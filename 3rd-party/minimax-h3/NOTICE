@@ -1,0 +1,17 @@
+MiniMax H3 is licensed under the MiniMax H3 Community License Agreement, Copyright © 2026 MiniMax. All Rights Reserved.
+
+Valtz includes, unmodified, MiniMax H3's prompt-writing skill
+(https://github.com/MiniMax-AI/MiniMax-H3, commit
+a107547fa669c509b8e6363fe18378d46ab3066c), part of MiniMax H3's
+Documentation:
+
+  skills/h3-prompt-writing/SKILL.md
+  skills/h3-prompt-writing/references/base-en.txt
+  skills/h3-prompt-writing/references/ref-en.txt
+
+They are used, as the instructions its makers publish, by Valtz's prompt
+enhancer when the target model is MiniMax H3 (FL2VA: base-en.txt; Ref2VA:
+base-en.txt and ref-en.txt). The license (LICENSE, beside this file, as
+published with the model at https://huggingface.co/MiniMaxAI/MiniMax-H3,
+revision 42ed227ee7df40d41602854ae760620d6eb651fe) governs their use and
+distribution, its Use Restrictions and Acceptable Use Policy included.

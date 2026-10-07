@@ -1,0 +1,81 @@
+{
+  "format": "valtz-extension",
+  "interface": 1,
+  "id": "com.example.watercolor",
+  "version": "1.0.0",
+  "name": {"en": "Watercolor", "zh-Hans": "水彩"},
+  "description": {
+    "en": "Krea 2 Turbo as a watercolor illustrator: its own prompt frame, enhancement skill and attention knob.",
+    "zh-Hans": "以 Krea 2 Turbo 绘制水彩插画：自带提示词框架、提示词增强技能与注意力选项。"
+  },
+  "vendor": "Valtz examples",
+  "license": "Apache-2.0",
+  "required_features": ["catalog/1"],
+  "models": [
+    {
+      "id": "krea2-watercolor",
+      "name": {"en": "Krea 2 Watercolor", "zh-Hans": "Krea 2 水彩"},
+      "family": "watercolor",
+      "role": "image",
+      "hf_path": "krea/Krea-2-Turbo",
+      "capabilities": ["text-to-image"],
+      "disk_gb": 33.0,
+      "min_ram_gb": 16,
+      "rank": 1,
+      "preview_with": "taef2",
+      "license": "krea-2-community",
+      "required_features": ["tuning-options/1", "prompt-template/1",
+                            "skills/1"],
+      "engine": {
+        "vpipe": {
+          "shape": "diffusion-image",
+          "config_stage": "krea2-model-config",
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "defaults": {"steps": 8, "width": 1024, "height": 1024},
+          "scheduler": {"steps": 8, "shift": 0.3},
+          "options": [
+            {
+              "key": "sage_dense_layers",
+              "type": "int", "min": 0, "max": 12, "step": 1,
+              "default": 0, "presets": {"quality": 4},
+              "needs": "sage_attn",
+              "requires": "matrix-cores",
+              "group": "attention",
+              "stage": "generate",
+              "label": {"en": "Dense lead blocks", "zh-Hans": "前置稠密块"},
+              "note": {"en": "Blocks kept out of SageAttention",
+                       "zh-Hans": "不使用 SageAttention 的前几个块"},
+              "help": {"en": "The first blocks set the composition; keeping them in full precision keeps the washes' edges.",
+                       "zh-Hans": "前几个块决定构图；保持全精度可保留水彩晕染的边缘。"}
+            }
+          ]
+        }
+      },
+      "prompting": {
+        "language": "english",
+        "template": "{prompt}. Loose watercolor illustration on cold-press paper, soft wet-on-wet washes, visible pigment granulation, white paper showing through.",
+        "enhance": {"generate": "watercolor-t2i"}
+      },
+      "notes": {"en": "Krea 2 Turbo's own weights, prompted for watercolor.",
+                "zh-Hans": "Krea 2 Turbo 原版权重，按水彩风格提示。"}
+    }
+  ],
+  "families": [
+    {
+      "id": "watercolor",
+      "name": {"en": "Watercolor", "zh-Hans": "水彩"},
+      "features": ["image-gen"],
+      "members": [{"model": "krea2-watercolor", "label": "Krea 2 Turbo"}]
+    }
+  ],
+  "skills": [
+    {"id": "watercolor-t2i", "file": "skills/watercolor-t2i.md"}
+  ],
+  "recognize": [
+    {
+      "kind": "lora", "family": "watercolor",
+      "metadata": {"ss_tag_frequency": "*watercolor*"},
+      "keys_any": ["lora_A", "lora_down"]
+    }
+  ]
+}

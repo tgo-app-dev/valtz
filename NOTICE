@@ -1,0 +1,28 @@
+Valtz
+Copyright 2026 T-Go LLC
+
+Valtz is developed by T-Go LLC.
+https://github.com/tgo-app-dev/valtz
+
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+The full license text is in the LICENSE file. It covers every file in
+this repository that does not say otherwise; the third-party material
+listed in THIRD_PARTY_LICENSES.md is licensed by its owners under its
+own terms.
+
+The Valtz Extension SDK -- what an extension package is built against:
+its manifest schema, interface headers and tools -- will be published
+separately under the Apache License, Version 2.0, as vpipe is. The
+example extensions (examples/extensions/) already are, to be copied
+freely as a package's starting point: Copyright 2026 T-Go LLC, licensed
+under the Apache License, Version 2.0 (examples/extensions/LICENSE).
+Until the SDK is published, the extension reference
+(docs/EXTENSIONS.md) is MPL-2.0 like the rest of this repository.
+
+Valtz runs on vpipe, its execution engine (Apache License, Version 2.0;
+https://github.com/tgo-app-dev/vpipe), which the macOS application
+bundles as a shared library together with vpipe's own license and
+NOTICE.

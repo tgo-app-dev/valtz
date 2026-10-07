@@ -1,0 +1,5 @@
+// Generated from @VALTZ_EMBED_SOURCE@ at configure time -- do not edit.
+namespace valtz::resources {
+extern const char @VALTZ_EMBED_SYMBOL@[];
+const char @VALTZ_EMBED_SYMBOL@[] = R"VALTZ_EMBED(@VALTZ_EMBED_CONTENT@)VALTZ_EMBED";
+}

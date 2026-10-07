@@ -1,0 +1,49 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 29, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Dev (Ninja, Debug, vpipe from ~/dump/vpipe-install)",
+      "generator": "Ninja",
+      "binaryDir": "$env{HOME}/dump/valtz-build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "VALTZ_VPIPE_PREFIX": "$env{HOME}/dump/vpipe-install"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "dev",
+      "displayName": "Release (Ninja)",
+      "binaryDir": "$env{HOME}/dump/valtz-build-rel",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "xcode",
+      "inherits": "dev",
+      "displayName": "Xcode project (for SwiftUI debugging)",
+      "generator": "Xcode",
+      "binaryDir": "$env{HOME}/dump/valtz-xcode"
+    },
+    {
+      "name": "no-engine",
+      "inherits": "dev",
+      "displayName": "Without libvpipe (UI / store work only)",
+      "binaryDir": "$env{HOME}/dump/valtz-build-noengine",
+      "cacheVariables": { "VALTZ_WITH_VPIPE": "OFF" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "no-engine", "configurePreset": "no-engine" }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

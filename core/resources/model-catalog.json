@@ -1,0 +1,922 @@
+{
+  "schema": 1,
+  "notes": [
+    "Valtz's model manifest. vpipe's own catalogue says how to FETCH and",
+    "LOAD a checkpoint; this file adds what Valtz needs to OFFER it: which",
+    "capabilities it serves, how much disk and RAM it needs, and how it",
+    "ranks against alternatives for the same capability.",
+    "disk_gb: measured=true figures are du of a complete download; the",
+    "rest are estimates, replaced by the hub listing when first checked.",
+    "min_ram_gb: the smallest tier the model is OFFERED on (streamed DiTs",
+    "run on 16 GB; see vpipe docs/MODEL-MEMORY.md). rank: higher wins",
+    "when several installed models fit the same capability.",
+    "auto: what the model field's Auto tries, per modality (image, video,",
+    "audio) and op, in priority order; the first this machine can run",
+    "(installed, fits, and the engine has its graph) is the pick.",
+    "prompting.language: \"english\" for a model prompted in English only",
+    "(the assistant translates a request for it); without it the model reads",
+    "Chinese as well, and the assistant keeps the request's language.",
+    "families: how Settings > Capabilities lists the models -- a family's",
+    "features (video-gen, video-edit, image-gen, image-edit, audio-gen,",
+    "helper, video-upscale, image-upscale), each checked where a member",
+    "makes it here, and its members (every model and resource it runs",
+    "with), each with the label it is listed by.",
+    "engine.vpipe.sampling (an assistant): the token sampler its chat",
+    "decodes with -- vpipe's sampler-select config, the model card's own",
+    "recommendation (Qwen's non-thinking one: Valtz runs it without",
+    "thinking); without it, greedy."
+  ],
+  "auto": {
+    "image": {
+      "generate": ["krea2-turbo", "qwen-image-2.1", "z-image-turbo",
+                   "flux2-klein-9b"],
+      "edit": ["qwen-image-2.1", "flux2-klein-9b"]
+    },
+    "video": {
+      "generate": ["minimax-h3-fl2va"],
+      "edit": ["minimax-h3-ref2va"]
+    },
+    "audio": {
+      "generate": ["yue2-3b", "moss-tts-v1.5-w8g64", "moss-tts-v1.5"],
+      "edit": ["moss-tts-v1.5-w8g64", "moss-tts-v1.5"]
+    }
+  },
+  "families": [
+    {
+      "id": "minimax-h3", "name": "MiniMax H3",
+      "features": ["video-gen", "video-edit", "image-gen", "image-edit"],
+      "members": [
+        {"model": "minimax-h3-fl2va", "label": "FL2VA"},
+        {"model": "minimax-h3-ref2va", "label": "Ref2VA"},
+        {"model": "taeh3", "label": "TAE"},
+        {"model": "minimax-h3-turbo-3step", "label": "TaoMate adapter (3-step streaming method)"},
+        {"model": "minimax-h3-turbo-4step", "label": "4-step Turbo LoRA, FL2VA (lightx2v)"},
+        {"model": "minimax-h3-ref2va-turbo-4step", "label": "4-step Turbo LoRA, Ref2VA (lightx2v)"},
+        {"model": "minimax-h3-turbo", "label": "6-step Turbo LoRA (larryvrh)"},
+        {"model": "minimax-h3-turbo-8step", "label": "8-step Turbo LoRA, FL2VA (lightx2v)"},
+        {"model": "minimax-h3-ref2va-turbo-8step", "label": "8-step Turbo LoRA, Ref2VA (lightx2v)"},
+        {"model": "minimax-h3-vdn", "label": "VDN linear branch"},
+        {"model": "minimax-h3-hyperflow", "label": "HyperFlow (8-step)"},
+        {"model": "minimax-h3-image-vae", "label": "Image VAE (Mamad8)"}
+      ]
+    },
+    {
+      "id": "qwen-image-21", "name": "Qwen-Image 2.1",
+      "features": ["image-gen", "image-edit"],
+      "members": [
+        {"model": "qwen-image-2.1", "label": "Main model"},
+        {"model": "qwen-image-21-turbo", "label": "6-step Turbo LoRA (Viggle)"},
+        {"model": "taeqi2_1", "label": "TAE (RGBA)"},
+        {"model": "qwen-image-21-rewriters", "label": "Prompt rewriters (QwenLM, non-commercial)"}
+      ]
+    },
+    {
+      "id": "krea2", "name": "Krea 2",
+      "features": ["image-gen"],
+      "members": [
+        {"model": "krea2-turbo", "label": "Krea 2 Turbo"},
+        {"model": "taew2_1", "label": "TAE"}
+      ]
+    },
+    {
+      "id": "flux2", "name": "FLUX.2 klein",
+      "features": ["image-gen", "image-edit"],
+      "members": [
+        {"model": "flux2-klein-9b", "label": "FLUX.2 klein 9B"},
+        {"model": "taef2", "label": "TAE"}
+      ]
+    },
+    {
+      "id": "z-image", "name": "Z-Image",
+      "features": ["image-gen"],
+      "members": [
+        {"model": "z-image-turbo", "label": "Z-Image Turbo"},
+        {"model": "taef1", "label": "TAE"}
+      ]
+    },
+    {
+      "id": "yue2", "name": "YuE2",
+      "features": ["audio-gen"],
+      "members": [
+        {"model": "yue2-3b", "label": "YuE2 3B"},
+        {"model": "yue2-vae", "label": "Decoder"},
+        {"model": "yue2-vae-legacy", "label": "Decoder (legacy, as benchmarked)"}
+      ]
+    },
+    {
+      "id": "moss-tts", "name": "MOSS-TTS",
+      "features": ["speech-gen"],
+      "members": [
+        {"model": "moss-tts-v1.5", "label": "MOSS-TTS v1.5 (bf16)"},
+        {"model": "moss-tts-v1.5-w8g64", "label": "MOSS-TTS v1.5 w8g64 (8-bit)"},
+        {"model": "moss-audio-tokenizer", "label": "Audio tokenizer"}
+      ]
+    },
+    {
+      "id": "helpers", "name": "Agentic helpers",
+      "features": ["helper"],
+      "members": [
+        {"model": "qwen3.5-9b", "label": "Qwen3.5 9B"},
+        {"model": "qwen3.8-27b", "label": "Qwen3.8 27B"},
+        {"model": "qwen3.8-27b-4bit", "label": "Qwen3.8 27B (4-bit)"},
+        {"model": "qwen3.8-27b-mtp-4bit", "label": "Qwen3.8 27B MTP drafter"},
+        {"model": "qwen3.8-27b-dflash2", "label": "Qwen3.8 27B DFlash 2 drafter"}
+      ]
+    },
+    {
+      "id": "upscalers", "name": "Upscalers",
+      "features": ["video-upscale", "image-upscale"],
+      "members": [
+        {"model": "flashvsr", "label": "FlashVSR (video)"},
+        {"model": "vosr", "label": "VOSR (image)"}
+      ]
+    },
+    {
+      "id": "other", "name": "Other",
+      "features": [],
+      "members": [
+        {"model": "dinov2-large", "label": "DINOv2 large"}
+      ]
+    }
+  ],
+  "models": [
+    {
+      "id": "qwen3.5-9b",
+      "name": "Qwen3.5 9B",
+      "family": "qwen3.5",
+      "role": "assistant",
+      "hf_path": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "capabilities": ["prompt-enhance", "intent", "caption"],
+      "disk_gb": 7.7, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 1,
+      "license": "apache-2.0",
+      "engine": {"vpipe": {"mtp": true,
+                           "sampling": {"temperature": 0.7, "top_p": 0.8, "top_k": 20,
+                                       "min_p": 0.0, "presence_penalty": 1.5,
+                                       "repetition_penalty": 1.0}}},
+      "notes": "OptiQ mixed 4/8-bit, vision tower included, and an MTP draft head (optiq/mtp.safetensors) the chat decodes with. ~19-20 tok/s decode on an M5 16 GB."
+    },
+    {
+      "id": "qwen3.8-27b",
+      "name": "Qwen3.8 27B",
+      "family": "qwen3.5",
+      "role": "assistant",
+      "hf_path": "mlx-community/Qwen3.8-27B-OptiQ-4bit",
+      "capabilities": ["prompt-enhance", "intent", "caption"],
+      "disk_gb": 20.7, "disk_measured": true,
+      "min_ram_gb": 32, "rank": 2,
+      "license": "apache-2.0",
+      "engine": {"vpipe": {"mtp": true,
+                           "sampling": {"temperature": 0.7, "top_p": 0.8, "top_k": 20,
+                                       "min_p": 0.0, "presence_penalty": 1.5,
+                                       "repetition_penalty": 1.0}}},
+      "notes": "OptiQ mixed 4/8-bit: 19.4 GB of weights + 0.9 GB vision tower + 0.3 GB MTP head (optiq/mtp.safetensors: the chat decodes with it). Offered from 32 GB: on a 24 GB M5 Pro the GPU keeps 17.8 GB resident against its 19.7 GB, and a decode paged every token (2026-10-05). The image/video model is unloaded while it runs."
+    },
+    {
+      "id": "qwen3.8-27b-4bit",
+      "name": "Qwen3.8 27B (4-bit)",
+      "family": "qwen3.5",
+      "role": "assistant",
+      "hf_path": "mlx-community/Qwen3.8-27B-4bit",
+      "capabilities": ["prompt-enhance", "intent", "caption"],
+      "disk_gb": 16.1, "disk_measured": true,
+      "min_ram_gb": 24, "rank": 1,
+      "requires": ["qwen3.8-27b-mtp-4bit"],
+      "license": "apache-2.0",
+      "engine": {"vpipe": {"mtp": true, "mtp_drafter": "qwen3.8-27b-mtp-4bit",
+                           "dflash_drafter": "qwen3.8-27b-dflash2",
+                           "sampling": {"temperature": 0.7, "top_p": 0.8, "top_k": 20,
+                                       "min_p": 0.0, "presence_penalty": 1.5,
+                                       "repetition_penalty": 1.0}}},
+      "notes": "Uniform MLX 4-bit (group 64), vision tower in the shards: 16.1 GB. Its conversion drops the MTP head; mlx-community ships it apart (qwen3.8-27b-mtp-4bit, downloaded with it), which vpipe's text-chat decodes with (mtp_model). On a 24 GB M5 Pro (2026-10-05): 24.6 tok/s with the drafter, 17.5 without; 17.7 GB peak. Ranked with the 9B, which comes first: chosen by name (Settings > Agentic Helper, valtzctl assistant). On the Pro with Qwen's sampler: 22.7 tok/s with the drafter, 17.7 without."
+    },
+    {
+      "id": "qwen3.8-27b-mtp-4bit",
+      "name": "Qwen3.8 27B MTP drafter",
+      "family": "qwen3.5",
+      "role": "drafter",
+      "hf_path": "mlx-community/Qwen3.8-27B-MTP-4bit",
+      "capabilities": [],
+      "disk_gb": 0.24, "disk_measured": true,
+      "min_ram_gb": 24,
+      "license": "apache-2.0",
+      "notes": "Qwen3.8 27B's multi-token-prediction head alone (mlx-vlm's qwen3_5_mtp: bare names, true norm weights, a 4-bit fc), split from the model it drafts for. Not a model by itself: qwen3.8-27b-4bit decodes with it."
+    },
+    {
+      "id": "qwen3.8-27b-dflash2",
+      "name": "Qwen3.8 27B DFlash 2 drafter",
+      "family": "qwen3.5",
+      "role": "drafter",
+      "hf_path": "incoai/Qwen3.8-27B-DFlash2",
+      "capabilities": [],
+      "disk_gb": 3.8,
+      "min_ram_gb": 24,
+      "license": "apache-2.0",
+      "notes": "Inco AI's DFlash 2 block drafter for Qwen3.8 27B (five layers, 2B parameters, bf16 on disk): it drafts a block from the model's hidden states, which the model verifies in one forward (vpipe's text-chat draft_model). Held at 8 bits (~2.2 GB) or 4 bits (~1.3 GB) in memory, beside the model's 17 GB: an option, not the default, on a 24 GB Mac (Settings > Agentic Helper > Drafter)."
+    },
+    {
+      "id": "z-image-turbo",
+      "name": "Z-Image Turbo",
+      "family": "z-image",
+      "role": "image",
+      "hf_path": "Tongyi-MAI/Z-Image-Turbo",
+      "capabilities": ["text-to-image"],
+      "disk_gb": 31, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 2,
+      "preview_with": "taef1",
+      "license": "apache-2.0",
+      "engine": {
+        "vpipe": {
+          "config_stage": "z-image-model-config",
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "config": { "guidance_scale": 0.0 },
+          "scheduler": { "steps": 8, "shift": 3.0, "type": "simple", "shift_type": "linear" },
+          "defaults": { "steps": 8, "width": 1024, "height": 1024 }
+        }
+      },
+      "notes": "6B DiT, 8 steps. Streams its F32 checkpoint on 16 GB (46 s at 1024^2 on an M5)."
+    },
+    {
+      "id": "flux2-klein-9b",
+      "name": "FLUX.2 [klein] 9B",
+      "family": "flux2",
+      "role": "image",
+      "hf_path": "black-forest-labs/FLUX.2-klein-9B",
+      "capabilities": ["text-to-image", "image-edit"],
+      "disk_gb": 17, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 3,
+      "preview_with": "taef2",
+      "license": "flux-non-commercial",
+      "gated": true,
+      "engine": {
+        "vpipe": {
+          "config_stage": "flux2-model-config",
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "config": {},
+          "defaults": { "steps": 4, "width": 1024, "height": 1024 },
+          "edit": {
+            "reference_to_conditioner": false,
+            "reference_area": 1048576,
+            "max_references": 4
+          }
+        }
+      },
+      "prompting": {"language": "english"},
+      "notes": "Multi-reference edit. vpipe's prepare-klein-9b-4bit graph quantizes it to 4-bit (12 GB) after download. Prompted in English: the assistant translates for it."
+    },
+    {
+      "id": "krea2-turbo",
+      "name": "Krea 2 Turbo",
+      "family": "krea2",
+      "role": "image",
+      "hf_path": "krea/Krea-2-Turbo",
+      "capabilities": ["text-to-image"],
+      "disk_gb": 33, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 2,
+      "preview_with": "taew2_1",
+      "license": "krea-2", "gated": true,
+      "prompting": {"language": "english"},
+      "engine": {
+        "vpipe": {
+          "config_stage": "krea2-model-config",
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "config": {},
+          "scheduler": { "steps": 8, "shift": 0.3 },
+          "defaults": { "steps": 8, "width": 1024, "height": 1024 },
+          "presets": {
+            "speed": { "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
+                       "i8_gemm": true },
+            "balanced": { "sage_attn": true, "i8_gemm": true },
+            "quality": { "steps": 12, "sol_attn": false, "sage_attn": false,
+                         "i8_gemm": false }
+          }
+        }
+      }
+    },
+    {
+      "id": "qwen-image-2.1",
+      "name": "Qwen-Image 2.1",
+      "family": "qwen-image-21",
+      "role": "image",
+      "hf_path": "Qwen/Qwen-Image-2.1",
+      "capabilities": ["text-to-image", "image-edit", "alpha-output"],
+      "disk_gb": 31, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 2,
+      "rank_for": { "image-edit": 4 },
+      "preview_with": "taeqi2_1",
+      "license": "apache-2.0",
+      "engine": {
+        "vpipe": {
+          "config_stage": "qwen-image-21-model-config",
+          "accel": ["sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "config": {},
+          "scheduler": { "steps": 20 },
+          "defaults": { "steps": 20, "width": 1024, "height": 1024 },
+          "align": 32,
+          "turbo": {
+            "lora": "qwen-image-21-turbo", "scale": 1.0,
+            "steps": { "speed": 6, "balanced": 6, "quality": 6 }
+          },
+          "presets": {
+            "speed": { "turbo": [{ "lora": "qwen-image-21-turbo", "steps": 6 }],
+                       "i8_gemm": true },
+            "balanced": { "turbo": [], "steps": 25, "i8_gemm": true },
+            "quality": { "turbo": [], "steps": 40, "i8_gemm": true }
+          },
+          "edit": {
+            "reference_to_conditioner": true,
+            "vl_bounds": true,
+            "reference_area": 1048576,
+            "max_references": 10,
+            "defaults": { "steps": 20 }
+          }
+        }
+      },
+      "prompting": {
+        "reference_tag": "<image{n}>",
+        "enhance": {
+          "generate": "qwen-image-2.1-t2i",
+          "edit": "qwen-image-2.1-edit"
+        }
+      },
+      "notes": "One checkpoint for generate and edit; native RGBA (straight alpha) output."
+    },
+    {
+      "id": "minimax-h3-fl2va",
+      "name": "MiniMax H3 FL2VA",
+      "family": "minimax-h3",
+      "role": "video",
+      "hf_path": "MiniMaxAI/MiniMax-H3",
+      "subdir": "FL2VA",
+      "capabilities": ["text-to-video", "image-to-video", "audio-output"],
+      "disk_gb": 144, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 2,
+      "preview_with": "taeh3",
+      "license": "minimax",
+      "engine": {
+        "vpipe": {
+          "config_stage": "minimax-h3-model-config",
+          "config": {
+            "video_shift": 12.0, "audio_shift": 3.0,
+            "condition_timestep": 1.0
+          },
+          "conditioner": {"unload_when_idle": "always"},
+          "generate": {"i8_gemm": true, "unload_when_idle": "always"},
+          "defaults": {"width": 960, "height": 544, "frames": 124, "fps": 24},
+          "align": 32,
+          "frame_grid": {"step": 17, "offset": 5},
+          "max_frames": 362,
+          "steps": {"speed": 8, "balanced": 12, "quality": 16},
+          "turbo": {
+            "lora": "minimax-h3-turbo", "scale": 1.0,
+            "steps": {"speed": 4, "balanced": 6, "quality": 8}
+          },
+          "presets": {
+            "speed": {
+              "turbo": [
+                {"lora": "minimax-h3-turbo-4step", "steps": 4,
+                 "config": {"video_shift": 6.0}}
+              ],
+              "sol_attn": true, "sol_tau": 1.0, "sage_attn": true,
+              "i8_gemm": true
+            },
+            "balanced": {
+              "turbo": [
+                {"lora": "minimax-h3-turbo-8step", "steps": 8,
+                 "config": {"video_shift": 6.0}}
+              ],
+              "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
+              "i8_gemm": true
+            },
+            "quality": {
+              "turbo": [], "sage_attn": true, "i8_gemm": true,
+              "motion_cache": true
+            }
+          },
+          "hyperflow": {"lora": "minimax-h3-hyperflow", "steps": 8},
+          "taomate": {"lora": "minimax-h3-turbo-3step", "steps": 3,
+                      "fixes": {"video_shift": 12, "audio_shift": 3}},
+          "vdn": {"branch": "minimax-h3-vdn"},
+          "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "ane_qkv_min_ram_gb": 24,
+          "first_frame": true,
+          "quality": 0.8
+        }
+      },
+      "prompting": {
+        "reference_tags": {"image": "<Picture {n}>"},
+        "enhance": {"generate": "minimax-h3-base"},
+        "outline": {
+          "en": [
+            "{if image}For the target video, at 0.00 seconds into the target video, {image} (from [Shot 1]) is fully referenced.",
+            "{if image}",
+            "{if image}integrated_multimodal_description: [Shot 1] (Begin from {image} -- its style, its subjects and where they are -- then what happens next. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
+            "{if none}integrated_multimodal_description: [Shot 1] (The style, the framing, who is where and what happens. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
+            "[Shot 2] At 00:04.000, (the camera cuts to what comes next.)",
+            "",
+            "overall_soundscape: (The ambience and the sounds of what happens -- steps, breathing, objects -- in one to four sentences; no dialogue, no music.)",
+            "",
+            "non_diegetic_music: (The score: instruments, tempo, rhythm, dynamics, in one to three sentences; N/A for none.)"
+          ],
+          "zh-Hans": [
+            "{if image}For the target video, at 0.00 seconds into the target video, {image} (from [Shot 1]) is fully referenced.",
+            "{if image}",
+            "{if image}integrated_multimodal_description: [Shot 1]（从 {image} 开始——它的风格、主体和它们的位置——再写接下来发生了什么。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
+            "{if none}integrated_multimodal_description: [Shot 1]（风格、构图、谁在哪里、发生了什么。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
+            "[Shot 2] At 00:04.000,（镜头切到接下来的画面。）",
+            "",
+            "overall_soundscape:（环境声和动作的声音——脚步、呼吸、物件——一到四句；不写对白，不写音乐。）",
+            "",
+            "non_diegetic_music:（配乐：乐器、速度、节奏、力度，一到三句；没有则写 N/A。）"
+          ]
+        }
+      },
+      "notes": "33B; video + audio from text, or from first / last keyframes. Streams on 16 GB."
+    },
+    {
+      "id": "minimax-h3-ref2va",
+      "name": "MiniMax H3 Ref2VA",
+      "family": "minimax-h3",
+      "role": "video",
+      "hf_path": "MiniMaxAI/MiniMax-H3",
+      "subdir": "Ref2VA",
+      "capabilities": ["reference-to-video", "audio-output"],
+      "disk_gb": 144, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 2,
+      "preview_with": "taeh3",
+      "license": "minimax",
+      "engine": {
+        "vpipe": {
+          "config_stage": "minimax-h3-model-config",
+          "config": {
+            "video_shift": 12.0, "audio_shift": 3.0,
+            "condition_timestep": 1.0, "condition_audio_timestep": 1.0
+          },
+          "generate": {"i8_gemm": true, "unload_when_idle": "always"},
+          "defaults": {"width": 960, "height": 544, "frames": 124, "fps": 24},
+          "align": 32,
+          "frame_grid": {"step": 17, "offset": 5},
+          "max_frames": 362,
+          "steps": {"speed": 8, "balanced": 12, "quality": 16},
+          "turbo": {
+            "lora": "minimax-h3-ref2va-turbo-8step", "scale": 1.0,
+            "steps": {"speed": 8, "balanced": 8, "quality": 8},
+            "config": {"video_shift": 6.0}
+          },
+          "presets": {
+            "speed": {
+              "turbo": [
+                {"lora": "minimax-h3-ref2va-turbo-4step", "steps": 4}
+              ],
+              "sol_attn": true, "sol_tau": 1.0, "sage_attn": true,
+              "i8_gemm": true
+            },
+            "balanced": {
+              "turbo": [
+                {"lora": "minimax-h3-ref2va-turbo-8step", "steps": 8,
+                 "config": {"video_shift": 6.0}}
+              ],
+              "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
+              "i8_gemm": true
+            },
+            "quality": {
+              "turbo": [], "sage_attn": true, "i8_gemm": true,
+              "motion_cache": true
+            }
+          },
+          "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "ane_qkv_min_ram_gb": 24,
+          "references": {
+            "max_pictures": 9, "max_clips": 3, "max_sounds": 3,
+            "max_total": 12, "ports": 6, "tail_frames": 90,
+            "encoder": {
+              "reference_image_short_edge": 1024,
+              "max_prompt_tokens": 32768,
+              "unload_when_idle": "auto"
+            }
+          },
+          "quality": 0.8
+        }
+      },
+      "prompting": {
+        "enhance": {"generate": "minimax-h3-ref"},
+        "reference_tags": {
+          "image": "<Picture {n}>", "video": "<Video {n}>",
+          "audio": "<Audio {n}>"
+        },
+        "continuation": "[video continuation + audio reference]",
+        "outline": {
+          "en": [
+            "subject_definitions:",
+            "<Subject {subject}> is (who or what it is: look, clothing, materials) in {image}.",
+            "<Subject {subject}> is (who or what it is) in {video}.",
+            "{video} is (what the clip is to the target video: the shot it continues from, a motion to follow, the video to edit).",
+            "{audio} is (what the sound is to the target video: a voice, a song, the soundtrack to follow).",
+            "{if none}<Subject 1> is (who or what is seen, and in which reference).",
+            "",
+            "summary:",
+            "[reference generation] (What happens, in one or two sentences, naming each subject. The bracket is the task: reference generation, keyframe completion, video editing, video continuation, audio reuse or audio reference, joined with \" + \".)",
+            "",
+            "retention_analysis:",
+            "{each image}<Subject {subject}> (appears in [Shot 1]): fully_preserved - (what is kept: identity, look, clothing).",
+            "{each video}<Subject {subject}> (appears in [Shot 1]): fully_preserved - (what is kept: identity, look, the place).",
+            "{audio}: reference - (what is followed without copying the signal: the timbre, the tempo, the voice).",
+            "{if none}<Subject 1> (appears in [Shot 1]): fully_preserved - (what is kept).",
+            "",
+            "detailed_description:",
+            "(The style, in one or two sentences: live-action or animated, the light, the lens.)",
+            "[Shot 1] (Who is where, the camera, and what happens. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
+            "[Shot 2] At 00:04.000, (the cut, and what happens next.)",
+            "",
+            "overall_soundscape:",
+            "(The ambience and the sounds of what happens, in one to four sentences; no dialogue, no music.)",
+            "",
+            "non_diegetic_music:",
+            "(The score the audience hears: instruments, tempo, how it develops; N/A for none.)"
+          ],
+          "zh-Hans": [
+            "subject_definitions:",
+            "<Subject {subject}> 是 {image} 中的（谁或什么：外貌、服装、材质）。",
+            "<Subject {subject}> 是 {video} 中的（谁或什么）。",
+            "{video} 是（这段视频对目标视频的作用：要接续的镜头、要跟随的动作、要编辑的视频）。",
+            "{audio} 是（这段声音对目标视频的作用：人声、歌曲、要跟随的配乐）。",
+            "{if none}<Subject 1> 是（看到的谁或什么，出自哪个参考）。",
+            "",
+            "summary:",
+            "[reference generation]（用一两句话写发生了什么，点出每个主体。方括号里是任务类型：reference generation、keyframe completion、video editing、video continuation、audio reuse 或 audio reference，多个用 \" + \" 连接。）",
+            "",
+            "retention_analysis:",
+            "{each image}<Subject {subject}> (appears in [Shot 1]): fully_preserved -（保留什么：身份、外貌、服装）。",
+            "{each video}<Subject {subject}> (appears in [Shot 1]): fully_preserved -（保留什么：身份、外貌、场景）。",
+            "{audio}: reference -（跟随而不复制原信号的部分：音色、速度、嗓音）。",
+            "{if none}<Subject 1> (appears in [Shot 1]): fully_preserved -（保留什么）。",
+            "",
+            "detailed_description:",
+            "（用一两句话写风格：实拍还是动画、光线、镜头。）",
+            "[Shot 1]（谁在哪里、镜头怎么拍、发生了什么。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
+            "[Shot 2] At 00:04.000,（切到什么，接下来发生了什么。）",
+            "",
+            "overall_soundscape:",
+            "（环境声和动作的声音，一到四句；不写对白，不写音乐。）",
+            "",
+            "non_diegetic_music:",
+            "（观众听到的配乐：乐器、速度、如何发展；没有则写 N/A。）"
+          ]
+        }
+      },
+      "notes": "33B; video + audio conditioned on reference pictures, clips and soundtracks (at most 9, 3 and 3; 12 in all): a subject, a motion, a voice or a song -- a clip continued from its tail, a song sung. The same repo's second partition. Streams on 16 GB."
+    },
+    {
+      "id": "yue2-3b",
+      "name": "YuE2 3B",
+      "family": "yue2",
+      "role": "audio",
+      "hf_path": "m-a-p/YuE2-3B",
+      "capabilities": ["text-to-audio"],
+      "disk_gb": 7.3, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 1,
+      "requires": ["yue2-vae"],
+      "license": "cc-by-nc-4.0",
+      "engine": {
+        "vpipe": {
+          "decoder": "yue2-vae",
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn"],
+          "defaults": {"steps": 32, "cot": "full"},
+          "max_seconds": 360,
+          "sample_rate": 48000
+        }
+      },
+      "prompting": {
+        "enhance": {"generate": "yue2-song"},
+        "outline": {
+          "en": [
+            "(The style: genre, mood, instruments, voice, tempo -- e.g. indie pop, warm female vocal, acoustic guitar, 100 BPM)",
+            "",
+            "[Verse]",
+            "(The first verse, a line at a time)",
+            "",
+            "[Chorus]",
+            "(The chorus)",
+            "",
+            "[Verse]",
+            "(The second verse)",
+            "",
+            "[Chorus]",
+            "(The chorus again)"
+          ],
+          "zh-Hans": [
+            "（风格：曲风、情绪、乐器、人声、速度——例如 indie pop, warm female vocal, acoustic guitar, 100 BPM）",
+            "",
+            "[Verse]",
+            "（第一段主歌，一行一句）",
+            "",
+            "[Chorus]",
+            "（副歌）",
+            "",
+            "[Verse]",
+            "（第二段主歌）",
+            "",
+            "[Chorus]",
+            "（再唱副歌）"
+          ]
+        }
+      },
+      "notes": "A song -- vocals and accompaniment, 48 kHz stereo -- from a style prompt and sectioned lyrics. Plans an ABC score first, then sings and plays to it; the model decides the length (up to 6 min). bf16, 3.6B; the plan peaks at 11.4 GB. Weights are CC BY-NC 4.0: non-commercial use only."
+    },
+    {
+      "id": "moss-tts-v1.5",
+      "name": "MOSS-TTS v1.5",
+      "family": "moss-tts",
+      "role": "audio",
+      "hf_path": "OpenMOSS-Team/MOSS-TTS-v1.5",
+      "capabilities": ["text-to-speech"],
+      "disk_gb": 17.0, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 1,
+      "requires": ["moss-audio-tokenizer"],
+      "license": "apache-2.0",
+      "engine": {
+        "vpipe": {
+          "decoder": "moss-audio-tokenizer",
+          "speech": {
+            "sample_rate": 24000, "tokens_per_second": 12.5,
+            "max_seconds": 300, "lm_quant": "w8",
+            "voice_seconds": 12
+          },
+          "accel": ["i8_gemm"],
+          "presets": {
+            "speed": { "w8_weights": true, "i8_gemm": true },
+            "balanced": { "w8_weights": true, "i8_gemm": true },
+            "quality": { "w8_weights": false, "i8_gemm": false }
+          },
+          "options": [
+            {
+              "key": "w8_weights", "type": "bool", "stage": "lm",
+              "presets": { "speed": true, "balanced": true,
+                           "quality": false },
+              "label": { "en": "8-bit weights",
+                         "zh-Hans": "8 位权重" },
+              "note": { "en": "The model held as affine 8-bit (w8, groups of 64): about half the memory and a faster token; off, its bf16 as published. The 8-bit pack is 8-bit either way.",
+                        "zh-Hans": "以仿射 8 位（w8，每组 64）保存模型：内存约减半，每个 token 更快；关闭则使用发布时的 bf16。8 位量化包无论如何都是 8 位。" },
+              "group": "arithmetic"
+            }
+          ]
+        }
+      },
+      "prompting": {
+        "enhance": {"generate": "moss-tts"},
+        "outline": {
+          "en": [
+            "Instruction: (how it is spoken -- e.g. a warm, unhurried narrator, smiling a little)",
+            "Quality: (e.g. a clean studio recording)",
+            "Language: (the text's language, by its English name -- English, Chinese, French ...)",
+            "",
+            "(The words to speak. [pause 1.5s] holds a pause.)"
+          ],
+          "zh-Hans": [
+            "Instruction: （怎么说——例如温暖、从容的旁白，略带笑意）",
+            "Quality: （例如干净的录音棚录音）",
+            "Language: （文字的语言，用英文名称——Chinese、English、French……）",
+            "",
+            "（要说的话。[pause 1.5s] 表示停顿。）"
+          ]
+        }
+      },
+      "notes": "Speech from text -- 24 kHz mono, 20+ languages -- in the voice of a reference sound when the prompt's row has one (voice cloning, up to 12 s of it). The prompt's own fields steer the whole utterance: Instruction, Quality, Sound event, Ambient sound, Language. bf16, 8B; held as w8 in memory, its layers streamed on a 16 GB Mac. Apache 2.0."
+    },
+    {
+      "id": "moss-tts-v1.5-w8g64",
+      "name": "MOSS-TTS v1.5 (8-bit)",
+      "hf_path": "local/MOSS-TTS-v1.5-8bit",
+      "quantize": {"from": "moss-tts-v1.5", "bits": 8, "group_size": 64},
+      "disk_gb": 9.3, "disk_measured": false, "rank": 2,
+      "notes": "MOSS-TTS v1.5 as an affine 8-bit group-64 pack: byte-identical to the w8 it is held as in memory, half the bytes to stream -- the one to run on a 16 GB Mac. Quantized here from the bf16 model, or one already made (vpipe's prepare-moss-tts-v1.5 writes local/MOSS-TTS-v1.5-8bit) linked."
+    },
+    {
+      "id": "moss-audio-tokenizer", "name": "MOSS Audio Tokenizer",
+      "family": "moss-tts", "role": "vae",
+      "hf_path": "OpenMOSS-Team/MOSS-Audio-Tokenizer",
+      "capabilities": [],
+      "disk_gb": 7.1, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "apache-2.0",
+      "notes": "MOSS-TTS's codec: speech to codes (a reference voice) and codes to 24 kHz speech."
+    },
+    {
+      "id": "yue2-vae", "name": "YuE2 VAE", "family": "yue2",
+      "role": "vae", "hf_path": "m-a-p/YuE2-Vae",
+      "capabilities": [],
+      "disk_gb": 0.53, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "cc-by-nc-4.0",
+      "notes": "Oobleck-style decoder: 25 latents a second in, 48 kHz stereo out. What the authors recommend for listening."
+    },
+    {
+      "id": "yue2-vae-legacy", "name": "YuE2 VAE (legacy)", "family": "yue2",
+      "role": "vae", "hf_path": "m-a-p/YuE2-Vae-legacy",
+      "capabilities": [],
+      "disk_gb": 0.53, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "cc-by-nc-4.0",
+      "notes": "The decoder the paper's benchmarks were measured with, over the same latents. Dropped on Favor's Custom panel (or valtzctl --vae), it decodes in place of the default."
+    },
+    {
+      "id": "flashvsr",
+      "name": "FlashVSR 1.1",
+      "family": "flashvsr",
+      "role": "upscale",
+      "hf_path": "JunhaoZhuang/FlashVSR-v1.1",
+      "capabilities": ["upscale-video"],
+      "engine": {"vpipe": {"upscale": {"grid": 128, "group": 25, "overlap": 4, "ahead": 1, "hidden": 1536}}},
+      "disk_gb": 12, "disk_measured": false,
+      "min_ram_gb": 24, "rank": 1,
+      "license": "apache-2.0"
+    },
+    {
+      "id": "vosr",
+      "name": "VOSR 2.0",
+      "family": "vosr",
+      "role": "upscale",
+      "hf_path": "CSWRY/VOSR",
+      "capabilities": ["upscale-image"],
+      "engine": {"vpipe": {"upscale": {"grid": 16, "encoder": "dinov2-large"}}},
+      "disk_gb": 6, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 1,
+      "requires": ["dinov2-large"],
+      "license": "apache-2.0"
+    },
+    {
+      "id": "dinov2-large",
+      "name": "DINOv2 Large",
+      "family": "dinov2",
+      "role": "encoder",
+      "hf_path": "facebook/dinov2-large",
+      "capabilities": [],
+      "disk_gb": 1.2, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 0,
+      "license": "apache-2.0"
+    },
+    {
+      "id": "taef1", "name": "TAE (FLUX.1 latents)", "family": "tae",
+      "role": "preview", "hf_path": "madebyollin/taef1",
+      "capabilities": ["live-preview"],
+      "disk_gb": 0.01, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "mit"
+    },
+    {
+      "id": "taef2", "name": "TAE (FLUX.2 latents)", "family": "tae",
+      "role": "preview", "hf_path": "madebyollin/taef2",
+      "capabilities": ["live-preview"],
+      "disk_gb": 0.01, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "mit"
+    },
+    {
+      "id": "taew2_1", "name": "TAE (Wan 2.1 latents)", "family": "tae",
+      "role": "preview", "hf_path": "madebyollin/taehv",
+      "file": "taew2_1.safetensors", "fetch_variant": "madebyollin/taew2_1",
+      "capabilities": ["live-preview"],
+      "disk_gb": 0.05, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "mit"
+    },
+    {
+      "id": "taeqi2_1", "name": "TAE (Qwen-Image 2.1, RGBA)", "family": "tae",
+      "role": "preview", "hf_path": "madebyollin/taeqi2_1",
+      "capabilities": ["live-preview"],
+      "disk_gb": 0.01, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "mit"
+    },
+    {
+      "id": "taeh3", "name": "TAE (MiniMax H3)", "family": "tae",
+      "role": "preview", "hf_path": "madebyollin/taehv",
+      "file": "taeh3.safetensors", "fetch_variant": "madebyollin/taeh3",
+      "capabilities": ["live-preview"],
+      "disk_gb": 0.02, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "mit",
+      "notes": "Temporal: decodes the clip's own frame count. Published in madebyollin's taehv GitHub repo beside taew2_1."
+    },
+    {
+      "id": "minimax-h3-turbo", "name": "MiniMax H3 Turbo LoRA (6-step)",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "larryvrh/MiniMax-H3-Turbo-Lora",
+      "file": "minimax_h3_turbo_v4_step600_ema.safetensors",
+      "fetch_variant": "larryvrh/MiniMax-H3-Turbo-Lora-v4-600-ema",
+      "capabilities": [],
+      "disk_gb": 0.74, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "Few-step distillation of the FL2VA partition (v4, step 600, EMA): video and audio in 4-8 steps, applied at run time at scale 1."
+    },
+    {
+      "id": "minimax-h3-hyperflow", "name": "MiniMax H3 HyperFlow",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "videorebirth/hyperflow",
+      "file": "minimax_h3_hyperflow_8step_v1.0.safetensors",
+      "fetch_variant": "videorebirth/hyperflow",
+      "capabilities": [],
+      "disk_gb": 2.8, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "Video Rebirth's 8-step flow-map self-distillation: the adapter brings its own sigma grid, so the step count is its 8. Each forward is ~9% slower than the base model's. Takes the adapter slot the Turbo LoRA would."
+    },
+    {
+      "id": "minimax-h3-vdn", "name": "MiniMax H3 VDN linear branch",
+      "family": "minimax-h3", "role": "branch",
+      "hf_path": "OpenVDN/vdn-minimax-h3",
+      "subdir": "stage-dmd-step-250",
+      "fetch_variant": "OpenVDN/vdn-minimax-h3-stage-dmd",
+      "capabilities": [],
+      "disk_gb": 4.3, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "VideoDeltaNet hybrid attention (stage DMD): a windowed softmax over nearby frames plus a linear delta-rule recurrence over the rest, a second checkpoint beside the DiT. Worth it on long clips at large sizes; replaces Sol-Attn on the blocks it covers."
+    },
+    {
+      "id": "minimax-h3-image-vae", "name": "MiniMax H3 Image VAE",
+      "family": "minimax-h3", "role": "vae",
+      "hf_path": "Mamad8/MiniMax-H3-Image-VAE",
+      "file": "minimax_h3_t1_image_vae_step1597.safetensors",
+      "fetch_variant": "Mamad8/MiniMax-H3-Image-VAE",
+      "capabilities": [],
+      "disk_gb": 4.8, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "Mamad8's single-latent-frame decoder: H3 decodes one frame as a still with it (vpipe's vae-decode takes it for a one-frame latent)."
+    },
+    {
+      "id": "minimax-h3-turbo-3step", "name": "MiniMax H3 TaoMate adapter",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "TaoLiveAIGC/TaoMate-H3",
+      "file": "adapter_model.safetensors",
+      "capabilities": [],
+      "disk_gb": 1.5, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "minimax-h3-community",
+      "notes": "TaoLive's 3-step adapter for the FL2VA partition (step-3000 generator EMA, rank 128, a PEFT adapter folder) -- the adapter of a streaming METHOD, not a few-step LoRA: the base model writes the soundtrack, the adapter the video in chunks against a clean K/V cache (vpipe's taomate; Favor's TaoMate). Text to clip only, in whole 5-second requests; its cache is kept on disk. An alternative method in Favor's Custom: no preset turns it on."
+    },
+    {
+      "id": "minimax-h3-turbo-4step", "name": "MiniMax H3 FL2VA 4-step LoRA",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "file": "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-4step-768p-v1.2",
+      "capabilities": [],
+      "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 4-step Turbo for FL2VA (v1.2, 768p), distilled at video shift 6."
+    },
+    {
+      "id": "minimax-h3-ref2va-turbo-4step",
+      "name": "MiniMax H3 Ref2VA 4-step LoRA",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "file": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-ref2va-4step",
+      "capabilities": [],
+      "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 4-step Turbo for the Ref2VA partition (v0.1, ComfyUI keys)."
+    },
+    {
+      "id": "minimax-h3-turbo-8step", "name": "MiniMax H3 FL2VA 8-step LoRA",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "file": "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-8step-768p-split",
+      "capabilities": [],
+      "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 8-step Turbo for FL2VA (v1.0, 768p, video shift 6)."
+    },
+    {
+      "id": "minimax-h3-ref2va-turbo-8step",
+      "name": "MiniMax H3 Ref2VA 8-step LoRA",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "file": "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors",
+      "fetch_variant": "lightx2v/Minimax-h3-Turbo-ref2va-8step-768p",
+      "capabilities": [],
+      "disk_gb": 1.4, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "lightx2v's 8-step Turbo for the Ref2VA partition (v1.0, 768p)."
+    },
+    {
+      "id": "qwen-image-21-turbo", "name": "Qwen-Image 2.1 Turbo LoRA",
+      "family": "qwen-image-21", "role": "lora",
+      "hf_path": "Viggle/Qwen-Image-2.1-viggle-turbo",
+      "file": "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+      "fetch_variant": "Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-r128",
+      "capabilities": [],
+      "disk_gb": 1.2, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "Viggle's 6-step turbo for Qwen-Image 2.1 (v0.2.1, rank 128: what upstream's ComfyUI workflows load)."
+    },
+    {
+      "id": "qwen-image-21-rewriters", "name": "Qwen-Image 2.1 prompt rewriters",
+      "family": "qwen-image-21", "role": "prompt",
+      "hf_path": "QwenLM/Qwen-Image-2.1",
+      "file": "system_prompt_t2i.txt",
+      "fetch_variant": "QwenLM/Qwen-Image-2.1-rewriters",
+      "capabilities": [],
+      "disk_gb": 0.0001, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "qwen-research (non-commercial)",
+      "prompting": {
+        "provides": {
+          "qwen-image-2.1-t2i": "system_prompt_t2i.txt",
+          "qwen-image-2.1-edit": "system_prompt_edit.txt"
+        }
+      },
+      "notes": "QwenLM's own instructions for writing Qwen-Image 2.1 prompts and edit instructions, which Enhance then follows in place of Valtz's own guide. Under the Qwen Research License: for NON-COMMERCIAL use only (its LICENSE is downloaded beside them). Fetched from QwenLM's GitHub repository, pinned to one commit."
+    }
+  ]
+}

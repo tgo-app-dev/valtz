@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>     <string>en</string>
+  <key>CFBundleLocalizations</key>
+  <array><string>@VALTZ_LOCALIZATIONS_PLIST@</string></array>
+  <key>CFBundleExecutable</key>            <string>Valtz</string>
+  <key>CFBundleIdentifier</key>            <string>@VALTZ_BUNDLE_ID@</string>
+  <key>CFBundleInfoDictionaryVersion</key> <string>6.0</string>
+  <key>CFBundleName</key>                  <string>Valtz</string>
+  <key>CFBundleDisplayName</key>           <string>Valtz</string>
+  <key>CFBundlePackageType</key>           <string>APPL</string>
+  <key>CFBundleShortVersionString</key>    <string>@PROJECT_VERSION@</string>
+  <key>CFBundleVersion</key>               <string>@VALTZ_APP_BUILD@</string>
+  <key>LSMinimumSystemVersion</key>        <string>@CMAKE_OSX_DEPLOYMENT_TARGET@</string>
+  <key>LSApplicationCategoryType</key>     <string>public.app-category.graphics-design</string>
+  <key>CFBundleIconFile</key>              <string>AppIcon</string>
+  <key>NSAccentColorName</key>             <string>AccentColor</string>
+  <key>NSHighResolutionCapable</key>       <true/>
+  <!-- Sound recorded into a blank audio asset (DESIGN §7b). -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Valtz records sound from the microphone you choose into an audio asset of your project.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Valtz takes a photo or a video with the camera, to use in your prompt.</string>
+  <key>NSPrincipalClass</key>              <string>NSApplication</string>
+
+  <!-- A project is a package directory (one LMDB file + a blob store);
+       Finder shows it as a single document. -->
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>  <string>@VALTZ_BUNDLE_ID@.project</string>
+      <key>UTTypeDescription</key> <string>Valtz Project</string>
+      <key>UTTypeConformsTo</key>
+      <array><string>com.apple.package</string><string>public.composite-content</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict><key>public.filename-extension</key><array><string>valtz</string></array></dict>
+    </dict>
+  </array>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>        <string>Valtz Project</string>
+      <key>CFBundleTypeRole</key>        <string>Editor</string>
+      <key>LSHandlerRank</key>           <string>Owner</string>
+      <key>LSTypeIsPackage</key>         <true/>
+      <key>LSItemContentTypes</key>      <array><string>@VALTZ_BUNDLE_ID@.project</string></array>
+    </dict>
+  </array>
+  <!-- Sparkle auto-update. Inert in a build without VALTZ_SPARKLE_DIR:
+       no updater reads them. SUFeedURL is the appcast, an asset of the
+       latest GitHub release; SUPublicEDKey the public half of the EdDSA
+       pair each update is signed with; an update that does not verify
+       against it is refused. Valtz is not sandboxed, so Sparkle needs no
+       installer launcher service. -->
+  <key>SUFeedURL</key>                     <string>@VALTZ_APP_FEED_URL@</string>
+  <key>SUPublicEDKey</key>                 <string>@VALTZ_APP_ED_PUBKEY@</string>
+  <key>SUEnableInstallerLauncherService</key> <false/>
+</dict>
+</plist>

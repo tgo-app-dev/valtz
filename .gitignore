@@ -1,0 +1,16 @@
+build
+.claude
+*.mdb
+
+# clangd index cache (written into the source root by the language server)
+.cache/
+
+# app temp root (vpipe::temp_root) when a process runs from the source tree
+.vpipe-tmp/
+
+
+# out-of-source build trees live under ~/dump; guard against in-tree ones
+build*/
+compile_commands.json
+*.valtz/
+.DS_Store

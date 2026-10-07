@@ -1,0 +1,5 @@
+module ValtzBridge {
+  header "valtz-bridge.h"
+  requires cplusplus
+  export *
+}
