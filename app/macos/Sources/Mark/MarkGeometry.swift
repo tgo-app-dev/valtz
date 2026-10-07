@@ -398,13 +398,25 @@ enum MarkGeometry {
         for i in 0..<(k - 1) {
             let p0 = pts[max(i - 1, 0)], p1 = pts[i]
             let p2 = pts[i + 1], p3 = pts[min(i + 2, k - 1)]
+            // Each term in steps, its scalars typed: integer literals
+            // among SIMD2's operators sent an older Swift's type checker
+            // past its time limit on this step.
+            let two: Float = 2, three: Float = 3
+            let four: Float = 4, five: Float = 5, half: Float = 0.5
+            let a: SIMD2<Float> = two * p1
+            let bPart: SIMD2<Float> = p2 - p0
+            var cPart: SIMD2<Float> = two * p0 - five * p1
+            cPart += four * p2 - p3
+            var dPart: SIMD2<Float> = three * p1 - p0
+            dPart += p3 - three * p2
             for s in 0..<32 {
-                let f = Float(s) / 32, f2 = f * f, f3 = f2 * f
-                let a = 2 * p1
-                let b = (p2 - p0) * f
-                let c = (2 * p0 - 5 * p1 + 4 * p2 - p3) * f2
-                let d = (3 * p1 - p0 - 3 * p2 + p3) * f3
-                dense.append(0.5 * (a + b + c + d))
+                let f = Float(s) / 32
+                let f2 = f * f
+                let f3 = f2 * f
+                var sum: SIMD2<Float> = a + bPart * f
+                sum += cPart * f2
+                sum += dPart * f3
+                dense.append(sum * half)
             }
         }
         dense.append(pts[k - 1])

@@ -305,6 +305,9 @@ inline constexpr Message kEnhanceUnreadable{
     "The assistant's answer could not be read. Try again."};
 inline constexpr Message kExportFormatUnknown{
     "core.export_format_unknown", "Valtz cannot export to {format}."};
+inline constexpr Message kExportEncodingInvalid{
+    "core.export_encoding_invalid",
+    "{format} cannot be written with those settings: {why}."};
 inline constexpr Message kExportNeedsPicture{
     "core.export_needs_picture", "{format} is a format for pictures."};
 inline constexpr Message kExportNeedsVideo{

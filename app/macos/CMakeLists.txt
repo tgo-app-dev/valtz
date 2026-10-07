@@ -83,6 +83,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/StorageView.swift
   Sources/Views/SettingsView.swift
   Sources/Views/TitleBar.swift
+  Sources/Views/VideoEncodingRows.swift
   Sources/Views/InspectorView.swift
   Sources/Views/CanvasSize.swift
   Sources/Views/ProjectOutput.swift
@@ -131,7 +132,11 @@ set(VALTZ_MARK_SOURCES
 add_executable(valtz-icon
   "${PROJECT_SOURCE_DIR}/tools/valtz-icon/main.swift"
   ${VALTZ_MARK_SOURCES})
-set_target_properties(valtz-icon PROPERTIES Swift_LANGUAGE_VERSION 6)
+# Its module name spelled out: a Swift module is an identifier, which
+# "valtz-icon" is not -- CMake 4 makes one of it, 3.29 to 3.31 pass it to
+# swiftc as it is, which refuses it.
+set_target_properties(valtz-icon PROPERTIES Swift_LANGUAGE_VERSION 6
+                                            Swift_MODULE_NAME valtz_icon)
 target_link_libraries(valtz-icon PRIVATE
   "-framework Metal" "-framework CoreGraphics" "-framework ImageIO")
 

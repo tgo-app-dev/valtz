@@ -625,7 +625,8 @@ struct ShareButton: View {
         let choices = model.exportChoices
         let options = choices.isEmpty ? nil
             : SaveOptions(choices: choices, originalExt: ext, kind: kind,
-                          panel: panel, picture: model.savedPicture)
+                          panel: panel, picture: model.savedPicture,
+                          seconds: model.exportSeconds)
         panel.accessoryView = options?.view
         options?.apply()
         let scripted = script != nil
@@ -634,7 +635,8 @@ struct ShareButton: View {
                   let url = scripted ? scriptedDestination : panel.url
             else { return }
             model.save(to: url, as: options?.choice ?? .original,
-                       quality: options?.jpegQuality)
+                       quality: options?.jpegQuality,
+                       video: options?.videoEncoding)
             options?.remember()
         }
         if let script, let options {
@@ -658,8 +660,8 @@ struct ShareButton: View {
 
 /// What the save panel's options say: the format, and its quality -- a
 /// PNG's or a TIFF's depth, a JPEG's quality, with about the file size
-/// it makes. The last ones chosen come back the next time (not in a
-/// scripted snapshot run).
+/// it makes; a movie's encoding (VideoEncodingRows). The last ones
+/// chosen come back the next time (not in a scripted snapshot run).
 ///
 /// Its controls are AppKit's: a pop-up, a segmented control, a slider. A
 /// SwiftUI picker in a save panel's accessory view never opened its menu
@@ -698,9 +700,13 @@ final class SaveOptions: NSObject {
     private let note = NSTextField(labelWithString: "")
     private let qualityRow: NSStackView
     private let options: NSStackView
+    /// A movie's encoding, under its format.
+    let video: VideoEncodingRows?
+    private let grid: NSGridView
+    private let box: NSView
 
     init(choices: [ExportChoice], originalExt: String, kind: String,
-         panel: NSSavePanel, picture: CGImage?) {
+         panel: NSSavePanel, picture: CGImage?, seconds: Double? = nil) {
         var seen: Set<ExportChoice> = []
         let formats = choices.map(\.format).filter {
             seen.insert($0).inserted
@@ -747,6 +753,8 @@ final class SaveOptions: NSObject {
         if kind == "image" {
             rows.append([optionLabel, options])
         }
+        video = kind == "video" ? VideoEncodingRows(seconds: seconds) : nil
+        if let video { rows += video.rows }
         let grid = NSGridView(views: rows)
         grid.column(at: 0).xPlacement = .trailing
         grid.rowAlignment = .firstBaseline
@@ -757,14 +765,21 @@ final class SaveOptions: NSObject {
             grid.row(at: r).yPlacement = .center
         }
         let box = NSView()
+        self.grid = grid
+        self.box = box
         grid.translatesAutoresizingMaskIntoConstraints = false
         box.addSubview(grid)
+        // At least the panel's usual width; wider when a movie's rows
+        // need it (they were cut at the left).
         NSLayoutConstraint.activate([
             grid.topAnchor.constraint(equalTo: box.topAnchor, constant: 12),
             grid.bottomAnchor.constraint(equalTo: box.bottomAnchor,
                                          constant: -12),
             grid.centerXAnchor.constraint(equalTo: box.centerXAnchor),
-            box.widthAnchor.constraint(equalToConstant: 520),
+            grid.leadingAnchor.constraint(greaterThanOrEqualTo:
+                                              box.leadingAnchor,
+                                          constant: 20),
+            box.widthAnchor.constraint(greaterThanOrEqualToConstant: 520),
         ])
         view = box
         super.init()
@@ -782,8 +797,20 @@ final class SaveOptions: NSObject {
         slider.isContinuous = true
         slider.target = self
         slider.action = #selector(qualityChanged)
+        video?.onChange = { [weak self] in self?.fit() }
         box.frame.size = box.fittingSize
     }
+
+    /// The accessory as tall as its rows shown.
+    private func fit() {
+        video?.hideRows(in: grid)
+        box.layoutSubtreeIfNeeded()
+        box.setFrameSize(box.fittingSize)
+    }
+
+    /// The request's "video": a movie's encoding, nil for the encoder's
+    /// own (or a picture's, a sound's).
+    var videoEncoding: [String: Any]? { format.video ? video?.request : nil }
 
     /// What is written: the format at its depth.
     var choice: ExportChoice { format.deep(deep) }
@@ -849,6 +876,8 @@ final class SaveOptions: NSObject {
             ? String(localized: "The file as it is, nothing re-encoded")
             : String(localized: "Every value the picture holds, highlights included")
         qualityValue.stringValue = "\(Int(quality))"
+        video?.show(format)
+        fit()
         estimateSoon()
     }
 
@@ -906,6 +935,7 @@ final class SaveOptions: NSObject {
         d.set(format.rawValue, forKey: Self.key(kind))
         d.set(deep, forKey: Self.deepKey)
         d.set(quality.rounded(), forKey: Self.qualityKey)
+        video?.remember()
     }
 
     private static let imageKey = "save.imageFormat"

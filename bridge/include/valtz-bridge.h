@@ -333,7 +333,11 @@ public:
   std::string enhance_prompt(const std::string& request_json);
   // {"project", "asset", "format" (png16|tiff16|exr|png|tiff|jpeg|
   //  prores4444|prores422hq|hevc10|h264), "path", "quality"? (a JPEG's,
-  //  1..100)}: the asset written out; job.finished carries the "path".
+  //  1..100), "video"? (a movie's encoding: {"bitrate", "max_bitrate"
+  //  -- bits per second -- "quality" 0..1, "keyframe_seconds",
+  //  "b_frames", "profile", "level", "entropy", "prores"},
+  //  engine::VideoEncoding)}: the asset written out; job.finished
+  //  carries the "path".
   //  A still with pages: a file a page, numbered beside "path"
   //  ("Doc-1.png"), job.finished listing them all ("paths").
   std::string export_asset(const std::string& request_json);

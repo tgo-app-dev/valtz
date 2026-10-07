@@ -67,6 +67,7 @@ all_messages()
     kGrabNeedsClip,
     kSourceNotBuilt, kRecipeModelUnknown, kEngineCannotRun,
     kImportFailedSome, kEnhanceUnreadable, kExportFormatUnknown,
+    kExportEncodingInvalid,
     kExportNeedsPicture, kExportNeedsVideo, kExportNeedsSound,
     kExportNotSaved,
   };

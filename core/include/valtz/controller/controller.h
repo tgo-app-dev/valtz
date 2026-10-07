@@ -296,7 +296,10 @@ struct ExportRequest {
   AssetId               asset;
   std::string           format;
   std::filesystem::path destination;
-  int                   quality = 0;
+  int                   quality = 0;   // a JPEG's, 1..100
+  // A movie's encoding: H.264's / HEVC's rate, keyframes, B-frames,
+  // profile, level, entropy; ProRes's flavour (engine::VideoEncoding).
+  engine::VideoEncoding video;
 };
 
 // Page `page` (from 0) of `pages`, beside `destination` with its number:

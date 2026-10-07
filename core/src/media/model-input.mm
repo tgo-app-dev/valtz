@@ -1539,6 +1539,41 @@ create_output_space(const ColorInfo& c)
   return CGColorSpaceCreateWithName(name);
 }
 
+// The space a VIDEO is written in: the one Core Video gives frames
+// decoded with these tags (CVImageBufferCreateColorSpaceFromAttachments),
+// so a clip drawn into it comes back as it was read. The named BT.709
+// space is not that one -- its curve is the camera's, the decoded frames'
+// Apple's -- and every frame of a project's export came out lighter
+// (mid-greys up by about a tenth).
+static CGColorSpaceRef
+create_video_output_space(const ColorInfo& c)
+{
+  CFStringRef prim = kCVImageBufferColorPrimaries_ITU_R_709_2;
+  CFStringRef xfer = kCVImageBufferTransferFunction_ITU_R_709_2;
+  CFStringRef mat = kCVImageBufferYCbCrMatrix_ITU_R_709_2;
+  if (c.primaries == Primaries::BT2020) {
+    prim = kCVImageBufferColorPrimaries_ITU_R_2020;
+    mat = kCVImageBufferYCbCrMatrix_ITU_R_2020;
+    xfer = c.transfer == Transfer::PQ
+               ? kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ
+           : c.transfer == Transfer::HLG
+               ? kCVImageBufferTransferFunction_ITU_R_2100_HLG
+               : kCVImageBufferTransferFunction_ITU_R_2020;
+  } else if (c.primaries == Primaries::SMPTE432) {
+    prim = kCVImageBufferColorPrimaries_P3_D65;
+  }
+  const void* keys[] = {kCVImageBufferColorPrimariesKey,
+                        kCVImageBufferTransferFunctionKey,
+                        kCVImageBufferYCbCrMatrixKey};
+  const void* values[] = {prim, xfer, mat};
+  CFDictionaryRef tags = CFDictionaryCreate(
+      nullptr, keys, values, 3, &kCFTypeDictionaryKeyCallBacks,
+      &kCFTypeDictionaryValueCallBacks);
+  CGColorSpaceRef cs = CVImageBufferCreateColorSpaceFromAttachments(tags);
+  CFRelease(tags);
+  return cs ? cs : create_output_space(c);
+}
+
 Status
 convert_picture(const fs::path& in, const fs::path& out,
                 const ColorInfo& color)
@@ -1588,7 +1623,7 @@ decode_movie_stack(const MovieStack& stack, Rational rate_in,
   @autoreleasepool {
     VALTZ_ASSIGN(auto reader, StackReader::open(stack, rate_in));
     // An export's own colour, else the bottom clip's.
-    CGColorSpaceRef out_space = color ? create_output_space(*color)
+    CGColorSpaceRef out_space = color ? create_video_output_space(*color)
                                       : nullptr;
     struct Release {
       CGColorSpaceRef cs;

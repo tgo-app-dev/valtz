@@ -4754,6 +4754,19 @@ Controller::export_asset(ExportRequest req)
   if (req.quality > 0) {
     spec.params["quality"] = std::clamp(req.quality, 1, 100);
   }
+  if (!req.video.empty()) {
+    if (!f->video) {
+      return make_error(Code::InvalidArgument, msg::kExportEncodingInvalid,
+                        {{"format", req.format},
+                         {"why", "it is not a movie"}});
+    }
+    if (auto why = engine::video_encoding_problem(req.video, req.format);
+        !why.empty()) {
+      return make_error(Code::InvalidArgument, msg::kExportEncodingInvalid,
+                        {{"format", req.format}, {"why", why}});
+    }
+    spec.params["video"] = engine::to_json(req.video);
+  }
   const bool drawn = a.cls == project::AssetClass::Still ||
                      a.cls == project::AssetClass::Composition ||
                      a.cls == project::AssetClass::Markup;

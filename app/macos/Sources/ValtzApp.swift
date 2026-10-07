@@ -1666,12 +1666,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         let wait = kv[0] == "wait"
                             ? Double(kv.last ?? "") ?? 1 : 0.8
                         try? await Task.sleep(for: .seconds(wait))
-                        print("snapshot: mark \(step) frame=\(m.videoFrame) "
-                              + "clip=\(m.sourceFrameAtPlayhead) "
-                              + "in=\(m.trim.markIn ?? -1) "
-                              + "out=\(m.trim.markOut ?? -1) "
-                              + "rate=\(m.videoRate) "
-                              + "stage=\(m.currentClip?.name ?? "-")")
+                        // One interpolation: a chain of + took the type
+                        // checker past its time limit.
+                        let markIn = m.trim.markIn ?? -1
+                        let markOut = m.trim.markOut ?? -1
+                        let stage = m.currentClip?.name ?? "-"
+                        print("snapshot: mark \(step) frame=\(m.videoFrame) clip=\(m.sourceFrameAtPlayhead) in=\(markIn) out=\(markOut) rate=\(m.videoRate) stage=\(stage)")
                     }
                 }
                 // A clip's keys: "adjust:55:exposure=1.5;crop:55:scale=0.6;
@@ -1696,7 +1696,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 // Render Upscaled (the Crop panel's), once the stage's layer
                 // is scaled up: whether it is offered, its size, the job.
-                if env["VALTZ_SNAPSHOT_UPSCALE"] == "1" {
+                let upscale = env["VALTZ_SNAPSHOT_UPSCALE"]
+                if upscale == "1" || upscale == "wait" {
                     try? await Task.sleep(for: .milliseconds(400))
                     // A composition: Flatten First, then upscale.
                     if m.upscaleNeedsFlatten {
@@ -1712,6 +1713,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         ?? "-"
                     if can { m.upscaleLayer() }
                     print("snapshot: upscale can=\(can) size=\(size) job=\(m.upscaleJob ?? "-")")
+                    // "wait": until it has landed, then the layer's look as
+                    // the project has it and as the panel does -- the hooks
+                    // after (an export) see it done.
+                    if upscale == "wait" {
+                        for _ in 0..<6000 where m.upscaleJob != nil {
+                            try? await Task.sleep(for: .milliseconds(100))
+                        }
+                        try? await Task.sleep(for: .milliseconds(800))
+                        let rec = m.currentClip?.cropKeys(layer: m.activeLayer)
+                        print("snapshot: upscale landed source=\(m.activeLayerSourceName) "
+                              + "recordCrop=\(rec.map { $0.isEmpty || $0.isIdentity ? "identity" : "keyed" } ?? "-") "
+                              + "panelIdentity=\(m.clipCropKeys.isIdentity)")
+                    }
                 }
                 if let s = env["VALTZ_SNAPSHOT_SEEK"], let n = Int(s) {
                     m.seekVideo(to: n)
@@ -2085,9 +2099,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if let q = Double(saveSpec[1]), f == .jpeg {
                         options.setQuality(q)
                     }
+                    // A movie's encoding, as its rows set it:
+                    // "rate=bitrate,bitrate=8,peak=12,keyframes=2,bframes=0,
+                    // profile=main,level=4.1,entropy=cavlc,prores=422lt,
+                    // hevc=main,quality=60"; the accessory drawn to
+                    // <snapshot>-save.png.
+                    if let spec = env["VALTZ_SNAPSHOT_SAVE_VIDEO"],
+                       let rows = options.video {
+                        var v = rows.settings
+                        for part in spec.split(separator: ",") {
+                            let kv = part.split(separator: "=").map(String.init)
+                            guard kv.count == 2 else { continue }
+                            let n = Double(kv[1]) ?? 0
+                            switch kv[0] {
+                            case "rate":
+                                v.rate = VideoEncodingSettings.Rate(
+                                    rawValue: kv[1]) ?? v.rate
+                            case "bitrate": v.bitrate = n
+                            case "peak": v.peak = n
+                            case "quality": v.quality = n
+                            case "keyframes": v.keyframes = n
+                            case "bframes": v.bFrames = n != 0
+                            case "profile": v.profile = kv[1]
+                            case "level": v.level = kv[1]
+                            case "entropy": v.entropy = kv[1]
+                            case "hevc": v.hevcProfile = kv[1]
+                            case "prores":
+                                if f == .prores4444 { v.prores4444 = kv[1] }
+                                else { v.prores422 = kv[1] }
+                            default: break
+                            }
+                        }
+                        rows.set(v)
+                        options.apply()
+                    }
                     Task { @MainActor in
                         // Long enough to capture the panel.
                         try? await Task.sleep(for: .seconds(3))
+                        if let acc = panel.accessoryView,
+                           let snap = env["VALTZ_SNAPSHOT"],
+                           let rep = acc.bitmapImageRepForCachingDisplay(
+                               in: acc.bounds) {
+                            acc.cacheDisplay(in: acc.bounds, to: rep)
+                            let out = (snap as NSString).deletingPathExtension
+                                + "-save.png"
+                            try? rep.representation(using: .png,
+                                                    properties: [:])?
+                                .write(to: URL(fileURLWithPath: out))
+                        }
+                        let video = options.videoEncoding.map { j in
+                            j.keys.sorted().map { k in "\(k)=\(j[k]!)" }
+                                .joined(separator: ",")
+                        } ?? "-"
+                        FileHandle.standardError.write(Data(
+                            "snapshot: save video=\(video)\n".utf8))
                         FileHandle.standardError.write(Data(
                             "snapshot: save panel \(type(of: panel)) choice=\(options.choice.rawValue) quality=\(options.jpegQuality.map(String.init) ?? "-") estimate=\(options.estimate.map(String.init) ?? "-") name=\(panel.nameFieldStringValue)\n".utf8))
                         // As Save would: NSSavePanel.ok(_:) throws when

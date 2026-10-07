@@ -1,6 +1,7 @@
 #include "testing.h"
 
 #include "valtz/base/json.h"
+#include "valtz/media/color.h"
 #include "valtz/media/crop.h"
 #include "valtz/media/exif.h"
 #include "valtz/media/keyframes.h"
@@ -33,6 +34,33 @@ write_png16_p3(const std::filesystem::path& path)
       px.data(), w, h, 16, w * 8, cs,
       static_cast<std::uint32_t>(kCGImageAlphaPremultipliedLast) |
           static_cast<std::uint32_t>(kCGBitmapByteOrder16Little));
+  CGImageRef img = CGBitmapContextCreateImage(ctx);
+  CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+      nullptr, reinterpret_cast<const UInt8*>(path.c_str()),
+      static_cast<CFIndex>(std::strlen(path.c_str())), false);
+  CGImageDestinationRef dst =
+      CGImageDestinationCreateWithURL(url, CFSTR("public.png"), 1, nullptr);
+  CGImageDestinationAddImage(dst, img, nullptr);
+  bool ok = CGImageDestinationFinalize(dst);
+  CFRelease(dst);
+  CFRelease(url);
+  CGImageRelease(img);
+  CGContextRelease(ctx);
+  CGColorSpaceRelease(cs);
+  return ok;
+}
+
+// Write an opaque 8-bit sRGB PNG of one grey, 64 x 36.
+bool
+write_png_grey(const std::filesystem::path& path, std::uint8_t v)
+{
+  const size_t w = 64, h = 36;
+  std::vector<std::uint8_t> px(w * h * 4, v);
+  for (size_t i = 3; i < px.size(); i += 4) { px[i] = 255; }
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(
+      px.data(), w, h, 8, w * 4, cs,
+      static_cast<std::uint32_t>(kCGImageAlphaPremultipliedLast));
   CGImageRef img = CGBitmapContextCreateImage(ctx);
   CFURLRef url = CFURLCreateFromFileSystemRepresentation(
       nullptr, reinterpret_cast<const UInt8*>(path.c_str()),
@@ -559,6 +587,57 @@ TEST(media, a_clip_decodes_with_its_look)
   // The exposure ramps up from frame 0: later frames come out brighter.
   REQUIRE(means.size() == 4);
   CHECK(means[3] > means[0]);
+}
+
+// A project exported in BT.709 writes a 709 clip as it was read: its
+// frames drawn into the space Core Video reads 709 video in. The named
+// BT.709 space's curve is another, and lifted every mid-grey of a
+// project's export by about a tenth.
+TEST(media, a_709_export_keeps_a_709_clips_colour)
+{
+  auto dir = test::temp_dir("media-709");
+  const auto png = dir / "grey.png";
+  REQUIRE(write_png_grey(png, 128));
+  // A short 709 clip of a mid-grey (encode_movie_stack: ProRes, 709).
+  media::MovieStack still;
+  still.canvas.frame_w = 64;
+  still.canvas.frame_h = 36;
+  still.frames = 4;
+  media::MovieLayer pic;
+  pic.file = png;
+  still.layers.push_back(pic);
+  const std::filesystem::path mov = dir / "grey.mov";
+  REQUIRE_OK(media::encode_movie_stack(still, {24, 1}, {64, 36}, {}, mov));
+
+  media::MovieStack stack;
+  media::MovieLayer clip;
+  clip.file = mov;
+  clip.video = true;
+  stack.layers.push_back(clip);
+  std::vector<_Float16> buf(3 * 64 * 36);
+  const auto target = [&](std::int64_t) -> Result<media::FrameBuffer> {
+    return media::FrameBuffer{buf.data(), buf.size() * 2, {}};
+  };
+  auto mean_of = [&](const media::ColorInfo* color) -> double {
+    double m = -1;
+    auto st = media::decode_movie_stack(
+        stack, {24, 1}, 1, 1, {64, 36}, target,
+        [&](std::int64_t) -> Status {
+          double sum = 0;
+          for (auto v : buf) { sum += static_cast<double>(v); }
+          m = sum / static_cast<double>(buf.size());
+          return ok_status();
+        },
+        nullptr, color);
+    CHECK(st.ok());
+    return m;
+  };
+  const double own = mean_of(nullptr);
+  const auto rec709 = media::output_color("rec709");
+  REQUIRE(rec709.has_value());
+  const double out = mean_of(&*rec709);
+  REQUIRE(own > 0.2 && own < 0.8);
+  CHECK(std::abs(out - own) < 0.004);
 }
 
 // A clip's late frames are read from where they are -- not decoded from

@@ -554,7 +554,7 @@ enum ExportChoice: String, CaseIterable, Identifiable, Sendable {
         case .jpeg: String(localized: "JPEG")
         case .prores4444: String(localized: "ProRes 4444 (keeps alpha)")
         case .prores422hq: String(localized: "ProRes 422 HQ")
-        case .hevc10: String(localized: "HEVC 10-bit (keeps HDR)")
+        case .hevc10: String(localized: "HEVC")
         case .h264: String(localized: "H.264")
         case .wav: String(localized: "WAV (uncompressed)")
         case .m4a: String(localized: "AAC (.m4a)")
@@ -6360,12 +6360,18 @@ final class AppModel {
     }
 
     /// The stage and the panels as the project now is -- after an undo, a
-    /// redo, a revert. Nothing the panels held before is written back.
+    /// redo, a revert, or a job that changed it (an upscale's swap).
+    /// Nothing the panels held before is written back, now or by a save
+    /// still waiting.
     func syncAfterHistory() {
         persistTask?.cancel()
         persistTask = nil
         cropPersistTask?.cancel()
         cropPersistTask = nil
+        clipKeysPersistTask?.cancel()
+        clipKeysPersistTask = nil
+        trimPersistTask?.cancel()
+        trimPersistTask = nil
         let before = stageAssetId.flatMap { id in
             assets.first { $0.id == id }
         }
@@ -7197,6 +7203,17 @@ final class AppModel {
         return !a.adjustments.isIdentity || !a.crop.isIdentity
     }
 
+    /// How long the clip or sound on the stage runs, as exported -- a
+    /// timeline's length, else the file's (for a bitrate's file size).
+    var exportSeconds: Double? {
+        guard let a = currentAsset else { return nil }
+        if a.isTimeline, let n = a.timeline ?? a.length,
+           let r = a.compositionRate {
+            return Double(n) / r.fps
+        }
+        return a.info?.seconds
+    }
+
     /// What Save… offers for the image or video on screen: its own file
     /// and the exports for its kind. An adjusted picture's own file would
     /// drop its adjustments, so it offers the exports only -- they apply
@@ -7233,21 +7250,23 @@ final class AppModel {
     /// Save the image or video on screen to `dest`: its own file (or what
     /// is shown, adjusted), or exported as `choice` -- a job; the banner
     /// says when it is saved. `quality`: a JPEG's, 1...100.
-    func save(to dest: URL, as choice: ExportChoice, quality: Int? = nil) {
+    func save(to dest: URL, as choice: ExportChoice, quality: Int? = nil,
+              video: [String: Any]? = nil) {
         guard choice != .original, let core, let projectId,
               let asset = currentAsset else {
             saveCurrent(to: dest)
             return
         }
-        // The export reads the modifier from the project: write the
-        // panel's latest values first (a sound's or a clip's marks too).
-        persistAdjustments()
-        persistTrim()
+        // The export reads the modifiers from the project: the panels'
+        // latest values first -- a clip's keyed look and marks too (a crop
+        // changed just before was exported without it).
+        flushPanels()
         var request: [String: Any] = [
             "project": projectId, "asset": asset.id,
             "format": choice.rawValue, "path": dest.path,
         ]
         if choice == .jpeg, let quality { request["quality"] = quality }
+        if choice.video, let video { request["video"] = video }
         let r = core.exportAsset(request)
         guard r.ok, let job = r.job else {
             flash(r.message)
@@ -7586,9 +7605,12 @@ final class AppModel {
         if job == upscaleJob {
             withAnimation(Self.motion) { upscaleJob = nil }
             if ev.kind == "job.finished" {
-                let layer = activeLayer
-                layersChanged()
-                selectLayer(layer)
+                // The core swapped the layer's source and divided its
+                // scale: the panels take the layer as it now is, writing
+                // nothing back. Saved first (selectLayer did), the panel's
+                // old scale went back over the new clip -- shown right on
+                // the stage, exported twice its size from a corner.
+                syncAfterHistory()
                 flash(String(localized: "Upscaled: the layer shows the result at its own pixels"))
             } else if ev.kind == "job.cancelled" {
                 flash(String(localized: "Upscale stopped"))

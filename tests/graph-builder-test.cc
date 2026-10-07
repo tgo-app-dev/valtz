@@ -320,6 +320,53 @@ TEST(graph_builder, export_graphs)
   CHECK(jget<std::string>(*vr, "type", "") == "avf-load-video");
   CHECK(jget<std::string>(config_of(vr), "alpha", "") == "keep");
   CHECK(jget<std::string>(config_of(vw), "codec", "") == "hevc");
+  CHECK(!config_of(vw).contains("bitrate"));
+
+  // Encoded as asked (engine::VideoEncoding): H.264's rate, keyframes in
+  // frames at the clip's rate, no B-frames, profile, level, entropy.
+  movie.info.frame_rate = {24, 1};
+  job.inputs = {movie};
+  VideoEncoding enc;
+  enc.bitrate = 8'000'000;
+  enc.max_bitrate = 12'000'000;
+  enc.keyframe_seconds = 2;
+  enc.b_frames = 0;
+  enc.profile = "main";
+  enc.level = "4.1";
+  enc.entropy = "cavlc";
+  CHECK(video_encoding_problem(enc, "h264").empty());
+  job.params = {{"format", "h264"}, {"video", to_json(enc)}};
+  auto h = vp::build_export(job);
+  REQUIRE_OK(h);
+  const Json& hw = config_of(find_stage(h->spec, "write"));
+  CHECK(jget<std::string>(hw, "codec", "") == "h264");
+  CHECK(jget<std::int64_t>(hw, "bitrate", 0) == 8'000'000);
+  CHECK(jget<std::int64_t>(hw, "max_bitrate", 0) == 12'000'000);
+  CHECK(jget(hw, "keyframe_interval", 0) == 48);
+  CHECK(jget<std::string>(hw, "frame_reordering", "") == "off");
+  CHECK(jget<std::string>(hw, "profile", "") == "main");
+  CHECK(jget<std::string>(hw, "level", "") == "4.1");
+  CHECK(jget<std::string>(hw, "entropy", "") == "cavlc");
+  // A ProRes flavour, HEVC at 8 bits: the codec written.
+  VideoEncoding lt;
+  lt.prores = "422lt";
+  CHECK(video_codec("prores422hq", lt) == "prores422lt");
+  CHECK(!video_encoding_problem(lt, "prores4444").empty());
+  VideoEncoding main8;
+  main8.profile = "main";
+  CHECK(video_codec("hevc10", main8) == "hevc8");
+  // What the codec has not: refused, said why.
+  VideoEncoding bad = enc;
+  bad.profile = "baseline";
+  bad.entropy = "cabac";
+  CHECK(!video_encoding_problem(bad, "h264").empty());
+  VideoEncoding rate;
+  rate.bitrate = 5'000'000;
+  CHECK(!video_encoding_problem(rate, "prores4444").empty());
+  // Through JSON and back.
+  const VideoEncoding back = video_encoding_from_json(to_json(enc));
+  CHECK(back.bitrate == enc.bitrate && back.b_frames == 0 &&
+        back.level == "4.1" && back.keyframe_seconds == 2);
 }
 
 // A plain reference keeps its pixels: no resample to the output size,

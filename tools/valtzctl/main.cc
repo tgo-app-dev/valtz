@@ -292,8 +292,14 @@ usage()
       "         --lora adds one -- two run, the first on)\n"
       "  export <project.valtz> <asset-id|file> --format F -o <file>\n"
       "         [--quality 1..100]\n"
+      "         [--bitrate 20M] [--max-bitrate 30M] [--video-quality 0..1]\n"
+      "         [--keyframes <seconds>] [--b-frames on|off]\n"
+      "         [--profile baseline|main|high|main10] [--level 4.1]\n"
+      "         [--entropy cabac|cavlc] [--prores 4444xq|422|422lt|...]\n"
       "          (a file is imported first -- a video linked in place;\n"
-      "          --quality is a JPEG's, 90 by default)\n"
+      "          --quality is a JPEG's, 90 by default; the rest a movie's\n"
+      "          encoding: H.264's / HEVC's rate, keyframes, B-frames,\n"
+      "          profile, level, entropy; ProRes's flavour)\n"
       "  export --formats\n"
       "  enhance <prompt> [--video|--audio] [--model id] [--mode m]\n"
       "          [--size WxH] [--seconds s] [--frames n] [--partial]\n"
@@ -2688,6 +2694,28 @@ main(int argc, char** argv)
         req.destination = fs::absolute(next());
       } else if (a == "--quality") {
         req.quality = std::atoi(next().c_str());
+      } else if (a == "--bitrate" || a == "--max-bitrate") {
+        // Bits per second: "20M", "800k", "2500000".
+        const std::string v = next();
+        double n = std::atof(v.c_str());
+        if (!v.empty() && (v.back() == 'M' || v.back() == 'm')) n *= 1e6;
+        if (!v.empty() && (v.back() == 'k' || v.back() == 'K')) n *= 1e3;
+        (a == "--bitrate" ? req.video.bitrate : req.video.max_bitrate) =
+            static_cast<std::int64_t>(std::llround(n));
+      } else if (a == "--video-quality") {
+        req.video.quality = std::atof(next().c_str());
+      } else if (a == "--keyframes") {
+        req.video.keyframe_seconds = std::atof(next().c_str());
+      } else if (a == "--b-frames") {
+        req.video.b_frames = next() == "on" ? 1 : 0;
+      } else if (a == "--profile") {
+        req.video.profile = next();
+      } else if (a == "--level") {
+        req.video.level = next();
+      } else if (a == "--entropy") {
+        req.video.entropy = next();
+      } else if (a == "--prores") {
+        req.video.prores = next();
       }
     }
     if (req.format.empty() || req.destination.empty()) {

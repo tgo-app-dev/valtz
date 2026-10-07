@@ -1955,6 +1955,8 @@ Core::export_asset(const std::string& request_json)
     req.format = jget<std::string>(*j, "format", "");
     req.destination = jget<std::string>(*j, "path", "");
     req.quality = jget(*j, "quality", 0);
+    req.video = engine::video_encoding_from_json(
+        jget(*j, "video", Json::object()));
     auto r = _impl->ctl->export_asset(std::move(req));
     return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
   });

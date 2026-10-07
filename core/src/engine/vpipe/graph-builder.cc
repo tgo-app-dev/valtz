@@ -73,6 +73,39 @@ stage(std::string_view id, std::string_view type, Json iports, Json config)
           {"config", std::move(config)}};
 }
 
+// A movie export's writer (avf-save-video) as the request's ENCODING
+// asks (engine::VideoEncoding, param "video"): its codec -- a ProRes
+// flavour, HEVC 8-bit -- and H.264's / HEVC's rate, keyframes, B-frames,
+// profile, level and entropy coding; the keyframe interval from seconds
+// at `fps`.
+Json
+video_writer(Json write, const Json& params, std::string_view format,
+             double fps)
+{
+  const VideoEncoding e = video_encoding_from_json(
+      jget(params, "video", Json::object()));
+  write["codec"] = video_codec(format, e);
+  if (format.starts_with("prores")) {
+    return write;
+  }
+  if (e.bitrate > 0) { write["bitrate"] = e.bitrate; }
+  if (e.max_bitrate > 0) { write["max_bitrate"] = e.max_bitrate; }
+  if (e.quality > 0) { write["quality"] = e.quality; }
+  if (e.keyframe_seconds > 0 && fps > 0) {
+    write["keyframe_interval"] = std::max<std::int64_t>(
+        1, std::llround(e.keyframe_seconds * fps));
+  }
+  if (e.b_frames >= 0) {
+    write["frame_reordering"] = e.b_frames > 0 ? "on" : "off";
+  }
+  if (format == "h264") {
+    if (!e.profile.empty()) { write["profile"] = e.profile; }
+    if (!e.level.empty()) { write["level"] = e.level; }
+    if (!e.entropy.empty()) { write["entropy"] = e.entropy; }
+  }
+  return write;
+}
+
 // Merge `over` into `base` (shallow).
 Json
 merged(Json base, const Json& over)
@@ -1237,16 +1270,16 @@ build_export(const JobSpec& job)
     g.height = m.size.height;
     g.frames = m.count;
     g.movie = std::move(m);
-    const std::string codec = name == "hevc10" ? "hevc" : name;
     Json stages = Json::array();
     stages.push_back(stage("read", ex::kSourceType, Json::array(),
                            Json::object()));
     stages.push_back(stage("write", "avf-save-video",
                            Json::array({port("read")}),
-                           {{"path", written.string()},
-                            {"codec", codec},
-                            {"fps", rate.to_double()},
-                            {"frames", g.frames}}));
+                           video_writer({{"path", written.string()},
+                                         {"fps", rate.to_double()},
+                                         {"frames", g.frames}},
+                                        job.params, name,
+                                        rate.to_double())));
     g.spec = {{"id", "valtz-" + jid},
               {"stages", stages},
               {"subpipelines", Json::array()}};
@@ -1295,7 +1328,6 @@ build_export(const JobSpec& job)
   const bool alpha = in.info.frame.alpha != media::AlphaMode::None;
   Json stages = Json::array();
   if (video) {
-    const std::string codec = name == "hevc10" ? "hevc" : name;
     // The picture goes through vpipe; a soundtrack -- which its stages do
     // not carry -- is joined back from the source by the engine.
     fs::path written = g.output;
@@ -1416,14 +1448,14 @@ build_export(const JobSpec& job)
     }
     // The writer counts the frames against what it is told to expect:
     // the export's progress.
-    Json write = {{"path", written.string()},
-                  {"codec", codec},
-                  {"fps", fps}};
+    Json write = {{"path", written.string()}, {"fps", fps}};
     if (g.frames > 0) {
       write["frames"] = g.frames;
     }
     stages.push_back(stage("write", "avf-save-video",
-                           Json::array({port("read")}), std::move(write)));
+                           Json::array({port("read")}),
+                           video_writer(std::move(write), job.params, name,
+                                        fps)));
   } else if (const Json aj = jget(job.params, "adjust", Json::object()),
                         cj = jget(job.params, "crop", Json::object());
              (aj.is_object() && !aj.empty()) ||

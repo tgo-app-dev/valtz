@@ -103,6 +103,37 @@ struct ExportFormat {
 std::span<const ExportFormat> export_formats();
 const ExportFormat* export_format(std::string_view name);
 
+// How a movie export is ENCODED (export-media's param "video"): H.264's
+// and HEVC's rate and structure -- what a delivery spec asks for -- and
+// ProRes's flavour. Each left 0, -1 or "" is the encoder's own choice.
+struct VideoEncoding {
+  std::int64_t bitrate = 0;       // average bits per second
+  std::int64_t max_bitrate = 0;   // the most bits in any one second
+  double       quality = 0;       // 0..1: a rate of its own, no bitrate
+  double       keyframe_seconds = 0;  // the most from one keyframe to the
+                                      // next
+  int          b_frames = -1;     // 1 allowed, 0 not
+  // H.264: baseline | main | high (its level 3.0 .. 5.2, entropy cabac |
+  // cavlc). HEVC: main10 (hevc10's own) | main (8-bit).
+  std::string  profile;
+  std::string  level;
+  std::string  entropy;
+  // ProRes: 4444 | 4444xq for prores4444; 422hq | 422 | 422lt | 422proxy
+  // for prores422hq.
+  std::string  prores;
+
+  bool empty() const;
+};
+Json to_json(const VideoEncoding& e);
+VideoEncoding video_encoding_from_json(const Json& j);
+// Why `e` cannot be written as `format` -- a setting of another codec, a
+// profile at a level H.264 has not -- or "" when it can.
+std::string video_encoding_problem(const VideoEncoding& e,
+                                   std::string_view format);
+// The codec vpipe's avf-save-video writes `format` with, `e`'s ProRes
+// flavour or HEVC profile taken.
+std::string video_codec(std::string_view format, const VideoEncoding& e);
+
 // A model resolved on the machine that runs the job.
 struct ModelRef {
   std::string           id;       // catalog id

@@ -1655,12 +1655,32 @@
         }
       }
     },
+    "Automatic" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动"
+          }
+        }
+      }
+    },
     "Average" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "平均"
+          }
+        }
+      }
+    },
+    "Average bitrate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "平均码率"
           }
         }
       }
@@ -1672,6 +1692,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "避免：%@"
+          }
+        }
+      }
+    },
+    "B-frames" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "B 帧"
           }
         }
       }
@@ -1768,6 +1798,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "原图 · %@"
+          }
+        }
+      }
+    },
+    "Baseline" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Baseline"
           }
         }
       }
@@ -1908,6 +1948,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "旁路"
+          }
+        }
+      }
+    },
+    "CABAC makes smaller files; CAVLC decodes on the simplest players" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "CABAC 文件更小；CAVLC 在最简单的播放器上也能解码"
           }
         }
       }
@@ -3522,12 +3572,52 @@
         }
       }
     },
+    "Entropy:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "熵编码："
+          }
+        }
+      }
+    },
     "Eraser" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "橡皮擦"
+          }
+        }
+      }
+    },
+    "Every %@ seconds" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每 %@ 秒"
+          }
+        }
+      }
+    },
+    "Every half second" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每半秒"
+          }
+        }
+      }
+    },
+    "Every second" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每秒"
           }
         }
       }
@@ -4014,6 +4104,16 @@
         }
       }
     },
+    "Frames predicted from both sides: smaller files; some old players and editors need them off" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "由前后两侧预测的帧：文件更小；一些旧播放器和编辑软件需要关闭它"
+          }
+        }
+      }
+    },
     "Free memory" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4382,7 +4482,18 @@
         }
       }
     },
+    "HEVC" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "HEVC"
+          }
+        }
+      }
+    },
     "HEVC 10-bit (keeps HDR)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -4568,6 +4679,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "隐藏此图层"
+          }
+        }
+      }
+    },
+    "High" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "High"
           }
         }
       }
@@ -5174,6 +5295,16 @@
         }
       }
     },
+    "Keyframes:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关键帧："
+          }
+        }
+      }
+    },
     "Landscape" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5340,6 +5471,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "电平"
+          }
+        }
+      }
+    },
+    "Level:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "级别："
           }
         }
       }
@@ -5552,6 +5693,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已生成，但无法显示"
+          }
+        }
+      }
+    },
+    "Main" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Main"
+          }
+        }
+      }
+    },
+    "Main (8-bit)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Main（8 位）"
+          }
+        }
+      }
+    },
+    "Main 10 (10-bit, keeps HDR)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Main 10（10 位，保留 HDR）"
           }
         }
       }
@@ -5782,6 +5953,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "作为下方图层的蒙版"
+          }
+        }
+      }
+    },
+    "Mbps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Mbps"
           }
         }
       }
@@ -6946,6 +7127,16 @@
         }
       }
     },
+    "Peak" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "峰值"
+          }
+        }
+      }
+    },
     "Pick a seed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7236,6 +7427,16 @@
         }
       }
     },
+    "Profile:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "配置："
+          }
+        }
+      }
+    },
     "Program" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7510,6 +7711,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "帧率"
+          }
+        }
+      }
+    },
+    "Rate:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "码率："
           }
         }
       }
@@ -9785,6 +9996,16 @@
         }
       }
     },
+    "The longest a player waits for a frame it can start from, seeking" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跳转时播放器最长需要等待多久才能遇到可起播的帧"
+          }
+        }
+      }
+    },
     "The model Start runs -- the generation card's, one choice" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9821,6 +10042,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "模型的少步 LoRA：开启或关闭时，步数随预设而定"
+          }
+        }
+      }
+    },
+    "The most it may spend in any one second -- empty for no cap" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "任意一秒内最多可用的码率——留空则不设上限"
+          }
+        }
+      }
+    },
+    "The peak is below the average: no peak" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "峰值低于平均值：不设峰值"
           }
         }
       }
@@ -10382,6 +10623,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "输入要说的话——或拖入一段声音作为音色"
+          }
+        }
+      }
+    },
+    "Type:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "类型："
           }
         }
       }
@@ -11718,6 +11969,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无法读取助手的回答，请重试。"
+          }
+        }
+      }
+    },
+    "core.export_encoding_invalid" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{format} cannot be written with those settings: {why}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法用这些设置写出 {format}：{why}。"
           }
         }
       }
@@ -13072,6 +13340,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "需要更多内存"
+          }
+        }
+      }
+    },
+    "none" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无"
           }
         }
       }
