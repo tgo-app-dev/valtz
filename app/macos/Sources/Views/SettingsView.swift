@@ -50,6 +50,7 @@ struct SettingsView: View {
                 case .capabilities: CapabilitiesView(model: model)
                 case .helper: HelperView(model: model)
                 case .storage: StorageView(model: model)
+                case .permissions: PermissionsView(model: model)
                 }
             }
             // The page's card names it; the window keeps the title for
@@ -96,7 +97,7 @@ struct SettingsView: View {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
-    case general, capabilities, helper, storage
+    case general, capabilities, helper, storage, permissions
     var id: String { rawValue }
 
     var title: String {
@@ -105,6 +106,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .capabilities: String(localized: "Capabilities")
         case .helper: String(localized: "Agentic Helper")
         case .storage: String(localized: "Storage")
+        case .permissions: String(localized: "Permissions")
         }
     }
 
@@ -114,6 +116,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .capabilities: "sparkles"
         case .helper: "brain"
         case .storage: "internaldrive.fill"
+        case .permissions: "hand.raised.fill"
         }
     }
 
@@ -123,6 +126,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .capabilities: .purple
         case .helper: .pink
         case .storage: .blue
+        case .permissions: .indigo
         }
     }
 
@@ -137,6 +141,8 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
             String(localized: "The model that writes prompts with you and reads what you ask for: which one, and how it runs.")
         case .storage:
             String(localized: "What Valtz keeps on the internal SSD: models, projects and the cache, each sized.")
+        case .permissions:
+            String(localized: "What Valtz may ask macOS to use — the camera, the microphone, the Mac's sound, your folders — whether it is allowed now, and where Valtz needs it.")
         }
     }
 }

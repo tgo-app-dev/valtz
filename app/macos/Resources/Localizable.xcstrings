@@ -911,6 +911,26 @@
         }
       }
     },
+    "A permission changed in System Settings takes effect when Valtz is opened again for screen and system audio recording; the others at once." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在“系统设置”中更改的权限：屏幕与系统录音在重新打开 Valtz 后生效，其余立即生效。"
+          }
+        }
+      }
+    },
+    "A photo or a video taken with the camera: the prompt's paperclip › Take a Photo or Video…." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "用相机拍摄的照片或视频：提示词的回形针 › 拍摄照片或视频…。"
+          }
+        }
+      }
+    },
     "A picture or a clip on the stage has layers." : {
       "localizations" : {
         "zh-Hans" : {
@@ -1342,6 +1362,16 @@
         }
       }
     },
+    "Allowed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已允许"
+          }
+        }
+      }
+    },
     "Altitude" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1458,6 +1488,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "按文字所需的时长"
+          }
+        }
+      }
+    },
+    "Ask Now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "立即请求"
+          }
+        }
+      }
+    },
+    "Asked for each place" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按位置分别询问"
           }
         }
       }
@@ -1707,6 +1757,7 @@
       }
     },
     "Back 10 ms (⌥: 1 ms)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -1716,12 +1767,33 @@
         }
       }
     },
+    "Back 10 ms, heard (←; ⌥: 1 ms)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "后退 10 毫秒并试听（←；⌥：1 毫秒）"
+          }
+        }
+      }
+    },
     "Back one frame" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "后退一帧"
+          }
+        }
+      }
+    },
+    "Back one frame, heard (←)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "后退一帧并试听（←）"
           }
         }
       }
@@ -3833,6 +3905,16 @@
         }
       }
     },
+    "Files and Folders" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "文件与文件夹"
+          }
+        }
+      }
+    },
     "Fill" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4397,6 +4479,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "跳到其起点"
+          }
+        }
+      }
+    },
+    "Go to the clip's end" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跳到片段结尾"
+          }
+        }
+      }
+    },
+    "Go to the clip's start" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跳到片段开头"
           }
         }
       }
@@ -6069,6 +6171,16 @@
         }
       }
     },
+    "Microphone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "麦克风"
+          }
+        }
+      }
+    },
     "Model" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6634,6 +6746,26 @@
         }
       }
     },
+    "Not allowed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未允许"
+          }
+        }
+      }
+    },
+    "Not asked yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尚未询问"
+          }
+        }
+      }
+    },
     "Not available" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6775,11 +6907,22 @@
       }
     },
     "On 10 ms (⌥: 1 ms)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "前进 10 毫秒（⌥：1 毫秒）"
+          }
+        }
+      }
+    },
+    "On 10 ms, heard (→; ⌥: 1 ms)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "前进 10 毫秒并试听（→；⌥：1 毫秒）"
           }
         }
       }
@@ -6815,11 +6958,22 @@
       }
     },
     "On one frame" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "前进一帧"
+          }
+        }
+      }
+    },
+    "On one frame, heard (→)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "前进一帧并试听（→）"
           }
         }
       }
@@ -6911,6 +7065,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "打开项目…"
+          }
+        }
+      }
+    },
+    "Open System Settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "打开系统设置"
           }
         }
       }
@@ -7137,6 +7301,16 @@
         }
       }
     },
+    "Permissions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "权限"
+          }
+        }
+      }
+    },
     "Pick a seed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7163,6 +7337,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "设为要编辑的图片"
+          }
+        }
+      }
+    },
+    "Pictures, clips and models in Desktop, Documents, Downloads or on an external or network disk: imported, linked or saved there. macOS asks the first time for each place." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "位于桌面、文稿、下载或外置/网络磁盘上的图片、视频与模型：在那里导入、链接或存储时使用。macOS 会在每个位置第一次使用时询问。"
           }
         }
       }
@@ -8256,6 +8440,16 @@
         }
       }
     },
+    "Restricted" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "受限制"
+          }
+        }
+      }
+    },
     "Result · %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8631,6 +8825,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "乐谱"
+          }
+        }
+      }
+    },
+    "Screen & System Audio Recording" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "录屏与系统录音"
           }
         }
       }
@@ -9242,6 +9446,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "声音"
+          }
+        }
+      }
+    },
+    "Sound recorded from a microphone: the paperclip › Record Sound › From the Microphone, a blank audio asset's Record, and the sound of a video taken with the camera." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从麦克风录制的声音：回形针 › 录制声音 › 从麦克风、空白音频素材的“录音”，以及用相机拍摄的视频中的声音。"
           }
         }
       }
@@ -11221,6 +11435,16 @@
         }
       }
     },
+    "What Valtz may ask macOS to use — the camera, the microphone, the Mac's sound, your folders — whether it is allowed now, and where Valtz needs it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 可能向 macOS 请求使用的内容——摄像头、麦克风、Mac 的声音、你的文件夹——当前是否已允许，以及 Valtz 在哪里需要它。"
+          }
+        }
+      }
+    },
     "What each model family makes on this Mac, and every resource it runs with: download it, or use it from where it already is." : {
       "localizations" : {
         "zh-Hans" : {
@@ -11247,6 +11471,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "矩形和椭圆的填充"
+          }
+        }
+      }
+    },
+    "What the Mac plays, recorded: the paperclip › Record Sound › From the System’s Audio, and a blank audio asset's Record with the system's audio as its source. Valtz records no picture of the screen." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "录制 Mac 播放的声音：回形针 › 录制声音 › 从系统音频，以及以系统音频为来源的空白音频素材的“录音”。Valtz 不会录制屏幕画面。"
           }
         }
       }

@@ -396,6 +396,9 @@ private struct ResultStage: View {
                     model.cropPan(dx: d.width, dy: d.height)
                 },
                 markupActive: !small && model.markupReady,
+                brushRadius: model.markup.tool == .brush
+                    || model.markup.tool == .eraser ? model.markup.radius : 0,
+                brushSoftness: model.markup.softness,
                 markupCursor: model.markup.tool.cursor,
                 markupOverlay: model.markupOverlay,
                 markupOrigin: model.stagePicture?.canvas.map {

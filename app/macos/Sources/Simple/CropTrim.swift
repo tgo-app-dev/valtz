@@ -640,7 +640,7 @@ private struct RotateField: View {
 /// centred:
 ///
 ///   kept length          00:00:01:23 #47                     Reset
-///   in ⇤ [I]   { rewind, back, a frame back, pause, on, play, ffwd }   [O] ⇥ out
+///   in ⇤ [I]   { |<, rewind, back, a frame back, pause, on, play, ffwd, >| }   [O] ⇥ out
 ///   Speed [1×]                 (its frames resampled: nearest)
 ///   Pitch [−] [+0] [+] semitones  [Hold | Follow Speed]     (a sound)
 ///   Volume 🔈 ────●── [0.0 dB]                               (a sound)
@@ -762,11 +762,16 @@ struct TrimPanel: View {
         .searchMark(model.searchHits.contains(SettingsRow.trimStart))
     }
 
-    /// { fast rewind, 1× back, a frame back, pause, a frame on, 1×, fast
-    /// forward }; the one playing is pressed in.
+    /// { the clip's start, fast rewind, 1× back, a frame back, pause, a
+    /// frame on, 1×, fast forward, the clip's end }; the one playing is
+    /// pressed in. A frame's step is heard (← and → step too).
     private var transport: some View {
         let r = model.videoRate
         return HStack(spacing: 4) {
+            TransportButton(symbol: "backward.end.fill",
+                            help: "Go to the clip's start", on: false) {
+                model.seekClipEdge(end: false)
+            }
             TransportButton(symbol: "backward.fill", help: "Fast rewind",
                             on: r < -1, action: model.fastRewind)
             TransportButton(symbol: "play.fill", mirrored: true,
@@ -775,7 +780,8 @@ struct TrimPanel: View {
             }
             TransportButton(symbol: "backward.frame.fill",
                             help: model.stageIsAudio
-                                ? "Back 10 ms (⌥: 1 ms)" : "Back one frame",
+                                ? "Back 10 ms, heard (←; ⌥: 1 ms)"
+                                : "Back one frame, heard (←)",
                             on: false) {
                 model.stepVideo(-1)
             }
@@ -785,7 +791,8 @@ struct TrimPanel: View {
             }
             TransportButton(symbol: "forward.frame.fill",
                             help: model.stageIsAudio
-                                ? "On 10 ms (⌥: 1 ms)" : "On one frame",
+                                ? "On 10 ms, heard (→; ⌥: 1 ms)"
+                                : "On one frame, heard (→)",
                             on: false) {
                 model.stepVideo(1)
             }
@@ -794,6 +801,10 @@ struct TrimPanel: View {
             }
             TransportButton(symbol: "forward.fill", help: "Fast forward",
                             on: r > 1, action: model.fastForward)
+            TransportButton(symbol: "forward.end.fill",
+                            help: "Go to the clip's end", on: false) {
+                model.seekClipEdge(end: true)
+            }
         }
     }
 

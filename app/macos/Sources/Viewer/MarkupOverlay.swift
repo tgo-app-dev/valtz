@@ -34,7 +34,12 @@ struct MarkupPointer {
 
 /// What the stage hands markup from the keyboard -- and the Edit menu's
 /// Cut, Copy and Paste, sent to it while it has the focus.
-enum MarkupKey { case delete, escape, cut, copy, paste }
+enum MarkupKey {
+    case delete, escape, cut, copy, paste
+    /// [ and ]: the brush smaller, larger; ⇧[ and ⇧]: softer, harder --
+    /// Photoshop's keys.
+    case smaller, larger, softer, harder
+}
 
 /// Draws a MarkupOverlay over CompareCanvas's picture; takes no clicks.
 final class MarkupOverlayView: NSView {
@@ -107,5 +112,84 @@ final class MarkupOverlayView: NSView {
         ctx.strokePath()
         ctx.endTransparencyLayer()
         ctx.restoreGState()
+    }
+}
+
+/// The brush's (or eraser's) OUTLINE under the pointer: the size its
+/// stroke has on the picture at the view's zoom, and -- a soft brush --
+/// its hard core dashed inside. Drawn here in Core Animation as the
+/// pointer moves, so it keeps up with it; two-toned, so it shows on any
+/// picture; a small crosshair when the ring would be too small to see.
+/// Takes no clicks.
+final class BrushRingView: NSView {
+    private let dark = CAShapeLayer()
+    private let light = CAShapeLayer()
+    private let coreDark = CAShapeLayer()
+    private let core = CAShapeLayer()
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        for l in [dark, light, coreDark, core] {
+            l.fillColor = nil
+            l.isHidden = true
+            layer?.addSublayer(l)
+        }
+        dark.strokeColor = NSColor.black.withAlphaComponent(0.55).cgColor
+        dark.lineWidth = 3
+        light.strokeColor = NSColor.white.withAlphaComponent(0.95).cgColor
+        light.lineWidth = 1
+        coreDark.strokeColor = NSColor.black.withAlphaComponent(0.45).cgColor
+        coreDark.lineWidth = 2.5
+        coreDark.lineDashPattern = [3, 3]
+        core.strokeColor = NSColor.white.withAlphaComponent(0.85).cgColor
+        core.lineWidth = 1
+        core.lineDashPattern = [3, 3]
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unused") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// At `center` (this view's points), `radius` points across, its hard
+    /// core `inner`; nil hides it.
+    func show(at center: CGPoint?, radius: CGFloat, inner: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard let c = center else {
+            for l in [dark, light, coreDark, core] { l.isHidden = true }
+            return
+        }
+        let path: CGPath
+        if radius < 3 {
+            let m = CGMutablePath()
+            let a: CGFloat = 6
+            m.move(to: CGPoint(x: c.x - a, y: c.y))
+            m.addLine(to: CGPoint(x: c.x + a, y: c.y))
+            m.move(to: CGPoint(x: c.x, y: c.y - a))
+            m.addLine(to: CGPoint(x: c.x, y: c.y + a))
+            path = m
+        } else {
+            path = CGPath(ellipseIn: CGRect(x: c.x - radius, y: c.y - radius,
+                                            width: 2 * radius,
+                                            height: 2 * radius),
+                          transform: nil)
+        }
+        dark.path = path
+        light.path = path
+        dark.isHidden = false
+        light.isHidden = false
+        let soft = radius >= 3 && inner >= 3 && inner < radius - 2
+        core.isHidden = !soft
+        coreDark.isHidden = !soft
+        if soft {
+            let p = CGPath(ellipseIn: CGRect(x: c.x - inner, y: c.y - inner,
+                                             width: 2 * inner,
+                                             height: 2 * inner),
+                           transform: nil)
+            core.path = p
+            coreDark.path = p
+        }
     }
 }

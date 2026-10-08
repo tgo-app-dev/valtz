@@ -84,6 +84,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/SettingsView.swift
   Sources/Views/TitleBar.swift
   Sources/Views/VideoEncodingRows.swift
+  Sources/Views/PermissionsView.swift
   Sources/Views/InspectorView.swift
   Sources/Views/CanvasSize.swift
   Sources/Views/ProjectOutput.swift
@@ -118,6 +119,7 @@ set(VALTZ_APP_SOURCES
   Sources/Viewer/MotionViews.swift
   Sources/Viewer/MarkupOverlay.swift
   Sources/Viewer/ViewerView.swift
+  Sources/Viewer/AudioScrubber.swift
   Sources/Viewer/Guides.swift
 )
 

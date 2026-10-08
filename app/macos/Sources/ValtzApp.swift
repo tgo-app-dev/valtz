@@ -91,6 +91,35 @@ struct ValtzApp: App {
             }
         case "key":
             m.markupKey(arg == "delete" ? .delete : .escape)
+        // A key pressed as the keyboard would -- through the app's event
+        // path, its monitors included: "[" "]" "{" (⇧[) "}" (⇧]).
+        case "press":
+            let shift = arg == "{" || arg == "}"
+            let code: UInt16 = arg == "[" || arg == "{" ? 33 : 30
+            if let w = m.editorWindow,
+               let e = NSEvent.keyEvent(
+                   with: .keyDown, location: .zero,
+                   modifierFlags: shift ? [.shift] : [], timestamp: 0,
+                   windowNumber: w.windowNumber, context: nil,
+                   characters: arg, charactersIgnoringModifiers: arg,
+                   isARepeat: false, keyCode: code) {
+                NSApp.postEvent(e, atStart: false)
+            }
+            try? await Task.sleep(for: .milliseconds(150))
+            let fr = m.editorWindow?.firstResponder.map {
+                String(describing: type(of: $0))
+            } ?? "-"
+            print("snapshot: press \(arg) radius=\(mk.radius) softness=\(mk.softness) focus=\(fr)")
+        // The pointer over a canvas pixel, its outline drawn; "zoom=2"
+        // the stage zoomed by as much first. Prints the outline's radius
+        // in points against the brush's in pixels.
+        case "zoom":
+            CompareCanvas.shown?.zoom(by: CGFloat(Double(arg) ?? 1))
+        case "hover":
+            if let p = points(arg).first, let c = CompareCanvas.shown {
+                let r = c.hover(atCanvas: p)
+                print("snapshot: hover \(arg) brush=\(mk.radius) ring=\(r)")
+            }
         case "text":
             m.editSelection { if $0.kind == .text { $0.text = arg } }
         // Markup objects cut, copied and pasted, as the Edit menu does on
@@ -1654,9 +1683,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let spec = env["VALTZ_SNAPSHOT_MARKS"] {
                     for step in spec.split(separator: ";").map(String.init) {
                         let kv = step.split(separator: ":").map(String.init)
+                        AudioScrubber.lastFrames = 0
                         switch kv[0] {
                         case "seek":
                             m.seekVideo(to: Int(kv.last ?? "") ?? 0)
+                        case "step":
+                            m.stepVideo(Int(kv.last ?? "") ?? 1)
+                        case "begin", "end":
+                            m.seekClipEdge(end: kv[0] == "end")
+                        // An arrow key as the keyboard sends it (⇧ with
+                        // "sleft" / "sright").
+                        case "key":
+                            let a = kv.last ?? ""
+                            let left = a.hasSuffix("left")
+                            if let w = m.editorWindow,
+                               let ev = NSEvent.keyEvent(
+                                   with: .keyDown, location: .zero,
+                                   modifierFlags: a.hasPrefix("s")
+                                       ? [.shift, .numericPad, .function]
+                                       : [.numericPad, .function],
+                                   timestamp: 0,
+                                   windowNumber: w.windowNumber,
+                                   context: nil,
+                                   characters: left ? "\u{F702}" : "\u{F703}",
+                                   charactersIgnoringModifiers:
+                                       left ? "\u{F702}" : "\u{F703}",
+                                   isARepeat: false,
+                                   keyCode: left ? 123 : 124) {
+                                NSApp.postEvent(ev, atStart: false)
+                            }
                         case "in", "out":
                             m.setMark(in: kv[0] == "in")
                         case "play": m.playVideo(rate: 1)
@@ -1671,7 +1726,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         let markIn = m.trim.markIn ?? -1
                         let markOut = m.trim.markOut ?? -1
                         let stage = m.currentClip?.name ?? "-"
-                        print("snapshot: mark \(step) frame=\(m.videoFrame) clip=\(m.sourceFrameAtPlayhead) in=\(markIn) out=\(markOut) rate=\(m.videoRate) stage=\(stage)")
+                        let heard = "\(AudioScrubber.lastFrames)@\(String(format: "%.3f", AudioScrubber.lastPeak))"
+                        print("snapshot: mark \(step) frame=\(m.videoFrame) clip=\(m.sourceFrameAtPlayhead) in=\(markIn) out=\(markOut) rate=\(m.videoRate) heard=\(heard) stage=\(stage)")
                     }
                 }
                 // A clip's keys: "adjust:55:exposure=1.5;crop:55:scale=0.6;
@@ -2340,6 +2396,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // The download prompt's Open Capabilities: Settings on that
             // page, the family opened ("minimax-h3").
+            // The app menu's items, as they stand (Check for Updates…
+            // there only with Sparkle built in).
+            if settings, let app = NSApp.mainMenu?.items.first?.submenu {
+                let items = app.items.filter { !$0.isSeparatorItem }
+                    .map(\.title).joined(separator: "|")
+                FileHandle.standardError.write(Data(
+                    "snapshot: app-menu \(items)\n".utf8))
+            }
             if settings, let fam = env["VALTZ_SNAPSHOT_OPEN_CAPS"],
                let m = model {
                 try? await Task.sleep(for: .milliseconds(1200))

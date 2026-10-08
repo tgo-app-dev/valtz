@@ -3098,6 +3098,11 @@ final class AppModel {
     /// was used meanwhile. Run from the view (onChange), not a didSet.
     func panelChanged(to p: ComposerPanel?) {
         let stageWork = p == .adjust || p == .crop || p == .trim
+        // Trim's ← and → step the clip: the prompt gives up the keyboard
+        // (its caret took them; a click in it gets them back).
+        if p == .trim, let w = editorWindow, w.firstResponder is NSText {
+            w.makeFirstResponder(nil)
+        }
         if stageWork {
             if !promptCompact {
                 compactForPanel = true
@@ -5916,6 +5921,40 @@ final class AppModel {
                                     token: (videoCommand?.token ?? 0) + 1)
     }
 
+    /// The selected layer's clip at its first frame on the timeline, or
+    /// its last (the Trim panel's |< and >|): where it lies, its marks
+    /// and speed taken; a clip alone, its own first and last.
+    func seekClipEdge(end: Bool) {
+        if let c = currentClip, c.isComposition, let k = layerClock,
+           k.timed {
+            let r = stageFrameRate
+            let first = max(0, Int((k.start * r.fps - 1e-6).rounded(.up)))
+            let last = max(first, Int((k.end * r.fps - 1e-6).rounded(.up)) - 1)
+            seekVideo(to: end ? last : first)
+        } else {
+            seekVideo(to: end ? max(0, (stageClipLength ?? 1) - 1) : 0)
+        }
+    }
+
+    /// ← and → step the clip in the Trim panel (⇧ ten steps; ⌥ a sound's
+    /// millisecond), its sound heard at each: handled -- true -- or left
+    /// to go on (text, a list, another window keep their arrows).
+    func trimKey(_ e: NSEvent) -> Bool {
+        guard openPanel == .trim, clipOnStage, let w = e.window,
+              !(w is NSPanel), editorWindow == nil || w === editorWindow
+        else { return false }
+        let fr = w.firstResponder
+        if fr is NSText || fr is NSTableView || fr is NSOutlineView
+            || fr is NSCollectionView { return false }
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.numericPad, .function, .capsLock])
+        guard mods.subtracting([.shift, .option]).isEmpty,
+              e.keyCode == 123 || e.keyCode == 124 else { return false }
+        let n = mods.contains(.shift) ? 10 : 1
+        stepVideo(e.keyCode == 123 ? -n : n)
+        return true
+    }
+
     /// Show frame `n` of the clip on the stage, exactly (paused): one it
     /// has.
     func seekVideo(to n: Int) {
@@ -6658,6 +6697,18 @@ final class AppModel {
                     self?.endViewingIfOutside(event)
                 }
                 return event
+            }) {
+            textWatch.append(m)
+        }
+        // The brush's [ ] and ⇧[ ⇧], wherever the keyboard is in the
+        // window but text; the Trim panel's ← →.
+        if let m = NSEvent.addLocalMonitorForEvents(
+            matching: .keyDown, handler: { [weak self] event in
+                let handled = MainActor.assumeIsolated {
+                    guard let self else { return false }
+                    return self.brushKey(event) || self.trimKey(event)
+                }
+                return handled ? nil : event
             }) {
             textWatch.append(m)
         }

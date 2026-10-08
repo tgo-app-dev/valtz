@@ -275,7 +275,11 @@ struct VideoPlayerView: NSViewRepresentable {
                    toleranceAfter: .zero)
         }
 
+        /// A step's sound, apart from the player.
+        let scrubber = AudioScrubber()
+
         func stop() {
+            scrubber.stop()
             stackBox.set(clock: nil)
             player?.pause()
             if let ended { NotificationCenter.default.removeObserver(ended) }
@@ -547,11 +551,14 @@ struct VideoPlayerView: NSViewRepresentable {
             c.seek(to: c.clamp(n))
         case .step(let n):
             // From the frame on screen, to one that exists: a step past
-            // either end stays on it.
+            // either end stays on it -- and its sound heard, a frame's (at
+            // least 60 ms, to be heard at all), to find a place by ear.
             p.pause()
             let now = c.clamp(rate.frame(at: p.currentTime().seconds))
-            p.seek(to: c.start(of: c.clamp(now + n)), toleranceBefore: .zero,
-                   toleranceAfter: .zero)
+            let to = c.clamp(now + n)
+            c.seek(to: to)
+            c.scrubber.play(item, at: c.start(of: to),
+                            seconds: max(1 / rate.fps, 0.06))
         case .play(var r):
             if r < -1 && !item.canPlayFastReverse {
                 r = item.canPlayReverse ? -1 : 0

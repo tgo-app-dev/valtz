@@ -33,6 +33,10 @@ struct CompareCanvasView: NSViewRepresentable {
     /// The markup toolbar's: active, its cursor, what it shows over the
     /// picture, and where its pointer and keys go.
     var markupActive = false
+    /// The brush's radius (canvas pixels) while it or the eraser is the
+    /// tool, else 0; its softness.
+    var brushRadius: Double = 0
+    var brushSoftness: Double = 0
     var markupCursor: NSCursor = .crosshair
     var markupOverlay = MarkupOverlay()
     var markupOrigin = CGPoint.zero
@@ -67,6 +71,8 @@ struct CompareCanvasView: NSViewRepresentable {
         v.onMarkupKey = { k in onMarkupKey(k) }
         v.canMarkupKey = { k in canMarkupKey(k) }
         v.markupActive = markupActive
+        v.brushRadius = brushRadius
+        v.brushSoftness = brushSoftness
         v.markupCursor = markupCursor
         v.markupOverlay = markupOverlay
         v.markupOrigin = markupOrigin

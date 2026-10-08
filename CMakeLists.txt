@@ -17,9 +17,11 @@
 
 cmake_minimum_required(VERSION 3.29)
 
-# Match libvpipe's own floor: an app cannot run below the dylib it links.
+# The oldest macOS Valtz runs on -- at or above libvpipe's own floor (an
+# app cannot run below the dylib it links; vpipe's is 26.0, its NAX
+# kernels 26.2).
 if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "26.2" CACHE STRING
       "Minimum macOS version" FORCE)
 endif()
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -52,6 +54,15 @@ if(VALTZ_BUILD_APP)
       "The SwiftUI app needs the Ninja or Xcode generator (CMake builds "
       "Swift with no other). Use `cmake --preset dev`, or pass "
       "-DVALTZ_BUILD_APP=OFF to build only the C++ layer.")
+  endif()
+  # swiftc targets the BUILD MACHINE's macOS unless it is told otherwise:
+  # CMake hands the deployment target to clang, not to swiftc. Built on
+  # macOS 27 the app said "macOS 27.0 or later" (its minos) and did not
+  # open on 26.6, while libvpipe, the plugin and valtzctl said 26.0. The
+  # triple carries it to every Swift compile and link.
+  if(NOT CMAKE_Swift_COMPILER_TARGET)
+    set(CMAKE_Swift_COMPILER_TARGET
+        "arm64-apple-macosx${CMAKE_OSX_DEPLOYMENT_TARGET}")
   endif()
   enable_language(Swift)
 endif()

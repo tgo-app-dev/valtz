@@ -143,9 +143,36 @@ final class CompareCanvas: NSView {
         didSet {
             if markupActive != oldValue {
                 window?.invalidateCursorRects(for: self)
+                updateBrushRing()
             }
         }
     }
+    /// The brush's (or eraser's) radius in canvas pixels while it is the
+    /// tool -- 0 otherwise -- and its softness: its outline follows the
+    /// pointer (BrushRingView), the size its stroke has at this zoom.
+    var brushRadius: Double = 0 {
+        didSet {
+            if brushRadius != oldValue {
+                if (brushRadius > 0) != (oldValue > 0) {
+                    window?.invalidateCursorRects(for: self)
+                }
+                updateBrushRing()
+            }
+        }
+    }
+    var brushSoftness: Double = 0 {
+        didSet { if brushSoftness != oldValue { updateBrushRing() } }
+    }
+    private let ringView = BrushRingView()
+    /// Where the pointer is over the view (its points), while it is.
+    private var pointerAt: CGPoint?
+    private var tracking: NSTrackingArea?
+    /// The stage on show, for the snapshot hooks.
+    static weak var shown: CompareCanvas?
+    /// No arrow: the brush's outline is the pointer.
+    private static let noCursor = NSCursor(
+        image: NSImage(size: NSSize(width: 1, height: 1)),
+        hotSpot: .zero)
     /// The cursor its tool shows.
     var markupCursor: NSCursor = .crosshair {
         didSet {
@@ -269,6 +296,7 @@ final class CompareCanvas: NSView {
         _ = guidesA
         _ = guidesB
         addSubview(overlayView)
+        addSubview(ringView)
         divider.backgroundColor = NSColor.white.withAlphaComponent(0.9).cgColor
         divider.shadowOpacity = 0.6
         divider.shadowRadius = 2
@@ -300,6 +328,7 @@ final class CompareCanvas: NSView {
     override func layout() {
         super.layout()
         overlayView.frame = bounds
+        ringView.frame = bounds
         if fitting {
             fitNow()
         } else {
@@ -526,6 +555,8 @@ final class CompareCanvas: NSView {
         overlayView.toView = CGAffineTransform(
             translationX: markupOrigin.x, y: markupOrigin.y)
             .concatenating(canvasToView)
+        // Zoomed or moved: the outline at its new size.
+        updateBrushRing()
         labelA.isHidden = (labelA.string as? String ?? "").isEmpty || !roomA
         // The band where the pointer grabs the divider moves with the
         // split, and comes and goes with the mode.
@@ -723,6 +754,8 @@ final class CompareCanvas: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        pointerAt = convert(event.locationInWindow, from: nil)
+        updateBrushRing()
         if markingUp {
             markupPointer(.drag, event)
             return
@@ -755,9 +788,68 @@ final class CompareCanvas: NSView {
     /// A press that began with markup active is markup's to its end.
     private var markingUp = false
 
+    // MARK: The brush's outline
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let t = NSTrackingArea(rect: .zero,
+                               options: [.mouseMoved, .mouseEnteredAndExited,
+                                         .activeInKeyWindow, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t)
+        tracking = t
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        pointerAt = convert(event.locationInWindow, from: nil)
+        updateBrushRing()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        pointerAt = convert(event.locationInWindow, from: nil)
+        updateBrushRing()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        pointerAt = nil
+        updateBrushRing()
+    }
+
+    /// The outline where the pointer is, its radius the brush's canvas
+    /// pixels at this zoom (points per canvas pixel), its core the part
+    /// that is not soft; hidden away from the stage or another tool.
+    private func updateBrushRing() {
+        let ppp = pointsPerPixel
+        let on = markupHere && brushRadius > 0
+        if on { Self.shown = self }
+        guard on, let p = pointerAt, bounds.contains(p) else {
+            ringView.show(at: nil, radius: 0, inner: 0)
+            return
+        }
+        let r = CGFloat(brushRadius) * ppp
+        ringView.show(at: p, radius: r,
+                      inner: r * CGFloat(1 - min(max(brushSoftness, 0), 1)))
+    }
+
+    /// The pointer put over canvas pixel `c` (a snapshot hook: a posted
+    /// event moves no tracking area); its outline's radius in points.
+    @discardableResult
+    func hover(atCanvas c: CGPoint) -> CGFloat {
+        let v = CGPoint(x: c.x + markupOrigin.x, y: c.y + markupOrigin.y)
+            .applying(canvasToView)
+        pointerAt = CGPoint(x: v.x, y: bounds.height - v.y)
+        updateBrushRing()
+        return CGFloat(brushRadius) * pointsPerPixel
+    }
+
     override func resetCursorRects() {
         if markupHere {
-            addCursorRect(bounds, cursor: markupCursor)
+            addCursorRect(bounds, cursor: brushRadius > 0 ? Self.noCursor
+                                                          : markupCursor)
             return
         }
         if cropEditing && (cropShown || cropDragsFlat) {

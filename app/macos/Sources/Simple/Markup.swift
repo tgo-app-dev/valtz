@@ -94,6 +94,18 @@ final class MarkupState {
     @ObservationIgnored var moved = false
 
     var selectedIds: Set<String> { Set(selection.map(\.id)) }
+
+    /// A brush radius a step up or down from `r`, as Photoshop steps its
+    /// brush: finer when small (its diameter's 1 / 10 / 25 / 50 / 100
+    /// steps, as radii), held to the toolbar's 1...200.
+    static func stepRadius(_ r: Double, up: Bool) -> Double {
+        let at = up ? r : r - 0.001
+        let step: Double = at < 5 ? 1 : at < 50 ? 5 : at < 100 ? 12.5
+                         : at < 150 ? 25 : 50
+        let next = up ? (r / step).rounded(.down) * step + step
+                      : (r / step).rounded(.up) * step - step
+        return min(200, max(1, next))
+    }
     var selectedText: MarkupObject? {
         selection.count == 1 && selection[0].kind == .text
             ? selection[0] : nil
@@ -231,7 +243,39 @@ extension AppModel {
         case .cut: copySelectedObjects(cut: true)
         case .copy: copySelectedObjects(cut: false)
         case .paste: pasteObjects()
+        case .smaller, .larger:
+            let m = markup
+            m.radius = MarkupState.stepRadius(m.radius, up: k == .larger)
+        case .softer, .harder:
+            // Photoshop's hardness steps of a quarter, softness its
+            // other side.
+            let m = markup
+            let s = m.softness + (k == .softer ? 0.25 : -0.25)
+            m.softness = min(1, max(0, (s * 4).rounded() / 4))
         }
+    }
+
+    /// [ ] and ⇧[ ⇧] on the brush or the eraser, wherever the keyboard is
+    /// but in text (a prompt, a field): handled -- true -- or left to go on.
+    func brushKey(_ e: NSEvent) -> Bool {
+        guard markupOpen, markupReady,
+              markup.tool == .brush || markup.tool == .eraser,
+              let w = e.window, !(w is NSPanel),
+              editorWindow == nil || w === editorWindow,
+              !(w.firstResponder is NSText) else { return false }
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard mods.subtracting([.shift, .capsLock]).isEmpty else {
+            return false
+        }
+        // By the character, else by the key (another layout's).
+        let ch = e.charactersIgnoringModifiers ?? ""
+        let left = ch == "[" || ch == "{" || (ch.isEmpty && e.keyCode == 33)
+        let right = ch == "]" || ch == "}" || (ch.isEmpty && e.keyCode == 30)
+        guard left || right else { return false }
+        let shift = mods.contains(.shift)
+        markupKey(shift ? (left ? .softer : .harder)
+                        : (left ? .smaller : .larger))
+        return true
     }
 
     // MARK: Copy and paste
@@ -250,7 +294,7 @@ extension AppModel {
         case .paste:
             return NSPasteboard.general.availableType(
                 from: [Self.markupPasteboardType]) != nil
-        case .escape: return true
+        case .escape, .smaller, .larger, .softer, .harder: return true
         }
     }
 
@@ -615,6 +659,12 @@ extension AppModel {
     func markupToolChanged() {
         let m = markup
         if m.tool != .select && m.tool != .text { commitSelection() }
+        // The brush or the eraser takes the keyboard from the prompt (as
+        // a painting app's tools do): [ ] are its size then, not words.
+        if m.tool == .brush || m.tool == .eraser,
+           let w = editorWindow, w.firstResponder is NSText {
+            w.makeFirstResponder(nil)
+        }
     }
 
     // MARK: Layers: merge and masks

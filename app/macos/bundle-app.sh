@@ -361,6 +361,40 @@ if [ "$leaks" -gt 0 ] || [ "$missing" -gt 0 ]; then
 fi
 echo "bundle-app.sh: every reference inside the bundle"
 
+# Nothing in it may need a newer macOS than the app says it runs on
+# (LSMinimumSystemVersion): dyld refuses a binary built for a later
+# system, and the app does not open at all -- as when swiftc, given no
+# target, built the app for the release machine's macOS 27 while the
+# app said 26.2, or a dylib comes from a package manager's bottle for
+# the build machine's own release. Frameworks' binaries included.
+floor="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' \
+           "$CONTENTS/Info.plist" 2>/dev/null || true)"
+if [ -n "$floor" ]; then
+  newer=0
+  while read -r macho; do
+    [ -n "$macho" ] || continue
+    file -b "$macho" | grep -q "Mach-O" || continue
+    minos="$(otool -l "$macho" | awk '
+      /LC_BUILD_VERSION/ {b=1} b && /minos/ {print $2; exit}
+      /LC_VERSION_MIN_MACOSX/ {v=1} v && /version/ {print $2; exit}')"
+    [ -n "$minos" ] || continue
+    if [ "$(printf '%s\n%s\n' "$floor" "$minos" | sort -V | tail -1)" \
+         != "$floor" ]; then
+      echo "bundle-app.sh: TOO NEW: ${macho#"$CONTENTS/"} needs macOS" \
+           "$minos, the app says $floor" >&2
+      newer=$((newer + 1))
+    fi
+  done < <(find "$CONTENTS" -type f \( -perm -u+x -o -name '*.dylib' \
+                 -o -name '*.so' \) 2>/dev/null)
+  if [ "$newer" -gt 0 ]; then
+    echo "bundle-app.sh: $newer binary(ies) need a newer macOS than" \
+         "$floor; refusing to sign. Rebuild them for $floor" \
+         "(CMAKE_OSX_DEPLOYMENT_TARGET, MACOSX_DEPLOYMENT_TARGET)." >&2
+    exit 1
+  fi
+  echo "bundle-app.sh: every binary runs on macOS $floor"
+fi
+
 # ---------------------------------------------------------------------
 # 6. sign, inside out
 # ---------------------------------------------------------------------
