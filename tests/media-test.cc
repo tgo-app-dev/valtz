@@ -8,6 +8,7 @@
 #include "valtz/media/model-input.h"
 #include "valtz/media/movie.h"
 #include "valtz/media/probe.h"
+#include "valtz/media/sound.h"
 #include "valtz/project/records.h"
 
 #include <CoreGraphics/CoreGraphics.h>
@@ -18,6 +19,8 @@
 #include <fstream>
 #include <iterator>
 #include <vector>
+
+namespace fs = std::filesystem;
 
 using namespace valtz;
 
@@ -152,6 +155,77 @@ write_tone(const std::filesystem::path& wav, double secs, int rate)
   f.write((const char*)pcm.data(), bytes);
 }
 
+}
+
+// A file's SOUND heard as one channel (DESIGN §4h): a 5.1 sound, its six
+// channels each at its own level, made one channel at 16 kHz -- each
+// sample the six AVERAGED, none dropped or weighted.
+TEST(media, a_sound_is_heard_as_one_channel)
+{
+  const auto dir = fs::temp_directory_path() / "valtz-mono-test";
+  fs::create_directories(dir);
+  const auto in = dir / "six.wav";
+  {
+    // WAVE_FORMAT_EXTENSIBLE, 5.1 (mask 0x3F), 48 kHz, a second: channel
+    // k holds (k + 1) x 1000 throughout.
+    const std::uint32_t rate = 48000, n = 48000, ch = 6;
+    std::vector<std::int16_t> pcm(std::size_t{n} * ch);
+    for (std::uint32_t i = 0; i < n; ++i) {
+      for (std::uint32_t c = 0; c < ch; ++c) {
+        pcm[i * ch + c] = static_cast<std::int16_t>((c + 1) * 1000);
+      }
+    }
+    std::ofstream f(in, std::ios::binary);
+    auto u32 = [&](std::uint32_t v) { f.write((const char*)&v, 4); };
+    auto u16 = [&](std::uint16_t v) { f.write((const char*)&v, 2); };
+    const std::uint32_t bytes = n * ch * 2;
+    f.write("RIFF", 4);
+    u32(60 + bytes);
+    f.write("WAVEfmt ", 8);
+    u32(40);
+    u16(0xFFFE);
+    u16(ch);
+    u32(rate);
+    u32(rate * ch * 2);
+    u16(ch * 2);
+    u16(16);
+    u16(22);
+    u16(16);
+    u32(0x3F);
+    // KSDATAFORMAT_SUBTYPE_PCM
+    const unsigned char guid[16] = {0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                    0x10, 0x00, 0x80, 0x00, 0x00, 0xAA,
+                                    0x00, 0x38, 0x9B, 0x71};
+    f.write((const char*)guid, 16);
+    f.write("data", 4);
+    u32(bytes);
+    f.write((const char*)pcm.data(), bytes);
+  }
+  const auto out = dir / "mono.wav";
+  auto secs = media::mono_sound(in, out, 16000);
+  REQUIRE_OK(secs);
+  CHECK(std::abs(*secs - 1.0) < 0.01);
+  // Its samples: the data chunk's, 16-bit, one channel.
+  std::ifstream f(out, std::ios::binary);
+  std::vector<char> bytes((std::istreambuf_iterator<char>(f)),
+                          std::istreambuf_iterator<char>());
+  std::vector<std::int16_t> mono;
+  for (std::size_t at = 12; at + 8 <= bytes.size();) {
+    std::uint32_t len = 0;
+    std::memcpy(&len, bytes.data() + at + 4, 4);
+    if (std::memcmp(bytes.data() + at, "data", 4) == 0) {
+      mono.resize(len / 2);
+      std::memcpy(mono.data(), bytes.data() + at + 8, mono.size() * 2);
+      break;
+    }
+    at += 8 + len + (len & 1);
+  }
+  REQUIRE(mono.size() > 8000);
+  // The six levels' mean, 3500, away from the edges the resampler rings.
+  for (std::size_t i = 2000; i < mono.size() - 2000; i += 1000) {
+    CHECK(std::abs(mono[i] - 3500) <= 40);
+  }
+  fs::remove_all(dir);
 }
 
 // A clip's picture and sound, written apart, joined: the video passed

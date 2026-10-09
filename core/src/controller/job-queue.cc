@@ -76,6 +76,7 @@ to_json(Json& j, const JobRecord& r)
     {"message", r.message},
     {"created", r.created_ms},
     {"finished", r.finished_ms},
+    {"runner", r.runner.empty() ? "local" : r.runner_name},
   };
 }
 

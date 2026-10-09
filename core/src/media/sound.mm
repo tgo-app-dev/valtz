@@ -655,6 +655,145 @@ mix_sound(const SoundPlan& plan, const fs::path& out)
 }
 
 
+Result<double>
+mono_sound(const fs::path& in, const fs::path& out, int rate)
+{
+  if (rate < 8000) {
+    return make_error(Code::InvalidArgument, std::format(
+        "{} Hz is not a sound to write", rate));
+  }
+  @autoreleasepool {
+    AVURLAsset* asset = [AVURLAsset
+        URLAssetWithURL:[NSURL fileURLWithPath:@(in.c_str())]
+                options:nil];
+    // Kept past the handler (this file is not ARC's: retained by hand).
+    __block NSArray<AVAssetTrack*>* tracks = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [asset loadTracksWithMediaType:AVMediaTypeAudio
+                 completionHandler:^(NSArray<AVAssetTrack*>* t, NSError*) {
+                   tracks = [t retain];
+                   dispatch_semaphore_signal(sem);
+                 }];
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    dispatch_release(sem);
+    [tracks autorelease];
+    if (tracks.count == 0) {
+      return make_error(Code::Corrupt, std::format(
+          "{} has no sound", in.filename().string()));
+    }
+    // Each track at the rate asked and its own channel count (none is
+    // named: the reader keeps the track's), interleaved float.
+    std::vector<float> sum;
+    std::vector<std::uint8_t> heard;
+    for (AVAssetTrack* track in tracks) {
+      NSError* err = nil;
+      AVAssetReader* r = [AVAssetReader assetReaderWithAsset:asset
+                                                       error:&err];
+      if (!r) {
+        return make_error(Code::Io, std::format("cannot read {}",
+                                                in.string()));
+      }
+      AVAssetReaderTrackOutput* o = [AVAssetReaderTrackOutput
+          assetReaderTrackOutputWithTrack:track
+                           outputSettings:@{
+        AVFormatIDKey : @(kAudioFormatLinearPCM),
+        AVSampleRateKey : @(rate),
+        AVLinearPCMBitDepthKey : @32,
+        AVLinearPCMIsFloatKey : @YES,
+        AVLinearPCMIsNonInterleaved : @NO,
+        AVLinearPCMIsBigEndianKey : @NO,
+      }];
+      [r addOutput:o];
+      if (![r startReading]) {
+        return make_error(Code::Io, std::format("cannot read {}",
+                                                in.string()));
+      }
+      std::size_t at = 0;
+      std::vector<float> chunk;
+      while (CMSampleBufferRef sb = [o copyNextSampleBuffer]) {
+        const auto* asbd = CMAudioFormatDescriptionGetStreamBasicDescription(
+            CMSampleBufferGetFormatDescription(sb));
+        const std::size_t ch = asbd && asbd->mChannelsPerFrame > 0
+                                   ? asbd->mChannelsPerFrame : 1;
+        const auto frames = static_cast<std::size_t>(
+            CMSampleBufferGetNumSamples(sb));
+        CMBlockBufferRef bb = CMSampleBufferGetDataBuffer(sb);
+        const std::size_t bytes = bb ? CMBlockBufferGetDataLength(bb) : 0;
+        chunk.resize(bytes / sizeof(float));
+        if (bb && CMBlockBufferCopyDataBytes(bb, 0, bytes, chunk.data()) ==
+                      kCMBlockBufferNoErr) {
+          const std::size_t n = std::min(frames, chunk.size() / ch);
+          if (sum.size() < at + n) {
+            sum.resize(at + n, 0.0f);
+            heard.resize(at + n, 0);
+          }
+          for (std::size_t f = 0; f < n; ++f) {
+            float s = 0;
+            for (std::size_t c = 0; c < ch; ++c) {
+              s += chunk[f * ch + c];
+            }
+            sum[at + f] += s / static_cast<float>(ch);
+            ++heard[at + f];
+          }
+          at += n;
+        }
+        CFRelease(sb);
+      }
+      if (r.status == AVAssetReaderStatusFailed) {
+        return make_error(Code::Io, std::format(
+            "cannot read {}: {}", in.string(),
+            r.error ? r.error.localizedDescription.UTF8String : "?"));
+      }
+    }
+    for (std::size_t i = 0; i < sum.size(); ++i) {
+      if (heard[i] > 1) {
+        sum[i] /= static_cast<float>(heard[i]);
+      }
+    }
+    std::error_code ec;
+    fs::create_directories(out.parent_path(), ec);
+    fs::remove(out, ec);
+    NSError* err = nil;
+    // Closed before it is read: a file AVAudioFile writes is finished as
+    // it closes.
+    AVAudioFile* dst = [[[AVAudioFile alloc]
+        initForWriting:[NSURL fileURLWithPath:@(out.c_str())]
+              settings:@{
+                AVFormatIDKey : @(kAudioFormatLinearPCM),
+                AVSampleRateKey : @(rate),
+                AVNumberOfChannelsKey : @1,
+                AVLinearPCMBitDepthKey : @16,
+                AVLinearPCMIsFloatKey : @NO,
+                AVLinearPCMIsBigEndianKey : @NO,
+              }
+          commonFormat:AVAudioPCMFormatFloat32
+           interleaved:NO
+                 error:&err] autorelease];
+    if (!dst) {
+      return make_error(Code::Io, std::format(
+          "cannot write {}: {}", out.string(),
+          err ? err.localizedDescription.UTF8String : "?"));
+    }
+    const AVAudioFrameCount chunk = 65536;
+    AVAudioPCMBuffer* buf = [[[AVAudioPCMBuffer alloc]
+        initWithPCMFormat:dst.processingFormat frameCapacity:chunk]
+        autorelease];
+    for (std::size_t i = 0; i < sum.size(); i += chunk) {
+      const auto n = static_cast<AVAudioFrameCount>(
+          std::min<std::size_t>(chunk, sum.size() - i));
+      std::copy_n(sum.data() + i, n, buf.floatChannelData[0]);
+      buf.frameLength = n;
+      if (![dst writeFromBuffer:buf error:&err]) {
+        return make_error(Code::Io, std::format(
+            "cannot write {}: {}", out.string(),
+            err ? err.localizedDescription.UTF8String : "?"));
+      }
+    }
+    [dst close];
+    return static_cast<double>(sum.size()) / rate;
+  }
+}
+
 Status
 convert_sound(const fs::path& in, const fs::path& out, int channels,
               int rate)

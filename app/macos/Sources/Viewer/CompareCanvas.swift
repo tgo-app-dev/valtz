@@ -118,19 +118,6 @@ final class CompareCanvas: NSView {
             if resized && fitting { fitNow() } else { relayout() }
         }
     }
-    /// The crop is being edited: a drag moves the picture on its canvas
-    /// (reported in canvas pixels, y down), and its overhang shows.
-    /// Drags under "Adjust crop" report even with no crop laid out (a
-    /// layer stack's crops are drawn into the image shown).
-    var cropDragsFlat = false
-    var cropEditing = false {
-        didSet {
-            guard cropEditing != oldValue else { return }
-            keepInView()
-            relayout()
-        }
-    }
-    var onCropDrag: ((CGSize) -> Void)?
     /// A 3 × 3 grid over what each side shows (View › Show Guides):
     /// A's canvas, B's picture.
     var showsGuides = false {
@@ -240,13 +227,11 @@ final class CompareCanvas: NSView {
     private let divider = CALayer()
     private let labelA = CATextLayer()
     private let labelB = CATextLayer()
-    // A cropped: the canvas (checker under the padding), the picture on
-    // it in canvas pixels, and -- while editing -- its overhang, faint.
+    // A cropped: the canvas (checker under the padding) and the picture
+    // on it in canvas pixels.
     private let cropBack = CALayer()
     private let cropSpace = CALayer()
     private let cropContent = CALayer()
-    private let ghostSpace = CALayer()
-    private let ghostContent = CALayer()
     private lazy var guidesA = GuideLayers(in: clipA)
     private lazy var guidesB = GuideLayers(in: clipB)
 
@@ -275,19 +260,15 @@ final class CompareCanvas: NSView {
             clip.addSublayer(content)
             layer?.addSublayer(clip)
         }
-        // Behind A's own layer in clipA: the overhang, then the canvas.
-        ghostSpace.opacity = 0.35
-        ghostSpace.addSublayer(ghostContent)
+        // Behind A's own layer in clipA: the canvas.
         cropBack.backgroundColor = checker
         cropSpace.masksToBounds = true
         cropSpace.addSublayer(cropContent)
-        for l in [cropContent, ghostContent] {
-            l.anchorPoint = .zero
-            l.contentsGravity = .resize
-            l.minificationFilter = .trilinear
-            l.preferredDynamicRange = .high
-        }
-        for l in [ghostSpace, cropBack, cropSpace] {
+        cropContent.anchorPoint = .zero
+        cropContent.contentsGravity = .resize
+        cropContent.minificationFilter = .trilinear
+        cropContent.preferredDynamicRange = .high
+        for l in [cropBack, cropSpace] {
             l.anchorPoint = .zero
             l.isHidden = true
             clipA.addSublayer(l)
@@ -450,7 +431,6 @@ final class CompareCanvas: NSView {
 
     private func applyImages() {
         cropContent.contents = contentsA
-        ghostContent.contents = contentsA
         layerA.contents = cropShown ? nil
             : mode == .b && imageB != nil ? contentsB : contentsA
         layerB.contents = mode == .a || mode == .b ? nil : contentsB
@@ -548,7 +528,7 @@ final class CompareCanvas: NSView {
         guidesA.show(over: showsGuides && imageA != nil
                          ? canvas ?? layerA.frame : nil,
                      in: clipA.bounds, scale: scale,
-                     border: canvas != nil && cropEditing)
+                     border: false)
         guidesB.show(over: showsGuides && hasB && !clipB.isHidden
                          ? layerB.frame : nil,
                      in: clipB.bounds, scale: scale, border: false)
@@ -580,7 +560,6 @@ final class CompareCanvas: NSView {
         layerA.isHidden = shown
         cropBack.isHidden = !shown
         cropSpace.isHidden = !shown
-        ghostSpace.isHidden = !(shown && cropEditing)
         guard let c = cropA, let img = imageA, shown else { return nil }
         let ppp = pointsPerPixel
         // In clipA's coordinates (side by side: offset into its region).
@@ -590,16 +569,13 @@ final class CompareCanvas: NSView {
         cropBack.frame = r
         let content = CGRect(x: 0, y: 0, width: img.width, height: img.height)
         let filter: CALayerContentsFilter = zoom >= 2 ? .nearest : .linear
-        for (space, pic) in [(cropSpace, cropContent),
-                             (ghostSpace, ghostContent)] {
-            space.bounds = CGRect(origin: .zero, size: c.canvas)
-            space.position = r.origin
-            space.transform = CATransform3DMakeScale(ppp, ppp, 1)
-            pic.bounds = content
-            pic.position = .zero
-            pic.setAffineTransform(c.transform)
-            pic.magnificationFilter = filter
-        }
+        cropSpace.bounds = CGRect(origin: .zero, size: c.canvas)
+        cropSpace.position = r.origin
+        cropSpace.transform = CATransform3DMakeScale(ppp, ppp, 1)
+        cropContent.bounds = content
+        cropContent.position = .zero
+        cropContent.setAffineTransform(c.transform)
+        cropContent.magnificationFilter = filter
         cropSpace.backgroundColor = c.pad
         return r
     }
@@ -693,9 +669,9 @@ final class CompareCanvas: NSView {
     /// spans [e0, e1] canvas pixels and the view `v` points: its near
     /// edge may come to `m` points from the view's far side, and no
     /// further, so the centre stays within (v / 2 - m) / ppp of the
-    /// picture. Not while a crop is adjusted (the picture is free there).
+    /// picture.
     private func keepInView() {
-        guard imageA != nil, !cropEditing else { return }
+        guard imageA != nil else { return }
         let r = regions().first ?? bounds
         let e = extentA
         let ppp = pointsPerPixel
@@ -766,11 +742,6 @@ final class CompareCanvas: NSView {
                 ? min(1, max(0, p.x / max(1, bounds.width)))
                 : min(1, max(0, 1 - p.y / max(1, bounds.height)))
             relayout()
-        } else if cropEditing && (cropShown || cropDragsFlat) {
-            // The picture moves on its canvas: canvas pixels, y down.
-            let ppp = pointsPerPixel
-            onCropDrag?(CGSize(width: (p.x - lastDrag.x) / ppp,
-                               height: -(p.y - lastDrag.y) / ppp))
         } else {
             pan(dx: p.x - lastDrag.x, dy: p.y - lastDrag.y)
         }
@@ -851,9 +822,6 @@ final class CompareCanvas: NSView {
             addCursorRect(bounds, cursor: brushRadius > 0 ? Self.noCursor
                                                           : markupCursor)
             return
-        }
-        if cropEditing && (cropShown || cropDragsFlat) {
-            addCursorRect(bounds, cursor: .openHand)
         }
         guard isWipe else { return }
         if mode == .wipe {

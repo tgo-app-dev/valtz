@@ -906,6 +906,10 @@ struct LayersSection: View {
                          disabled: model.mergeProblem != nil) {
                         model.mergeSelectedLayers()
                     }
+                    tool("folder.badge.plus",
+                         "Put the selected layers in a folder (⌘-click to select several)") {
+                        model.groupSelectedLayers()
+                    }
                     let active = stack.first { $0.id == model.activeLayer }
                     let isMask = active?.mask == true
                     tool(isMask ? "theatermasks.fill" : "theatermasks",
@@ -945,11 +949,17 @@ struct LayersSection: View {
                 }
                 ScrollView {
                     VStack(spacing: 2) {
-                        ForEach(Array(stack.enumerated()).reversed(),
-                                id: \.element.id) { i, l in
-                            LayerRow(model: model, layer: l,
-                                     masked: i + 1 < stack.count
-                                        && stack[i + 1].mask)
+                        ForEach(items(stack)) { item in
+                            switch item.kind {
+                            case .folder(let f, let members):
+                                LayerFolderRow(model: model, folder: f,
+                                               members: members)
+                            case .layer(let i, let l):
+                                LayerRow(model: model, layer: l,
+                                         masked: i + 1 < stack.count
+                                            && stack[i + 1].mask,
+                                         depth: l.folder == nil ? 0 : 1)
+                            }
                         }
                     }
                     .padding(.horizontal, 8)
@@ -978,6 +988,28 @@ struct LayersSection: View {
         }
     }
 
+    /// The rows, top first: a folder's header over its layers (none while
+    /// it is folded), the others as they come.
+    private func items(_ stack: [LayerDTO]) -> [LayerListItem] {
+        var out: [LayerListItem] = []
+        var open: String?
+        for (i, l) in stack.enumerated().reversed() {
+            if let f = l.folder, f != open {
+                open = f
+                let folder = model.stageLayerFolders.first { $0.id == f }
+                    ?? LayerFolderDTO(id: f, name: f)
+                out.append(LayerListItem(
+                    id: "folder:" + f,
+                    kind: .folder(folder, stack.filter { $0.folder == f })))
+            } else if l.folder == nil {
+                open = nil
+            }
+            if let f = l.folder, model.isFolderFolded(f) { continue }
+            out.append(LayerListItem(id: l.id, kind: .layer(i, l)))
+        }
+        return out
+    }
+
     /// Above the bottom layer, with room to go.
     /// Up or down the stack. A picture's own bottom layer (its frame) and
     /// a clip's own stay at the bottom; in the project's pictures every
@@ -1001,6 +1033,124 @@ struct LayersSection: View {
         .buttonStyle(.borderless)
         .disabled(disabled || model.isGenerating)
         .help(help)
+    }
+}
+
+/// A row of the Layers section: a folder's header, or a layer.
+private struct LayerListItem: Identifiable {
+    enum Kind {
+        case folder(LayerFolderDTO, [LayerDTO])
+        case layer(Int, LayerDTO)
+    }
+    let id: String
+    let kind: Kind
+}
+
+/// A folder of layers (DESIGN §6a): its fold, its eye -- every layer of
+/// it shown or hidden -- its name (double-click to rename) and how many
+/// it holds. A layer's row dropped on it goes in, on top; its menu
+/// renames it or ungroups it, the layers staying where they are.
+private struct LayerFolderRow: View {
+    @Bindable var model: AppModel
+    let folder: LayerFolderDTO
+    /// Its layers, bottom first.
+    let members: [LayerDTO]
+    @State private var renaming = false
+    @State private var name = ""
+    @State private var dropTarget = false
+    @FocusState private var nameFocused: Bool
+
+    var body: some View {
+        let shown = members.contains { $0.visible }
+        let folded = model.isFolderFolded(folder.id)
+        HStack(spacing: 6) {
+            Button {
+                model.toggleFolderFolded(folder.id)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .rotationEffect(.degrees(folded ? 0 : 90))
+                    .frame(width: 12, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(folded ? "Show its layers" : "Fold its layers away")
+            Button {
+                model.setFolderVisible(folder.id, !shown)
+            } label: {
+                Image(systemName: shown ? "eye" : "eye.slash")
+                    .foregroundStyle(shown ? .primary : .secondary)
+                    .frame(width: 18)
+            }
+            .buttonStyle(.borderless)
+            .help(shown ? "Hide its layers" : "Show its layers")
+            Image(systemName: "folder")
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            if renaming {
+                TextField("Name", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($nameFocused)
+                    .onSubmit(commitName)
+                    .onChange(of: nameFocused) { _, f in
+                        if !f { commitName() }
+                    }
+            } else {
+                Text(verbatim: folder.name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .onTapGesture(count: 2) { startRenaming() }
+            }
+            Spacer(minLength: 0)
+            Text(verbatim: String(members.count))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 6)
+            .fill(Color.primary.opacity(0.05)))
+        .overlay {
+            if dropTarget {
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+            }
+        }
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button("Rename Folder") { startRenaming() }
+            Button("Ungroup") { model.ungroupLayers(folder.id) }
+        }
+        .dropDestination(for: String.self) { items, _ in
+            put(items.compactMap { model.draggedLayer(text: $0) }.first)
+        } isTargeted: { dropTarget = $0 }
+        .dropDestination(for: URL.self) { urls, _ in
+            put(model.draggedLayer(url: urls.first))
+        } isTargeted: { dropTarget = $0 }
+        .help("A folder of layers: drag a layer's row onto it to put it in")
+    }
+
+    /// A layer dropped on it: in it, on top.
+    private func put(_ id: String?) -> Bool {
+        guard let id else { return false }
+        model.placeLayers([id], above: members.last?.id, folder: folder.id)
+        return true
+    }
+
+    private func startRenaming() {
+        name = folder.name
+        renaming = true
+        nameFocused = true
+    }
+
+    private func commitName() {
+        guard renaming else { return }
+        renaming = false
+        let n = name.trimmingCharacters(in: .whitespaces)
+        if !n.isEmpty, n != folder.name {
+            model.renameLayerFolder(folder.id, n)
+        }
     }
 }
 
@@ -1112,6 +1262,8 @@ private struct LayerRow: View {
     let layer: LayerDTO
     /// The layer above it is its mask.
     var masked = false
+    /// Set in under its folder.
+    var depth = 0
     @State private var image: CGImage?
     @State private var renaming = false
     @State private var name = ""
@@ -1125,6 +1277,8 @@ private struct LayerRow: View {
         if layer.isMarkup { return "Markup" }
         guard let src = model.source(of: layer) else { return nil }
         if src.kind == "audio" { return "Sound" }
+        // A composition of sound takes a clip's sound alone.
+        if model.stageIsAudio && src.kind == "video" { return "Clip's sound" }
         if src.isTimeline { return "Composition" }
         if src.isComposition { return "Still" }
         if src.kind == "video" { return "Clip" }
@@ -1217,7 +1371,7 @@ private struct LayerRow: View {
         .opacity(here ? 1 : 0.45)
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
-        .padding(.leading, layer.mask ? 10 : 0)
+        .padding(.leading, (layer.mask ? 10 : 0) + CGFloat(depth) * 16)
         .background(RoundedRectangle(cornerRadius: 6)
             .fill(selected ? Color.accentColor.opacity(0.18)
                   : inSelection ? Color.accentColor.opacity(0.09)
@@ -1233,6 +1387,23 @@ private struct LayerRow: View {
             }
         }
         .contextMenu {
+            Button(model.selectedLayers.count > 1
+                   && model.selectedLayers.contains(layer.id)
+                   ? "Group Selected Layers" : "Put in a New Folder") {
+                if !model.selectedLayers.contains(layer.id) {
+                    model.selectLayer(layer.id)
+                }
+                model.groupSelectedLayers()
+            }
+            if let f = layer.folder {
+                Button("Take Out of Its Folder") {
+                    let stack = model.stageStack?.layerStack ?? []
+                    // Above the folder's topmost layer, in no folder.
+                    let top = stack.last { $0.folder == f }?.id
+                    model.placeLayers([layer.id], above: top, folder: "")
+                }
+            }
+            Divider()
             if !model.isBottomLayer(layer.id) {
                 Button(layer.mask ? "Release Mask"
                                   : "Use as Mask of Layer Below") {
@@ -1269,6 +1440,15 @@ private struct LayerRow: View {
         // A picture or a clip dropped on it -- a file, or an asset of the
         // list (which arrives as a URL too): what it shows.
         .dropDestination(for: URL.self) { urls, _ in
+            // Another layer's row: it goes right above this one, in its
+            // folder (or out of any).
+            if let d = model.draggedLayer(url: urls.first) {
+                if d != layer.id {
+                    model.placeLayers([d], above: layer.id,
+                                      folder: layer.folder ?? "")
+                }
+                return true
+            }
             guard model.isPlacedLayer(layer.id), let url = urls.first else {
                 return false
             }
@@ -1280,17 +1460,29 @@ private struct LayerRow: View {
             model.setLayerSource(layer.id, from: url)
             return true
         } isTargeted: { dropTarget = $0 }
+        .dropDestination(for: String.self) { items, _ in
+            guard let d = items.compactMap({ model.draggedLayer(text: $0) })
+                .first else { return false }
+            if d != layer.id {
+                model.placeLayers([d], above: layer.id,
+                                  folder: layer.folder ?? "")
+            }
+            return true
+        } isTargeted: { dropTarget = $0 }
         .overlay {
             if dropTarget {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(Color.accentColor, lineWidth: 2)
             }
         }
+        // A still's layer carries its picture (into the prompt, alone);
+        // a clip's its id. Either goes into a folder dropped on one.
         .onDrag {
-            guard let url = model.layerFile(layer.id) else {
-                return NSItemProvider()
-            }
-            return NSItemProvider(object: url as NSURL)
+            let url = model.layerFile(layer.id)
+            model.layerDrag = (layer.id, url)
+            if let url { return NSItemProvider(object: url as NSURL) }
+            return NSItemProvider(
+                object: (AppModel.layerPrefix + layer.id) as NSString)
         }
         .task(id: "\(layer.id)-\(layer.source ?? "")-\(layer.own)-\(layer.markup?.raster ?? "")-\(layer.markup?.objects.hashValue ?? 0)") {
             image = await thumbnail()

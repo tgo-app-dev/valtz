@@ -263,12 +263,35 @@ enum CropField: CaseIterable, Identifiable, Sendable {
     case offsetX, offsetY, scaleX, scaleY
     var id: Self { self }
 
+    /// Its name, for VoiceOver (the card shows Offset / Zoom and the
+    /// axis).
     var label: LocalizedStringKey {
         switch self {
-        case .offsetX: "X off"
-        case .offsetY: "Y off"
-        case .scaleX: "X scale"
-        case .scaleY: "Y scale"
+        case .offsetX: "Offset X"
+        case .offsetY: "Offset Y"
+        case .scaleX: "Zoom X"
+        case .scaleY: "Zoom Y"
+        }
+    }
+
+    /// The axis it is, beside its box.
+    var axis: String {
+        self == .offsetX || self == .scaleX ? "X" : "Y"
+    }
+
+    /// Its wheel: an offset moves a frame's width (height) in 500 points
+    /// of drag; a zoom doubles in about 170 (a factor of e^0.004 a
+    /// point).
+    var jogPerPoint: Double {
+        self == .offsetX || self == .offsetY ? 0.002 : 0.004
+    }
+
+    var jogHelp: LocalizedStringKey {
+        switch self {
+        case .offsetX: "Drag the dot left or right to move the picture across (⌥ finer, ⇧ faster)"
+        case .offsetY: "Drag the dot left or right to move the picture up or down (⌥ finer, ⇧ faster)"
+        case .scaleX: "Drag the dot left or right to zoom out or in (⌥ finer, ⇧ faster)"
+        case .scaleY: "Drag the dot left or right to zoom its height out or in (⌥ finer, ⇧ faster)"
         }
     }
 
@@ -319,17 +342,15 @@ enum CropField: CaseIterable, Identifiable, Sendable {
 ///
 ///   the background colour, where the picture does not reach
 ///   the placement's keyframes                         (a clip)
-///   X off  Y off  X scale  Y scale -- relative to the frame   Reset
-///   Adjust crop: { smaller, 1:1, all of it, larger } 75%   drag to move
+///   Offset  X [  ] ◉  Y [  ] ◉     Zoom  X [  ] ◉  🔒  Y [  ] ◉     Reset
 ///   the rotation's keyframes                          (a clip)
-///   the rotation: slider and degrees, as wide as the boxes    Reset
+///   the rotation: slider and degrees                           Reset
 ///
-/// "Adjust crop" lets the stage frame the picture: the zoom tools size it
-/// on its canvas and a drag moves it -- the boxes follow.
+/// Each value is typed in its box, or JOGGED by the wheel after it: its
+/// dot dragged left or right. The lock between the zooms keeps them in
+/// ratio, and the second wheel goes while it is shut.
 struct CropPanel: View {
     @Bindable var model: AppModel
-    /// The placement boxes' width: the rotation row matches it.
-    @State private var fieldsWidth: CGFloat = 320
     /// The rows under a part's header (its keyframes, or its name) are
     /// set in by about four characters, to read as under it.
     private static let indent: CGFloat = 28
@@ -356,50 +377,20 @@ struct CropPanel: View {
                    bypass: "Hold to see the picture without its crop and zoom",
                    reset: model.resetCropPlacement,
                    isReset: model.cropPlacementIsReset)
-            HStack(spacing: 12) {
-                ForEach(CropField.allCases) { f in
-                    CropValueField(model: model, field: f)
+            // Offset and zoom on one row; short of room, one under the
+            // other.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 18) {
+                    offsetGroup
+                    zoomGroup
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    offsetGroup
+                    zoomGroup
                 }
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.width }
-                action: { fieldsWidth = $0 }
-            .padding(.leading, Self.indent)
-            HStack(spacing: 2) {
-                switchLabel("Adjust crop") { model.cropEditing.toggle() }
-                    .padding(.trailing, 6)
-                Toggle("Adjust crop", isOn: $model.cropEditing)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .searchMark(model.searchHits.contains(SettingsRow.cropEdit))
-                    .padding(.trailing, 10)
-                if model.cropEditing {
-                    zoomButton("minus.magnifyingglass",
-                               "Smaller on the canvas") {
-                        model.cropZoom(by: 1 / 1.25)
-                    }
-                    zoomButton("1.magnifyingglass",
-                               "The picture's own pixels (1:1)") {
-                        model.cropActualSize()
-                    }
-                    zoomButton("arrow.up.left.and.down.right.magnifyingglass",
-                               "All of the picture on the canvas") {
-                        model.cropFit()
-                    }
-                    zoomButton("plus.magnifyingglass", "Larger on the canvas") {
-                        model.cropZoom(by: 1.25)
-                    }
-                    Text(verbatim: ratio)
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .padding(.leading, 6)
-                    Spacer(minLength: 12)
-                    Text("Drag the picture to move it")
-                        .font(.callout)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    Spacer()
-                }
-            }
+            .searchMark(model.searchHits.contains(SettingsRow.cropZoom))
             .padding(.leading, Self.indent)
             if model.canUpscaleLayer || model.upscaleJob != nil {
                 upscaleRow
@@ -413,18 +404,74 @@ struct CropPanel: View {
                    reset: model.resetCropRotate,
                    isReset: model.cropRotateIsReset)
             HStack(spacing: 8) {
-                Slider(value: Binding(get: { model.crop.rotate },
-                                      set: { model.setCropRotate($0) }),
-                       in: CropSpec.rotateRange)
+                CenteredSlider(value: Binding(get: { model.crop.rotate },
+                                              set: { model.setCropRotate($0) }),
+                               range: CropSpec.rotateRange)
                     .accessibilityLabel(Text("Rotate"))
                 RotateField(model: model)
             }
-            .frame(width: fieldsWidth)
             .searchMark(model.searchHits.contains(SettingsRow.cropRotate))
             .padding(.leading, Self.indent)
         }
         .controlSize(.small)
         .disabled(!model.canAdjust)
+    }
+
+    /// "Offset  X [ ] ◉  Y [ ] ◉": where the picture's centre is, in frame
+    /// widths and heights.
+    private var offsetGroup: some View {
+        HStack(spacing: 8) {
+            Text("Offset")
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            value(.offsetX, jog: true)
+            value(.offsetY, jog: true)
+        }
+    }
+
+    /// "Zoom  X [ ] ◉ 🔒 Y [ ] ◉": its size as a share of the frame's;
+    /// locked, X and Y keep their ratio and one wheel turns both.
+    private var zoomGroup: some View {
+        HStack(spacing: 8) {
+            Text("Zoom")
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            value(.scaleX, jog: true)
+            Button {
+                model.cropZoomLocked.toggle()
+            } label: {
+                Image(systemName: model.cropZoomLocked ? "lock.fill"
+                                                       : "lock.open")
+                    .frame(width: 18, height: 20)
+                    .contentShape(Rectangle())
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(model.cropZoomLocked ? Color.primary
+                                                  : Color.secondary)
+            .help(model.cropZoomLocked
+                  ? "X and Y zoom together, keeping their ratio: click to zoom them apart"
+                  : "X and Y zoom apart: click to zoom them together")
+            .accessibilityLabel(Text("Zoom X and Y together"))
+            value(.scaleY, jog: !model.cropZoomLocked)
+        }
+    }
+
+    /// An axis's box and, after it, its wheel (or the wheel's room).
+    private func value(_ f: CropField, jog: Bool) -> some View {
+        HStack(spacing: 4) {
+            CropValueField(model: model, field: f)
+            ZStack {
+                if jog {
+                    JogWheel(perPoint: f.jogPerPoint, help: f.jogHelp) {
+                        model.nudgeCropPlacement(f, by: $0)
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .frame(width: JogWheel.size)
+            .animation(.smooth(duration: 0.2), value: jog)
+        }
     }
 
     /// Scaled up at one size: the clip or picture rendered at that size by
@@ -500,32 +547,6 @@ struct CropPanel: View {
         }
     }
 
-    /// A switch's name, as the panel's other labels; a click on it flips
-    /// the switch.
-    private func switchLabel(_ name: LocalizedStringKey,
-                             flip: @escaping () -> Void) -> some View {
-        Text(name)
-            .foregroundStyle(.secondary)
-            .onTapGesture(perform: flip)
-    }
-
-    /// The picture's size on the canvas: "75%", or "75% × 50%".
-    private var ratio: String {
-        let x = Int((model.crop.scaleX * 100).rounded())
-        let y = Int((model.crop.scaleY * 100).rounded())
-        return x == y ? "\(x)%" : "\(x)% × \(y)%"
-    }
-
-    private func zoomButton(_ symbol: String, _ help: LocalizedStringKey,
-                            action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .frame(width: 26, height: 22)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .help(help)
-    }
 }
 
 /// One of the placement's values as a text box, as an adjustment's: taken
@@ -542,8 +563,9 @@ private struct CropValueField: View {
     var body: some View {
         let value = field.value(model.crop)
         HStack(spacing: 4) {
-            Text(field.label)
+            Text(verbatim: field.axis)
                 .foregroundStyle(.secondary)
+                .fixedSize()
             TextField(field.label, text: $text)
                 .labelsHidden()
                 .textFieldStyle(.roundedBorder)
@@ -554,7 +576,6 @@ private struct CropValueField: View {
                 .frame(width: 52)
         }
         .help(field.help)
-        .searchMark(model.searchHits.contains(SettingsRow.cropZoom))
         .onAppear { show(CropField.display(value)) }
         // It follows the value, focused or not -- the zoom tools, a drag,
         // the frame a clip shows -- unless a value is being typed in it.
@@ -962,9 +983,9 @@ private struct StartTimeField: View {
     }
 }
 
-/// One of the Trim panel's buttons: its symbol (mirrored for playing
-/// backward) in a circle that shows it pressed in.
-private struct TransportButton: View {
+/// One of the Trim panel's buttons (and the timeline's): its symbol
+/// (mirrored for playing backward) in a circle that shows it pressed in.
+struct TransportButton: View {
     let symbol: String
     var mirrored = false
     let help: LocalizedStringKey

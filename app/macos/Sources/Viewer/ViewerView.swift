@@ -21,15 +21,9 @@ struct CompareCanvasView: NSViewRepresentable {
     var unfitRequest = 0
     var fitMargin: CGFloat = 0.98
     var background: NSColor? = NSColor(white: 0.11, alpha: 1)
-    /// A's crop (CompareCanvas.cropA), whether it is being edited, and the
-    /// guides.
+    /// A's crop (CompareCanvas.cropA), and the guides.
     var crop: CropPlacement? = nil
-    var cropEditing = false
-    /// Drags move the picture even with no crop laid out here: a layer
-    /// stack's crops are drawn into what is shown.
-    var cropDragsFlat = false
     var guides = false
-    var onCropDrag: (CGSize) -> Void = { _ in }
     /// The markup toolbar's: active, its cursor, what it shows over the
     /// picture, and where its pointer and keys go.
     var markupActive = false
@@ -66,7 +60,6 @@ struct CompareCanvasView: NSViewRepresentable {
 
     func updateNSView(_ v: CompareCanvas, context: Context) {
         v.onModeFlip = { m in DispatchQueue.main.async { onModeFlip(m) } }
-        v.onCropDrag = { d in onCropDrag(d) }
         v.onMarkupPointer = { e in onMarkupPointer(e) }
         v.onMarkupKey = { k in onMarkupKey(k) }
         v.canMarkupKey = { k in canMarkupKey(k) }
@@ -77,8 +70,6 @@ struct CompareCanvasView: NSViewRepresentable {
         v.markupOverlay = markupOverlay
         v.markupOrigin = markupOrigin
         v.fitMargin = fitMargin
-        v.cropEditing = cropEditing
-        v.cropDragsFlat = cropDragsFlat
         v.showsGuides = guides
         v.canvasBackground = background
         v.labelTextA = labelA

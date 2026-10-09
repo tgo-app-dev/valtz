@@ -691,7 +691,8 @@ struct JobPhase: Equatable {
 
     /// The phases in the order a generation runs them.
     static let order = ["prepare", "references", "score", "song", "speech",
-                        "denoise", "decode", "sound", "restore", "finish"]
+                        "transcribe", "denoise", "decode", "sound",
+                        "restore", "finish"]
 
     /// A phase's name, as the inspector lists how long each took -- a
     /// song's sound rendered and decoded, a clip's soundtrack.
@@ -702,6 +703,7 @@ struct JobPhase: Equatable {
         case "score": String(localized: "Planning the score")
         case "song": String(localized: "Writing the song")
         case "speech": String(localized: "Speaking")
+        case "transcribe": String(localized: "Transcribing")
         case "denoise": kind == .audio ? String(localized: "Rendering")
             : String(localized: "Generating")
         case "decode": String(localized: "Decoding")
@@ -861,6 +863,12 @@ final class AppModel {
     /// Settings › Agentic Helper: the helpers, the chosen one, the one in
     /// use.
     var helpers: HelperList?
+    /// The fleet (DESIGN §11): this Mac's place in one, the job it serves
+    /// for a member (its window given over to it, the mark in blue), the
+    /// offers waiting for an answer.
+    var fleet: FleetStatus?
+    var fleetServing: FleetServing?
+    var fleetAsks: [FleetJob] = []
     var capabilities: [CapabilityStatus] = []
     var catalog: [CatalogModel] = []
     var engine = ""
@@ -891,6 +899,10 @@ final class AppModel {
     var promptAttachments: [PromptAttachment] = []
     /// Their thumbnails, as they load.
     var referenceThumbs: [UUID: CGImage] = [:]
+    /// The picture whose pencil the EDIT-BASE SUGGESTION points at: the
+    /// first picture staged in an image prompt, not marked the base
+    /// (DESIGN §10a). Gone with a click anywhere else.
+    var baseHint: UUID?
     /// A task's latest preview frame, by the asset it makes: its row's
     /// picture in Assets while it runs.
     var taskThumbs: [String: CGImage] = [:]
@@ -1024,6 +1036,50 @@ final class AppModel {
     private var otherShapes: [Modality: OutputShape] = [:]
     /// Which composer panel is open (at most one).
     var openPanel: ComposerPanel?
+    /// The Crop card's zoom: X and Y together, their ratio kept (the
+    /// lock between them), or apart. Remembered between launches.
+    var cropZoomLocked = !AppModel.keepsViewState || UserDefaults.standard
+        .object(forKey: AppModel.cropZoomLockKey) as? Bool ?? true {
+        didSet {
+            if Self.keepsViewState {
+                UserDefaults.standard.set(cropZoomLocked,
+                                          forKey: Self.cropZoomLockKey)
+            }
+        }
+    }
+    static let cropZoomLockKey = "crop.zoomLocked"
+    /// The TIMELINE in the prompt's place (DESIGN §10a Timeline): asked
+    /// for (its switch beside the box), shown while the stage works on a
+    /// timeline or a still with pages (`timelineOpen`).
+    var timelineWanted = false
+    /// The timeline's rows of layers in view (its ⌃ ⌄), remembered
+    /// between launches (not by a scripted snapshot run).
+    var timelineRows = AppModel.storedTimelineRows {
+        didSet {
+            if Self.keepsViewState {
+                UserDefaults.standard.set(timelineRows,
+                                          forKey: Self.timelineRowsKey)
+            }
+        }
+    }
+    static let timelineRowRange = 1...12
+    private static let timelineRowsKey = "view.timelineRows"
+    private static var storedTimelineRows: Int {
+        let n = keepsViewState
+            ? UserDefaults.standard.integer(forKey: timelineRowsKey) : 0
+        return n > 0 ? min(n, timelineRowRange.upperBound) : 3
+    }
+    /// The timeline's zoom: how many times the whole of it fits (1: all
+    /// of it in view).
+    var timelineZoom = 1.0
+    /// The timeline's SCISSORS: a click on a clip cuts it there.
+    var timelineCutting = false
+    /// The file panels' folders kept for this session only (an anonymous
+    /// one's attachments and exports; FileHistory).
+    @ObservationIgnored var sessionPanelFolders: [String: URL] = [:]
+    /// Layer folders folded shut, in the Layers section and the timeline
+    /// ("<composition>/<folder>"): how they are looked at, not kept.
+    var foldedLayerFolders: Set<String> = []
     /// A long prompt stays three rows tall and scrolls, instead of the
     /// box growing with it (to half the window).
     var promptCompact = false
@@ -1176,9 +1232,6 @@ final class AppModel {
     @ObservationIgnored private var compositing = false
     @ObservationIgnored private var compositeAgain = false
     private var clipKeysPersistTask: Task<Void, Never>?
-    /// "Adjust crop": dragging on the stage moves the picture on its
-    /// canvas, and the zoom tools size it there.
-    var cropEditing = false
     /// A 3 × 3 grid over what the stage shows -- a picture, a clip, a
     /// preview (View › Show Guides). Kept between launches.
     var showsGuides = UserDefaults.standard
@@ -1557,6 +1610,7 @@ final class AppModel {
         capabilityTree = DTO.decode(CapabilityTree.self,
                                     core.capabilityTreeJSON())
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+        reloadFleet()
         // A chosen model that went away (deleted, moved) gives way to Auto.
         if !modelChoice.isEmpty,
            !modelOptions(for: activeModality).contains(where: {
@@ -1564,6 +1618,18 @@ final class AppModel {
            }) {
             modelChoice = ""
         }
+    }
+
+    /// What runs -- here, or on a fleet member (DESIGN §11) -- read
+    /// again: the capabilities, the models, Auto's picks.
+    func refreshRunnable() {
+        guard let core else { return }
+        capabilities = DTO.decode([CapabilityStatus].self,
+                                  core.capabilitiesJSON()) ?? capabilities
+        catalog = DTO.decode([CatalogModel].self, core.catalogJSON())
+            ?? catalog
+        auto = DTO.decode([String: [String: AutoChoice]].self,
+                          core.autoJSON()) ?? auto
     }
 
     /// Auto's pick for `op` ("generate" | "edit") in the modality; "" when
@@ -2294,7 +2360,6 @@ final class AppModel {
             selectedLayers = [id]
             loadClipTracks(pic, layer: activeLayer)
             bypassed = []
-            cropEditing = false
             recomposite()
             return
         }
@@ -2306,7 +2371,6 @@ final class AppModel {
             loadClipTracks(clip, layer: activeLayer)
             loadTrim(clip)
             bypassed = []
-            cropEditing = false
             refreshStackPlan()
             return
         }
@@ -2318,12 +2382,11 @@ final class AppModel {
         adjustments = pic.adjustments(layer: id)
         crop = pic.crop(layer: id)
         bypassed = []
-        cropEditing = false
     }
 
     /// A clip layer's tracks into the panels: as recorded, or one key at
     /// the first frame.
-    private func loadClipTracks(_ clip: AssetDTO, layer: String) {
+    func loadClipTracks(_ clip: AssetDTO, layer: String) {
         let a = clip.adjustKeys(layer: layer)
         clipAdjustKeys = a.isEmpty ? Keyframes(start: ImageAdjustments()) : a
         var cc = clip.cropKeys(layer: layer)
@@ -2421,6 +2484,84 @@ final class AppModel {
     func layersChanged() {
         reloadAssets()
         if clipOnStage { refreshStackPlan() } else { recomposite() }
+    }
+
+    // MARK: Layer folders (DESIGN §6a)
+
+    /// The stack's folders.
+    var stageLayerFolders: [LayerFolderDTO] { stageStack?.layerFolders ?? [] }
+
+    func layerFolderName(_ id: String) -> String {
+        stageLayerFolders.first { $0.id == id }?.name ?? ""
+    }
+
+    /// The selected layers -- several ⌘-clicked, else the one selected --
+    /// in a new folder, where the topmost of them is.
+    func groupSelectedLayers() {
+        guard let core, let projectId, let stack = stageStack else { return }
+        let ids = selectedLayers.count > 1 ? Array(selectedLayers)
+                                           : [activeLayer]
+        let n = String(stageLayerFolders.count + 1)
+        let r = core.layerOp(project: projectId,
+                             asset: composedTarget(stack.id), "group",
+                             extra: ["layers": ids,
+                                     "name": String(localized: "Folder \(n)")])
+        if !r.ok { flash(r.message) }
+        layersChanged()
+    }
+
+    func ungroupLayers(_ folder: String) {
+        layerOp("ungroup", "", ["folder": folder])
+    }
+
+    func renameLayerFolder(_ folder: String, _ name: String) {
+        layerOp("folder-rename", "", ["folder": folder, "name": name])
+    }
+
+    /// Every layer of the folder shown or hidden.
+    func setFolderVisible(_ folder: String, _ visible: Bool) {
+        layerOp(visible ? "folder-show" : "folder-hide", "",
+                ["folder": folder])
+    }
+
+    /// Layers moved to lie right above `above` (nil: at the bottom), in
+    /// `folder` ("": in none) -- a drag in the Layers section or the
+    /// timeline's headers.
+    func placeLayers(_ ids: [String], above: String?, folder: String) {
+        var extra: [String: Any] = ["layers": ids, "folder": folder]
+        if let above { extra["above"] = above }
+        layerOp("place", "", extra)
+    }
+
+    /// A folder folded shut (its layers out of sight), or open.
+    func isFolderFolded(_ folder: String) -> Bool {
+        foldedLayerFolders.contains("\(stageStack?.id ?? "")/\(folder)")
+    }
+
+    func toggleFolderFolded(_ folder: String) {
+        let k = "\(stageStack?.id ?? "")/\(folder)"
+        withAnimation(Self.motion) {
+            if foldedLayerFolders.contains(k) {
+                foldedLayerFolders.remove(k)
+            } else {
+                foldedLayerFolders.insert(k)
+            }
+        }
+    }
+
+    /// What a drag of a layer's row carries: this, and its id (a clip's
+    /// layer has no file to carry); a still's carries its file, matched
+    /// back to it here.
+    static let layerPrefix = "valtz-layer:"
+    @ObservationIgnored var layerDrag: (id: String, url: URL?)?
+
+    /// The layer a drop carries: by its marker, or its file.
+    func draggedLayer(text: String? = nil, url: URL? = nil) -> String? {
+        if let t = text, t.hasPrefix(Self.layerPrefix) {
+            return String(t.dropFirst(Self.layerPrefix.count))
+        }
+        if let url, let d = layerDrag, d.url == url { return d.id }
+        return nil
     }
 
     /// A picture or a clip dropped on a layer: what it shows from now on
@@ -2610,6 +2751,8 @@ final class AppModel {
         let layer = activeLayer
         let id = clip.id
         let firstPoster = stackPlayback == nil
+        // The markup objects being edited are drawn live, over it.
+        let hidden = markupOpen ? markup.selectedIds : []
         Task { @MainActor [weak self] in
             let made = await Task.detached {
                 let live = look.map {
@@ -2618,7 +2761,7 @@ final class AppModel {
                      crop: $0.crop.json(rate: rate) as Any)
                 }
                 return core.stackPlan(project: projectId, asset: id,
-                                      live: live)
+                                      live: live, hidden: hidden)
             }.value
             guard let self else {
                 if let made { core.releaseStackPlan(made.plan) }
@@ -2639,6 +2782,8 @@ final class AppModel {
                 self.refreshStackPlan()
             } else {
                 self.placeOnTrimSource()
+                // A stroke painted into it is in the frames now.
+                if made != nil { self.markupComposited() }
             }
         }
     }
@@ -4263,6 +4408,8 @@ final class AppModel {
     func toggleBase(_ id: UUID) {
         guard let i = promptAttachments.firstIndex(where: { $0.id == id }),
               promptAttachments[i].kind == "image" else { return }
+        // The suggestion taken (or the base chosen another way): it goes.
+        baseHint = nil
         var list = promptAttachments
         if list[i].isBase {
             list[i].isBase = false
@@ -5601,7 +5748,7 @@ final class AppModel {
     var stageCropPlacement: CropPlacement? {
         // A stack's crops are drawn into its composite.
         guard stageCropSubjectShown, !stageComposed,
-              crop != CropSpec() || cropEditing,
+              crop != CropSpec(),
               let a = stage.a, let core else { return nil }
         var spec = shownCrop
         if spec.contentWidth == 0 {
@@ -5637,59 +5784,34 @@ final class AppModel {
         crop = c
     }
 
-    /// The zoom tools: the picture larger or smaller on its canvas.
-    func cropZoom(by factor: Double) {
-        changeCrop {
-            $0.scaleX *= factor
-            $0.scaleY *= factor
-        }
-    }
-
-    /// The picture's own pixels on the canvas (1:1).
-    func cropActualSize() {
-        changeCrop {
-            $0.scaleX = 1
-            $0.scaleY = 1
-        }
-    }
-
-    /// All of the picture on the canvas, turned as it is, centred.
-    func cropFit() {
-        let rotate = crop.rotate
-        changeCrop { c in
-            let w = Double(c.contentWidth), h = Double(c.contentHeight)
-            let canvas = self.cropCanvas(c)
-            let t = rotate * .pi / 180
-            let bw = w * abs(cos(t)) + h * abs(sin(t))
-            let bh = w * abs(sin(t)) + h * abs(cos(t))
-            guard bw > 0, bh > 0 else { return }
-            let s = min(canvas.width / bw, canvas.height / bh)
-            c.scaleX = s
-            c.scaleY = s
-            c.offsetX = 0
-            c.offsetY = 0
-        }
-    }
-
-    /// A drag on the stage, in canvas pixels (y down): the picture moves
-    /// with it.
-    func cropPan(dx: Double, dy: Double) {
-        changeCrop { c in
-            let canvas = self.cropCanvas(c)
-            guard canvas.width > 0, canvas.height > 0 else { return }
-            c.offsetX += dx / canvas.width
-            c.offsetY += dy / canvas.height
-        }
-    }
-
-    /// The placement's text boxes: one value, relative to the frame.
+    /// The placement's text boxes: one value, relative to the frame. A
+    /// zoom with X and Y locked takes the other along, their ratio kept.
     func setCropPlacement(_ field: CropField, _ v: Double) {
         changeCrop { c in
             switch field {
             case .offsetX: c.offsetX = v
             case .offsetY: c.offsetY = v
-            case .scaleX: c.scaleX = v
-            case .scaleY: c.scaleY = v
+            case .scaleX:
+                if cropZoomLocked, c.scaleX > 0 { c.scaleY *= v / c.scaleX }
+                c.scaleX = v
+            case .scaleY:
+                if cropZoomLocked, c.scaleY > 0 { c.scaleX *= v / c.scaleY }
+                c.scaleY = v
+            }
+        }
+    }
+
+    /// A jog on the Crop card: an offset moved by `d` frame widths (or
+    /// heights); a zoom by a factor of e^`d` -- both, locked.
+    func nudgeCropPlacement(_ field: CropField, by d: Double) {
+        changeCrop { c in
+            switch field {
+            case .offsetX: c.offsetX = min(10, max(-10, c.offsetX + d))
+            case .offsetY: c.offsetY = min(10, max(-10, c.offsetY + d))
+            case .scaleX, .scaleY:
+                let k = exp(d)
+                if cropZoomLocked || field == .scaleX { c.scaleX *= k }
+                if cropZoomLocked || field == .scaleY { c.scaleY *= k }
             }
         }
     }
@@ -5828,6 +5950,9 @@ final class AppModel {
             return stageFrameRate
         }
         if let r = c.time(of: activeLayer).rate { return r }
+        // A composition of sound marks everything in milliseconds -- a
+        // clip there is its sound.
+        if c.kind == "audio" { return .milliseconds }
         guard let src = c.layers?.first(where: { $0.id == activeLayer })
                 .flatMap({ source(of: $0) }) else { return stageFrameRate }
         if src.kind == "audio" { return .milliseconds }
@@ -5837,7 +5962,7 @@ final class AppModel {
 
     /// The selected layer's time into the panel: its marks and start, its
     /// speed and sound.
-    private func loadTrim(_ clip: AssetDTO) {
+    func loadTrim(_ clip: AssetDTO) {
         let layer = activeLayer
         let t = clip.isComposition ? clip.time(of: layer) : LayerTimeDTO()
         trim = t.marks
@@ -5940,7 +6065,10 @@ final class AppModel {
     /// millisecond), its sound heard at each: handled -- true -- or left
     /// to go on (text, a list, another window keep their arrows).
     func trimKey(_ e: NSEvent) -> Bool {
-        guard openPanel == .trim, clipOnStage, let w = e.window,
+        // The timeline steps too: a clip's frames, a still's pages.
+        let timeline = timelineOpen && (clipOnStage || pagedOnStage)
+        guard (openPanel == .trim && clipOnStage) || timeline,
+              let w = e.window,
               !(w is NSPanel), editorWindow == nil || w === editorWindow
         else { return false }
         let fr = w.firstResponder
@@ -5951,7 +6079,7 @@ final class AppModel {
         guard mods.subtracting([.shift, .option]).isEmpty,
               e.keyCode == 123 || e.keyCode == 124 else { return false }
         let n = mods.contains(.shift) ? 10 : 1
-        stepVideo(e.keyCode == 123 ? -n : n)
+        timelineStep(e.keyCode == 123 ? -n : n)
         return true
     }
 
@@ -6432,8 +6560,13 @@ final class AppModel {
             putOnStage(a)
             return
         }
-        if clipOnStage, a.kind == "video" {
+        // A clip's -- or a composition of sound's -- layers, tracks and
+        // times as they now are: the panels hold them again (a mark or a
+        // start held from before would be written back over the undo),
+        // the player its new plan.
+        if clipOnStage, a.kind == "video" || a.isTimeline {
             loadClipTracks(a, layer: activeLayer)
+            if a.isComposition { loadTrim(a) }
             refreshStackPlan()
             return
         }
@@ -6481,11 +6614,10 @@ final class AppModel {
         panel.title = String(localized: "Save Project")
         panel.nameFieldStringValue = windowTitle + ".valtz"
         panel.allowedContentTypes = [.valtzProject]
-        if !isAnonymous, !projectPath.isEmpty {
-            panel.directoryURL = URL(fileURLWithPath: projectPath)
-                .deletingLastPathComponent()
-        }
+        // Where projects were last opened or saved.
+        panel.directoryURL = panelFolder(.project)
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        rememberPanel(.project, chose: url)
         _ = save(as: url)
     }
 
@@ -6534,14 +6666,20 @@ final class AppModel {
         syncAfterHistory()
     }
 
-    /// Before the project goes (another opened, a quit): its unsaved
-    /// changes saved, or thrown away -- or the person cancels (false). The
-    /// anonymous session is private and goes without asking.
+    /// Before the project goes (another opened, a new one, a quit): its
+    /// unsaved changes saved, or thrown away -- or the person cancels
+    /// (false). The ANONYMOUS session is deleted when it goes, so one
+    /// holding anything -- an asset, a change -- asks too: saved (Save
+    /// As: named, it is kept), deleted, or kept open. It went without a
+    /// word before, and a session's work with it.
     func confirmClose() -> Bool {
         discardOnClose = false
-        guard document.dirty, !isAnonymous, projectId != nil else {
-            return true
+        guard projectId != nil else { return true }
+        if isAnonymous {
+            return confirmCloseAnonymous(
+                String(localized: "Your work in it will be lost: an anonymous project is deleted when it closes, with everything in it — its results, imports and history — unless you save it."))
         }
+        guard document.dirty else { return true }
         // A scripted run keeps what it did, as before files were saved.
         if ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] != nil {
             saveDocument()
@@ -6559,6 +6697,46 @@ final class AppModel {
             return !document.dirty
         case .alertSecondButtonReturn:
             discardOnClose = true
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// The anonymous session asked about before it goes, when it holds
+    /// anything: Save… (Save As; cancelled there, nothing closes), Don't
+    /// Save (deleted), Cancel. `info` says what goes. A scripted run takes
+    /// VALTZ_SNAPSHOT_CLOSE's answer -- "save:<path>", "discard",
+    /// "cancel" -- and without one lets it go, as before.
+    func confirmCloseAnonymous(_ info: String) -> Bool {
+        guard isAnonymous, !assets.isEmpty || document.dirty else {
+            return true
+        }
+        let title = String(localized: "Do you want to save the anonymous project “\(windowTitle)”?")
+        let env = ProcessInfo.processInfo.environment
+        if env["VALTZ_SNAPSHOT"] != nil {
+            let answer = env["VALTZ_SNAPSHOT_CLOSE"] ?? "discard"
+            print("snapshot: close-alert title=\(title) answer=\(answer) assets=\(assets.count) dirty=\(document.dirty)")
+            if answer.hasPrefix("save:") {
+                return save(as: URL(fileURLWithPath:
+                    String(answer.dropFirst(5))))
+            }
+            return answer != "cancel"
+        }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = info
+        alert.addButton(withTitle: String(localized: "Save…"))
+        let dont = alert.addButton(withTitle: String(localized: "Don't Save"))
+        dont.hasDestructiveAction = true
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            saveDocumentAs()
+            // Named now: it is kept. The save panel cancelled: still
+            // anonymous, and nothing closes.
+            return !isAnonymous
+        case .alertSecondButtonReturn:
             return true
         default:
             return false
@@ -6913,19 +7091,12 @@ final class AppModel {
             return
         }
         if isAnonymous {
-            if sessionHasWork,
-               ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] == nil {
-                let alert = NSAlert()
-                alert.messageText = String(localized: "Start a new anonymous project?")
-                alert.informativeText = String(localized: "Everything in this one will be deleted. To keep it, use Save As first.")
-                alert.addButton(withTitle: String(localized: "Start New"))
-                alert.addButton(withTitle: String(localized: "Cancel"))
-                guard alert.runModal() == .alertFirstButtonReturn else {
-                    return
-                }
+            guard confirmCloseAnonymous(String(localized: "A new one starts in its place, and this one is deleted with everything in it — its results, imports and history — unless you save it.")) else { return }
+            // Saved: it is a named project now, and closes as one.
+            if isAnonymous {
+                startOver()
+                return
             }
-            startOver()
-            return
         }
         guard confirmClose() else { return }
         if let before = projectId {
@@ -6938,6 +7109,8 @@ final class AppModel {
     }
 
     private func resetSession() {
+        // An anonymous session's attachment and export folders go with it.
+        sessionPanelFolders = [:]
         // The prompt, with its inline media, and the prompt asset it was.
         prompt = ""
         promptAssetId = nil
@@ -6971,7 +7144,6 @@ final class AppModel {
         adjustTask?.cancel()
         adjustments = ImageAdjustments()
         crop = CropSpec()
-        cropEditing = false
         baseCrops = [:]
         trim = TrimSpec()
         videoFrame = 0
@@ -7095,6 +7267,14 @@ final class AppModel {
         case "layer.merge": String(localized: "Merge Layers")
         case "layer.mask": String(localized: "Use as Mask")
         case "layer.unmask": String(localized: "Release Mask")
+        case "layer.split": String(localized: "Cut Clip")
+        case "layer.slide": String(localized: "Move Clip")
+        case "layer.stretch": String(localized: "Stretch")
+        case "transcribe": String(localized: "Transcribe")
+        case "layer.group": String(localized: "Group Layers")
+        case "layer.ungroup": String(localized: "Ungroup Layers")
+        case "layer.folder-rename": String(localized: "Rename Layer Folder")
+        case "layer.place": String(localized: "Move Layer")
         case "markup.layer": String(localized: "Markup Layer")
         case "markup.paint": String(localized: "Paint")
         case "markup.objects": String(localized: "Markup")
@@ -7452,6 +7632,10 @@ final class AppModel {
 
     func handle(_ ev: CoreEvent) {
         let p = ev.payload
+        if ev.kind.hasPrefix("fleet.") || ev.kind == "job.runner" {
+            handleFleet(ev)
+            return
+        }
         switch ev.kind {
         case "log":
             note(p["level"] as? String ?? "info",
@@ -7847,7 +8031,6 @@ final class AppModel {
         adjustTask?.cancel()
         adjustments = asset.adjustments(layer: "")
         crop = asset.crop(layer: "")
-        cropEditing = false
         if !adjustments.isIdentity && (asset.layers ?? []).isEmpty
             && asset.canvas == nil {
             redrawAdjusted()
@@ -7937,7 +8120,6 @@ final class AppModel {
         adjustTask?.cancel()
         adjustments = ImageAdjustments()
         crop = CropSpec()
-        cropEditing = false
         videoFrame = 0
         // Its look: the tracks it carries, or one key at its first frame.
         if !asset.layerStack.contains(where: { $0.id == selectedLayer }) {

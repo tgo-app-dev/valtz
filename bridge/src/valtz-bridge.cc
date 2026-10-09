@@ -4,11 +4,13 @@
 #include "valtz/base/text.h"
 #include "valtz/controller/controller.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <format>
 #include <mutex>
+#include <set>
 
 namespace valtz::bridge {
 
@@ -163,6 +165,10 @@ Core::create(const std::string& config_json)
     if (j.is_object()) {
       cfg.with_engine = jget(j, "with_engine", true);
       cfg.language = jget<std::string>(j, "language", "");
+      // A member of a fleet (DESIGN §11); "fleet_config": where its
+      // configuration is kept, empty the standard place.
+      cfg.fleet = jget(j, "fleet", false);
+      cfg.fleet_config = jget<std::string>(j, "fleet_config", "");
       for (const auto& r : jget(j, "model_roots",
                                 std::vector<std::string>{})) {
         cfg.model_roots.emplace_back(r);
@@ -252,6 +258,55 @@ Core::unlink_model(const std::string& request_json)
     }
     auto st = _impl->ctl->unlink_model(jget<std::string>(*j, "model", ""));
     return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::fleet_status() const
+{
+  return guarded([&] { return ok(_impl->ctl->fleet_status()); });
+}
+
+std::string
+Core::fleet_configure(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->fleet_configure(*j);
+    return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::fleet_browse(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    _impl->ctl->fleet_browse(jget(*j, "on", false));
+    return ok();
+  });
+}
+
+std::string
+Core::fleet_answer(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto id = JobId::parse(jget<std::string>(*j, "job", ""));
+    if (!id) {
+      return err(Code::InvalidArgument, "bad job id");
+    }
+    _impl->ctl->fleet_answer(*id, jget(*j, "accept", false));
+    return ok();
   });
 }
 
@@ -735,12 +790,14 @@ Core::assets_json(const std::string& project_id) const
         j["link_state"] = chk.ok() ? project::to_str(chk->state) : "missing";
         j.erase("link");  // the bookmark is of no use to the UI
       }
-      // A prompt: its words (tags and all), and how much it has made --
-      // once anything, it is kept as it is.
-      if (Controller::is_prompt(a)) {
+      // A text: its words -- a prompt's tags and all, and how much it
+      // has made (once anything, it is kept as it is).
+      if (a.kind == project::AssetKind::Text && a.head > 0) {
         if (auto t = p->read_text(a.id); t.ok()) {
           j["text"] = std::string(utf8_prefix(*t, 65536));
         }
+      }
+      if (Controller::is_prompt(a)) {
         auto deps = p->dependents(a.id, false);
         j["uses"] = deps.ok() ? deps->size() : 0;
       }
@@ -865,6 +922,15 @@ Core::asset_op(const std::string& request_json)
       return *placed ? ok({{"asset", (*placed)->str()}, {"placed", true}})
                      : ok({{"placed", false}});
     }
+    if (op == "transcribe") {
+      // A sound -- a clip's -- transcribed into a text asset (DESIGN §4h).
+      auto made = c.transcribe(*pid, *aid,
+                               jget<std::string>(*j, "model", ""),
+                               jget<std::string>(*j, "language", ""));
+      return made.ok() ? ok({{"asset", made->first.str()},
+                             {"job", made->second.str()}})
+                       : err(made.error());
+    }
     if (op == "instantiate") {
       std::optional<AssetId> onto;
       if (!jget<std::string>(*j, "onto", "").empty()) {
@@ -879,8 +945,11 @@ Core::asset_op(const std::string& request_json)
       if (j->contains("at")) {
         at = jget<std::string>(*j, "at", "");
       }
+      // "new_layer": a drop on the timeline -- always a layer of its own,
+      // where it was put.
       auto put = c.instantiate(*pid, *aid, onto, at,
-                               jget<std::int64_t>(*j, "offset", 0));
+                               jget<std::int64_t>(*j, "offset", 0),
+                               !jget(*j, "new_layer", false));
       return put.ok() ? ok({{"asset", put->first.str()},
                             {"layer", put->second}})
                       : err(put.error());
@@ -1429,7 +1498,14 @@ Core::stack_plan(const std::string& request_json)
                                                   Json::object())),
           media::keyed_crop_from_json(jget(l, "crop", Json::object()))};
     }
-    auto stack = _impl->ctl->movie_stack(*pid, *aid, false, live);
+    // The markup objects being edited: drawn by the app, over it.
+    std::set<std::string> hidden;
+    for (const auto& h : jget(*j, "hidden", Json::array())) {
+      if (h.is_string()) {
+        hidden.insert(h.get<std::string>());
+      }
+    }
+    auto stack = _impl->ctl->movie_stack(*pid, *aid, false, live, hidden);
     if (!stack.ok()) {
       return err(stack.error());
     }
@@ -1444,6 +1520,24 @@ Core::stack_plan(const std::string& request_json)
     }
     const double fps = rate.to_double();
     const double end = sound->seconds;
+    // Each layer where it lies in time (the timeline draws them): its
+    // span in timeline seconds, its source's there, what it is, its file
+    // (a sound's waveform). Forever is -1.
+    Json spans = Json::array();
+    for (const auto& l : stack->layers) {
+      const auto& t = l.timing;
+      const auto fin = [](double v) { return std::isfinite(v) ? v : -1.0; };
+      spans.push_back({{"id", l.id},
+                       {"start", t.start},
+                       {"length", fin(t.length)},
+                       {"in", t.in},
+                       {"out", fin(t.timed && std::isfinite(t.length)
+                                       ? t.source_at(t.end()) : t.out)},
+                       {"timed", t.timed},
+                       {"video", l.video},
+                       {"audio_only", l.audio_only},
+                       {"file", l.file.string()}});
+    }
     Json segs = Json::array();
     for (const auto& l : stack->layers) {
       if (!l.video) {
@@ -1493,7 +1587,7 @@ Core::stack_plan(const std::string& request_json)
                  {"frames", n.ok() ? *n : 0}, {"rate_num", rate.num},
                  {"rate_den", rate.den}, {"clips", Json::array()},
                  {"segments", Json::array()}, {"audio", audio},
-                 {"mix", mix}, {"seconds", end}});
+                 {"mix", mix}, {"seconds", end}, {"layers", spans}});
     }
     auto r = media::StackRenderer::make(std::move(*stack), rate);
     if (!r.ok()) {
@@ -1516,7 +1610,7 @@ Core::stack_plan(const std::string& request_json)
                {"height", size.height}, {"frames", frames},
                {"rate_num", rate.num}, {"rate_den", rate.den},
                {"clips", clips}, {"segments", segs}, {"audio", audio},
-               {"mix", mix}, {"seconds", end}});
+               {"mix", mix}, {"seconds", end}, {"layers", spans}});
   });
 }
 
@@ -1656,9 +1750,52 @@ Core::layer_op(const std::string& request_json)
       return out;
     };
     if (op == "markup-target") {
+      // A still's page, or a timeline's frame.
+      std::optional<std::int64_t> at = page;
+      if (j->contains("frame")) {
+        at = jget<std::int64_t>(*j, "frame", 0);
+      }
       auto r = c.markup_layer(*pid, *aid,
-                              strings(jget(*j, "selected", Json())), page);
+                              strings(jget(*j, "selected", Json())), at);
       return r.ok() ? ok({{"layer", *r}}) : err(r.error());
+    }
+    // Layer folders: "group" {"layers", "name"} -> {"folder"}; "ungroup",
+    // "folder-rename" {"name"}, "folder-show" / "folder-hide" {"folder"};
+    // "place" {"layers", "above" (none: the bottom), "folder"}.
+    const auto folder = jget<std::string>(*j, "folder", "");
+    if (op == "group") {
+      auto r = c.group_layers(*pid, *aid, strings(jget(*j, "layers", Json())),
+                              jget<std::string>(*j, "name", ""));
+      return r.ok() ? ok({{"folder", *r}}) : err(r.error());
+    }
+    if (op == "ungroup" || op == "folder-rename" || op == "folder-show" ||
+        op == "folder-hide" || op == "place") {
+      Status fst = ok_status();
+      if (op == "ungroup") {
+        fst = c.ungroup_layers(*pid, *aid, folder);
+      } else if (op == "folder-rename") {
+        fst = c.rename_layer_folder(*pid, *aid, folder,
+                                    jget<std::string>(*j, "name", ""));
+      } else if (op == "place") {
+        std::optional<std::string> above;
+        if (j->contains("above")) {
+          above = jget<std::string>(*j, "above", "");
+        }
+        fst = c.place_layers(*pid, *aid, strings(jget(*j, "layers", Json())),
+                             above, folder);
+      } else {
+        fst = c.set_folder_visible(*pid, *aid, folder, op == "folder-show");
+      }
+      return fst.ok() ? ok() : err(fst.error());
+    }
+    if (op == "split") {
+      // The timeline's scissors: at timeline frame "frame".
+      auto r = c.split_layer(*pid, *aid, layer,
+                             jget<std::int64_t>(*j, "frame", 0));
+      return r.ok() ? ok({{"layer", r->layer},
+                          {"first", r->first.str()},
+                          {"second", r->second.str()}})
+                    : err(r.error());
     }
     if (op == "canvas") {
       auto r = c.canvas_size(*pid, *aid);
@@ -1709,6 +1846,12 @@ Core::layer_op(const std::string& request_json)
       st = c.set_layer_mask(*pid, *aid, layer, op == "mask");
     } else if (op == "decompose") {
       st = c.decompose(*pid, *aid, layer);
+    } else if (op == "slide") {
+      st = c.slide_layer(*pid, *aid, layer,
+                         jget<std::int64_t>(*j, "offset", 0));
+    } else if (op == "stretch") {
+      st = c.stretch_layer(*pid, *aid, layer,
+                           jget<std::int64_t>(*j, "length", 1));
     } else if (op == "flatten") {
       // The layer's composition made flat, in its place (Flatten First).
       auto made = c.flatten_layer(*pid, *aid, layer);

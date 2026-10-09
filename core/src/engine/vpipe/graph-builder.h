@@ -166,6 +166,10 @@ struct BuiltGraph {
   std::string           text_sink;     // streamed text chunks
   std::string           result_sink;   // the final text result
   std::string           score_sink;    // a song's score (ABC text)
+  // A sound transcribed (DESIGN §4h): its lines of speech, and the
+  // tagger's windows of sound events.
+  std::string           transcript_sink;
+  std::string           events_sink;
   std::filesystem::path output;        // file the graph writes
   // A still's pages exported (DESIGN §6a): every file, `output` the
   // first; empty for anything else.
@@ -251,6 +255,11 @@ Result<BuiltGraph> build_speech(const JobSpec&);
 // "output" ("bits", "group_size").
 Result<BuiltGraph> build_quantize_model(const JobSpec&);
 Result<BuiltGraph> build_chat(const JobSpec&);
+// A sound TRANSCRIBED (DESIGN §4h) from `wav` -- one channel at 16 kHz,
+// the engine's (media::mono_sound): its speech line by line, and its
+// sound events when the job names a tagger.
+Result<BuiltGraph> build_transcribe(const JobSpec&,
+                                    const std::filesystem::path& wav);
 Result<BuiltGraph> build_fetch_model(const JobSpec&);
 // export-media: the job's one input file read by vpipe's own Apple-native
 // readers and written by its writers -- a still through load-image (F16,

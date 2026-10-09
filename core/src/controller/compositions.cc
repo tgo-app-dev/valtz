@@ -555,7 +555,14 @@ Controller::check_source_(project::Project& p, const project::Asset& comp,
       return make_error(Code::InvalidArgument, msg::kLayerSourceKind);
     }
   } else if (comp.kind == AssetKind::Audio && !sound_like(src)) {
-    return make_error(Code::InvalidArgument, msg::kSoundOnlyComposition);
+    // A clip's sound: what a composition of sound takes of a clip.
+    if (!clip_like(src)) {
+      return make_error(Code::InvalidArgument, msg::kSoundOnlyComposition);
+    }
+    if (!sounds_(p, src, 0)) {
+      return make_error(Code::InvalidArgument, msg::kClipHasNoSound,
+                        {{"name", src.name}});
+    }
   }
   // Never itself, nor anything that shows it.
   if (src.id == comp.id) {
@@ -609,6 +616,10 @@ Controller::add_layer(ProjectId pid, AssetId aid, const std::string& above,
   }
   const std::string id = added.id;
   auto at = find_layer(ls, above);
+  // Above a layer in a folder: in it too.
+  if (at != ls.end()) {
+    added.folder = at->folder;
+  }
   ls.insert(at == ls.end() ? ls.end() : at + 1, std::move(added));
   VALTZ_TRY(p->set_layers(aid, std::move(ls)));
   post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
@@ -719,18 +730,30 @@ Controller::set_layer_source(ProjectId pid, AssetId aid,
   }
   // A clip dropped on a blank layer of a timeline: after what is there.
   const bool append = !job && !it->source && sequenced_(a, src);
+  bool was_still = false;
+  if (it->source) {
+    auto old = p->asset(*it->source);
+    was_still = old.ok() && old->kind == AssetKind::Image;
+  }
   // What it shows now: marks were the old one's; where it starts stays.
   it->source = source;
   it->source_version = 0;
   it->time.in = -1;
   it->time.out = -1;
   it->time.rate = {0, 1};
+  // On a timeline a still's length is its own -- a second, unless it has
+  // one -- and a clip's its marks': a still's length is not a clip's.
+  const bool still = is_timeline(a) && src.kind == AssetKind::Image;
   if (append) {
     VALTZ_ASSIGN(it->time.offset, content_end_(pid, aid));
     it->time.duration = 0;
+  } else if (still && it->time.duration <= 0) {
+    it->time.duration = second_of_(rate_of_(*p, a));
+  } else if (is_timeline(a) && !still && was_still) {
+    it->time.duration = 0;
   }
   VALTZ_TRY(p->set_layers(aid, std::move(ls)));
-  if (append) {
+  if (append || still) {
     VALTZ_TRY(grow_to_content_(pid, *p, aid));
   }
   post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
@@ -1404,6 +1427,7 @@ Controller::markup_layer(ProjectId pid, AssetId aid,
                          const std::vector<std::string>& selected,
                          std::optional<std::int64_t> page)
 {
+  // `page`: a still's page, or a timeline's frame.
   auto undo = command_(pid, "markup.layer", aid);
   project::Project* p = project(pid);
   if (!p) {
@@ -1416,11 +1440,21 @@ Controller::markup_layer(ProjectId pid, AssetId aid,
   VALTZ_ASSIGN(media::PixelSize frame, own_frame_(*p, a, 0));
   auto ls = a.layers;
   // A still with pages draws on the page shown: a layer elsewhere is not
-  // drawn on, and a new one is that page's alone.
+  // drawn on, and a new one is that page's alone. A timeline draws at the
+  // player's frame: on a still showing there; a new one runs a second.
   const bool pages = paged(a) && page.has_value();
+  const bool timed = is_timeline(a) && page.has_value();
   const std::int64_t at =
-      pages ? std::clamp<std::int64_t>(*page, 0, a.pages - 1) : 0;
+      pages ? std::clamp<std::int64_t>(*page, 0, a.pages - 1)
+      : timed ? std::max<std::int64_t>(0, *page) : 0;
+  const std::int64_t second = second_of_(rate_of_(*p, a));
   auto here = [&](const project::Layer& l) {
+    if (timed) {
+      // A markup or a blank: from its start, for its length (a blank's
+      // none: on to the end).
+      return l.time.offset <= at &&
+             (l.time.duration <= 0 || at < l.time.offset + l.time.duration);
+    }
     return !pages || on_page(l.time, at, a.pages);
   };
   auto shows_markup = [&](const project::Layer& l) {
@@ -1461,6 +1495,11 @@ Controller::markup_layer(ProjectId pid, AssetId aid,
   if (top >= 0 && ls[top].empty() && here(ls[top])) {
     VALTZ_ASSIGN(AssetId m, new_markup());
     ls[top].source = m;
+    // A blank that ran on to the end: a still's second, from here.
+    if (timed && ls[top].time.duration <= 0) {
+      ls[top].time.offset = at;
+      ls[top].time.duration = second;
+    }
     id = ls[top].id;
     changed = true;
   } else if (top >= 0 && shows_markup(ls[top])) {
@@ -1475,6 +1514,9 @@ Controller::markup_layer(ProjectId pid, AssetId aid,
     if (pages) {
       l.time.offset = at;
       l.time.duration = 1;
+    } else if (timed) {
+      l.time.offset = at;
+      l.time.duration = second;
     }
     id = l.id;
     ls.push_back(std::move(l));
@@ -1482,6 +1524,9 @@ Controller::markup_layer(ProjectId pid, AssetId aid,
   }
   if (changed) {
     VALTZ_TRY(p->set_layers(aid, std::move(ls)));
+    if (timed) {
+      VALTZ_TRY(grow_to_content_(pid, *p, aid));
+    }
     post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
                                       {"reason", "layers"}});
   }
@@ -1958,15 +2003,24 @@ Controller::flatten_surface(ProjectId pid, AssetId aid,
 
 Result<media::MovieStack>
 Controller::movie_stack(ProjectId pid, AssetId aid, bool for_job,
-                        const std::optional<LiveTracks>& live)
+                        const std::optional<LiveTracks>& live,
+                        const std::set<std::string>& hidden)
 {
-  return movie_stack_(pid, aid, for_job, live, 0);
+  return movie_stack_(pid, aid, for_job, live, 0, hidden);
+}
+
+std::int64_t
+Controller::second_of_(Rational rate)
+{
+  const double fps = rate.num > 0 ? rate.to_double() : 24.0;
+  return std::max<std::int64_t>(1, std::llround(fps));
 }
 
 Result<Controller::TimedSource>
 Controller::timed_source_(ProjectId pid, project::Project& p,
                           const project::Layer& l, bool for_job,
-                          media::PixelSize frame, int depth)
+                          media::PixelSize frame, int depth, bool sound_only,
+                          const std::set<std::string>& hidden)
 {
   TimedSource t;
   if (!l.source) {
@@ -1987,7 +2041,7 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
       VALTZ_ASSIGN(t.file, rendered_(pid, s.id, 0, depth + 1));
     } else {
       VALTZ_ASSIGN(t.drawn, media::render_markup_picture(
-                                raster, size, mk.objects, {}));
+                                raster, size, mk.objects, hidden));
     }
     return t;
   }
@@ -1998,20 +2052,30 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
                                         depth + 1));
     return t;
   }
+  // A clip in a composition of sound gives its sound alone, marked in
+  // milliseconds as any sound there is.
+  const bool clip_sound = sound_only && s.kind == AssetKind::Video;
   if (s.cls == AssetClass::Composition) {
-    VALTZ_ASSIGN(t.file, rendered_(pid, s.id, 0, depth + 1));
-    t.video = s.kind == AssetKind::Video;
-    t.audio_only = s.kind == AssetKind::Audio;
     const Rational r = rate_of_(p, s);
     VALTZ_ASSIGN(std::int64_t n, length_of_(pid, s.id, depth + 1));
     t.seconds = static_cast<double>(n) / r.to_double();
+    if (clip_sound) {
+      // Its mix, not the movie: nothing of its picture is drawn.
+      VALTZ_ASSIGN(t.file, mixed_(pid, s.id, depth + 1));
+      t.audio_only = true;
+      t.mark_rate = {1000, 1};
+      return t;
+    }
+    VALTZ_ASSIGN(t.file, rendered_(pid, s.id, 0, depth + 1));
+    t.video = s.kind == AssetKind::Video;
+    t.audio_only = s.kind == AssetKind::Audio;
     t.mark_rate = r;
     return t;
   }
   VALTZ_ASSIGN(t.file, p.media_path(s.id, l.source_version));
   VALTZ_ASSIGN(project::AssetVersion v, p.version(s.id, l.source_version));
-  t.video = s.kind == AssetKind::Video;
-  t.audio_only = s.kind == AssetKind::Audio;
+  t.video = s.kind == AssetKind::Video && !clip_sound;
+  t.audio_only = s.kind == AssetKind::Audio || clip_sound;
   if (t.video || t.audio_only) {
     t.seconds = seconds_of(v);
     t.mark_rate = t.video && v.info.frame_rate.num > 0
@@ -2057,7 +2121,8 @@ Controller::length_of_(ProjectId pid, AssetId aid, int depth)
 
 Result<media::MovieStack>
 Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
-                         const std::optional<LiveTracks>& live, int depth)
+                         const std::optional<LiveTracks>& live, int depth,
+                         const std::set<std::string>& hidden)
 {
   project::Project* p = project(pid);
   if (!p) {
@@ -2083,6 +2148,7 @@ Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
   std::map<std::string, std::size_t> index;
   for (const auto& l : a.layers) {
     media::MovieLayer ml;
+    ml.id = l.id;
     ml.visible = l.visible;
     ml.mask = l.mask;
     if (live && live->layer == l.id) {
@@ -2092,8 +2158,9 @@ Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
       ml.adjust = adjustment_keys_of(a, l.id);
       ml.crop = crop_keys_of(a, l.id);
     }
-    VALTZ_ASSIGN(TimedSource src, timed_source_(pid, *p, l, for_job, frame,
-                                                depth));
+    VALTZ_ASSIGN(TimedSource src,
+                 timed_source_(pid, *p, l, for_job, frame, depth,
+                               a.kind == AssetKind::Audio, hidden));
     ml.file = src.file;
     ml.drawn = src.drawn;
     ml.video = src.video;
@@ -2528,7 +2595,8 @@ Controller::place_result(ProjectId pid, AssetId asset,
 Result<std::pair<AssetId, std::string>>
 Controller::instantiate(ProjectId pid, AssetId asset,
                         std::optional<AssetId> onto,
-                        std::optional<std::string> at, std::int64_t offset)
+                        std::optional<std::string> at, std::int64_t offset,
+                        bool fill_blank)
 {
   auto undo = command_(pid, "asset.instantiate", asset);
   project::Project* p = project(pid);
@@ -2562,12 +2630,14 @@ Controller::instantiate(ProjectId pid, AssetId asset,
   std::size_t pos = ls.size();
   std::string id;
   bool fill = false;
-  if (at) {
+  // A composition with no layer yet (a blank one, just made): its first,
+  // whatever layer the stage named.
+  if (at && !ls.empty()) {
     auto it = find_layer(ls, *at);
     if (it == ls.end()) {
       return make_error(Code::InvalidArgument, "no such layer");
     }
-    if (it->empty()) {
+    if (it->empty() && fill_blank) {
       fill = true;
       id = it->id;
       pos = static_cast<std::size_t>(it - ls.begin());
@@ -2583,14 +2653,27 @@ Controller::instantiate(ProjectId pid, AssetId asset,
   n.source = asset;
   // A clip in a blank layer of a timeline: after what is there.
   const bool append = fill && sequenced_(t, s);
+  // A still on a timeline runs a second from where it was put (its
+  // block's end stretches it: stretch_layer), not to the timeline's end.
+  const bool still = is_timeline(t) && s.kind == AssetKind::Image;
   if (append) {
     VALTZ_ASSIGN(n.time.offset, content_end_(pid, t.id));
   } else if (is_timeline(t)) {
     n.time.offset = std::max<std::int64_t>(0, offset);
+    if (still) {
+      n.time.duration = second_of_(rate_of_(*p, t));
+    }
   } else if (paged(t)) {
     // On the page it was put on, alone.
     n.time.offset = std::clamp<std::int64_t>(offset, 0, t.pages - 1);
     n.time.duration = 1;
+  }
+  // A new layer right above another is in its folder; a blank one filled
+  // keeps its own.
+  if (fill) {
+    n.folder = ls[pos].folder;
+  } else if (at && pos > 0) {
+    n.folder = ls[pos - 1].folder;
   }
   if (fill) {
     n.mask = ls[pos].mask;
@@ -2603,12 +2686,501 @@ Controller::instantiate(ProjectId pid, AssetId asset,
     ls.insert(ls.begin() + static_cast<std::ptrdiff_t>(pos), n);
   }
   VALTZ_TRY(p->set_layers(t.id, std::move(ls)));
-  if (append) {
+  if (append || still) {
     VALTZ_TRY(grow_to_content_(pid, *p, t.id));
   }
   post_("assets.changed", JobId{}, {{"project", pid}, {"asset", t.id},
                                     {"reason", "layers"}, {"layer", n.id}});
   return std::pair{t.id, n.id};
+}
+
+namespace {
+
+// A flat or generated clip or sound with content: what the scissors cut.
+bool
+raw_timed(const project::Asset& a)
+{
+  return (a.cls == AssetClass::Flat || a.cls == AssetClass::Generated) &&
+         (a.kind == AssetKind::Video || a.kind == AssetKind::Audio) &&
+         a.head != 0;
+}
+
+// A PART the scissors made: a timeline of one plain layer showing a raw
+// clip or sound from its start -- no look, no canvas of its own, no
+// length set -- so a cut in it is a cut in that source.
+const project::Layer*
+part_layer(project::Project& p, const project::Asset& a)
+{
+  if (!is_timeline(a) || a.layers.size() != 1 || !a.modifiers.empty() ||
+      a.canvas.set() || a.timeline_frames > 0 || !a.transitions.empty()) {
+    return nullptr;
+  }
+  const project::Layer& l = a.layers.front();
+  if (!l.source || !l.visible || l.mask || l.time.offset != 0 ||
+      l.time.duration != 0) {
+    return nullptr;
+  }
+  auto s = p.asset(*l.source);
+  return s.ok() && raw_timed(*s) ? &l : nullptr;
+}
+
+// A layer's modifier for a layer that starts where it is cut: its one
+// key, if any, at its own first frame (a track keyed once holds its
+// value along it).
+project::Modifier
+from_first_frame(project::Modifier m, const std::string& layer)
+{
+  m.layer = layer;
+  for (const char* track : {"keys", "rotate_keys"}) {
+    auto it = m.params.find(track);
+    if (it == m.params.end() || !it->is_array()) {
+      continue;
+    }
+    for (auto& k : *it) {
+      if (k.is_object() && k.contains("frame")) {
+        k["frame"] = 0;
+      }
+    }
+  }
+  return m;
+}
+
+}  // namespace
+
+Result<Controller::SplitParts>
+Controller::split_layer(ProjectId pid, AssetId aid, const std::string& layer,
+                        std::int64_t frame)
+{
+  auto undo = command_(pid, "layer.split", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset c, p->asset(aid));
+  if (!is_timeline(c)) {
+    return make_error(Code::InvalidArgument, msg::kTimelineNeedsClip);
+  }
+  auto ls = c.layers;
+  auto it = find_layer(ls, layer);
+  if (it == ls.end() || !it->source) {
+    return make_error(Code::InvalidArgument, msg::kSplitNeedsClip);
+  }
+  const project::Layer cut = *it;
+  // What it shows: a raw clip or sound, or a part of one -- and where the
+  // part's span starts in that source.
+  VALTZ_ASSIGN(project::Asset shown, p->asset(*cut.source));
+  const project::Layer* inner = part_layer(*p, shown);
+  if (!raw_timed(shown) && !inner) {
+    return make_error(Code::InvalidArgument, msg::kSplitNeedsClip);
+  }
+  const AssetId raw_id = inner ? *inner->source : shown.id;
+  const std::uint32_t raw_version =
+      inner ? inner->source_version : cut.source_version;
+  VALTZ_ASSIGN(project::Asset raw, p->asset(raw_id));
+  VALTZ_ASSIGN(project::AssetVersion rv, p->version(raw_id, raw_version));
+  // In a composition of sound a clip is its sound: its parts are sound
+  // too, marked in milliseconds as it is there.
+  const bool sound = c.kind == AssetKind::Audio;
+  const bool video = raw.kind == AssetKind::Video && !sound;
+  // The source's own frames: a clip's rate, a sound's milliseconds.
+  const Rational raw_rate = video && rv.info.frame_rate.num > 0
+                                ? rv.info.frame_rate : Rational{1000, 1};
+  const double raw_seconds = seconds_of(rv);
+  // Keyed along it, a look would have to be cut too: not yet.
+  const auto crop = crop_keys_of(c, cut.id);
+  if (adjustment_keys_of(c, cut.id).keys.size() > 1 ||
+      crop.place.keys.size() > 1 || crop.turn.keys.size() > 1 ||
+      speed_keys_of(c, cut.id).keys.size() > 1 ||
+      sound_keys_of(c, cut.id).keys.size() > 1) {
+    return make_error(Code::InvalidArgument, msg::kSplitKeyed);
+  }
+  // The layer in time, as it is drawn: in what it shows (a part: its own
+  // seconds, from where its span starts in the source).
+  double base = 0;
+  double shown_seconds = raw_seconds;
+  Rational shown_rate = raw_rate;
+  if (inner) {
+    const Rational ir = inner->time.rate.num > 0 ? inner->time.rate
+                                                 : raw_rate;
+    base = static_cast<double>(std::max<std::int64_t>(0, inner->time.in)) /
+           ir.to_double();
+    // As the stack reads its marks (timed_source_): a clip's part in a
+    // composition of sound in milliseconds.
+    shown_rate = sound && shown.kind == AssetKind::Video
+                     ? Rational{1000, 1} : rate_of_(*p, shown);
+    VALTZ_ASSIGN(std::int64_t n, length_of_(pid, shown.id, 1));
+    shown_seconds = static_cast<double>(n) / shown_rate.to_double();
+  }
+  const Rational rate = rate_of_(*p, c);
+  const double fps = rate.to_double();
+  const project::LayerTime& t = cut.time;
+  const media::LayerTiming lt = media::resolve_timing(
+      t.offset, t.duration, t.in, t.out,
+      t.rate.num > 0 ? t.rate : shown_rate, rate, shown_seconds,
+      speed_keys_of(c, cut.id));
+  const double at = static_cast<double>(frame) / fps;
+  const double eps = 1e-6;
+  if (!std::isfinite(lt.length) || at < lt.start + 1.0 / fps - eps ||
+      at > lt.end() - 1.0 / fps + eps) {
+    return make_error(Code::InvalidArgument, msg::kSplitOutside);
+  }
+  // The two spans, in the source's seconds, then its frames (a mark-out
+  // keeps its frame: the first part ends a frame before the cut).
+  const double end_s = std::min({lt.out, lt.source_at(lt.end()),
+                                 shown_seconds});
+  const double r0 = base + lt.in;
+  const double rc = base + lt.source_at(at);
+  const double r1 = base + end_s;
+  const double mr = raw_rate.to_double();
+  const std::int64_t in1 = std::llround(r0 * mr);
+  const std::int64_t in2 = std::llround(rc * mr);
+  const std::int64_t last = std::llround(raw_seconds * mr) - 1;
+  const std::int64_t out2 = std::llround(r1 * mr) - 1;
+  if (in2 <= in1 || out2 < in2) {
+    return make_error(Code::InvalidArgument, msg::kSplitOutside);
+  }
+  // The parts: compositions of one layer each, the source's frame and
+  // rate (a sound's: sound alone, in milliseconds).
+  media::PixelSize size;
+  if (video) {
+    VALTZ_ASSIGN(size, shown_size_(*p, raw_id, raw_version, 0));
+  }
+  const auto part = [&](std::int64_t in, std::int64_t out,
+                        const std::string& name) -> Result<AssetId> {
+    VALTZ_ASSIGN(AssetId made,
+                 new_composition_(pid, *p, AssetClass::Composition, size,
+                                  raw_rate, name, raw.folder));
+    project::Layer l0;
+    l0.name = raw.name;
+    l0.source = raw_id;
+    l0.source_version = raw_version;
+    l0.time.in = in > 0 ? in : -1;
+    l0.time.out = out < last ? out : -1;
+    l0.time.rate = raw_rate;
+    VALTZ_TRY(p->set_layers(made, {l0}));
+    post_("assets.changed", JobId{}, {{"project", pid}, {"asset", made},
+                                      {"reason", "layers"}});
+    return made;
+  };
+  VALTZ_ASSIGN(AssetId first, part(in1, in2 - 1, shown.name + " · 1"));
+  VALTZ_ASSIGN(AssetId second, part(in2, out2, shown.name + " · 2"));
+  VALTZ_ASSIGN(project::Asset a1, p->asset(first));
+  VALTZ_ASSIGN(project::Asset a2, p->asset(second));
+  // The layer shows the first part from where it started; a new one
+  // right above it the second, from the cut -- a length set split too.
+  const bool named = cut.name.empty() || cut.name == shown.name;
+  it->source = first;
+  it->source_version = 0;
+  it->time = {};
+  it->time.offset = t.offset;
+  if (t.duration > 0) {
+    it->time.duration = frame - t.offset;
+  }
+  if (named) {
+    it->name = a1.name;
+  }
+  project::Layer next;
+  next.id = next_layer_id(ls);
+  next.name = a2.name;
+  next.source = second;
+  next.visible = cut.visible;
+  next.folder = cut.folder;
+  next.time.offset = frame;
+  if (t.duration > 0) {
+    next.time.duration = t.offset + t.duration - frame;
+  }
+  const std::string added = next.id;
+  ls.insert(it + 1, std::move(next));
+  // Its look, speed and sound on both.
+  std::vector<project::Modifier> mods = c.modifiers;
+  for (const auto& m : c.modifiers) {
+    if (m.layer == cut.id) {
+      mods.push_back(from_first_frame(m, added));
+    }
+  }
+  VALTZ_TRY(p->set_modifiers(aid, std::move(mods)));
+  VALTZ_TRY(p->set_layers(aid, std::move(ls)));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}, {"layer", added}});
+  return SplitParts{first, second, added};
+}
+
+// ---- layer folders (DESIGN §6a) ----------------------------------------
+
+Result<std::string>
+Controller::group_layers(ProjectId pid, AssetId aid,
+                         const std::vector<std::string>& layers,
+                         std::string name)
+{
+  auto undo = command_(pid, "layer.group", aid);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  if (!is_comp(a)) {
+    return make_error(Code::InvalidArgument, msg::kNotComposition,
+                      {{"name", a.name}});
+  }
+  std::set<std::string> want(layers.begin(), layers.end());
+  if (want.empty() ||
+      std::ranges::any_of(want, [&](const std::string& id) {
+        return std::ranges::none_of(a.layers, [&](const auto& l) {
+          return l.id == id;
+        });
+      })) {
+    return make_error(Code::InvalidArgument, "no such layer");
+  }
+  // A new id, "f1", "f2"...; a name, "Folder N", unless given.
+  int n = 1;
+  const auto taken = [&](const std::string& id) {
+    return std::ranges::any_of(a.layer_folders, [&](const auto& f) {
+      return f.id == id;
+    });
+  };
+  while (taken("f" + std::to_string(n))) {
+    ++n;
+  }
+  project::LayerFolder folder;
+  folder.id = "f" + std::to_string(n);
+  folder.name = name.empty()
+      ? "Folder " + std::to_string(a.layer_folders.size() + 1)
+      : std::string(utf8_prefix(one_line(name), 64));
+  const std::string id = folder.id;
+  // Gathered where the topmost of them is, in their order.
+  std::vector<project::Layer> moved, rest;
+  std::size_t top = 0;
+  for (std::size_t i = 0; i < a.layers.size(); ++i) {
+    if (want.contains(a.layers[i].id)) {
+      moved.push_back(a.layers[i]);
+      top = i;
+    }
+  }
+  std::size_t at = 0;
+  for (std::size_t i = 0; i < a.layers.size(); ++i) {
+    if (!want.contains(a.layers[i].id)) {
+      rest.push_back(a.layers[i]);
+      if (i < top) {
+        at = rest.size();
+      }
+    }
+  }
+  for (auto& l : moved) {
+    l.folder = id;
+  }
+  rest.insert(rest.begin() + static_cast<std::ptrdiff_t>(at),
+              moved.begin(), moved.end());
+  VALTZ_TRY(p->update_asset(aid, [&](project::Asset& x) -> Status {
+    x.layer_folders.push_back(folder);
+    x.layers = std::move(rest);
+    return ok_status();
+  }));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return id;
+}
+
+Status
+Controller::ungroup_layers(ProjectId pid, AssetId aid,
+                           const std::string& folder)
+{
+  auto undo = command_(pid, "layer.ungroup", aid);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_TRY(p->update_asset(aid, [&](project::Asset& x) -> Status {
+    for (auto& l : x.layers) {
+      if (l.folder == folder) {
+        l.folder.clear();
+      }
+    }
+    std::erase_if(x.layer_folders, [&](const auto& f) {
+      return f.id == folder;
+    });
+    return ok_status();
+  }));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return ok_status();
+}
+
+Status
+Controller::rename_layer_folder(ProjectId pid, AssetId aid,
+                                const std::string& folder, std::string name)
+{
+  auto undo = command_(pid, "layer.folder-rename", aid);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  const std::string n(utf8_prefix(one_line(name), 64));
+  VALTZ_TRY(p->update_asset(aid, [&](project::Asset& x) -> Status {
+    for (auto& f : x.layer_folders) {
+      if (f.id == folder) {
+        f.name = n;
+        return ok_status();
+      }
+    }
+    return make_error(Code::InvalidArgument, "no such folder");
+  }));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return ok_status();
+}
+
+Status
+Controller::set_folder_visible(ProjectId pid, AssetId aid,
+                               const std::string& folder, bool visible)
+{
+  auto undo = command_(pid, visible ? "layer.show" : "layer.hide", aid);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_TRY(p->update_asset(aid, [&](project::Asset& x) -> Status {
+    for (auto& l : x.layers) {
+      if (l.folder == folder) {
+        l.visible = visible;
+      }
+    }
+    return ok_status();
+  }));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return ok_status();
+}
+
+Status
+Controller::place_layers(ProjectId pid, AssetId aid,
+                         const std::vector<std::string>& layers,
+                         std::optional<std::string> above,
+                         const std::string& folder)
+{
+  auto undo = command_(pid, "layer.place", aid);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  if (!is_comp(a)) {
+    return make_error(Code::InvalidArgument, msg::kNotComposition,
+                      {{"name", a.name}});
+  }
+  if (!folder.empty() &&
+      std::ranges::none_of(a.layer_folders, [&](const auto& f) {
+        return f.id == folder;
+      })) {
+    return make_error(Code::InvalidArgument, "no such folder");
+  }
+  std::set<std::string> want(layers.begin(), layers.end());
+  std::vector<project::Layer> moved, rest;
+  for (const auto& l : a.layers) {
+    (want.contains(l.id) ? moved : rest).push_back(l);
+  }
+  if (moved.size() != want.size()) {
+    return make_error(Code::InvalidArgument, "no such layer");
+  }
+  if (above && want.contains(*above)) {
+    return ok_status();  // above itself: where it is
+  }
+  // On a frame of its own every layer moves; a stack from before keeps
+  // its bottom one -- the frame -- where it is (as move_layer).
+  const bool any = a.canvas.framed() || a.kind == AssetKind::Audio;
+  if (!any && !a.layers.empty() && want.contains(a.layers.front().id)) {
+    return make_error(Code::InvalidArgument, "no such layer to move");
+  }
+  std::size_t at = 0;
+  if (above) {
+    auto it = find_layer(rest, *above);
+    if (it == rest.end()) {
+      return make_error(Code::InvalidArgument, "no such layer");
+    }
+    at = static_cast<std::size_t>(it - rest.begin()) + 1;
+  }
+  if (!any && at == 0 && !rest.empty()) {
+    at = 1;
+  }
+  for (auto& l : moved) {
+    l.folder = folder;
+  }
+  rest.insert(rest.begin() + static_cast<std::ptrdiff_t>(at),
+              moved.begin(), moved.end());
+  VALTZ_TRY(p->set_layers(aid, std::move(rest)));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return ok_status();
+}
+
+Status
+Controller::slide_layer(ProjectId pid, AssetId aid, const std::string& layer,
+                        std::int64_t offset)
+{
+  auto undo = command_(pid, "layer.slide", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  if (!is_timeline(a) && !paged(a)) {
+    return make_error(Code::InvalidArgument, msg::kTimelineNeedsClip);
+  }
+  auto ls = a.layers;
+  auto it = find_layer(ls, layer);
+  if (it == ls.end()) {
+    return make_error(Code::InvalidArgument, "no such layer");
+  }
+  // A still's layer stays on a page it has.
+  it->time.offset = paged(a)
+      ? std::clamp<std::int64_t>(offset, 0, a.pages - 1)
+      : std::max<std::int64_t>(0, offset);
+  VALTZ_TRY(p->set_layers(aid, std::move(ls)));
+  if (is_timeline(a)) {
+    VALTZ_TRY(grow_to_content_(pid, *p, aid));
+  }
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return ok_status();
+}
+
+Status
+Controller::stretch_layer(ProjectId pid, AssetId aid, const std::string& layer,
+                          std::int64_t length)
+{
+  auto undo = command_(pid, "layer.stretch", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  if (!is_timeline(a) && !paged(a)) {
+    return make_error(Code::InvalidArgument, msg::kTimelineNeedsClip);
+  }
+  auto ls = a.layers;
+  auto it = find_layer(ls, layer);
+  if (it == ls.end()) {
+    return make_error(Code::InvalidArgument, "no such layer");
+  }
+  // A picture, a markup, a still composition: its length is its own. A
+  // clip's or a sound's is its marks' (the Trim panel's).
+  if (it->source) {
+    VALTZ_ASSIGN(project::Asset src, p->asset(*it->source));
+    if (src.kind != AssetKind::Image) {
+      return make_error(Code::InvalidArgument, msg::kStretchNeedsStill);
+    }
+  }
+  // A still's layer ends on its last page.
+  it->time.duration =
+      paged(a) ? std::clamp<std::int64_t>(length, 1,
+                                          a.pages - it->time.offset)
+               : std::max<std::int64_t>(1, length);
+  VALTZ_TRY(p->set_layers(aid, std::move(ls)));
+  if (is_timeline(a)) {
+    VALTZ_TRY(grow_to_content_(pid, *p, aid));
+  }
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return ok_status();
 }
 
 bool
@@ -2808,6 +3380,18 @@ Controller::decompose(ProjectId pid, AssetId aid, const std::string& layer)
   if (paged(src)) {
     return make_error(Code::InvalidArgument, msg::kDecomposePages);
   }
+  // A clip's sound in a composition of sound would show its picture in
+  // one with a frame.
+  if (src.kind == AssetKind::Audio && c.kind != AssetKind::Audio &&
+      std::ranges::any_of(src.layers, [&](const project::Layer& k) {
+        if (!k.source) {
+          return false;
+        }
+        auto ks = p->asset(*k.source);
+        return ks.ok() && clip_like(*ks);
+      })) {
+    return make_error(Code::InvalidArgument, msg::kDecomposeClipSound);
+  }
   if (is_timeline(src) && is_timeline(c) &&
       !(rate_of_(*p, src) == rate_of_(*p, c))) {
     return make_error(Code::InvalidArgument, msg::kDecomposeRate);
@@ -2846,6 +3430,9 @@ Controller::decompose(ProjectId pid, AssetId aid, const std::string& layer)
   auto used = ls;
   for (const auto& k : src.layers) {
     project::Layer n = k;
+    // In the instance's folder, where it was (the inner one's are not
+    // carried).
+    n.folder = inst.folder;
     // Layer 0 keeps its id: new takes still go there.
     n.id = kids.empty() && inst.id.empty() ? std::string()
                                            : next_layer_id(used);

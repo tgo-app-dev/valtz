@@ -2127,6 +2127,402 @@ TEST(composition, a_timeline_draws_and_sounds_in_time)
   CHECK(*longer == 2000);
 }
 
+// The timeline's SCISSORS (DESIGN §10a Timeline): a raw clip cut in two
+// PARTS, each a composition of one layer showing its span of the source,
+// on the layer and one right above it -- the same frames where they
+// were, its look on both; a part cut again from its source; refused
+// where it cannot be cut. And a layer SLID along the timeline, a length
+// set grown to hold it.
+TEST(composition, a_clip_is_cut_in_two_parts)
+{
+  Bench b("comp-split");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  // A raw clip: two seconds at 24, a movie imported.
+  auto shot = ctl.create_composition(pid, project::AssetClass::Composition,
+                                     {16, 16}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto in_shot = ctl.instantiate(pid, *red, *shot);
+  REQUIRE_OK(in_shot);
+  project::LayerTime two;
+  two.duration = 48;
+  REQUIRE_OK(ctl.set_layer_time(pid, *shot, in_shot->second, two));
+  auto movie = ctl.rendered(pid, *shot);
+  REQUIRE_OK(movie);
+  fs::copy_file(*movie, b.root / "shot.mov");
+  auto clip = import_and_wait(ctl, pid, b.root / "shot.mov");
+  REQUIRE(clip);
+  REQUIRE(b.p().asset(*clip)->kind == project::AssetKind::Video);
+  // On a timeline from frame 12, marked in at its frame 6: frames 12-53.
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {16, 16}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  auto placed = ctl.instantiate(pid, *clip, *tl, std::nullopt, 12);
+  REQUIRE_OK(placed);
+  const std::string l = placed->second;
+  project::LayerTime marked;
+  marked.in = 6;
+  marked.rate = {24, 1};
+  marked.offset = 12;
+  REQUIRE_OK(ctl.set_layer_time(pid, *tl, l, marked));
+  media::KeyedAdjustments look;
+  look.keys = {{0, media::Adjustments{}}};
+  look.keys[0].value.exposure = 0.5;
+  REQUIRE_OK(ctl.set_adjustment_keys(pid, *tl, look, l));
+  auto len = ctl.composition_length(pid, *tl);
+  REQUIRE_OK(len);
+  CHECK(*len == 54);
+  // A frame from either end, and outside it: refused.
+  auto edge = ctl.split_layer(pid, *tl, l, 12);
+  CHECK(!edge.ok() && edge.error().key == msg::kSplitOutside.key);
+  CHECK(!ctl.split_layer(pid, *tl, l, 54).ok());
+  CHECK(!ctl.split_layer(pid, *tl, l, 70).ok());
+  // Cut at 30: its source's frame 24.
+  auto r = ctl.split_layer(pid, *tl, l, 30);
+  REQUIRE_OK(r);
+  auto ls = b.layers(*tl);
+  REQUIRE(ls.size() == 2);
+  CHECK(ls[0].id == l && ls[0].source == r->first);
+  CHECK(ls[0].time.offset == 12 && ls[0].time.in < 0);
+  CHECK(ls[1].id == r->layer && ls[1].source == r->second);
+  CHECK(ls[1].time.offset == 30);
+  auto p1 = b.layers(r->first);
+  auto p2 = b.layers(r->second);
+  REQUIRE(p1.size() == 1 && p2.size() == 1);
+  CHECK(p1[0].source == *clip && p1[0].time.in == 6 &&
+        p1[0].time.out == 23);
+  CHECK(p2[0].source == *clip && p2[0].time.in == 24 &&
+        p2[0].time.out < 0);
+  CHECK(b.p().asset(r->first)->name.ends_with(" · 1"));
+  CHECK(b.p().asset(r->second)->kind == project::AssetKind::Video);
+  // Where they were: 12-29 and 30-53; the look on both.
+  auto m = ctl.movie_stack(pid, *tl, true);
+  REQUIRE_OK(m);
+  REQUIRE(m->layers.size() == 2);
+  CHECK(std::abs(m->layers[0].timing.end() - 30.0 / 24) < 1e-6);
+  CHECK(std::abs(m->layers[1].timing.start - 30.0 / 24) < 1e-6);
+  CHECK(std::abs(m->layers[1].timing.end() - 54.0 / 24) < 1e-6);
+  CHECK(std::abs(m->layers[1].adjust.at(0).exposure - 0.5) < 1e-9);
+  CHECK(m->layers[1].id == r->layer);
+  len = ctl.composition_length(pid, *tl);
+  REQUIRE_OK(len);
+  CHECK(*len == 54);
+  // The second part cut again, at 40: from the clip itself, 24-33, 34-.
+  auto again = ctl.split_layer(pid, *tl, r->layer, 40);
+  REQUIRE_OK(again);
+  auto q1 = b.layers(again->first);
+  auto q2 = b.layers(again->second);
+  REQUIRE(q1.size() == 1 && q2.size() == 1);
+  CHECK(q1[0].source == *clip && q1[0].time.in == 24 &&
+        q1[0].time.out == 33);
+  CHECK(q2[0].source == *clip && q2[0].time.in == 34);
+  CHECK(b.layers(*tl).size() == 3);
+  CHECK(b.layers(*tl)[2].time.offset == 40);
+  // Keyed along it: refused. A picture: refused.
+  media::KeyedAdjustments ramp = look;
+  ramp.keys.push_back({10, media::Adjustments{}});
+  REQUIRE_OK(ctl.set_adjustment_keys(pid, *tl, ramp, l));
+  auto keyed = ctl.split_layer(pid, *tl, l, 20);
+  CHECK(!keyed.ok() && keyed.error().key == msg::kSplitKeyed.key);
+  auto pic = ctl.instantiate(pid, *red, *tl);
+  REQUIRE_OK(pic);
+  auto still = ctl.split_layer(pid, *tl, pic->second, 20);
+  CHECK(!still.ok() && still.error().key == msg::kSplitNeedsClip.key);
+  // Undone a command at a time: one layer showing the clip, marked.
+  for (int i = 0; i < 4; ++i) {
+    REQUIRE_OK(ctl.undo(pid));
+  }
+  ls = b.layers(*tl);
+  REQUIRE(ls.size() == 1);
+  CHECK(ls[0].source == *clip && ls[0].time.in == 6);
+  // Slid along: from 60, the length following its content (to 102); a
+  // length set grows to hold it.
+  REQUIRE_OK(ctl.slide_layer(pid, *tl, l, 60));
+  CHECK(b.layers(*tl)[0].time.offset == 60);
+  len = ctl.composition_length(pid, *tl);
+  REQUIRE_OK(len);
+  CHECK(*len == 102);
+  REQUIRE_OK(ctl.set_timeline(pid, *tl, 110));
+  REQUIRE_OK(ctl.slide_layer(pid, *tl, l, 80));
+  CHECK(b.p().asset(*tl)->timeline_frames == 122);
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(b.p().asset(*tl)->timeline_frames == 110);
+  CHECK(b.layers(*tl)[0].time.offset == 60);
+
+  // A sound cut at 400 ms: two sounds, the mix as long as before.
+  REQUIRE(write_tone(b.root / "tone.wav", 1, 440, 0.5));
+  auto tone = import_and_wait(ctl, pid, b.root / "tone.wav");
+  REQUIRE(tone);
+  auto snd = ctl.create_composition(pid, project::AssetClass::Composition,
+                                    {0, 0}, {}, "sound");
+  REQUIRE_OK(snd);
+  auto sl = ctl.instantiate(pid, *tone, *snd);
+  REQUIRE_OK(sl);
+  auto sr = ctl.split_layer(pid, *snd, sl->second, 400);
+  REQUIRE_OK(sr);
+  CHECK(b.p().asset(sr->first)->kind == project::AssetKind::Audio);
+  auto s1 = b.layers(sr->first);
+  auto s2 = b.layers(sr->second);
+  REQUIRE(s1.size() == 1 && s2.size() == 1);
+  CHECK(s1[0].time.in < 0 && s1[0].time.out == 399);
+  CHECK(s2[0].time.in == 400 && s2[0].time.out < 0);
+  auto slen = ctl.composition_length(pid, *snd);
+  REQUIRE_OK(slen);
+  CHECK(*slen == 1000);
+  auto mix = ctl.sound_mix(pid, *snd);
+  REQUIRE_OK(mix);
+  const auto samples = read_sound(*mix);
+  CHECK(std::abs(static_cast<double>(samples.size()) / 48000 - 1.0) < 0.01);
+  CHECK(std::abs(rms(samples, 0.3, 0.6) - 0.354) < 0.03);  // across it
+}
+
+// A CLIP'S SOUND (DESIGN §6a): a composition of sound takes a clip with
+// sound -- its sound alone, marked in milliseconds -- and refuses one
+// without; put in a timeline with a frame, it is sound there, and its
+// clips' pictures stay out (decompose refused).
+TEST(composition, a_sound_composition_takes_a_clips_sound)
+{
+  Bench b("comp-clip-sound");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  REQUIRE(write_tone(b.root / "tone.wav", 2, 440, 0.5));
+  auto tone = import_and_wait(ctl, pid, b.root / "tone.wav");
+  REQUIRE(tone);
+  // A clip with sound, and one without: two seconds each, imported.
+  const auto movie = [&](bool sound, const char* name)
+      -> std::optional<AssetId> {
+    auto shot = ctl.create_composition(
+        pid, project::AssetClass::Composition, {16, 16}, {24, 1}, name);
+    if (!shot.ok()) {
+      return std::nullopt;
+    }
+    auto pic = ctl.instantiate(pid, *red, *shot);
+    project::LayerTime two;
+    two.duration = 48;
+    if (!pic.ok() ||
+        !ctl.set_layer_time(pid, *shot, pic->second, two).ok() ||
+        (sound && !ctl.instantiate(pid, *tone, *shot).ok())) {
+      return std::nullopt;
+    }
+    auto file = ctl.rendered(pid, *shot);
+    if (!file.ok()) {
+      return std::nullopt;
+    }
+    const auto to = b.root / (std::string(name) + ".mov");
+    fs::copy_file(*file, to);
+    return import_and_wait(ctl, pid, to);
+  };
+  auto loud = movie(true, "loud");
+  auto mute = movie(false, "mute");
+  REQUIRE(loud && mute);
+  auto snd = ctl.create_composition(pid, project::AssetClass::Composition,
+                                    {0, 0}, {}, "sound");
+  REQUIRE_OK(snd);
+  auto none = ctl.instantiate(pid, *mute, *snd, std::string());
+  CHECK(!none.ok() && none.error().key == msg::kClipHasNoSound.key);
+  CHECK(!ctl.instantiate(pid, *red, *snd).ok());
+  // Dropped on the stage of the blank composition, which names its layer
+  // 0 though it has none yet: its first layer.
+  auto in = ctl.instantiate(pid, *loud, *snd, std::string());
+  REQUIRE_OK(in);
+  // Its sound alone: no picture to draw, two seconds of the tone.
+  auto m = ctl.movie_stack(pid, *snd, true);
+  REQUIRE_OK(m);
+  REQUIRE(m->layers.size() == 1);
+  CHECK(!m->layers[0].video && m->layers[0].audio_only);
+  auto len = ctl.composition_length(pid, *snd);
+  REQUIRE_OK(len);
+  CHECK(std::abs(*len - 2000) <= 1);
+  auto mix = ctl.sound_mix(pid, *snd);
+  REQUIRE_OK(mix);
+  REQUIRE(!mix->empty());
+  const auto samples = read_sound(*mix);
+  CHECK(std::abs(static_cast<double>(samples.size()) / 48000 - 2) < 0.02);
+  CHECK(std::abs(rms(samples, 0.5, 1.5) - 0.354) < 0.03);
+  // Marked in milliseconds: from 500 to its end, 1.5 s.
+  project::LayerTime half;
+  half.in = 500;
+  REQUIRE_OK(ctl.set_layer_time(pid, *snd, in->second, half));
+  len = ctl.composition_length(pid, *snd);
+  REQUIRE_OK(len);
+  CHECK(std::abs(*len - 1500) <= 1);
+  // Cut there: parts of sound, marked in milliseconds.
+  auto cut = ctl.split_layer(pid, *snd, in->second, 700);
+  REQUIRE_OK(cut);
+  CHECK(b.p().asset(cut->first)->kind == project::AssetKind::Audio);
+  auto p2 = b.layers(cut->second);
+  REQUIRE(p2.size() == 1);
+  CHECK(p2[0].source == *loud && p2[0].time.in == 1200 &&
+        p2[0].time.rate == Rational(1000, 1));
+  REQUIRE_OK(ctl.undo(pid));
+  // On a timeline with a frame: sound there, not a picture.
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {16, 16}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  auto put = ctl.instantiate(pid, *snd, *tl);
+  REQUIRE_OK(put);
+  auto tm = ctl.movie_stack(pid, *tl, true);
+  REQUIRE_OK(tm);
+  REQUIRE(tm->layers.size() == 1);
+  CHECK(!tm->layers[0].video && tm->layers[0].audio_only);
+  auto tmix = ctl.sound_mix(pid, *tl);
+  REQUIRE_OK(tmix);
+  CHECK(!tmix->empty());
+  auto dec = ctl.decompose(pid, *tl, put->second);
+  CHECK(!dec.ok() && dec.error().key == msg::kDecomposeClipSound.key);
+}
+
+// Layer FOLDERS (DESIGN §6a): layers gathered under a folder lie together
+// in the stack -- a new layer above one of them joins it, layers placed
+// in or out by a drag, one moved between two of them joins it -- shown or
+// hidden together, renamed, ungrouped; a folder left empty goes.
+// A still put on a timeline runs a second from where it was put, and its
+// block's end stretches it (a clip's length is its marks'); markup is
+// drawn at the player's frame -- on a markup showing there, else on a new
+// one from there, a second long (DESIGN §6a).
+TEST(composition, a_still_on_a_timeline_runs_a_second)
+{
+  Bench b("comp-still-second");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {16, 16}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  const auto time_of = [&](const std::string& id) {
+    for (const auto& l : b.layers(*tl)) {
+      if (l.id == id) {
+        return l.time;
+      }
+    }
+    return project::LayerTime{};
+  };
+  auto in = ctl.instantiate(pid, *red, *tl, std::nullopt, 12);
+  REQUIRE_OK(in);
+  CHECK(time_of(in->second).offset == 12);
+  CHECK(time_of(in->second).duration == 24);
+  auto len = ctl.composition_length(pid, *tl);
+  REQUIRE_OK(len);
+  CHECK(*len == 36);
+  // Stretched by its end: two seconds; a frame at least; undone.
+  REQUIRE_OK(ctl.stretch_layer(pid, *tl, in->second, 48));
+  CHECK(time_of(in->second).duration == 48);
+  REQUIRE_OK(ctl.stretch_layer(pid, *tl, in->second, 0));
+  CHECK(time_of(in->second).duration == 1);
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(time_of(in->second).duration == 48);
+  // A blank layer given a still: a second, from where it starts.
+  auto blank = ctl.add_layer(pid, *tl, in->second);
+  REQUIRE_OK(blank);
+  REQUIRE_OK(ctl.set_layer_source(pid, *tl, *blank, *red));
+  CHECK(time_of(*blank).duration == 24);
+  // A clip -- a timeline -- is not stretched: its marks are its length.
+  auto shot = ctl.create_composition(pid, project::AssetClass::Composition,
+                                     {16, 16}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  REQUIRE_OK(ctl.instantiate(pid, *red, *shot));
+  auto clip = ctl.instantiate(pid, *shot, *tl);
+  REQUIRE_OK(clip);
+  CHECK(time_of(clip->second).duration == 0);
+  CHECK(!ctl.stretch_layer(pid, *tl, clip->second, 10).ok());
+  // Markup at frame 30: a new layer from there, a second long; at 40 the
+  // same one; at 60, past it, another.
+  auto m1 = ctl.markup_layer(pid, *tl, {}, 30);
+  REQUIRE_OK(m1);
+  CHECK(time_of(*m1).offset == 30);
+  CHECK(time_of(*m1).duration == 24);
+  auto again = ctl.markup_layer(pid, *tl, {}, 40);
+  REQUIRE_OK(again);
+  CHECK(*again == *m1);
+  auto m2 = ctl.markup_layer(pid, *tl, {}, 60);
+  REQUIRE_OK(m2);
+  CHECK(*m2 != *m1);
+  CHECK(time_of(*m2).offset == 60);
+  // Selected, a markup elsewhere in time is not drawn on either.
+  auto m3 = ctl.markup_layer(pid, *tl, {*m1}, 90);
+  REQUIRE_OK(m3);
+  CHECK(*m3 != *m1);
+  CHECK(time_of(*m3).offset == 90);
+}
+
+TEST(composition, layers_go_in_folders)
+{
+  Bench b("comp-folders");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {16, 16}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  for (int i = 0; i < 4; ++i) {
+    REQUIRE_OK(ctl.instantiate(pid, *red, *tl));
+  }
+  const auto order = [&] {
+    std::string o;
+    for (const auto& l : b.layers(*tl)) {
+      o += (l.id.empty() ? "0" : l.id) + (l.folder.empty() ? "" : "*");
+    }
+    return o;
+  };
+  CHECK(order() == "0123");
+  auto f = ctl.group_layers(pid, *tl, {"1", "2"});
+  REQUIRE_OK(f);
+  CHECK(order() == "01*2*3");
+  REQUIRE(b.p().asset(*tl)->layer_folders.size() == 1);
+  CHECK(b.p().asset(*tl)->layer_folders[0].name == "Folder 1");
+  // Gathered where the topmost was: 0 and 3 around them.
+  auto g = ctl.group_layers(pid, *tl, {"", "3"});
+  REQUIRE_OK(g);
+  CHECK(order() == "1*2*0*3*");
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(order() == "01*2*3");
+  // A new layer above one in it: in it.
+  auto added = ctl.add_layer(pid, *tl, "1");
+  REQUIRE_OK(added);
+  CHECK(*added == "4");
+  CHECK(order() == "01*4*2*3");
+  // Placed into it, and out of it above it.
+  REQUIRE_OK(ctl.place_layers(pid, *tl, {"3"}, std::string("1"), *f));
+  CHECK(order() == "01*3*4*2*");
+  REQUIRE_OK(ctl.place_layers(pid, *tl, {"4"}, std::string("2"), ""));
+  CHECK(order() == "01*3*2*4");
+  // Moved up between two of its layers: in it.
+  REQUIRE_OK(ctl.move_layer(pid, *tl, "", 2));
+  CHECK(order() == "1*3*0*2*4");
+  // To the bottom, out of it.
+  REQUIRE_OK(ctl.place_layers(pid, *tl, {"1"}, std::nullopt, ""));
+  CHECK(order() == "13*0*2*4");
+  // Shown and hidden at once; renamed.
+  REQUIRE_OK(ctl.set_folder_visible(pid, *tl, *f, false));
+  for (const auto& l : b.layers(*tl)) {
+    CHECK(l.visible == l.folder.empty());
+  }
+  REQUIRE_OK(ctl.rename_layer_folder(pid, *tl, *f, "Shots"));
+  CHECK(b.p().asset(*tl)->layer_folders[0].name == "Shots");
+  // Ungrouped: the layers where they are, the folder gone; undone, back.
+  REQUIRE_OK(ctl.ungroup_layers(pid, *tl, *f));
+  CHECK(order() == "13024");
+  CHECK(b.p().asset(*tl)->layer_folders.empty());
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(order() == "13*0*2*4");
+  // Emptied, it goes.
+  for (const char* id : {"3", "", "2"}) {
+    REQUIRE_OK(ctl.remove_layer(pid, *tl, id));
+  }
+  CHECK(order() == "14");
+  CHECK(b.p().asset(*tl)->layer_folders.empty());
+}
+
 // A layer's PITCH follows its speed, as a tape's, or is held (DESIGN
 // §6a): a 440 Hz tone at twice its speed sounds at 880 following, at 440
 // held -- an hour's worth of sound at either, through the mixer.

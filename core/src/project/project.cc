@@ -576,6 +576,7 @@ Project::set_layers(AssetId id, std::vector<Layer> layers)
       return make_error(Code::NotFound, "no such asset");
     }
     a->layers = std::move(layers);
+    tidy_layer_folders(*a);
     a->modified_ms = now_ms();
     return put_cbor(txn, _db.assets, id_key(id), Json(*a));
   });
@@ -592,6 +593,7 @@ Project::update_asset(AssetId id,
     }
     Asset b = *a;
     VALTZ_TRY(edit(b));
+    tidy_layer_folders(b);
     b.id = a->id;
     b.kind = a->kind;
     b.head = a->head;

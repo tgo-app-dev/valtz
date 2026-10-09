@@ -17,6 +17,8 @@
 #include <fstream>
 #include <iterator>
 #include <random>
+#include <set>
+#include <sstream>
 
 namespace valtz {
 
@@ -31,6 +33,16 @@ steady_seconds()
   return std::chrono::duration<double>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
+}
+
+// `what` among a list of strings (a fleet member's ops, models).
+bool
+listed(const Json& list, std::string_view what)
+{
+  return std::ranges::any_of(
+      list.is_array() ? list : Json::array(), [&](const Json& x) {
+        return x.is_string() && x.get_ref<const std::string&>() == what;
+      });
 }
 
 // A settings file in the support folder (assistant.json): a JSON object,
@@ -196,6 +208,36 @@ stamp_origin(project::Recipe& r, const models::ModelEntry& m)
 
 // ---- lifecycle --------------------------------------------------------
 
+// What serving needs of the controller, as the fleet asks for it.
+class Controller::FleetHost final : public fleet::Host {
+public:
+  explicit FleetHost(Controller& c) : _c(c) {}
+
+  Json fleet_self() override { return _c.fleet_self_(); }
+
+  Status
+  fleet_serve(const fleet::Offer& o, const std::string& from,
+              const fs::path& out_dir, engine::JobSink sink) override
+  {
+    return _c.fleet_serve_(o, from, out_dir, std::move(sink));
+  }
+
+  void fleet_cancel(JobId id) override { (void)_c._engine->cancel(id); }
+
+  void
+  fleet_note(std::string kind, Json data) override
+  {
+    JobId job;
+    if (auto id = JobId::parse(jget<std::string>(data, "job", ""))) {
+      job = *id;
+    }
+    _c.post_(std::move(kind), job, std::move(data));
+  }
+
+private:
+  Controller& _c;
+};
+
 Result<std::unique_ptr<Controller>>
 Controller::create(ControllerConfig cfg)
 {
@@ -290,6 +332,32 @@ Controller::create(ControllerConfig cfg)
     c->_engine = engine::make_null_engine();
   }
   c->take_extensions_();
+  // A member of a fleet, as its configuration says (DESIGN §11).
+  if (cfg.fleet) {
+    fs::path conf = cfg.fleet_config;
+    if (conf.empty()) {
+      const char* e = std::getenv("VALTZ_FLEET_CONFIG");
+      conf = e != nullptr && *e != '\0' ? fs::path(e)
+                                        : paths.support / "fleet.json";
+    }
+    const fs::path work =
+        conf.parent_path() / (conf.stem().string() + "-files");
+    c->_fleet_host = std::make_unique<FleetHost>(*c);
+    c->_fleet = fleet::make_fleet(conf, work, *c->_fleet_host);
+    // Members at addresses, without Bonjour ("host:port,..."): a network
+    // that does not carry it, or a Mac not allowed to use it.
+    if (const char* to = std::getenv("VALTZ_FLEET_CONNECT"); to && *to) {
+      std::stringstream in(to);
+      std::string one;
+      while (std::getline(in, one, ',')) {
+        if (const auto colon = one.rfind(':');
+            colon != std::string::npos && colon > 0) {
+          c->_fleet->connect(one.substr(0, colon),
+                             std::atoi(one.c_str() + colon + 1));
+        }
+      }
+    }
+  }
   VALTZ_LOG_INFO("controller", "valtz {} on {} ({} GB, {} GPU cores{}), "
                  "engine: {}", VALTZ_VERSION, c->_hw.chip, c->_hw.ram_gb(),
                  c->_hw.gpu_cores,
@@ -319,6 +387,10 @@ Controller::shutdown()
       std::error_code ec;
       fs::remove(f, ec);
     }
+  }
+  // The fleet first: no job comes in, none goes out.
+  if (_fleet) {
+    _fleet->stop();
   }
   if (_engine) {
     _engine->shutdown();
@@ -398,12 +470,23 @@ void
 Controller::post_(std::string kind, JobId job, Json data,
                   engine::TensorPtr tensor)
 {
+  // What the fleet's members read of this one changed: busy or not,
+  // the models here.
+  const bool tell = _fleet && (kind == "job.queued" ||
+                               kind == "job.started" ||
+                               kind == "job.finished" ||
+                               kind == "job.failed" ||
+                               kind == "job.cancelled" ||
+                               kind == "models.changed");
   Event ev;
   ev.kind = std::move(kind);
   ev.job = job;
   ev.data = std::move(data);
   ev.tensor = std::move(tensor);
   _bus.post(std::move(ev));
+  if (tell) {
+    _fleet->self_changed();
+  }
 }
 
 void
@@ -594,11 +677,34 @@ std::vector<models::CapabilityStatus>
 Controller::capabilities() const
 {
   using models::Capability;
-  if (!_engine || !_engine->available()) {
-    return models::resolve_capabilities(_catalog, *_store, _hw, nullptr);
+  auto caps = !_engine || !_engine->available()
+                  ? models::resolve_capabilities(_catalog, *_store, _hw,
+                                                 nullptr)
+                  : models::resolve_capabilities(
+                        _catalog, *_store, _hw,
+                        [this](Capability c) { return engine_runs_(c); });
+  // What a member taking jobs offers is ready here too: it runs there.
+  if (_fleet) {
+    std::set<std::string> theirs;
+    for (const auto& member : _fleet->members()) {
+      const Json self = jget(member, "self", Json::object());
+      if (!jget(self, "accepting", false)) {
+        continue;
+      }
+      for (const auto& f : jget(self, "features", Json::array())) {
+        if (f.is_string()) {
+          theirs.insert(f.get<std::string>());
+        }
+      }
+    }
+    for (auto& c : caps) {
+      if (c.availability != models::Availability::Ready &&
+          theirs.contains(models::to_str(c.capability))) {
+        c.availability = models::Availability::Ready;
+      }
+    }
   }
-  return models::resolve_capabilities(
-      _catalog, *_store, _hw, [this](Capability c) { return engine_runs_(c); });
+  return caps;
 }
 
 bool
@@ -625,6 +731,8 @@ Controller::engine_runs_(models::Capability c) const
     return _engine->supports(engine::kOpGenerateAudio);
   case Capability::TextToSpeech:
     return _engine->supports(engine::kOpGenerateSpeech);
+  case Capability::Transcribe:
+    return _engine->supports(engine::kOpTranscribeAudio);
   case Capability::UpscaleVideo:
     return _engine->supports(engine::kOpUpscaleVideo);
   case Capability::UpscaleImage:
@@ -1077,6 +1185,17 @@ bool
 Controller::runs(const models::ModelEntry& m, std::string_view modality,
                  std::string_view op) const
 {
+  if (runs_here(m, modality, op)) {
+    return true;
+  }
+  // A member taking jobs runs it (what it says it runs).
+  return fleet_runs_(std::format("{}/{}/{}", modality, op, m.id));
+}
+
+bool
+Controller::runs_here(const models::ModelEntry& m, std::string_view modality,
+                      std::string_view op) const
+{
   if (!_engine || !_engine->available() ||
       _store->info(m).state != models::InstallState::Installed ||
       _hw.ram_gb() < m.min_ram_gb) {
@@ -1087,7 +1206,7 @@ Controller::runs(const models::ModelEntry& m, std::string_view modality,
            _engine->supports(engine::kOpGenerateImage);
   }
   if (modality == "image" && op == "edit") {
-    return can_edit_(m);
+    return can_edit_(m, false);
   }
   if (modality == "video" && op == "generate") {
     return m.has(models::Capability::TextToVideo) &&
@@ -1179,6 +1298,10 @@ Controller::check_preset_loras_(const models::ModelEntry& m,
                                 std::string_view preference,
                                 const Json& overrides) const
 {
+  // Not on this Mac: a fleet member runs it, with its own (DESIGN §11).
+  if (_store->info(m).state != models::InstallState::Installed) {
+    return ok_status();
+  }
   // Custom's own LoRAs, or the adapter turned off, say otherwise.
   if (overrides.is_object() &&
       (overrides.contains("loras") || overrides.contains("turbo"))) {
@@ -1988,7 +2111,7 @@ Controller::withdraw_tasks_(ProjectId pid, std::uint64_t seq)
   for (const JobId& job : live) {
     VALTZ_LOG_INFO("build", "job {}: its request undone, withdrawn",
                    job.str());
-    (void)_engine->cancel(job);
+    (void)cancel(job);
   }
 }
 
@@ -2024,8 +2147,10 @@ Controller::tasks() const
     return a.id.str() < b.id.str();
   });
   Json out = Json::array();
-  int position = 0;
+  // Positions count per runner: each Mac runs one at a time.
+  std::map<std::string, int> positions;
   for (const auto& j : live) {
+    const std::string runner = j.runner.empty() ? "local" : j.runner_name;
     const bool upscale = j.op == engine::kOpUpscaleVideo ||
                          j.op == engine::kOpUpscaleImage;
     const bool exp = j.purpose == "export";
@@ -2036,8 +2161,8 @@ Controller::tasks() const
               {"op", j.op},
               {"title", j.title},
               {"state", to_str(j.state)},
-              {"position", position++},
-              {"runner", "local"},
+              {"position", positions[runner]++},
+              {"runner", runner},
               {"progress", j.progress}};
     if (exp) {
       t["source"] = j.asset.str();
@@ -2422,11 +2547,10 @@ Controller::ReplyForm::apply(std::string prompt) const
   return assist::retag(prompt, names);
 }
 
-Result<JobId>
-Controller::submit_chat_(JobId id, std::string purpose, std::string text,
-                         std::vector<engine::JobInput> images,
-                         int max_new_tokens, std::string song,
-                         ReplyForm form)
+Result<engine::JobSpec>
+Controller::chat_spec_(JobId id, std::string text,
+                       std::vector<engine::JobInput> images,
+                       int max_new_tokens) const
 {
   const auto* m = assistant_model();
   if (!m) {
@@ -2468,10 +2592,31 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
     }
   }
   spec.inputs = std::move(images);
+  return spec;
+}
+
+Result<JobId>
+Controller::submit_chat_(JobId id, std::string purpose, std::string text,
+                         std::vector<engine::JobInput> images,
+                         int max_new_tokens, std::string song,
+                         ReplyForm form)
+{
+  // Written by this Mac's assistant -- or, in a fleet, by a member's
+  // when this Mac has none or is busy (DESIGN §11).
+  auto spec = chat_spec_(id, text, images, max_new_tokens);
+  const bool here = spec.ok() && _engine->supports(engine::kOpChat);
+  auto members = fleet_candidates_(std::string(engine::kOpChat), {}, here);
+  if (members.empty() && !spec.ok()) {
+    return spec.error();
+  }
+  if (members.empty() && !here) {
+    return make_error(Code::Unsupported, msg::kEngineCannotRun,
+                      {{"operation", std::string(engine::kOpChat)}});
+  }
 
   JobRecord rec;
   rec.id = id;
-  rec.op = spec.op;
+  rec.op = std::string(engine::kOpChat);
   rec.purpose = purpose;
   rec.title = purpose == "enhance" ? "Enhance prompt" : "Understand request";
   rec.created_ms = project::now_ms();
@@ -2487,10 +2632,9 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
     std::string shown;
   };
   auto written = std::make_shared<Written>();
-  VALTZ_TRY(_engine->submit(std::move(spec),
-                            [this, purpose, song = std::move(song),
-                             form = std::move(form),
-                             written](const engine::JobEvent& ev) {
+  engine::JobSink sink = [this, purpose, song = std::move(song),
+                          form = std::move(form),
+                          written](const engine::JobEvent& ev) {
     if (ev.kind == engine::JobEventKind::Text && purpose == "enhance") {
       std::string now;
       {
@@ -2508,7 +2652,21 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
       }
     }
     on_chat_event_(ev, purpose, song, form);
-  }));
+  };
+  if (members.empty()) {
+    VALTZ_TRY(_engine->submit(std::move(*spec), std::move(sink)));
+    return id;
+  }
+  fleet::Offer offer{id, std::string(engine::kOpChat), "", rec.title,
+                     {{"text", text}, {"max_new_tokens", max_new_tokens}},
+                     images};
+  std::optional<engine::JobSpec> local;
+  if (here) {
+    local = std::move(*spec);
+  }
+  VALTZ_TRY(run_remote_(std::move(members), std::move(offer),
+                        fs::temp_directory_path(), std::move(local),
+                        std::move(sink)));
   return id;
 }
 
@@ -2553,11 +2711,17 @@ Controller::on_chat_event_(const engine::JobEvent& ev,
     finish_job_(ev.job, JobState::Finished, "");
     post_("job.finished", ev.job);
     break;
-  case engine::JobEventKind::Failed:
+  case engine::JobEventKind::Failed: {
     finish_job_(ev.job, JobState::Failed, ev.text);
-    post_("job.failed", ev.job, {{"code", to_str(ev.error)},
-                                 {"message", ev.text}});
+    Json d = {{"code", to_str(ev.error)}, {"message", ev.text}};
+    if (const auto key = jget<std::string>(ev.data, "key", "");
+        !key.empty()) {
+      d["key"] = key;
+      d["args"] = jget(ev.data, "args", Json::object());
+    }
+    post_("job.failed", ev.job, d);
     break;
+  }
   case engine::JobEventKind::Cancelled:
     finish_job_(ev.job, JobState::Cancelled, "");
     post_("job.cancelled", ev.job);
@@ -3730,6 +3894,103 @@ Controller::upscale_layer(UpscaleRequest req)
   return job;
 }
 
+Result<std::pair<AssetId, JobId>>
+Controller::transcribe(ProjectId pid, AssetId asset, std::string model,
+                       std::string language)
+{
+  auto undo = command_(pid, "transcribe", asset);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset src, p->asset(asset));
+  // A sound, or a clip with one (a composition's: its mix).
+  const bool timed = src.kind == project::AssetKind::Audio ||
+                     src.kind == project::AssetKind::Video;
+  if (!timed || !sounds_(*p, src, 0) ||
+      ((src.cls == project::AssetClass::Flat ||
+        src.cls == project::AssetClass::Generated) && src.head == 0)) {
+    return make_error(Code::InvalidArgument, msg::kTranscribeNeedsSound,
+                      {{"name", src.name}});
+  }
+  // The speech model: the one named, else the best installed; its voice
+  // detector; the tagger when there is one.
+  const models::ModelEntry* m = nullptr;
+  for (const auto& e : _catalog.models()) {
+    if (!e.has(models::Capability::Transcribe) ||
+        (!model.empty() && model != "auto" && model != e.id) ||
+        _store->info(e).state != models::InstallState::Installed ||
+        !engine_runs_(models::Capability::Transcribe)) {
+      continue;
+    }
+    if (!m || e.rank > m->rank) {
+      m = &e;
+    }
+  }
+  if (!m) {
+    return make_error(Code::NotFound, msg::kNoTranscriber);
+  }
+  const Json listen = jget(jget(m->engine, "vpipe", Json::object()),
+                           "listen", Json::object());
+  const auto installed = [&](const std::string& id) {
+    const auto* e = _catalog.find(id);
+    return e && _store->info(*e).state == models::InstallState::Installed;
+  };
+  const auto vad = jget<std::string>(listen, "vad", "");
+  if (vad.empty() || !installed(vad)) {
+    return make_error(Code::NotFound, msg::kNoTranscriber);
+  }
+  const auto tagger = jget<std::string>(listen, "tagger", "");
+  project::Recipe r;
+  r.op = std::string(engine::kOpTranscribeAudio);
+  r.model = m->id;
+  r.deterministic = true;
+  r.params = {{"name", src.name}, {"vad", vad}};
+  if (!tagger.empty() && installed(tagger)) {
+    r.params["tagger"] = tagger;
+  }
+  if (!language.empty()) {
+    r.params["language"] = language;
+  }
+  const bool drawn = src.cls == project::AssetClass::Composition;
+  r.inputs.push_back({"source", src.id, drawn ? 0 : src.head});
+  stamp_origin(r, *m);
+  VALTZ_ASSIGN(project::Asset a, p->define_derived(
+      std::format("{} transcript", src.name), project::AssetKind::Text, r,
+      96));
+  // Beside what it transcribes, in the list.
+  if (!src.folder.empty()) {
+    (void)p->set_asset_folder(a.id, src.folder);
+  }
+  post_("assets.changed", JobId{}, {{"project", pid},
+                                    {"asset", a.id},
+                                    {"reason", "defined"}});
+  VALTZ_ASSIGN(JobId job, submit_build_(pid, a.id, a.name));
+  return std::pair{a.id, job};
+}
+
+Result<fs::path>
+Controller::coreml_package_(const models::ModelEntry& e,
+                            const models::InstallInfo& info) const
+{
+  const fs::path dir = info.dir / (e.package.empty() ? e.id : e.package);
+  std::error_code ec;
+  if (fs::is_directory(dir, ec)) {
+    for (auto it = fs::recursive_directory_iterator(dir, ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec)) {
+      if (ec) {
+        break;
+      }
+      const auto ext = it->path().extension().string();
+      if (ext == ".mlpackage" || ext == ".mlmodelc") {
+        return it->path();
+      }
+    }
+  }
+  return make_error(Code::NotFound, msg::kModelNotUnpacked,
+                    {{"model", e.name}});
+}
+
 Result<AssetId>
 Controller::flatten_layer(ProjectId pid, AssetId comp_id,
                           const std::string& layer_id)
@@ -4054,14 +4315,33 @@ Controller::generate_speech_(GenerateAudioRequest& req,
 }
 
 bool
-Controller::can_edit_(const models::ModelEntry& m) const
+Controller::can_edit_(const models::ModelEntry& m, bool fleet) const
 {
   // The catalog says the model edits; the engine must also have an edit
   // graph, and the family must say how that graph takes references.
   const Json vp = jget(m.engine, "vpipe", Json::object());
-  return m.has(models::Capability::ImageEdit) &&
-         jget(vp, "edit", Json()).is_object() &&
-         _engine->supports(engine::kOpEditImage);
+  if (!m.has(models::Capability::ImageEdit) ||
+      !jget(vp, "edit", Json()).is_object()) {
+    return false;
+  }
+  return (_engine->available() && _engine->supports(engine::kOpEditImage)) ||
+         (fleet && fleet_runs_(std::format("image/edit/{}", m.id)));
+}
+
+bool
+Controller::fleet_runs_(const std::string& key) const
+{
+  if (!_fleet) {
+    return false;
+  }
+  for (const auto& member : _fleet->members()) {
+    const Json self = jget(member, "self", Json::object());
+    if (jget(self, "accepting", false) &&
+        listed(jget(self, "runs", Json()), key)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 const models::ModelEntry&
@@ -4121,104 +4401,37 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
   }
   VALTZ_ASSIGN(project::Recipe r, p->recipe(a.recipe));
   VALTZ_ASSIGN(auto inputs, p->resolve_inputs(r));
-  const auto* m = _catalog.find(r.model);
-  if (!m) {
+  if (!_catalog.find(r.model)) {
     return make_error(Code::NotFound, msg::kRecipeModelUnknown,
                       {{"model", r.model}});
   }
-  if (!_engine->supports(r.op)) {
-    return make_error(Code::Unsupported, msg::kEngineCannotRun,
-                      {{"operation", r.op}});
+  // Where it runs (DESIGN §11): here, when this Mac has what it needs
+  // and is free; else, in a fleet, a member that has it and is idle. A
+  // weight file of one's own stays here: it is not sent.
+  engine::ModelRef ref;
+  Json helpers = Json::object();
+  Status here = _engine->supports(r.op)
+                    ? resolve_build_(r.model, r.params, ref, helpers)
+                    : Status(make_error(Code::Unsupported,
+                                        msg::kEngineCannotRun,
+                                        {{"operation", r.op}}));
+  bool own_files = false;
+  for (const char* k : {"lora_file", "lora2_file", "dit_file", "vae_file"}) {
+    own_files = own_files || !jget<std::string>(r.params, k, "").empty();
   }
-  VALTZ_ASSIGN(engine::ModelRef ref, resolve_model_(*m, true));
-  // A run-time adapter the recipe applies (the Turbo LoRA), by its file.
-  if (const auto lora = jget<std::string>(r.params, "lora", "");
-      !lora.empty()) {
-    const auto* le = _catalog.find(lora);
-    if (!le) {
-      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
-                        {{"model", lora}});
+  std::vector<std::string> needs = {r.model};
+  for (const char* k : {"lora", "decoder", "encoder", "branch", "vad",
+                        "tagger"}) {
+    if (const auto id = jget<std::string>(r.params, k, ""); !id.empty()) {
+      needs.push_back(id);
     }
-    const auto li = _store->info(*le);
-    if (li.state != models::InstallState::Installed) {
-      return make_error(Code::NotFound, msg::kModelNotInstalled,
-                        {{"model", le->name}});
-    }
-    ref.lora = li.path();
   }
-  // LoRAs by their files, in the two slots.
-  for (const auto& [key, slot] :
-       {std::pair{"lora_file", &ref.lora}, std::pair{"lora2_file",
-                                                     &ref.lora2}}) {
-    const auto f = jget<std::string>(r.params, key, "");
-    if (f.empty()) {
-      continue;
-    }
-    std::error_code ec;
-    if (!fs::is_regular_file(f, ec)) {
-      return make_error(Code::NotFound, msg::kLoraMissing, {{"file", f}});
-    }
-    *slot = f;
+  std::vector<Json> members;
+  if (!own_files) {
+    members = fleet_candidates_(r.op, needs, here.ok());
   }
-  // A generator's own decoder (YuE2's VAE), by its folder -- unless a
-  // checkpoint of one's own takes its place (below).
-  if (const auto dec = jget<std::string>(r.params, "decoder", "");
-      !dec.empty()) {
-    const auto* de = _catalog.find(dec);
-    if (!de) {
-      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
-                        {{"model", dec}});
-    }
-    const auto di = _store->info(*de);
-    if (di.state != models::InstallState::Installed) {
-      return make_error(Code::NotFound, msg::kModelNotInstalled,
-                        {{"model", de->name}});
-    }
-    ref.vae = di.path();
-  }
-  // A vision tower its conditioner reads (VOSR's DINOv2), by its folder.
-  if (const auto enc = jget<std::string>(r.params, "encoder", "");
-      !enc.empty()) {
-    const auto* ee = _catalog.find(enc);
-    if (!ee) {
-      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
-                        {{"model", enc}});
-    }
-    const auto ei = _store->info(*ee);
-    if (ei.state != models::InstallState::Installed) {
-      return make_error(Code::NotFound, msg::kModelNotInstalled,
-                        {{"model", ee->name}});
-    }
-    ref.encoder = ei.path();
-  }
-  // Community checkpoints for its DiT and VAE, files or folders.
-  for (const auto& [key, slot] :
-       {std::pair{"dit_file", &ref.dit}, std::pair{"vae_file", &ref.vae}}) {
-    const auto f = jget<std::string>(r.params, key, "");
-    if (f.empty()) {
-      continue;
-    }
-    std::error_code ec;
-    if (!fs::exists(f, ec)) {
-      return make_error(Code::NotFound, msg::kWeightsMissing, {{"file", f}});
-    }
-    *slot = f;
-  }
-  // A second checkpoint beside the model (H3's VDN branch), by its
-  // folder.
-  if (const auto branch = jget<std::string>(r.params, "branch", "");
-      !branch.empty()) {
-    const auto* be = _catalog.find(branch);
-    if (!be) {
-      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
-                        {{"model", branch}});
-    }
-    const auto bi = _store->info(*be);
-    if (bi.state != models::InstallState::Installed) {
-      return make_error(Code::NotFound, msg::kModelNotInstalled,
-                        {{"model", be->name}});
-    }
-    ref.branch = bi.path();
+  if (members.empty() && !here.ok()) {
+    return here.error();
   }
 
   engine::JobSpec spec;
@@ -4226,6 +4439,7 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
   spec.op = r.op;
   spec.model = ref;
   spec.params = r.params;
+  spec.params.update(helpers);
   spec.output_dir = p->blobs().tmp_dir();
   // What its commit joins: the command it is submitted in.
   if (project::Workspace* w = workspace_(pid)) {
@@ -4324,11 +4538,149 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
                                {"purpose", rec.purpose},
                                {"project", pid}, {"asset", aid}});
 
-  VALTZ_TRY(_engine->submit(std::move(spec),
-                            [this](const engine::JobEvent& ev) {
+  engine::JobSink sink = [this](const engine::JobEvent& ev) {
     on_build_event_(ev);
-  }));
+  };
+  if (members.empty()) {
+    VALTZ_TRY(_engine->submit(std::move(spec), std::move(sink)));
+    return rec.id;
+  }
+  fleet::Offer offer{spec.id, r.op, r.model, rec.title, r.params,
+                     spec.inputs};
+  const fs::path out = spec.output_dir;
+  std::optional<engine::JobSpec> local;
+  if (here.ok()) {
+    local = std::move(spec);
+  }
+  VALTZ_TRY(run_remote_(std::move(members), std::move(offer), out,
+                        std::move(local), std::move(sink)));
   return rec.id;
+}
+
+Status
+Controller::resolve_build_(const std::string& model, const Json& params,
+                           engine::ModelRef& ref, Json& helpers) const
+{
+  const auto* m = _catalog.find(model);
+  if (!m) {
+    return make_error(Code::NotFound, msg::kRecipeModelUnknown,
+                      {{"model", model}});
+  }
+  VALTZ_ASSIGN(ref, resolve_model_(*m, true));
+  const Json& rp = params;
+
+  // A run-time adapter the recipe applies (the Turbo LoRA), by its file.
+  if (const auto lora = jget<std::string>(rp, "lora", "");
+      !lora.empty()) {
+    const auto* le = _catalog.find(lora);
+    if (!le) {
+      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
+                        {{"model", lora}});
+    }
+    const auto li = _store->info(*le);
+    if (li.state != models::InstallState::Installed) {
+      return make_error(Code::NotFound, msg::kModelNotInstalled,
+                        {{"model", le->name}});
+    }
+    ref.lora = li.path();
+  }
+  // LoRAs by their files, in the two slots.
+  for (const auto& [key, slot] :
+       {std::pair{"lora_file", &ref.lora}, std::pair{"lora2_file",
+                                                     &ref.lora2}}) {
+    const auto f = jget<std::string>(rp, key, "");
+    if (f.empty()) {
+      continue;
+    }
+    std::error_code ec;
+    if (!fs::is_regular_file(f, ec)) {
+      return make_error(Code::NotFound, msg::kLoraMissing, {{"file", f}});
+    }
+    *slot = f;
+  }
+  // A generator's own decoder (YuE2's VAE), by its folder -- unless a
+  // checkpoint of one's own takes its place (below).
+  if (const auto dec = jget<std::string>(rp, "decoder", "");
+      !dec.empty()) {
+    const auto* de = _catalog.find(dec);
+    if (!de) {
+      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
+                        {{"model", dec}});
+    }
+    const auto di = _store->info(*de);
+    if (di.state != models::InstallState::Installed) {
+      return make_error(Code::NotFound, msg::kModelNotInstalled,
+                        {{"model", de->name}});
+    }
+    ref.vae = di.path();
+  }
+  // A vision tower its conditioner reads (VOSR's DINOv2), by its folder.
+  if (const auto enc = jget<std::string>(rp, "encoder", "");
+      !enc.empty()) {
+    const auto* ee = _catalog.find(enc);
+    if (!ee) {
+      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
+                        {{"model", enc}});
+    }
+    const auto ei = _store->info(*ee);
+    if (ei.state != models::InstallState::Installed) {
+      return make_error(Code::NotFound, msg::kModelNotInstalled,
+                        {{"model", ee->name}});
+    }
+    ref.encoder = ei.path();
+  }
+  // A listener's helpers (DESIGN §4h): the voice detector and the
+  // tagger, CoreML packages unpacked beside their archives (catalog
+  // `package`), by catalog id -- the stages are handed the package.
+  for (const auto& [key, out] : {std::pair{"vad", "vad_path"},
+                                 std::pair{"tagger", "tagger_path"}}) {
+    const auto id = jget<std::string>(rp, key, "");
+    if (id.empty()) {
+      continue;
+    }
+    const auto* he = _catalog.find(id);
+    if (!he) {
+      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
+                        {{"model", id}});
+    }
+    const auto hi = _store->info(*he);
+    if (hi.state != models::InstallState::Installed) {
+      return make_error(Code::NotFound, msg::kModelNotInstalled,
+                        {{"model", he->name}});
+    }
+    VALTZ_ASSIGN(fs::path pkg, coreml_package_(*he, hi));
+    helpers[out] = pkg.string();
+  }
+  // Community checkpoints for its DiT and VAE, files or folders.
+  for (const auto& [key, slot] :
+       {std::pair{"dit_file", &ref.dit}, std::pair{"vae_file", &ref.vae}}) {
+    const auto f = jget<std::string>(rp, key, "");
+    if (f.empty()) {
+      continue;
+    }
+    std::error_code ec;
+    if (!fs::exists(f, ec)) {
+      return make_error(Code::NotFound, msg::kWeightsMissing, {{"file", f}});
+    }
+    *slot = f;
+  }
+  // A second checkpoint beside the model (H3's VDN branch), by its
+  // folder.
+  if (const auto branch = jget<std::string>(rp, "branch", "");
+      !branch.empty()) {
+    const auto* be = _catalog.find(branch);
+    if (!be) {
+      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
+                        {{"model", branch}});
+    }
+    const auto bi = _store->info(*be);
+    if (bi.state != models::InstallState::Installed) {
+      return make_error(Code::NotFound, msg::kModelNotInstalled,
+                        {{"model", be->name}});
+    }
+    ref.branch = bi.path();
+  }
+  return ok_status();
 }
 
 Json
@@ -4441,13 +4793,20 @@ Controller::on_build_event_(const engine::JobEvent& ev)
     b.inputs = rec->inputs;
     b.output = ev.output;
     b.info = ev.output_info;
-    b.engine = engine_description();
-    b.host = _host;
+    // Made by a fleet member: its engine, its name.
+    b.engine = rec->runner.empty() ? engine_description()
+                                   : rec->runner_engine;
+    b.host = rec->runner.empty() ? _host : rec->runner_name;
     b.model_digest = rec->model_digest;
-    // What it made beside its file: a song's score.
+    // What it made beside its file: a song's score; a transcript's
+    // lines and events, as data.
     if (const auto score = jget<std::string>(ev.data, "score", "");
         !score.empty()) {
       b.outputs["score"] = score;
+    }
+    if (const Json t = jget(ev.data, "transcript", Json());
+        t.is_object()) {
+      b.outputs["transcript"] = t;
     }
     {
       // How long it took; the prior of the next of its kind.
@@ -4503,6 +4862,12 @@ Controller::on_build_event_(const engine::JobEvent& ev)
       _upscale_targets.erase(rec->asset);
     }
     Json d = {{"code", to_str(ev.error)}, {"message", ev.text}};
+    // Worded for the person where it says how (a fleet member's refusal).
+    if (const auto key = jget<std::string>(ev.data, "key", "");
+        !key.empty()) {
+      d["key"] = key;
+      d["args"] = jget(ev.data, "args", Json::object());
+    }
     // Refused for memory: what vpipe asked for and had, and what to
     // change in the request.
     if (const Json m = jget(ev.data, "memory", Json());
@@ -4963,7 +5328,428 @@ Controller::on_export_event_(const engine::JobEvent& ev)
 Status
 Controller::cancel(JobId id)
 {
+  // Sent to a fleet member: told to stop there.
+  if (auto r = _jobs.get(id); r && !r->runner.empty() && _fleet) {
+    _fleet->cancel(id);
+    return ok_status();
+  }
   return _engine->cancel(id);
+}
+
+// ---- the fleet (fleet/fleet.h, DESIGN §11) ------------------------------
+
+
+namespace {
+
+// The engine ops that hold the machine while they run: a Mac running
+// one is busy.
+bool
+holds_engine(std::string_view op)
+{
+  return op == engine::kOpGenerateImage || op == engine::kOpEditImage ||
+         op == engine::kOpGenerateVideo || op == engine::kOpGenerateAudio ||
+         op == engine::kOpGenerateSpeech || op == engine::kOpUpscaleVideo ||
+         op == engine::kOpUpscaleImage || op == engine::kOpChat ||
+         op == engine::kOpTranscribeAudio || op == engine::kOpExportMedia ||
+         op == engine::kOpQuantizeModel;
+}
+
+// A member's refusal, worded for the person.
+const Message&
+refusal(std::string_view why)
+{
+  return why == "busy"                               ? msg::kFleetBusy
+         : why == "schedule" || why == "not-accepting" ? msg::kFleetNotTaking
+         : why == "cannot-run"                       ? msg::kFleetCannotRun
+         : why == "lost" || why == "left" || why == "stopped"
+             ? msg::kFleetLost
+             : msg::kFleetDeclined;
+}
+
+}  // namespace
+
+bool
+Controller::busy_here_() const
+{
+  for (const auto& j : _jobs.list()) {
+    if ((j.state == JobState::Queued || j.state == JobState::Running) &&
+        j.runner.empty() && holds_engine(j.op)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::vector<Json>
+Controller::fleet_candidates_(const std::string& op,
+                              const std::vector<std::string>& models,
+                              bool here) const
+{
+  std::vector<Json> out;
+  if (!_fleet) {
+    return out;
+  }
+  // A dev knob: as if this Mac were busy, to send what it could run.
+  static const bool prefer = [] {
+    const char* e = std::getenv("VALTZ_FLEET_PREFER");
+    return e != nullptr && std::string_view(e) == "remote";
+  }();
+  if (here && !busy_here_() && !prefer) {
+    return out;
+  }
+  const auto* m = models.empty() ? nullptr : _catalog.find(models.front());
+  for (auto& member : _fleet->members()) {
+    const Json self = jget(member, "self", Json::object());
+    if (!jget(self, "accepting", false) || jget(self, "busy", false) ||
+        jget(self, "serving", false) ||
+        !listed(jget(self, "ops", Json()), op)) {
+      continue;
+    }
+    if (op == engine::kOpChat) {
+      if (jget<std::string>(self, "assistant", "").empty()) {
+        continue;
+      }
+    } else if (!std::ranges::all_of(models, [&](const std::string& id) {
+                 return listed(jget(self, "installed", Json()), id);
+               })) {
+      continue;
+    }
+    const Json machine = jget(self, "machine", Json::object());
+    if (m && jget(machine, "ram_gb", 0u) < m->min_ram_gb) {
+      continue;
+    }
+    out.push_back(std::move(member));
+  }
+  // The roomiest first.
+  std::ranges::stable_sort(out, [](const Json& a, const Json& b) {
+    auto ram = [](const Json& x) {
+      return jget(jget(jget(x, "self", Json::object()), "machine",
+                       Json::object()),
+                  "ram_gb", 0);
+    };
+    return ram(a) > ram(b);
+  });
+  return out;
+}
+
+Status
+Controller::run_remote_(std::vector<Json> members, fleet::Offer offer,
+                        fs::path out_dir,
+                        std::optional<engine::JobSpec> local,
+                        engine::JobSink sink)
+{
+  if (members.empty()) {
+    if (!local) {
+      return make_error(Code::Unsupported, msg::kEngineCannotRun,
+                        {{"operation", offer.op}});
+    }
+    VALTZ_LOG_INFO("fleet", "{}: here after all", offer.title);
+    _jobs.update(offer.id, [](JobRecord& r) {
+      r.runner.clear();
+      r.runner_name.clear();
+      r.runner_engine.clear();
+    });
+    post_("job.runner", offer.id, {{"runner", "local"}});
+    return _engine->submit(std::move(*local), std::move(sink));
+  }
+  // Its inputs go by content: each named by its hash.
+  for (auto& in : offer.inputs) {
+    if (in.hash.is_zero()) {
+      VALTZ_ASSIGN(in.hash, hash_file(in.path));
+    }
+  }
+  const Json m = members.front();
+  members.erase(members.begin());
+  const auto id = jget<std::string>(m, "id", "");
+  const auto name = jget<std::string>(m, "name", "");
+  const auto engine_desc = jget<std::string>(
+      jget(m, "self", Json::object()), "engine", "");
+  _jobs.update(offer.id, [&](JobRecord& r) {
+    r.runner = id;
+    r.runner_name = name;
+    r.runner_engine = engine_desc;
+  });
+  post_("job.runner", offer.id, {{"runner", name}});
+  VALTZ_LOG_INFO("fleet", "{}: sent to {}", offer.title, name);
+  auto started = std::make_shared<std::atomic<bool>>(false);
+  auto rest = std::make_shared<std::vector<Json>>(std::move(members));
+  auto keep = std::make_shared<std::optional<engine::JobSpec>>(
+      std::move(local));
+  const fleet::Offer again = offer;
+  return _fleet->submit(
+      id, offer, out_dir,
+      [this, started, rest, keep, again, out_dir, sink,
+       name](const engine::JobEvent& ev) {
+        if (ev.kind == engine::JobEventKind::Started) {
+          started->store(true);
+        }
+        const auto why = jget<std::string>(ev.data, "fleet", "");
+        if (ev.kind != engine::JobEventKind::Failed || why.empty()) {
+          sink(ev);
+          return;
+        }
+        // Declined, or gone before it began: the next member, or here.
+        if (!started->load() && !withdrawn_(ev.job) &&
+            (!rest->empty() || keep->has_value())) {
+          VALTZ_LOG_INFO("fleet", "{}: {} ({})", again.title, ev.text, why);
+          if (run_remote_(std::move(*rest), again, out_dir,
+                          std::move(*keep), sink)
+                  .ok()) {
+            return;
+          }
+        }
+        // Worded for the person: who, and why.
+        engine::JobEvent e = ev;
+        const Message& said = refusal(why);
+        const MessageArgs args = {{"member", name}};
+        e.text = render_message(said.english, args);
+        e.data.update(message_fields(said, args));
+        sink(e);
+      });
+}
+
+Json
+Controller::fleet_self_() const
+{
+  const bool up = _engine && _engine->available();
+  Json ops = Json::array();
+  for (std::string_view op :
+       {engine::kOpGenerateImage, engine::kOpEditImage,
+        engine::kOpGenerateVideo, engine::kOpGenerateAudio,
+        engine::kOpGenerateSpeech, engine::kOpTranscribeAudio,
+        engine::kOpUpscaleVideo, engine::kOpUpscaleImage, engine::kOpChat}) {
+    if (up && _engine->supports(op)) {
+      ops.push_back(std::string(op));
+    }
+  }
+  Json installed = Json::array();
+  Json runs = Json::array();
+  for (const auto& m : _catalog.models()) {
+    if (_store->info(m).state != models::InstallState::Installed) {
+      continue;
+    }
+    installed.push_back(m.id);
+    for (const char* modality : {"image", "video", "audio"}) {
+      for (const char* op : {"generate", "edit"}) {
+        if (runs_here(m, modality, op)) {
+          runs.push_back(std::format("{}/{}/{}", modality, op, m.id));
+        }
+      }
+    }
+  }
+  Json features = Json::array();
+  const auto caps = up ? models::resolve_capabilities(
+                             _catalog, *_store, _hw,
+                             [this](models::Capability c) {
+                               return engine_runs_(c);
+                             })
+                       : std::vector<models::CapabilityStatus>{};
+  for (const auto& c : caps) {
+    if (c.availability == models::Availability::Ready) {
+      features.push_back(models::to_str(c.capability));
+    }
+  }
+  const auto* a = up ? assistant_model() : nullptr;
+  const bool chat = a && _store->info(*a).state ==
+                             models::InstallState::Installed;
+  return {{"ops", ops},
+          {"installed", installed},
+          {"runs", runs},
+          {"features", features},
+          {"assistant", chat ? a->id : std::string()},
+          {"busy", busy_here_()},
+          {"machine", {{"chip", _hw.chip},
+                       {"ram_gb", _hw.ram_gb()},
+                       {"gpu_cores", _hw.gpu_cores}}},
+          {"engine", engine_description()},
+          {"version", VALTZ_VERSION}};
+}
+
+Status
+Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
+                         const fs::path& out_dir, engine::JobSink sink)
+{
+  if (!_engine || !_engine->available() || !_engine->supports(o.op) ||
+      !listed(jget(fleet_self_(), "ops", Json()), o.op)) {
+    return make_error(Code::Unsupported, msg::kEngineCannotRun,
+                      {{"operation", o.op}});
+  }
+  // Files of the sender's own are never sent, so never named: a path in
+  // a job from elsewhere is refused.
+  for (const char* k : {"lora_file", "lora2_file", "dit_file", "vae_file",
+                        "mtp_model", "draft_model", "output"}) {
+    if (o.params.contains(k)) {
+      return make_error(Code::InvalidArgument,
+                        std::format("a fleet job names a file ({})", k));
+    }
+  }
+  engine::JobSpec spec;
+  if (o.op == engine::kOpChat) {
+    VALTZ_ASSIGN(spec, chat_spec_(o.id, jget<std::string>(o.params, "text",
+                                                          ""),
+                                  o.inputs,
+                                  jget(o.params, "max_new_tokens", 512)));
+  } else {
+    engine::ModelRef ref;
+    Json helpers = Json::object();
+    VALTZ_TRY(resolve_build_(o.model, o.params, ref, helpers));
+    spec.id = o.id;
+    spec.op = o.op;
+    spec.model = std::move(ref);
+    spec.params = o.params;
+    spec.params.update(helpers);
+    spec.inputs = o.inputs;
+  }
+  spec.output_dir = out_dir;
+  JobRecord rec;
+  rec.id = o.id;
+  rec.op = o.op;
+  rec.purpose = "fleet";
+  rec.title = o.title;
+  rec.runner_name = from;
+  rec.created_ms = project::now_ms();
+  _jobs.add(rec);
+  const Json about = {{"from", from}, {"title", o.title}, {"op", o.op},
+                      {"model", o.model}};
+  Json queued = about;
+  queued["state"] = "queued";
+  post_("fleet.serving", o.id, queued);
+  return _engine->submit(
+      std::move(spec), [this, sink, about](const engine::JobEvent& ev) {
+        Json d = about;
+        switch (ev.kind) {
+        case engine::JobEventKind::Started:
+          _jobs.update(ev.job, [](JobRecord& r) {
+            r.state = JobState::Running;
+          });
+          d["state"] = "running";
+          post_("fleet.serving", ev.job, d);
+          break;
+        case engine::JobEventKind::Progress:
+          _jobs.update(ev.job, [&](JobRecord& r) {
+            r.progress = std::max(0.0f, ev.progress);
+          });
+          d["state"] = "running";
+          d["progress"] = ev.progress;
+          d["phase"] = ev.data;
+          post_("fleet.progress", ev.job, d);
+          break;
+        case engine::JobEventKind::Finished:
+        case engine::JobEventKind::Failed:
+        case engine::JobEventKind::Cancelled:
+          finish_job_(ev.job,
+                      ev.kind == engine::JobEventKind::Finished
+                          ? JobState::Finished
+                      : ev.kind == engine::JobEventKind::Failed
+                          ? JobState::Failed
+                          : JobState::Cancelled,
+                      ev.text);
+          d["state"] = engine::to_str(ev.kind);
+          d["message"] = ev.text;
+          post_("fleet.serving", ev.job, d);
+          break;
+        default:
+          break;
+        }
+        sink(ev);
+      });
+}
+
+Json
+Controller::fleet_status() const
+{
+  if (!_fleet) {
+    return {{"enabled", false}};
+  }
+  Json s = _fleet->status();
+  s["enabled"] = true;
+  s["self"] = fleet_self_();
+  return s;
+}
+
+Status
+Controller::fleet_configure(const Json& j)
+{
+  if (!_fleet) {
+    return make_error(Code::Unsupported, msg::kFleetOff);
+  }
+  fleet::Config c = _fleet->config();
+  auto text = [&](const char* k) {
+    std::string v = jget<std::string>(j, k, "");
+    const auto a = v.find_first_not_of(" \t\r\n");
+    const auto b = v.find_last_not_of(" \t\r\n");
+    return a == std::string::npos ? std::string()
+                                  : std::string(utf8_prefix(
+                                        v.substr(a, b - a + 1), 63));
+  };
+  if (j.contains("member_name")) {
+    if (auto n = text("member_name"); !n.empty()) {
+      c.member_name = std::move(n);
+    }
+  }
+  if (j.contains("discoverable")) {
+    c.discoverable = jget(j, "discoverable", false);
+  }
+  if (j.contains("accept")) {
+    const auto a = jget<std::string>(j, "accept", "");
+    if (a == "always" || a == "ask" || a == "never") {
+      c.accept = a;
+    }
+  }
+  if (j.contains("schedule")) {
+    c.schedule = fleet::schedule_from_json(j["schedule"]);
+  }
+  // A fleet made or joined -- its name and secret -- or left.
+  const std::string secret = jget<std::string>(j, "secret", "");
+  if (!secret.empty() && secret.size() < 8) {
+    return make_error(Code::InvalidArgument, msg::kFleetSecretShort);
+  }
+  if (j.contains("fleet")) {
+    const std::string name = text("fleet");
+    if (name.empty()) {
+      c.fleet.clear();
+      c.key.clear();
+    } else if (secret.empty() && (name != c.fleet || c.key.empty())) {
+      return make_error(Code::InvalidArgument, msg::kFleetNeedsSecret);
+    } else {
+      if (!secret.empty()) {
+        c.key = fleet::derive_key(name, secret);
+      }
+      c.fleet = name;
+    }
+  } else if (!secret.empty()) {
+    if (c.fleet.empty()) {
+      return make_error(Code::InvalidArgument, msg::kFleetNameEmpty);
+    }
+    c.key = fleet::derive_key(c.fleet, secret);
+  }
+  VALTZ_TRY(_fleet->set_config(c));
+  post_("fleet.changed", JobId{});
+  return ok_status();
+}
+
+void
+Controller::fleet_browse(bool on)
+{
+  if (_fleet) {
+    _fleet->browse(on);
+  }
+}
+
+void
+Controller::fleet_answer(JobId job, bool accept)
+{
+  if (_fleet) {
+    _fleet->answer(job, accept);
+  }
+}
+
+void
+Controller::fleet_connect(const std::string& host, int port)
+{
+  if (_fleet) {
+    _fleet->connect(host, port);
+  }
 }
 
 }

@@ -202,7 +202,10 @@ extension AppModel {
     /// nearest before it), so frames repeat or are skipped. The same at a
     /// speed other than 1.
     var layerFrameRate: FrameRate? {
-        guard let a = layerSource, a.kind == "video" else { return nil }
+        // In a composition of sound a clip is its sound: no frames.
+        guard let a = layerSource, a.kind == "video", !stageIsAudio else {
+            return nil
+        }
         return a.isComposition ? a.compositionRate : a.info?.frameRate
     }
 

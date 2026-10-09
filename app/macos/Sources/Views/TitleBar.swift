@@ -27,12 +27,14 @@ struct TitleBarContent: ToolbarContent {
                 Label("Navigation", systemImage: "line.3.horizontal")
             }
             .help(model.navOpen ? "Hide navigation" : "Show navigation")
+            .disabled(model.fleetServing != nil)
         }
 
         // The name, drawn here rather than by the window (whose title is
         // kept for the Window menu), so simple mode's can be renamed.
         ToolbarItem(placement: .navigation) {
             WindowTitleField(model: model)
+                .disabled(model.fleetServing != nil)
         }
         .sharedBackgroundVisibility(.hidden)
 
@@ -49,6 +51,7 @@ struct TitleBarContent: ToolbarContent {
         if model.screen == .editor {
             ToolbarItem(placement: .primaryAction) {
                 TitleBarControls(model: model, scheme: scheme)
+                    .disabled(model.fleetServing != nil)
             }
             .sharedBackgroundVisibility(.hidden)
         }
@@ -619,6 +622,8 @@ struct ShareButton: View {
             panel.allowedContentTypes = [type]
         }
         panel.canCreateDirectories = true
+        // Where exports last went.
+        panel.directoryURL = model.panelFolder(.export)
         // The format: the file as it is, or an export (16-bit, OpenEXR,
         // JPEG at a quality, ProRes, HEVC 10-bit, a sound's WAV or AAC
         // cut at its marks...).
@@ -634,6 +639,7 @@ struct ShareButton: View {
             guard response == .OK,
                   let url = scripted ? scriptedDestination : panel.url
             else { return }
+            model.rememberPanel(.export, chose: url)
             model.save(to: url, as: options?.choice ?? .original,
                        quality: options?.jpegQuality,
                        video: options?.videoEncoding)

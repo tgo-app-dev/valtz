@@ -1756,6 +1756,64 @@ build_upscale_image(const JobSpec& job)
   return g;
 }
 
+// The sound's packets (load-audio) decoded into 32 ms pieces of PCM
+// (audio-to-pcm), which the voice detector (audio-segment: Silero) cuts
+// into stretches of speech for the speech model (audio-transcribe:
+// Qwen3-ASR), a line each to the transcript's sink; the same PCM, with
+// a tagger, into AudioSet's labels every 8 s over 10 s (audio-tagging:
+// BEATs) to the events' sink. A file is read faster than it plays: the
+// transcriber keeps the longest PCM it can (300 s) and takes every
+// stretch, however late it comes, rather than drop one.
+Result<BuiltGraph>
+build_transcribe(const JobSpec& job, const fs::path& wav)
+{
+  const auto vad = jget<std::string>(job.params, "vad_path", "");
+  const auto tagger = jget<std::string>(job.params, "tagger_path", "");
+  if (job.model.dir.empty() || vad.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "a transcription needs its speech model and its "
+                      "voice detector");
+  }
+  BuiltGraph g;
+  g.transcript_sink = "transcript-sink";
+  Json stages = Json::array();
+  stages.push_back(stage("load", "load-audio", Json::array(),
+                         {{"input_url", wav.string()}}));
+  stages.push_back(stage("pcm", "audio-to-pcm",
+                         Json::array({port("load")}),
+                         {{"output_sample_rate", 16000},
+                          {"chunk_duration_s", 0.032},
+                          {"channels", 1}}));
+  stages.push_back(stage("voice", "audio-segment",
+                         Json::array({port("pcm")}),
+                         {{"model_path", vad}}));
+  Json asr = {{"hf_dir", job.model.dir.string()},
+              {"pcm_buffer_s", 300.0},
+              {"late_marker_skip", false}};
+  if (const auto lang = jget<std::string>(job.params, "language", "");
+      !lang.empty()) {
+    asr["language_hint"] = lang;
+  }
+  stages.push_back(stage("asr", "audio-transcribe",
+                         Json::array({port("pcm"), port("voice")}),
+                         std::move(asr)));
+  stages.push_back(sink(g.transcript_sink, port("asr"), false));
+  if (!tagger.empty()) {
+    g.events_sink = "events-sink";
+    stages.push_back(stage("tags", "audio-tagging",
+                           Json::array({port("pcm")}),
+                           {{"model_path", tagger},
+                            {"model_kind", "beats"},
+                            {"top_k", 5},
+                            {"score_threshold", 0.1}}));
+    stages.push_back(sink(g.events_sink, port("tags"), false));
+  }
+  g.spec = {{"id", "valtz-" + job.id.str()},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
 Result<BuiltGraph>
 build_fetch_model(const JobSpec& job)
 {

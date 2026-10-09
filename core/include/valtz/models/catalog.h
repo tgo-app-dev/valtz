@@ -38,6 +38,7 @@ enum class Capability : std::uint8_t {
   AudioOutput,     // video with a soundtrack
   TextToAudio,     // a sound -- a song -- from words (YuE2)
   TextToSpeech,    // speech from text, a voice cloned (MOSS-TTS)
+  Transcribe,      // speech to text, sound events heard (Qwen3-ASR)
 };
 
 inline constexpr Capability kAllCapabilities[] = {
@@ -48,7 +49,7 @@ inline constexpr Capability kAllCapabilities[] = {
   Capability::PromptEnhance, Capability::Intent,
   Capability::Caption,       Capability::AlphaOutput,
   Capability::AudioOutput,   Capability::TextToAudio,
-  Capability::TextToSpeech,
+  Capability::TextToSpeech,  Capability::Transcribe,
 };
 
 const char* to_str(Capability);
@@ -76,6 +77,10 @@ struct ModelEntry {
   // of a repo's models a download pulls -- required where one repo
   // publishes several.
   std::string              fetch_variant;
+  // A CoreML archive's (vpipe-supplement's: `file` the .tar): the folder
+  // model-fetch unpacks it into, beside it, which holds the package the
+  // stage loads (catalog `package`).
+  std::string              package;
   std::vector<Capability>  capabilities;
   double                   disk_gb = 0;
   bool                     disk_measured = false;

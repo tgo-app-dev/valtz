@@ -248,10 +248,13 @@ extension AppModel {
         boxTab = promptTabs[activePromptTab]
         markupOpen = false
         showsTuning = false
-        cropEditing = false
         if inspectorTab != .layers { inspectorTab = .assets }
         stage.fitRequest += 1
         promptImmersive = true
+        // Back from it, the box: the prompt, not the timeline it may have
+        // left from.
+        timelineWanted = false
+        timelineCutting = false
     }
 
     /// Back to the stage: the prompt in the box is the tab last open (the

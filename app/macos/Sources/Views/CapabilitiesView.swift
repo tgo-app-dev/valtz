@@ -13,6 +13,7 @@ struct CapabilitiesView: View {
     @State private var expanded: Set<String> = []
 
     var body: some View {
+        ScrollViewReader { scroller in
         List {
             SettingsHeader(page: .capabilities)
                 .background(Color.primary.opacity(0.04),
@@ -51,6 +52,7 @@ struct CapabilitiesView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                .id(f.id)
             }
         }
         .listStyle(.inset)
@@ -60,20 +62,30 @@ struct CapabilitiesView: View {
             if expanded.isEmpty, let f = model.capabilityTree?.families.first {
                 expanded = [f.id]
             }
-            openAsked()
+            openAsked(scroller)
         }
         // A family asked for (a preset's LoRA to download): opened.
-        .onChange(of: model.capabilitiesFamily) { _, _ in openAsked() }
+        .onChange(of: model.capabilitiesFamily) { _, _ in
+            openAsked(scroller)
+        }
         // A gated model's Download: its license and the access token.
         .sheet(item: $model.gatedDownload) { m in
             GatedDownloadSheet(model: model, member: m)
         }
+        }
     }
 
-    private func openAsked() {
+    /// The family asked for opened, and scrolled to the top: one far down
+    /// the list (Listening) is otherwise opened out of sight.
+    private func openAsked(_ scroller: ScrollViewProxy) {
         guard let f = model.capabilitiesFamily else { return }
         withAnimation(AppModel.motion) { _ = expanded.insert(f) }
         model.capabilitiesFamily = nil
+        DispatchQueue.main.async {
+            withAnimation(AppModel.motion) {
+                scroller.scrollTo(f, anchor: .top)
+            }
+        }
     }
 
     private func toggle(_ id: String) {
@@ -137,6 +149,7 @@ private struct FeatureBadge: View {
         case "helper": "brain"
         case "video-upscale": "arrow.up.left.and.arrow.down.right"
         case "image-upscale": "plus.magnifyingglass"
+        case "audio-transcribe": "captions.bubble"
         default: "questionmark"
         }
     }
@@ -152,6 +165,7 @@ private struct FeatureBadge: View {
         case "helper": String(localized: "Agentic helper")
         case "video-upscale": String(localized: "Video upscaling")
         case "image-upscale": String(localized: "Image upscaling")
+        case "audio-transcribe": String(localized: "Transcription, sound events")
         default: f
         }
     }

@@ -46,6 +46,7 @@
 #include "valtz/controller/job-queue.h"
 #include "valtz/engine/engine.h"
 #include "valtz/ext/extension.h"
+#include "valtz/fleet/fleet.h"
 #include "valtz/media/adjust.h"
 #include "valtz/media/camera.h"
 #include "valtz/media/capture.h"
@@ -99,6 +100,11 @@ struct ControllerConfig {
   // The engine to run jobs on, in place of the one `with_engine` picks:
   // a test's own, which takes jobs and runs them when it says.
   std::function<std::unique_ptr<engine::Engine>()> engine_factory;
+  // Takes part in a FLEET (fleet/fleet.h, DESIGN §11) as its
+  // configuration says: the app; valtzctl when asked. Where that is kept
+  // (empty: $VALTZ_FLEET_CONFIG, else <support>/fleet.json).
+  bool                               fleet = false;
+  std::filesystem::path              fleet_config;
 };
 
 // THE PROMPT IS AN ASSET (DESIGN §10c). Every generation request carries
@@ -534,11 +540,14 @@ public:
   // top one of `selected` when it is EMPTY -- it gets a new markup, the
   // composition's frame in size -- or already shows a markup; else the
   // top layer when it shows one; else a new layer with a new markup.
-  // On a still with pages, `page`: only a layer on that page is drawn
-  // on, and a new one is on it alone.
+  // On a still with pages, `at` is the page shown: only a layer on that
+  // page is drawn on, and a new one is on it alone. On a timeline it is
+  // the frame the player is at: only a layer showing there is drawn on,
+  // and a new one -- or a blank one that ran on to the end -- starts
+  // there and runs a second, as any still put on a timeline.
   Result<std::string> markup_layer(ProjectId, AssetId,
                                    const std::vector<std::string>& selected,
-                                   std::optional<std::int64_t> page = {});
+                                   std::optional<std::int64_t> at = {});
   // A brush stroke painted into (or erased from) the markup a layer shows.
   Status paint_stroke(ProjectId, AssetId, const std::string& layer,
                       const media::Stroke&);
@@ -596,7 +605,8 @@ public:
   // A timeline's layers as they are drawn (media::MovieStack): files, the
   // tracks and where each lies in time, its canvas and length. Nested
   // compositions are their renderings. `for_job`: markup drawn into files
-  // (a job names files); else drawn in memory. `live`: a layer's tracks
+  // (a job names files); else drawn in memory, less the `hidden` objects
+  // (being edited: the app draws those itself). `live`: a layer's tracks
   // as the panels hold them, in place of what is recorded.
   struct LiveTracks {
     std::string              layer;
@@ -605,7 +615,8 @@ public:
   };
   Result<media::MovieStack> movie_stack(
       ProjectId, AssetId, bool for_job = false,
-      const std::optional<LiveTracks>& live = std::nullopt);
+      const std::optional<LiveTracks>& live = std::nullopt,
+      const std::set<std::string>& hidden = {});
   // A timeline's SOUND as the mixer and the player take it; its mix (a
   // WAV, cached; empty when nothing sounds); its length in its frames.
   Result<media::SoundPlan> sound_plan(ProjectId, AssetId);
@@ -757,10 +768,68 @@ public:
   // is there instead -- from its content's end, a length set growing to
   // hold it (sequenced_). Refused where onto cannot show it, or it
   // shows onto (a recursion). The composition and the layer.
+  // `fill` false (a drop on the timeline, DESIGN §10a Timeline): always
+  // a new layer right above `at`, at `offset` -- a blank `at` stays.
   Result<std::pair<AssetId, std::string>> instantiate(
       ProjectId, AssetId asset, std::optional<AssetId> onto,
       std::optional<std::string> at = std::nullopt,
-      std::int64_t offset = 0);
+      std::int64_t offset = 0, bool fill = true);
+  // The timeline's SCISSORS (DESIGN §10a Timeline): a layer's clip cut
+  // at timeline frame `frame` in two PARTS, each a composition of one
+  // layer showing its span of the source -- a flat clip or sound, or a
+  // part cut before (cut again from its source) -- the layer showing the
+  // first, a new layer right above it the second, from `frame`. Its look,
+  // speed and sound go with both; a track keyed more than once is
+  // refused (kSplitKeyed). One command.
+  struct SplitParts {
+    AssetId     first;
+    AssetId     second;
+    std::string layer;   // the new layer, showing the second
+  };
+  Result<SplitParts> split_layer(ProjectId, AssetId,
+                                 const std::string& layer,
+                                 std::int64_t frame);
+  // A sound TRANSCRIBED (DESIGN §4h): a sound, a clip's sound or a
+  // composition's mix -- its speech line by line, and the sound events
+  // heard when a tagger is installed -- summarized in a new TEXT asset
+  // made from it, the job's result (its data kept beside: outputs
+  // "transcript"). The speech model named, else the best installed; the
+  // voice detector it needs. The text asset and the job.
+  Result<std::pair<AssetId, JobId>> transcribe(ProjectId, AssetId,
+                                               std::string model = {},
+                                               std::string language = {});
+  // Layer FOLDERS (DESIGN §6a): `layers` gathered into a new folder
+  // named `name` (none: "Folder N"), where the topmost of them is -- its
+  // id. A folder's layers lie together in the stack
+  // (project::tidy_layer_folders).
+  Result<std::string> group_layers(ProjectId, AssetId,
+                                   const std::vector<std::string>& layers,
+                                   std::string name = {});
+  // The folder gone, its layers where they are.
+  Status ungroup_layers(ProjectId, AssetId, const std::string& folder);
+  Status rename_layer_folder(ProjectId, AssetId, const std::string& folder,
+                             std::string name);
+  // Every layer of the folder shown or hidden, at once.
+  Status set_folder_visible(ProjectId, AssetId, const std::string& folder,
+                            bool visible);
+  // `layers` (kept in their order) moved to lie right above `above` --
+  // none: at the bottom -- in `folder` ("": in none): a drag in the
+  // layers' list or the timeline's headers, into a folder or out.
+  Status place_layers(ProjectId, AssetId,
+                      const std::vector<std::string>& layers,
+                      std::optional<std::string> above,
+                      const std::string& folder);
+  // A layer SLID along its timeline (a still's: its pages) -- the
+  // timeline's drag: it starts at `offset`, its marks and length kept; a
+  // timeline's length, when set, grows to hold it.
+  Status slide_layer(ProjectId, AssetId, const std::string& layer,
+                     std::int64_t offset);
+  // A STILL's layer stretched -- the timeline's drag of its block's right
+  // end: it runs `length` frames (a still's: pages) from its start, at
+  // least one; a timeline's length, when set, grows to hold it. A clip's
+  // or a sound's length is its marks': refused (kStretchNeedsStill).
+  Status stretch_layer(ProjectId, AssetId, const std::string& layer,
+                       std::int64_t length);
   // A layer showing a composition, DECOMPOSED: replaced by that
   // composition's layers -- copies, with their looks, marks and keys --
   // its placement and time carried over to each. Refused, by name, where
@@ -795,9 +864,12 @@ public:
   Result<std::filesystem::path> rendered(ProjectId, AssetId,
                                          std::uint32_t version = 0);
   // Can this machine run `m` for that modality and op now? (A song needs
-  // its decoder installed too.)
+  // its decoder installed too.) In a fleet: here, or on a member that
+  // takes jobs now (runs_here: here alone).
   bool runs(const models::ModelEntry& m, std::string_view modality,
             std::string_view op) const;
+  bool runs_here(const models::ModelEntry& m, std::string_view modality,
+                 std::string_view op) const;
   // The few-step adapter `m` runs with (its catalog `turbo.lora`) when it
   // is installed; else null.
   const models::ModelEntry* turbo_adapter(const models::ModelEntry& m) const;
@@ -1052,9 +1124,29 @@ public:
   // | upscale | export), "op",
   // "title", "state" (queued | running), "position" (0, 1, ...: how many
   // run before it on its runner -- 0 the one running, T0 in the app),
-  // "runner" ("local": this Mac; a peer's, one day -- each runs one at a
-  // time), "progress", "destination" (an export's file)}].
+  // "runner" ("local": this Mac; a fleet member's name -- each runs one
+  // at a time), "progress", "destination" (an export's file)}].
   Json tasks() const;
+
+  // ---- the fleet (fleet/fleet.h, DESIGN §11) -------------------------
+  //
+  // {"enabled", "config" (no key), "port", "browsing", "members": [{"id",
+  // "name", "state" (connected | found | refused), "self"}], "fleets":
+  // [{"fleet", "members"}] (found on the network), "serving" (the job
+  // this Mac runs for a member), "asking", "sent", "self" (this Mac as
+  // the others see it)}.
+  Json fleet_status() const;
+  // This Mac in its fleet: {"member_name", "discoverable", "accept"
+  // (always | ask | never), "schedule": {"on", "days", "from", "to"}};
+  // and a fleet made or joined -- "fleet" with its "secret" -- or left
+  // ("fleet": "").
+  Status fleet_configure(const Json&);
+  // Fleets on the network looked for (the Fleet page open), or not.
+  void fleet_browse(bool on);
+  // The answer to a job a member offered ("fleet.ask").
+  void fleet_answer(JobId, bool accept);
+  // A member at an address, without Bonjour.
+  void fleet_connect(const std::string& host, int port);
 
   void shutdown();
 
@@ -1093,6 +1185,39 @@ private:
                            const std::string& layer);
   Result<engine::ModelRef> resolve_model_(const models::ModelEntry&,
                                           bool want_preview) const;
+  // A build's models on this Mac's disk: `ref` and the helpers' paths
+  // (a listener's, merged into its params) -- for a job of its own or
+  // one a fleet member sent.
+  Status resolve_build_(const std::string& model, const Json& params,
+                        engine::ModelRef& ref, Json& helpers) const;
+  // A chat as this Mac's assistant runs it.
+  Result<engine::JobSpec> chat_spec_(JobId, std::string text,
+                                     std::vector<engine::JobInput> images,
+                                     int max_new_tokens) const;
+  // ---- the fleet
+  class FleetHost;
+  // Busy: a job of its engine queued or running here.
+  bool busy_here_() const;
+  // The members that could take a job now, best first: idle, taking
+  // jobs, running `op` with every model in `models` (a chat: an
+  // assistant) -- when this Mac cannot run it (`here` false) or is
+  // busy. None: here.
+  std::vector<Json> fleet_candidates_(const std::string& op,
+                                      const std::vector<std::string>& models,
+                                      bool here) const;
+  // A job sent to the first of `members` that takes it -- the next when
+  // one declines or is gone before it starts, else here when `local`
+  // can run, else it fails.
+  Status run_remote_(std::vector<Json> members, fleet::Offer offer,
+                     std::filesystem::path out_dir,
+                     std::optional<engine::JobSpec> local,
+                     engine::JobSink sink);
+  Json fleet_self_() const;
+  // A member taking jobs runs "<modality>/<op>/<model>".
+  bool fleet_runs_(const std::string& key) const;
+  Status fleet_serve_(const fleet::Offer&, const std::string& from,
+                      const std::filesystem::path& out_dir,
+                      engine::JobSink sink);
   // A preset that needs a LoRA none of whose candidates is installed is
   // refused by name (kPresetLoraMissing) -- unless Custom names its own
   // LoRAs or turns the adapter off.
@@ -1113,7 +1238,8 @@ private:
                                  const project::RecipeInput& prompt);
   // A sound to clone a voice from: one, or a clip that has one.
   bool voiced_(project::Project&, AssetId) const;
-  bool can_edit_(const models::ModelEntry&) const;
+  // `fleet`: here, or a member taking jobs; else here alone.
+  bool can_edit_(const models::ModelEntry&, bool fleet = true) const;
   // A request's prompt against its row (capture_prompt's terms): the
   // POSITIONAL text a prompt asset holds; and its MENTION form -- every
   // mention and tag a U+FFFC, each with the medium it names (none:
@@ -1318,13 +1444,25 @@ private:
     double                seconds = 0;           // 0: untimed
     Rational              mark_rate{24, 1};      // its marks' rate
   };
+  // `sound_only`: for a composition of sound -- a clip gives its sound
+  // alone (a composition its mix), its marks in milliseconds. `hidden`:
+  // a markup's objects left out (drawn in memory only).
   Result<TimedSource> timed_source_(ProjectId, project::Project&,
                                     const project::Layer&, bool for_job,
-                                    media::PixelSize frame, int depth);
+                                    media::PixelSize frame, int depth,
+                                    bool sound_only = false,
+                                    const std::set<std::string>& hidden = {});
   Result<media::MovieStack> movie_stack_(
       ProjectId, AssetId, bool for_job,
-      const std::optional<LiveTracks>& live, int depth);
+      const std::optional<LiveTracks>& live, int depth,
+      const std::set<std::string>& hidden = {});
+  // A second of a timeline (at least a frame): how long a still put on
+  // it runs.
+  static std::int64_t second_of_(Rational rate);
   Result<media::SoundPlan> sound_plan_(ProjectId, AssetId, int depth);
+  // A CoreML package a helper model unpacked into (catalog `package`).
+  Result<std::filesystem::path> coreml_package_(
+      const models::ModelEntry&, const models::InstallInfo&) const;
   Result<AssetId> new_composition_(ProjectId, project::Project&,
                                    project::AssetClass,
                                    media::PixelSize size, Rational rate,
@@ -1369,6 +1507,8 @@ private:
   EventBus                           _bus;
   JobTable                           _jobs;
   std::string                        _host;
+  std::unique_ptr<FleetHost>         _fleet_host;
+  std::unique_ptr<fleet::Fleet>      _fleet;
 
   // A generation's phase clock (job-timing.h), while it runs; and the
   // last timing of each model and operation ("op|model"), its prior.

@@ -253,6 +253,9 @@ usage()
       "         own names for them; set is refused once something was\n"
       "         made from it. @<id> in place of any prompt uses it)\n"
       "  classify <file|folder>...  (lora, dit or vae: how a drop is filed)\n"
+      "  transcribe <project.valtz> <sound|clip-id> [--model ID]\n"
+      "         [--language L]  (its speech line by line, the sound\n"
+      "         events heard: a text asset made from it, printed)\n"
       "  layers <project.valtz> <picture-id> [add [above] | move <layer> <by>\n"
       "         | show|hide <layer> | source <layer> <picture-id>\n"
       "         | rename <layer> <name> | remove <layer>\n"
@@ -266,12 +269,22 @@ usage()
       "                 bold,italic,underline,color=#..]\n"
       "                 (a box: wrapped in it, the lines that fit whole)\n"
       "         | materialize <layer> [object-id...]\n"
+      "         | split <layer> <frame> | slide <layer> <frame>\n"
+      "         | stretch <layer> <frames>\n"
+      "         | group <layer>... [--name N] | ungroup <folder>\n"
+      "         | place <layer> <above-layer|bottom> [folder]\n"
       "         | pages <layer> <first> [count]] [--page P]\n"
       "         (a picture's layer stack, top first; \"\" is the bottom one.\n"
       "         markup: the layer the toolbar draws on, made when needed.\n"
       "         On a still with pages: --page P (from 1) puts a new layer\n"
       "         -- add, markup -- on that page alone; pages: the layer on\n"
-      "         <count> pages from <first>, no count to the last)\n"
+      "         <count> pages from <first>, no count to the last. On a\n"
+      "         timeline: markup --frame F, drawn at frame F (a new layer\n"
+      "         from there, a second long, as any still put on one).\n"
+      "         split: a raw clip or sound cut at a timeline frame in two\n"
+      "         parts, each a composition, on the layer and one above it;\n"
+      "         slide: where the layer starts, a timeline's length grown;\n"
+      "         stretch: a still's -- picture, markup -- length, frames)\n"
       "  pages <project.valtz> <still-id> [add [--after P] [--count N]\n"
       "         | remove <P>]  (a still's pages, from 1: drawn a page at a\n"
       "         time; a new page continues what runs across it, its keys\n"
@@ -323,6 +336,20 @@ usage()
       "          [--seed n]   the layer's clip rendered at its scale\n"
       "          (FlashVSR), the layer then showing it at scale 1\n"
       "  intent <text> [--image name]...\n"
+      "  fleet [status] [--json] | fleet browse [--seconds N]\n"
+      "        | fleet create|join <name> [--discoverable]\n"
+      "        | fleet set [name=N] [discoverable=on|off]\n"
+      "            [accept=always|ask|never]\n"
+      "            [schedule=mon-fri@09:00-18:00|off]\n"
+      "        | fleet leave | fleet connect <host:port>\n"
+      "        | fleet serve [--seconds N]\n"
+      "         (the FLEET: Valtz on the Macs of one network as one --\n"
+      "         a fleet's name and secret (asked for unechoed, or\n"
+      "         $VALTZ_FLEET_SECRET), discoverable or not, taking jobs\n"
+      "         or not; serve: a member at work until stopped. --fleet\n"
+      "         on any command: a job this Mac cannot run, or not now,\n"
+      "         goes to a member that can. $VALTZ_FLEET_CONFIG: another\n"
+      "         member's configuration -- two on one Mac)\n"
       "  download <model-id> [--hf-token]\n"
       "          (--hf-token: asks for a Hugging Face access token, not\n"
       "          echoed, for a GATED model -- used for this download only,\n"
@@ -734,6 +761,281 @@ layer_id(const std::string& typed)
 
 }
 
+// "mon-fri@09:00-18:00", "sat,sun@22:00-07:00", "every@...", "off": a
+// fleet schedule (fleet::Schedule).
+std::optional<Json>
+parse_schedule(const std::string& spec)
+{
+  if (spec == "off" || spec == "none") {
+    return Json{{"on", false}};
+  }
+  const auto at = spec.find('@');
+  if (at == std::string::npos) {
+    return std::nullopt;
+  }
+  static const std::array<std::string_view, 7> names = {
+      "mon", "tue", "wed", "thu", "fri", "sat", "sun"};
+  auto day = [&](std::string_view d) -> int {
+    for (int i = 0; i < 7; ++i) {
+      if (names[i] == d) {
+        return i;
+      }
+    }
+    return -1;
+  };
+  int days = 0;
+  const std::string ds = spec.substr(0, at);
+  if (ds == "every" || ds == "all") {
+    days = 0x7f;
+  } else {
+    std::stringstream in(ds);
+    std::string part;
+    while (std::getline(in, part, ',')) {
+      const auto dash = part.find('-');
+      const int a = day(part.substr(0, dash));
+      const int b = dash == std::string::npos ? a
+                                              : day(part.substr(dash + 1));
+      if (a < 0 || b < 0) {
+        return std::nullopt;
+      }
+      for (int k = a;; k = (k + 1) % 7) {
+        days |= 1 << k;
+        if (k == b) {
+          break;
+        }
+      }
+    }
+  }
+  int h0 = 0, m0 = 0, h1 = 0, m1 = 0;
+  if (std::sscanf(spec.c_str() + at + 1, "%d:%d-%d:%d", &h0, &m0, &h1,
+                  &m1) != 4) {
+    return std::nullopt;
+  }
+  return Json{{"on", true}, {"days", days}, {"from", h0 * 60 + m0},
+              {"to", h1 * 60 + m1}};
+}
+
+// The fleet as a person reads it.
+void
+print_fleet(const Json& s)
+{
+  const Json c = jget(s, "config", Json::object());
+  const Json sch = jget(c, "schedule", Json::object());
+  std::printf("this Mac  %s  (%s)\n",
+              jget<std::string>(c, "member_name", "").c_str(),
+              jget<std::string>(c, "member_id", "").c_str());
+  const auto fleet = jget<std::string>(c, "fleet", "");
+  std::printf("fleet     %s%s\n", fleet.empty() ? "(none)" : fleet.c_str(),
+              jget(c, "discoverable", false) ? "  discoverable" : "");
+  std::string when;
+  if (jget(sch, "on", false)) {
+    const int from = jget(sch, "from", 0), to = jget(sch, "to", 0);
+    when = std::format(", days {:#04x} {:02}:{:02}-{:02}:{:02}",
+                       jget(sch, "days", 0), from / 60, from % 60, to / 60,
+                       to % 60);
+  }
+  std::printf("jobs      %s%s%s\n",
+              jget<std::string>(c, "accept", "").c_str(), when.c_str(),
+              jget(c, "accepting", false) ? "  (taking jobs now)"
+                                          : "  (not now)");
+  if (const int port = jget(s, "port", 0); port > 0) {
+    std::printf("listening on port %d\n", port);
+  }
+  for (const auto& m : jget(s, "members", Json::array())) {
+    const Json self = jget(m, "self", Json::object());
+    const Json mach = jget(self, "machine", Json::object());
+    std::string what;
+    for (const auto& f : jget(self, "features", Json::array())) {
+      what += (what.empty() ? "" : ",") + f.get<std::string>();
+    }
+    const std::string state =
+        jget(self, "serving", false) ? "serving"
+        : jget(self, "busy", false)  ? "busy"
+        : jget(self, "accepting", false) ? "idle"
+                                         : "not-taking-jobs";
+    std::printf("  member  %-24s %-10s %-15s %s %d GB  %zu models  %s\n",
+                jget<std::string>(m, "name", "").c_str(),
+                jget<std::string>(m, "state", "").c_str(),
+                self.empty() ? "" : state.c_str(),
+                jget<std::string>(mach, "chip", "").c_str(),
+                jget(mach, "ram_gb", 0),
+                jget(self, "installed", Json::array()).size(), what.c_str());
+  }
+  for (const auto& f : jget(s, "fleets", Json::array())) {
+    std::printf("  on the network: fleet \"%s\", %d discoverable member(s)\n",
+                jget<std::string>(f, "fleet", "").c_str(),
+                jget(f, "members", 0));
+  }
+  if (const Json sv = jget(s, "serving", Json()); sv.is_object()) {
+    std::printf("serving   %s for %s\n",
+                jget<std::string>(sv, "title", "").c_str(),
+                jget<std::string>(sv, "from", "").c_str());
+  }
+}
+
+int
+fleet_command(Controller& c, std::vector<std::string>& args)
+{
+  const std::string sub = args.empty() ? "status" : args[0];
+  const bool as_json = std::erase(args, std::string("--json")) > 0;
+  auto seconds = [&](int fallback) {
+    for (std::size_t i = 0; i + 1 < args.size(); ++i) {
+      if (args[i] == "--seconds") {
+        return std::atoi(args[i + 1].c_str());
+      }
+    }
+    return fallback;
+  };
+  auto show = [&] {
+    const Json s = c.fleet_status();
+    if (as_json) {
+      std::cout << to_text(s, 2) << "\n";
+    } else {
+      print_fleet(s);
+    }
+  };
+  auto configure = [&](const Json& j) -> int {
+    if (auto st = c.fleet_configure(j); !st.ok()) {
+      return fail(st.error());
+    }
+    // The network made again, members reached.
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    show();
+    return 0;
+  };
+  if (sub == "status") {
+    std::this_thread::sleep_for(std::chrono::seconds(seconds(3)));
+    show();
+    return 0;
+  }
+  if (sub == "browse") {
+    c.fleet_browse(true);
+    std::this_thread::sleep_for(std::chrono::seconds(seconds(3)));
+    show();
+    return 0;
+  }
+  if (sub == "set") {
+    // name=, discoverable=on|off, accept=always|ask|never,
+    // schedule=mon-fri@09:00-18:00|off
+    Json j = Json::object();
+    for (std::size_t i = 1; i < args.size(); ++i) {
+      const auto eq = args[i].find('=');
+      if (eq == std::string::npos) {
+        return usage();
+      }
+      const std::string k = args[i].substr(0, eq);
+      const std::string v = args[i].substr(eq + 1);
+      if (k == "name") {
+        j["member_name"] = v;
+      } else if (k == "discoverable") {
+        j["discoverable"] = v == "on" || v == "true" || v == "1";
+      } else if (k == "accept") {
+        j["accept"] = v;
+      } else if (k == "schedule") {
+        auto sch = parse_schedule(v);
+        if (!sch) {
+          return fail(make_error(Code::InvalidArgument,
+                                 "schedule: mon-fri@09:00-18:00, or off"));
+        }
+        j["schedule"] = *sch;
+      } else {
+        return usage();
+      }
+    }
+    return configure(j);
+  }
+  if (sub == "join" || sub == "create") {
+    // The secret asked for at the terminal without echo, or
+    // $VALTZ_FLEET_SECRET (scripts): never an argument, which the shell's
+    // history would keep.
+    if (args.size() < 2) {
+      return usage();
+    }
+    std::string secret;
+    if (const char* e = std::getenv("VALTZ_FLEET_SECRET"); e && *e) {
+      secret = e;
+    } else {
+      char buf[256];
+      if (!readpassphrase("Fleet secret: ", buf, sizeof buf,
+                          RPP_REQUIRE_TTY)) {
+        return fail(make_error(Code::InvalidArgument,
+                               "no terminal to ask for the secret on"));
+      }
+      secret = buf;
+      std::fill(std::begin(buf), std::end(buf), '\0');
+    }
+    Json j = {{"fleet", args[1]}, {"secret", secret}};
+    std::fill(secret.begin(), secret.end(), '\0');
+    if (std::ranges::find(args, "--discoverable") != args.end()) {
+      j["discoverable"] = true;
+    }
+    return configure(j);
+  }
+  if (sub == "leave") {
+    return configure({{"fleet", ""}});
+  }
+  if (sub == "connect") {
+    // host:port -- a member reached without Bonjour.
+    if (args.size() < 2 || args[1].rfind(':') == std::string::npos) {
+      return usage();
+    }
+    const auto colon = args[1].rfind(':');
+    c.fleet_connect(args[1].substr(0, colon),
+                    std::atoi(args[1].c_str() + colon + 1));
+    std::this_thread::sleep_for(std::chrono::seconds(seconds(3)));
+    show();
+    return 0;
+  }
+  if (sub == "serve") {
+    // A member at work: its fleet's jobs taken and run, until stopped
+    // (or --seconds N); what happens printed.
+    const int limit = seconds(0);
+    const auto end = std::chrono::steady_clock::now() +
+                     std::chrono::seconds(limit > 0 ? limit : 1 << 30);
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    show();
+    std::string last;
+    while (std::chrono::steady_clock::now() < end) {
+      Event ev;
+      if (!c.events().wait(ev, 500)) {
+        continue;
+      }
+      if (ev.kind == "fleet.serving") {
+        std::printf("serving: %s for %s -- %s%s\n",
+                    jget<std::string>(ev.data, "title", "").c_str(),
+                    jget<std::string>(ev.data, "from", "").c_str(),
+                    jget<std::string>(ev.data, "state", "").c_str(),
+                    jget<std::string>(ev.data, "message", "").empty()
+                        ? ""
+                        : (": " + jget<std::string>(ev.data, "message", ""))
+                              .c_str());
+      } else if (ev.kind == "fleet.progress") {
+        const Json ph = jget(ev.data, "phase", Json::object());
+        const auto line = std::format(
+            "  {} {:.0f}%", jget<std::string>(ph, "phase", ""),
+            100.0 * std::max(0.0f, jget(ev.data, "progress", 0.0f)));
+        if (line != last) {
+          std::puts(line.c_str());
+          last = line;
+        }
+      } else if (ev.kind == "fleet.ask") {
+        std::printf("asked: %s from %s (valtzctl answers yes)\n",
+                    jget<std::string>(ev.data, "title", "").c_str(),
+                    jget<std::string>(ev.data, "from", "").c_str());
+        if (auto id = JobId::parse(jget<std::string>(ev.data, "job", ""));
+            id && !jget(ev.data, "done", false)) {
+          c.fleet_answer(*id, true);
+        }
+      } else if (ev.kind == "fleet.changed") {
+        std::puts("fleet: members changed");
+      }
+      std::fflush(stdout);
+    }
+    return 0;
+  }
+  return usage();
+}
+
 int
 main(int argc, char** argv)
 {
@@ -830,6 +1132,7 @@ main(int argc, char** argv)
   cfg.keep_working_copies = true;
   cfg.with_engine = cmd == "generate" || cmd == "video" || cmd == "audio" ||
                     cmd == "upscale" || cmd == "quantize" ||
+                    cmd == "transcribe" ||
                     (cmd == "ext" && (args.empty() || args[0] == "list")) ||
                     cmd == "status" || cmd == "families" ||
                     cmd == "enhance" ||
@@ -837,11 +1140,35 @@ main(int argc, char** argv)
                     cmd == "auto" ||
                     (cmd == "export" &&
                      !(args.size() == 1 && args[0] == "--formats"));
+  // "--fleet": a member of its fleet for this run (DESIGN §11) -- what
+  // this Mac cannot run, or not now, goes to a member that can.
+  const bool in_fleet = std::erase(args, std::string("--fleet")) > 0;
+  cfg.fleet = in_fleet || cmd == "fleet";
+  if (cmd == "fleet") {
+    cfg.with_engine = args.empty() || args[0] == "serve" ||
+                      args[0] == "status" || args[0] == "connect";
+  }
   auto cr = Controller::create(cfg);
   if (!cr.ok()) {
     return fail(cr.error());
   }
   Controller& c = **cr;
+  if (in_fleet) {
+    // Its members reached first: a few seconds ($VALTZ_FLEET_WAIT).
+    const char* w = std::getenv("VALTZ_FLEET_WAIT");
+    const int wait = w ? std::atoi(w) : 5;
+    for (int i = 0; i < wait * 10; ++i) {
+      bool any = false;
+      for (const auto& m : jget(c.fleet_status(), "members", Json())) {
+        any = any || (jget<std::string>(m, "state", "") == "connected" &&
+                      !jget(m, "self", Json::object()).empty());
+      }
+      if (any) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
   // What the command changed, saved as it ends -- unless --unsaved, or
   // the project is untitled.
   struct SaveAtExit {
@@ -1601,6 +1928,15 @@ main(int argc, char** argv)
       }
       return std::nullopt;
     };
+    auto text_flag = [&](std::string_view name)
+        -> std::optional<std::string> {
+      for (std::size_t i = 2; i + 1 < args.size(); ++i) {
+        if (args[i] == name) {
+          return args[i + 1];
+        }
+      }
+      return std::nullopt;
+    };
     std::vector<std::string> plain;
     for (std::size_t i = 0; i < args.size(); ++i) {
       if (args[i].starts_with("--")) {
@@ -1676,8 +2012,10 @@ main(int argc, char** argv)
                              plain.size() > 5
                                  ? std::atoll(plain[5].c_str()) : 0);
     } else if (op == "markup") {
+      // A still's page, or a timeline's frame (--frame F).
+      const auto at_frame = flag("--frame");
       auto r = c.markup_layer(*pid, *aid, {plain.begin() + 3, plain.end()},
-                              on_page);
+                              at_frame ? at_frame : on_page);
       if (!r.ok()) {
         return fail(r.error());
       }
@@ -1688,6 +2026,42 @@ main(int argc, char** argv)
       st = c.set_layer_mask(*pid, *aid, layer, arg != "off");
     } else if (op == "decompose") {
       st = c.decompose(*pid, *aid, layer);
+    } else if (op == "split") {
+      // The timeline's scissors: <layer> <frame>, two parts.
+      auto r = c.split_layer(*pid, *aid, layer, std::atoll(arg.c_str()));
+      if (!r.ok()) {
+        return fail(r.error());
+      }
+      std::printf("parts %s %s, layer %s\n", r->first.str().c_str(),
+                  r->second.str().c_str(), r->layer.c_str());
+    } else if (op == "slide") {
+      // <layer> <offset>: where it starts on the timeline (a page).
+      st = c.slide_layer(*pid, *aid, layer, std::atoll(arg.c_str()));
+    } else if (op == "stretch") {
+      // <layer> <frames>: a still's length on the timeline (its pages).
+      st = c.stretch_layer(*pid, *aid, layer, std::atoll(arg.c_str()));
+    } else if (op == "group") {
+      // group <layer>... [--name N]: a folder of them.
+      std::vector<std::string> ids;
+      for (std::size_t i = 3; i < plain.size(); ++i) {
+        ids.push_back(layer_id(plain[i]));
+      }
+      auto r = c.group_layers(*pid, *aid, ids,
+                              text_flag("--name").value_or(""));
+      if (!r.ok()) {
+        return fail(r.error());
+      }
+      std::printf("folder %s\n", r->c_str());
+    } else if (op == "ungroup") {
+      st = c.ungroup_layers(*pid, *aid, plain.size() > 3 ? plain[3] : "");
+    } else if (op == "place") {
+      // place <layer> <above-layer|bottom> [folder]: in a folder, or out.
+      std::optional<std::string> above;
+      if (arg != "bottom") {
+        above = layer_id(arg);
+      }
+      st = c.place_layers(*pid, *aid, {layer}, above,
+                          plain.size() > 5 ? plain[5] : "");
     } else if (op == "flatten") {
       // The layer's composition flat, in its place: upscalable.
       auto made = c.flatten_layer(*pid, *aid, layer);
@@ -1856,12 +2230,19 @@ main(int argc, char** argv)
                            it->time.out, it->time.offset,
                            it->time.duration);
       }
-      std::printf("  %-3s %s %-12s %s%s%s\n",
+      // In a folder: its id and name, set in.
+      std::string in;
+      for (const auto& f : a->layer_folders) {
+        if (f.id == it->folder) {
+          in = std::format("  {{{} {}}}", f.id, f.name);
+        }
+      }
+      std::printf("  %-3s %s %-12s %s%s%s%s\n",
                   it->id.empty() ? "0" : it->id.c_str(),
                   it->visible ? "shown " : "hidden",
                   it->name.empty() ? "-" : it->name.c_str(),
                   what.c_str(), when.c_str(),
-                  it->mask ? "  -- masks the layer below" : "");
+                  it->mask ? "  -- masks the layer below" : "", in.c_str());
     }
     for (const auto& t : a->transitions) {
       std::printf("  %s %s -> %s\n", t.kind.c_str(),
@@ -2289,6 +2670,40 @@ main(int argc, char** argv)
       return fail(j.error());
     }
     return follow(c, *j);
+  }
+  if (cmd == "transcribe") {
+    // A sound -- a clip's -- transcribed (DESIGN §4h): its speech and
+    // the sound events heard, summarized in a text asset, printed.
+    if (args.size() < 2) {
+      return usage();
+    }
+    auto pid = open_or_fail(c, args[0]);
+    auto aid = AssetId::parse(args[1]);
+    if (!pid.ok() || !aid) {
+      return usage();
+    }
+    std::string model, language;
+    for (std::size_t i = 2; i + 1 < args.size(); ++i) {
+      if (args[i] == "--model") {
+        model = args[++i];
+      } else if (args[i] == "--language") {
+        language = args[++i];
+      }
+    }
+    auto made = c.transcribe(*pid, *aid, model, language);
+    if (!made.ok()) {
+      return fail(made.error());
+    }
+    if (const int rc = follow(c, made->second); rc != 0) {
+      return rc;
+    }
+    auto text = c.project(*pid)->read_text(made->first);
+    if (!text.ok()) {
+      return fail(text.error());
+    }
+    std::printf("%s %s\n%s", made->first.str().c_str(), "transcript",
+                text->c_str());
+    return 0;
   }
   if (cmd == "history") {
     if (args.empty()) {
@@ -3073,6 +3488,9 @@ main(int argc, char** argv)
       return fail(j.error());
     }
     return follow(c, *j);
+  }
+  if (cmd == "fleet") {
+    return fleet_command(c, args);
   }
   if (cmd == "download") {
     // A gated model's token, asked for at the terminal without echo --

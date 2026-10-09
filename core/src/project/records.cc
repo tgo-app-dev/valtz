@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <map>
 
 namespace valtz::project {
 
@@ -276,6 +277,9 @@ to_json(Json& j, const Asset& a)
       if (l.mask) {
         lj["mask"] = true;
       }
+      if (!l.folder.empty()) {
+        lj["folder"] = l.folder;
+      }
       if (!l.time.identity() || l.time.rate.num > 0) {
         lj["time"] = to_json_time(l.time);
       }
@@ -290,6 +294,15 @@ to_json(Json& j, const Asset& a)
       ls.push_back(std::move(lj));
     }
     j["layers"] = std::move(ls);
+  }
+  if (!a.layer_folders.empty()) {
+    Json fs = Json::array();
+    for (const auto& f : a.layer_folders) {
+      Json fj = {{"id", f.id}, {"name", f.name}};
+      put_rest(fj, f.rest);
+      fs.push_back(std::move(fj));
+    }
+    j["layer_folders"] = std::move(fs);
   }
   if (a.canvas.set() || a.canvas.framed()) {
     j["canvas"] = media::to_json(a.canvas);
@@ -401,16 +414,77 @@ from_json(const Json& j, Asset& a)
     }
     layer.mask = jget(l, "mask", false);
     layer.time = time_from_json(jget(l, "time", Json::object()));
+    layer.folder = jget<std::string>(l, "folder", "");
     layer.rest = rest_of(l, {"id", "name", "visible", "own", "source",
-                             "source_version", "markup", "mask", "time"});
+                             "source_version", "markup", "mask", "time",
+                             "folder"});
     a.layers.push_back(std::move(layer));
+  }
+  a.layer_folders.clear();
+  for (const auto& f : jget(j, "layer_folders", Json::array())) {
+    LayerFolder lf;
+    lf.id = jget<std::string>(f, "id", "");
+    lf.name = jget<std::string>(f, "name", "");
+    lf.rest = rest_of(f, {"id", "name"});
+    if (!lf.id.empty()) {
+      a.layer_folders.push_back(std::move(lf));
+    }
   }
   a.rest = rest_of(j, {"id", "name", "kind", "origin", "class", "head",
                        "recipe", "tags", "created", "modified",
                        "source_path", "linked", "link", "extra",
                        "modifiers", "canvas", "timeline", "rate_num",
                        "rate_den", "pages", "transitions", "markup",
-                       "from", "folder", "layers"});
+                       "from", "folder", "layers", "layer_folders"});
+}
+
+void
+tidy_layer_folders(Asset& a)
+{
+  auto& ls = a.layers;
+  for (auto& l : ls) {
+    if (!l.folder.empty() &&
+        std::ranges::none_of(a.layer_folders, [&](const LayerFolder& f) {
+          return f.id == l.folder;
+        })) {
+      l.folder.clear();
+    }
+  }
+  // Between two of a folder's layers: in it.
+  for (std::size_t i = 1; i + 1 < ls.size(); ++i) {
+    const std::string& f = ls[i - 1].folder;
+    if (!f.empty() && ls[i + 1].folder == f) {
+      ls[i].folder = f;
+    }
+  }
+  // Each folder's longest run (the topmost of equal ones) keeps it.
+  std::map<std::string, std::pair<std::size_t, std::size_t>> run;
+  for (std::size_t i = 0; i < ls.size();) {
+    const std::string f = ls[i].folder;
+    std::size_t j = i;
+    while (j < ls.size() && ls[j].folder == f) {
+      ++j;
+    }
+    if (!f.empty()) {
+      auto it = run.find(f);
+      if (it == run.end() || j - i >= it->second.second) {
+        run[f] = {i, j - i};
+      }
+    }
+    i = j;
+  }
+  for (std::size_t i = 0; i < ls.size(); ++i) {
+    if (ls[i].folder.empty()) {
+      continue;
+    }
+    const auto [start, len] = run[ls[i].folder];
+    if (i < start || i >= start + len) {
+      ls[i].folder.clear();
+    }
+  }
+  std::erase_if(a.layer_folders, [&](const LayerFolder& f) {
+    return !run.contains(f.id);
+  });
 }
 
 void

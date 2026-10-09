@@ -21,7 +21,7 @@ struct CapName {
   const char* label;
 };
 
-constexpr std::array<CapName, 15> kCapNames = {{
+constexpr std::array<CapName, 16> kCapNames = {{
   {Capability::TextToImage, "text-to-image", "Text to image"},
   {Capability::ImageEdit, "image-edit", "Image edit"},
   {Capability::TextToVideo, "text-to-video", "Text to video"},
@@ -37,6 +37,7 @@ constexpr std::array<CapName, 15> kCapNames = {{
   {Capability::AudioOutput, "audio-output", "Video with audio"},
   {Capability::TextToAudio, "text-to-audio", "Text to audio"},
   {Capability::TextToSpeech, "text-to-speech", "Text to speech"},
+  {Capability::Transcribe, "audio-transcribe", "Transcribe audio"},
 }};
 
 }
@@ -153,6 +154,7 @@ read_entry(const Json& m, const Contributor& who, ModelEntry& e,
   e.subdir = jget<std::string>(m, "subdir", "");
   e.file = jget<std::string>(m, "file", "");
   e.fetch_variant = jget<std::string>(m, "fetch_variant", "");
+  e.package = jget<std::string>(m, "package", "");
   e.family = jget<std::string>(m, "family", "");
   e.role = jget<std::string>(m, "role", "");
   for (const auto& c : jget(m, "capabilities",
@@ -553,6 +555,7 @@ feature_capabilities(std::string_view f)
   if (f == "image-edit") { return {C::ImageEdit}; }
   if (f == "audio-gen") { return {C::TextToAudio}; }
   if (f == "speech-gen") { return {C::TextToSpeech}; }
+  if (f == "audio-transcribe") { return {C::Transcribe}; }
   if (f == "helper") { return {C::PromptEnhance, C::Intent}; }
   if (f == "video-upscale") { return {C::UpscaleVideo}; }
   if (f == "image-upscale") { return {C::UpscaleImage}; }

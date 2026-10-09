@@ -81,6 +81,9 @@ inline constexpr std::string_view kOpUpscaleVideo = "upscale-video";
 // output is a 16-bit PNG.
 inline constexpr std::string_view kOpUpscaleImage = "upscale-image";
 inline constexpr std::string_view kOpChat = "chat";
+// A sound -- a clip's -- transcribed: its speech and the sound events
+// heard (DESIGN §4h), a summary written as a text file.
+inline constexpr std::string_view kOpTranscribeAudio = "transcribe-audio";
 inline constexpr std::string_view kOpFetchModel = "fetch-model";
 // One input (role "source") written again in another format: a still as
 // a 16-bit PNG / TIFF, OpenEXR, or 8-bit; a movie as ProRes 4444 (with

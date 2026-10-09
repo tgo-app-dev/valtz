@@ -85,6 +85,14 @@ bool needs_render(const SoundPlan&);
 Result<bool> mix_sound(const SoundPlan& plan,
                        const std::filesystem::path& out);
 
+// A file's SOUND as ONE channel at `rate` Hz, written as a 16-bit WAV --
+// what a speech model hears (DESIGN §4h): every sound track of it (a
+// clip's too) read at its own channel count, each sample's channels
+// AVERAGED -- every channel heard, none dropped or weighted -- then the
+// tracks averaged where they overlap. Its length, in seconds. Blocking.
+Result<double> mono_sound(const std::filesystem::path& in,
+                          const std::filesystem::path& out, int rate);
+
 // A sound as `channels` (1, mixed down; 2) at `rate` Hz -- a project's
 // output (project::OutputSettings) -- written as a 24-bit WAV. Blocking.
 Status convert_sound(const std::filesystem::path& in,

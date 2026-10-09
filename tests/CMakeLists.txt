@@ -13,6 +13,7 @@ add_executable(valtz_test
   workspace-test.cc
   models-test.cc
   assist-test.cc
+  fleet-test.cc
   ext-test.cc
   controller-test.cc
   model-input-test.cc

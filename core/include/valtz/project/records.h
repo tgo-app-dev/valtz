@@ -193,6 +193,8 @@ struct Layer {
   std::uint32_t          source_version = 0;
   bool                   mask = false;
   LayerTime              time;
+  // The FOLDER it is in (Asset::layer_folders); "" none.
+  std::string            folder;
   // From before 2026-10-04, read by the migration only: the layer showed
   // the asset's own image (`own`), or held its markup.
   bool                   own = false;
@@ -201,6 +203,15 @@ struct Layer {
 
   // Nothing on it yet: a new layer, waiting for content.
   bool empty() const { return !own && !source && !markup; }
+};
+
+// A FOLDER of a composition's layers (DESIGN §6a): a name its layers --
+// each naming it (Layer::folder) -- are gathered under. It draws nothing
+// of its own; its layers lie together in the stack (tidy_layer_folders).
+struct LayerFolder {
+  std::string id;
+  std::string name;
+  Json        rest = Json::object();  // keys not read, kept
 };
 
 // What happens where two layers' spans OVERLAP in a composition's time
@@ -232,8 +243,9 @@ struct Asset {
   LinkInfo                 link;  // when linked
   // A composition's: its layers' looks and tracks (Modifier).
   std::vector<Modifier>    modifiers;
-  // A composition's layers, bottom first.
+  // A composition's layers, bottom first, and the folders they are in.
   std::vector<Layer>       layers;
+  std::vector<LayerFolder> layer_folders;
   // A composition's frame and canvas (media::StackCanvas).
   media::StackCanvas       canvas;
   // A composition's length, in its frames; 0: the latest end among its
@@ -261,6 +273,13 @@ struct Asset {
   std::string              kind_name;
   Json                     rest = Json::object();  // keys not read, kept
 };
+
+// A composition's folders kept TIDY: a folder's layers lie together in
+// the stack -- a layer between two of its layers joins it; of its layers
+// apart from each other, the longest run keeps it (the topmost of equal
+// runs) and the others leave -- a layer naming no folder there names none,
+// and a folder with no layer goes. Every write of layers keeps it so.
+void tidy_layer_folders(Asset&);
 
 struct RecipeInput {
   std::string   role;         // "reference", "init_image", "mask", ...

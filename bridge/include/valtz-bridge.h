@@ -76,6 +76,18 @@ public:
   // {"drafter": "mtp" | "dflash", "drafter_bits": 8 | 4}: what it
   // drafts with.
   std::string assistants_json() const;
+  // The FLEET (Controller::fleet_status, DESIGN §11): this Mac's place in
+  // one, its members, the fleets on the network, the job it serves.
+  // fleet_configure ({"member_name", "discoverable", "accept",
+  // "schedule", "fleet", "secret"}: a fleet made, joined or -- "fleet":
+  // "" -- left); fleet_browse ({"on"}: the network looked over for
+  // fleets); fleet_answer ({"job", "accept"}: a member's offer, asked).
+  // Events: "fleet.changed", "fleet.ask", "fleet.serving",
+  // "fleet.progress", "job.runner".
+  std::string fleet_status() const;
+  std::string fleet_configure(const std::string& request_json);
+  std::string fleet_browse(const std::string& request_json);
+  std::string fleet_answer(const std::string& request_json);
   std::string choose_assistant(const std::string& request_json);
   // {"seq", "max"?} -> {"ok", "rows", "next", "first"}: the Log view's
   // rows after `seq` (Controller::log_since); clear_log empties it.
@@ -228,9 +240,11 @@ public:
   // a composition's or a markup's rendering, made and cached as needed
   // (an audio timeline's mix, a still's picture). Blocking.
   std::string rendered_path(const std::string& request_json);
-  // {"project", "asset", "live"?: {"layer", "adjust", "crop"}}: a clip's
-  // stack, ready to draw for the player (media::StackRenderer) -- the
-  // layer being edited with its tracks as the panels hold them.
+  // {"project", "asset", "live"?: {"layer", "adjust", "crop"},
+  //  "hidden"?: [markup object ids]}: a clip's stack, ready to draw for
+  // the player (media::StackRenderer) -- the layer being edited with its
+  // tracks as the panels hold them, the markup objects being edited left
+  // out (the app draws them, live).
   // {"plan": token, "width", "height", "frames", "rate_num", "rate_den",
   //  "seconds", "clips": [the video layers' files, in order],
   //  "segments": [per clip: [[at, length, source, source_length]...]]
@@ -286,7 +300,10 @@ public:
   // after the last) -> {"page"}; "page-remove" ("page"); "pages"
   // ("layer", "first", "count": 0 to the last page); "add" and
   // "markup-target" take the "page" shown (a new layer on it alone).
-  // Assets list a still's "pages" (absent: one).
+  // Assets list a still's "pages" (absent: one). On a timeline
+  // "markup-target" takes the player's "frame" (a new layer from it, a
+  // second long); "slide" ("layer", "offset") and "stretch" ("layer",
+  // "length": a still's, in frames -- or pages) are the timeline's drags.
   // Markup (media/markup.h): "markup-target" ("selected": [layer ids])
   // -> {"layer"}: the layer to draw on, made when there is none;
   // "canvas" -> {"width", "height"}; "stroke" ("layer", "stroke");

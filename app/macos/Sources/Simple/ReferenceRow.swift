@@ -134,8 +134,16 @@ private struct ReferenceThumb: View {
                 }
             }
             .overlay(alignment: .topTrailing) {
-                if item.kind == "image" && (item.isBase || hovering) {
+                if item.kind == "image"
+                    && (item.isBase || hovering || hinted) {
                     pencil
+                        // The edit-base suggestion, pointing at it.
+                        .appKitPopover(isPresented: Binding(
+                            get: { hinted },
+                            set: { if !$0 { model.baseHint = nil } }),
+                                       arrowEdge: .top) {
+                            BaseHint()
+                        }
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -226,6 +234,8 @@ private struct ReferenceThumb: View {
         return h * min(max(a, 0.75), 1.6)
     }
 
+    private var hinted: Bool { model.baseHint == item.id && !item.isBase }
+
     /// The base toggle: accent on the base, faint on the others.
     private var pencil: some View {
         Button {
@@ -278,6 +288,28 @@ private struct ReferenceThumb: View {
 
 /// A thumbnail dragged along the row: the others make room as it passes,
 /// and it lands where it is let go.
+/// The EDIT-BASE SUGGESTION: what the pencil on a picture of the row does
+/// -- marked, the model changes that picture; unmarked, it draws from it.
+private struct BaseHint: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "pencil.circle.fill")
+                .font(.system(size: 22))
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("The picture to edit?")
+                    .font(.headline)
+                Text("If this is the picture to change, click the pencil to mark it. Unmarked, it is a reference the model draws from.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(14)
+        .frame(width: 290, alignment: .leading)
+    }
+}
+
 private struct ReorderDrop: DropDelegate {
     let target: UUID
     let model: AppModel
@@ -303,5 +335,29 @@ private struct ReorderDrop: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         dragging = nil
         return true
+    }
+}
+
+extension AppModel {
+    /// The row's pictures changed: the first picture staged in an image
+    /// prompt -- not marked the base -- gets the suggestion, once its
+    /// thumbnail is there (the pencil sits where it ends up); a picture
+    /// gone, or marked, takes it with it.
+    func suggestBase(was: [UUID], now: [UUID]) {
+        if let h = baseHint, !now.contains(h) { baseHint = nil }
+        guard was.isEmpty, let first = now.first,
+              activeModality == .image,
+              promptAttachments.first(where: { $0.id == first })?.isBase
+                  == false else { return }
+        Task { @MainActor [weak self] in
+            for _ in 0..<40 where self?.referenceThumbs[first] == nil {
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            try? await Task.sleep(for: .milliseconds(150))
+            guard let self, self.activeModality == .image,
+                  let item = self.promptAttachments.first(where: {
+                      $0.id == first }), !item.isBase else { return }
+            self.baseHint = first
+        }
     }
 }

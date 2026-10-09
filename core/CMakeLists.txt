@@ -45,7 +45,10 @@ set(VALTZ_CORE_SOURCES
   src/models/tuning.cc
   src/assist/assistant.cc
   src/assist/rewrite-prompts.cc
+  src/assist/transcript.cc
   src/ext/extension.cc
+  src/fleet/fleet-config.cc
+  src/fleet/fleet.mm
   src/engine/engine.cc
   src/engine/tensor.cc
   src/engine/null-engine.cc
@@ -139,6 +142,8 @@ target_link_libraries(valtz_core PUBLIC
   "-framework Metal"
   "-framework IOSurface"
   "-framework IOKit"
+  "-framework Network"
+  "-framework Security"
   "-framework ScreenCaptureKit")
 # PRIVATE: definitions on a PUBLIC interface would reach swiftc, where
 # -D takes no value.
@@ -147,6 +152,7 @@ target_compile_definitions(valtz_core PRIVATE
   $<$<BOOL:${VALTZ_HAVE_VPIPE}>:VALTZ_HAVE_VPIPE=1>)
 set_source_files_properties(
   src/media/camera.mm src/media/capture.mm
+  src/fleet/fleet.mm
   src/media/exif.mm src/media/markup.mm src/media/model-input.mm
   src/media/movie.mm
   src/media/probe.mm src/media/thumbnail.mm

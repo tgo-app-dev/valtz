@@ -150,6 +150,8 @@ Result<PreviewPicture> preview_movie_frame(const std::filesystem::path& src,
 // (StackCanvas::framed) places every layer on it; one from before has its
 // bottom clip set the frame, through its crop, as a still's does.
 struct MovieLayer {
+  std::string           id;     // its layer's (not written: a job's stack
+                                // has no use for it)
   std::filesystem::path file;   // a clip, a still, a markup PNG, a sound
   DrawnPicture          drawn;  // markup drawn in memory, in place of it
   bool                  video = false;

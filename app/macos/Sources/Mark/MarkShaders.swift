@@ -25,7 +25,8 @@ struct SceneUniforms {
     float4   holes[8];       // centre xy, the strip edge's direction xy
     float4   hole_shapes[8]; // cross direction xy, half size across, along
     float4   sweep;          // a passing point light: xyz (design px, z in front), w strength
-    float4   ground;         // x: 1 = the mark sits on a light ground
+    float4   ground;         // x: 1 = the mark sits on a light ground;
+                             // y: blue, 0...1 (a fleet job)
 };
 
 struct VertexIn {
@@ -90,6 +91,30 @@ struct SceneOut {
     float4 color [[color(0)]];
     float4 glow  [[color(1)]];
 };
+
+// BLUE (u.ground.y): the colour's hue turned 205 degrees -- the reds,
+// oranges and yellows of the ribbon, its warm edges and glow, into the
+// sky's blues and teals -- its luminance kept (the CSS hue-rotate
+// matrix, on linear light).
+static float3 cool(float3 c, float k) {
+    if (k <= 0.0) {
+        return c;
+    }
+    const float a = 205.0 * M_PI_F / 180.0;
+    const float co = cos(a);
+    const float si = sin(a);
+    const float3x3 m = float3x3(
+        float3(0.213 + co * 0.787 - si * 0.213,
+               0.213 - co * 0.213 + si * 0.143,
+               0.213 - co * 0.213 - si * 0.787),
+        float3(0.715 - co * 0.715 - si * 0.715,
+               0.715 + co * 0.285 + si * 0.140,
+               0.715 - co * 0.715 + si * 0.715),
+        float3(0.072 - co * 0.072 + si * 0.928,
+               0.072 - co * 0.072 - si * 0.283,
+               0.072 + co * 0.928 + si * 0.072));
+    return mix(c, max(m * c, 0.0), k);
+}
 
 fragment SceneOut scene_fragment(VertexOut in [[stage_in]],
                                  constant SceneUniforms& u [[buffer(1)]]) {
@@ -169,9 +194,11 @@ fragment SceneOut scene_fragment(VertexOut in [[stage_in]],
 
     SceneOut o;
     if (!glass) {
-        o.color = float4(lit * (1.0 - 0.5 * saturate(hair)) + emit, coverage);
+        o.color = float4(cool(lit * (1.0 - 0.5 * saturate(hair)) + emit,
+                              u.ground.y), coverage);
         // Only the hairlines glow: the artwork has no haze outside its edges.
-        o.glow = float4(emit * float3(1.0, 0.70, 0.35), 1.0) * coverage;
+        o.glow = float4(cool(emit * float3(1.0, 0.70, 0.35), u.ground.y),
+                        1.0) * coverage;
         return o;
     }
 
@@ -257,8 +284,9 @@ fragment SceneOut scene_fragment(VertexOut in [[stage_in]],
     // the edges' hairlines (a glass edge catches the light).
     const float a = saturate(alpha + refl_a * (1.0 - alpha) + 0.8 * hair) * coverage;
     const float3 rgb = (glass_tint * alpha * (1.0 - 0.4 * saturate(hair)) + refl + emit) * coverage;
-    o.color = float4(rgb, a);
-    o.glow = float4(emit * float3(1.0, 0.70, 0.35) + refl * 0.25, 1.0) * coverage;
+    o.color = float4(cool(rgb, u.ground.y), a);
+    o.glow = float4(cool(emit * float3(1.0, 0.70, 0.35) + refl * 0.25,
+                         u.ground.y), 1.0) * coverage;
     return o;
 }
 

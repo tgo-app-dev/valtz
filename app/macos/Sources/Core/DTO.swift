@@ -60,7 +60,13 @@ struct CapabilityStatus: Decodable, Sendable, Identifiable {
     var capability: String
     var label: String       // English, from the core's catalog
     /// `label` in the user's language, by the capability's stable id.
-    var localizedLabel: String {
+    var localizedLabel: String { Self.localizedLabel(capability, label) }
+
+    /// A capability named in the user's language by its id -- a fleet
+    /// member's, which comes without a label (`english`: the catalog's,
+    /// else the id read as words).
+    static func localizedLabel(_ capability: String,
+                               _ english: String? = nil) -> String {
         switch capability {
         case "text-to-image": String(localized: "Text to image")
         case "image-edit": String(localized: "Image edit")
@@ -75,7 +81,10 @@ struct CapabilityStatus: Decodable, Sendable, Identifiable {
         case "caption": String(localized: "Image captioning")
         case "alpha-output": String(localized: "Transparent output")
         case "audio-output": String(localized: "Video with audio")
-        default: label
+        case "audio-transcribe": String(localized: "Transcribe audio")
+        case "text-to-audio": String(localized: "Text to audio")
+        case "text-to-speech": String(localized: "Text to speech")
+        default: english ?? capability.replacingOccurrences(of: "-", with: " ")
         }
     }
     var availability: String  // ready | needs-download | needs-more-ram | ...
@@ -417,6 +426,9 @@ struct StackPlayback: Equatable, Sendable {
     var audio: [StackAudio] = []
     var mix: URL? = nil
     var seconds: Double = 0
+    /// Each layer where it lies in time, as the core resolved it (the
+    /// timeline draws them).
+    var layers: [StackSpan] = []
 
     /// Sound alone: nothing drawn (no renderer).
     var soundOnly: Bool { plan == 0 }
@@ -429,6 +441,24 @@ struct StackPlayback: Equatable, Sendable {
                              "\(segments)", "\(audio.map(\.shape))",
                              mix?.path ?? ""]
     }
+}
+
+/// A layer of a timeline in time (core media::LayerTiming): its span in
+/// timeline seconds -- `length` nil while it runs on to the end, as a
+/// picture does -- what of its source shows there (`from` to `until`,
+/// its seconds), what it is, and its file (a sound's waveform).
+struct StackSpan: Equatable, Sendable {
+    var id: String
+    var start: Double
+    var length: Double?
+    var from: Double
+    var until: Double?
+    var timed: Bool
+    var video: Bool
+    var audioOnly: Bool
+    var file: URL?
+
+    var end: Double? { length.map { start + $0 } }
 }
 
 /// One layer's sound, as the player plays it.
@@ -516,8 +546,9 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
     /// project::Modifier), applied when a file is made from it.
     var modifiers: [ModifierDTO]?
     /// Its layer stack, bottom first (core project::Layer); nil or empty:
-    /// the picture is its own image.
+    /// the picture is its own image. Its layers' folders.
     var layers: [LayerDTO]?
+    var layerFolders: [LayerFolderDTO]?
     /// How long its current version took to make; nil for a source, or a
     /// result made before it was kept.
     var timing: TimingDTO?
@@ -1105,6 +1136,8 @@ struct LayerDTO: Decodable, Sendable, Hashable, Identifiable {
     var markup: MarkupDTO? = nil
     var mask = false
     var time: LayerTimeDTO? = nil
+    /// The folder it is in (AssetDTO.layerFolders); nil: none.
+    var folder: String? = nil
 
     /// What it shows: a name given, or "Layer 0" (id ""), "Layer 2".
     var title: String {
@@ -1121,7 +1154,7 @@ struct LayerDTO: Decodable, Sendable, Hashable, Identifiable {
     }
 
     private enum K: String, CodingKey {
-        case id, name, visible, own, source, markup, mask, time
+        case id, name, visible, own, source, markup, mask, time, folder
     }
 
     init(from d: Decoder) throws {
@@ -1141,7 +1174,16 @@ struct LayerDTO: Decodable, Sendable, Hashable, Identifiable {
             .flatMap { $0 } ?? false
         time = (try? c.decodeIfPresent(LayerTimeDTO.self, forKey: .time))
             .flatMap { $0 }
+        folder = (try? c.decodeIfPresent(String.self, forKey: .folder))
+            .flatMap { $0 }.flatMap { $0.isEmpty ? nil : $0 }
     }
+}
+
+/// A folder of a composition's layers (core project::LayerFolder): its
+/// layers lie together in the stack, each naming it.
+struct LayerFolderDTO: Decodable, Sendable, Hashable, Identifiable {
+    var id: String
+    var name: String
 }
 
 /// A generation refused for lack of memory (job.failed with "memory",

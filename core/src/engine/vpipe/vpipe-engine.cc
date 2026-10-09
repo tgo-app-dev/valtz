@@ -24,12 +24,14 @@
 #include "valtz/models/hardware.h"
 #include "valtz/engine/engine.h"
 
+#include "valtz/assist/transcript.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
 #include "valtz/media/exif.h"
 #include "valtz/media/model-input.h"
 #include "valtz/media/movie.h"
 #include "valtz/media/probe.h"
+#include "valtz/media/sound.h"
 #include "engine/vpipe/flex-json.h"
 #include "engine/vpipe/graph-builder.h"
 #include "engine/vpipe/host-exchange.h"
@@ -48,6 +50,7 @@
 #include <cstdlib>
 #include <deque>
 #include <format>
+#include <fstream>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -207,7 +210,8 @@ public:
            op == kOpGenerateVideo || op == kOpGenerateAudio ||
            op == kOpGenerateSpeech || op == kOpQuantizeModel ||
            op == kOpChat || op == kOpFetchModel || op == kOpExportMedia ||
-           op == kOpUpscaleVideo || op == kOpUpscaleImage;
+           op == kOpUpscaleVideo || op == kOpUpscaleImage ||
+           op == kOpTranscribeAudio;
   }
 
   Status
@@ -493,6 +497,24 @@ private:
       }
     }
     Result<vp::BuiltGraph> built = make_error(Code::Internal, "");
+    // A sound to transcribe: heard as one channel at 16 kHz -- every
+    // track of it, each sample's channels averaged (media::mono_sound) --
+    // which the graph reads.
+    fs::path mono;
+    double mono_seconds = 0;
+    if (spec.op == kOpTranscribeAudio) {
+      if (spec.inputs.empty()) {
+        fail_(q, Code::InvalidArgument, "nothing to transcribe");
+        return;
+      }
+      mono = spec.output_dir / (spec.id.str() + "-mono.wav");
+      auto s = media::mono_sound(spec.inputs.front().path, mono, 16000);
+      if (!s.ok()) {
+        fail_(q, s.code(), s.error().message);
+        return;
+      }
+      mono_seconds = *s;
+    }
     if (spec.op == kOpGenerateImage) {
       built = vp::build_text_to_image(spec);
     } else if (spec.op == kOpEditImage) {
@@ -517,6 +539,8 @@ private:
       built = vp::build_upscale_image(spec);
     } else if (spec.op == kOpChat) {
       built = vp::build_chat(spec);
+    } else if (spec.op == kOpTranscribeAudio) {
+      built = vp::build_transcribe(spec, mono);
     } else if (spec.op == kOpFetchModel) {
       built = vp::build_fetch_model(spec);
     } else if (spec.op == kOpExportMedia) {
@@ -570,6 +594,35 @@ private:
     auto on_result = [&](vp::SinkBeat&& b) {
       std::lock_guard lk(result_mu);
       result_text += jget<std::string>(b.meta, "text", "");
+    };
+    // A sound transcribed: its lines of speech -- how far into the sound
+    // they reach is its progress -- and the tagger's windows.
+    assist::Transcript transcript;
+    transcript.seconds = mono_seconds;
+    std::vector<Json> windows;
+    auto on_transcript = [&](vp::SinkBeat&& b) {
+      auto line = assist::transcript_line(b.meta);
+      if (!line) {
+        return;
+      }
+      JobEvent ev;
+      ev.job = spec.id;
+      ev.kind = JobEventKind::Progress;
+      ev.progress = mono_seconds > 0
+          ? static_cast<float>(std::min(1.0, line->end / mono_seconds))
+          : -1.0f;
+      ev.data = {{"phase", "transcribe"},
+                 {"done", std::lround(line->end)},
+                 {"total", std::lround(mono_seconds)}};
+      {
+        std::lock_guard lk(result_mu);
+        transcript.lines.push_back(std::move(*line));
+      }
+      q.sink(ev);
+    };
+    auto on_events = [&](vp::SinkBeat&& b) {
+      std::lock_guard lk(result_mu);
+      windows.push_back(std::move(b.meta));
     };
     // A song's score: one string beat, the ABC it followed.
     std::string score;
@@ -630,8 +683,10 @@ private:
       phase = std::move(now);
       sent = t;
     };
-    // A chat's progress is its streamed text.
-    const bool reports = spec.op != kOpChat;
+    // A chat's progress is its streamed text; a transcription's, how far
+    // its lines reach.
+    const bool reports = spec.op != kOpChat &&
+                         spec.op != kOpTranscribeAudio;
 
     // A long export shows what it writes (kPhaseExport): a small frame
     // every half second, as a generation's preview -- drawn from the
@@ -713,6 +768,8 @@ private:
     read(g.text_sink, on_text);
     read(g.result_sink, on_result);
     read(g.score_sink, on_score);
+    read(g.transcript_sink, on_transcript);
+    read(g.events_sink, on_events);
 
     // References go in now, decoded straight into beats the graph leased
     // us: no file is re-read by vpipe and no pixel is copied after the
@@ -835,6 +892,33 @@ private:
       if (!score.empty()) {
         out.data = {{"score", score}};
       }
+      q.sink(out);
+    } else if (spec.op == kOpTranscribeAudio) {
+      // Its summary, as text: the lines in order, the windows as events.
+      std::ranges::sort(transcript.lines,
+                        [](const auto& a, const auto& b) {
+                          return a.start < b.start;
+                        });
+      transcript.tagged = !g.events_sink.empty();
+      transcript.events = assist::sound_events(windows);
+      const fs::path text = spec.output_dir / (spec.id.str() + ".txt");
+      {
+        std::ofstream f(text, std::ios::binary);
+        f << assist::transcript_summary(
+            jget<std::string>(spec.params, "name", ""), transcript);
+        if (!f) {
+          fail_(q, Code::Io, "could not write the transcript");
+          return;
+        }
+      }
+      fs::remove(mono, ec);
+      JobEvent out;
+      out.job = spec.id;
+      out.kind = JobEventKind::Output;
+      out.output = text;
+      out.output_info.type = media::MediaType::Text;
+      out.output_info.uti = "public.utf8-plain-text";
+      out.data = {{"transcript", assist::to_json(transcript)}};
       q.sink(out);
     } else if (spec.op == kOpChat) {
       if (result_text.empty()) {

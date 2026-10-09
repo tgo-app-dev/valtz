@@ -42,6 +42,9 @@ final class MarkRenderer {
     /// The mark as a flat white silhouette -- no shading, no glow: what
     /// reads at 16 x 16, where the ribbon's detail would be mush.
     var flat = false
+    /// The mark in BLUE (0...1): its hue turned to the sky's, its light
+    /// and shade kept -- the Mac at work on a fleet job (DESIGN §11).
+    var blue: Float = 0
     /// The mark sits on a light ground (the light appearance): its glass
     /// is then denser and more saturated, so white behind it does not
     /// wash it out.
@@ -190,7 +193,7 @@ final class MarkRenderer {
             holeShapes: (holeShapes[0], holeShapes[1], holeShapes[2], holeShapes[3],
                          holeShapes[4], holeShapes[5], holeShapes[6], holeShapes[7]),
             sweep: sweepLight(),
-            ground: SIMD4(lightGround && material == .glass ? 1 : 0, 0, 0, 0))
+            ground: SIMD4(lightGround && material == .glass ? 1 : 0, blue, 0, 0))
 
         // 1. The layers, back to front (painter's order, no depth), MSAA,
         //    into the HDR color and glow targets.
@@ -403,7 +406,7 @@ private struct SceneUniforms {
     var holeShapes: (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>,
                      SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>)
     var sweep: SIMD4<Float>    // toward the passing light, strength
-    var ground: SIMD4<Float>   // x: light ground (0/1)
+    var ground: SIMD4<Float>   // x: light ground (0/1); y: blue (0...1)
 }
 
 private struct BlurUniforms {

@@ -23,6 +23,12 @@
   <string>Valtz records sound from the microphone you choose into an audio asset of your project.</string>
   <key>NSCameraUsageDescription</key>
   <string>Valtz takes a photo or a video with the camera, to use in your prompt.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Valtz finds the other Macs of your fleet on this network, sends them the jobs this Mac cannot run, and runs theirs.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_valtz-fleet._tcp</string>
+  </array>
   <key>NSPrincipalClass</key>              <string>NSApplication</string>
 
   <!-- A project is a package directory (one LMDB file + a blob store);

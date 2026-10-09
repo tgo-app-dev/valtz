@@ -70,35 +70,76 @@ struct ComposerStack: View {
     /// Between the two headers.
     private let tabGap: CGFloat = 8
 
+    /// The timeline in the prompt's place (DESIGN §10a Timeline): no
+    /// modality tab, no generation card -- the other cards tucked under it
+    /// as under the prompt.
+    private var timeline: Bool { !immersive && model.timelineOpen }
+
     var body: some View {
         // The tab first: its foot, under the card, is drawn behind it.
         VStack(alignment: .leading, spacing: 0) {
-            if !immersive {
+            if !immersive && !timeline {
                 ModalityTab(model: model)
                     .transition(.opacity)
             }
             ZStack(alignment: .top) {
                 if !immersive {
                     tray
+                        // Under the wide timeline, where it is under the
+                        // prompt: its width, centred, its headers at the
+                        // prompt's right -- not out at the timeline's.
+                        .frame(maxWidth: timeline
+                               ? SimpleView.columnWidth - 2 * trayInset
+                               : .infinity)
                         .padding(.horizontal, trayInset)
-                        .padding(.top, rowHeight + promptHeight - tuck)
+                        .padding(.top, timeline
+                                 ? TimelineCard.height(rows: model.timelineRows)
+                                     - tuck
+                                 : rowHeight + promptHeight - tuck)
                         .transition(.opacity)
                 }
-                promptCard
+                // The prompt slides out to the left as the timeline comes
+                // in from the right, and back.
+                if timeline {
+                    TimelineCard(model: model)
+                        .overlay(alignment: .leading) {
+                            TimelineSwitch(toTimeline: false) {
+                                model.showTimeline(false)
+                            }
+                            .offset(x: -36)
+                        }
+                        .transition(.move(edge: .trailing)
+                            .combined(with: .opacity))
+                } else {
+                    promptCard
+                        .overlay(alignment: .trailing) {
+                            if !immersive && model.timelineAvailable {
+                                TimelineSwitch(toTimeline: true) {
+                                    model.showTimeline(true)
+                                }
+                                .offset(x: 36)
+                                .transition(.opacity)
+                            }
+                        }
+                        .transition(.move(edge: .leading)
+                            .combined(with: .opacity))
+                }
             }
         }
         .onChange(of: model.openPanel) { _, p in
             // Custom's panel belongs to the generation card.
             if p != .generate { model.showsTuning = false }
             if let p { lastPanel = p }
-            // The Crop card shows the whole canvas; closing it ends the
-            // editing (a drag on the stage pans the view again).
+            // The Crop card shows the whole canvas.
             if p == .crop { model.stage.fitRequest += 1 }
-            if p != .crop { model.cropEditing = false }
             model.panelChanged(to: p)
         }
-        .onChange(of: model.cropEditing) { _, _ in
-            model.stage.fitRequest += 1
+        // The generation card goes with the prompt.
+        .onChange(of: model.timelineOpen) { _, open in
+            if open && model.openPanel == .generate {
+                withAnimation(AppModel.motion) { model.openPanel = nil }
+            }
+            if !open { model.timelineCutting = false }
         }
         // The Adjust and Crop tabs go when the stage has nothing for them;
         // their cards go with them.
@@ -499,7 +540,10 @@ struct ComposerStack: View {
                         .fixedSize()
                         .transition(.opacity)
                 }
-                generateTab
+                if !timeline {
+                    generateTab
+                        .transition(.opacity)
+                }
             }
         }
         // Added to the headers' anchors, not in place of them.
@@ -794,12 +838,14 @@ struct ComposerStack: View {
     /// file. The prompt card's paperclip, and immersive editing's.
     static func attach(_ model: AppModel) {
         let panel = NSOpenPanel()
+        panel.directoryURL = model.panelFolder(.attach)
         // A song's: lyrics, a text file a song (vpipe's songs-from-lyrics),
         // into the prompt after its words.
         if model.activeModality == .audio {
             panel.allowedContentTypes = [.plainText, .text]
             panel.message = String(localized: "Choose a lyrics file")
             if panel.runModal() == .OK, let url = panel.url {
+                model.rememberPanel(.attach, chose: url)
                 withAnimation(AppModel.motion) { model.addLyrics(from: url) }
             }
             return
@@ -809,6 +855,7 @@ struct ComposerStack: View {
         panel.allowedContentTypes = model.activeModality == .video
             ? [.image, .movie, .audio] : [.image, .movie]
         if panel.runModal() == .OK {
+            model.rememberPanel(.attach, chose: panel.urls.first)
             model.addReferences(panel.urls)
         }
     }
@@ -1146,10 +1193,11 @@ private struct AdjustPanel: View {
                 .gridColumnAlignment(.trailing)
                 .onTapGesture(count: 2) { model.setAdjustment(key, 0) }
                 .help("Double-click to reset")
-            Slider(value: Binding(get: { model.adjustments[key] },
-                                  set: { model.setAdjustment(key, $0) }),
-                   in: key.range)
+            CenteredSlider(value: Binding(get: { model.adjustments[key] },
+                                          set: { model.setAdjustment(key, $0) }),
+                           range: key.range)
                 .frame(minWidth: 110)
+                .accessibilityLabel(Text(key.label))
             AdjustValueField(model: model, key: key)
         }
     }
@@ -1404,15 +1452,18 @@ private struct DrawerSettings: View {
                          selection: optional(preference))
                 // Custom's options, from the Custom segment itself (the
                 // segments are equal: the middle of its share) -- not in
-                // the Prompt Editor, whose popover shows them inside.
-                .popover(isPresented: Binding(
-                             get: {
-                                 !tuneInline && model.showsTuning
-                                     && !model.promptImmersive
-                             },
-                             set: { if !tuneInline { model.showsTuning = $0 } }),
-                         attachmentAnchor: .point(customAnchor),
-                         arrowEdge: .top) {
+                // the Prompt Editor, whose popover shows them inside. AppKit's
+                // popover, semi-transient: it stays open while Valtz is
+                // left, for weights dragged in from the Finder.
+                .appKitPopover(isPresented: Binding(
+                                   get: {
+                                       !tuneInline && model.showsTuning
+                                           && !model.promptImmersive
+                                   },
+                                   set: {
+                                       if !tuneInline { model.showsTuning = $0 }
+                                   }),
+                               anchor: customAnchor, arrowEdge: .top) {
                     TuningPanel(model: model)
                 }
                 .onAppear { model.watchTuningPresses() }
@@ -1628,7 +1679,9 @@ private struct DrawerSettings: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.plainText, .text]
         panel.message = String(localized: "Choose a lyrics file")
+        panel.directoryURL = model.panelFolder(.attach)
         if panel.runModal() == .OK, let url = panel.url {
+            model.rememberPanel(.attach, chose: url)
             withAnimation(AppModel.motion) { model.addLyrics(from: url) }
         }
     }

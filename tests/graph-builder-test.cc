@@ -260,6 +260,51 @@ TEST(graph_builder, a_fetch_carries_its_token)
              .contains("hf_token"));
 }
 
+// A transcription (DESIGN §4h): the sound as one channel at 16 kHz, the
+// voice detector's spans and the PCM into the speech model, the tagger
+// beside them only when it is installed; refused without the detector.
+TEST(graph_builder, a_transcription_hears_one_channel)
+{
+  JobSpec job;
+  job.id = JobId::make();
+  job.op = std::string(kOpTranscribeAudio);
+  job.model.dir = "/m/Qwen/Qwen3-ASR-0.6B";
+  job.params = {{"vad_path", "/m/silero.mlpackage"},
+                {"tagger_path", "/m/beats.mlpackage"},
+                {"language", "English"}};
+  auto g = vp::build_transcribe(job, "/tmp/x-mono.wav");
+  REQUIRE_OK(g);
+  const Json* load = find_stage(g->spec, "load");
+  const Json* pcm = find_stage(g->spec, "pcm");
+  const Json* asr = find_stage(g->spec, "asr");
+  const Json* tags = find_stage(g->spec, "tags");
+  REQUIRE(load && pcm && asr && tags);
+  CHECK(jget<std::string>(config_of(load), "input_url", "") ==
+        "/tmp/x-mono.wav");
+  CHECK(jget(config_of(pcm), "channels", 0) == 1);
+  CHECK(jget(config_of(pcm), "output_sample_rate", 0) == 16000);
+  CHECK(src_of(asr, 0) == "pcm");
+  CHECK(src_of(asr, 1) == "voice");
+  CHECK(jget<std::string>(config_of(asr), "hf_dir", "") ==
+        "/m/Qwen/Qwen3-ASR-0.6B");
+  CHECK(jget<std::string>(config_of(asr), "language_hint", "") ==
+        "English");
+  CHECK(jget<std::string>(config_of(tags), "model_kind", "") == "beats");
+  CHECK(g->transcript_sink == "transcript-sink");
+  CHECK(g->events_sink == "events-sink");
+
+  job.params.erase("tagger_path");
+  job.params.erase("language");
+  auto plain = vp::build_transcribe(job, "/tmp/x-mono.wav");
+  REQUIRE_OK(plain);
+  CHECK(!find_stage(plain->spec, "tags"));
+  CHECK(plain->events_sink.empty());
+  CHECK(!config_of(find_stage(plain->spec, "asr")).contains("language_hint"));
+
+  job.params.erase("vad_path");
+  CHECK(!vp::build_transcribe(job, "/tmp/x-mono.wav").ok());
+}
+
 TEST(graph_builder, export_graphs)
 {
   JobSpec job;

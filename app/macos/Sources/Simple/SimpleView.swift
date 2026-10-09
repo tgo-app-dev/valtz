@@ -57,9 +57,21 @@ struct SimpleView: View {
         }
         .animation(AppModel.motion, value: model.stageVisible)
         .animation(AppModel.motion, value: model.openPanel)
+        .animation(AppModel.motion, value: model.timelineOpen)
         .onGeometryChange(for: CGRect.self) {
             $0.frame(in: .global)
         } action: { area = $0 }
+        // The prompt row's first picture, in an image prompt: its pencil
+        // suggested -- the picture to edit, if it is one. Watched here:
+        // the row itself comes with its first item.
+        .onChange(of: model.promptAttachments.filter {
+            $0.kind == "image"
+        }.map(\.id)) { was, now in
+            model.suggestBase(was: was, now: now)
+        }
+        .onChange(of: model.activeModality) { _, _ in
+            model.baseHint = nil
+        }
     }
 
     /// The prompt's column: the stage's slot (or the mark) above the
@@ -89,6 +101,8 @@ struct SimpleView: View {
                     // The mark takes no drops: media go into the prompt,
                     // or onto a stage's layers.
                     HeroMark(sweep: model.markSweep)
+                        // A fleet job's overlay shows the mark, in blue.
+                        .opacity(model.fleetServing == nil ? 1 : 0)
                         .layoutPriority(1)
                         .padding(24)
                         .transition(.scale(scale: 0.8)
@@ -124,7 +138,11 @@ struct SimpleView: View {
             ComposerStack(model: model, maxPromptHeight: size.height / 2,
                           immersive: immersive, cardWidth: card)
                 .frame(width: immersive ? card : nil)
-                .frame(maxWidth: immersive ? nil : Self.columnWidth)
+                // The timeline is wide: the window's width but the
+                // margins, where its switch back sits.
+                .frame(maxWidth: immersive ? nil
+                       : model.timelineOpen ? max(base, size.width - 80)
+                       : Self.columnWidth)
                 .frame(maxHeight: immersive ? .infinity : nil,
                        alignment: .top)
                 // Wider, it grows to the right: its left edge stays.
@@ -349,18 +367,29 @@ private struct ResultStage: View {
                             core: model.core,
                             onFrame: { model.videoFrameChanged($0) },
                             onRate: { model.videoRate = $0 })
-                // "Adjust crop": a drag moves the picture on its canvas
-                // (the clip fills the card, so the card is the canvas).
-                .overlay {
-                    if model.cropEditing && model.clipOnStage {
-                        ClipCropDrag(model: model)
-                    }
-                }
                 // The guides over the clip (View › Show Guides): the clip
                 // fills the card. Not over a sound's waveform.
                 .overlay {
                     if model.showsGuides && !small && !model.stageIsAudio {
                         GuidesGrid()
+                    }
+                }
+                // Markup on the clip (DESIGN §10a Markup): drawn at the
+                // player's frame, the pointer in its canvas's pixels.
+                .overlay {
+                    if !small && model.markupReady && model.markupOnClip {
+                        ClipMarkupView(
+                            canvas: model.clipMarkupCanvas,
+                            origin: model.clipMarkupOrigin,
+                            overlay: model.markupOverlay,
+                            cursor: model.markup.tool.cursor,
+                            brushRadius: model.markup.tool == .brush
+                                || model.markup.tool == .eraser
+                                ? model.markup.radius : 0,
+                            brushSoftness: model.markup.softness,
+                            onPointer: { model.markupPointer($0) },
+                            onKey: { model.markupKey($0) },
+                            canKey: { model.markupCan($0) })
                     }
                 }
                 // Not in the selected clip -- past its end, before its
@@ -385,16 +414,9 @@ private struct ResultStage: View {
                 zoomInRequest: model.stage.zoomInRequest,
                 zoomOutRequest: model.stage.zoomOutRequest,
                 unfitRequest: model.stage.unfitRequest,
-                // Editing a crop leaves room around the canvas, where the
-                // picture's overhang shows.
-                fitMargin: model.cropEditing ? 0.8 : 1, background: nil,
+                fitMargin: 1, background: nil,
                 crop: model.stageCropPlacement,
-                cropEditing: model.cropEditing,
-                cropDragsFlat: model.stageComposed,
                 guides: model.showsGuides && !small,
-                onCropDrag: { d in
-                    model.cropPan(dx: d.width, dy: d.height)
-                },
                 markupActive: !small && model.markupReady,
                 brushRadius: model.markup.tool == .brush
                     || model.markup.tool == .eraser ? model.markup.radius : 0,
@@ -550,34 +572,6 @@ private func fittedSize(aspect: CGFloat, in box: CGSize) -> CGSize {
     return CGSize(width: w, height: w / aspect)
 }
 
-
-/// Over a clip while its crop is edited: a drag moves the picture on its
-/// canvas -- view points to canvas pixels by the card's width.
-private struct ClipCropDrag: View {
-    @Bindable var model: AppModel
-    @State private var last: CGPoint?
-
-    var body: some View {
-        GeometryReader { g in
-            Color.clear
-                .contentShape(Rectangle())
-                .pointerStyle(.grabIdle)
-                .gesture(DragGesture(minimumDistance: 0)
-                    .onChanged { v in
-                        let canvas = model.stackPlayback.map {
-                            CGSize(width: $0.width, height: $0.height)
-                        } ?? model.cropCanvas(model.crop)
-                        let k = canvas.width > 0 && g.size.width > 0
-                            ? canvas.width / g.size.width : 1
-                        let p = last ?? v.startLocation
-                        model.cropPan(dx: (v.location.x - p.x) * k,
-                                      dy: (v.location.y - p.y) * k)
-                        last = v.location
-                    }
-                    .onEnded { _ in last = nil })
-        }
-    }
-}
 
 /// Continue's menu while it is open (a scripted snapshot reads and closes
 /// it).

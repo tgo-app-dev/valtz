@@ -228,12 +228,12 @@ struct MarkupBar: View {
     /// goes on, or a new one.
     private var target: String {
         guard model.markupReady else {
-            return model.stagePicture == nil
-                ? String(localized: "Markup goes on a picture on the stage")
+            return model.markupAsset == nil
+                ? String(localized: "Markup goes on a picture or a clip on the stage")
                 : String(localized: "Show the picture alone to mark it up")
         }
         if let l = m.selectionLayer,
-           let layer = model.stagePicture?.layerStack.first(where: {
+           let layer = model.markupAsset?.layerStack.first(where: {
                $0.id == l }) {
             return String(localized: "On \(layer.title)")
         }

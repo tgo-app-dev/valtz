@@ -24,6 +24,17 @@ struct RootView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        // A fleet job running here (DESIGN §11): the window given over to
+        // it -- its controls out of reach, the mark in blue, the job's
+        // progress.
+        .disabled(model.fleetServing != nil)
+        .overlay {
+            if let s = model.fleetServing {
+                FleetServingOverlay(serving: s)
+                    .transition(.opacity)
+            }
+        }
+        .fleetAskAlert(model)
         // The title bar's bottom edge: while the pointer is over the title
         // bar, and always while the inspector or the markup toolbar sits
         // under it.

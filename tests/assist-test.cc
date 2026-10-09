@@ -1,6 +1,7 @@
 #include "testing.h"
 
 #include "valtz/assist/assistant.h"
+#include "valtz/assist/transcript.h"
 #include "valtz/base/text.h"
 #include "valtz/models/catalog.h"
 
@@ -727,3 +728,51 @@ TEST(assist, a_suggestion_s_names_become_the_row_s_tags)
         "<valtz_ref_aud_0>, <Audio 2>.");
   CHECK(retag("<Picture 1>", {}) == "<Picture 1>");
 }
+
+// A sound TRANSCRIBED (DESIGN §4h): Qwen3-ASR's lines, their language
+// taken off their words; BEATs' windows joined into events, each label's
+// touching windows one span at its best score; the summary of both.
+TEST(assist, a_transcript_is_summarized)
+{
+  using namespace valtz::assist;
+  auto l = transcript_line(
+      {{"text", "language English<asr_text> Hello there. "},
+       {"start_us", 400000}, {"end_us", 3200000}});
+  REQUIRE(l.has_value());
+  CHECK(l->text == "Hello there.");
+  CHECK(l->language == "English");
+  CHECK(std::abs(l->start - 0.4) < 1e-9 && std::abs(l->end - 3.2) < 1e-9);
+  CHECK(!transcript_line({{"text", "language None<asr_text>  "}}));
+  const std::vector<Json> windows = {
+    {{"timestamp_us", 0}, {"duration_us", 10000000},
+     {"tags", {{{"label", "Speech"}, {"score", 0.9}},
+               {{"label", "Music"}, {"score", 0.2}}}}},
+    {{"timestamp_us", 8000000}, {"duration_us", 10000000},
+     {"tags", {{{"label", "Speech"}, {"score", 0.8}},
+               {{"label", "Music"}, {"score", 0.5}}}}},
+    {{"timestamp_us", 30000000}, {"duration_us", 10000000},
+     {"tags", {{{"label", "Speech"}, {"score", 0.7}}}}},
+  };
+  auto ev = sound_events(windows);
+  REQUIRE(ev.size() == 3);
+  CHECK(ev[0].label == "Speech" && ev[0].start == 0 && ev[0].end == 18 &&
+        std::abs(ev[0].score - 0.9) < 1e-9);
+  CHECK(ev[1].label == "Music" && ev[1].start == 8 && ev[1].end == 18);
+  CHECK(ev[2].label == "Speech" && ev[2].start == 30);
+  Transcript t;
+  t.seconds = 40;
+  t.tagged = true;
+  t.lines = {*l};
+  t.events = ev;
+  const auto s = transcript_summary("talk.wav", t);
+  CHECK(s.starts_with("# Transcript of talk.wav (00:40) · English\n"));
+  CHECK(s.find("[00:00.4 - 00:03.2] Hello there.\n") != std::string::npos);
+  CHECK(s.find("## Sound events\n[00:00 - 00:18] Speech (90%)") !=
+        std::string::npos);
+  t.lines.clear();
+  t.tagged = false;
+  const auto quiet = transcript_summary("talk.wav", t);
+  CHECK(quiet.find("(no speech)") != std::string::npos);
+  CHECK(quiet.find("Sound events") == std::string::npos);
+}
+

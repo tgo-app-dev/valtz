@@ -1,5 +1,7 @@
 #include "valtz/models/capabilities.h"
 
+#include <algorithm>
+
 namespace valtz::models {
 
 const char*
@@ -40,7 +42,15 @@ resolve_capabilities(const Catalog& cat, const ModelStore& store,
       if (!first_fit) {
         first_fit = &o;
       }
-      if (!first_ready && o.install.state == InstallState::Installed) {
+      // Ready with what it needs beside it (catalog `requires`: a
+      // codec, a voice detector), not alone.
+      const bool needs_met = std::ranges::all_of(
+          o.entry->requires_models, [&](const std::string& r) {
+            const ModelEntry* re = cat.find(r);
+            return re && store.info(*re).state == InstallState::Installed;
+          });
+      if (!first_ready && o.install.state == InstallState::Installed &&
+          needs_met) {
         first_ready = &o;
       }
     }

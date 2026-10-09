@@ -13,7 +13,6 @@ struct SettingsRow: Identifiable, Sendable {
     static let songPlan = "song-plan", songLength = "song-length"
     static let lyrics = "lyrics", soundtrack = "soundtrack"
     static let voice = "voice", speechLength = "speech-length"
-    static let cropEdit = "crop-edit"
     static let cropZoom = "crop-zoom", cropPad = "crop-pad"
     static let cropRotate = "crop-rotate"
     static let trimNow = "trim-now", markIn = "mark-in", markOut = "mark-out"
@@ -206,11 +205,10 @@ struct SettingsRow: Identifiable, Sendable {
         }
         if m.showsCrop {
             rows += [
-                SettingsRow(id: cropEdit, panel: .crop,
-                            terms: [String(localized: "Crop"),
-                                    String(localized: "Adjust crop")]),
                 SettingsRow(id: cropZoom, panel: .crop,
-                            terms: [String(localized: "Zoom")]),
+                            terms: [String(localized: "Crop"),
+                                    String(localized: "Zoom"),
+                                    String(localized: "Offset")]),
                 SettingsRow(id: cropPad, panel: .crop,
                             terms: [String(localized: "Padding")]),
                 SettingsRow(id: cropRotate, panel: .crop,

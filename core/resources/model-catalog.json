@@ -18,13 +18,17 @@
     "Chinese as well, and the assistant keeps the request's language.",
     "families: how Settings > Capabilities lists the models -- a family's",
     "features (video-gen, video-edit, image-gen, image-edit, audio-gen,",
-    "helper, video-upscale, image-upscale), each checked where a member",
+    "helper, video-upscale, image-upscale, audio-transcribe), each checked where a member",
     "makes it here, and its members (every model and resource it runs",
     "with), each with the label it is listed by.",
     "engine.vpipe.sampling (an assistant): the token sampler its chat",
     "decodes with -- vpipe's sampler-select config, the model card's own",
     "recommendation (Qwen's non-thinking one: Valtz runs it without",
-    "thinking); without it, greedy."
+    "thinking); without it, greedy.",
+    "engine.vpipe.listen (a speech model): the voice detector it needs and",
+    "the tagger it lists sound events with when that is installed (DESIGN",
+    "§4h). package: the folder a CoreML archive (`file`, a .tar) unpacks",
+    "into, beside it, which holds the package its stage loads."
   ],
   "auto": {
     "image": {
@@ -129,6 +133,16 @@
       "members": [
         {"model": "flashvsr", "label": "FlashVSR (video)"},
         {"model": "vosr", "label": "VOSR (image)"}
+      ]
+    },
+    {
+      "id": "listen", "name": "Listening",
+      "features": ["audio-transcribe"],
+      "members": [
+        {"model": "qwen3-asr-1.7b", "label": "Qwen3-ASR 1.7B"},
+        {"model": "qwen3-asr-0.6b", "label": "Qwen3-ASR 0.6B"},
+        {"model": "silero-vad", "label": "Silero VAD (voice activity)"},
+        {"model": "beats-as2m", "label": "BEATs (sound events)"}
       ]
     },
     {
@@ -917,6 +931,52 @@
         }
       },
       "notes": "QwenLM's own instructions for writing Qwen-Image 2.1 prompts and edit instructions, which Enhance then follows in place of Valtz's own guide. Under the Qwen Research License: for NON-COMMERCIAL use only (its LICENSE is downloaded beside them). Fetched from QwenLM's GitHub repository, pinned to one commit."
+    },
+    {
+      "id": "qwen3-asr-1.7b", "name": "Qwen3-ASR 1.7B",
+      "family": "listen", "role": "asr",
+      "hf_path": "mlx-community/Qwen3-ASR-1.7B-8bit",
+      "capabilities": ["audio-transcribe"],
+      "disk_gb": 2.5, "disk_measured": false, "min_ram_gb": 16, "rank": 2,
+      "requires": ["silero-vad"],
+      "license": "apache-2.0",
+      "engine": {"vpipe": {"listen": {"vad": "silero-vad", "tagger": "beats-as2m"}}},
+      "notes": "Qwen's speech recognizer, 8-bit MLX: speech to text in 52 languages and dialects, the language found by itself. The larger and more accurate of the two."
+    },
+    {
+      "id": "qwen3-asr-0.6b", "name": "Qwen3-ASR 0.6B",
+      "family": "listen", "role": "asr",
+      "hf_path": "mlx-community/Qwen3-ASR-0.6B-8bit",
+      "capabilities": ["audio-transcribe"],
+      "disk_gb": 1.0, "disk_measured": true, "min_ram_gb": 16, "rank": 1,
+      "requires": ["silero-vad"],
+      "license": "apache-2.0",
+      "engine": {"vpipe": {"listen": {"vad": "silero-vad", "tagger": "beats-as2m"}}},
+      "notes": "Qwen's speech recognizer, 8-bit MLX: the smaller and faster of the two."
+    },
+    {
+      "id": "silero-vad", "name": "Silero VAD v6",
+      "family": "listen", "role": "vad",
+      "hf_path": "tgo-app-dev/vpipe-supplement",
+      "file": "silero-vad-unified-v6.tar",
+      "fetch_variant": "silero_vad_unified_v6",
+      "package": "silero_vad_unified_v6",
+      "capabilities": [],
+      "disk_gb": 0.01, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "mit",
+      "notes": "A voice activity detector (CoreML): where speech starts and stops, so the speech model hears each stretch whole and each line is timed."
+    },
+    {
+      "id": "beats-as2m", "name": "BEATs AS2M",
+      "family": "listen", "role": "tagger",
+      "hf_path": "tgo-app-dev/vpipe-supplement",
+      "file": "beats_as2m_10s.tar",
+      "fetch_variant": "beats_as2m_10s",
+      "package": "beats_as2m_10s",
+      "capabilities": [],
+      "disk_gb": 0.2, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "mit",
+      "notes": "Microsoft's audio tagger (CoreML): the sounds heard -- music, laughter, a dog, rain -- by AudioSet's 527 labels, ten seconds at a time. Optional: with it, a transcript lists the sound events."
     }
   ]
 }

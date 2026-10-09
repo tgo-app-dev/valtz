@@ -143,9 +143,11 @@ extension AppModel {
 }
 
 /// Over a blank sound on the stage: where it records from, Record /
-/// Stop, and while it runs its time and level.
+/// Stop, and while it runs its time and level -- or a sound, or a clip
+/// with sound (its sound alone), dropped on it from Assets or the Finder.
 struct CaptureOverlay: View {
     @Bindable var model: AppModel
+    @State private var dropTargeted = false
 
     var body: some View {
         let recording = model.capture.recording
@@ -194,15 +196,36 @@ struct CaptureOverlay: View {
             }
             Text(recording
                  ? "Stop puts the recording on this composition."
-                 : "An empty sound: record into it.")
+                 : "An empty sound: record into it — or drop a sound on it, or a clip with sound (its sound alone).")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 300)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(22)
         .glassEffect(in: RoundedRectangle(cornerRadius: 18))
         // Over the whole stage: a blank sound has nothing to play.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black.opacity(0.92))
+        // It covers the stage: a drop on it is a drop on the stage.
+        .overlay {
+            if dropTargeted {
+                Rectangle()
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .allowsHitTesting(false)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            if let id = AppModel.draggedAssets(urls).first {
+                return model.dropAssetOnStage(id)
+            }
+            return model.dropFilesOnStage(urls.filter(\.isFileURL))
+        } isTargeted: { dropTargeted = $0 }
+        .dropDestination(for: String.self) { items, _ in
+            items.compactMap { AppModel.draggedAsset($0) }
+                .first.map { model.dropAssetOnStage($0) } ?? false
+        } isTargeted: { dropTargeted = $0 }
         .onAppear { model.refreshCaptureSources() }
     }
 }

@@ -116,10 +116,35 @@ extension AppModel {
     // MARK: Markup
 
     /// The markup toolbar has the stage's pointer: it is open over a
-    /// picture of the project, shown alone.
+    /// picture of the project, shown alone, or a clip.
     var markupReady: Bool {
-        markupOpen && stagePicture != nil && stage.mode == .a
+        markupOpen && markupAsset != nil && stage.mode == .a
             && !isGenerating
+    }
+
+    /// What markup draws on: the picture on the stage -- or the CLIP, a
+    /// timeline drawn where the player is (DESIGN §10a Markup); one as
+    /// imported or made through its edited copy, as a picture is.
+    var markupAsset: AssetDTO? {
+        if let pic = stagePicture { return pic }
+        guard clipOnStage, let c = currentClip, c.kind == "video" else {
+            return nil
+        }
+        return c
+    }
+
+    /// Markup on a clip: at the player's frame, drawn by the player.
+    var markupOnClip: Bool { stagePicture == nil && markupAsset != nil }
+
+    /// A layer markup takes now: on the page shown -- on a timeline, one
+    /// showing at the player's frame (a markup or a blank runs from its
+    /// start for its length, none: on to the end; core markup_layer).
+    func markupShows(_ l: LayerDTO, in a: AssetDTO) -> Bool {
+        if a.isPaged { return a.isOnPage(l, stagePage) }
+        guard markupOnClip else { return true }
+        let t = l.time ?? LayerTimeDTO()
+        return t.offset <= videoFrame
+            && (t.duration <= 0 || videoFrame < t.offset + t.duration)
     }
 
     /// What the stage draws over the picture for markup.
@@ -134,6 +159,14 @@ extension AppModel {
         }
         o.objects = m.selection + (m.draft.map { [$0] } ?? [])
         o.selected = m.selectedIds
+        // On a clip, the selection's layer away from the player's frame:
+        // nothing of it shows there.
+        if markupOnClip, let a = markupAsset, let id = m.selectionLayer,
+           let l = a.layerStack.first(where: { $0.id == id }),
+           !markupShows(l, in: a) {
+            o.objects = m.draft.map { [$0] } ?? []
+            o.selected = []
+        }
         return o
     }
 
@@ -141,13 +174,18 @@ extension AppModel {
     /// else the top markup layer, else a new one on top), made if need
     /// be, and selected in the layer editor.
     private func markupTarget() -> String? {
-        guard let core, let projectId, let pic = stagePicture else {
+        guard let core, let projectId, let pic = markupAsset else {
             return nil
         }
         let selected = Array(selectedLayers.union([activeLayer]))
         var extra: [String: Any] = ["selected": selected]
-        // A still with pages: drawn on the page shown.
+        // A still with pages: drawn on the page shown; a timeline, at the
+        // player's frame (a new layer from there, a second long).
         if pic.isPaged { extra["page"] = stagePage }
+        if markupOnClip {
+            extra["frame"] = videoFrame
+            pauseForMarkup()
+        }
         let r = core.layerOp(project: projectId, asset: composedTarget(pic.id),
                              "markup-target", extra: extra)
         guard r.ok, let layer = r["layer"] as? String else {
@@ -155,18 +193,27 @@ extension AppModel {
             return nil
         }
         reloadAssets()
-        if activeLayer != layer || !stageLayered { selectLayer(layer) }
+        if activeLayer != layer || (stageStack?.layers ?? []).isEmpty {
+            selectLayer(layer)
+        }
         return layer
     }
 
     private func markupObjects(_ layer: String) -> [MarkupObject] {
-        stagePicture?.layerStack.first { $0.id == layer }?.markup?.objects
+        markupAsset?.layerStack.first { $0.id == layer }?.markup?.objects
             ?? []
+    }
+
+    /// Drawn on a clip: the player held on the frame it is drawn at.
+    private func pauseForMarkup() {
+        if videoRate != 0 { playVideo(rate: 0) }
     }
 
     /// A pointer on the picture, as the tool takes it.
     func markupPointer(_ e: MarkupPointer) {
         guard markupReady else { return }
+        // On a clip: drawn on the frame pressed on, the player held there.
+        if e.phase == .down && markupOnClip { pauseForMarkup() }
         let m = markup
         let p = e.point
         switch (e.phase, m.tool) {
@@ -305,7 +352,7 @@ extension AppModel {
         guard markupReady, !m.selection.isEmpty else { return }
         let doc: [String: Any] = [
             "objects": m.selection.map(\.json),
-            "asset": stagePicture?.id ?? "",
+            "asset": markupAsset?.id ?? "",
             "cut": cut,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: doc)
@@ -339,7 +386,7 @@ extension AppModel {
             m.pastes = 0
             m.pasteboardChange = pb.changeCount
         }
-        let here = stagePicture?.id ?? ""
+        let here = markupAsset?.id ?? ""
         let fromHere = (doc["asset"] as? String) == here
         let cut = doc["cut"] as? Bool ?? false
         let step = Double(m.pastes + (fromHere && !cut ? 1 : 0)) * 20
@@ -368,9 +415,29 @@ extension AppModel {
         select(objects, on: layer)
     }
 
+    /// The canvas a clip on the stage is drawn on, in pixels -- a canvas
+    /// of its own size, else its frame -- and where markup's frame lies
+    /// on it: what the clip's markup view fits, as the player does.
+    var clipMarkupCanvas: CGSize {
+        guard let c = markupAsset else { return .zero }
+        if let cv = c.canvas, cv.resized {
+            return CGSize(width: cv.w, height: cv.h)
+        }
+        if let f = markupFrame { return f }
+        if let s = stackPlayback {
+            return CGSize(width: s.width, height: s.height)
+        }
+        return .zero
+    }
+
+    var clipMarkupOrigin: CGPoint {
+        guard let cv = markupAsset?.canvas, cv.resized else { return .zero }
+        return CGPoint(x: cv.x, y: cv.y)
+    }
+
     /// What markup is drawn on: the picture's frame, in its pixels.
     private var markupFrame: CGSize? {
-        guard let pic = stagePicture else { return nil }
+        guard let pic = markupAsset else { return nil }
         if let c = pic.canvas, let w = c.fw, let h = c.fh, c.framed {
             return CGSize(width: w, height: h)
         }
@@ -408,7 +475,7 @@ extension AppModel {
     /// The stroke just drawn, painted into the target layer.
     private func paintStroke() {
         let m = markup
-        guard let core, let projectId, let pic = stagePicture,
+        guard let core, let projectId, let pic = markupAsset,
               !m.stroke.isEmpty, let layer = markupTarget() else {
             m.stroke = []
             return
@@ -443,7 +510,7 @@ extension AppModel {
     @discardableResult
     private func saveObjects(_ objects: [MarkupObject],
                              on layer: String) -> Bool {
-        guard let core, let projectId, let pic = stagePicture else {
+        guard let core, let projectId, let pic = markupAsset else {
             return false
         }
         let r = core.layerOp(project: projectId, asset: composedTarget(pic.id), "objects",
@@ -461,7 +528,7 @@ extension AppModel {
         if m.selectionLayer != layer || m.selectedIds != Set(objects.map(\.id)) {
             m.selection = objects
             m.selectionLayer = layer
-            m.selectionAsset = stagePicture?.id
+            m.selectionAsset = markupAsset?.id
             if activeLayer != layer { selectLayer(layer) }
             markupChanged()
         }
@@ -472,7 +539,7 @@ extension AppModel {
     func commitSelection(keep: Bool = false) {
         let m = markup
         // Another picture on the stage now: the selection was its.
-        if m.selectionAsset != nil && m.selectionAsset != stagePicture?.id {
+        if m.selectionAsset != nil && m.selectionAsset != markupAsset?.id {
             m.selection = []
             m.selectionLayer = nil
             m.selectionAsset = nil
@@ -508,11 +575,12 @@ extension AppModel {
     /// empty or markup layer among the selected, else a markup layer on
     /// top); nil: a new one.
     var markupTargetPreview: LayerDTO? {
-        guard let pic = stagePicture, !(pic.layers ?? []).isEmpty else {
+        guard let pic = markupAsset, !(pic.layers ?? []).isEmpty else {
             return nil
         }
-        // On a still with pages, the page shown's layers alone.
-        let stack = pic.layerStack.filter { pic.isOnPage($0, stagePage) }
+        // On a still with pages, the page shown's layers alone; on a
+        // timeline, those showing at the player's frame.
+        let stack = pic.layerStack.filter { markupShows($0, in: pic) }
         let sel = selectedLayers.union([activeLayer])
         if let top = stack.last(where: { sel.contains($0.id) }),
            top.isEmpty || top.isMarkup {
@@ -538,7 +606,7 @@ extension AppModel {
     /// The selected objects made pixels, on their layer.
     func materializeSelection() {
         let m = markup
-        guard let core, let projectId, let pic = stagePicture,
+        guard let core, let projectId, let pic = markupAsset,
               let layer = m.selectionLayer, !m.selection.isEmpty else {
             return
         }
@@ -567,8 +635,9 @@ extension AppModel {
            }) {
             return (o, layer)
         }
-        for l in (stagePicture?.layerStack ?? []).reversed()
-        where l.visible {
+        guard let a = markupAsset else { return nil }
+        for l in a.layerStack.reversed()
+        where l.visible && markupShows(l, in: a) {
             for o in (l.markup?.objects ?? []).reversed()
             where MarkupRender.hits(o, p, tolerance: tol) {
                 let live = m.selection.first { $0.id == o.id } ?? o
@@ -642,7 +711,11 @@ extension AppModel {
     /// The picture made again: the markup's layers changed, or which
     /// objects it draws itself.
     private func markupChanged() {
-        if stageComposed { recomposite() }
+        if markupOnClip {
+            refreshStackPlan()
+        } else if stageComposed {
+            recomposite()
+        }
     }
 
     /// The picture made with a painted stroke is shown: the stroke drawn

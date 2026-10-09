@@ -59,6 +59,14 @@ extension AppModel {
     /// makes it the active one instead.
     func viewAsset(_ a: AssetDTO) {
         guard viewedAsset != a.id else { return }
+        // A snapshot run: how long a posted click took to get here, and
+        // to be on the stage.
+        let clickedAt = AppDelegate.postedClickAt
+        if clickedAt > 0 {
+            print("snapshot: view-asset after-click="
+                  + "\(Int((CACurrentMediaTime() - clickedAt) * 1000))ms")
+            AppDelegate.postedClickAt = 0
+        }
         // What to come back to: the active one -- kept while one viewed
         // asset follows another.
         let back = viewedAsset == nil ? stageAssetId : viewReturn
@@ -68,6 +76,10 @@ extension AppModel {
         swapStageAnimated { [weak self] in
             self?.stageReturn = nil
             self?.putOnStage(a)
+            if clickedAt > 0 {
+                print("snapshot: view-asset staged after-click="
+                      + "\(Int((CACurrentMediaTime() - clickedAt) * 1000))ms")
+            }
         }
     }
 
@@ -109,7 +121,9 @@ extension AppModel {
     /// The stage card taken off (lifted, larger, fading out), `change`,
     /// and the new one put down (from above, settling).
     private func swapStageAnimated(_ change: @escaping @MainActor () -> Void) {
-        let up = Animation.easeIn(duration: 0.2 * AppModel.animationScale)
+        // Eased OUT: it moves from the first frame (eased in, the first
+        // tenth of a second hardly showed).
+        let up = Animation.easeOut(duration: 0.15 * AppModel.animationScale)
         withAnimation(stageVisible ? up : nil) {
             stageLift = 1
         } completion: { [weak self] in
@@ -350,11 +364,34 @@ extension AppModel {
         return true
     }
 
+    /// Its speech, and the sound events heard, transcribed into a text
+    /// asset of the project's (core Controller::transcribe, DESIGN §4h): a
+    /// task, its asset in the list from the request.
+    func transcribe(_ a: AssetDTO) {
+        guard let core, let projectId else { return }
+        let r = core.assetOp(project: projectId, "transcribe",
+                             ["asset": a.id])
+        guard r.ok else {
+            flash(r.message)
+            return
+        }
+        reloadAssets()
+        reloadTasks()
+        flash(String(localized: "Transcribing \(a.name): the transcript goes to Assets."))
+    }
+
+    /// A speech model and its voice detector are here (Settings ›
+    /// Capabilities › Listening).
+    var transcribeReady: Bool {
+        capabilities.first { $0.capability == "audio-transcribe" }?
+            .availability == "ready"
+    }
+
     /// Files dropped on the stage: imported, then each instantiated as an
-    /// asset is (a picture or a clip; the first that is one).
+    /// asset is (a picture, a clip or a sound; the first that is one).
     func dropFilesOnStage(_ urls: [URL]) -> Bool {
         guard let url = urls.first(where: {
-            ["image", "video"].contains(PromptTextView.kind(of: $0))
+            ["image", "video", "audio"].contains(PromptTextView.kind(of: $0))
         }) else { return false }
         if let a = asset(forFile: url) { return dropAssetOnStage(a.id) }
         importFiles([url])
@@ -664,7 +701,11 @@ struct AssetsSection: View {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = [.image, .movie, .audio]
-        if panel.runModal() == .OK { model.importFiles(panel.urls) }
+        panel.directoryURL = model.panelFolder(.attach)
+        if panel.runModal() == .OK {
+            model.rememberPanel(.attach, chose: panel.urls.first)
+            model.importFiles(panel.urls)
+        }
     }
 
     private func tool(_ symbol: String, _ help: LocalizedStringKey,
@@ -717,6 +758,11 @@ private struct AssetRow: View {
     let used: Bool
     @State private var image: CGImage?
     @State private var hovering = false
+    /// When it was last clicked: a second click within the double-click
+    /// interval is a double-click's.
+    @State private var lastClick: CFTimeInterval = 0
+    /// A text's click, waiting out the double-click interval.
+    @State private var pendingClick: Task<Void, Never>?
 
     var body: some View {
         let a = asset
@@ -851,38 +897,34 @@ private struct AssetRow: View {
         }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture(count: 2) {
+        // A click VIEWS it on the stage at once -- a task's, its preview
+        // and progress; the second click of a double-click then does
+        // more (a prompt into the box, a composition made active). One
+        // gesture, the second click told by its time: a double-click
+        // gesture beside a single one holds every click back for the
+        // double-click interval (350 ms) to tell the two apart. (The
+        // action runs after AppKit's event: NSApp.currentEvent is not the
+        // click, and its clickCount can throw.)
+        .onTapGesture {
             guard !renaming else { return }
-            // Another kind than text: the Prompt Editor goes.
-            if a.kind != "text" { model.retreatFromEditor() }
-            if let t = task {
-                model.watchTask(t.job)
-            } else if a.isPrompt {
-                model.usePrompt(a)
-            } else if a.isComposition {
-                model.viewedAsset = nil
-                model.viewReturn = nil
-                model.setActive(a)
+            let now = CACurrentMediaTime()
+            let second = now - lastClick <= NSEvent.doubleClickInterval
+            lastClick = second ? 0 : now
+            pendingClick?.cancel()
+            pendingClick = nil
+            if second {
+                doubleClicked()
+            } else if asset.kind == "text" {
+                // Text opens the Prompt Editor; a prompt's double-click
+                // puts it in the box instead -- so its click waits to know
+                // which (it changes no stage).
+                pendingClick = Task {
+                    try? await Task.sleep(
+                        for: .seconds(NSEvent.doubleClickInterval))
+                    if !Task.isCancelled { clicked() }
+                }
             } else {
-                // Only a composition is made active: a flat one is viewed.
-                model.viewAsset(a)
-            }
-        }
-        // A single click VIEWS it on the stage -- a task's, its preview
-        // and progress.
-        .onTapGesture(count: 1) {
-            guard !renaming else { return }
-            // Text: in the Prompt Editor, beside the prompt, to look at.
-            // Anything else: the editor goes, and it is viewed.
-            if a.kind == "text" {
-                model.openTextAsset(a)
-                return
-            }
-            model.retreatFromEditor()
-            if let t = task {
-                model.watchTask(t.job)
-            } else {
-                model.viewAsset(a)
+                clicked()
             }
         }
         .onDrag {
@@ -939,6 +981,15 @@ private struct AssetRow: View {
                     Button("Show on Stage") { model.showMadeOnStage(a) }
                 }
                 Button("Add to Prompt") { model.addAssetReferences([a.id]) }
+                // Its speech, and the sounds heard: a text asset of it
+                // (DESIGN §4h).
+                if a.kind == "audio" || a.kind == "video" {
+                    Button("Transcribe") { model.transcribe(a) }
+                        .disabled(!model.transcribeReady)
+                        .help(model.transcribeReady
+                              ? "Its speech line by line, and the sounds heard, into a text asset"
+                              : "Download Qwen3-ASR and Silero VAD in Settings › Capabilities › Listening to transcribe")
+                }
                 if a.kind == "image" {
                     Divider()
                     Button("Compare as A") { model.compareAsset(a, in: .a) }
@@ -1069,22 +1120,67 @@ private struct AssetRow: View {
                 .minute())
     }
 
+    /// A click: text into the Prompt Editor, beside the prompt, to look
+    /// at; anything else viewed on the stage (the editor going).
+    private func clicked() {
+        let a = asset
+        if a.kind == "text" {
+            model.openTextAsset(a)
+            return
+        }
+        model.retreatFromEditor()
+        if let t = task {
+            model.watchTask(t.job)
+        } else {
+            model.viewAsset(a)
+        }
+    }
+
+    /// A double-click's second click: a prompt into the box, a
+    /// composition made active; a flat asset stays viewed.
+    private func doubleClicked() {
+        let a = asset
+        // Another kind than text: the Prompt Editor goes.
+        if a.kind != "text" { model.retreatFromEditor() }
+        if let t = task {
+            model.watchTask(t.job)
+        } else if a.isPrompt {
+            model.usePrompt(a)
+        } else if a.isComposition {
+            model.viewedAsset = nil
+            model.viewReturn = nil
+            model.setActive(a)
+        } else {
+            // Only a composition is made active: a flat one is viewed.
+            model.viewAsset(a)
+        }
+    }
+
     /// "Generated 12:38 · 832 × 480", "Edited copy · …", "Capture · 2
     /// layers".
     private var subtitle: String {
         let a = asset
-        // Being made: what it is doing, or how many run before it.
+        // Being made: what it is doing, or how many run before it -- and,
+        // sent to a fleet member, where (DESIGN §11).
         if let t = task {
+            let doing: String
             if t.running {
                 if let p = model.jobs[t.job]?.phase {
-                    return p.caption(kind: a.kind == "video" ? .video
-                                     : a.kind == "audio" ? .audio : .image)
+                    doing = p.caption(kind: a.kind == "video" ? .video
+                                      : a.kind == "audio" ? .audio : .image)
+                } else {
+                    doing = String(localized: "Preparing…")
                 }
-                return String(localized: "Preparing…")
+            } else if t.runner != "local" && t.position == 0 {
+                // Sent, not begun there yet.
+                return String(localized: "Sent to \(t.runner)")
+            } else {
+                doing = t.position <= 1
+                    ? String(localized: "Queued · next")
+                    : String(localized: "Queued · \(String(t.position)) ahead")
             }
-            return t.position == 1
-                ? String(localized: "Queued · next")
-                : String(localized: "Queued · \(String(t.position)) ahead")
+            return t.runner == "local" ? doing
+                : String(localized: "\(doing) · on \(t.runner)")
         }
         let what: String = switch a.op {
         case _ where a.isProject:
@@ -1100,6 +1196,7 @@ private struct AssetRow: View {
              "generate-speech":
             String(localized: "Generated \(made)")
         case "edit-image": String(localized: "Edited by a model \(made)")
+        case "transcribe-audio": String(localized: "Transcribed \(made)")
         default:
             a.isPrompt ? promptSubtitle
                 : a.kind == "audio" ? String(localized: "Sound")

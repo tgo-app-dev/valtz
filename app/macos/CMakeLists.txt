@@ -71,6 +71,8 @@ set(VALTZ_APP_SOURCES
   Sources/ValtzApp.swift
   Sources/Core/CoreService.swift
   Sources/Core/Updater.swift
+  Sources/Core/FileHistory.swift
+  Sources/Core/Fleet.swift
   Sources/Core/MachineMonitor.swift
   Sources/Core/MarkupDTO.swift
   Sources/Core/SettingsDTO.swift
@@ -84,6 +86,9 @@ set(VALTZ_APP_SOURCES
   Sources/Views/SettingsView.swift
   Sources/Views/TitleBar.swift
   Sources/Views/VideoEncodingRows.swift
+  Sources/Views/AppKitPopover.swift
+  Sources/Views/FleetView.swift
+  Sources/Views/FleetServing.swift
   Sources/Views/PermissionsView.swift
   Sources/Views/InspectorView.swift
   Sources/Views/CanvasSize.swift
@@ -96,6 +101,8 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/SimpleView.swift
   Sources/Simple/ComposerStack.swift
   Sources/Simple/CropTrim.swift
+  Sources/Simple/Timeline.swift
+  Sources/Simple/ValueControls.swift
   Sources/Simple/Keyframes.swift
   Sources/Simple/TuningPanel.swift
   Sources/Simple/Markup.swift
@@ -117,6 +124,7 @@ set(VALTZ_APP_SOURCES
   Sources/Viewer/StackCompositor.swift
   Sources/Viewer/AudioWaveform.swift
   Sources/Viewer/MotionViews.swift
+  Sources/Viewer/ClipMarkup.swift
   Sources/Viewer/MarkupOverlay.swift
   Sources/Viewer/ViewerView.swift
   Sources/Viewer/AudioScrubber.swift

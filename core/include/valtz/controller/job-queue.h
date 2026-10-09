@@ -41,6 +41,12 @@ struct JobRecord {
   // The base (or a clip's first frame) as the model got it, when it was
   // rendered for it -- a look of its own: kept for the history.
   project::BlobRef           rendered_base;
+  // Where it runs: "" this Mac; a fleet member's id, its name, its
+  // engine (DESIGN §11). A job this Mac serves for one: "fleet" its
+  // purpose, `runner_name` the member it is for.
+  std::string                runner;
+  std::string                runner_name;
+  std::string                runner_engine;
   JobState                   state = JobState::Queued;
   float                      progress = 0.0f;
   std::string                message;

@@ -21,6 +21,8 @@ struct MarkView: View {
     var material: MarkRenderer.Material = .glass
     var sweep: Int = 0
     var shadow: Bool = false
+    /// In blue: the Mac at work on a fleet job (DESIGN §11).
+    var blue: Bool = false
 
     @Environment(\.displayScale) private var scale
     @Environment(\.colorScheme) private var scheme
@@ -44,6 +46,7 @@ struct MarkView: View {
                 if live {
                     LiveMarkView(animating: animating, material: material,
                                  lightGround: scheme == .light, shadow: shadow,
+                                 blue: blue,
                                  sweep: sweepPending,
                                  sweepTaken: { sweepPending = false },
                                  showing: { liveShowing = true },
@@ -51,11 +54,12 @@ struct MarkView: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .task(id: "\(pw)x\(ph)-\(scheme == .light)") {
+            .task(id: "\(pw)x\(ph)-\(scheme == .light)-\(blue)") {
                 guard pw > 0, ph > 0, let r = MarkRenderer.shared else { return }
                 r.material = material
                 r.lightGround = scheme == .light
                 r.shadow = shadow
+                r.blue = blue ? 1 : 0
                 r.motion = 0
                 still = r.image(width: pw, height: ph, style: .markFit,
                                 supersample: 2,
@@ -79,6 +83,7 @@ private struct LiveMarkView: NSViewRepresentable {
     var material: MarkRenderer.Material
     var lightGround: Bool
     var shadow: Bool
+    var blue: Bool
     var sweep: Bool
     var sweepTaken: () -> Void
     var showing: () -> Void
@@ -105,6 +110,7 @@ private struct LiveMarkView: NSViewRepresentable {
         c.renderer?.material = material
         c.renderer?.lightGround = lightGround
         c.renderer?.shadow = shadow
+        c.renderer?.blue = blue ? 1 : 0
         c.setAnimating(animating)
         if sweep {
             c.startSweep()

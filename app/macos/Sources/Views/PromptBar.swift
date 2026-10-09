@@ -81,8 +81,10 @@ struct PromptBar: View {
         .buttonStyle(.borderless)
         .help("Generation settings: what the generation card sets")
         .accessibilityLabel(Text("Generation settings"))
-        .popover(isPresented: $model.showsGenerationSettings,
-                 arrowEdge: .bottom) {
+        // Semi-transient (AppKit's): open while Valtz is left, so weights
+        // can be dragged into Tune's options inside it from the Finder.
+        .appKitPopover(isPresented: $model.showsGenerationSettings,
+                       arrowEdge: .bottom) {
             GenerationSettingsPopover(model: model)
         }
         // Shut, it takes Tune's options with it.

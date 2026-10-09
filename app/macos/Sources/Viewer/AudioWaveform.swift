@@ -14,6 +14,42 @@ enum AudioWaveform {
         return draw(peaks, width: width, height: height)
     }
 
+    /// A sound's peaks at a fixed density -- `perSecond` stretches a
+    /// second of it, 0...1 -- for the timeline's blocks, which show any
+    /// span of it at any zoom. Read once a file, then kept (a few
+    /// thousand numbers a sound).
+    @MainActor
+    static func timedPeaks(_ url: URL,
+                           perSecond: Int = 50) async -> TimedPeaks? {
+        if let p = timedCache[url.path] { return p }
+        let asset = AVURLAsset(url: url)
+        guard let d = try? await asset.load(.duration), d.seconds > 0 else {
+            return nil
+        }
+        let count = max(1, min(400_000, Int(d.seconds * Double(perSecond))))
+        guard let peaks = await peaks(url, count: count) else { return nil }
+        let p = TimedPeaks(peaks: peaks,
+                           perSecond: Double(count) / d.seconds)
+        timedCache[url.path] = p
+        return p
+    }
+
+    /// The loudest of each stretch, and how many stretches a second.
+    struct TimedPeaks: Sendable {
+        let peaks: [Float]
+        let perSecond: Double
+
+        /// The loudest between source seconds `a` and `b`.
+        func peak(from a: Double, to b: Double) -> Float {
+            guard !peaks.isEmpty else { return 0 }
+            let i = max(0, min(peaks.count - 1, Int(a * perSecond)))
+            let j = max(i, min(peaks.count - 1, Int(b * perSecond)))
+            return peaks[i...j].max() ?? 0
+        }
+    }
+
+    @MainActor private static var timedCache: [String: TimedPeaks] = [:]
+
     /// The loudest sample of each of `count` stretches, 0...1 -- kept
     /// as the samples stream by: an hour's sound is 115 MB of samples at
     /// 8 kHz, and never more than a buffer of it is held.

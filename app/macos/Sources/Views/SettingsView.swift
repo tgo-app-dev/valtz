@@ -10,6 +10,8 @@ import AppKit
 ///                 where it already is (CapabilitiesView)
 ///   Agentic Helper  the model that writes prompts with the person: which
 ///                 one, and how it runs (HelperView)
+///   Fleet         this Mac as a member of a fleet of Valtz Macs: joined,
+///                 made, discoverable; the jobs it takes (FleetView)
 ///   Storage       what Valtz keeps on the internal SSD (StorageView)
 ///
 /// The sidebar is System Settings' measure -- 32 pt rows inset 10 pt, 20
@@ -49,6 +51,7 @@ struct SettingsView: View {
                 case .general: GeneralSettings(model: model)
                 case .capabilities: CapabilitiesView(model: model)
                 case .helper: HelperView(model: model)
+                case .fleet: FleetView(model: model)
                 case .storage: StorageView(model: model)
                 case .permissions: PermissionsView(model: model)
                 }
@@ -97,7 +100,7 @@ struct SettingsView: View {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
-    case general, capabilities, helper, storage, permissions
+    case general, capabilities, helper, fleet, storage, permissions
     var id: String { rawValue }
 
     var title: String {
@@ -105,6 +108,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .general: String(localized: "General")
         case .capabilities: String(localized: "Capabilities")
         case .helper: String(localized: "Agentic Helper")
+        case .fleet: String(localized: "Fleet")
         case .storage: String(localized: "Storage")
         case .permissions: String(localized: "Permissions")
         }
@@ -115,6 +119,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .general: "gearshape.fill"
         case .capabilities: "sparkles"
         case .helper: "brain"
+        case .fleet: "point.3.connected.trianglepath.dotted"
         case .storage: "internaldrive.fill"
         case .permissions: "hand.raised.fill"
         }
@@ -125,6 +130,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .general: .gray
         case .capabilities: .purple
         case .helper: .pink
+        case .fleet: .teal
         case .storage: .blue
         case .permissions: .indigo
         }
@@ -139,6 +145,8 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
             String(localized: "What each model family makes on this Mac, and every resource it runs with: download it, or use it from where it already is.")
         case .helper:
             String(localized: "The model that writes prompts with you and reads what you ask for: which one, and how it runs.")
+        case .fleet:
+            String(localized: "The Valtz Macs of this network as one: a job this Mac cannot run, or not now, goes to a member that can, and this Mac takes theirs when it is free.")
         case .storage:
             String(localized: "What Valtz keeps on the internal SSD: models, projects and the cache, each sized.")
         case .permissions:

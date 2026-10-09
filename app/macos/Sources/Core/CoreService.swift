@@ -44,7 +44,15 @@ final class CoreService: @unchecked Sendable {
     }
 
     static var defaultConfig: String {
-        let cfg = ["language": L10n.uiLanguage]
+        var cfg: [String: Any] = ["language": L10n.uiLanguage,
+                                  "fleet": true]
+        // A scripted run keeps a fleet of its own, unless one is named:
+        // the person's is left alone.
+        let env = ProcessInfo.processInfo.environment
+        if env["VALTZ_SNAPSHOT"] != nil, env["VALTZ_FLEET_CONFIG"] == nil {
+            cfg["fleet_config"] = FileManager.default.temporaryDirectory
+                .appendingPathComponent("valtz-snapshot-fleet.json").path
+        }
         guard let d = try? JSONSerialization.data(withJSONObject: cfg),
               let s = String(data: d, encoding: .utf8) else { return "{}" }
         return s
@@ -78,6 +86,22 @@ final class CoreService: @unchecked Sendable {
     }
     /// Settings › Agentic Helper: the helpers, the one chosen and the one
     /// in use; choosing one ("" Auto) is kept for later runs.
+    // MARK: - The fleet (DESIGN §11)
+
+    func fleetStatusJSON() -> Data { Data(String(core.fleet_status()).utf8) }
+
+    func fleetConfigure(_ request: [String: Any]) -> CoreReply {
+        send(core.fleet_configure, request)
+    }
+
+    func fleetBrowse(_ on: Bool) {
+        _ = send(core.fleet_browse, ["on": on])
+    }
+
+    func fleetAnswer(job: String, accept: Bool) {
+        _ = send(core.fleet_answer, ["job": job, "accept": accept])
+    }
+
     func assistantsJSON() -> Data {
         Data(String(core.assistants_json()).utf8)
     }
@@ -211,15 +235,18 @@ final class CoreService: @unchecked Sendable {
     }
 
     /// A clip's stack, ready for the player: `live` is the layer being
-    /// edited, its tracks as the panels hold them (keyframe JSON).
+    /// edited, its tracks as the panels hold them (keyframe JSON);
+    /// `hidden` the markup objects being edited (drawn by the app).
     func stackPlan(project: String, asset: String,
-                   live: (layer: String, adjust: Any, crop: Any)?)
+                   live: (layer: String, adjust: Any, crop: Any)?,
+                   hidden: Set<String> = [])
         -> StackPlayback? {
         var req: [String: Any] = ["project": project, "asset": asset]
         if let live {
             req["live"] = ["layer": live.layer, "adjust": live.adjust,
                            "crop": live.crop]
         }
+        if !hidden.isEmpty { req["hidden"] = Array(hidden) }
         let r = send(core.stack_plan, req)
         let planValue = r["plan"] as? NSNumber
         guard r.ok, let plan = planValue?.uint64Value,
@@ -246,12 +273,31 @@ final class CoreService: @unchecked Sendable {
         let mix = (r["mix"] as? String).flatMap {
             $0.isEmpty ? nil : URL(fileURLWithPath: $0)
         }
+        let spans: [StackSpan] = (r["layers"] as? [[String: Any]] ?? [])
+            .map { l in
+                func value(_ k: String) -> Double? {
+                    (l[k] as? NSNumber)?.doubleValue
+                }
+                func finite(_ k: String) -> Double? {
+                    value(k).flatMap { $0 < 0 ? nil : $0 }
+                }
+                let file = (l["file"] as? String) ?? ""
+                return StackSpan(
+                    id: l["id"] as? String ?? "",
+                    start: value("start") ?? 0, length: finite("length"),
+                    from: value("in") ?? 0, until: finite("out"),
+                    timed: l["timed"] as? Bool ?? false,
+                    video: l["video"] as? Bool ?? false,
+                    audioOnly: l["audio_only"] as? Bool ?? false,
+                    file: file.isEmpty ? nil : URL(fileURLWithPath: file))
+            }
         return StackPlayback(plan: plan, width: w, height: h, frames: frames,
                              rate: FrameRate(num: num, den: den),
                              clips: clips, segments: segments, audio: audio,
                              mix: mix,
                              seconds: (r["seconds"] as? NSNumber)?
-                                 .doubleValue ?? 0)
+                                 .doubleValue ?? 0,
+                             layers: spans)
     }
 
     func releaseStackPlan(_ plan: UInt64) {

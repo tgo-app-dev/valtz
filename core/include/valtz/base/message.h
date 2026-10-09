@@ -152,7 +152,10 @@ inline constexpr Message kLayerSourceKind{
     "shows anything but text."};
 inline constexpr Message kSoundOnlyComposition{
     "core.sound_only_composition",
-    "A composition of sound holds only sounds."};
+    "A composition of sound holds only sounds -- a sound, or a clip's."};
+inline constexpr Message kClipHasNoSound{
+    "core.clip_has_no_sound",
+    "{name} has no sound for a composition of sound to take."};
 inline constexpr Message kTransitionLayers{
     "core.transition_layers",
     "A transition -- a cut or a dissolve -- goes between two layers of "
@@ -178,6 +181,55 @@ inline constexpr Message kDecomposeRate{
 inline constexpr Message kDecomposeTimeline{
     "core.decompose_timeline",
     "A timeline's layers cannot go into a still."};
+inline constexpr Message kDecomposeClipSound{
+    "core.decompose_clip_sound",
+    "It holds clips' sound alone: decomposed here, their pictures would "
+    "show too."};
+// The fleet (DESIGN §11).
+inline constexpr Message kFleetBusy{
+    "core.fleet_busy", "{member} is busy."};
+inline constexpr Message kFleetNotTaking{
+    "core.fleet_not_taking", "{member} is not taking fleet jobs now."};
+inline constexpr Message kFleetCannotRun{
+    "core.fleet_cannot_run", "{member} cannot run this job."};
+inline constexpr Message kFleetDeclined{
+    "core.fleet_declined", "{member} declined the job."};
+inline constexpr Message kFleetLost{
+    "core.fleet_lost", "The connection to {member} was lost."};
+inline constexpr Message kFleetOff{
+    "core.fleet_off", "This Valtz takes part in no fleet."};
+inline constexpr Message kFleetNameEmpty{
+    "core.fleet_name_empty", "A fleet needs a name."};
+inline constexpr Message kFleetNeedsSecret{
+    "core.fleet_needs_secret", "Joining a fleet takes its secret."};
+inline constexpr Message kFleetSecretShort{
+    "core.fleet_secret_short",
+    "A fleet's secret has at least 8 characters."};
+inline constexpr Message kStretchNeedsStill{
+    "core.stretch_needs_still",
+    "Only a picture, a markup or a still composition is stretched: a "
+    "clip's or a sound's length is its marks'."};
+inline constexpr Message kTranscribeNeedsSound{
+    "core.transcribe_needs_sound",
+    "{name} has no sound to transcribe."};
+inline constexpr Message kNoTranscriber{
+    "core.no_transcriber",
+    "No speech model is installed: download Qwen3-ASR and Silero VAD in "
+    "Settings › Capabilities › Listening."};
+inline constexpr Message kModelNotUnpacked{
+    "core.model_not_unpacked",
+    "{model} was downloaded but not unpacked: download it again."};
+inline constexpr Message kSplitNeedsClip{
+    "core.split_needs_clip",
+    "Only a clip or a sound -- imported or generated, or a part cut from "
+    "one -- can be cut in two."};
+inline constexpr Message kSplitKeyed{
+    "core.split_keyed",
+    "This layer's look, speed or sound changes along it (keyed more than "
+    "once): it cannot be cut yet."};
+inline constexpr Message kSplitOutside{
+    "core.split_outside",
+    "Cut inside the clip, at least a frame from either end."};
 inline constexpr Message kProjectCompositionStays{
     "core.project_composition_stays",
     "The project's composition stays: it is what the project is."};
