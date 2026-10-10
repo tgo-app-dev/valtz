@@ -75,6 +75,51 @@ struct ValtzApp: App {
             f.underline = p.contains("underline")
             mk.font = f
             m.editSelection { if $0.kind == .text { $0.font = f } }
+        // A long stroke as a hand draws it: "scribble=W,H,N" -- N points
+        // zigzagging over W x H canvas pixels, one every 8 ms (120 Hz);
+        // prints the overlay's draws, how late the stroke ran, and what
+        // its release took until the picture painted with it was shown.
+        case "scribble":
+            let a = arg.split(separator: ",").compactMap { Double($0) }
+            guard a.count == 3 else { return }
+            let (w, h, n) = (a[0], a[1], Int(a[2]))
+            func at(_ i: Int) -> CGPoint {
+                let t = Double(i) / Double(max(1, n - 1))
+                let rows = 8.0
+                let y = h * 0.1 + h * 0.8 * t
+                let x = w * 0.1 + w * 0.8 *
+                    abs((t * rows).truncatingRemainder(dividingBy: 2) - 1)
+                return CGPoint(x: x, y: y)
+            }
+            MarkupOverlayView.drawn = (0, 0, 0)
+            let start = CFAbsoluteTimeGetCurrent()
+            pointer(.down, at(0))
+            var late = 0.0
+            for i in 1..<n {
+                let due = start + Double(i) * 0.008
+                let now = CFAbsoluteTimeGetCurrent()
+                late = max(late, now - due)
+                if due > now {
+                    try? await Task.sleep(for: .seconds(due - now))
+                }
+                pointer(.drag, at(i))
+            }
+            let drawing = CFAbsoluteTimeGetCurrent() - start
+            let d = MarkupOverlayView.drawn
+            let up0 = CFAbsoluteTimeGetCurrent()
+            pointer(.up, at(n - 1))
+            let upSync = CFAbsoluteTimeGetCurrent() - up0
+            for _ in 0..<600 where !mk.stroke.isEmpty || !mk.pending.isEmpty {
+                try? await Task.sleep(for: .milliseconds(10))
+            }
+            let shown = CFAbsoluteTimeGetCurrent() - up0
+            print(String(format: "snapshot: scribble points=%d took=%.2fs "
+                         + "(ideal %.2fs) late=%.0fms draws=%d "
+                         + "drawMean=%.1fms drawMax=%.1fms upSync=%.0fms "
+                         + "shown=%.0fms", n, drawing,
+                         Double(n - 1) * 0.008, late * 1000, d.count,
+                         d.count > 0 ? d.total / Double(d.count) * 1000 : 0,
+                         d.longest * 1000, upSync * 1000, shown * 1000))
         case "drag", "sdrag":
             let ps = points(arg)
             guard let first = ps.first else { return }
@@ -1155,11 +1200,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             if m.promptImmersive && !m.activeTabDoNotApply {
                                 m.toggleImmersivePrompt()
                             }
+                        // A tab's name: "edit:<i>" its header a field (as
+                        // a double-click makes it), "keys:<text>" typed
+                        // into what has the keyboard, "enter" / "esc";
+                        // "rename:<i>:<name>" the model's.
+                        case "edit":
+                            if let n = Int(arg),
+                               m.promptTabs.indices.contains(n) {
+                                m.selectPromptTab(n)
+                                m.renamingPromptTab = m.promptTabs[n].id
+                            }
+                        case "keys", "enter", "esc":
+                            let chars = kv[0] == "enter" ? "\r"
+                                : kv[0] == "esc" ? "\u{1b}" : arg
+                            for ch in chars {
+                                let code: UInt16 = ch == "\r" ? 36
+                                    : ch == "\u{1b}" ? 53 : 0
+                                if let w = m.editorWindow,
+                                   let e = NSEvent.keyEvent(
+                                       with: .keyDown, location: .zero,
+                                       modifierFlags: [], timestamp: 0,
+                                       windowNumber: w.windowNumber,
+                                       context: nil,
+                                       characters: String(ch),
+                                       charactersIgnoringModifiers:
+                                           String(ch),
+                                       isARepeat: false, keyCode: code) {
+                                    w.sendEvent(e)
+                                }
+                                try? await Task.sleep(for: .milliseconds(40))
+                            }
+                        // Typed into its text, as the keyboard types:
+                        // the editor being edited.
+                        case "typing":
+                            if let win = m.editorWindow,
+                               let root = win.contentView?.superview,
+                               let tv = Self.find(PromptTextView.self,
+                                                  in: root) {
+                                win.makeFirstResponder(tv)
+                                tv.setSelectedRange(NSRange(
+                                    location: tv.string.utf16.count,
+                                    length: 0))
+                                for ch in arg {
+                                    tv.insertText(String(ch),
+                                                  replacementRange:
+                                                      tv.selectedRange())
+                                }
+                            }
+                        // A locked tab's Duplicate and Edit.
+                        case "dup":
+                            if let n = Int(arg) { m.duplicatePromptTab(n) }
+                        case "rename":
+                            let parts = arg.split(separator: ":",
+                                                  maxSplits: 1,
+                                                  omittingEmptySubsequences:
+                                                      false)
+                            if let n = Int(parts.first ?? "") {
+                                m.renamePromptTab(
+                                    n, parts.count > 1 ? String(parts[1]) : "")
+                            }
                         default: break
                         }
                         try? await Task.sleep(for: .milliseconds(400))
                         FileHandle.standardError.write(Data(
-                            "snapshot: tabs \(op) immersive=\(m.promptImmersive) active=\(m.activePromptTab) tabs=\(m.promptTabs.indices.map { i in "\(i):\(m.tabDoNotApply(i) ? "look" : "edit")\(m.promptTabs[i].readOnly ? "-ro" : "")" }.joined(separator: ",")) shrink=\(m.promptImmersive && !m.activeTabDoNotApply) prompt=\(String(m.prompt.prefix(24)).replacingOccurrences(of: " ", with: "_")) prompts=\(m.assets.filter(\.isPrompt).count)\n".utf8))
+                            "snapshot: tabs \(op) immersive=\(m.promptImmersive) active=\(m.activePromptTab) tabs=\(m.promptTabs.indices.map { i in "\(i):\(m.tabDoNotApply(i) ? "look" : "edit")\(m.promptTabs[i].readOnly ? "-ro" : "")" }.joined(separator: ",")) shrink=\(m.promptImmersive && !m.activeTabDoNotApply) prompt=\(String(m.prompt.prefix(24)).replacingOccurrences(of: " ", with: "_")) prompts=\(m.assets.filter(\.isPrompt).count) titles=\(m.promptTabs.indices.map { m.promptTabTitle($0) }.joined(separator: "|").replacingOccurrences(of: " ", with: "_")) names=\(m.promptTabs.indices.map { m.promptTabName($0) ?? "-" }.joined(separator: "|").replacingOccurrences(of: " ", with: "_")) editing=\(m.promptTabs.firstIndex { $0.id == m.renamingPromptTab }.map(String.init) ?? "-") promptNames=\(m.assets.filter(\.isPrompt).map { ($0.isNamed ? "*" : "") + $0.name }.joined(separator: "|").replacingOccurrences(of: " ", with: "_")) focus=\(m.editorWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "-")\n".utf8))
                     }
                 }
                 if let spec = env["VALTZ_SNAPSHOT_MD"],
@@ -1407,7 +1511,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         let p = step.split(separator: ":").map(String.init)
                         var arg = p.count > 1 ? p[1] : ""
                         // "newest-capture": the last capture made; "transcribe:<id>"
-                // a sound or a clip transcribed, its text printed.
+                // a sound or a clip transcribed, its text printed;
+                // "summarize:<id>" a clip summarized, likewise.
                         if arg == "newest-capture",
                            let c = m.assets.filter(\.isCapture)
                                .max(by: { $0.created < $1.created }) {
@@ -1436,6 +1541,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         let words = (t.text ?? "")
                                             .replacingOccurrences(of: "\n", with: " | ")
                                         print("snapshot: transcribed asset=\(t.id) name=\(t.name) text=\(words)")
+                                        break
+                                    }
+                                }
+                            }
+                        // Summarized (DESIGN §4i): the request, then --
+                        // its task done -- the summary's words, and what
+                        // the clip's Information links to.
+                        case "summarize":
+                            if let a = m.assets.first(where: { $0.id == arg }) {
+                                let before = Set(m.assets.map(\.id))
+                                m.summarize(a)
+                                for _ in 0..<3000 {
+                                    try? await Task.sleep(for: .milliseconds(100))
+                                    m.reloadAssets()
+                                    if let t = m.assets.first(where: {
+                                        !before.contains($0.id) && $0.kind == "text"
+                                            && $0.head > 0
+                                    }) {
+                                        let words = (t.text ?? "")
+                                            .replacingOccurrences(of: "\n", with: " | ")
+                                        let from = t.recipe?.inputs?.first {
+                                            $0.role == "source" }?.asset ?? "-"
+                                        print("snapshot: summarized asset=\(t.id) name=\(t.name) from=\(from) text=\(words)")
                                         break
                                     }
                                 }
@@ -1578,6 +1706,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         // composition).
                         case "decompose":
                             m.decomposeLayer(Self.layerId(arg))
+                        // Its row's menu's Duplicate Layer.
+                        case "dup":
+                            m.duplicateLayer(Self.layerId(arg))
                         // A still's pages (DESIGN §6a): one added after
                         // the page shown, that page removed, the stage at
                         // a page ("page=2", from 1), the selected layer's
@@ -1869,6 +2000,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             m.seekClipEdge(end: kv[0] == "end")
                         // An arrow key as the keyboard sends it (⇧ with
                         // "sleft" / "sright").
+                        case "key" where kv.last == "space":
+                            Self.postSpace(m)
                         case "key":
                             let a = kv.last ?? ""
                             let left = a.hasSuffix("left")
@@ -1950,6 +2083,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         case "play": m.playVideo(rate: 1)
                         case "pause": m.playVideo(rate: 0)
                         case "scissors": m.timelineCutting = arg != "off"
+                        case "key" where arg == "space":
+                            Self.postSpace(m)
                         case "key":
                             let left = arg.hasSuffix("left")
                             if let w = m.editorWindow,
@@ -2011,6 +2146,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         // dragged to the gap above another ("hdrag=0>2";
                         // rows from the top, the gap under the last is
                         // their count).
+                        // A header's name: "hname=<row>" double-clicked
+                        // through the view, "type=<text>" typed into what
+                        // has the keyboard, "enter" / "esc".
+                        case "hname":
+                            if let r = Int(arg),
+                               let pt = TimelineNSView.shown?
+                                   .windowPoint(header: r) {
+                                await Self.postDoubleClick(x: pt.x, y: pt.y)
+                            }
+                        case "type", "enter", "esc":
+                            Self.sendKeys(m, key == "enter" ? "\r"
+                                          : key == "esc" ? "\u{1b}" : arg)
                         case "eye", "hdrag", "fold":
                             let v = TimelineNSView.shown
                             let p = arg.split(separator: ">")
@@ -2098,7 +2245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         default: break
                         }
                         try? await Task.sleep(for: .seconds(wait))
-                        print("snapshot: timeline \(step) \(Self.timelineSummary(m))")
+                        print("snapshot: timeline \(step) \(Self.timelineSummary(m)) naming=\(TimelineNSView.shown?.isNaming ?? false) titles=\(m.timelineModel.rows.map(\.title).joined(separator: "|").replacingOccurrences(of: " ", with: "_"))")
                     }
                 }
                 // A clip's keys: "adjust:55:exposure=1.5;crop:55:scale=0.6;
@@ -2420,6 +2567,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 FileHandle.standardError.write(Data(
                     "snapshot: startOver oldPackageGone=\(gone)\n".utf8))
             }
+            // The editor's window closed as ⌘W closes it: asked about
+            // first (VALTZ_SNAPSHOT_CLOSE answers), Cancel keeping it.
+            // "cancel" | "discard" | "save:<path>": that close's answer
+            // (the run's own quit takes VALTZ_SNAPSHOT_CLOSE's).
+            if let m = model, let a = env["VALTZ_SNAPSHOT_CLOSE_WINDOW"],
+               let w = m.editorWindow {
+                let guarded = w.delegate is WindowCloseGuard
+                m.snapshotCloseAnswer = a
+                w.performClose(nil)
+                m.snapshotCloseAnswer = nil
+                try? await Task.sleep(for: .seconds(1))
+                FileHandle.standardError.write(Data(
+                    "snapshot: close-window answer=\(a) guarded=\(guarded) open=\(m.editorWindow?.isVisible == true) confirmed=\(m.closeConfirmed)\n".utf8))
+            }
             // The stage's compare mode ("difference"), once a result
             // has landed to compare.
             if let m = model, let name = env["VALTZ_SNAPSHOT_STAGE_MODE"],
@@ -2700,6 +2861,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             m.toggleCompare()
                             FileHandle.standardError.write(Data(
                                 "snapshot: compare on=\(m.compareOn) b=\(m.stage.b.map { "\($0.width)x\($0.height)" } ?? "-") mode=\(m.stage.mode)\n".utf8))
+                        } else if p[0] == "appearance" {
+                            // The bulb: light <-> dark, faded.
+                            m.setAppearance(dark: !m.appearsDark,
+                                            animated: true)
+                            // A transition is kept under kCATransition.
+                            let fades = NSApp.windows.filter(\.isVisible)
+                                .compactMap { w in
+                                    (w.contentView?.superview?.layer
+                                        ?? w.contentView?.layer)?
+                                        .animation(forKey: kCATransition)
+                                        .map { "\($0.duration)s" }
+                                }
+                            FileHandle.standardError.write(Data(
+                                "snapshot: appearance dark=\(m.appearsDark) fades=\(fades.joined(separator: ","))\n".utf8))
                         } else if let panel = ComposerPanel.allCases.first(
                             where: { "\($0)" == p[0] }) {
                             m.openPanel = m.openPanel == panel ? nil : panel
@@ -2964,7 +3139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     + "stack=\(m.stackPlayback.map { "\($0.width)x\($0.height)/\($0.frames)f/\($0.clips.count)clips" } ?? "-") "
                     + "look=\(m.stageStack?.layerStack.map { l in let k = m.layerLook(l.id); return "\(l.id.isEmpty ? "0" : l.id):\(k.adjust ? "a" : "")\(k.place ? "p" : "")\(k.turn ? "t" : "")\(k.keyed ? "k" : "")" }.joined(separator: ",") ?? "-") "
                     + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(m.inspectorStacked ? "stacked" : "one"):\(InspectorTab.allCases.filter { !m.inspectorFolded.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
-                    + "markup=\(m.markupOpen ? m.markup.tool.rawValue : "off"):sel[\(m.markup.selection.map(\.kind.rawValue).joined(separator: ","))]@\(m.markup.selectionLayer ?? "-") "
+                    + "markup=\(m.markupOpen ? m.markup.tool.rawValue : "off"):sel[\(m.markup.selection.map(\.kind.rawValue).joined(separator: ","))\(m.markup.drawing ? "+drawing" : "")]@\(m.markup.selectionLayer ?? "-") "
                     + "favor=\(m.preference.rawValue) tuning=\(m.preference == .custom ? m.customSummary : "-") tunePanel=\(m.showsTuning) "
                     + "upscale=\(m.upscaleJob != nil ? "running" : m.canUpscaleLayer ? "offered" : m.upscaleNeedsFlatten ? "flatten-first" : "-") "
                     + "capture=\(m.capture.recording ? "recording" : m.showsCapture ? "offered" : "-") captureSources=\(m.captureSources.map(\.kind).joined(separator: ",")) "
@@ -2974,11 +3149,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     + "suggests=\([m.suggestsShorterClip ? "length" : nil, m.suggestsSmallerSize ? "size" : nil, m.suggestsFewerReferences ? "refs" : nil].compactMap { $0 }.joined(separator: ",")) "
                     + "bypassed=\(m.bypassed.map { "\($0)" }.sorted()) "
                     + "statusBar=\(m.showsStatusBar) "
+                    // The stage player's own controls: floating, or none
+                    // (the timeline open).
+                    + "playerControls=\(NSApp.windows.first { $0.isVisible }?.contentView.flatMap { Self.find(AVPlayerView.self, in: $0) }.map { $0.controlsStyle == .none ? "none" : "floating" } ?? "-") "
                     // The fleet: in one or not, its members reached, a
                     // job served here.
                     + "fleet=\(m.fleet?.config.map { $0.joined ? $0.fleet.replacingOccurrences(of: " ", with: "_") : "-" } ?? "off"):\((m.fleet?.members ?? []).filter { $0.state == "connected" }.map { $0.name.replacingOccurrences(of: " ", with: "_") }.joined(separator: ",")) "
                     + "fleetServing=\(m.fleetServing.map { "\($0.from)/\($0.op)/\(Int(($0.progress ?? 0) * 100))%" } ?? "-") "
                     + "fleetAsks=\(m.fleetAsks.count) "
+                    + "localNetwork=\(m.fleet?.localNetwork.flatMap { $0.isEmpty ? nil : $0 } ?? "-") "
                     + "load=ane:\(m.monitor.load.ane.map { String(format: "%.1f", $0) } ?? "-"),gpu:\(m.monitor.load.gpu.map { String(format: "%.1f", $0) } ?? "-"),ram:\(m.monitor.load.footprint.map { String(format: "%.2fGB", $0 / 1e9) } ?? "-"),sys:\(m.monitor.load.systemUsed.map { String(format: "%.2fGB", $0 / 1e9) } ?? "-") "
                     + "thermal=\(m.monitor.thermal?.verdict ?? "-"):\(m.monitor.thermalLabel.replacingOccurrences(of: " ", with: "_")) "
                     + "firstResponder=\(NSApp.windows.first { $0.isVisible }?.firstResponder.map { r in ((r as? NSTextView)?.delegate as? NSTextField).map { "field(\($0.placeholderString ?? $0.stringValue))" } ?? String(describing: type(of: r)) } ?? "-") "
@@ -2997,7 +3176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     + "generating=\(m.isGenerating) exporting=\(m.exportShow != nil) "
                     + "stackFrames=\(m.stackCounts.map { "\($0.drawn)/\($0.skipped)" } ?? "-") "
                     + "promptText=\(m.prompt.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "\n", with: "|")) "
-                    + "immersive=\(m.promptImmersive) tabs=\(m.promptTabs.count) activeTab=\(m.activePromptTab) tabTitles=\(m.promptTabs.indices.map { m.promptTabTitle($0).replacingOccurrences(of: " ", with: "_") }.joined(separator: "|")) markdown=\(m.promptMarkdown) "
+                    + "immersive=\(m.promptImmersive) editorEdited=\(m.editorEdited) tabs=\(m.promptTabs.count) activeTab=\(m.activePromptTab) tabTitles=\(m.promptTabs.indices.map { m.promptTabTitle($0).replacingOccurrences(of: " ", with: "_") }.joined(separator: "|")) markdown=\(m.promptMarkdown) "
                     + "promptAsset=\(m.promptAssetId ?? "-") unbound=\(m.unboundRefTags.joined(separator: ",")) refTags=\(AppModel.refTags(in: m.prompt).count) prompts=\(m.assets.filter(\.isPrompt).count) "
                     + "references=\(m.usesReferences) badges=\(m.promptAttachments.map { (m.referenceBadge($0) ?? "-") + ($0.continues ? ">" : "") }.joined(separator: ",")) canContinue=\(m.canContinueClip) guides=\(m.guideLengths.map { "\($0.asked):\($0.frames)" }.joined(separator: ",")) running=\(m.runningModel) "
                     + "songPlan=\(m.songPlan.rawValue) songLength=\(m.songSeconds.map(String.init) ?? "auto") "
@@ -3007,7 +3186,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     + "guides=\(m.showsGuides) "
                     + "cropPlaced=\(m.stageCropPlacement.map { "\(Int($0.canvas.width))x\(Int($0.canvas.height))" } ?? "-") "
                     + "trim=\(m.trim.markIn.map(String.init) ?? "-")..\(m.trim.markOut.map(String.init) ?? "-") offset=\(m.trimOffset) "
-                    + "clipTime=\(m.clipEdge?.rawValue ?? m.trimRate.timecode(m.sourceFrameAtPlayhead)) clipEdge=\(m.clipEdge?.rawValue ?? "-") layerEnd=\(m.layerClock.map { $0.end.isFinite ? String(format: "%.3f", $0.end) : "inf" } ?? "-") "
+                    + "clipTime=\(m.clipEdge?.rawValue ?? m.trimRate.timecode(m.sourceFrameAtPlayhead)) clipEdge=\(m.clipEdge?.rawValue ?? "-") layerOff=\(m.layerOffStage?.rawValue ?? "-") canEditLayer=\(m.canEditLayerHere) layerEnd=\(m.layerClock.map { $0.end.isFinite ? String(format: "%.3f", $0.end) : "inf" } ?? "-") "
                     + "speed=\(m.layerSpeed.keys.map { "\($0.frame):\(CropField.display($0.value.rate))" }.joined(separator: ",")) sound=\(m.layerSound.keys.map { "\($0.frame):\(CropField.display($0.value.volume))/\(CropField.display($0.value.pitch))" }.joined(separator: ",")) followSpeed=\(m.pitchFollowsSpeed) resampled=\(m.layerResampled) timedLayer=\(m.layerIsTimed) layerSound=\(m.layerHasSound) "
                     + "viewing=\(m.stageViewingName.map { "\"\($0)\"" } ?? "-") project=\(m.projectViews.first.map { p in (p.kind == "audio" ? "sound" : p.isTimeline ? "timeline" : "still") + (p.ownFrame.map { ":\($0.w)x\($0.h)" } ?? "") + ":\(p.layerStack.count)layers" } ?? "-") "
                     + "videoFrame=\(m.videoFrame) showsCrop=\(m.showsCrop) "
@@ -3128,8 +3307,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// click takes to act is measured from it.
     @MainActor static var postedClickAt: CFTimeInterval = 0
 
+    /// Characters typed into what has the window's keyboard -- "\r"
+    /// Return, "\u{1b}" Escape -- as key events sent to the window.
+    @MainActor
+    static func sendKeys(_ m: AppModel, _ text: String) {
+        guard let w = m.editorWindow else { return }
+        for ch in text {
+            let code: UInt16 = ch == "\r" ? 36 : ch == "\u{1b}" ? 53 : 0
+            if let e = NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [],
+                timestamp: 0, windowNumber: w.windowNumber, context: nil,
+                characters: String(ch),
+                charactersIgnoringModifiers: String(ch),
+                isARepeat: false, keyCode: code) {
+                w.sendEvent(e)
+            }
+        }
+    }
+
+    /// Space, as the keyboard sends it, through the app's event path (its
+    /// monitors included).
+    @MainActor
+    static func postSpace(_ m: AppModel) {
+        guard let w = m.editorWindow,
+              let ev = NSEvent.keyEvent(
+                  with: .keyDown, location: .zero, modifierFlags: [],
+                  timestamp: 0, windowNumber: w.windowNumber, context: nil,
+                  characters: " ", charactersIgnoringModifiers: " ",
+                  isARepeat: false, keyCode: 49) else { return }
+        NSApp.postEvent(ev, atStart: false)
+    }
+
     /// A double-click posted to the window at (x, y) points from its top
-    /// left: the pointer there first, then two clicks 90 ms apart.
+    /// left: the pointer there first, then two clicks 180 ms apart.
     @MainActor
     static func postDoubleClick(x: Double, y: Double) async {
         guard let win = NSApp.windows.first(where: { $0.isVisible }) else {
@@ -3145,12 +3355,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 win.sendEvent(ev)
             }
         }
+        // At a hand's pace: the pointer resting first, each press held a
+        // moment -- SwiftUI's taps missed the second click of a faster one
+        // in a scroll view (the prompt tabs).
         post(.mouseMoved, 0)
-        try? await Task.sleep(for: .milliseconds(100))
+        try? await Task.sleep(for: .milliseconds(600))
         post(.leftMouseDown, 1)
+        try? await Task.sleep(for: .milliseconds(60))
         post(.leftMouseUp, 1)
-        try? await Task.sleep(for: .milliseconds(90))
+        try? await Task.sleep(for: .milliseconds(180))
         post(.leftMouseDown, 2)
+        try? await Task.sleep(for: .milliseconds(60))
         post(.leftMouseUp, 2)
     }
 
@@ -3277,9 +3492,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    /// Its window closed, Valtz quits -- the EDITOR's: a window closed
+    /// before that one has been there never quits it. Sparkle's update
+    /// permission prompt can come up first (its short delay elapses while
+    /// launch is busy), and answering it closed the only window: Valtz
+    /// quit at once, without a word.
     func applicationShouldTerminateAfterLastWindowClosed(
         _ sender: NSApplication
-    ) -> Bool { true }
+    ) -> Bool {
+        MainActor.assumeIsolated { model?.editorWasShown ?? false }
+    }
 
     /// Unsaved changes: saved, let go, or the quit cancelled.
     @MainActor
@@ -3287,6 +3509,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
         guard let m = model else { return .terminateNow }
+        // Asked already, as its window closed.
+        if m.closeConfirmed { return .terminateNow }
         guard m.confirmClose() else { return .terminateCancel }
         m.closeForQuit()
         return .terminateNow

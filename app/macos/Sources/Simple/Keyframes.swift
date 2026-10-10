@@ -294,7 +294,10 @@ struct KeyframeBar: View {
         // Keys count from the layer's own start (a still's: its pages).
         let f = model.keyFrame
         let keys = model.keyFrames(track)
-        let here = keys.contains(f)
+        // The playhead off the layer: no key there -- the way back is a
+        // key's arrow, the transport or the timeline.
+        let off = model.layerOffStage
+        let here = off == nil && keys.contains(f)
         HStack(spacing: 4) {
             Button {
                 model.goToKey(track, forward: false)
@@ -309,7 +312,7 @@ struct KeyframeBar: View {
                 Image(systemName: here ? "minus.diamond" : "plus.diamond")
                     .frame(width: 22)
             }
-            .disabled(here && keys.count == 1)
+            .disabled(off != nil || (here && keys.count == 1))
             .help(here ? "Remove the keyframe here" : "Add a keyframe here")
             Button {
                 model.goToKey(track, forward: true)
@@ -322,11 +325,27 @@ struct KeyframeBar: View {
                 .font(.caption)
                 .foregroundStyle(here ? Color.accentColor : .secondary)
                 .padding(.leading, 6)
-            Text(keyText(keys, here: here, frame: f))
-                .font(.callout.monospacedDigit())
-                .foregroundStyle(.secondary)
+            if let off {
+                Text(Self.offText(off, paged: model.pagedOnStage
+                                      && !model.clipOnStage))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .help("Move the playhead onto the layer to change it")
+            } else {
+                Text(keyText(keys, here: here, frame: f))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
         }
         .buttonStyle(.borderless)
+    }
+
+    /// Where the stage is against the layer, when it is not on it.
+    static func offText(_ edge: AppModel.ClipEdge,
+                        paged: Bool) -> LocalizedStringKey {
+        if paged { return "Not on this page" }
+        return edge == .before ? "Before the layer starts"
+                               : "After the layer ends"
     }
 
     /// "Keyframe 2 of 3 · frame 48", or "3 keyframes · frame 30" -- on a

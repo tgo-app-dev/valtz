@@ -144,7 +144,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .capabilities:
             String(localized: "What each model family makes on this Mac, and every resource it runs with: download it, or use it from where it already is.")
         case .helper:
-            String(localized: "The model that writes prompts with you and reads what you ask for: which one, and how it runs.")
+            String(localized: "The model that writes prompts with you, reads what you ask for and watches your clips: which one, and how it runs.")
         case .fleet:
             String(localized: "The Valtz Macs of this network as one: a job this Mac cannot run, or not now, goes to a member that can, and this Mac takes theirs when it is free.")
         case .storage:

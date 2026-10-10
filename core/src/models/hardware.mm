@@ -133,6 +133,46 @@ ane_cores_of_chip(std::string_view chip)
   return chip.find("Ultra") != std::string_view::npos ? 2 * die : die;
 }
 
+double
+memory_bandwidth_of_chip(std::string_view chip, std::uint32_t gpu_cores)
+{
+  const auto m = chip.find(" M");
+  if (m == std::string_view::npos) {
+    return 0;
+  }
+  std::uint32_t gen = 0;
+  for (auto i = m + 2; i < chip.size() && chip[i] >= '0' && chip[i] <= '9';
+       ++i) {
+    gen = gen * 10 + static_cast<std::uint32_t>(chip[i] - '0');
+  }
+  if (gen == 0) {
+    return 0;
+  }
+  const auto has = [&](std::string_view w) {
+    return chip.find(w) != std::string_view::npos;
+  };
+  // {base, Pro, Max (fewer GPU cores), Max (the full GPU), Ultra}.
+  struct Row {
+    double base, pro, max_cut, max_full, ultra;
+    std::uint32_t full_gpu;  // a Max's GPU cores from which it is "full"
+  };
+  static constexpr Row kRows[] = {
+    {68, 200, 400, 400, 800, 0},     // M1
+    {100, 200, 400, 400, 800, 0},    // M2
+    {100, 150, 300, 400, 819, 40},   // M3
+    {120, 273, 410, 546, 1092, 40},  // M4
+    {153, 307, 460, 614, 1228, 40},  // M5
+  };
+  const Row& r = kRows[std::min<std::uint32_t>(gen, 5) - 1];
+  if (has("Ultra")) {
+    return r.ultra;
+  }
+  if (has("Max")) {
+    return gpu_cores >= r.full_gpu ? r.max_full : r.max_cut;
+  }
+  return has("Pro") ? r.pro : r.base;
+}
+
 HardwareInfo
 probe_hardware()
 {
@@ -173,6 +213,13 @@ probe_hardware()
   if (const char* lim = std::getenv("VALTZ_RAM_LIMIT_GB")) {
     if (auto gb = std::strtoull(lim, nullptr, 10); gb > 0) {
       hw.ram_bytes = gb << 30;
+    }
+  }
+  hw.memory_bandwidth_gbs = memory_bandwidth_of_chip(hw.chip, hw.gpu_cores);
+  // A slower (or faster) memory simulated: what a video summary reads.
+  if (const char* bw = std::getenv("VALTZ_MEMORY_BANDWIDTH_GBS")) {
+    if (const double g = std::strtod(bw, nullptr); g > 0) {
+      hw.memory_bandwidth_gbs = g;
     }
   }
   // An older GPU simulated -- what Favor's presets do on it (models/
@@ -287,6 +334,7 @@ to_json(Json& j, const HardwareInfo& h)
     {"ane_cores", h.ane_cores},
     {"gpu_working_set_gb",
      static_cast<double>(h.gpu_working_set_bytes) / (1ull << 30)},
+    {"memory_bandwidth_gbs", h.memory_bandwidth_gbs},
     {"thermal", to_str(h.thermal)},
   };
 }

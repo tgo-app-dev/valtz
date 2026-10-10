@@ -244,6 +244,44 @@ base64(std::span<const std::uint8_t> bytes)
   return out;
 }
 
+std::optional<std::vector<std::uint8_t>>
+unbase64(std::string_view s)
+{
+  auto value = [](char c) -> int {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+  };
+  std::vector<std::uint8_t> out;
+  out.reserve(s.size() / 4 * 3);
+  std::uint32_t acc = 0;
+  int bits = 0;
+  bool ended = false;
+  for (char c : s) {
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+      continue;
+    }
+    if (c == '=') {
+      ended = true;
+      continue;
+    }
+    const int v = value(c);
+    if (v < 0 || ended) {
+      return std::nullopt;
+    }
+    acc = (acc << 6) | static_cast<std::uint32_t>(v);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push_back(static_cast<std::uint8_t>((acc >> bits) & 0xff));
+    }
+  }
+  return out;
+}
+
 }
 
 namespace valtz {

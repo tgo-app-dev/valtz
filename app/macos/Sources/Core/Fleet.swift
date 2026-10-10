@@ -11,6 +11,9 @@ struct FleetStatus: Decodable, Sendable, Equatable {
     var config: FleetConfig?
     var port: Int?
     var browsing: Bool?
+    /// macOS's Local Network permission, as browsing found it: allowed,
+    /// denied, or "" -- not known (nothing browsed since launch).
+    var localNetwork: String?
     var members: [FleetMember]?
     var fleets: [FleetSeen]?
     var serving: FleetJob?
@@ -19,8 +22,8 @@ struct FleetStatus: Decodable, Sendable, Equatable {
     var me: FleetSelf?
 
     enum CodingKeys: String, CodingKey {
-        case enabled, config, port, browsing, members, fleets, serving,
-             asking, me = "self"
+        case enabled, config, port, browsing, localNetwork, members, fleets,
+             serving, asking, me = "self"
     }
 }
 

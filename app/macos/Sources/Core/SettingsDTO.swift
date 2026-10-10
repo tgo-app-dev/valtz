@@ -74,6 +74,11 @@ struct HelperList: Decodable, Sendable {
     /// block drafter, held at `drafterBits` in memory).
     var drafter: String?
     var drafterBits: Int?
+    /// A video summary's FRAME INTERVAL (DESIGN §4i): as set (0: Auto),
+    /// what it comes to now, and the memory bandwidth Auto went by (GB/s).
+    var videoEvery: Double?
+    var videoEveryNow: Double?
+    var memoryBandwidthGbs: Double?
     var models: [Helper]
 
     struct Helper: Decodable, Sendable, Identifiable {
@@ -135,6 +140,8 @@ struct StorageReport: Decodable, Sendable {
         var repo: String
         var names: [String]
         var bytes: Int64
+        /// When its folder was made, ms since 1970 (0 unknown).
+        var created: Int64?
         var id: String { repo }
     }
     struct Projects: Decodable, Sendable {
@@ -146,6 +153,7 @@ struct StorageReport: Decodable, Sendable {
         var name: String
         var path: String
         var bytes: Int64
+        var created: Int64?
         var open: Bool
         var ephemeral: Bool
         var assets: [Asset]?
@@ -158,6 +166,7 @@ struct StorageReport: Decodable, Sendable {
         var kind: String
         var bytes: Int64
         var linked: Bool
+        var created: Int64?
     }
     struct Cache: Decodable, Sendable {
         var root: String

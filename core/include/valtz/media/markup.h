@@ -71,6 +71,14 @@ Json normalize_objects(const Json&);
 Status paint_stroke(const std::filesystem::path& raster, PixelSize canvas,
                     const Stroke& s, const std::filesystem::path& out);
 
+// `raster` (empty: a clear one) with `drawing` -- another markup's
+// raster, a PNG placed as draw_raster places one (centred at its own
+// size) -- laid over it `dx`, `dy` canvas pixels off (y down), the
+// canvas's size, to `out`: a drawing COPIED onto a markup.
+Status paste_drawing(const std::filesystem::path& raster, PixelSize canvas,
+                     const std::filesystem::path& drawing, double dx,
+                     double dy, const std::filesystem::path& out);
+
 // A markup layer's picture: its raster (empty: none) with its objects
 // drawn over it, those in `hidden` left out (the app draws the ones it is
 // editing), the canvas's size, to `out` as an 8-bit sRGB PNG.

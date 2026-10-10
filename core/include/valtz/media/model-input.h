@@ -139,6 +139,26 @@ Status decode_movie(const std::filesystem::path& src,
 Result<PreviewPicture> preview_movie_frame(const std::filesystem::path& src,
                                            double seconds, int edge);
 
+// A clip READ SPARSE, for a model that watches it (a video summary,
+// DESIGN §4i): the frame showing at every `every` seconds from its start
+// -- the first frame at or after each mark -- upright (the track's
+// transform applied), in sRGB, 8-bit, planar [3, h, w] at `size`, into
+// the buffer `target` hands out for its index and its time in the clip,
+// then `done`. Every frame is decoded (a file is read in order), only the
+// marked ones drawn. Blocking.
+using SampleTarget =
+    std::function<Result<FrameBuffer>(std::int64_t, double)>;
+Status sample_movie(const std::filesystem::path& src, double every,
+                    PixelSize size, const SampleTarget& target,
+                    const FrameDone& done);
+
+// The size sample_movie draws a clip at: its upright shape within `most`
+// -- its long edge at most the larger of the two, its short at most the
+// smaller -- each side a multiple of `align` (a vision tower's patches
+// and their merge: 32 for Qwen3-VL), never past `most`.
+Result<PixelSize> sampled_size(const std::filesystem::path& src,
+                               PixelSize most, int align);
+
 // A COMPOSITION's layers on its timeline (DESIGN §6a), as a writer or the
 // screen draws them: bottom first -- clips, pictures, markup, sounds --
 // each with its own tracks of keyframes (adjust, crop, turn) counted from

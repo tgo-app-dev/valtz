@@ -12,6 +12,7 @@ namespace valtz::plugin {
 void register_source(vpipe::VpipePluginContext*);
 void register_sink(vpipe::VpipePluginContext*);
 void register_tap(vpipe::VpipePluginContext*);
+void register_summary(vpipe::VpipePluginContext*);
 
 }
 

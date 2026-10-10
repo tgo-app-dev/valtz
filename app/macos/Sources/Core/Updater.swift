@@ -14,6 +14,11 @@ import Sparkle
 /// Info.plist (SUFeedURL, SUPublicEDKey). Sparkle asks the person, on
 /// the second launch, before it checks by itself; until then, and when
 /// they say no, it sends nothing.
+///
+/// It STARTS once the editor's window is there (`start`, from AppModel):
+/// started with the model -- before the window, the core still loading --
+/// its permission prompt came up first, alone, and answering it closed
+/// the only window, which quit Valtz.
 @MainActor @Observable
 final class Updater {
 #if VALTZ_SPARKLE
@@ -21,21 +26,32 @@ final class Updater {
     /// Mirrors Sparkle's setting, so the toggle redraws when it changes.
     private(set) var checksAutomatically: Bool
 
+    @ObservationIgnored private var started = false
+
     init() {
-        // A scripted snapshot run is a test of the window, not a launch:
-        // no scheduled check, no permission prompt over the window.
-        let scripted = ProcessInfo.processInfo
-            .environment["VALTZ_SNAPSHOT"] != nil
         controller = SPUStandardUpdaterController(
-            startingUpdater: !scripted, updaterDelegate: nil,
+            startingUpdater: false, updaterDelegate: nil,
             userDriverDelegate: nil)
         checksAutomatically =
             controller.updater.automaticallyChecksForUpdates
     }
 
+    /// The updater going: its scheduled checks, its permission prompt.
+    /// Once; never in a scripted snapshot run -- a test of the window,
+    /// not a launch.
+    func start() {
+        guard !started, ProcessInfo.processInfo
+            .environment["VALTZ_SNAPSHOT"] == nil else { return }
+        started = true
+        controller.startUpdater()
+    }
+
     var canCheck: Bool { true }
 
-    func checkForUpdates() { controller.checkForUpdates(nil) }
+    func checkForUpdates() {
+        start()
+        controller.checkForUpdates(nil)
+    }
 
     func setChecksAutomatically(_ on: Bool) {
         controller.updater.automaticallyChecksForUpdates = on
@@ -43,6 +59,7 @@ final class Updater {
     }
 #else
     init() {}
+    func start() {}
     var canCheck: Bool { false }
     var checksAutomatically: Bool { false }
     func checkForUpdates() {}

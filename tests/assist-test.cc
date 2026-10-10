@@ -2,6 +2,7 @@
 
 #include "valtz/assist/assistant.h"
 #include "valtz/assist/transcript.h"
+#include "valtz/assist/video-summary.h"
 #include "valtz/base/text.h"
 #include "valtz/models/catalog.h"
 
@@ -776,3 +777,48 @@ TEST(assist, a_transcript_is_summarized)
   CHECK(quiet.find("Sound events") == std::string::npos);
 }
 
+
+// A clip summarized (DESIGN §4i): the stage's beats read as scenes and
+// the whole, written as Markdown -- the whole first, then each scene with
+// its span, the last kept within the clip -- and the language the model
+// writes in named from the interface's.
+TEST(assist, a_video_summary_is_written)
+{
+  const auto sc = assist::summary_scene(
+      {{"kind", "scene"}, {"index", 0}, {"start", 0.0}, {"end", 11.0},
+       {"frames", 11}, {"at_cut", true}, {"text", "A woman holds a bird."}});
+  REQUIRE(sc);
+  CHECK(sc->end == 11.0);
+  CHECK(sc->frames == 11);
+  CHECK(sc->at_cut);
+  CHECK(!assist::summary_scene({{"kind", "scene"}, {"text", ""}}));
+  CHECK(!assist::summary_scene({{"kind", "overall"}, {"text", "x"}}));
+  CHECK(assist::summary_overall({{"kind", "overall"}, {"text", "All."}}) ==
+        "All.");
+  CHECK(assist::summary_overall({{"kind", "scene"}, {"text", "x"}}).empty());
+
+  assist::VideoSummary v;
+  v.seconds = 37.8;
+  v.every = 1;
+  v.overall = "A clockmaker and her bird.";
+  v.scenes.push_back(*sc);
+  v.scenes.push_back({11.0, 39.0, 28, false, "A kitchen counter."});
+  const std::string t = assist::summary_text("montage.mp4", v);
+  CHECK(t.starts_with("# Summary of montage.mp4 (0:37)\n\n"
+                      "A clockmaker and her bird.\n"));
+  CHECK(t.find("**0:00 - 0:11** A woman holds a bird.") !=
+        std::string::npos);
+  // The last scene's end, at the clip's.
+  CHECK(t.find("**0:11 - 0:37** A kitchen counter.") != std::string::npos);
+  CHECK(assist::to_json(v)["scenes"][1]["end"].get<double>() == 37.8);
+  v.scenes.clear();
+  CHECK(assist::summary_text("x", v).find("(nothing seen)") !=
+        std::string::npos);
+
+  CHECK(assist::language_name("zh-Hans") == "Simplified Chinese");
+  CHECK(assist::language_name("zh-Hant-TW") == "Traditional Chinese");
+  CHECK(assist::language_name("fr-CA") == "French");
+  CHECK(assist::language_name("en") == "English");
+  CHECK(assist::language_name("") == "English");
+  CHECK(assist::language_name("tlh") == "English");
+}

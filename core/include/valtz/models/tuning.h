@@ -44,6 +44,11 @@
 //                          steps a chunk. A preset runs it from the
 //                          catalog's `taomate.min_ram_gb` (its cache
 //                          alone is ~18 GB at 480p); text to clip only
+//   taomate_lora   bool    H3, with taomate: its adapter run as an
+//                          ordinary LoRA instead -- 3 steps, no
+//                          soundtrack pass, no chunks, no cache -- at
+//                          TaoMate's own shifts (`taomate.lora_only`:
+//                          12 / 3); a clip may open on a picture
 //   sol_attn       bool    Sol-Attn block routing
 //   sol_tau        real    its threshold, in standard deviations
 //   motion_cache   bool    H3: MotionCache, reused forwards

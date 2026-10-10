@@ -542,9 +542,28 @@ private:
         });
     nw_browser_set_state_changed_handler(
         b, ^(nw_browser_state_t s, nw_error_t e) {
-          if (s == nw_browser_state_failed && *alive) {
+          if (!*alive) {
+            return;
+          }
+          // What it says of the LOCAL NETWORK permission (macOS asks for
+          // it the first time): ready, allowed; refused by policy
+          // (kDNSServiceErr_PolicyDenied), not allowed.
+          const bool denied =
+              e && nw_error_get_error_domain(e) == nw_error_domain_dns &&
+              nw_error_get_error_code(e) == -65570;
+          const std::string was = _local_network;
+          if (s == nw_browser_state_ready) {
+            _local_network = "allowed";
+          } else if (denied) {
+            _local_network = "denied";
+          }
+          if (s == nw_browser_state_failed) {
             VALTZ_LOG_WARN("fleet", "browsing failed: {}",
                            e ? nw_error_get_error_code(e) : 0);
+          }
+          if (_local_network != was) {
+            publish_();
+            _host.fleet_note("fleet.changed", Json::object());
           }
         });
     nw_browser_start(b);
@@ -1555,6 +1574,8 @@ private:
     std::lock_guard lk(_mu);
     _snapshot = {{"port", _port},
                  {"browsing", _browser != nil},
+                 // allowed | denied | "" (not known: no browse yet)
+                 {"local_network", _local_network},
                  {"members", members},
                  {"fleets", fl},
                  {"serving", serving},
@@ -1579,6 +1600,7 @@ private:
   nw_browser_t      _browser;
   int               _port = 0;
   bool              _browse_wanted = false;
+  std::string       _local_network;
   std::uint64_t     _next_link = 0;
   std::int64_t      _next_stream = 0;
   std::map<std::uint64_t, std::unique_ptr<Link>> _links;

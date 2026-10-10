@@ -4,8 +4,9 @@ import SwiftUI
 /// person (Enhance, a song's lyrics, a voice's directions) and reads what
 /// they ask for. Which one -- Auto, the tier's pick, or one by name, kept
 /// by the core so valtzctl takes it too -- and how it runs: the sampler
-/// its model card recommends, and the drafter it decodes ahead with.
-/// More of the helper's settings will gather here.
+/// its model card recommends, and the drafter it decodes ahead with; and
+/// how often it looks when it watches a clip (a video summary, DESIGN
+/// §4i). More of the helper's settings will gather here.
 struct HelperView: View {
     @Bindable var model: AppModel
 
@@ -41,6 +42,7 @@ struct HelperView: View {
                     Text("Kept loaded, the next request starts at once instead of reading the whole model again. A generation that needs the memory unloads it first.")
                         .foregroundStyle(.secondary)
                 }
+                videoSection(list)
                 if let h = list.helper(list.using) {
                     Section("How It Runs") {
                         LabeledContent("Sampling") {
@@ -104,6 +106,52 @@ struct HelperView: View {
             Text("It drafts a block of words at a time, which the model checks in one pass. It holds more memory beside the model; on a Mac without much to spare, the MTP head is as fast.")
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// How often a video summary looks at the clip: Auto -- one frame a
+    /// second, or one every two on a Mac whose memory moves less than
+    /// 200 GB/s -- or as chosen.
+    @ViewBuilder
+    private func videoSection(_ list: HelperList) -> some View {
+        Section {
+            Picker("Frames", selection: Binding(
+                get: { Self.everyChoice(list.videoEvery ?? 0) },
+                set: { model.setVideoEvery($0) })) {
+                Text(autoEveryLabel(list)).tag(0.0)
+                Divider()
+                Text("One a second").tag(1.0)
+                Text("One every 2 seconds").tag(2.0)
+                Text("One every 3 seconds").tag(3.0)
+                Text("One every 5 seconds").tag(5.0)
+                Text("One every 10 seconds").tag(10.0)
+            }
+        } header: {
+            Text("Video Summary")
+        } footer: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("A clip is read a frame at a time, 576 × 320 at most, cut into scenes where the picture changes, and each scene told in a few sentences, then the whole. More frames see more and take longer: each is about 180 of the model's words to read.")
+                if let bw = list.memoryBandwidthGbs, bw > 0 {
+                    Text("Auto reads one a second, or one every 2 seconds on a Mac whose memory moves less than 200 GB/s. This Mac's moves \(String(Int(bw.rounded()))) GB/s.")
+                }
+            }
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    /// What Auto comes to here, by the memory's bandwidth (the core's
+    /// rule: Controller::video_every).
+    private func autoEveryLabel(_ list: HelperList) -> String {
+        let bw = list.memoryBandwidthGbs ?? 0
+        return bw > 0 && bw < 200
+            ? String(localized: "Auto (one every 2 seconds)")
+            : String(localized: "Auto (one a second)")
+    }
+
+    /// The offered interval nearest to what is set (valtzctl may set any).
+    private static func everyChoice(_ s: Double) -> Double {
+        guard s > 0 else { return 0 }
+        let offered: [Double] = [1, 2, 3, 5, 10]
+        return offered.min { abs($0 - s) < abs($1 - s) } ?? 1
     }
 
     /// The offered time nearest to what is kept (valtzctl may set any).

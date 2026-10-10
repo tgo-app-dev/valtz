@@ -68,6 +68,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -117,8 +118,11 @@ struct ControllerConfig {
 // which the result is derived from (recipe input role "prompt") beside
 // its media. `prompt_asset`: the prompt the box came from -- reused when
 // the words are its own, changed in place when nothing has been made
-// from it yet, else a new prompt is made. The model is given its own
-// names for the media (<image2>, <Picture 1>), never the tags.
+// from it yet, else a new prompt is made. `prompt_name`: the name the
+// person gave the prompt (the Prompt Editor's tab): the prompt captured
+// is named so and keeps it (Controller::rename_asset); "" -- its words
+// name it. The model is given its own names for the media (<image2>,
+// <Picture 1>), never the tags.
 
 struct GenerateImageRequest {
   ProjectId            project;
@@ -127,6 +131,7 @@ struct GenerateImageRequest {
   // references.
   std::vector<AssetId> row;
   std::optional<AssetId> prompt_asset;
+  std::string          prompt_name;
   std::string          negative;
   std::string          model;        // catalog id; "" = the default
   std::string          name;         // result asset name
@@ -189,6 +194,7 @@ struct GenerateVideoRequest {
   // references -- or the picture it opens on.
   std::vector<AssetId> row;
   std::optional<AssetId> prompt_asset;
+  std::string          prompt_name;
   std::string          model;        // catalog id; "" / "auto" = Auto's
   std::string          name;         // result asset name
   std::int32_t         width = 0;    // 0 = the model's default; edges go
@@ -259,6 +265,7 @@ struct GenerateAudioRequest {
   std::string          prompt;
   std::vector<AssetId> row;                // the reference row (above)
   std::optional<AssetId> prompt_asset;
+  std::string          prompt_name;
   // Lyrics given apart (valtzctl --lyrics, a file's): in place of any in
   // the prompt, which is then the style.
   std::string          lyrics;
@@ -436,11 +443,14 @@ public:
   // assets each), the managed cache -- and the volume's size and free
   // space:
   //   {"volume": {"path", "capacity", "free"},
-  //    "models": {"root", "bytes", "items": [{"repo", "names", "bytes"}]},
+  //    "models": {"root", "bytes", "items": [{"repo", "names", "bytes",
+  //      "created"}]},
   //    "projects": {"root", "bytes", "items": [{"name", "path", "bytes",
-  //      "open", "ephemeral", "assets": [{"id", "name", "kind", "bytes",
-  //      "linked"}], "other"}]},
+  //      "created", "open", "ephemeral", "assets": [{"id", "name",
+  //      "kind", "bytes", "linked", "created"}], "other"}]},
   //    "cache": {"root", "bytes", "budget"}}
+  // "created": ms since 1970 -- a folder's birth time (the Finder's
+  // Created), an asset's record's.
   // Walks the folders: call it off the main thread.
   Json storage_report() const;
   // What Auto picks, per modality and op: the catalog's `auto` order and
@@ -557,6 +567,30 @@ public:
   // Objects made pixels: drawn into its raster and gone from its objects.
   Status materialize_markup(ProjectId, AssetId, const std::string& layer,
                             const std::vector<std::string>& objects);
+  // Its DRAWING -- the pixels painted on it, its raster -- as a file (""
+  // with nothing painted): what is copied of it.
+  Result<std::filesystem::path> markup_drawing(ProjectId, AssetId,
+                                               const std::string& layer);
+  // A drawing pasted onto the markup a layer shows: `png` (a drawing as
+  // markup_drawing gave it) laid over its raster `dx`, `dy` pixels off.
+  Status paste_drawing(ProjectId, AssetId, const std::string& layer,
+                       const std::filesystem::path& png, double dx,
+                       double dy);
+  // The same, the drawing given as its PNG's bytes (the app's pasteboard):
+  // written inside the project's own working copy first -- an anonymous
+  // session's never reaches another place on disk.
+  Status paste_drawing_data(ProjectId, AssetId, const std::string& layer,
+                            std::span<const std::uint8_t> png, double dx,
+                            double dy);
+  // Its drawing cleared (cut, deleted): its objects stay.
+  Status clear_drawing(ProjectId, AssetId, const std::string& layer);
+  // A layer DUPLICATED right above it, named `name` ("": its own name):
+  // its looks and tracks, its time, its folder -- not a mask; a markup's
+  // copy of its own (drawing and objects), so the two are drawn on
+  // apart; anything else shown by both. -> the new layer's id.
+  Result<std::string> duplicate_layer(ProjectId, AssetId,
+                                      const std::string& layer,
+                                      const std::string& name = {});
   // Two layers made one -- what they show together, each through its
   // look and the mask between them, as pixels: a FLAT picture the lower
   // layer shows, in its place. Refused where a mask ties either one to a
@@ -659,7 +693,9 @@ public:
   Status delete_folder(ProjectId, const std::string& folder);
   Status move_asset(ProjectId, AssetId, const std::string& folder);
   // Its name in the list (one line, at most 200 bytes; empty refused).
-  // The project's composition is named by the project, not here.
+  // The project's composition is named by the project, not here. A
+  // PROMPT renamed is NAMED (tag "named"): its name is the person's, kept
+  // as its words change; "" names it from its words again.
   Status rename_asset(ProjectId, AssetId, std::string name);
   // The asset gone -- refused while another asset is built from it or
   // shows it on a layer, and for the project's composition.
@@ -798,6 +834,18 @@ public:
   Result<std::pair<AssetId, JobId>> transcribe(ProjectId, AssetId,
                                                std::string model = {},
                                                std::string language = {});
+  // A clip SUMMARIZED (DESIGN §4i): a clip, a timeline's picture -- read
+  // a frame every video_every() seconds at 576 x 320 at most, cut into
+  // scenes where the picture changes, each scene told in a few sentences
+  // by a vision-language model, the whole in a paragraph -- in a new TEXT
+  // asset made from it, beside it in the list, its data kept beside it
+  // (outputs "summary"). The model: the one named, else the helper when it
+  // watches video, else the best installed that does; it writes in the
+  // interface's language. `every` > 0: seconds a frame for this one, in
+  // place of the setting. The text asset and the job.
+  Result<std::pair<AssetId, JobId>> summarize_video(ProjectId, AssetId,
+                                                    std::string model = {},
+                                                    double every = 0);
   // Layer FOLDERS (DESIGN §6a): `layers` gathered into a new folder
   // named `name` (none: "Folder N"), where the topmost of them is -- its
   // id. A folder's layers lie together in the stack
@@ -920,6 +968,15 @@ public:
   static constexpr double kDefaultKeepLoaded = 600;
   Status set_assistant_keep_loaded(double seconds);
   double assistant_keep_loaded() const { return _assistant_keep; }
+  // A video summary's FRAME INTERVAL (Settings > Agentic Helper), seconds
+  // of the clip a frame stands for: 0 Auto -- one a second where memory
+  // moves kFastMemoryGbs or more, one every two below, where a frame's
+  // ~180 tokens are as many again to prefill per second of work. Kept in
+  // assistant.json ("video_every"). video_every(): what Auto comes to.
+  static constexpr double kFastMemoryGbs = 200;
+  Status set_video_every(double seconds);
+  double video_every_setting() const { return _video_every; }
+  double video_every() const;
   // The helper's DRAFTER (speculative decoding, token for token the same
   // reply, faster): "mtp" -- its MTP head, or the one shipped apart -- by
   // default; "dflash" -- a DFlash 2 block drafter (catalog
@@ -1041,14 +1098,16 @@ public:
   // that name nothing yet are kept (a captured prompt is a form whose
   // row is filled in later). `from`: the prompt it came from -- reused
   // for its own words, changed in place while nothing is made from it.
+  // `name`: the person's (a request's `prompt_name`); "" its words'.
   Result<AssetId> capture_prompt(ProjectId, const std::string& prompt,
                                  const std::vector<std::optional<AssetId>>&
                                      inline_media,
                                  const std::vector<AssetId>& row,
-                                 std::optional<AssetId> from = std::nullopt);
+                                 std::optional<AssetId> from = std::nullopt,
+                                 const std::string& name = {});
   // A prompt's words, changed in place -- refused (kPromptInUse) once
   // something has been made from it: it stays as it was, and a copy is
-  // what changes.
+  // what changes. A named prompt keeps its name.
   Status set_prompt_text(ProjectId, AssetId, const std::string& text);
   // Is it a prompt (a text asset captured as one)?
   static bool is_prompt(const project::Asset&);
@@ -1194,6 +1253,11 @@ private:
   Result<engine::JobSpec> chat_spec_(JobId, std::string text,
                                      std::vector<engine::JobInput> images,
                                      int max_new_tokens) const;
+  // How the helper `m` is loaded and decodes, as its chat and a video
+  // summary hand it to vpipe -- alike, so the model one keeps warm is the
+  // other's: {mtp, sampling, keep_loaded, mtp_model?, draft_model?,
+  // draft_bits?}.
+  Json helper_params_(const models::ModelEntry& m) const;
   // ---- the fleet
   class FleetHost;
   // Busy: a job of its engine queued or running here.
@@ -1254,10 +1318,11 @@ private:
       project::Project&, const std::string& prompt,
       const std::vector<std::optional<AssetId>>& inline_media,
       const std::vector<AssetId>& row, bool bound);
-  // The prompt asset for `positional` (capture_prompt), and its version.
+  // The prompt asset for `positional` (capture_prompt), and its version;
+  // `name` the person's, or "".
   Result<project::RecipeInput> capture_prompt_(
       project::Project&, ProjectId, const std::string& positional,
-      std::optional<AssetId> from);
+      std::optional<AssetId> from, const std::string& name);
   // A clip's REFERENCES (generate_video), in the order the model reads
   // them -- those read whole by their files first (pictures, untrimmed
   // sounds), then the spans (the clip continued, clips, trimmed sounds)
@@ -1497,6 +1562,7 @@ private:
   double                             _assistant_keep = kDefaultKeepLoaded;
   std::string                        _assistant_drafter = "mtp";
   int                                _assistant_drafter_bits = 8;
+  double                             _video_every = 0;  // 0: Auto
   models::Catalog                    _catalog;
   // Every package found at launch, as taken (fixed for the run).
   std::vector<ext::Extension>        _extensions;

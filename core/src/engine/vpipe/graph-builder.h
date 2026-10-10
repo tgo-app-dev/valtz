@@ -152,6 +152,17 @@ struct MovieFeed {
   Gate                    gate;
 };
 
+// A clip the engine must READ SPARSE into valtz-source `stage` (a video
+// summary, DESIGN §4i): the frame at every `every` seconds, upright,
+// sRGB, planar u8 [3, h, w] at `size` (media::sample_movie), each beat's
+// sideband its time in the clip (`pts_us`).
+struct SampleFeed {
+  std::string           stage;
+  std::filesystem::path path;
+  double                every = 1;
+  media::PixelSize      size;
+};
+
 // Sink stage ids; empty when the graph has no such output.
 struct BuiltGraph {
   Json                  spec;
@@ -170,6 +181,9 @@ struct BuiltGraph {
   // tagger's windows of sound events.
   std::string           transcript_sink;
   std::string           events_sink;
+  // A clip summarized (DESIGN §4i): a beat a scene, then the whole's.
+  std::string           summary_sink;
+  std::optional<SampleFeed> samples;
   std::filesystem::path output;        // file the graph writes
   // A still's pages exported (DESIGN §6a): every file, `output` the
   // first; empty for anything else.
@@ -260,6 +274,15 @@ Result<BuiltGraph> build_chat(const JobSpec&);
 // sound events when the job names a tagger.
 Result<BuiltGraph> build_transcribe(const JobSpec&,
                                     const std::filesystem::path& wav);
+// summarize-video (DESIGN §4i): the clip -- input "source" -- read sparse
+// at `size` (a frame every param `every` s: g.samples) into Valtz's
+// valtz-video-summary, which cuts it into scenes and has the model
+// (job.model: the helper, loaded as its chat loads it -- `mtp_model`,
+// `draft_model`, `draft_bits`, `keep_loaded`; its `sampling` on a
+// sampler-select) tell each in `language`, then the whole. Its beats
+// reach g.summary_sink.
+Result<BuiltGraph> build_summarize_video(const JobSpec&,
+                                         media::PixelSize size);
 Result<BuiltGraph> build_fetch_model(const JobSpec&);
 // export-media: the job's one input file read by vpipe's own Apple-native
 // readers and written by its writers -- a still through load-image (F16,

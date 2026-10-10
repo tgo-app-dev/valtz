@@ -147,8 +147,10 @@ public:
   // Saved, and the network made to follow: a new fleet, a new secret,
   // discoverable or not.
   virtual Status set_config(const Config&) = 0;
-  // {"config", "port", "browsing", "members": [{"id", "name", "state",
-  // "self"}], "fleets": [{"fleet", "members"}], "serving", "asking"}.
+  // {"config", "port", "browsing", "local_network" (allowed | denied |
+  // "" not known yet: what browsing has told of macOS's Local Network
+  // permission), "members": [{"id", "name", "state", "self"}], "fleets":
+  // [{"fleet", "members"}], "serving", "asking"}.
   virtual Json status() const = 0;
   // The members connected now, each as it says it is ("self", "id",
   // "name").

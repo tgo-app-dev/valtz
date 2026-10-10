@@ -17,6 +17,7 @@
 #include <cmath>
 #include <ctime>
 #include <format>
+#include <fstream>
 #include <numbers>
 
 namespace valtz {
@@ -1643,6 +1644,155 @@ Controller::materialize_markup(ProjectId pid, AssetId aid,
   VALTZ_ASSIGN(mk.raster, p->blobs().adopt_file(out, "png"));
   mk.objects = std::move(rest);
   return put_markup_(pid, *p, aid, mid, std::move(mk));
+}
+
+Result<fs::path>
+Controller::markup_drawing(ProjectId pid, AssetId aid,
+                           const std::string& layer)
+{
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
+  const auto& mk = at.second;
+  return mk.raster.empty() ? fs::path() : p->blobs().path_of(mk.raster);
+}
+
+Status
+Controller::paste_drawing(ProjectId pid, AssetId aid,
+                          const std::string& layer, const fs::path& png,
+                          double dx, double dy)
+{
+  auto undo = command_(pid, "markup.paste", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  std::error_code ec;
+  if (png.empty() || !fs::exists(png, ec)) {
+    return make_error(Code::NotFound, "no drawing to paste");
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
+  auto& [mid, mk] = at;
+  const fs::path raster = mk.raster.empty()
+                              ? fs::path() : p->blobs().path_of(mk.raster);
+  const fs::path out = p->blobs().make_tmp_path("png");
+  VALTZ_TRY(media::paste_drawing(raster, {mk.width, mk.height}, png, dx, dy,
+                                 out));
+  VALTZ_ASSIGN(mk.raster, p->blobs().adopt_file(out, "png"));
+  return put_markup_(pid, *p, aid, mid, std::move(mk));
+}
+
+Status
+Controller::paste_drawing_data(ProjectId pid, AssetId aid,
+                               const std::string& layer,
+                               std::span<const std::uint8_t> png, double dx,
+                               double dy)
+{
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  const fs::path tmp = p->blobs().make_tmp_path("png");
+  {
+    std::ofstream f(tmp, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(png.data()),
+            static_cast<std::streamsize>(png.size()));
+    if (!f) {
+      return make_error(Code::Io, "cannot write the drawing");
+    }
+  }
+  Status st = paste_drawing(pid, aid, layer, tmp, dx, dy);
+  std::error_code ec;
+  fs::remove(tmp, ec);
+  return st;
+}
+
+Status
+Controller::clear_drawing(ProjectId pid, AssetId aid,
+                          const std::string& layer)
+{
+  auto undo = command_(pid, "markup.clear", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
+  auto& [mid, mk] = at;
+  if (mk.raster.empty()) {
+    return ok_status();
+  }
+  mk.raster = {};
+  return put_markup_(pid, *p, aid, mid, std::move(mk));
+}
+
+Result<std::string>
+Controller::duplicate_layer(ProjectId pid, AssetId aid,
+                            const std::string& layer,
+                            const std::string& name)
+{
+  auto undo = command_(pid, "layer.duplicate", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  if (!is_comp(a)) {
+    return make_error(Code::InvalidArgument, msg::kNotComposition,
+                      {{"name", a.name}});
+  }
+  auto ls = a.layers;
+  auto it = find_layer(ls, layer);
+  if (it == ls.end()) {
+    return make_error(Code::InvalidArgument, "no such layer");
+  }
+  project::Layer copy = *it;
+  copy.id = next_layer_id(ls);
+  copy.mask = false;
+  if (!name.empty()) {
+    copy.name = one_line(name);
+  }
+  // A markup: a copy of its own, drawn on apart from the original.
+  if (copy.source) {
+    VALTZ_ASSIGN(project::Asset src, p->asset(*copy.source));
+    if (src.cls == AssetClass::Markup) {
+      project::Asset m;
+      m.name = src.name;
+      m.kind = src.kind;
+      m.cls = AssetClass::Markup;
+      m.folder = src.folder;
+      m.markup = src.markup;
+      VALTZ_ASSIGN(project::Asset made, p->add_asset(std::move(m), 64));
+      post_("assets.changed", JobId{}, {{"project", pid},
+                                        {"asset", made.id},
+                                        {"reason", "defined"}});
+      copy.source = made.id;
+      copy.source_version = 0;
+    }
+  }
+  const std::string id = copy.id;
+  ls.insert(it + 1, std::move(copy));
+  // Its looks and tracks, the copy's too.
+  std::vector<project::Modifier> mods = a.modifiers;
+  for (const auto& m : a.modifiers) {
+    if (m.layer == layer) {
+      project::Modifier c = m;
+      c.layer = id;
+      mods.push_back(std::move(c));
+    }
+  }
+  VALTZ_TRY(p->update_asset(aid, [&](project::Asset& r) -> Status {
+    r.layers = std::move(ls);
+    r.modifiers = std::move(mods);
+    return ok_status();
+  }));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return id;
 }
 
 // ---- renderings -----------------------------------------------------------

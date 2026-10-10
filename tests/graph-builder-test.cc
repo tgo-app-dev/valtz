@@ -14,6 +14,8 @@
 
 using namespace valtz;
 using namespace valtz::engine;
+namespace ex = valtz::exchange;
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -305,6 +307,84 @@ TEST(graph_builder, a_transcription_hears_one_channel)
   CHECK(!vp::build_transcribe(job, "/tmp/x-mono.wav").ok());
 }
 
+// A video summary (DESIGN §4i): the clip read sparse into a valtz-source
+// at the size given, the helper's model loaded as its chat loads it (its
+// drafters, its warm hold), its sampler on the stage's port, Valtz's own
+// words for the scenes and the whole.
+TEST(graph_builder, a_video_summary_reads_sparse)
+{
+  JobSpec job;
+  job.id = JobId::make();
+  job.op = std::string(kOpSummarizeVideo);
+  job.model.dir = "/m/mlx-community/Qwen3.8-27B-4bit";
+  JobInput in;
+  in.role = "source";
+  in.path = "/tmp/clip.mov";
+  in.info.type = media::MediaType::Video;
+  job.inputs.push_back(in);
+  job.params = {{"every", 2.0},
+                {"language", "Simplified Chinese"},
+                {"keep_loaded", 600.0},
+                {"mtp_model", "/m/mtp"},
+                {"draft_model", "/m/dflash"},
+                {"draft_bits", 4},
+                {"sampling", {{"temperature", 0.7}, {"top_k", 20}}}};
+  auto g = vp::build_summarize_video(job, {544, 320});
+  REQUIRE_OK(g);
+  REQUIRE(g->samples);
+  CHECK(g->samples->stage == "frames");
+  CHECK(g->samples->path == fs::path("/tmp/clip.mov"));
+  CHECK(g->samples->every == 2.0);
+  CHECK(g->samples->size.width == 544);
+  CHECK(g->samples->size.height == 320);
+  const Json* frames = find_stage(g->spec, "frames");
+  const Json* sum = find_stage(g->spec, "summary");
+  const Json* smp = find_stage(g->spec, "sampler");
+  REQUIRE(frames && sum && smp);
+  CHECK(jget<std::string>(*frames, "type", "") == ex::kSourceType);
+  CHECK(jget<std::string>(*sum, "type", "") == ex::kSummaryType);
+  CHECK(src_of(sum, 0) == "frames");
+  CHECK(src_of(sum, 1) == "sampler");
+  const Json cfg = config_of(sum);
+  CHECK(jget<std::string>(cfg, ex::kSummaryModel, "") ==
+        "/m/mlx-community/Qwen3.8-27B-4bit");
+  CHECK(jget(cfg, ex::kSummaryEvery, 0.0) == 2.0);
+  CHECK(jget<std::string>(cfg, ex::kSummaryLanguage, "") ==
+        "Simplified Chinese");
+  CHECK(jget<std::string>(cfg, ex::kSummaryMtpModel, "") == "/m/mtp");
+  CHECK(jget<std::string>(cfg, ex::kSummaryDraftModel, "") == "/m/dflash");
+  CHECK(jget(cfg, ex::kSummaryDraftBits, 0) == 4);
+  CHECK(jget(cfg, ex::kSummaryKeepLoaded, 0.0) == 600.0);
+  CHECK(jget<std::string>(cfg, ex::kSummaryScenePrompt, "")
+            .find("{start}") != std::string::npos);
+  CHECK(jget<std::string>(cfg, ex::kSummaryOverallPrompt, "")
+            .find("{scenes}") != std::string::npos);
+  CHECK(jget(config_of(smp), "top_k", 0) == 20);
+  // Its pages as the helper's chat has them: one model warm for both.
+  {
+    JobSpec chat = job;
+    chat.op = std::string(kOpChat);
+    chat.params = {{"text", "a fox"}};
+    auto cg = vp::build_chat(chat);
+    REQUIRE_OK(cg);
+    const Json cc = config_of(find_stage(cg->spec, "text-chat"));
+    CHECK(jget(cfg, ex::kSummaryPageTokens, 0) == jget(cc, "page_tokens", -1));
+    CHECK(jget(cfg, ex::kSummaryMaxPages, 0) == jget(cc, "max_pages", -1));
+  }
+  CHECK(g->summary_sink == "summary-sink");
+  REQUIRE(find_stage(g->spec, g->summary_sink));
+  CHECK(src_of(find_stage(g->spec, g->summary_sink), 0) == "summary");
+
+  // Greedy with no sampler; no clip, no frame size: refused.
+  job.params.erase("sampling");
+  auto greedy = vp::build_summarize_video(job, {544, 320});
+  REQUIRE_OK(greedy);
+  CHECK(!find_stage(greedy->spec, "sampler"));
+  CHECK(!vp::build_summarize_video(job, {0, 0}).ok());
+  job.inputs.clear();
+  CHECK(!vp::build_summarize_video(job, {544, 320}).ok());
+}
+
 TEST(graph_builder, export_graphs)
 {
   JobSpec job;
@@ -544,6 +624,44 @@ TEST(graph_builder, klein_edit_skips_the_conditioner)
   CHECK(!find_stage(g->spec, "qwen-image-21-model-config"));
 }
 
+// Qwen-Image 2.1 Turbo: the base model's graph -- its config stage, the
+// conditioner reading the pictures -- with NO scheduler (its schedule is
+// in its files) and its own 8 steps whatever was asked; vpipe would run
+// them anyway, and warn.
+TEST(graph_builder, qwen_image_turbo_runs_its_own_schedule)
+{
+  auto job = job_for("qwen-image-2.1-turbo", kOpGenerateImage);
+  REQUIRE(job.model.id == "qwen-image-2.1-turbo");
+  CHECK(jget(job.params, "steps", 0) == 20);   // asked for another count
+  auto g = vp::build_text_to_image(job);
+  REQUIRE_OK(g);
+  CHECK(!find_stage(g->spec, "scheduler-select"));
+  REQUIRE(find_stage(g->spec, "qwen-image-21-model-config"));
+  const Json* gen = find_stage(g->spec, "generate-image");
+  REQUIRE(gen);
+  CHECK(jget(config_of(gen), "steps", 0) == 8);
+  CHECK(src_of(gen, 4) == "");                  // the scheduler port
+  CHECK(src_of(gen, 7) == "qwen-image-21-model-config");
+  CHECK(g->width == 1024 && g->height == 1024);
+
+  auto edit = job_for("qwen-image-2.1-turbo", kOpEditImage);
+  auto e = vp::build_image_edit(edit, {{"/a.png", {1200, 800}, false, true},
+                                       {"/b.png", {640, 480}, false, false}});
+  REQUIRE_OK(e);
+  CHECK(!find_stage(e->spec, "scheduler-select"));
+  CHECK(jget(config_of(find_stage(e->spec, "generate-image")), "steps", 0) ==
+        8);
+  check_lists(e->spec, /*to_cond=*/true);
+
+  // The base model still has its scheduler, at the count asked.
+  auto base = vp::build_text_to_image(job_for("qwen-image-2.1",
+                                              kOpGenerateImage));
+  REQUIRE_OK(base);
+  REQUIRE(find_stage(base->spec, "scheduler-select"));
+  CHECK(jget(config_of(find_stage(base->spec, "generate-image")), "steps",
+             0) == 20);
+}
+
 TEST(graph_builder, edit_needs_a_recipe_and_a_reference)
 {
   CHECK(!vp::build_image_edit(job_for("qwen-image-2.1", kOpEditImage), {})
@@ -733,6 +851,16 @@ TEST(graph_builder, minimax_h3_clip_with_turbo_and_preview)
   CHECK(jget<std::string>(config_of(find_stage(tg->spec,
                                                "minimax-h3-model-config")),
                           "taomate", "") == "off");
+  // Its adapter as a plain LoRA: the method off, the adapter's shifts on
+  // the config stage as the tuning says.
+  j.params["tuning"] = {{"taomate", true}, {"taomate_lora", true},
+                        {"video_shift", 12}, {"audio_shift", 3}};
+  tg = vp::build_video(j, std::nullopt);
+  REQUIRE_OK(tg);
+  const Json lc = config_of(find_stage(tg->spec, "minimax-h3-model-config"));
+  CHECK(jget<std::string>(lc, "taomate", "") == "off");
+  CHECK(jget(lc, "video_shift", 0.0) == 12.0);
+  CHECK(jget(lc, "audio_shift", 0.0) == 3.0);
 }
 
 // A song, in the shapes of vpipe's YuE2 graphs: the description alone
@@ -1287,6 +1415,55 @@ TEST(graph_builder, tuning_reaches_the_stages)
   CHECK(jget(ic, "sol_attn", false) && jget(ic, "i8_gemm", false));
   CHECK(jget(ic, "ane_ffn", false) && jget(ic, "ane_qkv", false));
   CHECK(!ic.contains("shift") && !ic.contains("steps_on"));
+}
+
+// Z-Image Turbo from words, as vpipe's own pipeline wires it
+// (docs/pipelines/z-image-turbo-text-to-image): its config stage --
+// guidance 0, the preview keys -- into the conditioner's model_config
+// (5) and generate-image's (7); the scheduler simple, its shift 3.0
+// linear, at the steps asked; no reference lists; a 16-bit result.
+TEST(graph_builder, z_image_turbo_from_words)
+{
+  JobSpec j = job_for("z-image-turbo", kOpGenerateImage);
+  j.model.preview = "/models/madebyollin/taef1";
+  j.params = {{"prompt", "a red fox in snow"}, {"width", 512},
+              {"height", 512}, {"steps", 8}, {"seed", 42}};
+  auto g = vp::build_text_to_image(j);
+  REQUIRE_OK(g);
+  const Json& spec = g->spec;
+  const Json* cfg = find_stage(spec, "z-image-model-config");
+  REQUIRE(cfg);
+  CHECK(jget<std::string>(*cfg, "type", "") == "z-image-model-config");
+  const Json cc = config_of(cfg);
+  CHECK(jget(cc, "guidance_scale", -1.0) == 0.0);
+  CHECK(jget<std::string>(cc, "preview_vae", "") ==
+        "/models/madebyollin/taef1");
+  CHECK(g->preview_sink == "preview-sink");
+
+  const Json sc = config_of(find_stage(spec, "scheduler-select"));
+  CHECK(jget(sc, "steps", 0) == 8);
+  CHECK(jget(sc, "shift", 0.0) == 3.0);
+  CHECK(jget<std::string>(sc, "type", "") == "simple");
+  CHECK(jget<std::string>(sc, "shift_type", "") == "linear");
+
+  const Json* cond = find_stage(spec, "diffusion-conditioner");
+  CHECK(src_of(cond, 0) == "text-prompt");
+  CHECK(src_of(cond, 1).empty());                 // no negative
+  CHECK(src_of(cond, 2) == "model-select");
+  CHECK(src_of(cond, 5) == "z-image-model-config");
+  const Json* gen = find_stage(spec, "generate-image");
+  CHECK(src_of(gen, 0) == "diffusion-conditioner");
+  CHECK(src_of(gen, 2) == "model-select");
+  CHECK(src_of(gen, 4) == "scheduler-select");
+  CHECK(src_of(gen, 7) == "z-image-model-config");
+  CHECK(!find_stage(spec, vp::kRefList));
+  const Json gc = config_of(gen);
+  CHECK(jget(gc, "width", 0) == 512 && jget(gc, "height", 0) == 512);
+  CHECK(jget(gc, "steps", 0) == 8 && jget(gc, "seed", 0) == 42);
+  const Json* dec = find_stage(spec, "vae-decode");
+  CHECK(src_of(dec, 0) == "generate-image");
+  CHECK(jget(config_of(find_stage(spec, "save-image")), "bit_depth", 0) ==
+        16);
 }
 
 // The second LoRA slot -- a style or identity adapter -- reaches the

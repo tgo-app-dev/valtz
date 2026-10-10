@@ -25,7 +25,8 @@ const VpipePluginInfo kInfo = {
   "tgous",
   "MPL-2.0",
   "Valtz host exchange: valtz-source / valtz-sink / valtz-tap, "
-  "zero-copy buffers and flow control over stage commands",
+  "zero-copy buffers and flow control over stage commands; "
+  "valtz-video-summary, a clip told scene by scene",
   kRequires,
 };
 
@@ -35,6 +36,11 @@ register_plugin(vpipe::VpipePluginContext* ctx)
   valtz::plugin::register_source(ctx);
   valtz::plugin::register_sink(ctx);
   valtz::plugin::register_tap(ctx);
+  // A host without VideoTurn cannot drive a model for it: the exchange
+  // works on without it.
+  if (ctx->has_feature(VPIPE_FEATURE_VIDEO_TURN)) {
+    valtz::plugin::register_summary(ctx);
+  }
 }
 
 }

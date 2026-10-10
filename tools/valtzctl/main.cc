@@ -65,19 +65,25 @@ usage()
       "  families             (Settings > Capabilities: each model family,\n"
       "         its features -- [x] made here -- and every resource it\n"
       "         runs with, where it is: valtz, vpipe or a link)\n"
-      "  storage              (Settings > Storage: what Valtz keeps on the\n"
-      "         internal SSD -- models, projects, cache -- each sized)\n"
+      "  storage [--sort size|created|name] [--asc|--desc]\n"
+      "         (Settings > Storage: what Valtz keeps on the internal\n"
+      "         SSD -- models, projects, cache -- each sized, with when it\n"
+      "         was made; each list in the order asked, largest first by\n"
+      "         default)\n"
       "  link <model-id> <file|folder> | unlink <model-id>\n"
       "         (a model kept somewhere else -- ComfyUI's, Draw Things',\n"
       "         anywhere -- used from there)\n"
       "  assistant [<model-id>|auto] [--keep <seconds>]\n"
       "            [--drafter mtp|dflash] [--bits 8|4]\n"
+      "            [--video-every <seconds>|auto]\n"
       "         (Settings > Agentic Helper: the helpers, which is chosen\n"
       "         and which runs, each one's sampler; with an id, that one\n"
       "         chosen -- kept for the app and every later run; --keep:\n"
       "         how long it stays loaded after a request, 0 not at all;\n"
       "         --drafter: what it drafts with -- its MTP head, or a\n"
-      "         DFlash 2 drafter held at --bits)\n"
+      "         DFlash 2 drafter held at --bits; --video-every: a video\n"
+      "         summary's seconds a frame, auto: 1, or 2 where memory\n"
+      "         moves under 200 GB/s)\n"
       "  status [--thermal]   (the machine's load, as the app's status bar\n"
       "         shows it: ANE, GPU, memory; --thermal adds whether the GPU\n"
       "         is held back, from a 600 ms sample)\n"
@@ -93,7 +99,9 @@ usage()
       "  folders <project.valtz>  (the asset list's folders)\n"
       "  folder <project.valtz> add <name> | rename <id> <name> | rm <id>\n"
       "  mv <project.valtz> <asset-id> <folder-id|top>\n"
-      "  rename <project.valtz> <asset-id> <name>  (its name in the list)\n"
+      "  rename <project.valtz> <asset-id> <name>  (its name in the list;\n"
+      "         a prompt's is then kept as its words change, \"\" names it\n"
+      "         from its words again)\n"
       "  save <project.valtz> [--as <new.valtz>] | revert <project.valtz>\n"
       "         (the working copy written to its package, or read back\n"
       "         from it; every command saves as it ends, but --unsaved)\n"
@@ -246,16 +254,24 @@ usage()
       "        starts from -- written for a reference row holding those\n"
       "        kinds, in order: each named by its tag where it belongs)\n"
       "  prompts <project.valtz>  (the prompts: each made from, how much)\n"
-      "  prompt <project.valtz> add <text> | show <id> | set <id> <text>\n"
+      "  prompt <project.valtz> add <text> [--name N] | show <id>\n"
+      "         | set <id> <text>\n"
       "         (a prompt as an asset: its media named by POSITION in\n"
       "         the reference row -- <valtz_ref_img_0> the first picture,\n"
       "         _vid_ a clip, _aud_ a sound -- and each model told its\n"
       "         own names for them; set is refused once something was\n"
-      "         made from it. @<id> in place of any prompt uses it)\n"
+      "         made from it. @<id> in place of any prompt uses it;\n"
+      "         --prompt-name N on generate, video and audio names the\n"
+      "         prompt captured, as --name here: the person's name, kept\n"
+      "         as its words change)\n"
       "  classify <file|folder>...  (lora, dit or vae: how a drop is filed)\n"
       "  transcribe <project.valtz> <sound|clip-id> [--model ID]\n"
       "         [--language L]  (its speech line by line, the sound\n"
       "         events heard: a text asset made from it, printed)\n"
+      "  summarize <project.valtz> <clip-id> [--model ID] [--every S]\n"
+      "         (watched by the helper -- a frame every S seconds, the\n"
+      "         setting's by default -- scene by scene, then whole: a\n"
+      "         text asset made from it, printed)\n"
       "  layers <project.valtz> <picture-id> [add [above] | move <layer> <by>\n"
       "         | show|hide <layer> | source <layer> <picture-id>\n"
       "         | rename <layer> <name> | remove <layer>\n"
@@ -269,6 +285,10 @@ usage()
       "                 bold,italic,underline,color=#..]\n"
       "                 (a box: wrapped in it, the lines that fit whole)\n"
       "         | materialize <layer> [object-id...]\n"
+      "         | duplicate <layer> [name]  (a copy right above it: a\n"
+      "                 markup's drawing and objects its own)\n"
+      "         | drawing <layer>  (the file its painted pixels are in)\n"
+      "         | paste-drawing <layer> <png> [dx dy] | clear-drawing <layer>\n"
       "         | split <layer> <frame> | slide <layer> <frame>\n"
       "         | stretch <layer> <frames>\n"
       "         | group <layer>... [--name N] | ungroup <folder>\n"
@@ -1132,7 +1152,7 @@ main(int argc, char** argv)
   cfg.keep_working_copies = true;
   cfg.with_engine = cmd == "generate" || cmd == "video" || cmd == "audio" ||
                     cmd == "upscale" || cmd == "quantize" ||
-                    cmd == "transcribe" ||
+                    cmd == "transcribe" || cmd == "summarize" ||
                     (cmd == "ext" && (args.empty() || args[0] == "list")) ||
                     cmd == "status" || cmd == "families" ||
                     cmd == "enhance" ||
@@ -1222,9 +1242,65 @@ main(int argc, char** argv)
     return 0;
   }
   if (cmd == "storage") {
-    const Json r = c.storage_report();
+    Json r = c.storage_report();
     auto gb = [](const Json& b) {
       return std::format("{:8.2f} GB", b.get<double>() / 1e9);
+    };
+    // Each list in the order Settings > Storage offers: by size, by when
+    // it was made, by name; descending by default.
+    std::string by = "size";
+    bool asc = false;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+      if (args[i] == "--sort" && i + 1 < args.size()) {
+        by = args[++i];
+        if (by != "size" && by != "created" && by != "name") {
+          return usage();
+        }
+      } else if (args[i] == "--asc") {
+        asc = true;
+      } else if (args[i] == "--desc") {
+        asc = false;
+      }
+    }
+    auto order = [&](Json& items, const char* name_key) {
+      std::vector<Json> v(items.begin(), items.end());
+      std::ranges::stable_sort(v, [&](const Json& a, const Json& b) {
+        int c = 0;
+        if (by == "size") {
+          c = jget<std::int64_t>(a, "bytes", 0) <
+                      jget<std::int64_t>(b, "bytes", 0)
+                  ? -1
+              : jget<std::int64_t>(a, "bytes", 0) >
+                      jget<std::int64_t>(b, "bytes", 0)
+                  ? 1 : 0;
+        } else if (by == "created") {
+          c = jget<std::int64_t>(a, "created", 0) <
+                      jget<std::int64_t>(b, "created", 0)
+                  ? -1
+              : jget<std::int64_t>(a, "created", 0) >
+                      jget<std::int64_t>(b, "created", 0)
+                  ? 1 : 0;
+        } else {
+          c = jget<std::string>(a, name_key, "").compare(
+              jget<std::string>(b, name_key, ""));
+          c = c < 0 ? -1 : c > 0 ? 1 : 0;
+        }
+        return asc ? c < 0 : c > 0;
+      });
+      items = Json(v);
+    };
+    order(r["models"]["items"], "repo");
+    order(r["projects"]["items"], "name");
+    auto made = [](const Json& j) {
+      const std::time_t t = jget<std::int64_t>(j, "created", 0) / 1000;
+      if (t <= 0) {
+        return std::string("          ");
+      }
+      std::tm tm{};
+      localtime_r(&t, &tm);
+      char buf[16];
+      std::strftime(buf, sizeof buf, "%Y-%m-%d", &tm);
+      return std::string(buf);
     };
     std::printf("volume   %s of %s free\n",
                 gb(r["volume"]["free"]).c_str(),
@@ -1232,14 +1308,14 @@ main(int argc, char** argv)
     std::printf("models   %s  %s\n", gb(r["models"]["bytes"]).c_str(),
                 r["models"]["root"].get<std::string>().c_str());
     for (const auto& m : r["models"]["items"]) {
-      std::printf("  %s  %s\n", gb(m["bytes"]).c_str(),
-                  m["repo"].get<std::string>().c_str());
+      std::printf("  %s  %s  %s\n", gb(m["bytes"]).c_str(),
+                  made(m).c_str(), m["repo"].get<std::string>().c_str());
     }
     std::printf("projects %s  %s\n", gb(r["projects"]["bytes"]).c_str(),
                 r["projects"]["root"].get<std::string>().c_str());
     for (const auto& p : r["projects"]["items"]) {
-      std::printf("  %s  %s\n", gb(p["bytes"]).c_str(),
-                  p["name"].get<std::string>().c_str());
+      std::printf("  %s  %s  %s\n", gb(p["bytes"]).c_str(),
+                  made(p).c_str(), p["name"].get<std::string>().c_str());
     }
     std::printf("cache    %s  (budget %s)\n",
                 gb(r["cache"]["bytes"]).c_str(),
@@ -1258,6 +1334,11 @@ main(int argc, char** argv)
       Status st = ok_status();
       if (args[i] == "--keep" && i + 1 < args.size()) {
         st = c.set_assistant_keep_loaded(std::atof(args[++i].c_str()));
+      } else if (args[i] == "--video-every" && i + 1 < args.size()) {
+        ++i;
+        st = c.set_video_every(args[i] == "auto"
+                                   ? 0.0
+                                   : std::atof(args[i].c_str()));
       } else if (args[i] == "--bits" && i + 1 < args.size()) {
         ++i;
         st = c.set_assistant_drafter(
@@ -1274,7 +1355,8 @@ main(int argc, char** argv)
     const Json a = c.assistants();
     const auto choice = a["choice"].get<std::string>();
     std::printf("chosen   %s\nauto     %s\nusing    %s\nkept     %g s "
-                "after a request\ndrafter  %s%s\n",
+                "after a request\ndrafter  %s%s\nvideo    a frame every "
+                "%g s%s (memory %g GB/s)\n",
                 choice.empty() ? "auto" : choice.c_str(),
                 a["auto"].get<std::string>().c_str(),
                 a["using"].get<std::string>().c_str(),
@@ -1283,7 +1365,10 @@ main(int argc, char** argv)
                 jget<std::string>(a, "drafter", "") == "dflash"
                     ? std::format(" ({}-bit)", jget(a, "drafter_bits", 8))
                           .c_str()
-                    : "");
+                    : "",
+                jget(a, "video_every_now", 1.0),
+                jget(a, "video_every", 0.0) > 0 ? "" : " (auto)",
+                jget(a, "memory_bandwidth_gbs", 0.0));
     for (const auto& m : a["models"]) {
       std::string drafter;
       if (m.contains("drafter")) {
@@ -2020,6 +2105,26 @@ main(int argc, char** argv)
         return fail(r.error());
       }
       std::printf("markup layer %s\n", r->c_str());
+    } else if (op == "duplicate") {
+      auto r = c.duplicate_layer(*pid, *aid, layer, arg);
+      if (!r.ok()) {
+        return fail(r.error());
+      }
+      std::printf("duplicated as layer %s\n", r->c_str());
+    } else if (op == "drawing") {
+      auto r = c.markup_drawing(*pid, *aid, layer);
+      if (!r.ok()) {
+        return fail(r.error());
+      }
+      std::printf("%s\n", r->empty() ? "(nothing painted)"
+                                      : r->string().c_str());
+    } else if (op == "paste-drawing") {
+      // <layer> <png> [dx dy]: a drawing laid over the markup's.
+      const double dx = plain.size() > 5 ? std::atof(plain[5].c_str()) : 0;
+      const double dy = plain.size() > 6 ? std::atof(plain[6].c_str()) : 0;
+      st = c.paste_drawing(*pid, *aid, layer, arg, dx, dy);
+    } else if (op == "clear-drawing") {
+      st = c.clear_drawing(*pid, *aid, layer);
     } else if (op == "merge") {
       st = c.merge_layers(*pid, *aid, layer, arg);
     } else if (op == "mask") {
@@ -2705,6 +2810,41 @@ main(int argc, char** argv)
                 text->c_str());
     return 0;
   }
+  if (cmd == "summarize") {
+    // A clip told scene by scene, then whole (DESIGN §4i): a text asset,
+    // printed.
+    if (args.size() < 2) {
+      return usage();
+    }
+    auto pid = open_or_fail(c, args[0]);
+    auto aid = AssetId::parse(args[1]);
+    if (!pid.ok() || !aid) {
+      return usage();
+    }
+    std::string model;
+    double every = 0;
+    for (std::size_t i = 2; i + 1 < args.size(); ++i) {
+      if (args[i] == "--model") {
+        model = args[++i];
+      } else if (args[i] == "--every") {
+        every = std::atof(args[++i].c_str());
+      }
+    }
+    auto made = c.summarize_video(*pid, *aid, model, every);
+    if (!made.ok()) {
+      return fail(made.error());
+    }
+    if (const int rc = follow(c, made->second); rc != 0) {
+      return rc;
+    }
+    auto text = c.project(*pid)->read_text(made->first);
+    if (!text.ok()) {
+      return fail(text.error());
+    }
+    std::printf("%s %s\n%s", made->first.str().c_str(), "summary",
+                text->c_str());
+    return 0;
+  }
   if (cmd == "history") {
     if (args.empty()) {
       return usage();
@@ -2774,7 +2914,11 @@ main(int argc, char** argv)
       return fail(pid.error());
     }
     if (args[1] == "add") {
-      auto a = c.capture_prompt(*pid, args[2], {}, {});
+      std::string name;
+      if (args.size() > 4 && args[3] == "--name") {
+        name = args[4];
+      }
+      auto a = c.capture_prompt(*pid, args[2], {}, {}, std::nullopt, name);
       if (!a.ok()) {
         return fail(a.error());
       }
@@ -2877,6 +3021,8 @@ main(int argc, char** argv)
         req.steps = std::atoi(next().c_str());
       } else if (a == "--seed") {
         req.seed = std::atoll(next().c_str());
+      } else if (a == "--prompt-name") {
+        req.prompt_name = next();
       } else if (a == "--size") {
         std::string s = next();
         std::sscanf(s.c_str(), "%dx%d", &req.width, &req.height);
@@ -2967,6 +3113,8 @@ main(int argc, char** argv)
         req.preference = "quality";
       } else if (a == "--seed") {
         req.seed = std::atoll(next().c_str());
+      } else if (a == "--prompt-name") {
+        req.prompt_name = next();
       } else if (a == "--no-turbo") {
         req.turbo = false;
       } else if (a == "--tune") {
@@ -3053,6 +3201,8 @@ main(int argc, char** argv)
         req.preference = "quality";
       } else if (a == "--seed") {
         req.seed = std::atoll(next().c_str());
+      } else if (a == "--prompt-name") {
+        req.prompt_name = next();
       } else if (a == "--tune") {
         req.tuning.update(tune_spec(next()));
       } else if (a == "--vae") {

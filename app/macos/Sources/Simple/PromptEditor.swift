@@ -734,6 +734,11 @@ struct PromptEditor: NSViewRepresentable {
         init(_ p: PromptEditor) { parent = p }
 
         func textDidChange(_ notification: Notification) {
+            // Typed (the person's change, never a load): the editor is
+            // being edited.
+            if parent.model.promptImmersive {
+                parent.model.editorEdited = true
+            }
             sync()
         }
 

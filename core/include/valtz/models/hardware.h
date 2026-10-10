@@ -32,6 +32,10 @@ struct HardwareInfo {
   // the chip has -- 16 a die, 32 from M6 on; an Ultra is two dies.
   std::uint32_t ane_cores = 0;
   std::uint64_t gpu_working_set_bytes = 0; // recommendedMaxWorkingSetSize
+  // Unified memory's bandwidth, GB/s, as Apple states it for the chip
+  // (memory_bandwidth_of_chip); what a model's decode -- and a VLM's
+  // prefill of many frames -- is bound by. 0 when the chip is not known.
+  double        memory_bandwidth_gbs = 0;
   ThermalState  thermal = ThermalState::Nominal;
 
   std::uint32_t ram_gb() const noexcept
@@ -47,6 +51,14 @@ std::uint32_t ane_cores_of_chip(std::string_view chip);
 
 // Probe once per launch. `VALTZ_RAM_LIMIT_GB` overrides the RAM figure,
 // to exercise a small-box tier on a big box.
+// Unified memory's bandwidth by the chip's name ("Apple M5 Pro") and its
+// GPU cores (a Max comes in two: M4 Max 410 or 546 GB/s), in GB/s, as
+// Apple states it: M1 68, M2 / M3 100, M4 120, M5 153; Pro 200 (M3 Pro
+// 150, M4 Pro 273, M5 Pro 307); Max and Ultra from 300 up. A later
+// generation is taken as M5's of its tier. 0 for a chip not an M-series.
+double memory_bandwidth_of_chip(std::string_view chip,
+                                std::uint32_t gpu_cores);
+
 HardwareInfo probe_hardware();
 
 std::uint64_t free_disk_bytes(const std::filesystem::path&);

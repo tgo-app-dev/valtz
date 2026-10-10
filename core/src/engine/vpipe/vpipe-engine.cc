@@ -25,6 +25,7 @@
 #include "valtz/engine/engine.h"
 
 #include "valtz/assist/transcript.h"
+#include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
 #include "valtz/media/exif.h"
@@ -127,10 +128,21 @@ public:
       VALTZ_LOG_ERROR("engine", "vpipe refused the session config");
       return;
     }
-    // vpipe's log, to the host as well as to stdout (the Log view).
-    if (cfg.on_log) {
-      _session->set_log_listener(cfg.on_log);
-    }
+    // vpipe's log, to the host as well as to stdout (the Log view); its
+    // first error in a graph kept, for the job it fails (run_error_).
+    _session->set_log_listener(
+        [this, on_log = cfg.on_log](int level, std::string_view text) {
+          if (level == 0) {
+            std::lock_guard lk(_err_mu);
+            if (_run_error.empty()) {
+              _run_error = utf8_prefix(text.substr(0, text.find('\n')),
+                                       400);
+            }
+          }
+          if (on_log) {
+            on_log(level, text);
+          }
+        });
     if (!plugin_loaded_()) {
       VALTZ_LOG_ERROR("engine", "vpipe did not load {} (its reason is in "
                       "the vpipe log)", plugin.string());
@@ -211,7 +223,7 @@ public:
            op == kOpGenerateSpeech || op == kOpQuantizeModel ||
            op == kOpChat || op == kOpFetchModel || op == kOpExportMedia ||
            op == kOpUpscaleVideo || op == kOpUpscaleImage ||
-           op == kOpTranscribeAudio;
+           op == kOpTranscribeAudio || op == kOpSummarizeVideo;
   }
 
   Status
@@ -541,6 +553,19 @@ private:
       built = vp::build_chat(spec);
     } else if (spec.op == kOpTranscribeAudio) {
       built = vp::build_transcribe(spec, mono);
+    } else if (spec.op == kOpSummarizeVideo) {
+      // Its frames' size: the clip's shape, upright, within the most a
+      // frame may be (576 x 320), on the tower's 32-pixel grid.
+      if (spec.inputs.empty()) {
+        fail_(q, Code::InvalidArgument, "nothing to summarize");
+        return;
+      }
+      auto size = media::sampled_size(
+          spec.inputs.front().path,
+          {jget(spec.params, "max_width", 576),
+           jget(spec.params, "max_height", 320)}, 32);
+      built = size.ok() ? vp::build_summarize_video(spec, *size)
+                        : Result<vp::BuiltGraph>(size.error());
     } else if (spec.op == kOpFetchModel) {
       built = vp::build_fetch_model(spec);
     } else if (spec.op == kOpExportMedia) {
@@ -624,6 +649,39 @@ private:
       std::lock_guard lk(result_mu);
       windows.push_back(std::move(b.meta));
     };
+    // A clip summarized: its scenes as they are told -- how far into the
+    // clip they reach is its progress -- and the whole.
+    assist::VideoSummary summary;
+    if (spec.op == kOpSummarizeVideo && !spec.inputs.empty()) {
+      summary.seconds = spec.inputs.front().info.duration.seconds();
+      summary.every = jget(spec.params, "every", 1.0);
+    }
+    auto on_summary = [&](vp::SinkBeat&& b) {
+      if (auto sc = assist::summary_scene(b.meta)) {
+        JobEvent ev;
+        ev.job = spec.id;
+        ev.kind = JobEventKind::Progress;
+        const double total = summary.seconds;
+        ev.progress = total > 0
+            ? static_cast<float>(std::min(1.0, sc->end / total))
+            : -1.0f;
+        ev.data = {{"phase", "summarize"},
+                   {"done", std::lround(std::min(sc->end,
+                                                 total > 0 ? total
+                                                           : sc->end))},
+                   {"total", std::lround(total)},
+                   {"scene", sc->text}};
+        {
+          std::lock_guard lk(result_mu);
+          summary.scenes.push_back(std::move(*sc));
+        }
+        q.sink(ev);
+      } else if (auto all = assist::summary_overall(b.meta);
+                 !all.empty()) {
+        std::lock_guard lk(result_mu);
+        summary.overall = std::move(all);
+      }
+    };
     // A song's score: one string beat, the ABC it followed.
     std::string score;
     auto on_score = [&](vp::SinkBeat&& b) {
@@ -684,9 +742,10 @@ private:
       sent = t;
     };
     // A chat's progress is its streamed text; a transcription's, how far
-    // its lines reach.
+    // its lines reach; a summary's, how far its scenes do.
     const bool reports = spec.op != kOpChat &&
-                         spec.op != kOpTranscribeAudio;
+                         spec.op != kOpTranscribeAudio &&
+                         spec.op != kOpSummarizeVideo;
 
     // A long export shows what it writes (kPhaseExport): a small frame
     // every half second, as a generation's preview -- drawn from the
@@ -736,6 +795,10 @@ private:
 
     // Reports from here on are this job's: one graph runs at a time.
     const std::uint64_t reports_from = _session->reports_version();
+    {
+      std::lock_guard lk(_err_mu);
+      _run_error.clear();
+    }
     // The graph goes in as a document, converted node by node: its number
     // kinds intact, no JSON text written or parsed.
     vpipe::PipelineHandle h = _session->load_pipeline(vp::to_flex(g.spec));
@@ -770,6 +833,7 @@ private:
     read(g.score_sink, on_score);
     read(g.transcript_sink, on_transcript);
     read(g.events_sink, on_events);
+    read(g.summary_sink, on_summary);
 
     // References go in now, decoded straight into beats the graph leased
     // us: no file is re-read by vpipe and no pixel is copied after the
@@ -837,6 +901,20 @@ private:
       std::string why = memory_sentence_(m);
       fail_(q, Code::OutOfMemory, std::move(why), {{"memory", std::move(m)}});
       return;
+    }
+    // A stage's refusal reaches only the log. A job with no file to look
+    // for fails with its words: a download vpipe refused at once had
+    // read as one finished.
+    if (spec.op == kOpFetchModel || spec.op == kOpQuantizeModel) {
+      std::string why;
+      {
+        std::lock_guard lk(_err_mu);
+        why = _run_error;
+      }
+      if (!why.empty()) {
+        fail_(q, Code::Engine, std::move(why));
+        return;
+      }
     }
 
     // A clip comes out in two halves -- vpipe's Apple-native writer is
@@ -919,6 +997,34 @@ private:
       out.output_info.type = media::MediaType::Text;
       out.output_info.uti = "public.utf8-plain-text";
       out.data = {{"transcript", assist::to_json(transcript)}};
+      q.sink(out);
+    } else if (spec.op == kOpSummarizeVideo) {
+      // Told as text: the whole, then the scenes in order.
+      if (summary.scenes.empty()) {
+        fail_(q, Code::Engine,
+              "the model told nothing of the clip (see the log)");
+        return;
+      }
+      std::ranges::sort(summary.scenes, [](const auto& a, const auto& b) {
+        return a.start < b.start;
+      });
+      const fs::path text = spec.output_dir / (spec.id.str() + ".md");
+      {
+        std::ofstream f(text, std::ios::binary);
+        f << assist::summary_text(
+            jget<std::string>(spec.params, "name", ""), summary);
+        if (!f) {
+          fail_(q, Code::Io, "could not write the summary");
+          return;
+        }
+      }
+      JobEvent out;
+      out.job = spec.id;
+      out.kind = JobEventKind::Output;
+      out.output = text;
+      out.output_info.type = media::MediaType::Text;
+      out.output_info.uti = "net.daringfireball.markdown";
+      out.data = {{"summary", assist::to_json(summary)}};
       q.sink(out);
     } else if (spec.op == kOpChat) {
       if (result_text.empty()) {
@@ -1270,6 +1376,42 @@ private:
         return st;
       }
     }
+    // A clip read sparse (a summary): a frame at each mark, drawn small
+    // straight into a leased beat, its time in its sideband. A cancel
+    // stops it between frames.
+    if (g.samples) {
+      const vp::SampleFeed& sf = *g.samples;
+      vp::SourceWriter src(h.stage(sf.stage));
+      std::optional<vp::SourceWriter::Lease> lease;
+      const auto target =
+          [&](std::int64_t, double t) -> Result<media::FrameBuffer> {
+            if (_cancel.load()) {
+              return make_error(Code::Cancelled, "cancelled");
+            }
+            // Its time, as vpipe's own stages tag a frame's.
+            VALTZ_ASSIGN(auto l, src.lease(
+                Tensor::DType::U8, {3, sf.size.height, sf.size.width},
+                {{"pts_us", static_cast<std::uint64_t>(
+                                std::llround(std::max(0.0, t) * 1e6))}}));
+            lease = std::move(l);
+            return media::FrameBuffer{lease->data(), lease->size(), {}};
+          };
+      const auto done = [&](std::int64_t) -> Status {
+        lease->commit();
+        lease.reset();
+        fed();
+        return ok_status();
+      };
+      Status st = media::sample_movie(sf.path, sf.every, sf.size, target,
+                                      done);
+      if (st.ok()) {
+        st = src.finish();
+      }
+      if (!st.ok()) {
+        _session->stop_pipeline(h);
+        return st;
+      }
+    }
     // The base's EXIF, for the result: ONE beat whatever it holds --
     // save-image reads one per image, so a base without EXIF still
     // sends an (empty) object.
@@ -1303,6 +1445,10 @@ private:
   bool                    _stop = false;
   JobId                   _running;
   std::atomic<bool>       _cancel{false};
+  // The first error vpipe logged in the graph running: the listener
+  // writes it, on whichever thread reports.
+  std::mutex              _err_mu;
+  std::string             _run_error;
   std::once_flag                        _monitor_once;
   std::unique_ptr<vpipe::SystemMonitor> _monitor;
 };

@@ -216,6 +216,13 @@ inline constexpr Message kNoTranscriber{
     "core.no_transcriber",
     "No speech model is installed: download Qwen3-ASR and Silero VAD in "
     "Settings › Capabilities › Listening."};
+inline constexpr Message kSummarizeNeedsPicture{
+    "core.summarize_needs_picture",
+    "{name} has no picture to summarize: a clip or a timeline does."};
+inline constexpr Message kNoVideoWatcher{
+    "core.no_video_watcher",
+    "No model here can watch a video: download Qwen3.5 9B in Settings › "
+    "Capabilities › Agentic helpers."};
 inline constexpr Message kModelNotUnpacked{
     "core.model_not_unpacked",
     "{model} was downloaded but not unpacked: download it again."};

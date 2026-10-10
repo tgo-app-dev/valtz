@@ -1,5 +1,6 @@
 #include "valtz/controller/controller.h"
 
+#include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
 #include "valtz/media/layers.h"
@@ -8,6 +9,7 @@
 #include "valtz/media/probe.h"
 #include "valtz/media/thumbnail.h"
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -123,6 +125,35 @@ inline_numbers(const std::vector<std::optional<AssetId>>& at,
 }
 
 namespace {
+
+// A prompt NAMED by the person (rename_asset, a request's prompt_name;
+// DESIGN §10c): its name is kept as its words change, where one named by
+// its words follows them.
+constexpr const char* kNamedTag = "named";
+
+bool
+is_named(const project::Asset& a)
+{
+  return std::ranges::find(a.tags, std::string(kNamedTag)) != a.tags.end();
+}
+
+void
+set_named(project::Asset& a, bool on)
+{
+  std::erase(a.tags, std::string(kNamedTag));
+  if (on) {
+    a.tags.push_back(kNamedTag);
+  }
+}
+
+// What a prompt's words name it: its first line, no Markdown.
+std::string
+words_name(const std::string& text)
+{
+  std::string name =
+      one_line(assist::without_markdown(assist::prompt_words(text)));
+  return std::string(utf8_prefix(name.empty() ? "Prompt" : name, 64));
+}
 
 // "18.2 GB": a size a person reads, as text (DESIGN §10b: no digit
 // grouping from the app's formatter).
@@ -275,6 +306,7 @@ Controller::create(ControllerConfig cfg)
                                                               : "mtp";
     c->_assistant_drafter_bits =
         jget(helper, "drafter_bits", 8) == 4 ? 4 : 8;
+    c->_video_every = std::max(0.0, jget(helper, "video_every", 0.0));
   }
 
   char host[256] = {};
@@ -733,6 +765,8 @@ Controller::engine_runs_(models::Capability c) const
     return _engine->supports(engine::kOpGenerateSpeech);
   case Capability::Transcribe:
     return _engine->supports(engine::kOpTranscribeAudio);
+  case Capability::VideoSummary:
+    return _engine->supports(engine::kOpSummarizeVideo);
   case Capability::UpscaleVideo:
     return _engine->supports(engine::kOpUpscaleVideo);
   case Capability::UpscaleImage:
@@ -863,6 +897,19 @@ folder_bytes(const fs::path& dir)
   return n;
 }
 
+// When `path` was made (its birth time, as the Finder's "Created"), ms
+// since 1970; 0 when it cannot be read.
+std::int64_t
+created_ms(const fs::path& path)
+{
+  struct stat st {};
+  if (::stat(path.c_str(), &st) != 0) {
+    return 0;
+  }
+  return static_cast<std::int64_t>(st.st_birthtimespec.tv_sec) * 1000 +
+         st.st_birthtimespec.tv_nsec / 1'000'000;
+}
+
 }
 
 Json
@@ -900,7 +947,7 @@ Controller::storage_report() const
       const std::uint64_t n = folder_bytes(repo.path());
       mtotal += n;
       models.push_back({{"repo", hf}, {"names", std::move(names)},
-                        {"bytes", n}});
+                        {"bytes", n}, {"created", created_ms(repo.path())}});
     }
   }
   out["models"] = {{"root", mroot.string()}, {"bytes", mtotal},
@@ -933,6 +980,7 @@ Controller::storage_report() const
     Json item = {{"name", op ? op->ws->project().name()
                              : pkg.stem().string()},
                  {"path", pkg.string()}, {"bytes", n},
+                 {"created", created_ms(pkg)},
                  {"open", op != nullptr},
                  {"ephemeral", op && op->ephemeral}};
     if (op) {
@@ -955,7 +1003,8 @@ Controller::storage_report() const
           held += b;
           assets.push_back({{"id", a.id}, {"name", a.name},
                             {"kind", project::to_str(a.kind)},
-                            {"bytes", b}, {"linked", a.linked}});
+                            {"bytes", b}, {"linked", a.linked},
+                            {"created", a.created_ms}});
         }
       }
       item["assets"] = std::move(assets);
@@ -1135,6 +1184,26 @@ Controller::rename_asset(ProjectId pid, AssetId aid, std::string name)
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
   name = one_line(name);
+  if (is_prompt(a)) {
+    // Named by the person; "" -- by its words again.
+    const bool given = !name.empty();
+    if (!given) {
+      VALTZ_ASSIGN(std::string text, p->read_text(aid));
+      name = words_name(text);
+    }
+    name = std::string(utf8_prefix(name, 200));
+    if (name == a.name && is_named(a) == given) {
+      return ok_status();
+    }
+    VALTZ_TRY(p->update_asset(aid, [&](project::Asset& r) {
+      r.name = name;
+      set_named(r, given);
+      return ok_status();
+    }));
+    post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                      {"reason", "renamed"}});
+    return ok_status();
+  }
   if (name.empty()) {
     return make_error(Code::InvalidArgument, msg::kAssetNameEmpty);
   }
@@ -1329,6 +1398,12 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
 {
   const Json vp = jget(m.engine, "vpipe", Json::object());
   r.params["steps"] = steps > 0 ? steps : jget(t, "steps", 8);
+  // A checkpoint with a schedule of its own runs its own count: that is
+  // what is recorded, whatever was asked.
+  if (jget(vp, "steps_fixed", false)) {
+    r.params["steps"] = jget(jget(vp, "defaults", Json::object()), "steps",
+                             8);
+  }
   // The two LoRA slots: HyperFlow's adapter first when it is on, then the
   // LoRAs on, in list order. The catalog's Turbo LoRA in the first is
   // recorded by its id; anything else by its file. The job is given the
@@ -1426,7 +1501,8 @@ Controller::preset_summary(const models::ModelEntry& m,
           {"ane_ffn", jget(v, "ane_ffn", false)},
           {"ane_qkv", jget(v, "ane_qkv", false)},
           {"motion_cache", jget(v, "motion_cache", false)},
-          {"taomate", jget(v, "taomate", false)}};
+          {"taomate", jget(v, "taomate", false)},
+          {"taomate_lora", jget(v, "taomate_lora", false)}};
 }
 
 Result<Json>
@@ -2488,6 +2564,34 @@ Controller::set_assistant_drafter(const std::string& kind, int bits)
   return ok_status();
 }
 
+Status
+Controller::set_video_every(double seconds)
+{
+  seconds = std::clamp(seconds, 0.0, 60.0);
+  const fs::path file = _paths.support / "assistant.json";
+  Json j = read_settings(file);
+  if (!j.is_object()) {
+    j = Json::object();
+  }
+  j["video_every"] = seconds;
+  VALTZ_TRY(write_settings(file, j));
+  _video_every = seconds;
+  post_("assistant.changed", JobId{}, {{"video_every", seconds}});
+  return ok_status();
+}
+
+double
+Controller::video_every() const
+{
+  if (_video_every > 0) {
+    return _video_every;
+  }
+  return _hw.memory_bandwidth_gbs > 0 &&
+                 _hw.memory_bandwidth_gbs < kFastMemoryGbs
+             ? 2.0
+             : 1.0;
+}
+
 Json
 Controller::assistants() const
 {
@@ -2535,6 +2639,9 @@ Controller::assistants() const
           {"keep_loaded", _assistant_keep},
           {"drafter", _assistant_drafter},
           {"drafter_bits", _assistant_drafter_bits},
+          {"video_every", _video_every},
+          {"video_every_now", video_every()},
+          {"memory_bandwidth_gbs", _hw.memory_bandwidth_gbs},
           {"models", std::move(list)}};
 }
 
@@ -2562,23 +2669,32 @@ Controller::chat_spec_(JobId id, std::string text,
   spec.id = id;
   spec.op = std::string(engine::kOpChat);
   spec.model = ref;
-  // Without thinking, decoded with the model's own sampler (catalog
-  // engine.vpipe.sampling: Qwen's non-thinking recommendation); MTP
-  // drafts under it as it does greedy.
-  const Json vp = jget(m->engine, "vpipe", Json::object());
-  spec.params = {{"text", std::move(text)},
-                 {"disable_thinking", true},
-                 {"max_new_tokens", max_new_tokens},
-                 {"mtp", assistant_mtp(*m)},
-                 {"sampling", jget(vp, "sampling", Json::object())},
-                 {"keep_loaded", _assistant_keep}};
+  // Without thinking, decoded as the helper is set to.
+  spec.params = helper_params_(*m);
+  spec.params["text"] = std::move(text);
+  spec.params["disable_thinking"] = true;
+  spec.params["max_new_tokens"] = max_new_tokens;
+  spec.inputs = std::move(images);
+  return spec;
+}
+
+Json
+Controller::helper_params_(const models::ModelEntry& m) const
+{
+  // Decoded with the model's own sampler (catalog engine.vpipe.sampling:
+  // Qwen's non-thinking recommendation); MTP drafts under it as it does
+  // greedy. Kept loaded as Settings say.
+  const Json vp = jget(m.engine, "vpipe", Json::object());
+  Json p = {{"mtp", assistant_mtp(m)},
+            {"sampling", jget(vp, "sampling", Json::object())},
+            {"keep_loaded", _assistant_keep}};
   // A model whose MTP head ships apart (engine.vpipe.mtp_drafter): the
   // drafter's directory, when it is installed.
-  if (assistant_mtp(*m)) {
-    if (const auto* d = _catalog.find(jget<std::string>(
-            jget(m->engine, "vpipe", Json::object()), "mtp_drafter", ""));
+  if (assistant_mtp(m)) {
+    if (const auto* d = _catalog.find(
+            jget<std::string>(vp, "mtp_drafter", ""));
         d && _store->info(*d).state == models::InstallState::Installed) {
-      spec.params["mtp_model"] = _store->info(*d).path().string();
+      p["mtp_model"] = _store->info(*d).path().string();
     }
   }
   // DFlash 2 when chosen and here (it takes over from MTP in text-chat);
@@ -2587,12 +2703,11 @@ Controller::chat_spec_(JobId id, std::string text,
     if (const auto* d = _catalog.find(
             jget<std::string>(vp, "dflash_drafter", ""));
         d && _store->info(*d).state == models::InstallState::Installed) {
-      spec.params["draft_model"] = _store->info(*d).path().string();
-      spec.params["draft_bits"] = _assistant_drafter_bits;
+      p["draft_model"] = _store->info(*d).path().string();
+      p["draft_bits"] = _assistant_drafter_bits;
     }
   }
-  spec.inputs = std::move(images);
-  return spec;
+  return p;
 }
 
 Result<JobId>
@@ -3145,7 +3260,8 @@ Controller::prompt_form_(project::Project& p, const std::string& prompt,
 Result<project::RecipeInput>
 Controller::capture_prompt_(project::Project& p, ProjectId pid,
                             const std::string& text,
-                            std::optional<AssetId> from)
+                            std::optional<AssetId> from,
+                            const std::string& person)
 {
   // Pinned to the version it is now: what was made from it says which.
   auto pinned = [&](AssetId id) -> Result<project::RecipeInput> {
@@ -3157,23 +3273,38 @@ Controller::capture_prompt_(project::Project& p, ProjectId pid,
                                       {"asset", id},
                                       {"reason", reason}});
   };
-  std::string name =
-      one_line(assist::without_markdown(assist::prompt_words(text)));
-  if (name.empty()) {
-    name = "Prompt";
-  }
-  name = std::string(utf8_prefix(name, 64));
+  const std::string name = words_name(text);
+  // The person's name for it, if they gave one: the prompt it is is
+  // named so, whichever it is.
+  const std::string given(utf8_prefix(one_line(person), 200));
+  auto give = [&](const project::Asset& a) -> Status {
+    if (given.empty() || (a.name == given && is_named(a))) {
+      return ok_status();
+    }
+    VALTZ_TRY(p.update_asset(a.id, [&](project::Asset& r) {
+      r.name = given;
+      set_named(r, true);
+      return ok_status();
+    }));
+    told(a.id, "renamed");
+    return ok_status();
+  };
   if (from) {
     auto a = p.asset(*from);
     if (a.ok() && is_prompt(*a)) {
       if (auto cur = p.read_text(*from); cur.ok() && *cur == text) {
+        VALTZ_TRY(give(*a));
         return pinned(*from);
       }
-      // Nothing made from it yet: it is still a draft, changed in place.
+      // Nothing made from it yet: it is still a draft, changed in place
+      // -- named by its words, unless the person named it.
       if (auto deps = p.dependents(*from, false); deps.ok() &&
                                                   deps->empty()) {
         VALTZ_TRY(p.update_text(*from, text));
-        (void)p.rename_asset(*from, name);
+        if (given.empty() && !is_named(*a)) {
+          (void)p.rename_asset(*from, name);
+        }
+        VALTZ_TRY(give(*a));
         told(*from, "edited");
         return pinned(*from);
       }
@@ -3184,9 +3315,16 @@ Controller::capture_prompt_(project::Project& p, ProjectId pid,
   for (const auto& a : all) {
     if (is_prompt(a)) {
       if (auto t = p.read_text(a.id); t.ok() && *t == text) {
+        VALTZ_TRY(give(a));
         return pinned(a.id);
       }
     }
+  }
+  if (!given.empty()) {
+    VALTZ_ASSIGN(project::Asset a,
+                 p.add_text(given, text, {"prompt", kNamedTag}));
+    told(a.id, "defined");
+    return pinned(a.id);
   }
   VALTZ_ASSIGN(project::Asset a, p.add_text(name, text, {"prompt"}));
   told(a.id, "defined");
@@ -3198,7 +3336,8 @@ Controller::capture_prompt(ProjectId pid, const std::string& prompt,
                            const std::vector<std::optional<AssetId>>&
                                inline_media,
                            const std::vector<AssetId>& row,
-                           std::optional<AssetId> from)
+                           std::optional<AssetId> from,
+                           const std::string& name)
 {
   auto undo = command_(pid, "prompt.capture");
   project::Project* p = project(pid);
@@ -3213,7 +3352,7 @@ Controller::capture_prompt(ProjectId pid, const std::string& prompt,
     return make_error(Code::InvalidArgument, msg::kPromptEmpty);
   }
   VALTZ_ASSIGN(project::RecipeInput in,
-               capture_prompt_(*p, pid, f.positional, from));
+               capture_prompt_(*p, pid, f.positional, from, name));
   return in.asset;
 }
 
@@ -3237,10 +3376,10 @@ Controller::set_prompt_text(ProjectId pid, AssetId id,
                       {{"name", a.name}});
   }
   VALTZ_TRY(p->update_text(id, text));
-  std::string name =
-      one_line(assist::without_markdown(assist::prompt_words(text)));
-  (void)p->rename_asset(id, std::string(utf8_prefix(
-      name.empty() ? std::string("Prompt") : name, 64)));
+  // Named by its words -- unless the person named it.
+  if (!is_named(a)) {
+    (void)p->rename_asset(id, words_name(text));
+  }
   post_("assets.changed", JobId{}, {{"project", pid},
                                     {"asset", id},
                                     {"reason", "edited"}});
@@ -3378,7 +3517,7 @@ Controller::generate_image(GenerateImageRequest req)
   // Made from its prompt as well as its pictures: the prompt, captured.
   VALTZ_ASSIGN(project::RecipeInput pin,
                capture_prompt_(*p, req.project, pf.positional,
-                               req.prompt_asset));
+                               req.prompt_asset, req.prompt_name));
   r.inputs.push_back(pin);
   // The prompt on one line, cut to 48 bytes and made unique by the
   // project ("…", " (2)").
@@ -3485,8 +3624,10 @@ Controller::generate_video(GenerateVideoRequest req)
     overrides["turbo"] = false;
   }
   // TaoMate's method makes a clip from words alone: one that opens on a
-  // picture takes the preset's Turbo LoRA instead.
-  if (req.first) {
+  // picture takes the preset's Turbo LoRA instead -- unless its adapter
+  // runs as a plain LoRA, which an ordinary denoise opens on a picture
+  // with.
+  if (req.first && !jget(overrides, "taomate_lora", false)) {
     overrides["taomate"] = false;
   }
   VALTZ_TRY(check_preset_loras_(*m, req.preference, overrides));
@@ -3555,7 +3696,7 @@ Controller::generate_video(GenerateVideoRequest req)
   // Made from its prompt as well as its media: the prompt, captured.
   VALTZ_ASSIGN(project::RecipeInput pin,
                capture_prompt_(*p, req.project, pf.positional,
-                               req.prompt_asset));
+                               req.prompt_asset, req.prompt_name));
   r.inputs.push_back(pin);
   std::string name = req.name.empty()
                          ? one_line(assist::without_markdown(words))
@@ -3969,6 +4110,76 @@ Controller::transcribe(ProjectId pid, AssetId asset, std::string model,
   return std::pair{a.id, job};
 }
 
+Result<std::pair<AssetId, JobId>>
+Controller::summarize_video(ProjectId pid, AssetId asset, std::string model,
+                            double every)
+{
+  auto undo = command_(pid, "summarize", asset);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset src, p->asset(asset));
+  // A clip, or a timeline with a picture (one of sound alone is kind
+  // audio): what it shows, as it plays.
+  const bool drawn = src.cls == project::AssetClass::Composition;
+  if (src.kind != project::AssetKind::Video ||
+      (!drawn && src.head == 0)) {
+    return make_error(Code::InvalidArgument, msg::kSummarizeNeedsPicture,
+                      {{"name", src.name}});
+  }
+  // The model: the one named; else the helper, when it watches video;
+  // else the best installed that does.
+  const auto watches = [&](const models::ModelEntry& e) {
+    return e.has(models::Capability::VideoSummary) &&
+           _store->info(e).state == models::InstallState::Installed;
+  };
+  const models::ModelEntry* m = nullptr;
+  if (!model.empty() && model != "auto") {
+    m = _catalog.find(model);
+    if (m && !watches(*m)) {
+      m = nullptr;
+    }
+  } else if (const auto* h = assistant_model(); h && watches(*h)) {
+    m = h;
+  } else {
+    for (const auto& e : _catalog.models()) {
+      if (watches(e) && (!m || e.rank > m->rank)) {
+        m = &e;
+      }
+    }
+  }
+  if (!m || !engine_runs_(models::Capability::VideoSummary)) {
+    return make_error(Code::NotFound, msg::kNoVideoWatcher);
+  }
+  project::Recipe r;
+  r.op = std::string(engine::kOpSummarizeVideo);
+  r.model = m->id;
+  // Its sampler draws afresh each time: asked again, it may say it
+  // otherwise.
+  r.deterministic = false;
+  r.params = {{"name", src.name},
+              {"every", every > 0 ? std::clamp(every, 0.25, 60.0)
+                                  : video_every()},
+              {"max_width", 576},
+              {"max_height", 320},
+              {"language", assist::language_name(_cfg.language)}};
+  r.inputs.push_back({"source", src.id, drawn ? 0 : src.head});
+  stamp_origin(r, *m);
+  VALTZ_ASSIGN(project::Asset a, p->define_derived(
+      std::format("{} summary", src.name), project::AssetKind::Text, r,
+      96));
+  // Beside what it tells, in the list.
+  if (!src.folder.empty()) {
+    (void)p->set_asset_folder(a.id, src.folder);
+  }
+  post_("assets.changed", JobId{}, {{"project", pid},
+                                    {"asset", a.id},
+                                    {"reason", "defined"}});
+  VALTZ_ASSIGN(JobId job, submit_build_(pid, a.id, a.name));
+  return std::pair{a.id, job};
+}
+
 Result<fs::path>
 Controller::coreml_package_(const models::ModelEntry& e,
                             const models::InstallInfo& info) const
@@ -4124,7 +4335,7 @@ Controller::generate_audio(GenerateAudioRequest req)
     }
     VALTZ_ASSIGN(project::RecipeInput pin,
                  capture_prompt_(*p, req.project, pf.positional,
-                                 req.prompt_asset));
+                                 req.prompt_asset, req.prompt_name));
     return generate_speech_(req, *m, *p, words, pin);
   }
   assist::SongText song = assist::split_song(words);
@@ -4191,7 +4402,7 @@ Controller::generate_audio(GenerateAudioRequest req)
   // Made from its prompt: the prompt, captured.
   VALTZ_ASSIGN(project::RecipeInput pin,
                capture_prompt_(*p, req.project, pf.positional,
-                               req.prompt_asset));
+                               req.prompt_asset, req.prompt_name));
   r.inputs.push_back(pin);
   // Named after its style, else its first sung line.
   std::string name = req.name;
@@ -4568,6 +4779,12 @@ Controller::resolve_build_(const std::string& model, const Json& params,
   }
   VALTZ_ASSIGN(ref, resolve_model_(*m, true));
   const Json& rp = params;
+  // A helper at work on a build (a video summary): loaded as its chat
+  // loads it -- the same drafter, sampler and warm hold -- so either finds
+  // the model the other kept.
+  if (m->role == "assistant") {
+    helpers.update(helper_params_(*m));
+  }
 
   // A run-time adapter the recipe applies (the Turbo LoRA), by its file.
   if (const auto lora = jget<std::string>(rp, "lora", "");
@@ -4804,9 +5021,10 @@ Controller::on_build_event_(const engine::JobEvent& ev)
         !score.empty()) {
       b.outputs["score"] = score;
     }
-    if (const Json t = jget(ev.data, "transcript", Json());
-        t.is_object()) {
-      b.outputs["transcript"] = t;
+    for (const char* key : {"transcript", "summary"}) {
+      if (const Json t = jget(ev.data, key, Json()); t.is_object()) {
+        b.outputs[key] = t;
+      }
     }
     {
       // How long it took; the prior of the next of its kind.
@@ -5351,7 +5569,7 @@ holds_engine(std::string_view op)
          op == engine::kOpGenerateSpeech || op == engine::kOpUpscaleVideo ||
          op == engine::kOpUpscaleImage || op == engine::kOpChat ||
          op == engine::kOpTranscribeAudio || op == engine::kOpExportMedia ||
-         op == engine::kOpQuantizeModel;
+         op == engine::kOpQuantizeModel || op == engine::kOpSummarizeVideo;
 }
 
 // A member's refusal, worded for the person.
@@ -5517,7 +5735,8 @@ Controller::fleet_self_() const
        {engine::kOpGenerateImage, engine::kOpEditImage,
         engine::kOpGenerateVideo, engine::kOpGenerateAudio,
         engine::kOpGenerateSpeech, engine::kOpTranscribeAudio,
-        engine::kOpUpscaleVideo, engine::kOpUpscaleImage, engine::kOpChat}) {
+        engine::kOpSummarizeVideo, engine::kOpUpscaleVideo,
+        engine::kOpUpscaleImage, engine::kOpChat}) {
     if (up && _engine->supports(op)) {
       ops.push_back(std::string(op));
     }

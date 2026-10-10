@@ -1,5 +1,6 @@
 #include "engine/vpipe/graph-builder.h"
 
+#include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
 #include "valtz-vpipe/exchange.h"
 
@@ -13,6 +14,14 @@ namespace valtz::engine::vp {
 namespace fs = std::filesystem;
 
 namespace {
+
+// The helper's K/V pages, as its chat and a video summary both load it:
+// the page sizing is part of vpipe's model cache key, so alike, a model
+// kept warm by one is handed to the other. 16 tokens a page (text-chat's
+// own), up to 32,768 tokens -- a scene of 24 frames is ~4,500; Qwen's
+// pool grows as it fills, so the cap costs nothing held.
+constexpr int kHelperPageTokens = 16;
+constexpr int kHelperMaxPages = 2048;
 
 Json
 port(std::string_view src, int oport = 0)
@@ -246,6 +255,13 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
   width = round_to(width, align);
   height = round_to(height, align);
   int steps = jget(job.params, "steps", jget(defaults, "steps", 8));
+  // A checkpoint distilled to a schedule of its own (catalog
+  // `steps_fixed`: Qwen-Image 2.1 Turbo's sample_sigmas) runs its own
+  // count -- vpipe ignores another, with a warning -- so it is asked for
+  // that and nothing else.
+  if (jget(vp, "steps_fixed", false)) {
+    steps = jget(defaults, "steps", 8);
+  }
   auto seed = jget<std::int64_t>(job.params, "seed", 0);
 
   BuiltGraph g;
@@ -688,10 +704,13 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
       }
     }
     // TaoMate's method, said either way: its adapter in the first slot
-    // runs the streaming method when on, and nothing else ever does.
+    // runs the streaming method when on, and nothing else ever does --
+    // but as a plain LoRA (`taomate_lora`): the ordinary denoise with it.
     if (t.is_object() && t.contains("taomate") &&
         t["taomate"].is_boolean()) {
-      cfg["taomate"] = t["taomate"].get<bool>() ? "on" : "off";
+      const bool method = t["taomate"].get<bool>() &&
+                          !jget(t, "taomate_lora", false);
+      cfg["taomate"] = method ? "on" : "off";
     }
   }
   if (!job.model.branch.empty()) {
@@ -1110,6 +1129,9 @@ build_chat(const JobSpec& job)
     // chunks for text-to-speech): the suggestion is watched as it is
     // written.
     {"stream_words", 0},
+    // Its K/V pages as a video summary has them: one model warm for both.
+    {"page_tokens", kHelperPageTokens},
+    {"max_pages", kHelperMaxPages},
   };
   // A drafter shipped apart from the model (its conversion dropped the
   // head): vpipe's text-chat loads it beside the model.
@@ -1808,6 +1830,77 @@ build_transcribe(const JobSpec& job, const fs::path& wav)
                             {"score_threshold", 0.1}}));
     stages.push_back(sink(g.events_sink, port("tags"), false));
   }
+  g.spec = {{"id", "valtz-" + job.id.str()},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+Result<BuiltGraph>
+build_summarize_video(const JobSpec& job, media::PixelSize size)
+{
+  if (job.inputs.size() != 1 ||
+      job.inputs.front().info.type != media::MediaType::Video) {
+    return make_error(Code::InvalidArgument,
+                      "a summary takes one clip (role \"source\")");
+  }
+  if (job.model.dir.empty() || size.width <= 0 || size.height <= 0) {
+    return make_error(Code::InvalidArgument,
+                      "a summary needs its model and a frame size");
+  }
+  const double every = std::max(0.1, jget(job.params, "every", 1.0));
+  BuiltGraph g;
+  g.summary_sink = "summary-sink";
+  g.samples = SampleFeed{"frames", job.inputs.front().path, every, size};
+
+  Json cfg = {{ex::kSummaryModel, job.model.dir.string()},
+              {ex::kSummaryEvery, every},
+              {ex::kSummaryLanguage,
+               jget<std::string>(job.params, "language", "English")},
+              {ex::kSummaryScenePrompt, assist::kSummaryScenePrompt},
+              {ex::kSummaryOverallPrompt, assist::kSummaryOverallPrompt},
+              {ex::kSummaryKeepLoaded, jget(job.params, "keep_loaded", 0.0)},
+              {ex::kSummaryWireWeights, true},
+              {ex::kSummaryPageTokens, kHelperPageTokens},
+              {ex::kSummaryMaxPages, kHelperMaxPages}};
+  // Loaded as the helper's chat loads it, so either is handed the model
+  // the other kept warm.
+  if (auto mm = jget<std::string>(job.params, "mtp_model", "");
+      !mm.empty()) {
+    cfg[ex::kSummaryMtpModel] = mm;
+  }
+  if (auto dm = jget<std::string>(job.params, "draft_model", "");
+      !dm.empty()) {
+    cfg[ex::kSummaryDraftModel] = dm;
+    cfg[ex::kSummaryDraftBits] = jget(job.params, "draft_bits", 8);
+  }
+  // A scene's frames at most: ~180 tokens each at 576 x 320, so 24 keep a
+  // prefill near 4,500 -- and at one every two seconds, 48 s of a shot.
+  if (const int sf = jget(job.params, "scene_frames", 0); sf > 0) {
+    cfg[ex::kSummarySceneFrames] = sf;
+  }
+  Json stages = Json::array();
+  stages.push_back(stage("frames", ex::kSourceType, Json::array(),
+                         Json::object()));
+  Json in = Json::array({port("frames")});
+  // The model's own sampler (catalog engine.vpipe.sampling), as the chat
+  // has it; none, greedy.
+  if (const Json smp = jget(job.params, "sampling", Json::object());
+      smp.is_object() && !smp.empty()) {
+    Json sc = Json::object();
+    for (const char* k : {"temperature", "top_k", "top_p", "min_p",
+                          "repetition_penalty", "presence_penalty"}) {
+      if (smp.contains(k) && smp[k].is_number()) {
+        sc[k] = smp[k];
+      }
+    }
+    sc["seed"] = jget<std::uint64_t>(smp, "seed", 0);
+    stages.push_back(stage("sampler", "sampler-select", Json::array(), sc));
+    in.push_back(port("sampler"));
+  }
+  stages.push_back(stage("summary", ex::kSummaryType, std::move(in),
+                         std::move(cfg)));
+  stages.push_back(sink(g.summary_sink, port("summary"), false));
   g.spec = {{"id", "valtz-" + job.id.str()},
             {"stages", stages},
             {"subpipelines", Json::array()}};

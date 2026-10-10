@@ -18,9 +18,10 @@
     "Chinese as well, and the assistant keeps the request's language.",
     "families: how Settings > Capabilities lists the models -- a family's",
     "features (video-gen, video-edit, image-gen, image-edit, audio-gen,",
-    "helper, video-upscale, image-upscale, audio-transcribe), each checked where a member",
-    "makes it here, and its members (every model and resource it runs",
-    "with), each with the label it is listed by.",
+    "helper, video-summary, video-upscale, image-upscale, audio-transcribe),",
+    "each checked where a member makes it here, and its members (every",
+    "model and resource it runs with), each with the label it is listed",
+    "by.",
     "engine.vpipe.sampling (an assistant): the token sampler its chat",
     "decodes with -- vpipe's sampler-select config, the model card's own",
     "recommendation (Qwen's non-thinking one: Valtz runs it without",
@@ -28,13 +29,17 @@
     "engine.vpipe.listen (a speech model): the voice detector it needs and",
     "the tagger it lists sound events with when that is installed (DESIGN",
     "§4h). package: the folder a CoreML archive (`file`, a .tar) unpacks",
-    "into, beside it, which holds the package its stage loads."
+    "into, beside it, which holds the package its stage loads.",
+    "engine.vpipe.steps_fixed: a distilled checkpoint whose schedule is",
+    "its own (Qwen-Image 2.1 Turbo's sample_sigmas): no scheduler is wired,",
+    "the step count is defaults.steps whatever is asked, and Favor's Custom",
+    "offers no steps."
   ],
   "auto": {
     "image": {
-      "generate": ["krea2-turbo", "qwen-image-2.1", "z-image-turbo",
-                   "flux2-klein-9b"],
-      "edit": ["qwen-image-2.1", "flux2-klein-9b"]
+      "generate": ["krea2-turbo", "qwen-image-2.1-turbo", "qwen-image-2.1",
+                   "z-image-turbo", "flux2-klein-9b"],
+      "edit": ["qwen-image-2.1", "qwen-image-2.1-turbo", "flux2-klein-9b"]
     },
     "video": {
       "generate": ["minimax-h3-fl2va"],
@@ -69,6 +74,7 @@
       "features": ["image-gen", "image-edit"],
       "members": [
         {"model": "qwen-image-2.1", "label": "Main model"},
+        {"model": "qwen-image-2.1-turbo", "label": "Turbo, 8 steps (Qwen)"},
         {"model": "qwen-image-21-turbo", "label": "6-step Turbo LoRA (Viggle)"},
         {"model": "taeqi2_1", "label": "TAE (RGBA)"},
         {"model": "qwen-image-21-rewriters", "label": "Prompt rewriters (QwenLM, non-commercial)"}
@@ -118,7 +124,7 @@
     },
     {
       "id": "helpers", "name": "Agentic helpers",
-      "features": ["helper"],
+      "features": ["helper", "video-summary"],
       "members": [
         {"model": "qwen3.5-9b", "label": "Qwen3.5 9B"},
         {"model": "qwen3.8-27b", "label": "Qwen3.8 27B"},
@@ -160,7 +166,7 @@
       "family": "qwen3.5",
       "role": "assistant",
       "hf_path": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
-      "capabilities": ["prompt-enhance", "intent", "caption"],
+      "capabilities": ["prompt-enhance", "intent", "caption", "video-summary"],
       "disk_gb": 7.7, "disk_measured": true,
       "min_ram_gb": 16, "rank": 1,
       "license": "apache-2.0",
@@ -176,7 +182,7 @@
       "family": "qwen3.5",
       "role": "assistant",
       "hf_path": "mlx-community/Qwen3.8-27B-OptiQ-4bit",
-      "capabilities": ["prompt-enhance", "intent", "caption"],
+      "capabilities": ["prompt-enhance", "intent", "caption", "video-summary"],
       "disk_gb": 20.7, "disk_measured": true,
       "min_ram_gb": 32, "rank": 2,
       "license": "apache-2.0",
@@ -192,7 +198,7 @@
       "family": "qwen3.5",
       "role": "assistant",
       "hf_path": "mlx-community/Qwen3.8-27B-4bit",
-      "capabilities": ["prompt-enhance", "intent", "caption"],
+      "capabilities": ["prompt-enhance", "intent", "caption", "video-summary"],
       "disk_gb": 16.1, "disk_measured": true,
       "min_ram_gb": 24, "rank": 1,
       "requires": ["qwen3.8-27b-mtp-4bit"],
@@ -318,7 +324,7 @@
       "min_ram_gb": 16, "rank": 2,
       "rank_for": { "image-edit": 4 },
       "preview_with": "taeqi2_1",
-      "license": "apache-2.0",
+      "license": "qwen-research (non-commercial)",
       "engine": {
         "vpipe": {
           "config_stage": "qwen-image-21-model-config",
@@ -356,12 +362,56 @@
       "notes": "One checkpoint for generate and edit; native RGBA (straight alpha) output."
     },
     {
+      "id": "qwen-image-2.1-turbo",
+      "name": "Qwen-Image 2.1 Turbo",
+      "family": "qwen-image-21",
+      "role": "image",
+      "hf_path": "Qwen/Qwen-Image-2.1-Turbo",
+      "capabilities": ["text-to-image", "image-edit", "alpha-output"],
+      "disk_gb": 30.2, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 3,
+      "rank_for": { "image-edit": 3 },
+      "preview_with": "taeqi2_1",
+      "license": "qwen-research (non-commercial)",
+      "engine": {
+        "vpipe": {
+          "config_stage": "qwen-image-21-model-config",
+          "accel": ["sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "config": {},
+          "steps_fixed": true,
+          "defaults": { "steps": 8, "width": 1024, "height": 1024 },
+          "align": 32,
+          "presets": {
+            "speed": { "i8_gemm": true },
+            "balanced": { "i8_gemm": true },
+            "quality": { "i8_gemm": false }
+          },
+          "edit": {
+            "reference_to_conditioner": true,
+            "vl_bounds": true,
+            "reference_area": 1048576,
+            "max_references": 10,
+            "defaults": { "steps": 8 }
+          }
+        }
+      },
+      "prompting": {
+        "reference_tag": "<image{n}>",
+        "enhance": {
+          "generate": "qwen-image-2.1-t2i",
+          "edit": "qwen-image-2.1-edit"
+        }
+      },
+      "notes": "Qwen's own distillation of Qwen-Image 2.1 to 8 steps: the same DiT, VL encoder and RGBA VAE, generate and edit alike. Its schedule is in its files (model_index.json's sample_sigmas, dynamic shifting off) and vpipe runs it as written, so no scheduler is wired and the step count is the checkpoint's. Not the Turbo LoRA (qwen-image-21-turbo), which speeds up the base model."
+    },
+    {
       "id": "minimax-h3-fl2va",
       "name": "MiniMax H3 FL2VA",
       "family": "minimax-h3",
       "role": "video",
       "hf_path": "MiniMaxAI/MiniMax-H3",
       "subdir": "FL2VA",
+      "fetch_variant": "MiniMaxAI/MiniMax-H3-FL2VA",
       "capabilities": ["text-to-video", "image-to-video", "audio-output"],
       "disk_gb": 144, "disk_measured": true,
       "min_ram_gb": 16, "rank": 2,
@@ -409,7 +459,9 @@
           },
           "hyperflow": {"lora": "minimax-h3-hyperflow", "steps": 8},
           "taomate": {"lora": "minimax-h3-turbo-3step", "steps": 3,
-                      "fixes": {"video_shift": 12, "audio_shift": 3}},
+                      "fixes": {"video_shift": 12, "audio_shift": 3},
+                      "lora_only": {"steps": 3,
+                                    "fixes": {"video_shift": 12, "audio_shift": 3}}},
           "vdn": {"branch": "minimax-h3-vdn"},
           "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
@@ -454,6 +506,7 @@
       "role": "video",
       "hf_path": "MiniMaxAI/MiniMax-H3",
       "subdir": "Ref2VA",
+      "fetch_variant": "MiniMaxAI/MiniMax-H3-Ref2VA",
       "capabilities": ["reference-to-video", "audio-output"],
       "disk_gb": 144, "disk_measured": true,
       "min_ram_gb": 16, "rank": 2,

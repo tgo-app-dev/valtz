@@ -39,6 +39,7 @@ enum class Capability : std::uint8_t {
   TextToAudio,     // a sound -- a song -- from words (YuE2)
   TextToSpeech,    // speech from text, a voice cloned (MOSS-TTS)
   Transcribe,      // speech to text, sound events heard (Qwen3-ASR)
+  VideoSummary,    // a clip told scene by scene (a VLM: Qwen3.5)
 };
 
 inline constexpr Capability kAllCapabilities[] = {
@@ -50,6 +51,7 @@ inline constexpr Capability kAllCapabilities[] = {
   Capability::Caption,       Capability::AlphaOutput,
   Capability::AudioOutput,   Capability::TextToAudio,
   Capability::TextToSpeech,  Capability::Transcribe,
+  Capability::VideoSummary,
 };
 
 const char* to_str(Capability);

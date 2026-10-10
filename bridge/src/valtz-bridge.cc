@@ -325,7 +325,16 @@ Core::choose_assistant(const std::string& request_json)
       return err(j.error());
     }
     // {"model"}: the helper chosen; {"keep_loaded"}: how long it stays;
-    // {"drafter", "drafter_bits"}: what it drafts with.
+    // {"drafter", "drafter_bits"}: what it drafts with; {"video_every"}:
+    // a video summary's seconds a frame (0 Auto).
+    if (j->contains("video_every")) {
+      auto st = _impl->ctl->set_video_every(jget(*j, "video_every", 0.0));
+      if (!st.ok() || (!j->contains("model") &&
+                       !j->contains("keep_loaded") &&
+                       !j->contains("drafter"))) {
+        return st.ok() ? ok() : err(st.error());
+      }
+    }
     if (j->contains("drafter")) {
       auto st = _impl->ctl->set_assistant_drafter(
           jget<std::string>(*j, "drafter", "mtp"),
@@ -931,6 +940,15 @@ Core::asset_op(const std::string& request_json)
                              {"job", made->second.str()}})
                        : err(made.error());
     }
+    if (op == "summarize") {
+      // A clip told scene by scene, into a text asset (DESIGN §4i).
+      auto made = c.summarize_video(*pid, *aid,
+                                    jget<std::string>(*j, "model", ""),
+                                    jget(*j, "every", 0.0));
+      return made.ok() ? ok({{"asset", made->first.str()},
+                             {"job", made->second.str()}})
+                       : err(made.error());
+    }
     if (op == "instantiate") {
       std::optional<AssetId> onto;
       if (!jget<std::string>(*j, "onto", "").empty()) {
@@ -1118,6 +1136,7 @@ Core::generate_image(const std::string& request_json)
     req.inline_pictures = inline_pictures(*j);
     req.row = row_of(*j);
     req.prompt_asset = prompt_asset_of(*j);
+    req.prompt_name = jget<std::string>(*j, "prompt_name", "");
     auto r = _impl->ctl->generate_image(std::move(req));
     return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
   });
@@ -1170,6 +1189,7 @@ Core::generate_video(const std::string& request_json)
     req.inline_media = inline_pictures(*j);
     req.row = row_of(*j);
     req.prompt_asset = prompt_asset_of(*j);
+    req.prompt_name = jget<std::string>(*j, "prompt_name", "");
     auto r = _impl->ctl->generate_video(std::move(req));
     return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
   });
@@ -1229,6 +1249,7 @@ Core::generate_audio(const std::string& request_json)
     req.seed = jget<std::int64_t>(*j, "seed", -1);
     req.row = row_of(*j);
     req.prompt_asset = prompt_asset_of(*j);
+    req.prompt_name = jget<std::string>(*j, "prompt_name", "");
     // Speech (a model that speaks): a voice to clone, about how long.
     if (const auto v = jget<std::string>(*j, "voice", ""); !v.empty()) {
       auto vid = parse_id<AssetId>(v);
@@ -1257,7 +1278,8 @@ Core::capture_prompt(const std::string& request_json)
     }
     auto a = _impl->ctl->capture_prompt(
         *pid, jget<std::string>(*j, "prompt", ""), inline_pictures(*j),
-        row_of(*j), prompt_asset_of(*j));
+        row_of(*j), prompt_asset_of(*j),
+        jget<std::string>(*j, "prompt_name", ""));
     return a.ok() ? ok({{"asset", a->str()}}) : err(a.error());
   });
 }
@@ -1797,6 +1819,17 @@ Core::layer_op(const std::string& request_json)
                           {"second", r->second.str()}})
                     : err(r.error());
     }
+    // A markup's drawing: "drawing" -> {"path"} ("" none); "duplicate"
+    // {"name"?} -> {"layer"}.
+    if (op == "drawing") {
+      auto r = c.markup_drawing(*pid, *aid, layer);
+      return r.ok() ? ok({{"path", r->string()}}) : err(r.error());
+    }
+    if (op == "duplicate") {
+      auto r = c.duplicate_layer(*pid, *aid, layer,
+                                 jget<std::string>(*j, "name", ""));
+      return r.ok() ? ok({{"layer", *r}}) : err(r.error());
+    }
     if (op == "canvas") {
       auto r = c.canvas_size(*pid, *aid);
       return r.ok() ? ok({{"width", r->width}, {"height", r->height}})
@@ -1839,6 +1872,23 @@ Core::layer_op(const std::string& request_json)
     } else if (op == "materialize") {
       st = c.materialize_markup(*pid, *aid, layer,
                                 strings(jget(*j, "objects", Json())));
+    } else if (op == "paste-drawing") {
+      // {"png" (a file) | "png_base64" (its bytes), "dx", "dy"}: a
+      // drawing laid over the markup's.
+      const auto b64 = jget<std::string>(*j, "png_base64", "");
+      if (!b64.empty()) {
+        auto bytes = unbase64(b64);
+        st = bytes ? c.paste_drawing_data(*pid, *aid, layer, *bytes,
+                                          jget(*j, "dx", 0.0),
+                                          jget(*j, "dy", 0.0))
+                   : make_error(Code::InvalidArgument, "not base64");
+      } else {
+        st = c.paste_drawing(*pid, *aid, layer,
+                             jget<std::string>(*j, "png", ""),
+                             jget(*j, "dx", 0.0), jget(*j, "dy", 0.0));
+      }
+    } else if (op == "clear-drawing") {
+      st = c.clear_drawing(*pid, *aid, layer);
     } else if (op == "merge") {
       st = c.merge_layers(*pid, *aid, layer,
                           jget<std::string>(*j, "with", ""));

@@ -735,6 +735,157 @@ preview_movie_frame(const fs::path& src, double seconds, int edge)
   }
 }
 
+namespace {
+
+// The track's picture upright: its transform applied, moved back to the
+// origin.
+CIImage*
+upright(CIImage* img, CGAffineTransform t)
+{
+  if (CGAffineTransformIsIdentity(t)) {
+    return img;
+  }
+  img = [img imageByApplyingTransform:t];
+  const CGRect e = img.extent;
+  return [img imageByApplyingTransform:CGAffineTransformMakeTranslation(
+                                           -e.origin.x, -e.origin.y)];
+}
+
+}
+
+Result<PixelSize>
+sampled_size(const fs::path& src, PixelSize most, int align)
+{
+  @autoreleasepool {
+    NSURL* url = [NSURL fileURLWithPath:@(src.c_str())];
+    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url options:nil];
+    AVAssetTrack* track = video_track(asset);
+    if (!track) {
+      return make_error(Code::Corrupt, std::format(
+          "{} has no video track", src.filename().string()));
+    }
+    const CGRect r = CGRectApplyAffineTransform(
+        CGRectMake(0, 0, track.naturalSize.width, track.naturalSize.height),
+        track.preferredTransform);
+    const double w = std::abs(r.size.width);
+    const double h = std::abs(r.size.height);
+    if (w < 1 || h < 1) {
+      return make_error(Code::Corrupt, std::format(
+          "{} has no picture size", src.filename().string()));
+    }
+    align = std::max(1, align);
+    const int lng = std::max(most.width, most.height);
+    const int sht = std::min(most.width, most.height);
+    const int max_w = w >= h ? lng : sht;
+    const int max_h = w >= h ? sht : lng;
+    const double s = std::min({1.0, max_w / w, max_h / h});
+    const auto side = [&](double v, int cap) {
+      const int n = static_cast<int>(std::lround(v * s / align)) * align;
+      return std::clamp(n, align, std::max(align, cap / align * align));
+    };
+    return PixelSize{side(w, max_w), side(h, max_h)};
+  }
+}
+
+Status
+sample_movie(const fs::path& src, double every, PixelSize size,
+             const SampleTarget& target, const FrameDone& done)
+{
+  if (size.width <= 0 || size.height <= 0 || !(every > 0)) {
+    return make_error(Code::InvalidArgument, "bad sampling");
+  }
+  @autoreleasepool {
+    NSURL* url = [NSURL fileURLWithPath:@(src.c_str())];
+    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url options:nil];
+    AVAssetTrack* track = video_track(asset);
+    if (!track) {
+      return make_error(Code::Corrupt, std::format(
+          "{} has no video track", src.filename().string()));
+    }
+    NSError* err = nil;
+    AVAssetReader* reader = [AVAssetReader assetReaderWithAsset:asset
+                                                          error:&err];
+    if (!reader) {
+      return make_error(Code::Io, std::format(
+          "cannot read {}", src.filename().string()));
+    }
+    NSDictionary* settings = @{
+      (id)kCVPixelBufferPixelFormatTypeKey : @(reader_format(track)),
+      (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
+    };
+    AVAssetReaderTrackOutput* out =
+        [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:track
+                                                   outputSettings:settings];
+    out.alwaysCopiesSampleData = NO;
+    [reader addOutput:out];
+    if (![reader startReading]) {
+      return make_error(Code::Io, std::format(
+          "cannot read {}", src.filename().string()));
+    }
+    const CGAffineTransform turn = track.preferredTransform;
+    // A model's input: sRGB, clamped -- an HDR clip shown as SDR shows it.
+    CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    // Half a frame early is on time: a 30 fps clip's frame at 0.99 s
+    // shows at the 1 s mark.
+    const double fps = track.nominalFrameRate > 0 ? track.nominalFrameRate
+                                                  : 30.0;
+    const double slack = 0.5 / fps;
+    std::int64_t n = 0;  // the next mark's index
+    Status st = ok_status();
+    for (;;) {
+      CMSampleBufferRef sb = [out copyNextSampleBuffer];
+      if (!sb) {
+        break;
+      }
+      @autoreleasepool {
+        CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sb);
+        const double t = CMTimeGetSeconds(
+            CMSampleBufferGetPresentationTimeStamp(sb));
+        if (pb && std::isfinite(t) &&
+            t + slack >= static_cast<double>(n) * every) {
+          CIImage* img = upright([CIImage imageWithCVPixelBuffer:pb], turn);
+          auto buf = target(n, t);
+          if (!buf.ok()) {
+            st = buf.error();
+          } else if (buf->size < static_cast<std::size_t>(size.width) *
+                                     size.height * 3) {
+            st = make_error(Code::InvalidArgument, "frame buffer too small");
+          } else {
+            st = render_planar(img, size, 3, Fit::Crop, /*f16=*/false,
+                               /*clamp=*/true, srgb, buf->data, buf->gpu);
+            if (st.ok()) {
+              st = done(n);
+            }
+          }
+          // The marks this frame stood for, passed: a clip slower than
+          // the sampling gives each frame once.
+          while (static_cast<double>(n) * every <= t + slack) {
+            ++n;
+          }
+        }
+      }
+      CFRelease(sb);
+      if (!st.ok()) {
+        break;
+      }
+    }
+    CGColorSpaceRelease(srgb);
+    if (!st.ok()) {
+      [reader cancelReading];
+      return st;
+    }
+    if (reader.status == AVAssetReaderStatusFailed) {
+      return make_error(Code::Io, std::format(
+          "reading {} failed", src.filename().string()));
+    }
+    if (n == 0) {
+      return make_error(Code::Corrupt, std::format(
+          "{} gave no frames", src.filename().string()));
+    }
+  }
+  return ok_status();
+}
+
 Status
 decode_movie(const fs::path& src, const KeyedAdjustments& adjust,
              const KeyedCrop& crop, Rational rate, std::int64_t first,

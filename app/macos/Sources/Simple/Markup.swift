@@ -69,11 +69,19 @@ final class MarkupState {
     var fill = RGBA.clear
     var font = MarkupFont()
 
-    /// The brush stroke being drawn; kept after it is painted until the
-    /// picture made with it is shown.
+    /// The brush stroke being drawn.
     var stroke: [CGPoint] = []
     var strokeErase = false
-    @ObservationIgnored var strokePainted = false
+    /// Strokes let go: painted by the core OFF the main thread, one after
+    /// another in the order drawn (a long or wide one takes a while), and
+    /// drawn over the picture until a picture composed after its paint is
+    /// shown.
+    var pending: [PendingStroke] = []
+    /// How many strokes the core has painted (`PendingStroke.painted`).
+    @ObservationIgnored var painted = 0
+    @ObservationIgnored var paintedNext = 0
+    /// The last paint queued: the next waits for it.
+    @ObservationIgnored var painting: Task<Void, Never>?
     /// A shape being dragged out.
     var draft: MarkupObject?
     /// The selected objects, all on `selectionLayer`, as they are now.
@@ -94,6 +102,23 @@ final class MarkupState {
     @ObservationIgnored var moved = false
 
     var selectedIds: Set<String> { Set(selection.map(\.id)) }
+
+    /// The selection being CHANGED -- moved, reshaped, restyled, typed:
+    /// drawn live over the picture and left out of the core's, which
+    /// would lag. Otherwise the core draws it, in its layer's place --
+    /// over it, a selected object of a lower layer covered the layers
+    /// above -- and the stage outlines it alone. `settling`: just kept,
+    /// the live copy stays until the picture made with it is shown.
+    var live = false
+    var settling = false
+    /// The selection layer's DRAWING -- the pixels painted on it --
+    /// selected too (the select tool on them): copied, cut, deleted and
+    /// pasted as pixels, onto a blank or markup layer.
+    var drawing = false
+    /// Each drawing read, by its raster's hash: its picture and where its
+    /// pixels are (canvas pixels, y down) -- for a click and an outline.
+    @ObservationIgnored var rasters: [String: (image: CGImage,
+                                                bounds: CGRect)] = [:]
 
     /// A brush radius a step up or down from `r`, as Photoshop steps its
     /// brush: finer when small (its diameter's 1 / 10 / 25 / 50 / 100
@@ -152,13 +177,20 @@ extension AppModel {
         guard markupOpen else { return MarkupOverlay() }
         let m = markup
         var o = MarkupOverlay()
+        o.strokes = m.pending.filter { $0.asset == markupAsset?.id }
+            .map(\.stroke)
         if !m.stroke.isEmpty {
-            o.stroke = MarkupOverlay.Stroke(
+            o.strokes.append(MarkupOverlay.Stroke(
                 points: m.stroke, radius: m.radius, softness: m.softness,
-                color: m.edge, erase: m.strokeErase)
+                color: m.edge, erase: m.strokeErase))
         }
         o.objects = m.selection + (m.draft.map { [$0] } ?? [])
         o.selected = m.selectedIds
+        // Drawn by the core, in its layer's place, but while it changes.
+        o.drawsSelection = m.live || m.settling
+        if m.drawing, let layer = m.selectionLayer {
+            o.drawingBounds = drawingBounds(layer)
+        }
         // On a clip, the selection's layer away from the player's frame:
         // nothing of it shows there.
         if markupOnClip, let a = markupAsset, let id = m.selectionLayer,
@@ -221,7 +253,6 @@ extension AppModel {
             commitSelection()
             m.stroke = [p]
             m.strokeErase = m.tool == .eraser
-            m.strokePainted = false
             m.drag = .stroke
         case (.drag, .brush), (.drag, .eraser):
             guard case .stroke = m.drag, let q = m.stroke.last else { return }
@@ -269,7 +300,7 @@ extension AppModel {
         case (.drag, .select):
             selectDrag(e)
         case (.up, .select):
-            if m.moved { commitSelection(keep: true) }
+            if m.moved { commitSelection(keep: true) } else { settleSelection() }
             m.drag = .none
             m.moved = false
         default:
@@ -337,7 +368,8 @@ extension AppModel {
     func markupCan(_ k: MarkupKey) -> Bool {
         guard markupReady else { return false }
         switch k {
-        case .cut, .copy, .delete: return !markup.selection.isEmpty
+        case .cut, .copy, .delete:
+            return !markup.selection.isEmpty || markup.drawing
         case .paste:
             return NSPasteboard.general.availableType(
                 from: [Self.markupPasteboardType]) != nil
@@ -349,10 +381,20 @@ extension AppModel {
     /// plain text too, for the prompt and other apps -- and, cut, gone.
     func copySelectedObjects(cut: Bool) {
         let m = markup
-        guard markupReady, !m.selection.isEmpty else { return }
+        guard markupReady, !m.selection.isEmpty || m.drawing else { return }
+        // The drawing as its PNG -- the whole canvas, where it lies --
+        // held by the pasteboard alone (never a file elsewhere: an
+        // anonymous session's stays in its working copy).
+        var png: Data?
+        if m.drawing, let layer = m.selectionLayer,
+           let path = drawingPath(layer) {
+            png = try? Data(contentsOf: path)
+        }
         let doc: [String: Any] = [
             "objects": m.selection.map(\.json),
             "asset": markupAsset?.id ?? "",
+            "layer": m.selectionLayer ?? "",
+            "drawing": png != nil,
             "cut": cut,
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: doc)
@@ -360,6 +402,7 @@ extension AppModel {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setData(data, forType: Self.markupPasteboardType)
+        if let png { pb.setData(png, forType: .png) }
         let words = m.selection.filter { $0.kind == .text }.map(\.text)
         if !words.isEmpty {
             pb.setString(words.joined(separator: "\n"), forType: .string)
@@ -379,22 +422,31 @@ extension AppModel {
         guard markupReady,
               let data = pb.data(forType: Self.markupPasteboardType),
               let doc = try? JSONSerialization.jsonObject(with: data)
-                as? [String: Any],
-              var objects = DTO.decode([MarkupObject].self, doc["objects"]),
-              !objects.isEmpty else { return }
+                as? [String: Any] else { return }
+        var objects = DTO.decode([MarkupObject].self, doc["objects"]) ?? []
+        let drawing = doc["drawing"] as? Bool == true
+            ? pb.data(forType: .png) : nil
+        guard !objects.isEmpty || drawing != nil else { return }
         if pb.changeCount != m.pasteboardChange {
             m.pastes = 0
             m.pasteboardChange = pb.changeCount
         }
-        let here = markupAsset?.id ?? ""
-        let fromHere = (doc["asset"] as? String) == here
+        commitSelection()
+        // Onto the layer the next mark goes on: a blank one selected
+        // takes a markup; a markup one selected is pasted on.
+        guard let layer = markupTarget() else { return }
+        // Onto the layer it came from, it steps off the original (and
+        // off the paste before); onto another, where it was -- a cut
+        // comes back where it was.
+        let fromHere = (doc["asset"] as? String) == markupAsset?.id
+            && (doc["layer"] as? String) == layer
         let cut = doc["cut"] as? Bool ?? false
         let step = Double(m.pastes + (fromHere && !cut ? 1 : 0)) * 20
         m.pastes += 1
         var dx = step, dy = step
         let union = objects.map(MarkupRender.bounds)
             .reduce(CGRect.null) { $0.union($1) }
-        if let f = markupFrame,
+        if !union.isNull, let f = markupFrame,
            !union.offsetBy(dx: dx, dy: dy).intersects(
                CGRect(origin: .zero, size: f)) {
             dx = f.width / 2 - union.midX
@@ -407,12 +459,156 @@ extension AppModel {
             objects[i].y0 += dy
             objects[i].y1 += dy
         }
-        commitSelection()
-        guard let layer = markupTarget(),
-              saveObjects(markupObjects(layer) + objects, on: layer)
-        else { return }
+        if let drawing, let core, let projectId, let pic = markupAsset {
+            let r = core.layerOp(
+                project: projectId, asset: composedTarget(pic.id),
+                "paste-drawing", layer: layer,
+                extra: ["png_base64": drawing.base64EncodedString(),
+                        "dx": dx, "dy": dy])
+            if !r.ok {
+                note("error", r.message)
+                return
+            }
+            reloadAssets()
+            markupChanged()
+        }
+        if !objects.isEmpty,
+           !saveObjects(markupObjects(layer) + objects, on: layer) {
+            return
+        }
         if m.tool != .select && m.tool != .text { m.tool = .select }
         select(objects, on: layer)
+        m.drawing = drawing != nil
+    }
+
+    // MARK: Drawings (a markup's painted pixels)
+
+    /// The file a layer's drawing is in (the core's; nil: none painted).
+    private func drawingPath(_ layer: String) -> URL? {
+        guard let core, let projectId, let pic = markupAsset else {
+            return nil
+        }
+        let r = core.layerOp(project: projectId, asset: composedTarget(pic.id),
+                             "drawing", layer: layer)
+        guard r.ok, let p = r["path"] as? String, !p.isEmpty else {
+            return nil
+        }
+        return URL(fileURLWithPath: p)
+    }
+
+    /// A layer's drawing read (once a raster): its picture, and where its
+    /// pixels are.
+    private func drawingRaster(_ layer: String)
+        -> (image: CGImage, bounds: CGRect)?
+    {
+        guard let l = markupAsset?.layerStack.first(where: { $0.id == layer }),
+              let hash = l.markup?.raster, !hash.isEmpty else { return nil }
+        let m = markup
+        if let r = m.rasters[hash] { return r }
+        guard let url = drawingPath(layer),
+              let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let img = CGImageSourceCreateImageAtIndex(src, 0, nil)
+        else { return nil }
+        let r = (image: img, bounds: Self.paintedBounds(img))
+        m.rasters[hash] = r
+        return r
+    }
+
+    /// The drawing's pixels' bounds on the canvas, when it has been read.
+    private func drawingBounds(_ layer: String) -> CGRect? {
+        guard let l = markupAsset?.layerStack.first(where: { $0.id == layer }),
+              let hash = l.markup?.raster,
+              let r = markup.rasters[hash], !r.bounds.isNull else {
+            return nil
+        }
+        return r.bounds.offsetBy(dx: rasterOffset(r.image).x,
+                                 dy: rasterOffset(r.image).y)
+    }
+
+    /// Where a raster lies on the canvas: centred at its own size, as the
+    /// core lays it.
+    private func rasterOffset(_ img: CGImage) -> CGPoint {
+        guard let f = markupFrame else { return .zero }
+        return CGPoint(x: (f.width - CGFloat(img.width)) / 2,
+                       y: (f.height - CGFloat(img.height)) / 2)
+    }
+
+    /// The layer whose drawing is under `p` -- painted there, within a
+    /// few points -- the visible markup layers' showing here, from the
+    /// top.
+    private func drawingHit(_ p: CGPoint, _ e: MarkupPointer) -> String? {
+        guard let a = markupAsset else { return nil }
+        let reach = min(12, max(1, Int((4 * e.pixelsPerPoint).rounded())))
+        for l in a.layerStack.reversed()
+        where l.visible && markupShows(l, in: a)
+            && !(l.markup?.raster.isEmpty ?? true) {
+            guard let r = drawingRaster(l.id) else { continue }
+            let o = rasterOffset(r.image)
+            if Self.painted(r.image, at: CGPoint(x: p.x - o.x, y: p.y - o.y),
+                            reach: reach) {
+                return l.id
+            }
+        }
+        return nil
+    }
+
+    /// Anything painted within `reach` pixels of `q` (y down)?
+    private static func painted(_ img: CGImage, at q: CGPoint,
+                                reach: Int) -> Bool {
+        let n = 2 * reach + 1
+        var px = [UInt8](repeating: 0, count: n * n * 4)
+        let x = Int(q.x.rounded(.down)) - reach
+        let y = Int(q.y.rounded(.down)) - reach
+        let hit = px.withUnsafeMutableBytes { buf -> Bool in
+            guard let ctx = Self.rgba(buf.baseAddress, n, n) else {
+                return false
+            }
+            // Pixel (x, y) from the top at the context's origin.
+            ctx.draw(img, in: CGRect(x: -x,
+                                     y: -(img.height - n - y),
+                                     width: img.width, height: img.height))
+            return stride(from: 3, to: buf.count, by: 4).contains {
+                buf[$0] > 8
+            }
+        }
+        return hit
+    }
+
+    /// An 8-bit premultiplied RGBA context over `data`, `w` x `h`: its
+    /// alphas read every fourth byte, rows from the top.
+    private static func rgba(_ data: UnsafeMutableRawPointer?, _ w: Int,
+                             _ h: Int) -> CGContext? {
+        CGContext(data: data, width: w, height: h, bitsPerComponent: 8,
+                  bytesPerRow: w * 4,
+                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+    }
+
+    /// Where a drawing's pixels are (y down); null for none.
+    private static func paintedBounds(_ img: CGImage) -> CGRect {
+        let w = img.width, h = img.height
+        var a = [UInt8](repeating: 0, count: w * h * 4)
+        let ok = a.withUnsafeMutableBytes { buf -> Bool in
+            guard let ctx = Self.rgba(buf.baseAddress, w, h) else {
+                return false
+            }
+            ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard ok else { return .null }
+        var x0 = w, y0 = h, x1 = -1, y1 = -1
+        for row in 0..<h {
+            let base = row * w * 4 + 3
+            for col in 0..<w where a[base + col * 4] > 8 {
+                x0 = min(x0, col)
+                x1 = max(x1, col)
+                y0 = min(y0, row)
+                y1 = max(y1, row)
+            }
+        }
+        // The context's rows run from the top in memory.
+        guard x1 >= 0 else { return .null }
+        return CGRect(x: x0, y: y0, width: x1 - x0 + 1, height: y1 - y0 + 1)
     }
 
     /// The canvas a clip on the stage is drawn on, in pixels -- a canvas
@@ -472,7 +668,10 @@ extension AppModel {
                        y: d.y0 + (dy < 0 ? -s : s))
     }
 
-    /// The stroke just drawn, painted into the target layer.
+    /// The stroke just drawn, painted into the target layer -- by the core
+    /// off the main thread, after the strokes before it: the pointer and
+    /// the window stay live while a long stroke is painted. Until the
+    /// picture painted with it is shown, the overlay draws it.
     private func paintStroke() {
         let m = markup
         guard let core, let projectId, let pic = markupAsset,
@@ -480,21 +679,42 @@ extension AppModel {
             m.stroke = []
             return
         }
-        let s: [String: Any] = [
-            "points": m.stroke.map { [Double($0.x), Double($0.y)] },
-            "radius": m.radius, "softness": m.softness,
-            "color": m.edge.json, "erase": m.strokeErase,
-        ]
-        let r = core.layerOp(project: projectId, asset: composedTarget(pic.id), "stroke",
-                             layer: layer, extra: ["stroke": s])
-        if !r.ok {
-            note("error", r.message)
-            m.stroke = []
-            return
+        m.paintedNext += 1
+        let entry = PendingStroke(
+            id: m.paintedNext, asset: pic.id,
+            stroke: MarkupOverlay.Stroke(
+                points: m.stroke, radius: m.radius, softness: m.softness,
+                color: m.edge, erase: m.strokeErase))
+        m.pending.append(entry)
+        m.stroke = []
+        let asset = composedTarget(pic.id)
+        let s = entry.stroke
+        let previous = m.painting
+        m.painting = Task { @MainActor [weak self] in
+            await previous?.value
+            let r = await Task.detached(priority: .userInitiated) {
+                core.layerOp(project: projectId, asset: asset, "stroke",
+                             layer: layer, extra: ["stroke": [
+                                 "points": s.points.map {
+                                     [Double($0.x), Double($0.y)]
+                                 },
+                                 "radius": s.radius, "softness": s.softness,
+                                 "color": s.color.json, "erase": s.erase,
+                             ] as [String: Any]])
+            }.value
+            guard let self else { return }
+            let m = self.markup
+            guard r.ok else {
+                self.note("error", r.message)
+                m.pending.removeAll { $0.id == entry.id }
+                return
+            }
+            m.painted += 1
+            if let i = m.pending.firstIndex(where: { $0.id == entry.id }) {
+                m.pending[i].painted = m.painted
+            }
+            self.markupChanged()
         }
-        // Shown until the picture painted with it is.
-        m.strokePainted = true
-        markupChanged()
     }
 
     /// A new object on the target layer, selected.
@@ -525,6 +745,7 @@ extension AppModel {
     /// the picture; the layer selected in the editor.
     private func select(_ objects: [MarkupObject], on layer: String) {
         let m = markup
+        if m.selectionLayer != layer { m.drawing = false }
         if m.selectionLayer != layer || m.selectedIds != Set(objects.map(\.id)) {
             m.selection = objects
             m.selectionLayer = layer
@@ -534,19 +755,45 @@ extension AppModel {
         }
     }
 
+    /// The selection is being changed: drawn live, out of the core's
+    /// picture, until it is kept (`settleSelection`).
+    func liveSelection() {
+        let m = markup
+        guard !m.live, !m.selection.isEmpty else { return }
+        m.live = true
+        m.settling = false
+        markupChanged()
+    }
+
+    /// Its change kept: the core draws it again in its layer's place; the
+    /// live copy goes once that picture is shown (markupComposited).
+    func settleSelection() {
+        let m = markup
+        guard m.live else { return }
+        m.live = false
+        m.settling = true
+        markupChanged()
+    }
+
     /// The selection's values kept on its layer; and, unless `keep`, the
     /// selection let go -- its objects drawn into the picture again.
     func commitSelection(keep: Bool = false) {
+        defer { settleSelection() }
         let m = markup
         // Another picture on the stage now: the selection was its.
         if m.selectionAsset != nil && m.selectionAsset != markupAsset?.id {
             m.selection = []
             m.selectionLayer = nil
             m.selectionAsset = nil
+            m.drawing = false
             return
         }
         guard let layer = m.selectionLayer, !m.selection.isEmpty else {
-            if !keep { m.selection = []; m.selectionLayer = nil }
+            if !keep {
+                m.selection = []
+                m.selectionLayer = nil
+                m.drawing = false
+            }
             return
         }
         let byId = Dictionary(uniqueKeysWithValues:
@@ -556,6 +803,7 @@ extension AppModel {
         if !keep {
             m.selection = []
             m.selectionLayer = nil
+            m.drawing = false
             markupChanged()
         }
     }
@@ -567,6 +815,7 @@ extension AppModel {
                        _ change: (inout MarkupObject) -> Void) {
         let m = markup
         guard !m.selection.isEmpty else { return }
+        if !commit { liveSelection() }
         for i in m.selection.indices { change(&m.selection[i]) }
         if commit { commitSelection(keep: true) }
     }
@@ -592,7 +841,20 @@ extension AppModel {
 
     func deleteSelectedObjects() {
         let m = markup
+        // The drawing selected: its pixels cleared (its objects stay but
+        // those selected).
+        if m.drawing, let layer = m.selectionLayer, let core, let projectId,
+           let pic = markupAsset {
+            m.drawing = false
+            let r = core.layerOp(project: projectId,
+                                 asset: composedTarget(pic.id),
+                                 "clear-drawing", layer: layer)
+            if !r.ok { note("error", r.message) }
+            reloadAssets()
+            markupChanged()
+        }
         guard let layer = m.selectionLayer, !m.selection.isEmpty else {
+            m.selectionLayer = m.selection.isEmpty ? nil : m.selectionLayer
             return
         }
         let gone = m.selectedIds
@@ -662,6 +924,20 @@ extension AppModel {
             }
         }
         guard let hit = markupHit(p, e) else {
+            // Painted pixels there: the layer's DRAWING selected (⇧: with
+            // the objects selected on it).
+            if let layer = drawingHit(p, e) {
+                if !(e.shift && m.selectionLayer == layer) {
+                    commitSelection()
+                    m.selection = []
+                    m.selectionLayer = layer
+                    m.selectionAsset = markupAsset?.id
+                    if activeLayer != layer { selectLayer(layer) }
+                }
+                m.drawing = true
+                m.drag = .none
+                return
+            }
             commitSelection()
             m.drag = .none
             return
@@ -686,6 +962,11 @@ extension AppModel {
     private func selectDrag(_ e: MarkupPointer) {
         let m = markup
         let p = e.point
+        // Moved or reshaped: drawn live from its first step.
+        switch m.drag {
+        case .move, .handle: liveSelection()
+        default: break
+        }
         switch m.drag {
         case .move:
             let (dx, dy) = (p.x - m.last.x, p.y - m.last.y)
@@ -718,14 +999,12 @@ extension AppModel {
         }
     }
 
-    /// The picture made with a painted stroke is shown: the stroke drawn
-    /// over it can go.
-    func markupComposited() {
+    /// A picture composed once `painted` strokes were painted is shown:
+    /// those strokes drawn over it can go (one painted later stays).
+    func markupComposited(painted: Int) {
         let m = markup
-        if m.strokePainted {
-            m.strokePainted = false
-            m.stroke = []
-        }
+        if m.settling { m.settling = false }
+        m.pending.removeAll { ($0.painted ?? .max) <= painted }
     }
 
     /// The toolbar closed, or its tool changed: the selection let go.
@@ -821,4 +1100,13 @@ extension AppModel {
             selectedLayers = keep
         }
     }
+}
+
+/// A stroke let go: its points and brush, and -- once the core has
+/// painted it -- the count of strokes painted by then.
+struct PendingStroke: Equatable {
+    var id: Int
+    var asset: String   // the picture it is drawn on
+    var stroke: MarkupOverlay.Stroke
+    var painted: Int?
 }

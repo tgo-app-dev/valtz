@@ -6,6 +6,7 @@
 #include "valtz/controller/controller.h"
 #include "valtz/media/camera.h"
 #include "valtz/media/markup.h"
+#include "valtz/media/model-input.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/sound.h"
 #include "valtz/project/migrate.h"
@@ -186,6 +187,81 @@ TEST(controller, prompts_are_assets)
   REQUIRE_OK(m);
   CHECK(*p->read_text(*m) == "lit like");
   CHECK(!(*c)->set_prompt_text(*pid, pic->id, "y").ok());  // not a prompt
+}
+
+// A prompt NAMED by the person (DESIGN §10c: the Prompt Editor's tab):
+// captured with a name, it is named so; renamed, it is too; either way
+// its name is kept as its words change, where one its words name follows
+// them -- and "" names it from its words again.
+TEST(controller, a_prompt_keeps_the_name_it_is_given)
+{
+  auto root = test::temp_dir("ctl-prompt-name");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  auto c = Controller::create(cfg);
+  REQUIRE_OK(c);
+  auto pid = (*c)->create_project(root / "P.valtz", "P");
+  REQUIRE_OK(pid);
+  project::Project* p = (*c)->project(*pid);
+  auto name = [&](AssetId id) { return p->asset(id)->name; };
+
+  // Its words name it, and follow them.
+  auto a = (*c)->capture_prompt(*pid, "a fox in snow", {}, {});
+  REQUIRE_OK(a);
+  CHECK(name(*a) == "a fox in snow");
+  REQUIRE_OK((*c)->set_prompt_text(*pid, *a, "a fox at dusk"));
+  CHECK(name(*a) == "a fox at dusk");
+  // Renamed: kept as its words change, in place or captured again.
+  REQUIRE_OK((*c)->rename_asset(*pid, *a, "Hero shot"));
+  REQUIRE_OK((*c)->set_prompt_text(*pid, *a, "a fox at noon"));
+  CHECK(name(*a) == "Hero shot");
+  auto same = (*c)->capture_prompt(*pid, "a fox at night", {}, {}, *a);
+  REQUIRE_OK(same);
+  CHECK(*same == *a);
+  CHECK(name(*a) == "Hero shot");
+  // "": its words again, and following them.
+  REQUIRE_OK((*c)->rename_asset(*pid, *a, ""));
+  CHECK(name(*a) == "a fox at night");
+  REQUIRE_OK((*c)->set_prompt_text(*pid, *a, "a fox asleep"));
+  CHECK(name(*a) == "a fox asleep");
+
+  // Captured with a name: a new prompt named so; the draft it came from
+  // renamed in place; one already holding those words named too.
+  auto b = (*c)->capture_prompt(*pid, "a heron", {}, {}, std::nullopt,
+                                "Bird");
+  REQUIRE_OK(b);
+  CHECK(name(*b) == "Bird");
+  auto b2 = (*c)->capture_prompt(*pid, "a heron wading", {}, {}, *b);
+  REQUIRE_OK(b2);
+  CHECK(*b2 == *b);
+  CHECK(name(*b) == "Bird");
+  REQUIRE_OK((*c)->capture_prompt(*pid, "a heron wading", {}, {}, *b,
+                                  "Wader"));
+  CHECK(name(*b) == "Wader");
+  auto found = (*c)->capture_prompt(*pid, "a fox asleep", {}, {},
+                                    std::nullopt, "Sleeper");
+  REQUIRE_OK(found);
+  CHECK(*found == *a);
+  CHECK(name(*a) == "Sleeper");
+
+  // Something made from it: a changed text is a new prompt, named as
+  // asked -- the old one keeps its name.
+  project::Recipe r;
+  r.op = "generate-image";
+  r.inputs.push_back({"prompt", *b, p->asset(*b)->head});
+  REQUIRE_OK(p->define_derived("made", project::AssetKind::Image, r));
+  auto fork = (*c)->capture_prompt(*pid, "two herons", {}, {}, *b,
+                                   "Wader");
+  REQUIRE_OK(fork);
+  CHECK(*fork != *b);
+  CHECK(name(*fork) == "Wader");
+  CHECK(name(*b) == "Wader");
+  // Any other asset: no empty name.
+  auto t = p->add_text("notes", "x");
+  REQUIRE_OK(t);
+  CHECK(!(*c)->rename_asset(*pid, t->id, "").ok());
 }
 
 namespace {
@@ -1499,6 +1575,47 @@ TEST(media, a_text_box_wraps_and_cuts_at_a_line)
   CHECK(!ink(0, 400, 120, 200));
 }
 
+// A long SOFT stroke paints in a moment, and only where it went: each
+// dab's gradient is drawn in its own square -- unclipped, Core Graphics
+// shaded the whole canvas for every dab, and a 600-point stroke on a
+// 1024 x 1024 canvas took 3.6 s (the app hung at the pointer's release).
+// Then erased the same way, softly.
+TEST(media, a_long_soft_stroke_paints_in_a_moment)
+{
+  const auto root = test::temp_dir("markup-stroke");
+  media::Stroke s;
+  s.radius = 30;
+  s.softness = 0.5;
+  s.color = {1, 0.125, 0, 1};
+  for (int i = 0; i < 600; ++i) {
+    const double t = i / 599.0;
+    s.points.push_back(
+        {102 + 819 * std::abs(std::fmod(t * 8, 2.0) - 1), 102 + 819 * t});
+  }
+  const auto painted = root / "painted.png";
+  const auto t0 = std::chrono::steady_clock::now();
+  REQUIRE_OK(media::paint_stroke({}, {1024, 1024}, s, painted));
+  const double took = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - t0).count();
+  CHECK(took < 1.0);
+  CHECK(pixel_at(painted, 921, 102)[3] > 200);    // where it starts
+  CHECK(pixel_at(painted, 921, 102)[0] > 200);
+  CHECK(pixel_at(painted, 50, 50)[3] == 0);       // nowhere near it
+  CHECK(pixel_at(painted, 1000, 30)[3] == 0);
+  // The soft edge: fading, not cut, past the hard core.
+  const int edge = pixel_at(painted, 921, 102 - 25)[3];
+  CHECK(edge > 0 && edge < 255);
+
+  media::Stroke e = s;
+  e.erase = true;
+  const auto erased = root / "erased.png";
+  const auto t1 = std::chrono::steady_clock::now();
+  REQUIRE_OK(media::paint_stroke(painted, {1024, 1024}, e, erased));
+  CHECK(std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      t1).count() < 1.0);
+  CHECK(pixel_at(erased, 921, 102)[3] < 10);
+}
+
 // An asset's NAME in the list: one line, never empty, undoable.
 TEST(controller, an_asset_is_renamed)
 {
@@ -2279,6 +2396,103 @@ TEST(composition, a_clip_is_cut_in_two_parts)
   CHECK(std::abs(rms(samples, 0.3, 0.6) - 0.354) < 0.03);  // across it
 }
 
+// A clip SUMMARIZED (DESIGN §4i): read sparse -- the frame at each mark,
+// upright, sRGB, 8-bit planar, at a size within 576 x 320 on a 32-pixel
+// grid, with its time -- and asked of a clip only, by a model that watches
+// video (none here: no engine). The frame interval: one a second where
+// memory moves 200 GB/s or more, one every two below, or as set.
+TEST(composition, a_clip_is_read_sparse_for_a_summary)
+{
+  ::setenv("VALTZ_MEMORY_BANDWIDTH_GBS", "150", 1);
+  Bench b("comp-summary");
+  ::unsetenv("VALTZ_MEMORY_BANDWIDTH_GBS");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 640, 360, {0xff, 0, 0, 0xff});
+  auto blue = b.png("blue.png", 640, 360, {0, 0, 0xff, 0xff});
+  REQUIRE(red && blue);
+  // Red for a second, blue for the next.
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {640, 360}, {24, 1}, "two");
+  REQUIRE_OK(tl);
+  auto lr = ctl.instantiate(pid, *red, *tl);
+  auto lb = ctl.instantiate(pid, *blue, *tl);
+  REQUIRE_OK(lr);
+  REQUIRE_OK(lb);
+  project::LayerTime tr;
+  tr.duration = 24;
+  REQUIRE_OK(ctl.set_layer_time(pid, *tl, lr->second, tr));
+  project::LayerTime tb;
+  tb.offset = 24;
+  tb.duration = 24;
+  REQUIRE_OK(ctl.set_layer_time(pid, *tl, lb->second, tb));
+  auto movie = ctl.rendered(pid, *tl);
+  REQUIRE_OK(movie);
+
+  auto size = media::sampled_size(*movie, {576, 320}, 32);
+  REQUIRE_OK(size);
+  CHECK(size->width == 576);
+  CHECK(size->height == 320);
+  // The most is a long edge and a short, in either order.
+  {
+    auto upright = media::sampled_size(*movie, {320, 576}, 32);
+    REQUIRE_OK(upright);
+    CHECK(upright->width == 576);
+  }
+  std::vector<double> times;
+  std::vector<std::array<int, 3>> colours;
+  std::vector<std::uint8_t> buf(
+      static_cast<std::size_t>(size->width) * size->height * 3);
+  const std::size_t plane = static_cast<std::size_t>(size->width) *
+                            size->height;
+  auto st = media::sample_movie(
+      *movie, 0.5, *size,
+      [&](std::int64_t, double t) -> Result<media::FrameBuffer> {
+        times.push_back(t);
+        return media::FrameBuffer{buf.data(), buf.size(), {}};
+      },
+      [&](std::int64_t) -> Status {
+        const std::size_t mid = plane / 2 + size->width / 2;
+        colours.push_back({buf[mid], buf[plane + mid], buf[2 * plane + mid]});
+        return ok_status();
+      });
+  REQUIRE_OK(st);
+  REQUIRE(times.size() == 4);
+  for (std::size_t i = 0; i < times.size(); ++i) {
+    CHECK(std::abs(times[i] - 0.5 * static_cast<double>(i)) < 0.05);
+  }
+  CHECK(colours[0][0] > 200 && colours[0][2] < 50);  // red
+  CHECK(colours[3][2] > 200 && colours[3][0] < 50);  // blue
+
+  // A picture is not summarized; a clip is, by a model that watches.
+  auto pic = ctl.summarize_video(pid, *red);
+  REQUIRE(!pic.ok());
+  CHECK(pic.error().key == msg::kSummarizeNeedsPicture.key);
+  auto none = ctl.summarize_video(pid, *tl);
+  REQUIRE(!none.ok());
+  CHECK(none.error().key == msg::kNoVideoWatcher.key);
+
+  // 150 GB/s: a frame every two seconds; as set, then Auto again --
+  // and kept for the next run.
+  CHECK(ctl.hardware().memory_bandwidth_gbs == 150);
+  CHECK(ctl.video_every() == 2.0);
+  REQUIRE_OK(ctl.set_video_every(3));
+  CHECK(ctl.video_every() == 3.0);
+  CHECK(jget(ctl.assistants(), "video_every_now", 0.0) == 3.0);
+  {
+    ControllerConfig cfg;
+    cfg.support_root = b.root / "support";
+    cfg.model_roots = {b.root / "models"};
+    cfg.with_engine = false;
+    auto again = Controller::create(cfg);
+    REQUIRE_OK(again);
+    CHECK((*again)->video_every_setting() == 3.0);
+  }
+  REQUIRE_OK(ctl.set_video_every(0));
+  CHECK(ctl.video_every() == 2.0);
+}
+
 // A CLIP'S SOUND (DESIGN §6a): a composition of sound takes a clip with
 // sound -- its sound alone, marked in milliseconds -- and refuses one
 // without; put in a timeline with a frame, it is sound there, and its
@@ -2386,6 +2600,132 @@ TEST(composition, a_sound_composition_takes_a_clips_sound)
 // block's end stretches it (a clip's length is its marks'); markup is
 // drawn at the player's frame -- on a markup showing there, else on a new
 // one from there, a second long (DESIGN §6a).
+// A markup's DRAWING -- its painted pixels -- copied onto another
+// layer (pasted where asked, cleared), and a layer DUPLICATED: a
+// markup's copy its own (drawn on apart), its looks with it.
+TEST(composition, a_drawing_is_copied_and_a_layer_duplicated)
+{
+  Bench b("comp-drawing");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto comp = ctl.create_composition(pid, project::AssetClass::Still,
+                                     {64, 64}, {0, 1}, "sheet");
+  REQUIRE_OK(comp);
+  auto m0 = ctl.markup_layer(pid, *comp, {});
+  REQUIRE_OK(m0);
+  media::Stroke s;
+  s.points = {{4, 10}, {20, 10}};
+  s.radius = 3;
+  s.color = {1, 0, 0, 1};
+  REQUIRE_OK(ctl.paint_stroke(pid, *comp, *m0, s));
+  auto drawing = ctl.markup_drawing(pid, *comp, *m0);
+  REQUIRE_OK(drawing);
+  REQUIRE(!drawing->empty());
+  // Copied: a copy of the file, as the app's pasteboard holds it.
+  const auto held = b.root / "held.png";
+  std::filesystem::copy_file(*drawing, held);
+  // Onto a blank layer: it becomes a markup, the drawing 30 px down.
+  auto blank = ctl.add_layer(pid, *comp, *m0);
+  REQUIRE_OK(blank);
+  REQUIRE_OK(ctl.markup_layer(pid, *comp, {*blank}));
+  REQUIRE_OK(ctl.paste_drawing(pid, *comp, *blank, held, 0, 30));
+  const auto flat = b.root / "flat.png";
+  REQUIRE_OK(ctl.set_layer_visible(pid, *comp, *m0, false));
+  REQUIRE_OK(ctl.flatten(pid, *comp, flat));
+  CHECK(pixel_at(flat, 12, 40)[0] > 200);   // pasted, down
+  CHECK(pixel_at(flat, 12, 10)[3] < 40);    // not where it was
+  // As bytes too (the app's way), onto the same layer: both there.
+  std::ifstream f(held, std::ios::binary);
+  std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)), {});
+  REQUIRE_OK(ctl.paste_drawing_data(pid, *comp, *blank, bytes, 0, 0));
+  REQUIRE_OK(ctl.flatten(pid, *comp, flat));
+  CHECK(pixel_at(flat, 12, 10)[0] > 200 && pixel_at(flat, 12, 40)[0] > 200);
+  // Cleared; undone.
+  REQUIRE_OK(ctl.clear_drawing(pid, *comp, *blank));
+  CHECK(ctl.markup_drawing(pid, *comp, *blank)->empty());
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(!ctl.markup_drawing(pid, *comp, *blank)->empty());
+
+  // Duplicated: right above it, a markup of its own, its crop with it.
+  media::Crop c;
+  c.offset_x = 0.25;
+  REQUIRE_OK(ctl.set_crop(pid, *comp, c, *m0));
+  auto dup = ctl.duplicate_layer(pid, *comp, *m0, "Copy");
+  REQUIRE_OK(dup);
+  const auto ls = b.layers(*comp);
+  auto at = [&](const std::string& id) {
+    for (std::size_t i = 0; i < ls.size(); ++i) {
+      if (ls[i].id == id) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  };
+  CHECK(at(*dup) == at(*m0) + 1);
+  CHECK(ls[at(*dup)].name == "Copy");
+  CHECK(ls[at(*dup)].source != ls[at(*m0)].source);
+  auto ca = b.p().asset(*comp);
+  REQUIRE_OK(ca);
+  CHECK(Controller::crop_of(*ca, *dup).offset_x == 0.25);
+  // Painted on apart: the original's drawing is as it was.
+  const auto before = ctl.markup_drawing(pid, *comp, *m0);
+  REQUIRE_OK(before);
+  media::Stroke s2 = s;
+  s2.points = {{40, 50}, {60, 50}};
+  REQUIRE_OK(ctl.paint_stroke(pid, *comp, *dup, s2));
+  CHECK(*ctl.markup_drawing(pid, *comp, *m0) == *before);
+  CHECK(*ctl.markup_drawing(pid, *comp, *dup) != *before);
+  // Undone whole.
+  REQUIRE_OK(ctl.undo(pid));
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(b.layers(*comp).size() == ls.size() - 1);
+}
+
+// A timeline of markup drawn for a model (rendered_, a reference's
+// movie) frame by frame as the player draws it: its keys between them.
+TEST(composition, a_markup_timeline_moves_between_its_keys)
+{
+  Bench b("comp-markup-keys");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {64, 36}, {24, 1}, "motion");
+  REQUIRE_OK(tl);
+  auto m = ctl.markup_layer(pid, *tl, {}, 0);
+  REQUIRE_OK(m);
+  REQUIRE_OK(ctl.set_markup_objects(pid, *tl, *m, Json::array({
+      {{"kind", "rect"}, {"x0", 0}, {"y0", 12}, {"x1", 8}, {"y1", 24},
+       {"fill", {1, 0, 0, 1}}, {"width", 0}}})));
+  REQUIRE_OK(ctl.stretch_layer(pid, *tl, *m, 24));
+  // Across half the frame over its 24 frames.
+  media::KeyedCrop k;
+  media::Crop c0, c1;
+  c1.offset_x = 0.5;
+  k.place.keys = {{0, c0}, {23, c1}};
+  k.place.rate = {24, 1};
+  REQUIRE_OK(ctl.set_crop_keys(pid, *tl, k, *m));
+  auto stack = ctl.movie_stack(pid, *tl, true);
+  REQUIRE_OK(stack);
+  auto red_x = [&](std::int64_t f) {
+    const auto out = b.root / std::format("k{}.png", f);
+    if (!media::write_stack_frame(*stack, {24, 1}, f, out).ok()) {
+      return -1;
+    }
+    for (int x = 63; x >= 0; --x) {
+      if (pixel_at(out, x, 18)[0] > 200) {
+        return x;   // the right edge
+      }
+    }
+    return -1;
+  };
+  CHECK(std::abs(red_x(0) - 7) <= 1);
+  CHECK(std::abs(red_x(23) - (7 + 32)) <= 1);
+  // Half way: half way (linear between the keys).
+  CHECK(std::abs(red_x(12) - (7 + 17)) <= 2);
+}
+
 TEST(composition, a_still_on_a_timeline_runs_a_second)
 {
   Bench b("comp-still-second");

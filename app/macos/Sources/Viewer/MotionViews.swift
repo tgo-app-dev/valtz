@@ -83,6 +83,9 @@ struct VideoPlayerView: NSViewRepresentable {
     var stack: StackPlayback? = nil
     /// A sound's picture (its waveform), over the player's empty frame.
     var artwork: CGImage? = nil
+    /// AVKit's own controls over the picture -- none while the timeline,
+    /// whose transport is the fuller one, is open.
+    var controls = true
     var core: CoreService? = nil
     var onFrame: (Int) -> Void = { _ in }
     var onRate: (Float) -> Void = { _ in }
@@ -305,6 +308,8 @@ struct VideoPlayerView: NSViewRepresentable {
 
     func updateNSView(_ v: AVPlayerView, context: Context) {
         let c = context.coordinator
+        let style: AVPlayerViewControlsStyle = controls ? .floating : .none
+        if v.controlsStyle != style { v.controlsStyle = style }
         if let overlay = v.contentOverlayView {
             let iv = overlay.subviews.compactMap { $0 as? NSImageView }.first
                 ?? {

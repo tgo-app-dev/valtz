@@ -8,7 +8,9 @@ import SwiftUI
 /// the card; the others grey. While they fit in 80% of the height each
 /// shows its whole title (to a length); past that the longest titles give
 /// way first, and when even short tabs do not fit, they scroll, the round
-/// + below them in the last fifth. Otherwise + follows the last tab.
+/// + below them in the last fifth. Otherwise + follows the last tab. A
+/// tab's title is typed over in place to NAME its prompt: a double-click
+/// on it, or its menu's Rename.
 struct PromptTabRail: View {
     @Bindable var model: AppModel
     /// The prompt card's height.
@@ -26,6 +28,8 @@ struct PromptTabRail: View {
     private static let radius: CGFloat = 14
     private static let minLength: CGFloat = 64
     private static let maxLength: CGFloat = 240
+    /// A tab whose name is being typed: room to type in.
+    private static let editLength: CGFloat = 200
     private static let inset: CGFloat = 14
     private static let font = NSFont.systemFont(ofSize: 12)
 
@@ -33,8 +37,14 @@ struct PromptTabRail: View {
         let n = model.promptTabs.count
         let titles = (0..<n).map { model.promptTabTitle($0) }
         let room = max(0, height - Self.top) * 0.8
+        let editing = model.promptTabs.firstIndex {
+            $0.id == model.renamingPromptTab }
         let (lengths, scrolls) = Self.lengths(
-            titles.enumerated().map { Self.natural($1, number: $0 + 1) },
+            titles.enumerated().map { i, t in
+                let l = Self.natural(t, number: i + 1,
+                                     locked: model.promptTabs[i].readOnly)
+                return i == editing ? max(l, Self.editLength) : l
+            },
             room: room - Self.gap * CGFloat(max(0, n - 1)))
         VStack(alignment: .leading, spacing: Self.gap) {
             ScrollViewReader { reader in
@@ -50,9 +60,23 @@ struct PromptTabRail: View {
                                     || !model.promptTabTitleIsEmpty(i),
                                 lookOnly: model.tabDoNotApply(i),
                                 locked: tab.readOnly,
+                                editing: i == editing,
                                 select: { act { model.selectPromptTab(i) } },
                                 close: { model.requestClosePromptTab(i) },
-                                new: { act { model.newPromptTab() } })
+                                new: { act { model.newPromptTab() } },
+                                rename: {
+                                    act { model.selectPromptTab(i) }
+                                    model.renamingPromptTab = tab.id
+                                },
+                                duplicate: tab.readOnly ? {
+                                    act { model.duplicatePromptTab(i) }
+                                } : nil,
+                                named: { typed in
+                                    model.renamingPromptTab = nil
+                                    if let typed, typed != titles[i] {
+                                        act { model.renamePromptTab(i, typed) }
+                                    }
+                                })
                                 .id(tab.id)
                         }
                         if !scrolls { plus }
@@ -100,13 +124,16 @@ struct PromptTabRail: View {
 
     /// A tab's length for its whole title: its number, the title, its
     /// ends -- within the bounds a tab has.
-    private static func natural(_ title: String, number: Int) -> CGFloat {
+    private static func natural(_ title: String, number: Int,
+                                locked: Bool = false) -> CGFloat {
         let w = { (s: String) in
             (s as NSString).size(withAttributes: [.font: font]).width
         }
         // A little over the measure: SwiftUI's line takes a few points
         // more than the font's advances.
+        // A locked one's lock beside its number.
         let len = w(String(number)) + 6 + w(title) + 2 * inset + 12
+            + (locked ? 14 : 0)
         return min(maxLength, max(minLength, ceil(len)))
     }
 
@@ -138,7 +165,7 @@ struct PromptTabRail: View {
 }
 
 /// One tab: a card on its side, its number and title running up it; the
-/// number turns into × on hover.
+/// number turns into × on hover. Renamed, the title is a field.
 private struct PromptTabCard: View {
     let number: Int
     let title: String
@@ -149,9 +176,15 @@ private struct PromptTabCard: View {
     /// read only, a lock before it.
     var lookOnly = false
     var locked = false
+    var editing = false
     let select: () -> Void
     let close: () -> Void
     let new: () -> Void
+    /// Its title made a field; and what was typed there (nil: Escape).
+    let rename: () -> Void
+    /// A locked prompt's copy to edit (none for another).
+    let duplicate: (() -> Void)?
+    let named: (String?) -> Void
     @State private var hovering = false
 
     private var run: CGFloat { max(0, length - 28) }
@@ -173,17 +206,24 @@ private struct PromptTabCard: View {
                 .shadow(color: .black.opacity(open ? 0.13 : 0.09),
                         radius: 7, y: 3)
                 .contentShape(shape)
-                .onTapGesture(perform: select)
+                // A double-click on it names it (a click alone selects at
+                // once: no wait for a second).
+                .onClick({ if !editing { select() } },
+                         double: { if !editing { rename() } })
                 .onHover { hovering = $0 }
         }
         .animation(.smooth(duration: 0.15), value: hovering)
         .contextMenu {
             Button("New Prompt", action: new)
+            Button("Rename Prompt", action: rename)
+            if let duplicate {
+                Button("Duplicate and Edit", action: duplicate)
+            }
             if closable {
                 Button("Close Prompt", action: close)
             }
         }
-        .help(title)
+        .help(editing ? "" : String(localized: "\(title) -- double-click to name it"))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(verbatim: "\(number) \(title)"))
         .accessibilityAddTraits(open ? [.isSelected, .isButton] : .isButton)
@@ -213,16 +253,62 @@ private struct PromptTabCard: View {
                     .font(.system(size: 8))
                     .foregroundStyle(.secondary)
             }
-            Text(verbatim: title)
-                .font(.callout)
-                .italic(lookOnly)
-                .foregroundStyle(open ? .primary : .secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if editing {
+                TabNameField(initial: title, done: named)
+            } else {
+                Text(verbatim: title)
+                    .font(.callout)
+                    .italic(lookOnly)
+                    .foregroundStyle(open ? .primary : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
         }
         .frame(width: run, alignment: .leading)
         .rotationEffect(.degrees(-90))
         .frame(width: 20, height: run)
+    }
+}
+
+/// A tab's title as a field: its name typed over it -- Return (or a
+/// click away) names the prompt, Escape leaves it as it was; emptied, the
+/// prompt is named by its words again.
+private struct TabNameField: View {
+    let initial: String
+    let done: (String?) -> Void
+    @State private var text = ""
+    @State private var ended = false
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        TextField("Prompt name", text: $text)
+            .textFieldStyle(.plain)
+            .font(.callout)
+            .focused($focused)
+            // Read as a field: a light box, the accent's edge.
+            .padding(.horizontal, 4)
+            .background(RoundedRectangle(cornerRadius: 4)
+                .fill(Color(nsColor: .textBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(Color.accentColor.opacity(0.7)))
+            .onSubmit { end(text) }
+            .onExitCommand { end(nil) }
+            .onChange(of: focused) { _, now in
+                if !now { end(text) }
+            }
+            .onAppear {
+                text = initial
+                // Focused once it is in the window: it takes the keyboard,
+                // its words selected.
+                DispatchQueue.main.async { focused = true }
+            }
+            .accessibilityLabel(Text("Prompt name"))
+    }
+
+    private func end(_ typed: String?) {
+        guard !ended else { return }
+        ended = true
+        done(typed)
     }
 }
 
@@ -246,6 +332,7 @@ extension AppModel {
         }
         stashPromptTab()
         boxTab = promptTabs[activePromptTab]
+        editorEdited = false
         markupOpen = false
         showsTuning = false
         if inspectorTab != .layers { inspectorTab = .assets }
@@ -273,6 +360,7 @@ extension AppModel {
                 t.mentions = box.mentions
                 t.assetId = box.assetId
                 t.enhanced = box.enhanced
+                t.name = box.name
                 promptTabs.insert(t, at: 0)
                 activePromptTab = 0
             }
@@ -302,6 +390,21 @@ extension AppModel {
         stashPromptTab()
         activePromptTab = i
         loadPromptTab(promptTabs[i])
+    }
+
+    /// A LOCKED prompt (something was made from it) copied into a new tab
+    /// after it, open and editable: its words and mentions -- the same
+    /// words are still that prompt; changed, a new one.
+    func duplicatePromptTab(_ i: Int) {
+        guard promptTabs.indices.contains(i) else { return }
+        stashPromptTab()
+        let t = promptTabs[i]
+        var copy = PromptTab()
+        copy.marked = t.marked
+        copy.mentions = t.mentions
+        promptTabs.insert(copy, at: i + 1)
+        activePromptTab = i + 1
+        loadPromptTab(copy)
     }
 
     /// A new, empty prompt after the others, open.
@@ -449,7 +552,8 @@ extension AppModel {
         }
         var req: [String: Any] = ["project": projectId, "prompt": text,
                                   "row": rowAssetIds, "inline": inline]
-        if let a = t.assetId { req["prompt_asset"] = a }
+        if let a = live ? promptAssetId : t.assetId { req["prompt_asset"] = a }
+        if let n = promptTabName(i) { req["prompt_name"] = n }
         let r = core.capturePrompt(req)
         if !r.ok { flash(r.message) }
         reloadAssets()
@@ -486,6 +590,7 @@ extension AppModel {
         promptTabs[activePromptTab].mentions = synced ? promptMentions : []
         promptTabs[activePromptTab].assetId = promptAssetId
         promptTabs[activePromptTab].enhanced = enhanced
+        promptTabs[activePromptTab].name = promptName
     }
 
     /// A tab's prompt into the text view: its mentions where they were
@@ -495,14 +600,23 @@ extension AppModel {
         promptMentions = t.mentions
         prompt = t.words
         promptAssetId = t.assetId
+        promptName = t.name
         enhanced = t.enhanced
         promptRevision += 1
         promptChanged()
     }
 
-    /// A tab's name: its first words -- tags as their names ("Image 1"),
-    /// Markdown's markers left out -- or "New Prompt".
+    /// A tab's title: the name the person gave it; a text asset opened
+    /// from Assets, its name there; else its first words
+    /// -- tags as their names ("Image 1"), Markdown's markers left out --
+    /// or "New Prompt".
     func promptTabTitle(_ i: Int) -> String {
+        if let n = promptTabName(i) { return n }
+        // A text asset opened from Assets: called as Assets calls it.
+        if promptTabs.indices.contains(i), let src = promptTabs[i].source,
+           let a = assets.first(where: { $0.id == src }) {
+            return a.name
+        }
         let t = Self.tabTitle(i == activePromptTab ? prompt
                               : promptTabs.indices.contains(i)
                                   ? promptTabs[i].words : "")
@@ -510,9 +624,60 @@ extension AppModel {
     }
 
     func promptTabTitleIsEmpty(_ i: Int) -> Bool {
-        Self.tabTitle(i == activePromptTab ? prompt
-                      : promptTabs.indices.contains(i)
-                          ? promptTabs[i].words : "").isEmpty
+        promptTabName(i) == nil
+            && Self.tabTitle(i == activePromptTab ? prompt
+                             : promptTabs.indices.contains(i)
+                                 ? promptTabs[i].words : "").isEmpty
+    }
+
+    // MARK: A prompt's name (DESIGN §10c)
+
+    /// The name the person gave a tab's prompt. Once its prompt is in
+    /// Assets the asset's is the one -- renamed there, undone, it follows
+    /// (a prompt its words name: none); before, the tab keeps it, and the
+    /// prompt captured from it (Start, Keep in Assets) is named so.
+    func promptTabName(_ i: Int) -> String? {
+        guard promptTabs.indices.contains(i) else { return nil }
+        let live = i == activePromptTab
+        return givenName(asset: live ? promptAssetId : promptTabs[i].assetId,
+                         kept: live ? promptName : promptTabs[i].name)
+    }
+
+    /// The box's prompt's (the open tab's), sent with Start.
+    var promptGivenName: String? {
+        givenName(asset: promptAssetId, kept: promptName)
+    }
+
+    private func givenName(asset: String?, kept: String?) -> String? {
+        if let asset, let a = assets.first(where: { $0.id == asset }),
+           a.isPrompt {
+            return a.isNamed ? a.name : nil
+        }
+        return kept.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// A tab named, as typed in its header: its prompt in Assets renamed
+    /// with it (one undoable step); not there yet, the tab keeps the name
+    /// for it. Emptied, the prompt is named by its words again.
+    func renamePromptTab(_ i: Int, _ typed: String) {
+        guard promptTabs.indices.contains(i) else { return }
+        let name = typed.split(whereSeparator: \.isNewline)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        let given = name.isEmpty ? nil : name
+        let live = i == activePromptTab
+        if live { promptName = given }
+        promptTabs[i].name = given
+        guard let id = live ? promptAssetId : promptTabs[i].assetId,
+              let a = assets.first(where: { $0.id == id }),
+              let core, let projectId else { return }
+        // Any other text (a transcript looked at) is named only when a
+        // name is given.
+        guard a.isPrompt || given != nil else { return }
+        let r = core.assetOp(project: projectId, "rename",
+                             ["asset": id, "name": name])
+        if !r.ok { flash(r.message) }
+        reloadAssets()
     }
 
     nonisolated static func tabTitle(_ words: String) -> String {

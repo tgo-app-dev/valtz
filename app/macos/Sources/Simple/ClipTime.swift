@@ -147,6 +147,32 @@ extension AppModel {
         return nil
     }
 
+    /// Where the stage is against the selected layer of the composition
+    /// on it, whatever the layer shows (a clip, a picture, markup): nil
+    /// while it is there -- the playhead (the page shown) in its span --
+    /// else before or after it. Off it, nothing of the layer is seen, so
+    /// the panels that change it wait, greyed, and no key is made out of
+    /// its range (DESIGN §10a): its values would change unseen.
+    var layerOffStage: ClipEdge? {
+        if pagedOnStage && !clipOnStage {
+            guard let pic = stagePicture,
+                  let l = pic.layerStack.first(where: { $0.id == activeLayer })
+            else { return nil }
+            guard let span = pic.pageSpan(of: l) else { return .after }
+            return stagePage < span.lowerBound ? .before
+                : stagePage > span.upperBound ? .after : nil
+        }
+        guard clipOnStage, let c = currentClip, c.isComposition,
+              let k = layerClock else { return nil }
+        let t = Double(videoFrame) / k.fps
+        if t < k.start - 1e-6 { return .before }
+        if t >= k.end - 1e-6 { return .after }
+        return nil
+    }
+
+    /// The panels change the selected layer here: it shows on the stage.
+    var canEditLayerHere: Bool { canAdjust && layerOffStage == nil }
+
     /// The frame of the selected layer's source showing at the playhead,
     /// at its speed: the CLIP's own time, which the panel shows around
     /// the transport.
@@ -190,6 +216,7 @@ extension AppModel {
     /// value, more change the one here -- or make one). A faster clip
     /// takes less of the timeline.
     func setLayerSpeed(_ rate: Double) {
+        guard layerOffStage == nil else { return }
         let r = min(LayerSpeed.range.upperBound,
                     max(LayerSpeed.range.lowerBound, rate))
         var k = layerSpeed.isEmpty ? Keyframes(start: LayerSpeed()) : layerSpeed
@@ -240,6 +267,7 @@ extension AppModel {
     }
 
     private func editSound(_ change: (inout LayerSound) -> Void) {
+        guard layerOffStage == nil else { return }
         var k = layerSound.isEmpty ? Keyframes(start: LayerSound()) : layerSound
         k.edit(at: keyFrame, change)
         layerSound = k

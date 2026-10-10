@@ -18,7 +18,9 @@ vpipe_add_plugin(valtz-vpipe SOURCES
   src/beat-buffer.cc
   src/sink-stage.cc
   src/source-stage.cc
-  src/tap-stage.cc)
+  src/tap-stage.cc
+  src/scene-cut.cc
+  src/summary-stage.cc)
 target_include_directories(valtz-vpipe PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(valtz-vpipe PRIVATE valtz_vpipe_contract

@@ -296,22 +296,11 @@ struct InspectorView: View {
                 }
             }
             if a.isComposition {
-                // What its layer 0 shows, and how that was made.
-                let bg = a.layerStack.first { $0.id.isEmpty }?.source
-                    .flatMap { id in model.assets.first { $0.id == id } }
-                if let bg {
-                    section("Layer 0") {
-                        Text(verbatim: bg.name)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                if let bg, let r = bg.recipe {
-                    recipe(r, timing: bg.timing)
-                }
+                selectedLayer(a)
             } else if let r = a.recipe {
                 recipe(r, timing: a.timing, score: a.score)
             }
+            toldIn(a)
             if !model.adjustments.isIdentity {
                 section("Adjustments") {
                     ForEach(ImageAdjustments.Key.allCases.filter {
@@ -346,6 +335,128 @@ struct InspectorView: View {
         }
     }
 
+    /// The composition's SELECTED layer -- the one the panels and the
+    /// Layers section work on, when it is what the stage works on; else
+    /// its layer 0: what it shows (that asset's kind and size or length),
+    /// where it lies on a timeline, and how what it shows was made.
+    @ViewBuilder
+    private func selectedLayer(_ a: AssetDTO) -> some View {
+        let id = model.stageStack?.id == a.id ? model.activeLayer : ""
+        if let l = a.layerStack.first(where: { $0.id == id })
+            ?? a.layerStack.first(where: { $0.id.isEmpty }) {
+            let src = l.source.flatMap { s in
+                model.assets.first { $0.id == s }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(verbatim: l.title)
+                    .font(.system(size: 11, weight: .semibold))
+                Grid(alignment: .leadingFirstTextBaseline,
+                     horizontalSpacing: 8, verticalSpacing: 4) {
+                    row("Shows") {
+                        Text(verbatim: src?.name
+                             ?? (l.isMarkup ? String(localized: "Markup")
+                                 : String(localized: "Nothing: an empty layer")))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let src {
+                        row("Type") { Text(verbatim: Self.kindLabel(src)) }
+                        if let f = src.isComposition ? src.ownFrame
+                            : src.info.map({ FrameSizeDTO(w: $0.frame.w,
+                                                          h: $0.frame.h) }),
+                           f.w > 0, src.kind != "audio" {
+                            row("Dimensions") {
+                                Text(verbatim: "\(f.w) × \(f.h)")
+                            }
+                        }
+                        if let secs = src.info?.seconds, secs > 0 {
+                            row("Duration") {
+                                Text(verbatim: String(format: "%.2f", secs)
+                                     + " s")
+                            }
+                        }
+                    } else if let mk = l.markup {
+                        row("Objects") {
+                            Text(verbatim: String(mk.objects.count))
+                        }
+                    }
+                    // On a timeline: where it starts, how long it runs.
+                    if a.isTimeline, let r = a.compositionRate {
+                        let span = model.currentClip?.id == a.id
+                            ? model.stackPlayback?.layers
+                                .first { $0.id == l.id } : nil
+                        let start = span.map { r.frame(at: $0.start) }
+                            ?? (l.time?.offset ?? 0)
+                        row("Starts") {
+                            Text(verbatim: r.timecode(start)).monospacedDigit()
+                        }
+                        if let len = span?.length.map({ r.frame(at: $0) })
+                            ?? l.time.flatMap({ $0.duration > 0
+                                ? $0.duration : nil }) {
+                            row("Runs") {
+                                Text(verbatim: r.timecode(len)).monospacedDigit()
+                            }
+                        }
+                    }
+                    if !l.visible {
+                        row("Shown") { Text("Hidden") }
+                    }
+                }
+            }
+            if let src, let r = src.recipe {
+                recipe(r, timing: src.timing, score: src.score)
+            }
+        }
+    }
+
+    /// The TEXT assets told from it -- its summaries (DESIGN §4i) and
+    /// transcripts (§4h) -- each opened in the Prompt Editor by a click.
+    @ViewBuilder
+    private func toldIn(_ a: AssetDTO) -> some View {
+        let told = model.assets.filter { t in
+            t.kind == "text" &&
+                ["summarize-video", "transcribe-audio"]
+                    .contains(t.recipe?.op ?? "") &&
+                (t.recipe?.inputs ?? []).contains {
+                    $0.role == "source" && $0.asset == a.id
+                }
+        }
+        if !told.isEmpty {
+            section("In Words") {
+                ForEach(told) { t in
+                    row(t.recipe?.op == "summarize-video" ? Text("Summary")
+                                                          : Text("Transcript")) {
+                        Button {
+                            model.openTextAsset(t)
+                        } label: {
+                            Text(verbatim: t.name)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        .buttonStyle(.link)
+                        .help("Open it in the Prompt Editor")
+                    }
+                }
+            }
+        }
+    }
+
+    /// What an asset a layer shows is, in a word.
+    private static func kindLabel(_ a: AssetDTO) -> String {
+        if a.isMarkupAsset { return String(localized: "Markup") }
+        if a.isComposition {
+            return a.kind == "audio" ? String(localized: "Composition · sound")
+                : a.isTimeline ? String(localized: "Composition")
+                : String(localized: "Still composition")
+        }
+        return switch a.kind {
+        case "video": String(localized: "Clip")
+        case "audio": String(localized: "Sound")
+        case "text": String(localized: "Text")
+        default: String(localized: "Picture")
+        }
+    }
+
     @ViewBuilder
     private func recipe(_ r: RecipeDTO, timing: TimingDTO?,
                         score: String? = nil) -> some View {
@@ -361,14 +472,18 @@ struct InspectorView: View {
                 case "capture": Text("Capture")
                 case "instance": Text("Placed from an asset")
                 case "project": Text("Project")
+                case "summarize-video": Text("Video summary")
+                case "transcribe-audio": Text("Transcript")
                 default: Text("Generation")
                 }
             }
             // What it was made from, by name: an original, what was
-            // captured or placed.
-            if ["modify", "capture", "instance"].contains(r.op),
+            // captured or placed, the clip or sound told in words.
+            if ["modify", "capture", "instance", "summarize-video",
+                "transcribe-audio"].contains(r.op),
                let from = r.inputs?.first(where: {
-                   $0.role == "base" || $0.role == "own" })?.asset,
+                   $0.role == "base" || $0.role == "own" ||
+                       $0.role == "source" })?.asset,
                let a = model.assets.first(where: { $0.id == from }) {
                 row("From") {
                     Text(verbatim: a.name)
@@ -1011,13 +1126,14 @@ struct LayersSection: View {
     }
 
     /// Above the bottom layer, with room to go.
-    /// Up or down the stack. A picture's own bottom layer (its frame) and
-    /// a clip's own stay at the bottom; in the project's pictures every
-    /// layer moves, layer 0 too.
+    /// Up or down the stack, as the core moves it (move_layer): on a
+    /// frame of its own -- every composition made so, a timeline of
+    /// markups too -- and in a sound's, every layer moves, layer 0 too; a
+    /// stack from before keeps its bottom one (the frame) where it is.
     private func canMove(_ stack: [LayerDTO], up: Bool) -> Bool {
         guard let i = stack.firstIndex(where: { $0.id == model.activeLayer })
         else { return false }
-        let fixed = !(model.stageFramed && model.stageStack?.kind == "image")
+        let fixed = !(model.stageFramed || model.stageStack?.kind == "audio")
         if fixed && i == 0 { return false }
         return up ? i < stack.count - 1 : i > (fixed ? 1 : 0)
     }
@@ -1093,6 +1209,9 @@ private struct LayerFolderRow: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($nameFocused)
                     .onSubmit(commitName)
+                    // Escape: the name as it was (the focus then going
+                    // commits nothing: no longer renaming).
+                    .onExitCommand { renaming = false }
                     .onChange(of: nameFocused) { _, f in
                         if !f { commitName() }
                     }
@@ -1337,6 +1456,9 @@ private struct LayerRow: View {
                     .textFieldStyle(.roundedBorder)
                     .focused($nameFocused)
                     .onSubmit(commitName)
+                    // Escape: the name as it was (the focus then going
+                    // commits nothing: no longer renaming).
+                    .onExitCommand { renaming = false }
                     .onChange(of: nameFocused) { _, f in
                         if !f { commitName() }
                     }
@@ -1347,12 +1469,6 @@ private struct LayerRow: View {
                         .truncationMode(.middle)
                         .foregroundStyle(layer.visible ? .primary
                                                        : .secondary)
-                        .onTapGesture(count: 2) {
-                            name = layer.name.isEmpty ? layer.title
-                                                      : layer.name
-                            renaming = true
-                            nameFocused = true
-                        }
                     if let kind = shows {
                         Text(kind)
                             .font(.system(size: 9))
@@ -1377,16 +1493,32 @@ private struct LayerRow: View {
                   : inSelection ? Color.accentColor.opacity(0.09)
                   : .clear))
         .contentShape(Rectangle())
-        // ⌘- or ⇧-click: in or out of the selection, to merge two.
-        .onTapGesture {
+        // A click selects it at once (⌘ or ⇧: in or out of the selection,
+        // to merge two); a double-click names it. One gesture: a
+        // double-click's on the name beside the row's single held every
+        // click there back 350 ms.
+        .onClick {
             let mods = NSEvent.modifierFlags
             if mods.contains(.command) || mods.contains(.shift) {
                 model.toggleLayerSelection(layer.id)
             } else {
                 model.selectLayer(layer.id)
             }
+        } double: {
+            let mods = NSEvent.modifierFlags
+            guard !mods.contains(.command), !mods.contains(.shift) else {
+                return
+            }
+            name = layer.name.isEmpty ? layer.title : layer.name
+            renaming = true
+            nameFocused = true
         }
         .contextMenu {
+            // A copy right above it: a markup's drawing and objects its
+            // own, anything else shown by both.
+            Button("Duplicate Layer") { model.duplicateLayer(layer.id) }
+                .disabled(layer.isEmpty)
+            Divider()
             Button(model.selectedLayers.count > 1
                    && model.selectedLayers.contains(layer.id)
                    ? "Group Selected Layers" : "Put in a New Folder") {
@@ -1606,5 +1738,53 @@ struct NewProjectButton: View {
                 .padding(14)
                 .frame(width: 260)
             }
+    }
+}
+
+extension View {
+    /// A click acted on AT ONCE, and a second within the double-click
+    /// interval told apart by its time -- in place of a count-2 tap gesture
+    /// beside a single one, which holds every single click back for the
+    /// double-click interval (~350 ms) to tell the two apart. The first
+    /// click of a double-click has done `single` already.
+    func onClick(_ single: @escaping () -> Void,
+                 double: @escaping () -> Void) -> some View {
+        modifier(ClickOrDouble(single: single, double: double))
+    }
+}
+
+private struct ClickOrDouble: ViewModifier {
+    let single: () -> Void
+    let double: () -> Void
+    @State private var last: CFTimeInterval = 0
+    @State private var doubled: CFTimeInterval = 0
+
+    func body(content: Content) -> some View {
+        content
+            .onTapGesture {
+                let now = CACurrentMediaTime()
+                if now - last <= NSEvent.doubleClickInterval {
+                    twice(now)
+                } else {
+                    last = now
+                    single()
+                }
+            }
+            // In a scroll view a tap is AppKit's click: the second click
+            // of a double (its click count 2) is no single tap, and only
+            // a count-2 gesture sees it. Beside the single one, not
+            // before it, so the single is not held back.
+            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                twice(CACurrentMediaTime())
+            })
+    }
+
+    /// The double-click's part, once however it was seen (both gestures
+    /// may see its second click); a third click in the interval is none.
+    private func twice(_ now: CFTimeInterval) {
+        last = now
+        guard now - doubled > NSEvent.doubleClickInterval else { return }
+        doubled = now
+        double()
     }
 }

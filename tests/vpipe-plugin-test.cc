@@ -11,14 +11,22 @@
 #include "engine/vpipe/host-exchange.h"
 #include "engine/vpipe/job-progress.h"
 #include "valtz/engine/engine.h"
+#include "valtz/models/catalog.h"
 #include "valtz-vpipe/exchange.h"
+#include "scene-cut.h"
 
 #include "vpipe/vpipe.h"
+#include "stages/model-catalog.h"
 
+#include <array>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 using namespace valtz;
@@ -582,6 +590,51 @@ TEST(vpipe_plugin, extension_backends_are_checked)
   e->shutdown();
 }
 
+// A download vpipe refuses fails with vpipe's words. A fetch writes no
+// file to look for, and the refusal reaches only the log: MiniMax-H3's,
+// its repo named without saying which of its two models, ended in a
+// millisecond as a download FINISHED -- Capabilities said nothing.
+TEST(vpipe_plugin, a_refused_download_fails_in_words)
+{
+  if (!plugin_present()) {
+    SKIP("valtz-vpipe.so not found");
+  }
+  const auto dir = test::temp_dir("refused-fetch");
+  EngineConfig cfg;
+  cfg.state_dir = dir / "engine";
+  cfg.temp_dir = dir / "tmp";
+  cfg.log_level = "error";
+  auto e = make_vpipe_engine(cfg);
+  REQUIRE(e && e->available());
+  JobSpec spec;
+  spec.id = JobId::make();
+  spec.op = std::string(kOpFetchModel);
+  spec.params = {{"hf_path", "MiniMaxAI/MiniMax-H3"},
+                 {"base_path", (dir / "models").string()}};
+  std::mutex mu;
+  std::condition_variable cv;
+  std::optional<JobEvent> end;
+  REQUIRE_OK(e->submit(spec, [&](const JobEvent& ev) {
+    if (ev.kind == JobEventKind::Finished ||
+        ev.kind == JobEventKind::Failed ||
+        ev.kind == JobEventKind::Cancelled) {
+      std::lock_guard lk(mu);
+      end = ev;
+      cv.notify_all();
+    }
+  }));
+  {
+    std::unique_lock lk(mu);
+    REQUIRE(cv.wait_for(lk, std::chrono::seconds(60),
+                        [&] { return end.has_value(); }));
+  }
+  CHECK(end->kind == JobEventKind::Failed);
+  CHECK(end->text.find("publishes 2 models") != std::string::npos);
+  CHECK(end->text.find('\n') == std::string::npos);
+  CHECK(!fs::exists(dir / "models" / "MiniMaxAI"));
+  e->shutdown();
+}
+
 // valtz-tap (exchange.h): the frames going by are counted -- a [F, C, H,
 // W] beat is F, any other tensor one -- `wait` replies once a count is
 // reached (it waits; the beats do not) or at the end of the stream, and
@@ -707,4 +760,226 @@ TEST(engine_progress, an_upscale_is_its_frames_restored)
     last = e;
   }
   CHECK(at(72, 601).estimate == 1.0);
+}
+
+namespace {
+
+// A planar RGB frame [3, h, w]: a horizontal gradient of `a` into `b`,
+// with a bright square at `x` (what moves in a shot).
+std::vector<std::uint8_t>
+shot_frame(int w, int h, std::array<int, 3> a, std::array<int, 3> b, int x)
+{
+  std::vector<std::uint8_t> f(static_cast<std::size_t>(3) * w * h);
+  const std::size_t plane = static_cast<std::size_t>(w) * h;
+  for (int y = 0; y < h; ++y) {
+    for (int i = 0; i < w; ++i) {
+      const bool square = i >= x && i < x + w / 8 && y >= h / 3 &&
+                          y < h / 3 + h / 6;
+      for (int c = 0; c < 3; ++c) {
+        const int v = square ? 240 : a[c] + (b[c] - a[c]) * i / (w - 1);
+        f[c * plane + static_cast<std::size_t>(y) * w + i] =
+            static_cast<std::uint8_t>(v);
+      }
+    }
+  }
+  return f;
+}
+
+}
+
+// The summary stage's SCENES (valtz-vpipe scene-cut.h): a change of shot
+// is a cut -- even between two shots alike -- and a thing moving within a
+// shot is not; a cut must stand out from what the scene has been.
+TEST(vpipe_plugin, scenes_are_cut_where_the_shot_changes)
+{
+  using plugin::SceneCutter;
+  using plugin::signature;
+  const int W = 160, H = 96;
+  const std::array<int, 3> warm1{90, 50, 30}, warm2{160, 110, 60};
+  const std::array<int, 3> blue1{20, 40, 120}, blue2{60, 120, 200};
+  SceneCutter cut;
+  std::vector<int> at;
+  int n = 0;
+  const auto feed = [&](const std::vector<std::uint8_t>& f) {
+    if (cut.next(signature(f.data(), H, W))) {
+      at.push_back(n);
+    }
+    ++n;
+  };
+  // Shot A: its square crossing the frame.
+  for (int i = 0; i < 6; ++i) {
+    feed(shot_frame(W, H, warm1, warm2, 10 + 15 * i));
+  }
+  // Shot B: another place altogether.
+  for (int i = 0; i < 5; ++i) {
+    feed(shot_frame(W, H, blue1, blue2, 100 - 10 * i));
+  }
+  // Shot C: A's colours, lit otherwise -- a shot like the first.
+  for (int i = 0; i < 5; ++i) {
+    feed(shot_frame(W, H, warm2, warm1, 40));
+  }
+  CHECK(at == (std::vector<int>{6, 11}));
+  CHECK(plugin::distance(signature(shot_frame(W, H, warm1, warm2, 10).data(),
+                                   H, W),
+                         signature(shot_frame(W, H, warm1, warm2, 10).data(),
+                                   H, W)) == 0.0);
+  // Restarted (a scene split for length): measured afresh, no cut.
+  cut.restart();
+  feed(shot_frame(W, H, warm2, warm1, 40));
+  CHECK(at.size() == 2);
+}
+
+namespace {
+
+// The summary stage run on `frames` (each with its time, a second
+// apart): its beats.
+std::vector<Json>
+summarized(TestSession& ts, const char* vlm, int scene_frames,
+           const std::vector<std::vector<std::uint8_t>>& frames, int w,
+           int h)
+{
+  const Json g = {
+    {"id", "summary"},
+    {"stages", Json::array({
+      {{"id", "src"}, {"type", ex::kSourceType},
+       {"iports", Json::array()}, {"config", Json::object()}},
+      {{"id", "sum"}, {"type", ex::kSummaryType},
+       {"iports", Json::array({{{"src", "src"}, {"oport", 0}}})},
+       {"config", {{ex::kSummaryModel, vlm}, {ex::kSummaryEvery, 1.0},
+                   {ex::kSummaryMaxTokens, 96},
+                   {ex::kSummarySceneFrames, scene_frames}}}},
+      {{"id", "sink"}, {"type", ex::kSinkType},
+       {"iports", Json::array({{{"src", "sum"}, {"oport", 0}}})},
+       {"config", {{ex::kSinkPolicy, ex::kSinkPolicyQueue},
+                   {ex::kSinkDepth, 16}}}},
+    })},
+    {"subpipelines", Json::array()},
+  };
+  vpipe::PipelineHandle ph = ts.s->load_pipeline(g.dump());
+  if (!ph || ts.s->launch_pipeline(ph).code != 0) {
+    return {};
+  }
+  Collected got;
+  vp::SinkReader reader(ph.stage("sink"), got.fn());
+  vp::SourceWriter src(ph.stage("src"));
+  Unloader unload{ts, ph};
+  for (std::size_t i = 0; i < frames.size(); ++i) {
+    auto l = src.lease(Tensor::DType::U8, {3, h, w},
+                       {{"pts_us", static_cast<std::uint64_t>(i) * 1000000}});
+    if (!l.ok()) {
+      return {};
+    }
+    std::memcpy(l->data(), frames[i].data(), frames[i].size());
+    l->commit();
+  }
+  if (!src.finish().ok() || ts.s->wait_pipelines(600000).code != 0) {
+    return {};
+  }
+  reader.join();
+  unload.release();
+  ts.s->unload_pipeline(ph);
+  std::vector<Json> out;
+  for (const auto& b : got.beats) {
+    out.push_back(b.meta);
+  }
+  return out;
+}
+
+}
+
+// A clip told scene by scene (DESIGN §4i) by a real vision-language model:
+// two shots of three frames each, a cut between them -- two scenes, each
+// with its span, frames and words, then the whole; one long shot split
+// into scenes of two frames, each from where the last ended. Gated: set
+// VALTZ_TEST_VLM to the model's directory (Qwen3.5 9B's).
+TEST(vpipe_plugin, a_clip_is_told_scene_by_scene)
+{
+  const char* vlm = std::getenv("VALTZ_TEST_VLM");
+  if (!vlm || !*vlm) {
+    SKIP("set VALTZ_TEST_VLM to a vision-language model's directory");
+  }
+  REQUIRE(plugin_present());
+  TestSession ts(test::temp_dir("vpx-summary"));
+  REQUIRE(ts.s);
+  const int W = 320, H = 192;
+  std::vector<std::vector<std::uint8_t>> two;
+  for (int i = 0; i < 6; ++i) {
+    two.push_back(i < 3 ? shot_frame(W, H, {200, 40, 30}, {250, 120, 60},
+                                     20 + 40 * i)
+                        : shot_frame(W, H, {10, 30, 120}, {40, 110, 220},
+                                     200 - 40 * (i - 3)));
+  }
+  const auto beats = summarized(ts, vlm, 24, two, W, H);
+  std::vector<Json> scenes;
+  std::string overall;
+  for (const auto& meta : beats) {
+    if (jget<std::string>(meta, ex::kKind, "") == ex::kSummaryKindScene) {
+      scenes.push_back(meta);
+    } else if (jget<std::string>(meta, ex::kKind, "") ==
+               ex::kSummaryKindOverall) {
+      overall = jget<std::string>(meta, ex::kText, "");
+    }
+  }
+  REQUIRE(scenes.size() == 2);
+  CHECK(jget(scenes[0], ex::kStart, -1.0) == 0.0);
+  CHECK(jget(scenes[0], ex::kEnd, -1.0) == 3.0);
+  CHECK(jget(scenes[0], ex::kFrames, 0) == 3);
+  CHECK(jget(scenes[0], ex::kAtCut, false));
+  CHECK(jget(scenes[1], ex::kStart, -1.0) == 3.0);
+  CHECK(!jget(scenes[1], ex::kAtCut, true));
+  for (const auto& sc : scenes) {
+    CHECK(!jget<std::string>(sc, ex::kText, "").empty());
+  }
+  CHECK(!overall.empty());
+
+  // One shot of six frames, two to a scene: three scenes, none at a cut,
+  // each starting where the last ended (its last frame shown again).
+  std::vector<std::vector<std::uint8_t>> one;
+  for (int i = 0; i < 6; ++i) {
+    one.push_back(shot_frame(W, H, {200, 40, 30}, {250, 120, 60},
+                             20 + 30 * i));
+  }
+  std::vector<Json> parts;
+  for (const auto& meta : summarized(ts, vlm, 2, one, W, H)) {
+    if (jget<std::string>(meta, ex::kKind, "") == ex::kSummaryKindScene) {
+      parts.push_back(meta);
+    }
+  }
+  REQUIRE(parts.size() == 3);
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    CHECK(jget(parts[i], ex::kStart, -1.0) == 2.0 * static_cast<double>(i));
+    CHECK(jget(parts[i], ex::kFrames, 0) == 2);
+    CHECK(!jget(parts[i], ex::kAtCut, true));
+  }
+}
+
+// Every download Valtz offers names ONE of vpipe's catalogue entries, as
+// model-fetch resolves them: a repo vpipe publishes several models from
+// (MiniMax-H3's FL2VA and Ref2VA) is refused without a `fetch_variant`
+// that selects exactly one -- and was, from vpipe cf3f8991 on, for every
+// H3 download from Capabilities, without a word in any test here.
+TEST(vpipe_plugin, every_download_names_one_vpipe_entry)
+{
+  auto cat_r = models::Catalog::builtin();
+  REQUIRE(cat_r.ok());
+  const models::Catalog cat = std::move(*cat_r);
+  int known = 0;
+  for (const auto& m : cat.models()) {
+    if (m.hf_path.empty()) { continue; }
+    const auto cands = vpipe::catalog_all_by_path(m.hf_path);
+    // A repo vpipe does not know is fetched as it is.
+    if (cands.empty()) { continue; }
+    ++known;
+    if (cands.size() == 1 && m.fetch_variant.empty()) { continue; }
+    std::vector<const vpipe::ModelCatalogEntry*> hits;
+    const auto* e =
+        vpipe::catalog_pick_variant(cands, m.fetch_variant, &hits);
+    if (e == nullptr) {
+      std::fprintf(stderr, "  %s: '%s' variant '%s' hits %zu of %zu\n",
+                   m.id.c_str(), m.hf_path.c_str(),
+                   m.fetch_variant.c_str(), hits.size(), cands.size());
+    }
+    CHECK(e != nullptr);
+  }
+  CHECK(known > 10);
 }

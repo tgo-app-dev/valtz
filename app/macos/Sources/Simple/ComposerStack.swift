@@ -66,7 +66,7 @@ struct ComposerStack: View {
     /// The tray's inset from each side of the card: past its corner.
     private let trayInset: CGFloat = 30
     /// The height of a header.
-    private let tabHeight: CGFloat = 56
+    private let tabHeight: CGFloat = 37
     /// Between the two headers.
     private let tabGap: CGFloat = 8
 
@@ -381,6 +381,10 @@ struct ComposerStack: View {
                 if immersive || promptLines > 2 {
                     HStack(spacing: 2) {
                         if !immersive { sizeToggle }
+                        // A locked prompt: a copy of it to change.
+                        if immersive && model.activeTabReadOnly {
+                            duplicateButton
+                        }
                         // A tab only looked at never goes to the box.
                         if !model.activeTabDoNotApply { editorButton }
                         if clearInText { clearButton }
@@ -432,6 +436,24 @@ struct ComposerStack: View {
                                bottomTrailingRadius: radius,
                                topTrailingRadius: immersive ? 0 : radius,
                                style: .continuous)
+    }
+
+    /// A locked prompt -- something was made from it -- copied into a new
+    /// tab, to edit.
+    private var duplicateButton: some View {
+        Button {
+            withAnimation(AppModel.motion) {
+                model.duplicatePromptTab(model.activePromptTab)
+            }
+        } label: {
+            Image(systemName: "plus.square.on.square")
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help("Duplicate and Edit: something was made from this prompt, so it stays as it is -- its words in a new tab, to change")
+        .accessibilityLabel(Text("Duplicate and Edit"))
     }
 
     /// Into the Prompt Editor -- the card grown to the window's height --
@@ -1168,6 +1190,7 @@ private struct AdjustPanel: View {
                     .disabled(model.keyedStage
                               ? model.clipAdjustKeys
                                   == Keyframes(start: ImageAdjustments())
+                                  || model.layerOffStage != nil
                               : model.adjustments.isIdentity)
             }
             HStack(alignment: .top, spacing: 28) {
@@ -1180,7 +1203,9 @@ private struct AdjustPanel: View {
                     .focusSection()
                 }
             }
-            .disabled(!model.canAdjust)
+            // Greyed while the playhead is off the selected layer: its
+            // values would change unseen.
+            .disabled(!model.canEditLayerHere)
         }
         .controlSize(.small)
     }

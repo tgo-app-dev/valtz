@@ -387,6 +387,30 @@ extension AppModel {
             .availability == "ready"
     }
 
+    /// What a clip shows, told scene by scene by the helper and then
+    /// whole, into a text asset of the project's beside it (core
+    /// Controller::summarize_video, DESIGN §4i): a task, its asset in the
+    /// list from the request.
+    func summarize(_ a: AssetDTO) {
+        guard let core, let projectId else { return }
+        let r = core.assetOp(project: projectId, "summarize",
+                             ["asset": a.id])
+        guard r.ok else {
+            flash(r.message)
+            return
+        }
+        reloadAssets()
+        reloadTasks()
+        flash(String(localized: "Summarizing \(a.name): the summary goes to Assets."))
+    }
+
+    /// A helper that watches video is here (Settings › Capabilities ›
+    /// Agentic helpers).
+    var summarizeReady: Bool {
+        capabilities.first { $0.capability == "video-summary" }?
+            .availability == "ready"
+    }
+
     /// Files dropped on the stage: imported, then each instantiated as an
     /// asset is (a picture, a clip or a sound; the first that is one).
     func dropFilesOnStage(_ urls: [URL]) -> Bool {
@@ -522,7 +546,7 @@ struct AssetsSection: View {
                 }
                 Spacer()
                 if !stale.isEmpty {
-                    Button("Remove Stale (\(stale.count))") {
+                    Button("Remove Unused (\(stale.count))") {
                         model.removeStaleAssets()
                     }
                     .buttonStyle(.borderless)
@@ -530,8 +554,10 @@ struct AssetsSection: View {
                 }
             }
             .padding(.horizontal, 12)
-            if all.isEmpty && model.assetFolders.isEmpty
-                && model.tasks.isEmpty {
+            // The project's own composition counts: a timeline of markups
+            // alone (its markups no assets of their own) is listed.
+            if all.isEmpty && model.projectViews.isEmpty
+                && model.assetFolders.isEmpty && model.tasks.isEmpty {
                 ContentUnavailableView(
                     "No assets yet", systemImage: "photo.stack",
                     description: Text("Pictures, clips and sounds put into Valtz, and everything made here, are listed here."))
@@ -598,7 +624,7 @@ struct AssetsSection: View {
                 }
             }
             if notes {
-                Text("Set an asset active to edit it. Drag it into the prompt to use it, onto the stage to place its layers in what is there, onto A or B under the stage to compare it, or onto a folder. A generation nothing uses any more is marked stale; it stays until you remove it.")
+                Text("Set an asset active to edit it. Drag it into the prompt to use it, onto the stage to place its layers in what is there, onto A or B under the stage to compare it, or onto a folder. A generation nothing uses any more is marked unused; it stays until you remove it.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 14)
@@ -831,7 +857,7 @@ private struct AssetRow: View {
                             .help("On the stage: every panel works on it")
                     }
                     if stale {
-                        Text("Stale")
+                        Text("Unused")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.orange)
                             .padding(.horizontal, 4)
@@ -990,6 +1016,15 @@ private struct AssetRow: View {
                               ? "Its speech line by line, and the sounds heard, into a text asset"
                               : "Download Qwen3-ASR and Silero VAD in Settings › Capabilities › Listening to transcribe")
                 }
+                // What it shows, scene by scene and whole: a text asset of
+                // it (DESIGN §4i).
+                if a.kind == "video" {
+                    Button("Summarize Video") { model.summarize(a) }
+                        .disabled(!model.summarizeReady)
+                        .help(model.summarizeReady
+                              ? "What it shows, scene by scene and as a whole, into a text asset"
+                              : "Download Qwen3.5 9B in Settings › Capabilities › Agentic helpers to summarize")
+                }
                 if a.kind == "image" {
                     Divider()
                     Button("Compare as A") { model.compareAsset(a, in: .a) }
@@ -1121,14 +1156,18 @@ private struct AssetRow: View {
     }
 
     /// A click: text into the Prompt Editor, beside the prompt, to look
-    /// at; anything else viewed on the stage (the editor going).
+    /// at; anything else viewed on the stage -- the editor going, unless
+    /// something is being written in it: then only its small stage shows
+    /// it.
     private func clicked() {
         let a = asset
         if a.kind == "text" {
             model.openTextAsset(a)
             return
         }
-        model.retreatFromEditor()
+        if !(model.promptImmersive && model.editorEdited) {
+            model.retreatFromEditor()
+        }
         if let t = task {
             model.watchTask(t.job)
         } else {
@@ -1137,7 +1176,9 @@ private struct AssetRow: View {
     }
 
     /// A double-click's second click: a prompt into the box, a
-    /// composition made active; a flat asset stays viewed.
+    /// composition made active; a flat asset stays viewed. Another kind
+    /// than text is to be worked on: the Prompt Editor goes, even while
+    /// something is being written in it.
     private func doubleClicked() {
         let a = asset
         // Another kind than text: the Prompt Editor goes.
@@ -1197,6 +1238,7 @@ private struct AssetRow: View {
             String(localized: "Generated \(made)")
         case "edit-image": String(localized: "Edited by a model \(made)")
         case "transcribe-audio": String(localized: "Transcribed \(made)")
+        case "summarize-video": String(localized: "Summarized \(made)")
         default:
             a.isPrompt ? promptSubtitle
                 : a.kind == "audio" ? String(localized: "Sound")

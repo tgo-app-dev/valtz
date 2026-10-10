@@ -46,6 +46,7 @@ set(VALTZ_CORE_SOURCES
   src/assist/assistant.cc
   src/assist/rewrite-prompts.cc
   src/assist/transcript.cc
+  src/assist/video-summary.cc
   src/ext/extension.cc
   src/fleet/fleet-config.cc
   src/fleet/fleet.mm

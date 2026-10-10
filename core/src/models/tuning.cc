@@ -328,8 +328,10 @@ offers(const ModelEntry& m, const TuningContext& ctx,
   const bool sound = m.role == "audio";
   std::vector<Offer> out;
 
-  // Speech (MOSS-TTS) samples a token a frame: no steps to take.
-  if (!jget(vp, "speech", Json()).is_object()) {
+  // Speech (MOSS-TTS) samples a token a frame: no steps to take; nor
+  // does a checkpoint whose schedule is its own (`steps_fixed`).
+  if (!jget(vp, "speech", Json()).is_object() &&
+      !jget(vp, "steps_fixed", false)) {
     Offer o{"steps", Kind::Int, 1, 100, 1};
     o.preset = turbo_on ? steps_on : steps_off;
     out.push_back(std::move(o));
@@ -362,6 +364,24 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     }
     o.excludes = Json::array({"hyperflow", "vdn", "motion_cache"});
     out.push_back(std::move(o));
+    // ...or its adapter ALONE, as an ordinary few-step LoRA: three steps
+    // over the whole clip, no soundtrack pass, no chunks, no cache
+    // (vpipe's `taomate: off`) -- at the shifts TaoMate's own schedule
+    // runs at (`lora_only.fixes`), not the model's defaults. Found to
+    // look right on FL2VA; vpipe keeps the mode for comparison.
+    if (const Json lo = jget(tm, "lora_only", Json()); lo.is_object()) {
+      Offer l{"taomate_lora", Kind::Bool};
+      l.available = ctx.taomate_installed;
+      l.why = l.available ? "" : "not-installed";
+      l.preset = false;
+      l.needs = "taomate";
+      l.fixes = {{"steps", jget(lo, "steps", 3)}};
+      const Json lfx = jget(lo, "fixes", Json::object());
+      for (auto it = lfx.begin(); it != lfx.end(); ++it) {
+        l.fixes[it.key()] = it.value();
+      }
+      out.push_back(std::move(l));
+    }
   }
   const bool vdn_block = jget(vp, "vdn", Json()).is_object();
   if (vdn_block) {
@@ -541,7 +561,7 @@ offers(const ModelEntry& m, const TuningContext& ctx,
   for (auto& o : out) {
     // (TaoMate's preset is decided above, against the memory it needs.)
     if (o.kind == Kind::List || o.key == "steps" || o.key == "taomate" ||
-        !table.contains(o.key)) {
+        o.key == "taomate_lora" || !table.contains(o.key)) {
       continue;
     }
     if (Json v = coerce(o, table[o.key]); !v.is_null()) {
@@ -752,6 +772,14 @@ preset_steps(const ModelEntry& m, std::string_view preference, bool edit,
 {
   const Json vp = vpipe_block(m);
   const std::string p(preference);
+  // A checkpoint whose schedule is its own (`steps_fixed`) runs its own
+  // count whatever is preferred: Favor moves its arithmetic, not steps.
+  if (jget(vp, "steps_fixed", false)) {
+    const Json d = jget(vp, "defaults", Json::object());
+    return jget(edit ? jget(jget(vp, "edit", Json::object()), "defaults", d)
+                     : d,
+                "steps", 8);
+  }
   // The preset's own count, without its adapter.
   if (!turbo) {
     if (const int n = jget(preset_table(vp, preference), "steps", 0);

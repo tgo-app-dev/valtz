@@ -15,9 +15,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace valtz {
 
@@ -69,6 +71,9 @@ std::string fit_columns(std::string_view s, int cols, bool middle = false);
 
 // Standard base64 (RFC 4648, padded): how bytes travel inside JSON.
 std::string base64(std::span<const std::uint8_t> bytes);
+// Back to bytes (padding optional, whitespace skipped); nullopt for
+// anything else.
+std::optional<std::vector<std::uint8_t>> unbase64(std::string_view s);
 
 }
 

@@ -82,6 +82,7 @@ struct CapabilityStatus: Decodable, Sendable, Identifiable {
         case "alpha-output": String(localized: "Transparent output")
         case "audio-output": String(localized: "Video with audio")
         case "audio-transcribe": String(localized: "Transcribe audio")
+        case "video-summary": String(localized: "Video summary")
         case "text-to-audio": String(localized: "Text to audio")
         case "text-to-speech": String(localized: "Text to speech")
         default: english ?? capability.replacingOccurrences(of: "-", with: " ")
@@ -634,6 +635,9 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
 
     /// A captured prompt (core Controller::is_prompt).
     var isPrompt: Bool { kind == "text" && (tags ?? []).contains("prompt") }
+    /// A prompt NAMED by the person (core rename_asset, a request's
+    /// prompt_name): its name kept as its words change.
+    var isNamed: Bool { isPrompt && (tags ?? []).contains("named") }
 
     /// The prompt it was made from (its recipe's input "prompt").
     var promptInput: String? {
@@ -950,6 +954,8 @@ struct TuningOption: Identifiable, Equatable, Sendable {
     let step: Double
     let excludes: [String]    // turned off while it is on
     let fixedSteps: Int?      // the steps while it is on (HyperFlow)
+    // Every value it sets while it is on (TaoMate's steps and shifts).
+    let fixes: [String: Double]
     let needs: String?        // the option it refines (Sol's threshold)
     // The LoRA list's: how many run at once (vpipe's slots), the catalog
     // Turbo LoRA's file ("" when not installed) and the names its entries
@@ -979,6 +985,9 @@ struct TuningOption: Identifiable, Equatable, Sendable {
         step = j["step"] as? Double ?? 1
         excludes = j["excludes"] as? [String] ?? []
         fixedSteps = (j["fixes"] as? [String: Any])?["steps"] as? Int
+        fixes = ((j["fixes"] as? [String: Any]) ?? [:]).compactMapValues {
+            ($0 as? NSNumber)?.doubleValue
+        }
         needs = j["needs"] as? String
         slots = j["slots"] as? Int ?? 2
         turbo = j["turbo"] as? String ?? ""

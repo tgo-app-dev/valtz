@@ -205,10 +205,11 @@ public:
   std::string upscale_layer(const std::string& request_json);
   // A PROMPT as an asset (Controller::capture_prompt; DESIGN §10c):
   // {"project", "prompt", "inline"?: [ids], "row"?: [ids],
-  //  "prompt_asset"?} -> {"ok", "asset"}; and {"project", "asset",
-  //  "text"} -> {"ok"}: its words changed in place, refused once
-  //  something has been made from it. Every generate_* request takes
-  //  "row" (the reference row, in order) and "prompt_asset" too;
+  //  "prompt_asset"?, "prompt_name"?: the person's name for it} ->
+  //  {"ok", "asset"}; and {"project", "asset", "text"} -> {"ok"}: its
+  //  words changed in place, refused once something has been made from
+  //  it. Every generate_* request takes "row" (the reference row, in
+  //  order), "prompt_asset" and "prompt_name" too;
   //  assets_json lists a prompt's "text" and "uses".
   std::string capture_prompt(const std::string& request_json);
   std::string set_prompt_text(const std::string& request_json);

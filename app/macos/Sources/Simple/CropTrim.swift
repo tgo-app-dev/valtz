@@ -372,6 +372,7 @@ struct CropPanel: View {
                         .labelsHidden()
                     Spacer()
                 }
+                .disabled(off)
             }
             header(.place, "Crop and zoom",
                    bypass: "Hold to see the picture without its crop and zoom",
@@ -392,6 +393,7 @@ struct CropPanel: View {
             }
             .searchMark(model.searchHits.contains(SettingsRow.cropZoom))
             .padding(.leading, Self.indent)
+            .disabled(off)
             if model.canUpscaleLayer || model.upscaleJob != nil {
                 upscaleRow
                     .padding(.leading, Self.indent)
@@ -412,10 +414,15 @@ struct CropPanel: View {
             }
             .searchMark(model.searchHits.contains(SettingsRow.cropRotate))
             .padding(.leading, Self.indent)
+            .disabled(off)
         }
         .controlSize(.small)
         .disabled(!model.canAdjust)
     }
+
+    /// The playhead is off the selected layer: what changes it waits,
+    /// greyed (a running upscale's Stop does not).
+    private var off: Bool { model.layerOffStage != nil }
 
     /// "Offset  X [ ] ◉  Y [ ] ◉": where the picture's centre is, in frame
     /// widths and heights.
@@ -447,8 +454,8 @@ struct CropPanel: View {
                     .contentTransition(.symbolEffect(.replace))
             }
             .buttonStyle(.borderless)
-            .foregroundStyle(model.cropZoomLocked ? Color.primary
-                                                  : Color.secondary)
+            .foregroundStyle(model.cropZoomLocked && model.canEditLayerHere
+                             ? Color.primary : Color.secondary)
             .help(model.cropZoomLocked
                   ? "X and Y zoom together, keeping their ratio: click to zoom them apart"
                   : "X and Y zoom apart: click to zoom them together")
@@ -497,6 +504,7 @@ struct CropPanel: View {
                 } label: {
                     Label("Render Upscaled", systemImage: "sparkles.rectangle.stack")
                 }
+                .disabled(off)
                 .help("Render it at the size it is shown, with the upscaler: sharper than scaling it up")
                 if let t = model.upscaleTarget {
                     Text(verbatim: "\(t.width) × \(t.height)")
@@ -523,7 +531,7 @@ struct CropPanel: View {
                 ProgressView().controlSize(.small)
             }
             Button("Flatten First", action: model.flattenLayerForUpscale)
-                .disabled(model.flatteningLayer)
+                .disabled(model.flatteningLayer || off)
                 .help("Make a flat copy of what the layer shows -- one picture or clip, as it is drawn -- and show it in its place; then Render Upscaled")
         }
     }
@@ -543,7 +551,7 @@ struct CropPanel: View {
             Spacer()
             BypassButton(model: model, part: part, help: bypass)
             Button("Reset", action: reset)
-                .disabled(isReset)
+                .disabled(isReset || off)
         }
     }
 
@@ -694,7 +702,7 @@ struct TrimPanel: View {
                     }
                     Spacer()
                     Button("Reset", action: model.resetTrim)
-                        .disabled(model.trim.isIdentity)
+                        .disabled(model.trim.isIdentity || off)
                 }
             }
             // The marks at the row's ends; short of room, under it.
@@ -717,11 +725,14 @@ struct TrimPanel: View {
                 }
             }
             if model.layerIsTimed {
-                SpeedRow(model: model)
-                if model.layerHasSound {
-                    PitchRow(model: model)
-                    VolumeRow(model: model)
+                Group {
+                    SpeedRow(model: model)
+                    if model.layerHasSound {
+                        PitchRow(model: model)
+                        VolumeRow(model: model)
+                    }
                 }
+                .disabled(off)
             }
             start(rate: rate)
         }
@@ -729,17 +740,24 @@ struct TrimPanel: View {
         .disabled(model.isGenerating)
     }
 
+    /// The playhead is off the selected layer: its fields wait, greyed --
+    /// keyed values would be keyed where it does not show. The transport
+    /// and the buttons that go to it, or bring it to the playhead, stay.
+    private var off: Bool { model.layerOffStage != nil }
+
     /// Where the player is in the clip itself -- or that it is not in it.
     @ViewBuilder
     private var clipTime: some View {
         let r = model.trimRate
         HStack(spacing: 6) {
-            if let edge = model.clipEdge {
+            if let edge = model.layerOffStage {
                 ZigzagStrip(teethOnLeft: edge == .after, tooth: 6)
                     .fill(Color.secondary)
                     .frame(width: 7, height: 16)
-                Text(edge == .after ? "After the clip's end"
-                                    : "Before the clip's start")
+                Text(!model.layerIsTimed
+                     ? KeyframeBar.offText(edge, paged: false)
+                     : edge == .after ? "After the clip's end"
+                                      : "Before the clip's start")
                     .font(.title3)
                     .foregroundStyle(.secondary)
             } else {
@@ -770,6 +788,7 @@ struct TrimPanel: View {
                 .foregroundStyle(.secondary)
             StartTimeField(model: model,
                            shown: rate.timecode(model.trimOffset))
+                .disabled(off)
             TransportButton(symbol: "arrow.right.to.line.compact",
                             help: "Start here: where the player is on the timeline",
                             on: model.trimOffset == model.videoFrame) {
@@ -843,9 +862,10 @@ struct TrimPanel: View {
             .disabled(i == nil)
             TransportButton(symbol: "i.square", help: "Mark In",
                             on: i != nil && i == model.sourceFrameAtPlayhead
-                                && model.clipEdge == nil) {
+                                && !off) {
                 model.setMark(in: true)
             }
+            .disabled(off)
             .searchMark(model.searchHits.contains(SettingsRow.markIn))
         }
     }
@@ -856,9 +876,10 @@ struct TrimPanel: View {
         return HStack(spacing: 4) {
             TransportButton(symbol: "o.square", help: "Mark Out",
                             on: o != nil && o == model.sourceFrameAtPlayhead
-                                && model.clipEdge == nil) {
+                                && !off) {
                 model.setMark(in: false)
             }
+            .disabled(off)
             .searchMark(model.searchHits.contains(SettingsRow.markOut))
             TransportButton(symbol: "arrow.right.to.line",
                             help: "Go to the mark-out", on: false) {
@@ -879,6 +900,7 @@ struct TrimPanel: View {
         if rate.isMilliseconds {
             MarkTimeField(model: model, isIn: isIn,
                           shown: mark.map { rate.timecode($0) } ?? "")
+                .disabled(off)
         } else if let mark {
             VStack(alignment: isIn ? .leading : .trailing, spacing: 0) {
                 Text(verbatim: rate.timecode(mark))

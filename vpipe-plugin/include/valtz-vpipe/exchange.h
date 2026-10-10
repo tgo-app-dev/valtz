@@ -18,6 +18,11 @@
 //                 Its bytes stay as replied for as long as any owner
 //                 lives: after close, after stop, after unload.
 //
+// Beside them, valtz-tap (frames counted as they go by, so a host feeds
+// by what has come out) and valtz-video-summary (a clip watched by a
+// vision-language model, scene by scene) -- stages of Valtz's own that
+// need nothing vpipe does not export.
+//
 // Both sides compile this header -- the plugin declaring and serving the
 // commands, Valtz's engine sending them -- so a renamed key is a compile
 // error on both sides instead of a silent default on one. It includes
@@ -83,6 +88,58 @@ inline constexpr char kFrames[] = "frames";
 inline constexpr char kPassed[] = "passed";   // uint: frames gone by
 inline constexpr char kCut[] = "cut";         // uint: frames dropped
 // (`stats`, as the sink's: {passed, cut, eos}.)
+
+// ---- valtz-video-summary ---------------------------------------------------
+// A clip SUMMARIZED by a vision-language model (DESIGN §4i), scene by
+// scene. Its frames come in as Valtz decodes them -- planar 8-bit RGB
+// [3, h, w], sparse and small, each with its time in the clip (sideband
+// `pts_us`, vpipe's own key). They are cut into SCENES where the picture
+// changes (src/scene-cut.h) or a scene runs `scene_frames` long; each
+// scene's frames go through the model as one video, and what it says
+// leaves as a beat. At the end of the stream, the clip in a paragraph,
+// written from the scenes' words. Port 1 (optional): a sampler-select's
+// spec; unwired, greedy.
+inline constexpr char kSummaryType[] = "valtz-video-summary";
+// Config: the model (as text-chat takes it: its directory, a drafter
+// shipped apart, a DFlash drafter and its bits -- the same as the helper's
+// chat, so a model kept warm by one is handed to the other), how long it
+// stays loaded after (s), its buffers wired as they load.
+inline constexpr char kSummaryModel[] = "hf_dir";
+inline constexpr char kSummaryMtpModel[] = "mtp_model";
+inline constexpr char kSummaryDraftModel[] = "draft_model";
+inline constexpr char kSummaryDraftBits[] = "draft_bits";
+inline constexpr char kSummaryKeepLoaded[] = "keep_loaded";
+inline constexpr char kSummaryWireWeights[] = "wire_weights";
+// The K/V pages, as the chat sizes them (the cache key: shared only
+// alike).
+inline constexpr char kSummaryPageTokens[] = "page_tokens";
+inline constexpr char kSummaryMaxPages[] = "max_pages";
+// What the model is told. `scene_prompt` follows a scene's frames,
+// `overall_prompt` the scenes' words; in them {start} {end} (m:ss),
+// {every} (seconds between frames), {language} and -- the overall's --
+// {scenes} (a line each: "[m:ss-m:ss] words") are filled in.
+inline constexpr char kSummaryScenePrompt[] = "scene_prompt";
+inline constexpr char kSummaryOverallPrompt[] = "overall_prompt";
+inline constexpr char kSummaryLanguage[] = "language";  // "English", ...
+inline constexpr char kSummaryEvery[] = "every";        // s between frames
+// A scene's frames at most (a longer one goes on in the next, its last
+// frame shown again first) and at least (but at the end), and the
+// distance that may cut (scene-cut.h).
+inline constexpr char kSummarySceneFrames[] = "scene_frames";
+inline constexpr char kSummaryMinFrames[] = "min_frames";
+inline constexpr char kSummaryCutAt[] = "cut_threshold";
+inline constexpr char kSummaryMaxTokens[] = "max_new_tokens";
+inline constexpr char kSummaryOverall[] = "overall";    // bool
+// Out: a data beat a scene, {kind: "scene", index, start, end (s), frames,
+// at_cut (it ended where the picture changed), text}; then, for a clip of
+// two scenes or more, one {kind: "overall", text}.
+inline constexpr char kSummaryKindScene[] = "scene";
+inline constexpr char kSummaryKindOverall[] = "overall";
+inline constexpr char kIndex[] = "index";
+inline constexpr char kStart[] = "start";
+inline constexpr char kEnd[] = "end";
+inline constexpr char kAtCut[] = "at_cut";
+inline constexpr char kText[] = "text";
 
 // ---- valtz-source ----------------------------------------------------------
 

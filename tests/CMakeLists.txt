@@ -21,8 +21,12 @@ add_executable(valtz_test
   i18n-test.cc)
 if(VALTZ_HAVE_VPIPE)
   # The valtz-vpipe plugin in a real vpipe session (no models needed).
+  # The summary stage's scene cuts are plain C++: tested here as well.
   target_sources(valtz_test PRIVATE vpipe-plugin-test.cc
-    graph-builder-test.cc)
+    graph-builder-test.cc
+    "${PROJECT_SOURCE_DIR}/vpipe-plugin/src/scene-cut.cc")
+  target_include_directories(valtz_test PRIVATE
+    "${PROJECT_SOURCE_DIR}/vpipe-plugin/src")
   target_link_libraries(valtz_test PRIVATE valtz_vpipe_contract)
 endif()
 target_link_libraries(valtz_test PRIVATE valtz::core

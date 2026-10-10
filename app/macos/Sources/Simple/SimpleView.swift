@@ -176,10 +176,13 @@ struct SimpleView: View {
         if room >= 72 {
             let aspect = max(0.2, model.stage.layoutAspect)
             let w = min(room, (size.height * 0.45) * aspect)
+            // Its own transport under the picture, when it plays or has
+            // pages: too small for a player's over it.
+            let bar = model.stageHasTransport ? Self.smallBar : 0
             Group {
                 if model.stageVisible {
                     Color.clear
-                        .frame(width: w, height: w / aspect)
+                        .frame(width: w, height: w / aspect + bar)
                         .anchorPreference(key: StageSlotKey.self,
                                           value: .bounds) { $0 }
                 } else if model.isGenerating {
@@ -188,10 +191,18 @@ struct SimpleView: View {
                         .transition(.opacity)
                 }
             }
-            .padding(.leading, 16)
-            .padding(.top, 16)
+            .padding(.leading, Self.smallInset)
+            // As far under the editor's toolbar as from the window's left
+            // edge -- measured, so it never lies over the toolbar.
+            .padding(.top, Self.smallInset
+                     + max(0, model.editorToolbarBottom - area.minY))
         }
     }
+
+    /// The small stage's margin, left and top.
+    static let smallInset: CGFloat = 16
+    /// Its transport's row, under the picture.
+    static let smallBar: CGFloat = 30
 }
 
 /// Where the stage goes: the slot above the prompt, or the editor's top
@@ -201,6 +212,56 @@ private struct StageSlotKey: PreferenceKey {
     static func reduce(value: inout Anchor<CGRect>?,
                        nextValue: () -> Anchor<CGRect>?) {
         value = nextValue() ?? value
+    }
+}
+
+/// The Prompt Editor's small stage's transport, under its picture: a
+/// clip, a timeline or a sound { |<, play / pause, >| } (Space too); a
+/// still with pages { ‹, › }.
+private struct SmallTransport: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if model.clipOnStage {
+                let playing = model.videoRate != 0
+                button("backward.end.fill", "Go to the start") {
+                    model.seekStage(end: false)
+                }
+                button(playing ? "pause.fill" : "play.fill",
+                       playing ? "Pause (Space)" : "Play (Space)") {
+                    model.playVideo(rate: playing ? 0 : 1)
+                }
+                button("forward.end.fill", "Go to the end") {
+                    model.seekStage(end: true)
+                }
+            } else {
+                button("chevron.backward", "Previous page") {
+                    model.goToPage(model.stagePage - 1)
+                }
+                .disabled(model.stagePage <= 0)
+                button("chevron.forward", "Next page") {
+                    model.goToPage(model.stagePage + 1)
+                }
+                .disabled(model.stagePage >= model.stagePages - 1)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
+    }
+
+    private func button(_ symbol: String, _ help: LocalizedStringKey,
+                        action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 28, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help(help)
+        .accessibilityLabel(Text(help))
     }
 }
 
@@ -309,6 +370,11 @@ private struct ResultStage: View {
                     .frame(width: size.width, height: size.height)
                     .position(x: geo.size.width / 2, y: geo.size.height / 2)
             }
+            if small && model.stageHasTransport {
+                SmallTransport(model: model)
+                    .frame(height: SimpleView.smallBar)
+                    .transition(.opacity)
+            }
             if !small {
             Group {
             if model.stage.video != nil && model.stage.clip == nil {
@@ -364,6 +430,10 @@ private struct ResultStage: View {
                                 ? model.stageClipLook : nil,
                             stack: model.stackPlayback,
                             artwork: model.stageIsAudio ? model.stage.a : nil,
+                            // The timeline's transport is the fuller one:
+                            // no controls over the picture while it is
+                            // open; the small stage has its own under it.
+                            controls: !model.timelineOpen && !small,
                             core: model.core,
                             onFrame: { model.videoFrameChanged($0) },
                             onRate: { model.videoRate = $0 })

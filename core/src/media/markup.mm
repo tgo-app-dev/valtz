@@ -408,9 +408,18 @@ paint_stroke(const fs::path& raster, PixelSize canvas, const Stroke& s,
         CGContextFillEllipseInRect(cov, CGRectMake(x - r, y - r, 2 * r,
                                                    2 * r));
       } else {
+        // Clipped to the dab's own square: unclipped, Core Graphics
+        // evaluates the shading over the whole canvas for every dab
+        // (W8_shade_radial), though nothing is drawn past its outer
+        // circle -- 3.6 s for a 600-point stroke on a 1024 x 1024
+        // canvas, growing with the stroke. The same pixels either way.
+        CGContextSaveGState(cov);
+        CGContextClipToRect(cov, CGRectMake(x - r - 1, y - r - 1,
+                                            2 * r + 2, 2 * r + 2));
         CGContextDrawRadialGradient(cov, fade, CGPointMake(x, y), r0,
                                     CGPointMake(x, y), r,
                                     kCGGradientDrawsBeforeStartLocation);
+        CGContextRestoreGState(cov);
       }
     };
     const double step = std::max(0.5, r * 0.15);
@@ -446,6 +455,35 @@ paint_stroke(const fs::path& raster, PixelSize canvas, const Stroke& s,
     CGContextRestoreGState(ctx);
     CGImageRelease(mask);
     Status st = write_png(ctx, out);
+    CGContextRelease(ctx);
+    return st;
+  }
+}
+
+Status
+paste_drawing(const fs::path& raster, PixelSize canvas,
+              const fs::path& drawing, double dx, double dy,
+              const fs::path& out)
+{
+  if (canvas.width <= 0 || canvas.height <= 0) {
+    return make_error(Code::InvalidArgument, "the canvas has no size");
+  }
+  @autoreleasepool {
+    CGContextRef ctx = rgba_context(canvas);
+    if (!ctx) {
+      return make_error(Code::Internal, "cannot make the markup canvas");
+    }
+    Status st = draw_raster(ctx, canvas, raster);
+    if (st.ok()) {
+      // Canvas pixels are y-down; the context's y is up.
+      CGContextSaveGState(ctx);
+      CGContextTranslateCTM(ctx, dx, -dy);
+      st = draw_raster(ctx, canvas, drawing);
+      CGContextRestoreGState(ctx);
+    }
+    if (st.ok()) {
+      st = write_png(ctx, out);
+    }
     CGContextRelease(ctx);
     return st;
   }

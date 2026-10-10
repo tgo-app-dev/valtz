@@ -114,6 +114,10 @@ final class CoreService: @unchecked Sendable {
     func setAssistantDrafter(_ kind: String, bits: Int) -> CoreReply {
         send(core.choose_assistant, ["drafter": kind, "drafter_bits": bits])
     }
+    /// A video summary's seconds a frame; 0: Auto.
+    func setVideoEvery(_ seconds: Double) -> CoreReply {
+        send(core.choose_assistant, ["video_every": seconds])
+    }
     /// The Log view's rows after `seq` (any thread):
     /// {"rows", "next", "first"}.
     func logSinceJSON(_ seq: UInt64, max: Int = 4096) -> Data {

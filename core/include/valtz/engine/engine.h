@@ -84,6 +84,13 @@ inline constexpr std::string_view kOpChat = "chat";
 // A sound -- a clip's -- transcribed: its speech and the sound events
 // heard (DESIGN §4h), a summary written as a text file.
 inline constexpr std::string_view kOpTranscribeAudio = "transcribe-audio";
+// A clip SUMMARIZED by a vision-language model (DESIGN §4i): input
+// "source", read a frame every `every` seconds within `max_width` x
+// `max_height`, cut into scenes, each told in a few sentences, the whole
+// in a paragraph -- written as a text file (Markdown). The model is the
+// helper's, loaded as its chat loads it (`mtp_model`, `draft_model`,
+// `keep_loaded`, `sampling`), writing in `language`.
+inline constexpr std::string_view kOpSummarizeVideo = "summarize-video";
 inline constexpr std::string_view kOpFetchModel = "fetch-model";
 // One input (role "source") written again in another format: a still as
 // a 16-bit PNG / TIFF, OpenEXR, or 8-bit; a movie as ProRes 4444 (with

@@ -210,10 +210,12 @@ TEST(models, auto_order_is_catalog_data)
   auto c = Catalog::builtin();
   REQUIRE_OK(c);
   CHECK((c->auto_order("image", "generate") ==
-         std::vector<std::string>{"krea2-turbo", "qwen-image-2.1",
-                                  "z-image-turbo", "flux2-klein-9b"}));
+         std::vector<std::string>{"krea2-turbo", "qwen-image-2.1-turbo",
+                                  "qwen-image-2.1", "z-image-turbo",
+                                  "flux2-klein-9b"}));
   CHECK((c->auto_order("image", "edit") ==
-         std::vector<std::string>{"qwen-image-2.1", "flux2-klein-9b"}));
+         std::vector<std::string>{"qwen-image-2.1", "qwen-image-2.1-turbo",
+                                  "flux2-klein-9b"}));
   CHECK((c->auto_order("video", "generate") ==
          std::vector<std::string>{"minimax-h3-fl2va"}));
   CHECK((c->auto_order("video", "edit") ==
@@ -666,6 +668,30 @@ TEST(models, favor_presets_follow_the_catalog)
   CHECK(f["taomate"] == true && f["hyperflow"] == false);
   CHECK(f["steps"] == 3 && f["video_shift"] == 12 && f["audio_shift"] == 3);
   CHECK(f["loras"][0]["on"] == false);
+  CHECK(f["taomate_lora"] == false);
+  // ...or its adapter as a plain LoRA: still 3 steps at TaoMate's shifts
+  // (a video shift asked for otherwise does not hold), the Turbo LoRA off;
+  // never without TaoMate itself.
+  f = resolve_tuning(fl, h, "speed", false,
+                     {{"taomate", true}, {"taomate_lora", true},
+                      {"video_shift", 6}});
+  CHECK(f["taomate"] == true && f["taomate_lora"] == true);
+  CHECK(f["steps"] == 3 && f["video_shift"] == 12 && f["audio_shift"] == 3);
+  CHECK(f["loras"][0]["on"] == false);
+  f = resolve_tuning(fl, h, "speed", false, {{"taomate_lora", true}});
+  CHECK(f["taomate"] == false && f["taomate_lora"] == false);
+  CHECK(f["steps"] == 4 && f["video_shift"] == 6);
+  {
+    bool listed = false;
+    const Json fo = tuning_options(fl, h, "speed", false);
+    for (const auto& o : fo["options"]) {
+      if (o["key"] == "taomate_lora") {
+        listed = true;
+        CHECK(jget<std::string>(o, "needs", "") == "taomate");
+      }
+    }
+    CHECK(listed);
+  }
   // ...where it needs no Turbo LoRA, even with none here; without it, Fast
   // needs its 4-step -- not 8 plain steps at TaoMate's shifts.
   h.loras.erase("minimax-h3-turbo-4step");
@@ -723,6 +749,29 @@ TEST(models, favor_presets_follow_the_catalog)
   const Json opts = tuning_options(q, qt, "speed", false);
   CHECK(opts["turbo"]["name"] == "Qwen turbo");
   CHECK(opts["missing"].empty());
+
+  // Qwen-Image 2.1 Turbo: a checkpoint distilled to a schedule of its own
+  // -- its 8 steps whatever is preferred, edits too, and no LoRA to need.
+  // Favor moves its arithmetic (int8 GEMMs on Fast and Med, none on
+  // Fine); Custom offers no steps.
+  const ModelEntry& t8 = *c->find("qwen-image-2.1-turbo");
+  for (const char* p : {"speed", "balanced", "quality"}) {
+    CHECK(missing_loras(t8, m5, p).empty());
+    CHECK(preset_steps(t8, p, false, false) == 8);
+    CHECK(preset_steps(t8, p, true, false) == 8);
+  }
+  Json tv = resolve_tuning(t8, m5, "speed", false);
+  CHECK(tv["i8_gemm"] == true);
+  tv = resolve_tuning(t8, m5, "balanced", true);
+  CHECK(tv["i8_gemm"] == true);
+  tv = resolve_tuning(t8, m5, "quality", false);
+  CHECK(tv["i8_gemm"] == false);
+  bool offers_steps = false;
+  const Json t8opts = tuning_options(t8, m5, "balanced", false);
+  for (const auto& o : t8opts["options"]) {
+    offers_steps = offers_steps || o["key"] == "steps";
+  }
+  CHECK(!offers_steps);
 }
 
 // The LoRA list: two on at most, the first in list order (vpipe's two
@@ -912,4 +961,22 @@ TEST(models, families_and_links)
     CHECK(store.info(*lora).state == InstallState::Missing);
     CHECK(store.link_of(folder->id) == std::filesystem::absolute(dir / "vdn"));
   }
+}
+
+// Unified memory's bandwidth, by the chip (Apple's figures): what a video
+// summary's frame interval is chosen by (DESIGN §4i).
+TEST(models, memory_bandwidth_by_chip)
+{
+  using models::memory_bandwidth_of_chip;
+  CHECK(memory_bandwidth_of_chip("Apple M5", 10) == 153);
+  CHECK(memory_bandwidth_of_chip("Apple M5 Pro", 20) == 307);
+  CHECK(memory_bandwidth_of_chip("Apple M3 Pro", 18) == 150);
+  CHECK(memory_bandwidth_of_chip("Apple M2 Pro", 19) == 200);
+  CHECK(memory_bandwidth_of_chip("Apple M4 Max", 32) == 410);
+  CHECK(memory_bandwidth_of_chip("Apple M4 Max", 40) == 546);
+  CHECK(memory_bandwidth_of_chip("Apple M1 Ultra", 64) == 800);
+  CHECK(memory_bandwidth_of_chip("Apple M1", 8) == 68);
+  // A later generation, as M5's of its tier.
+  CHECK(memory_bandwidth_of_chip("Apple M7 Pro", 24) == 307);
+  CHECK(memory_bandwidth_of_chip("Intel(R) Core(TM) i9", 0) == 0);
 }

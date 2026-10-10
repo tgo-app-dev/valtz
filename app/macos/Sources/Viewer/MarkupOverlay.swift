@@ -13,11 +13,20 @@ struct MarkupOverlay: Equatable {
         var color: RGBA
         var erase: Bool
     }
-    var stroke: Stroke?
+    /// The strokes let go but not yet in the picture, then the one being
+    /// drawn.
+    var strokes: [Stroke] = []
     var objects: [MarkupObject] = []
     var selected: Set<String> = []
+    /// The selected objects drawn here too (while they change), not only
+    /// outlined: otherwise the picture under has them in their place.
+    var drawsSelection = true
+    /// The selected DRAWING's pixels' bounds (canvas pixels), outlined.
+    var drawingBounds: CGRect?
 
-    var isEmpty: Bool { stroke == nil && objects.isEmpty }
+    var isEmpty: Bool {
+        strokes.isEmpty && objects.isEmpty && drawingBounds == nil
+    }
 }
 
 /// A pointer on the picture, for the markup toolbar: where (canvas
@@ -54,18 +63,39 @@ final class MarkupOverlayView: NSView {
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+    /// How its draws went (the snapshot hooks' `scribble=` reads them):
+    /// how many, their total and longest, in seconds.
+    static var drawn = (count: 0, total: 0.0, longest: 0.0)
+
     override func draw(_ dirtyRect: NSRect) {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        defer {
+            let d = CFAbsoluteTimeGetCurrent() - t0
+            Self.drawn.count += 1
+            Self.drawn.total += d
+            Self.drawn.longest = max(Self.drawn.longest, d)
+        }
         guard !overlay.isEmpty,
               let ctx = NSGraphicsContext.current?.cgContext else { return }
         ctx.saveGState()
         ctx.concatenate(toView)
-        if let s = overlay.stroke, !s.points.isEmpty {
+        for s in overlay.strokes where !s.points.isEmpty {
             drawStroke(s, in: ctx)
         }
-        for o in overlay.objects {
+        for o in overlay.objects
+        where overlay.drawsSelection || !overlay.selected.contains(o.id) {
             MarkupRender.draw(o, in: ctx)
         }
         ctx.restoreGState()
+        // The selected drawing: its outline alone (it is not reshaped).
+        if let d = overlay.drawingBounds {
+            let outline = NSBezierPath(rect: d.applying(toView)
+                .insetBy(dx: -3, dy: -3))
+            outline.lineWidth = 1
+            outline.setLineDash([4, 3], count: 2, phase: 0)
+            NSColor.controlAccentColor.setStroke()
+            outline.stroke()
+        }
         // Outlines and handles at screen size.
         for o in overlay.objects where overlay.selected.contains(o.id) {
             let b = MarkupRender.bounds(o).applying(toView)

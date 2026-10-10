@@ -150,6 +150,7 @@ private struct FeatureBadge: View {
         case "video-upscale": "arrow.up.left.and.arrow.down.right"
         case "image-upscale": "plus.magnifyingglass"
         case "audio-transcribe": "captions.bubble"
+        case "video-summary": "text.below.photo"
         default: "questionmark"
         }
     }
@@ -166,6 +167,7 @@ private struct FeatureBadge: View {
         case "video-upscale": String(localized: "Video upscaling")
         case "image-upscale": String(localized: "Image upscaling")
         case "audio-transcribe": String(localized: "Transcription, sound events")
+        case "video-summary": String(localized: "Video summary")
         default: f
         }
     }

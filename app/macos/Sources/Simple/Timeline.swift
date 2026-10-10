@@ -516,6 +516,7 @@ struct TimelineCard: View {
                 if id != model.activeLayer { model.selectLayer(id) }
                 model.addLayer()
             },
+            duplicateLayer: { model.duplicateLayer($0) },
             removeLayer: { model.removeLayer($0) },
             canRemove: { model.canRemoveLayer($0) },
             toggleFolded: { model.toggleFolderFolded($0) },
@@ -534,6 +535,8 @@ struct TimelineCard: View {
             },
             ungroup: { model.ungroupLayers($0) },
             extendSelection: { model.toggleLayerSelection($0) },
+            renameLayer: { model.renameLayer($0, $1) },
+            renameFolder: { model.renameLayerFolder($0, $1) },
             dropAsset: { model.dropOnTimeline(asset: $0, above: $1, at: $2) },
             dropFiles: {
                 model.dropFilesOnTimeline($0, above: $1, at: $2)
@@ -754,6 +757,7 @@ struct TimelineActions {
     var toggleVisible: (String) -> Void = { _ in }
     var moveLayer: (String, Int) -> Void = { _, _ in }
     var addLayer: (String) -> Void = { _ in }
+    var duplicateLayer: (String) -> Void = { _ in }
     var removeLayer: (String) -> Void = { _ in }
     var canRemove: (String) -> Bool = { _ in false }
     /// Folders: folded or open, every layer shown or hidden, layers put
@@ -765,6 +769,9 @@ struct TimelineActions {
     var group: (String) -> Void = { _ in }
     var ungroup: (String) -> Void = { _ in }
     var extendSelection: (String) -> Void = { _ in }
+    /// A header's name typed over: a layer's, a folder's.
+    var renameLayer: (String, String) -> Void = { _, _ in }
+    var renameFolder: (String, String) -> Void = { _, _ in }
     var dropAsset: (String, String?, Int) -> Bool = { _, _, _ in false }
     var dropFiles: ([URL], String?, Int) -> Bool = { _, _, _ in false }
 }
@@ -836,6 +843,10 @@ final class TimelineNSView: NSView {
     }
     private var drag: Drag?
     private var hover: CGPoint?
+    /// A header's name being typed over (a double-click): its field, and
+    /// the row's id.
+    private var nameField: NSTextField?
+    private var naming: String?
     /// Where a drop would go: above which row (nil: on top), from which
     /// frame.
     private var dropAt: (row: Int?, frame: Int)?
@@ -949,6 +960,10 @@ final class TimelineNSView: NSView {
         }
         if model.cutting != old.cutting {
             window?.invalidateCursorRects(for: self)
+        }
+        // The row being named gone (undone, removed): its field too.
+        if let id = naming, !model.rows.contains(where: { $0.id == id }) {
+            endNaming(commit: false)
         }
         clampScroll()
         // The player's line kept in view as it moves.
@@ -1075,8 +1090,28 @@ final class TimelineNSView: NSView {
             CGRect(x: area.minX, y: rowTop(i) + Self.rowHeight - 0.5,
                    width: area.width, height: 0.5).fill()
         }
+        drawGrid(area)
         drawCutLine()
         drawDropMark(area)
+    }
+
+    /// A line down from each of the ruler's labelled ticks, across every
+    /// layer to the view's foot -- over the blocks, as the rows' lines
+    /// are -- so what lines up in time is seen to.
+    private func drawGrid(_ area: CGRect) {
+        let major = tickSteps().0
+        let first = max(0, Int(frame(at: area.minX)) / major * major)
+        let last = Int(frame(at: area.maxX)) + major
+        NSColor.labelColor.withAlphaComponent(0.1).setFill()
+        var f = first
+        while f <= last {
+            let fx = x(Double(f)).rounded() + 0.5
+            if fx >= area.minX {
+                CGRect(x: fx - 0.5, y: area.minY, width: 1,
+                       height: area.height).fill()
+            }
+            f += major
+        }
     }
 
     /// A folder's row: where any of its layers plays, a grey band each
@@ -1397,11 +1432,15 @@ final class TimelineNSView: NSView {
                 .foregroundColor: r.visible ? NSColor.labelColor
                                             : NSColor.secondaryLabelColor,
             ])
-            s.draw(with: CGRect(x: x + 17, y: top + 4.5,
-                                width: area.width - x - 17 - Self.divider - 4,
-                                height: 14),
-                   options: [.usesLineFragmentOrigin,
-                             .truncatesLastVisibleLine])
+            // Being named: its field is there instead.
+            if r.id != naming {
+                s.draw(with: CGRect(x: x + 17, y: top + 4.5,
+                                    width: area.width - x - 17
+                                        - Self.divider - 4,
+                                    height: 14),
+                       options: [.usesLineFragmentOrigin,
+                                 .truncatesLastVisibleLine])
+            }
             NSColor.labelColor.withAlphaComponent(0.08).setFill()
             CGRect(x: 0, y: rr.maxY - 0.5, width: area.width, height: 0.5)
                 .fill()
@@ -1609,8 +1648,15 @@ final class TimelineNSView: NSView {
                 actions.toggleFolded(f)
                 return
             }
+            let mods = e.modifierFlags
+            // A double-click on its name names it, as in the Layers
+            // section (AppKit's click count: the second click of two).
+            if e.clickCount == 2, !mods.contains(.command),
+               !mods.contains(.shift) {
+                beginNaming(i)
+                return
+            }
             if let id = r.layer {
-                let mods = e.modifierFlags
                 if mods.contains(.command) || mods.contains(.shift) {
                     actions.extendSelection(id)
                     return
@@ -1755,6 +1801,11 @@ final class TimelineNSView: NSView {
         m.addItem(Self.item(String(localized: "Add Layer Above")) { [weak self] in
             self?.actions.addLayer(r.id)
         })
+        if r.kind != .blank {
+            m.addItem(Self.item(String(localized: "Duplicate Layer")) {
+                [weak self] in self?.actions.duplicateLayer(r.id)
+            })
+        }
         m.addItem(Self.item(r.visible ? String(localized: "Hide Layer")
                                       : String(localized: "Show Layer")) {
             [weak self] in self?.actions.toggleVisible(r.id)
@@ -1787,7 +1838,69 @@ final class TimelineNSView: NSView {
         actions.seek(min(max(0, f), last))
     }
 
+    // MARK: Naming a header
+
+    /// A row's name made a field, where it is drawn: its words selected.
+    private func beginNaming(_ i: Int) {
+        endNaming(commit: true)
+        let r = model.rows[i]
+        guard r.layer != nil || r.folder != nil else { return }
+        let x = Self.iconX + CGFloat(r.depth) * Self.indent
+            + (r.isFolder ? 12 : 0) + 14
+        let f = NSTextField(string: r.title)
+        f.font = .systemFont(ofSize: 10.5,
+                             weight: r.isFolder ? .semibold : .regular)
+        f.isBordered = true
+        f.isBezeled = true
+        f.bezelStyle = .squareBezel
+        f.drawsBackground = true
+        f.focusRingType = .none
+        f.cell?.isScrollable = true
+        f.cell?.wraps = false
+        f.delegate = self
+        f.frame = CGRect(x: x, y: rowTop(i) + 2,
+                         width: Self.nameWidth - x - Self.divider - 2,
+                         height: Self.rowHeight - 4)
+        f.setAccessibilityLabel(String(localized: "Layer name"))
+        addSubview(f)
+        nameField = f
+        naming = r.id
+        needsDisplay = true
+        // Its editing begun, the words selected (selectText ends any
+        // editing under way: a makeFirstResponder before it was undone).
+        f.selectText(nil)
+    }
+
+    /// The field gone: its name kept (Return, a click away) or not
+    /// (Escape). A layer's emptied takes its default name back; a
+    /// folder's is never empty.
+    private func endNaming(commit: Bool) {
+        guard let f = nameField, let id = naming else { return }
+        nameField = nil
+        naming = nil
+        let text = f.stringValue.trimmingCharacters(in: .whitespaces)
+        f.delegate = nil
+        f.removeFromSuperview()
+        needsDisplay = true
+        if window?.firstResponder == nil
+            || window?.firstResponder === window {
+            window?.makeFirstResponder(self)
+        }
+        guard commit, let r = model.rows.first(where: { $0.id == id }),
+              text != r.title else { return }
+        if r.isFolder, let folder = r.folder {
+            if !text.isEmpty { actions.renameFolder(folder, text) }
+        } else if let layer = r.layer {
+            actions.renameLayer(layer, text)
+        }
+    }
+
+    /// Whether a header's name is being typed (the hooks).
+    var isNaming: Bool { nameField != nil }
+
     override func scrollWheel(with e: NSEvent) {
+        // The rows move: the name being typed is kept first.
+        endNaming(commit: true)
         let mods = e.modifierFlags
         var dx = e.scrollingDeltaX, dy = e.scrollingDeltaY
         if !e.hasPreciseScrollingDeltas {
@@ -1984,4 +2097,25 @@ private final class MenuRun: NSObject {
     let run: @MainActor () -> Void
     init(_ run: @escaping @MainActor () -> Void) { self.run = run }
     @objc func go(_ sender: Any?) { run() }
+}
+
+extension TimelineNSView: NSTextFieldDelegate {
+    /// Return names it; Escape leaves it as it was.
+    func control(_ control: NSControl, textView: NSTextView,
+                 doCommandBy sel: Selector) -> Bool {
+        if sel == #selector(NSResponder.cancelOperation(_:)) {
+            endNaming(commit: false)
+            return true
+        }
+        if sel == #selector(NSResponder.insertNewline(_:)) {
+            endNaming(commit: true)
+            return true
+        }
+        return false
+    }
+
+    /// A click away: kept.
+    func controlTextDidEndEditing(_ obj: Notification) {
+        endNaming(commit: true)
+    }
 }

@@ -271,6 +271,11 @@ struct TuningPanel: View {
                 let steps = String(n)
                 return String(localized: "\(Self.title(other)) runs its own \(steps)")
             }
+            // Any other value it decides (TaoMate's shifts), shown as set.
+            if o.key != "steps", let v = other.fixes[o.key] {
+                let value = v == v.rounded() ? String(Int(v)) : String(v)
+                return String(localized: "\(Self.title(other)) sets it to \(value)")
+            }
         }
         if let needs = o.needs, t.flags[needs] != true {
             let name = info.options.first { $0.key == needs }
@@ -290,6 +295,7 @@ struct TuningPanel: View {
         case "steps": String(localized: "Steps")
         case "hyperflow": String(localized: "HyperFlow")
         case "taomate": String(localized: "TaoMate")
+        case "taomate_lora": String(localized: "As a LoRA only")
         case "vdn": String(localized: "VDN branch")
         case "sol_attn": String(localized: "Sol-Attn")
         case "sol_tau": String(localized: "Sol threshold")
@@ -311,6 +317,7 @@ struct TuningPanel: View {
         case "steps": String(localized: "Denoising steps")
         case "hyperflow": String(localized: "8-step flow-map adapter; each step ~9% slower")
         case "taomate": String(localized: "3-step streaming method; its cache on disk")
+        case "taomate_lora": String(localized: "Its adapter for 3 steps; no streaming, no cache")
         case "vdn": String(localized: "Linear attention for long, large clips")
         case "sol_attn": String(localized: "Attends only the key blocks that matter")
         case "sol_tau": String(localized: "Higher keeps fewer blocks: faster, less exact")
@@ -330,6 +337,7 @@ struct TuningPanel: View {
         switch key {
         case "hyperflow": String(localized: "Video Rebirth's flow-map adapter brings its own 8-step grid. It takes a LoRA slot, in place of the Turbo LoRA; keep the shifts at 12 and 3, which it was trained at.")
         case "taomate": String(localized: "TaoMate-H3's streaming method, not a LoRA: the base model writes the soundtrack, then its adapter writes the video in chunks, 3 steps each, against a cache of the chunks before. It takes a LoRA slot in place of the Turbo LoRA. Words to a clip only, made in whole 5-second requests. That cache is kept on disk (in 8 bits with int8 GEMM) and read back a block at a time. An alternative to the Turbo LoRA: no Favor preset turns it on.")
+        case "taomate_lora": String(localized: "TaoMate-H3's adapter run as an ordinary LoRA: 3 steps over the whole clip, at the shifts TaoMate's own schedule uses (video 12, audio 3). No soundtrack pass by the base model, no chunks and no cache, so no disk traffic, and a clip may open on a picture. Not the method the adapter was trained for: judge its results by eye.")
         case "vdn": String(localized: "VideoDeltaNet: a windowed softmax over nearby frames plus a linear recurrence over the rest, a second checkpoint beside the model. Its advantage grows with the clip's length and size; it replaces Sol-Attn.")
         case "sol_attn": String(localized: "Training-free sparse attention: key blocks a cheap proxy scores low are folded in as their centroid. Saves about a quarter to a third of the denoise on a long clip.")
         case "sol_tau": String(localized: "In standard deviations of the routing score's spread. 1.0 is the published setting.")
@@ -382,7 +390,7 @@ private enum TuningGroup: CaseIterable, Identifiable {
 
     static func of(_ key: String) -> TuningGroup {
         switch key {
-        case "steps", "hyperflow", "taomate": .steps
+        case "steps", "hyperflow", "taomate", "taomate_lora": .steps
         case "loras", "dits", "vaes": .weights
         case "vdn", "sol_attn", "sol_tau", "sage_attn": .attention
         case "i8_gemm", "ane_ffn", "ane_qkv", "motion_cache": .compute

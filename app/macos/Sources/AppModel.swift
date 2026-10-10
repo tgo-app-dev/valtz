@@ -595,6 +595,8 @@ struct PromptTab: Identifiable, Sendable {
     var mentions: [UUID] = []
     var assetId: String?
     var enhanced: EnhancedPrompt?
+    /// Its name, given by the person before its prompt is in Assets.
+    var name: String?
     /// A TEXT ASSET opened from Assets to look at (DESIGN §10c): the asset,
     /// its words as they were, and whether something was made from it --
     /// READ ONLY, then. DO-NOT-APPLY while it is read only or unedited: it
@@ -691,8 +693,8 @@ struct JobPhase: Equatable {
 
     /// The phases in the order a generation runs them.
     static let order = ["prepare", "references", "score", "song", "speech",
-                        "transcribe", "denoise", "decode", "sound",
-                        "restore", "finish"]
+                        "transcribe", "summarize", "denoise", "decode",
+                        "sound", "restore", "finish"]
 
     /// A phase's name, as the inspector lists how long each took -- a
     /// song's sound rendered and decoded, a clip's soundtrack.
@@ -704,6 +706,7 @@ struct JobPhase: Equatable {
         case "song": String(localized: "Writing the song")
         case "speech": String(localized: "Speaking")
         case "transcribe": String(localized: "Transcribing")
+        case "summarize": String(localized: "Summarizing")
         case "denoise": kind == .audio ? String(localized: "Rendering")
             : String(localized: "Generating")
         case "decode": String(localized: "Decoding")
@@ -988,6 +991,11 @@ final class AppModel {
     /// back to the core, which keeps it for the same words, changes it in
     /// place while nothing is made from it, or makes a new one.
     var promptAssetId: String?
+    /// The name the person gave the box's prompt (the Prompt Editor's
+    /// tab, DESIGN §10c) while it is in no prompt asset yet: Start names
+    /// the prompt it captures so. One in Assets is named there
+    /// (`promptTabName`).
+    var promptName: String?
     /// A song's plan: the score it writes before it sings.
     var songPlan: SongPlan = .full
     /// The longest a song may run, in seconds; nil: as long as the model
@@ -1093,8 +1101,18 @@ final class AppModel {
     /// (`prompt`, `promptMarked`, ...); the others wait in `promptTabs`.
     /// Back in the box, the prompt is the tab last open.
     var promptImmersive = false
+    /// The editor is being EDITED: something typed (or styled) in it
+    /// since it opened. Then a click on an asset only views it in the
+    /// small stage, the editor kept; a double-click (to work on it) still
+    /// takes the editor away.
+    var editorEdited = false
+    /// The Prompt Editor's toolbar's foot, in the window: the small stage
+    /// keeps a margin under it.
+    var editorToolbarBottom: CGFloat = 0
     var promptTabs: [PromptTab] = []
     var activePromptTab = 0
+    /// The tab whose name is being typed in its header, if any.
+    var renamingPromptTab: UUID?
     /// The prompt box as it was when the editor opened: what it stays when
     /// the editor goes from a do-not-apply tab (closing tabs never
     /// changes it).
@@ -1848,6 +1866,8 @@ final class AppModel {
         promptMarked = text
         setPrompt(text)
         promptAssetId = a.id
+        // Its name, if the person gave it one, is the asset's.
+        promptName = nil
         dropSuggestion()
     }
 
@@ -2353,6 +2373,12 @@ final class AppModel {
     /// A layer chosen: the panels show and change its values -- on a
     /// clip, its tracks.
     func selectLayer(_ id: String) {
+        // A snapshot run: how long a posted click took to get here.
+        if AppDelegate.postedClickAt > 0 {
+            print("snapshot: select-layer \(id.isEmpty ? "0" : id) after-click="
+                  + "\(Int((CACurrentMediaTime() - AppDelegate.postedClickAt) * 1000))ms")
+            AppDelegate.postedClickAt = 0
+        }
         if pagedOnStage, let pic = stagePicture {
             // A still with pages: its tracks, keyed by page.
             persistClipTracks()
@@ -2420,6 +2446,30 @@ final class AppModel {
     /// Up (+1) or down (-1) the stack.
     func moveLayer(_ id: String, by: Int) {
         layerOp("move", id, ["by": by])
+    }
+
+    /// A layer DUPLICATED right above it -- a markup's drawing and
+    /// objects copied (drawn on apart), anything else shown by both, its
+    /// looks and time with it -- "Layer 2 Copy", selected.
+    func duplicateLayer(_ id: String) {
+        guard let core, let projectId, let pic = stageStack,
+              let l = pic.layerStack.first(where: { $0.id == id }) else {
+            return
+        }
+        // What the panels hold of it, recorded first: the copy takes it.
+        flushPanels()
+        commitSelection()
+        let title = l.title
+        let r = core.layerOp(project: projectId,
+                             asset: composedTarget(pic.id), "duplicate",
+                             layer: id,
+                             extra: ["name": String(localized: "\(title) Copy")])
+        guard r.ok, let made = r["layer"] as? String else {
+            flash(r.message)
+            return
+        }
+        layersChanged()
+        selectLayer(made)
     }
 
     func setLayerVisible(_ id: String, _ visible: Bool) {
@@ -2751,8 +2801,9 @@ final class AppModel {
         let layer = activeLayer
         let id = clip.id
         let firstPoster = stackPlayback == nil
-        // The markup objects being edited are drawn live, over it.
-        let hidden = markupOpen ? markup.selectedIds : []
+        // The markup objects being changed are drawn live, over it.
+        let hidden = markupOpen && markup.live ? markup.selectedIds : []
+        let painted = markup.painted
         Task { @MainActor [weak self] in
             let made = await Task.detached {
                 let live = look.map {
@@ -2783,7 +2834,7 @@ final class AppModel {
             } else {
                 self.placeOnTrimSource()
                 // A stroke painted into it is in the frames now.
-                if made != nil { self.markupComposited() }
+                if made != nil { self.markupComposited(painted: painted) }
             }
         }
     }
@@ -2808,13 +2859,33 @@ final class AppModel {
             return
         }
         Task { @MainActor [weak self] in
+            // Nothing on it yet (a timeline just set up): its frame, black,
+            // so the stage takes the timeline's shape -- it was square.
             let img = await Task.detached {
                 core.stackStill(plan: s.plan, frame: 0)
-            }.value
+            }.value ?? Self.blankPoster(width: s.width, height: s.height)
             guard let self, let img, self.currentClip?.id == id,
                   self.stackPlayback?.plan == s.plan else { return }
             self.stage.a = img
         }
+    }
+
+    /// A black picture of a frame's shape (its longer edge 256 pixels):
+    /// what an empty timeline shows, and the stage's aspect.
+    nonisolated static func blankPoster(width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0 else { return nil }
+        let k = 256 / Double(max(width, height))
+        let w = max(1, Int((Double(width) * k).rounded()))
+        let h = max(1, Int((Double(height) * k).rounded()))
+        guard let ctx = CGContext(
+            data: nil, width: w, height: h, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+            return nil
+        }
+        ctx.setFillColor(CGColor(gray: 0, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        return ctx.makeImage()
     }
 
     private func releaseLater(_ plan: UInt64) {
@@ -2857,9 +2928,10 @@ final class AppModel {
                         ? ImageAdjustments() : adjustments,
                     crop: shownCrop)
         let id = pic.id
-        // The markup objects being edited are drawn live, over it.
-        let hidden = markupOpen ? markup.selectedIds : []
+        // The markup objects being changed are drawn live, over it.
+        let hidden = markupOpen && markup.live ? markup.selectedIds : []
         let page = pic.isPaged ? stagePage : 0
+        let painted = markup.painted
         Task { @MainActor [weak self] in
             // Drawn by the core on the GPU into a surface the canvas shows
             // as it is; read in place where pixels are wanted.
@@ -2877,7 +2949,7 @@ final class AppModel {
             self.compositing = false
             if let made, self.stagePicture?.id == id, self.stageComposed {
                 self.showCurrent(made.image, surface: made.surface)
-                self.markupComposited()
+                self.markupComposited(painted: painted)
             }
             if self.compositeAgain {
                 self.compositeAgain = false
@@ -3195,6 +3267,7 @@ final class AppModel {
         let names: [(String, String)] = [
             ("hyperflow", String(localized: "HyperFlow")),
             ("taomate", String(localized: "TaoMate")),
+            ("taomate_lora", String(localized: "LoRA only")),
             ("vdn", String(localized: "VDN")),
             ("sol_attn", String(localized: "Sol")),
             ("sage_attn", String(localized: "Sage")),
@@ -3420,6 +3493,14 @@ final class AppModel {
     func setHelperKeepLoaded(_ seconds: Double) {
         guard let core else { return }
         let r = core.setAssistantKeepLoaded(seconds)
+        if !r.ok { flash(r.message) }
+        helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+    }
+
+    /// A video summary's seconds a frame (DESIGN §4i); 0: Auto.
+    func setVideoEvery(_ seconds: Double) {
+        guard let core else { return }
+        let r = core.setVideoEvery(seconds)
         if !r.ok { flash(r.message) }
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
     }
@@ -3975,6 +4056,7 @@ final class AppModel {
         if let t = sentTuning { req["tuning"] = t }
         if let seed = Int64(seedText) { req["seed"] = seed }
         if let pa = promptAssetId { req["prompt_asset"] = pa }
+        if let n = promptGivenName { req["prompt_name"] = n }
         if usesReferences {
             // The row's media as references, in its order (each through
             // its look or its trim); the clip continued, its tail; the
@@ -4035,6 +4117,7 @@ final class AppModel {
             req["max_seconds"] = s
         }
         if let pa = promptAssetId { req["prompt_asset"] = pa }
+        if let n = promptGivenName { req["prompt_name"] = n }
         if let t = sentTuning { req["tuning"] = t }
         if let seed = Int64(seedText) { req["seed"] = seed }
         generationBase = nil
@@ -4335,6 +4418,7 @@ final class AppModel {
     func clearPrompt() {
         clearReferenceFocus()
         promptAssetId = nil
+        promptName = nil
         promptAttachments = []
         referenceThumbs = [:]
         promptMentions = []
@@ -4859,6 +4943,7 @@ final class AppModel {
         // Its tags' row, and the prompt it came from (DESIGN §10c).
         req["row"] = rowAssetIds
         if let pa = promptAssetId { req["prompt_asset"] = pa }
+        if let n = promptGivenName { req["prompt_name"] = n }
         if willEdit {
             req["model"] = editModel
             req["mode"] = "edit"
@@ -5534,6 +5619,8 @@ final class AppModel {
     /// A key here, with the values the clip shows here -- or, on a key,
     /// none (the last one stays).
     func toggleKey(_ track: KeyTrack) {
+        // None out of the layer's range: it does not show there.
+        guard layerOffStage == nil else { return }
         func toggle<T>(_ k: inout Keyframes<T>) {
             let f = keyFrame
             if k.index(at: f) != nil {
@@ -5651,6 +5738,8 @@ final class AppModel {
 
     /// There is something of `part` to leave out.
     func canBypass(_ part: KeyTrack) -> Bool {
+        // The layer not on the stage: nothing of it to see without.
+        guard layerOffStage == nil else { return false }
         switch part {
         case .adjust:
             return keyedStage ? !clipAdjustKeys.isIdentity
@@ -5685,6 +5774,8 @@ final class AppModel {
             adjustments[key] = v
             return
         }
+        // Keys only where the layer shows.
+        guard layerOffStage == nil else { return }
         clipAdjustKeys.edit(at: keyFrame) { $0[key] = v }
         clipTracksChanged()
     }
@@ -5775,6 +5866,7 @@ final class AppModel {
             c.scaleY = min(r.upperBound, max(r.lowerBound, c.scaleY))
         }
         if keyedStage {
+            guard layerOffStage == nil else { return }
             clipCropKeys.place.edit(at: keyFrame, apply)
             clipTracksChanged()
             return
@@ -5820,6 +5912,7 @@ final class AppModel {
     /// frame on screen.
     func setCropRotate(_ degrees: Double) {
         if keyedStage {
+            guard layerOffStage == nil else { return }
             clipCropKeys.turn.edit(at: keyFrame) { $0.degrees = degrees }
             clipTracksChanged()
             return
@@ -5989,6 +6082,8 @@ final class AppModel {
     /// Set the mark-in (or the mark-out) where the player is -- held to
     /// the clip's frames. A mark past the other one clears that one.
     func setMark(in isIn: Bool) {
+        // The player outside the clip: no frame of it to mark.
+        guard layerOffStage == nil else { return }
         var at = sourceFrameAtPlayhead
         if let len = sourceLength { at = min(at, max(0, len - 1)) }
         var t = trim
@@ -6046,15 +6141,30 @@ final class AppModel {
                                     token: (videoCommand?.token ?? 0) + 1)
     }
 
+    /// The clip (timeline, sound) on the stage at its first frame or its
+    /// last: the editor's small stage's |< and >|.
+    func seekStage(end: Bool) {
+        seekVideo(to: end ? max(0, (stageClipLength ?? 1) - 1) : 0)
+    }
+
+    /// The small stage has its own transport under it: something that
+    /// plays, or a still's pages to turn.
+    var stageHasTransport: Bool {
+        clipOnStage || (pagedOnStage && stagePages > 1)
+    }
+
     /// The selected layer's clip at its first frame on the timeline, or
     /// its last (the Trim panel's |< and >|): where it lies, its marks
-    /// and speed taken; a clip alone, its own first and last.
+    /// and speed taken -- a picture's span too, the way back onto a layer
+    /// the playhead has left; a clip alone, its own first and last.
     func seekClipEdge(end: Bool) {
-        if let c = currentClip, c.isComposition, let k = layerClock,
-           k.timed {
+        if let c = currentClip, c.isComposition, let k = layerClock {
             let r = stageFrameRate
             let first = max(0, Int((k.start * r.fps - 1e-6).rounded(.up)))
-            let last = max(first, Int((k.end * r.fps - 1e-6).rounded(.up)) - 1)
+            // A picture running on to the timeline's end: its end.
+            let last = k.end.isFinite
+                ? max(first, Int((k.end * r.fps - 1e-6).rounded(.up)) - 1)
+                : max(first, (stageClipLength ?? 1) - 1)
             seekVideo(to: end ? last : first)
         } else {
             seekVideo(to: end ? max(0, (stageClipLength ?? 1) - 1) : 0)
@@ -6080,6 +6190,29 @@ final class AppModel {
               e.keyCode == 123 || e.keyCode == 124 else { return false }
         let n = mods.contains(.shift) ? 10 : 1
         timelineStep(e.keyCode == 123 ? -n : n)
+        return true
+    }
+
+    /// SPACE plays or pauses what plays on the stage -- a clip, a
+    /// timeline, a sound -- as in any player: from the start again when
+    /// it stands at the end. Wherever the keyboard is in the window but
+    /// text (the prompt's space is a space), a list or a control (a
+    /// focused button's space presses it); held, once. Before the
+    /// player's own (AVKit takes Space when it has the keyboard), so the
+    /// two never both toggle.
+    func playerKey(_ e: NSEvent) -> Bool {
+        guard e.keyCode == 49, clipOnStage, fleetServing == nil,
+              let w = e.window, !(w is NSPanel),
+              editorWindow == nil || w === editorWindow else { return false }
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.numericPad, .function, .capsLock])
+        guard mods.isEmpty else { return false }
+        let fr = w.firstResponder
+        if fr is NSText || fr is NSTableView || fr is NSOutlineView
+            || fr is NSCollectionView || fr is NSControl { return false }
+        if !e.isARepeat {
+            playVideo(rate: videoRate == 0 ? 1 : 0)
+        }
         return true
     }
 
@@ -6715,8 +6848,10 @@ final class AppModel {
         let title = String(localized: "Do you want to save the anonymous project “\(windowTitle)”?")
         let env = ProcessInfo.processInfo.environment
         if env["VALTZ_SNAPSHOT"] != nil {
-            let answer = env["VALTZ_SNAPSHOT_CLOSE"] ?? "discard"
-            print("snapshot: close-alert title=\(title) answer=\(answer) assets=\(assets.count) dirty=\(document.dirty)")
+            let answer = snapshotCloseAnswer
+                ?? env["VALTZ_SNAPSHOT_CLOSE"] ?? "discard"
+            FileHandle.standardError.write(Data(
+                "snapshot: close-alert title=\(title) answer=\(answer) assets=\(assets.count) dirty=\(document.dirty)\n".utf8))
             if answer.hasPrefix("save:") {
                 return save(as: URL(fileURLWithPath:
                     String(answer.dropFirst(5))))
@@ -6768,11 +6903,44 @@ final class AppModel {
     /// before it was there is sized once it is.
     @ObservationIgnored weak var editorWindow: NSWindow? {
         didSet {
-            if editorWindow != nil, let size = pendingWindowSize {
+            guard let w = editorWindow else { return }
+            editorWasShown = true
+            // Its close asks about the project while it is still there.
+            if closeGuard?.window !== w {
+                closeGuard = WindowCloseGuard(window: w) { [weak self] in
+                    self?.confirmWindowClose() ?? true
+                }
+            }
+            // Auto-update starts once the editor is there: its prompt over
+            // the editor, never before it.
+            updater.start()
+            if let size = pendingWindowSize {
                 pendingWindowSize = nil
                 applyWindowSize(size)
             }
         }
+    }
+    /// The editor's window has been there: closing the last window quits
+    /// Valtz from now on (AppDelegate).
+    @ObservationIgnored private(set) var editorWasShown = false
+    @ObservationIgnored private var closeGuard: WindowCloseGuard?
+    /// The project already asked about as the editor's window closed:
+    /// the quit that follows does not ask again.
+    @ObservationIgnored private(set) var closeConfirmed = false
+    /// A scripted run's answer to the next close alert, over
+    /// VALTZ_SNAPSHOT_CLOSE (VALTZ_SNAPSHOT_CLOSE_WINDOW's).
+    @ObservationIgnored var snapshotCloseAnswer: String?
+
+    /// The editor's window asked to close -- its close button, ⌘W: the
+    /// project asked about FIRST, while the window is still there, so
+    /// Cancel keeps it (before, the window went, and Cancel at the quit
+    /// that followed left Valtz running with no window, asking again).
+    /// Agreed, what a quit does is done; Valtz then quits as it goes.
+    func confirmWindowClose() -> Bool {
+        guard confirmClose() else { return false }
+        closeForQuit()
+        closeConfirmed = true
+        return true
     }
     @ObservationIgnored private var pendingWindowSize: CGSize?
 
@@ -6879,12 +7047,13 @@ final class AppModel {
             textWatch.append(m)
         }
         // The brush's [ ] and ⇧[ ⇧], wherever the keyboard is in the
-        // window but text; the Trim panel's ← →.
+        // window but text; the Trim panel's ← →; Space, play / pause.
         if let m = NSEvent.addLocalMonitorForEvents(
             matching: .keyDown, handler: { [weak self] event in
                 let handled = MainActor.assumeIsolated {
                     guard let self else { return false }
                     return self.brushKey(event) || self.trimKey(event)
+                        || self.playerKey(event)
                 }
                 return handled ? nil : event
             }) {
@@ -7114,6 +7283,7 @@ final class AppModel {
         // The prompt, with its inline media, and the prompt asset it was.
         prompt = ""
         promptAssetId = nil
+        promptName = nil
         promptAttachments = []
         referenceThumbs = [:]
         promptMentions = []
@@ -7258,6 +7428,7 @@ final class AppModel {
         case "page.add": String(localized: "Add Page")
         case "page.remove": String(localized: "Remove Page")
         case "layer.add": String(localized: "Add Layer")
+        case "layer.duplicate": String(localized: "Duplicate Layer")
         case "layer.remove": String(localized: "Remove Layer")
         case "layer.move": String(localized: "Move Layer")
         case "layer.show": String(localized: "Show Layer")
@@ -7271,6 +7442,7 @@ final class AppModel {
         case "layer.slide": String(localized: "Move Clip")
         case "layer.stretch": String(localized: "Stretch")
         case "transcribe": String(localized: "Transcribe")
+        case "summarize": String(localized: "Summarize Video")
         case "layer.group": String(localized: "Group Layers")
         case "layer.ungroup": String(localized: "Ungroup Layers")
         case "layer.folder-rename": String(localized: "Rename Layer Folder")
@@ -7279,6 +7451,8 @@ final class AppModel {
         case "markup.paint": String(localized: "Paint")
         case "markup.objects": String(localized: "Markup")
         case "markup.pixels": String(localized: "Make Pixels")
+        case "markup.paste": String(localized: "Paste Drawing")
+        case "markup.clear": String(localized: "Delete Drawing")
         case "folder.add": String(localized: "New Folder")
         case "folder.rename": String(localized: "Rename Folder")
         case "folder.remove": String(localized: "Delete Folder")
@@ -7333,9 +7507,31 @@ final class AppModel {
 
     /// The light bulb: the whole app light or dark, whatever the
     /// system's setting -- to proof an image against a light or a dark
-    /// ground.
-    func setAppearance(dark: Bool) {
+    /// ground. `animated` (the bulb itself): the windows fade from one to
+    /// the other over two seconds, the ground darkening or lightening
+    /// gradually -- a crossfade Core Animation draws of everything they
+    /// show (the window's frame view's layer: title bar, glass and stage
+    /// too), the new look live under it.
+    func setAppearance(dark: Bool, animated: Bool = false) {
+        if animated {
+            for w in NSApp.windows where w.isVisible {
+                guard let layer = w.contentView?.superview?.layer
+                    ?? w.contentView?.layer else { continue }
+                let fade = CATransition()
+                fade.type = .fade
+                fade.duration = 2 * Self.animationScale
+                fade.timingFunction = CAMediaTimingFunction(
+                    name: .easeInEaseOut)
+                layer.add(fade, forKey: kCATransition)
+            }
+        }
         NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+    }
+
+    /// The app shows dark now.
+    var appearsDark: Bool {
+        NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+            == .darkAqua
     }
 
     /// What share and the inspector act on: the result on the stage.

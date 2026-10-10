@@ -256,7 +256,8 @@ struct TitleBarControls: View {
                     title: "Light or Dark",
                     help: scheme == .light ? "Proof on a dark background"
                                            : "Proof on a light background") {
-                    model.setAppearance(dark: scheme == .light)
+                    model.setAppearance(dark: scheme == .light,
+                                        animated: true)
                 }
                 .titleBarCapsule()
 

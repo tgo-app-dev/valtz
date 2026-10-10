@@ -91,6 +91,10 @@ struct RootView: View {
                     // the editor grows the prompt card itself (SimpleView).
                     if model.promptImmersive {
                         PromptBar(model: model)
+                            // Its foot: the small stage keeps clear of it.
+                            .onGeometryChange(for: CGFloat.self) {
+                                $0.frame(in: .global).maxY
+                            } action: { model.editorToolbarBottom = $0 }
                             .transition(.move(edge: .top)
                                 .combined(with: .opacity))
                     } else if model.markupOpen {
@@ -205,6 +209,43 @@ private struct NavRow: View {
 }
 
 /// The window a view is in, told when it has one.
+/// Asks before the editor's window closes (its close button, ⌘W, File ›
+/// Close): standing in as the window's delegate, `windowShouldClose`
+/// asks; everything else goes on to the delegate SwiftUI gave the window,
+/// as it was. SwiftUI has no way to refuse a window's close.
+@MainActor
+final class WindowCloseGuard: NSObject, NSWindowDelegate {
+    weak var window: NSWindow?
+    nonisolated(unsafe) private weak var inner: NSWindowDelegate?
+    private let ask: @MainActor () -> Bool
+
+    init(window: NSWindow, ask: @escaping @MainActor () -> Bool) {
+        self.window = window
+        self.ask = ask
+        super.init()
+        inner = window.delegate
+        window.delegate = self
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if let i = inner, i.windowShouldClose?(sender) == false {
+            return false
+        }
+        return ask()
+    }
+
+    nonisolated override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector)
+            || (inner?.responds(to: aSelector) ?? false)
+    }
+
+    nonisolated override func forwardingTarget(for aSelector: Selector!)
+        -> Any? {
+        if let inner, inner.responds(to: aSelector) { return inner }
+        return super.forwardingTarget(for: aSelector)
+    }
+}
+
 private struct WindowReader: NSViewRepresentable {
     let found: (NSWindow) -> Void
 
