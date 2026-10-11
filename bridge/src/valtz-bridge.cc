@@ -356,6 +356,168 @@ Core::choose_assistant(const std::string& request_json)
   });
 }
 
+// ---- the agent ------------------------------------------------------------
+
+std::string
+Core::agent_start(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto pid = ProjectId::parse(jget<std::string>(*j, "project", ""));
+    if (!pid) {
+      return err(Code::InvalidArgument, "bad project id");
+    }
+    AgentRequest req;
+    req.project = *pid;
+    req.prompt = jget<std::string>(*j, "prompt", "");
+    if (auto c = AssetId::parse(jget<std::string>(*j, "composition", ""))) {
+      req.composition = *c;
+    }
+    req.row = row_of(*j);
+    req.review = jget(*j, "review", true);
+    req.backend = jget<std::string>(*j, "backend", "");
+    auto id = _impl->ctl->agent_start(std::move(req));
+    if (!id.ok()) {
+      return err(id.error());
+    }
+    return ok({{"agent", *id}});
+  });
+}
+
+std::string
+Core::agent_say(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->agent_say(jget<std::string>(*j, "agent", ""),
+                                    jget<std::string>(*j, "text", ""));
+    return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::agent_review(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->agent_review(
+        jget<std::string>(*j, "agent", ""), jget(*j, "step", 0),
+        jget<std::string>(*j, "decision", "approve"),
+        jget(*j, "args", Json()), jget<std::string>(*j, "note", ""));
+    return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::agent_control(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    const auto id = jget<std::string>(*j, "agent", "");
+    const auto action = jget<std::string>(*j, "action", "");
+    auto& c = *_impl->ctl;
+    Status st = action == "pause"    ? c.agent_pause(id)
+              : action == "resume" ? c.agent_resume(id)
+              : action == "stop"   ? c.agent_stop(id)
+              : action == "review" ? c.agent_set_review(id, true)
+              : action == "auto"   ? c.agent_set_review(id, false)
+                                   : make_error(Code::InvalidArgument,
+                                                "no such agent action");
+    return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::agent_state(const std::string& request_json) const
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    Json st = _impl->ctl->agent_state(jget<std::string>(*j, "agent", ""));
+    if (st.is_null()) {
+      return err(Code::NotFound, "no such agent session");
+    }
+    // Each step's arguments and result as text, as the app shows them;
+    // an ask_user's question by itself.
+    for (auto& step : st["steps"]) {
+      step["args_text"] = to_text(jget(step, "args", Json::object()));
+      if (step.contains("result")) {
+        step["result_text"] = to_text(step["result"]);
+      }
+      if (jget<std::string>(step, "tool", "") == "ask_user") {
+        step["question"] = jget<std::string>(
+            jget(step, "args", Json::object()), "question", "");
+      }
+    }
+    return ok({{"session", std::move(st)}});
+  });
+}
+
+std::string
+Core::agents(const std::string& request_json) const
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto pid = ProjectId::parse(jget<std::string>(*j, "project", ""));
+    if (!pid) {
+      return err(Code::InvalidArgument, "bad project id");
+    }
+    return ok({{"agents", _impl->ctl->agents(*pid)}});
+  });
+}
+
+std::string
+Core::agent_settings() const
+{
+  return guarded([&] { return ok(_impl->ctl->agent_settings()); });
+}
+
+std::string
+Core::set_agent_settings(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->set_agent_settings(*j);
+    return st.ok() ? ok(_impl->ctl->agent_settings()) : err(st.error());
+  });
+}
+
+std::string
+Core::set_agent_key(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    std::string key = jget<std::string>(*j, "key", "");
+    auto st = _impl->ctl->set_agent_key(jget<std::string>(*j, "provider", ""),
+                                        key);
+    std::fill(key.begin(), key.end(), '\0');
+    return st.ok() ? ok(_impl->ctl->agent_settings()) : err(st.error());
+  });
+}
+
 std::string
 Core::log_since(const std::string& request_json) const
 {
@@ -417,6 +579,7 @@ Core::auto_json() const
                           {"runs", _impl->ctl->runs(*m, a.modality, a.op)}});
       }
       out[a.modality][a.op] = {{"chosen", a.chosen},
+                               {"waits", a.waits},
                                {"models", std::move(models)}};
     }
     return to_text(out);

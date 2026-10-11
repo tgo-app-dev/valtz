@@ -1,0 +1,344 @@
+// The controller's AGENT: its sessions, the loop each runs, the tools it
+// calls (agent-tools.cc), the backends its turns go to -- this Mac's
+// helper or a fleet member's (here), a cloud API (agent/cloud.mm) -- and
+// the turns this Mac serves for a member's sessions. DESIGN §9b.
+//
+// A private header: agent.cc and agent-tools.cc only.
+
+#ifndef VALTZ_CONTROLLER_AGENT_HOST_H
+#define VALTZ_CONTROLLER_AGENT_HOST_H
+
+#include "valtz/agent/agent.h"
+#include "valtz/controller/controller.h"
+#include "valtz/fleet/fleet.h"
+
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace valtz {
+
+class Controller::AgentHost {
+public:
+  explicit AgentHost(Controller& c);
+  ~AgentHost();
+
+  Result<std::string> start(AgentRequest);
+  Status say(const std::string& id, const std::string& text);
+  Status review(const std::string& id, int step, const std::string& what,
+                const Json& args, const std::string& note);
+  Status set_review(const std::string& id, bool review);
+  Status pause(const std::string& id);
+  Status resume(const std::string& id);
+  Status stop(const std::string& id);
+  Json state(const std::string& id) const;
+  Json list(ProjectId) const;
+
+  Json settings() const;
+  Status set_settings(const Json&);
+  Json tools_json() const;
+
+  // A job's event as the controller posts it: an agent's picture landing
+  // (handled on the host's own thread, never the poster's).
+  void on_event(const std::string& kind, JobId job, const Json& data);
+  // The project closing: its sessions stopped.
+  void project_closing(ProjectId);
+
+  // ---- turns served for a fleet member's sessions
+  // The engine job for a member's turn: the helper's, its context kept
+  // under the member's key in this Mac's fleet folder, as long as its
+  // lease. `dir`: where a served job's files go.
+  Result<engine::JobSpec> served_turn(const fleet::Offer&,
+                                      const std::string& from,
+                                      const std::filesystem::path& dir);
+  // A member's session over: its context let go.
+  void close_served(const std::string& from, const std::string& key);
+
+  void shutdown();
+
+  // ---- a session
+  struct Step {
+    int                    n = 0;
+    std::string            call_id;
+    std::string            tool;
+    std::string            title;
+    Json                   args = Json::object();
+    // proposed | running | waiting (its picture not yet landed) | done
+    // | failed | skipped
+    std::string            state;
+    Json                   result;
+    std::string            error;
+    std::optional<JobId>   job;
+  };
+  // Where a picture it generates goes when it lands -- or a SOUND (a
+  // song, a voice-over): onto a timeline from `start`, cut at `seconds`,
+  // at its volume, faded in and out.
+  struct Landing {
+    std::string                 session;
+    int                         step = 0;
+    ProjectId                   project;
+    std::optional<AssetId>      composition;
+    std::int64_t                page = 0;      // from 0
+    std::optional<std::array<double, 4>> box;  // x, y, width, height
+    bool                        bottom = false;
+    bool                        sound = false;
+    std::int64_t                start = 0;     // the timeline's frames
+    double                      seconds = 0;   // 0: as long as it is
+    double                      volume = 1;
+    double                      fade_in = 0;
+    double                      fade_out = 0;
+    // Music: ended with the clips, if they end before it would.
+    bool                        fit = false;
+  };
+  struct Decision {
+    int         step = 0;
+    std::string what;
+    Json        args;
+    std::string note;
+  };
+  struct Session {
+    std::string                         id;
+    ProjectId                           project;
+    std::optional<AssetId>              target;
+    std::string                         prompt;
+    std::vector<AssetId>                row;
+    std::vector<agent::Message>         messages;
+    std::vector<Step>                   steps;
+    std::unique_ptr<agent::Backend>     backend;
+    std::filesystem::path               dir;
+    mutable std::mutex                  mu;
+    std::condition_variable             cv;
+    std::string                         state = "starting";
+    bool                                review = true;
+    bool                                pause_asked = false;
+    bool                                stop_asked = false;
+    std::atomic<bool>                   cancel{false};
+    std::deque<std::string>             said;
+    std::optional<Decision>             decision;
+    // Its pictures not yet landed, and what landed since the model was
+    // last told.
+    std::set<JobId>                     pending;
+    std::vector<Json>                   landed;
+    // The person's question it asked (ask_user), and the answer.
+    std::optional<std::string>          answer;
+    std::string                         writing;
+    std::string                         error;
+    // Its message as the app words it: {message, key, args}.
+    Json                                error_fields = Json::object();
+    int                                 turns = 0;
+    Json                                usage = Json::object();
+    // The last turn's cost and speed (agent::turn_stats).
+    Json                                stats = Json::object();
+    std::int64_t                        created_ms = 0;
+    std::thread                         thread;
+  };
+
+  // ---- a tool (agent-tools.cc)
+  using ToolFn = Result<Json> (AgentHost::*)(
+      Session&, Step&, const Json&, std::vector<std::filesystem::path>&);
+  struct Tool {
+    std::string name;
+    std::string kind;   // read | edit | generate
+    std::string title;
+    std::string description;
+    Json        parameters;
+    ToolFn      run = nullptr;
+  };
+  static const std::vector<Tool>& tools();
+  static std::vector<agent::ToolSpec> tool_specs();
+
+private:
+  // This Mac's helper, or a fleet member's (agent.cc).
+  class HelperBackend;
+
+  void run_(Session& s);
+  // Between steps: paused, it waits; stopped, false.
+  bool gate_(Session& s);
+  // The person's next words (done, failed): false when stopped.
+  bool wait_words_(Session& s);
+  void set_state_(Session& s, std::string state);
+  void post_(Session& s, std::optional<int> step = std::nullopt);
+  Json state_json_(const Session& s, bool messages) const;
+  void save_(Session& s);
+  std::shared_ptr<Session> find_(const std::string& id) const;
+  // The system message: the guide, the project as it is, the request.
+  std::string system_text_(const Session& s);
+  std::unique_ptr<agent::Backend> backend_(const std::string& kind,
+                                           const std::string& key,
+                                           const std::filesystem::path& dir);
+  // Its pictures waited for (wait_for_generations; done with some
+  // still out): false when stopped.
+  bool wait_pending_(Session& s);
+  // What landed since the model was last told, as a user message.
+  void tell_landed_(Session& s);
+  void land_(JobId job, const std::string& kind, const Json& data);
+  void housekeeping_();
+
+  // ---- the tools (agent-tools.cc)
+  Result<Json> t_get_project(Session&, Step&, const Json&,
+                             std::vector<std::filesystem::path>&);
+  Result<Json> t_get_composition(Session&, Step&, const Json&,
+                                 std::vector<std::filesystem::path>&);
+  Result<Json> t_view_page(Session&, Step&, const Json&,
+                           std::vector<std::filesystem::path>&);
+  Result<Json> t_create_composition(Session&, Step&, const Json&,
+                                    std::vector<std::filesystem::path>&);
+  Result<Json> t_add_pages(Session&, Step&, const Json&,
+                           std::vector<std::filesystem::path>&);
+  Result<Json> t_remove_page(Session&, Step&, const Json&,
+                             std::vector<std::filesystem::path>&);
+  Result<Json> t_add_text(Session&, Step&, const Json&,
+                          std::vector<std::filesystem::path>&);
+  Result<Json> t_add_shape(Session&, Step&, const Json&,
+                           std::vector<std::filesystem::path>&);
+  Result<Json> t_update_object(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  Result<Json> t_remove_object(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  Result<Json> t_place_asset(Session&, Step&, const Json&,
+                             std::vector<std::filesystem::path>&);
+  Result<Json> t_set_layer_box(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  Result<Json> t_set_layer_pages(Session&, Step&, const Json&,
+                                 std::vector<std::filesystem::path>&);
+  Result<Json> t_arrange_layer(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  Result<Json> t_remove_layer(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
+  Result<Json> t_rename_layer(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
+  Result<Json> t_set_layer_visible(Session&, Step&, const Json&,
+                                   std::vector<std::filesystem::path>&);
+  Result<Json> t_adjust_layer(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
+  Result<Json> t_create_prompt(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  Result<Json> t_generate_image(Session&, Step&, const Json&,
+                                std::vector<std::filesystem::path>&);
+  Result<Json> t_wait_for_generations(Session&, Step&, const Json&,
+                                      std::vector<std::filesystem::path>&);
+  Result<Json> t_ask_user(Session&, Step&, const Json&,
+                          std::vector<std::filesystem::path>&);
+  // ---- timelines: clips, sounds, music (agent-tools.cc)
+  Result<Json> t_describe_clip(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  Result<Json> t_view_frames(Session&, Step&, const Json&,
+                             std::vector<std::filesystem::path>&);
+  Result<Json> t_add_clip(Session&, Step&, const Json&,
+                          std::vector<std::filesystem::path>&);
+  Result<Json> t_add_sound(Session&, Step&, const Json&,
+                           std::vector<std::filesystem::path>&);
+  Result<Json> t_set_layer_time(Session&, Step&, const Json&,
+                                std::vector<std::filesystem::path>&);
+  Result<Json> t_set_layer_sound(Session&, Step&, const Json&,
+                                 std::vector<std::filesystem::path>&);
+  Result<Json> t_set_transition(Session&, Step&, const Json&,
+                                std::vector<std::filesystem::path>&);
+  Result<Json> t_set_timeline_length(Session&, Step&, const Json&,
+                                     std::vector<std::filesystem::path>&);
+  Result<Json> t_generate_music(Session&, Step&, const Json&,
+                                std::vector<std::filesystem::path>&);
+  Result<Json> t_generate_voiceover(Session&, Step&, const Json&,
+                                    std::vector<std::filesystem::path>&);
+
+  // Tool helpers (agent-tools.cc)
+  Result<AssetId> composition_(const Session& s, const Json& args);
+  Result<std::string> layer_(const Json& args);
+  // A page argument (from 1) as the composition's (from 0), checked.
+  Result<std::int64_t> page_(ProjectId, AssetId comp, const Json& args,
+                             const char* key = "page");
+  // A layer's box on its composition's frame, from its placement.
+  Json layer_box_(ProjectId, const project::Asset& comp,
+                  const project::Layer&);
+  // The crop that lays content of `content` pixels in a box of the frame.
+  static media::Crop box_crop_(media::PixelSize content,
+                               media::PixelSize frame,
+                               const std::array<double, 4>& box);
+  Result<std::array<double, 4>> box_(const Json& args,
+                                     media::PixelSize frame);
+  // The markup layer a page's words and shapes go on, and its objects.
+  Result<std::string> markup_on_(ProjectId, AssetId comp,
+                                 std::int64_t page);
+  Result<Json> objects_(ProjectId, AssetId comp, const std::string& layer);
+  // The markup words and shapes go on: a still's page's (`page`), or on
+  // a timeline one from `start` for `duration` seconds -- and where, as
+  // the result tells it.
+  Result<std::pair<std::string, Json>> markup_for_(ProjectId, AssetId comp,
+                                                   const Json& args);
+  // ---- timelines (agent-tools.cc): the model speaks SECONDS -- of the
+  // timeline, of a clip's own -- and these turn them into frames.
+  // A timeline the session works on (or the one named): refused for a
+  // still.
+  Result<AssetId> timeline_(const Session& s, const Json& args);
+  Rational rate_(ProjectId, AssetId comp);
+  // Each layer's place in time, resolved in seconds, by its id.
+  Result<std::map<std::string, media::LayerTiming>> timings_(ProjectId,
+                                                             AssetId comp);
+  // What a layer is, as the timeline tools tell it: "clip", "picture",
+  // "title" (a markup), "sound", or "nothing".
+  std::string layer_kind_(ProjectId, const project::Layer&);
+  // The rate a source's marks count at: a clip's frames, a sound's
+  // milliseconds, a composition's own frames -- on a composition of
+  // sound (`sound_only`), a clip's sound's milliseconds.
+  Rational mark_rate_(ProjectId, AssetId source, bool sound_only);
+  // A timeline's markup for `length` frames from `start`: a markup layer
+  // there exactly (a title and the panel behind it share one), else a
+  // new one on top.
+  Result<std::string> title_layer_(ProjectId, AssetId comp,
+                                   std::int64_t start, std::int64_t length);
+  // A layer's volume over its `seconds`, faded in and out (keys at its
+  // own frames); 1 and no fades: as it is.
+  Status shape_sound_(ProjectId, AssetId comp, const std::string& layer,
+                      double volume, double fade_in, double fade_out,
+                      double seconds);
+  // Where a timeline's last clip or picture ends, seconds (0: none).
+  double shown_end_(ProjectId, AssetId comp);
+  // A clip's or sound's layer cut to end at `end` (timeline seconds), its
+  // fades laid again at its new end.
+  Status cut_at_(ProjectId, AssetId comp, const std::string& layer,
+                 double end);
+  // A sound that LANDED, laid as its Landing says: cut, its volume.
+  Json lay_sound_(const Landing&, AssetId comp, const std::string& layer,
+                  AssetId asset);
+  // A job of its own waited for (a clip's summary): false when stopped.
+  bool wait_job_(Session& s, JobId job);
+
+  Controller&                                      _c;
+  mutable std::mutex                               _mu;
+  std::map<std::string, std::shared_ptr<Session>>  _sessions;
+  std::map<JobId, Landing>                         _landings;
+  // Settings (<support>/agent.json).
+  Json                                             _settings;
+  // Events to handle on the housekeeping thread: picture landings.
+  struct Pending {
+    JobId       job;
+    std::string kind;
+    Json        data;
+  };
+  std::deque<Pending>                              _events;
+  // Turns served for members: each session's key, until when it is
+  // kept, and the folder of its saved context.
+  struct Lease {
+    std::chrono::steady_clock::time_point until;
+    std::filesystem::path                 dir;
+  };
+  std::map<std::string, Lease>                     _leases;
+  std::condition_variable                          _cv;
+  bool                                             _stop = false;
+  std::thread                                      _house;
+};
+
+}  // namespace valtz
+
+#endif

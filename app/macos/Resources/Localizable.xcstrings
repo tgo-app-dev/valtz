@@ -47,6 +47,16 @@
         }
       }
     },
+    "%@ (this Mac)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@（本机）"
+          }
+        }
+      }
+    },
     "%@ -- double-click to name it" : {
       "localizations" : {
         "zh-Hans" : {
@@ -119,6 +129,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 繁忙"
+          }
+        }
+      }
+    },
+    "%@ cached" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已缓存 %@"
           }
         }
       }
@@ -326,12 +346,68 @@
         }
       }
     },
+    "%@ on %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ on %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@（在 %2$@ 上）"
+          }
+        }
+      }
+    },
+    "%@ on this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@（在这台 Mac 上）"
+          }
+        }
+      }
+    },
     "%@ pages" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 页"
+          }
+        }
+      }
+    },
+    "%@ reused" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "复用 %@"
+          }
+        }
+      }
+    },
+    "%@ reused, in memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "复用 %@（内存中）"
+          }
+        }
+      }
+    },
+    "%@ reused, read from disk" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "复用 %@（从磁盘读回）"
           }
         }
       }
@@ -430,6 +506,16 @@
         }
       }
     },
+    "%@ withheld" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 项不共享"
+          }
+        }
+      }
+    },
     "%@ °C" : {
       "localizations" : {
         "zh-Hans" : {
@@ -494,6 +580,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ · ANE"
+          }
+        }
+      }
+    },
+    "%@ · Downloading" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ · 下载中"
           }
         }
       }
@@ -680,6 +776,32 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@：%2$@"
+          }
+        }
+      }
+    },
+    "%@: GPU %@, ANE %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@: GPU %2$@, ANE %3$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@：GPU %2$@，ANE %3$@"
+          }
+        }
+      }
+    },
+    "%@: not told" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@：未报告"
           }
         }
       }
@@ -975,6 +1097,16 @@
         }
       }
     },
+    "A chat with the helper goes to a member's own helper." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "与助手的对话会交给成员自己的助手。"
+          }
+        }
+      }
+    },
     "A clip is read a frame at a time, 576 × 320 at most, cut into scenes where the picture changes, and each scene told in a few sentences, then the whole. More frames see more and take longer: each is about 180 of the model's words to read." : {
       "localizations" : {
         "zh-Hans" : {
@@ -1036,11 +1168,22 @@
       }
     },
     "A job this Mac cannot run, or cannot run now because it is busy, goes to a member that can and is free — generations and the helper's prompts alike." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "这台 Mac 无法运行的任务，或因忙碌而暂时无法运行的任务，会交给能运行且空闲的成员——生成和助手的提示词都是如此。"
+          }
+        }
+      }
+    },
+    "A key is kept in your Keychain." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "钥匙串中已存有密钥。"
           }
         }
       }
@@ -1051,6 +1194,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "其中一个图层通过蒙版与另外的图层相关联"
+          }
+        }
+      }
+    },
+    "A member keeps its context" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "成员保留其上下文"
+          }
+        }
+      }
+    },
+    "A model's own policy comes before its task's. Listed: the models on this Mac or offered by a member." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型自己的策略优先于其任务的策略。列出的是本机上的模型和成员提供的模型。"
+          }
+        }
+      }
+    },
+    "A new composition" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "新的合成"
           }
         }
       }
@@ -1155,6 +1328,16 @@
         }
       }
     },
+    "A task withheld is not offered: the members run it themselves or send it to another member." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不共享的任务不会提供给其他成员：它们会自己运行，或交给另一个成员。"
+          }
+        }
+      }
+    },
     "AAC (.m4a)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1201,6 +1384,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "ANE 模块"
+          }
+        }
+      }
+    },
+    "API Key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "API 密钥"
           }
         }
       }
@@ -1285,6 +1478,16 @@
         }
       }
     },
+    "Add Clip" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加片段"
+          }
+        }
+      }
+    },
     "Add Layer" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1321,6 +1524,46 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "添加页面"
+          }
+        }
+      }
+    },
+    "Add Pages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加页面"
+          }
+        }
+      }
+    },
+    "Add Shape" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加形状"
+          }
+        }
+      }
+    },
+    "Add Sound" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加声音"
+          }
+        }
+      }
+    },
+    "Add Text" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加文字"
           }
         }
       }
@@ -1436,6 +1679,16 @@
         }
       }
     },
+    "Adjust Layer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "调整图层"
+          }
+        }
+      }
+    },
     "Adjust crop" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1533,6 +1786,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "图层结束之后"
+          }
+        }
+      }
+    },
+    "Agent" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体"
+          }
+        }
+      }
+    },
+    "Agent Turns" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体回合"
+          }
+        }
+      }
+    },
+    "Agent · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体 · %@"
           }
         }
       }
@@ -1639,6 +1922,26 @@
         }
       }
     },
+    "Answer in the box below." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请在下面的输入框中回答。"
+          }
+        }
+      }
+    },
+    "Anthropic" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Anthropic"
+          }
+        }
+      }
+    },
     "Aperture" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1689,12 +1992,32 @@
         }
       }
     },
+    "Arrange Layer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "排列图层"
+          }
+        }
+      }
+    },
     "Artist" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "作者"
+          }
+        }
+      }
+    },
+    "As Its Task" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "同其任务"
           }
         }
       }
@@ -1749,6 +2072,16 @@
         }
       }
     },
+    "Ask First" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "先询问"
+          }
+        }
+      }
+    },
     "Ask Now" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1759,12 +2092,42 @@
         }
       }
     },
+    "Ask You" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "询问你"
+          }
+        }
+      }
+    },
     "Ask a member of the fleet for its secret." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "请向舰队的成员索取密钥。"
+          }
+        }
+      }
+    },
+    "Ask before each step" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每一步之前先询问"
+          }
+        }
+      }
+    },
+    "Ask for something to make — “a five-slide deck on the water cycle, a picture on each”" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请它做点什么——“一份关于水循环的五页幻灯片，每页一张图片”"
           }
         }
       }
@@ -1942,6 +2305,16 @@
         }
       }
     },
+    "Auto (%@ · Downloading)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动（%@ · 下载中）"
+          }
+        }
+      }
+    },
     "Auto (%@)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2049,6 +2422,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "B 帧"
+          }
+        }
+      }
+    },
+    "Back" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "后退"
           }
         }
       }
@@ -2351,6 +2734,16 @@
         }
       }
     },
+    "By default a job this Mac cannot run, or cannot run now because it is busy, goes to a member that can and is free — generations and the helper's prompts alike. Offload Policies set it task by task." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "默认情况下，本机无法运行或因忙碌暂时无法运行的任务，会交给能运行且空闲的成员——生成和助手的提示都是如此。分流策略可按任务设置。"
+          }
+        }
+      }
+    },
     "Bypass" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2517,6 +2910,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "更改"
+          }
+        }
+      }
+    },
+    "Change Text or Shape" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "更改文字或形状"
           }
         }
       }
@@ -2721,6 +3124,16 @@
         }
       }
     },
+    "Clip Upscaling" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "视频片段放大"
+          }
+        }
+      }
+    },
     "Clip's sound" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2731,12 +3144,32 @@
         }
       }
     },
+    "Clips" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "视频片段"
+          }
+        }
+      }
+    },
     "Clone" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "克隆"
+          }
+        }
+      }
+    },
+    "Close" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关闭"
           }
         }
       }
@@ -2777,6 +3210,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "关闭此提示词"
+          }
+        }
+      }
+    },
+    "Cloud" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "云端"
           }
         }
       }
@@ -3340,6 +3783,16 @@
         }
       }
     },
+    "Debugging" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "调试"
+          }
+        }
+      }
+    },
     "Decline" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3734,7 +4187,6 @@
       }
     },
     "Done" : {
-      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -4079,6 +4531,16 @@
         }
       }
     },
+    "Each step that changes the document waits for your word" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每一步修改文稿的操作都要等你同意"
+          }
+        }
+      }
+    },
     "Edit" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4209,6 +4671,16 @@
         }
       }
     },
+    "End the session; what it made stays" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "结束会话；已做出的内容保留"
+          }
+        }
+      }
+    },
     "Engine" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4242,7 +4714,6 @@
       }
     },
     "Enhance" : {
-      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -4342,6 +4813,16 @@
         }
       }
     },
+    "Everything" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "全部"
+          }
+        }
+      }
+    },
     "Everything in this one will be deleted. To keep it, use Save As first." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -4349,6 +4830,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "当前项目中的所有内容都将被删除。若要保留，请先使用“存储为”。"
+          }
+        }
+      }
+    },
+    "Experimental" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "实验性功能"
           }
         }
       }
@@ -4725,6 +5216,16 @@
         }
       }
     },
+    "Fleet First" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "舰队优先"
+          }
+        }
+      }
+    },
     "Fleet Jobs" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4831,6 +5332,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "格式："
+          }
+        }
+      }
+    },
+    "Forward" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "前进"
           }
         }
       }
@@ -5072,12 +5583,32 @@
         }
       }
     },
+    "Generate Music" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成音乐"
+          }
+        }
+      }
+    },
     "Generate Picture" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "生成图片"
+          }
+        }
+      }
+    },
+    "Generate Voice-Over" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成旁白"
           }
         }
       }
@@ -5984,12 +6515,32 @@
         }
       }
     },
+    "It asks you" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它在问你"
+          }
+        }
+      }
+    },
     "It drafts a block of words at a time, which the model checks in one pass. It holds more memory beside the model; on a Mac without much to spare, the MTP head is as fast." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "它一次起草一段词，由模型一次性校验。它在模型之外还要占用更多内存；在内存不宽裕的 Mac 上，MTP 预测头一样快。"
+          }
+        }
+      }
+    },
+    "It stops after the step it is on" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "完成当前这一步后暂停"
           }
         }
       }
@@ -6110,6 +6661,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "逐行写出其中的话语和听到的声音，存为文本素材"
+          }
+        }
+      }
+    },
+    "Its turns run on this Mac's helper -- or on a fleet member's, as Offload Policies send Agent Turns: a Mac with the memory for the model, beside one with the GPU for the pictures. A member keeps the conversation in memory between turns, as long as set here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它的回合在这台 Mac 的助手上运行——或者按照“分流策略”对“智能体回合”的设置，在机群成员的助手上运行：一台 Mac 提供模型所需的内存，另一台用 GPU 生成图片。成员在回合之间把对话保留在内存中，时长按这里的设置。"
           }
         }
       }
@@ -6368,6 +6929,26 @@
         }
       }
     },
+    "Layer Pages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图层页面"
+          }
+        }
+      }
+    },
+    "Layer Volume" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图层音量"
+          }
+        }
+      }
+    },
     "Layer name" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6518,6 +7099,16 @@
         }
       }
     },
+    "Link" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "链接"
+          }
+        }
+      }
+    },
     "Linked" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6610,6 +7201,16 @@
         }
       }
     },
+    "Local First" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "本机优先"
+          }
+        }
+      }
+    },
     "Local Network" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6636,6 +7237,46 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "日志"
+          }
+        }
+      }
+    },
+    "Look at Frames" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "查看画面"
+          }
+        }
+      }
+    },
+    "Look at a Composition" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "查看合成"
+          }
+        }
+      }
+    },
+    "Look at a Page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "查看页面"
+          }
+        }
+      }
+    },
+    "Look at the Project" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "查看项目"
           }
         }
       }
@@ -6786,6 +7427,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "生成语音"
+          }
+        }
+      }
+    },
+    "Make a Composition" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "新建合成"
           }
         }
       }
@@ -7586,6 +8237,16 @@
         }
       }
     },
+    "No Results" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无结果"
+          }
+        }
+      }
+    },
     "No assets yet" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7637,6 +8298,16 @@
         }
       }
     },
+    "No key is kept yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尚未保存密钥。"
+          }
+        }
+      }
+    },
     "No layers" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7664,6 +8335,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无模型"
+          }
+        }
+      }
+    },
+    "No model is on this Mac or offered by a member yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "本机还没有模型，成员也还没有提供模型。"
+          }
+        }
+      }
+    },
+    "No model is on this Mac yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "本机还没有模型。"
           }
         }
       }
@@ -7838,6 +8529,16 @@
         }
       }
     },
+    "Not run on this Mac" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "本机不运行此任务"
+          }
+        }
+      }
+    },
     "Not set" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7868,12 +8569,32 @@
         }
       }
     },
+    "Not this one: it is told, with your note" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跳过这一步：会连同你的备注告诉它"
+          }
+        }
+      }
+    },
     "Not weights Valtz can use here" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "不是 Valtz 在此可用的权重"
+          }
+        }
+      }
+    },
+    "Note for Skip (optional)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跳过时的备注（可选）"
           }
         }
       }
@@ -7958,12 +8679,43 @@
         }
       }
     },
+    "Offered Now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "当前提供"
+          }
+        }
+      }
+    },
     "Offered to the Fleet" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "提供给舰队"
+          }
+        }
+      }
+    },
+    "Offload" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分流"
+          }
+        }
+      }
+    },
+    "Offload Policies" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分流策略"
           }
         }
       }
@@ -8201,6 +8953,16 @@
         }
       }
     },
+    "Only models on this Mac are offered. One downloaded later is offered too, until it is withheld." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "只提供本机上的模型。之后下载的模型也会提供，除非设为不共享。"
+          }
+        }
+      }
+    },
     "Only on Page %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8307,6 +9069,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "展开此部分"
+          }
+        }
+      }
+    },
+    "OpenAI" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "OpenAI"
+          }
+        }
+      }
+    },
+    "OpenAI-compatible server" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "OpenAI 兼容服务器"
           }
         }
       }
@@ -8533,6 +9315,16 @@
         }
       }
     },
+    "Paused" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已暂停"
+          }
+        }
+      }
+    },
     "Peak" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8583,12 +9375,42 @@
         }
       }
     },
+    "Picture Edits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图片编辑"
+          }
+        }
+      }
+    },
+    "Picture Upscaling" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图片放大"
+          }
+        }
+      }
+    },
     "Picture to Edit" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "设为要编辑的图片"
+          }
+        }
+      }
+    },
+    "Pictures" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图片"
           }
         }
       }
@@ -8639,6 +9461,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放置"
+          }
+        }
+      }
+    },
+    "Place Asset" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放置素材"
           }
         }
       }
@@ -9054,12 +9886,32 @@
         }
       }
     },
+    "Provider" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "服务商"
+          }
+        }
+      }
+    },
     "Put in a New Folder" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放入新文件夹"
+          }
+        }
+      }
+    },
+    "Put it away: the next request starts anew" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "收起：下一个请求将重新开始"
           }
         }
       }
@@ -9442,6 +10294,16 @@
         }
       }
     },
+    "Remove" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除"
+          }
+        }
+      }
+    },
     "Remove Asset" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9479,6 +10341,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "移除过时项（%lld）"
+          }
+        }
+      }
+    },
+    "Remove Text or Shape" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除文字或形状"
           }
         }
       }
@@ -9966,6 +10838,36 @@
         }
       }
     },
+    "Run" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "执行"
+          }
+        }
+      }
+    },
+    "Run All" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "全部执行"
+          }
+        }
+      }
+    },
+    "Run on Their Own" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动执行"
+          }
+        }
+      }
+    },
     "Running hot but still at full clock. A fanless Mac usually starts slowing down if the load continues." : {
       "localizations" : {
         "zh-Hans" : {
@@ -10006,12 +10908,52 @@
         }
       }
     },
+    "Runs here, never sent to a member." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在本机运行，从不交给成员。"
+          }
+        }
+      }
+    },
+    "Runs here, unless this Mac cannot run it or is busy: then a free member that can." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在本机运行；本机无法运行或正忙时，交给能运行的空闲成员。"
+          }
+        }
+      }
+    },
     "Runs in place of the model's own (one at a time)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "替代模型自带的部件运行（一次一个）"
+          }
+        }
+      }
+    },
+    "Runs on a free member that can, else here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "交给能运行的空闲成员；没有则在本机运行。"
+          }
+        }
+      }
+    },
+    "Runs on a member only, never here: refused while none can take it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "只在成员上运行，从不在本机运行；没有成员能接手时会被拒绝。"
           }
         }
       }
@@ -10122,6 +11064,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "存储项目"
+          }
+        }
+      }
+    },
+    "Save Prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保存提示词"
           }
         }
       }
@@ -10302,6 +11254,16 @@
         }
       }
     },
+    "Server" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "服务器"
+          }
+        }
+      }
+    },
     "Set" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10409,6 +11371,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "共享"
+          }
+        }
+      }
+    },
+    "Shared Capabilities" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "共享的能力"
           }
         }
       }
@@ -10533,6 +11505,16 @@
         }
       }
     },
+    "Show Speed in the Agent's Output" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在智能体的输出中显示速度"
+          }
+        }
+      }
+    },
     "Show Status Bar" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10599,6 +11581,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示选项"
+          }
+        }
+      }
+    },
+    "Show or Hide Layer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示或隐藏图层"
           }
         }
       }
@@ -10824,6 +11816,16 @@
         }
       }
     },
+    "Skip" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跳过"
+          }
+        }
+      }
+    },
     "Smaller on the canvas" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -10906,6 +11908,16 @@
       }
     },
     "Song" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "歌曲"
+          }
+        }
+      }
+    },
+    "Songs" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -11428,6 +12440,26 @@
         }
       }
     },
+    "Stopped" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已停止"
+          }
+        }
+      }
+    },
+    "Stopped by an error" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "因错误而停止"
+          }
+        }
+      }
+    },
     "Storage" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11548,6 +12580,16 @@
         }
       }
     },
+    "TFLOPS" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "TFLOPS"
+          }
+        }
+      }
+    },
     "TIFF" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11658,6 +12700,26 @@
         }
       }
     },
+    "Tasks" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "任务"
+          }
+        }
+      }
+    },
+    "Tell the agent what to do next" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "告诉智能体接下来做什么"
+          }
+        }
+      }
+    },
     "Temperature" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11748,6 +12810,16 @@
         }
       }
     },
+    "The Agent tab over the prompt: ask for a deck, a poster or a video of your clips with music, and a model builds it in your document with the editor's tools, a step at a time. Switched off, the tab goes, and a session at work stops." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "提示词上方的“智能体”标签：请它做一份演示文稿、一张海报，或用你的视频片段配上音乐剪成一段视频，模型会用编辑器的工具在你的文稿中一步一步完成。关闭后，该标签会消失，正在进行的会话也会停止。"
+          }
+        }
+      }
+    },
     "The GPU is busy but running below the clock it is rated for — steps take longer, and nothing in the generation is at fault. Better airflow under the Mac helps more than anything in software." : {
       "localizations" : {
         "zh-Hans" : {
@@ -11808,6 +12880,26 @@
         }
       }
     },
+    "The agent's turns go to the provider: your requests, its steps and the names and words in the project. Pictures it looks at go too." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体的回合会发送给服务商：你的请求、它的步骤，以及项目中的名称和文字。它查看的图片也会发送。"
+          }
+        }
+      }
+    },
+    "The arithmetic Valtz achieves, in trillions of operations a second (TFLOP/s). The first figure and the bar in front: the GPU's. The second figure and the grey bar after it: the Neural Engine's. The last figure, the bar's full length: the highest the two have reached together since Valtz started. Counted as the models that report it count it: the picture and video models' transformers, not yet their decoders or text encoders." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 实际达到的运算量，单位为每秒万亿次运算（TFLOP/s）。第一个数字和前面的条：GPU 的。第二个数字和其后的灰色条：神经网络引擎的。最后一个数字，即条的全长：两者合计自 Valtz 启动以来达到的最高值。按报告它的模型的计数方式统计：图片和视频模型的 Transformer，尚不包括它们的解码器和文本编码器。"
+          }
+        }
+      }
+    },
     "The clip is trimmed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11844,6 +12936,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "第一个数字和前面的条：Valtz 正在使用的内存，包括模型（它的内存占用，与“活动监视器”显示的一致）。第二个数字和后面的灰色条：整台 Mac 正在使用的内存（“活动监视器”中的“已使用内存”），占全部内存的多少。"
+          }
+        }
+      }
+    },
+    "The fleet's arithmetic: every member's GPU and Neural Engine TFLOP/s, this Mac's included, added up, of the highest the fleet has reached since Valtz started." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "舰队的运算量：每个成员（包括本机）的 GPU 和神经网络引擎 TFLOP/s 之和，以及自 Valtz 启动以来舰队达到的最高值。"
           }
         }
       }
@@ -12190,6 +13292,16 @@
         }
       }
     },
+    "Thermal" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "温度"
+          }
+        }
+      }
+    },
     "Thermal state unavailable." : {
       "localizations" : {
         "zh-Hans" : {
@@ -12220,12 +13332,42 @@
         }
       }
     },
+    "They apply while this Mac is in a fleet. It is in none now: every job runs here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这些策略在本机加入舰队时生效。本机目前不在任何舰队中：所有任务都在本机运行。"
+          }
+        }
+      }
+    },
     "Thinking" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "思考"
+          }
+        }
+      }
+    },
+    "Thinking…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "思考中…"
+          }
+        }
+      }
+    },
+    "Thinks On" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "思考位置"
           }
         }
       }
@@ -12270,6 +13412,16 @@
         }
       }
     },
+    "This engine does not count it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此引擎不统计该数据。"
+          }
+        }
+      }
+    },
     "This model has no few-step adapter" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12286,6 +13438,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "此模型自带调度"
+          }
+        }
+      }
+    },
+    "This one and every step after it, without asking" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这一步及之后的每一步，都不再询问"
           }
         }
       }
@@ -12366,6 +13528,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "时间线"
+          }
+        }
+      }
+    },
+    "Timeline Length" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "时间线长度"
           }
         }
       }
@@ -12520,6 +13692,16 @@
         }
       }
     },
+    "Transcription" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "转写"
+          }
+        }
+      }
+    },
     "Transcription, sound events" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12536,6 +13718,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Transformer"
+          }
+        }
+      }
+    },
+    "Transition" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "转场"
           }
         }
       }
@@ -12570,6 +13762,16 @@
         }
       }
     },
+    "Trim Layer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "修剪图层"
+          }
+        }
+      }
+    },
     "Trim the clip" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12586,6 +13788,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "修剪声音"
+          }
+        }
+      }
+    },
+    "Try Again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "重试"
           }
         }
       }
@@ -12687,6 +13899,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "字体"
+          }
+        }
+      }
+    },
+    "Under each of the agent's turns, in small type: the tokens it read (prefill) and wrote (decode), how fast, and how much of the conversation it went on from. The Agent is in Settings › Experimental." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在智能体的每一轮下方以小字显示：它读入（预填充）和写出（解码）的词元数、速度，以及沿用了多少已有对话。智能体位于“设置 › 实验性功能”。"
           }
         }
       }
@@ -13095,6 +14317,16 @@
         }
       }
     },
+    "Video Summaries" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "视频概要"
+          }
+        }
+      }
+    },
     "Video Summary" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13255,12 +14487,84 @@
         }
       }
     },
+    "Wait for Generations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "等待生成"
+          }
+        }
+      }
+    },
+    "Wait for Pictures" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "等待图片"
+          }
+        }
+      }
+    },
     "Wait for the work in progress to finish." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "请等待正在进行的工作完成。"
+          }
+        }
+      }
+    },
+    "Waiting for %@ to download" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "等待 %@ 下载完成"
+          }
+        }
+      }
+    },
+    "Waiting for generations…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "等待生成…"
+          }
+        }
+      }
+    },
+    "Waiting for its model to download: it joins the queue then." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在等待它的模型下载完成，届时加入队列。"
+          }
+        }
+      }
+    },
+    "Waiting for pictures…" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "等待图片…"
+          }
+        }
+      }
+    },
+    "Waiting for your word" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "等待你的确认"
           }
         }
       }
@@ -13291,6 +14595,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在升温。风扇（如有）已加速；无风扇的 Mac 可能已开始降速。"
+          }
+        }
+      }
+    },
+    "Watch a Clip" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "观看片段"
           }
         }
       }
@@ -13341,6 +14655,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "导出项目时使用的设置。每个素材保留自己的设置；其他帧率的片段会重新采样为项目的帧率。"
+          }
+        }
+      }
+    },
+    "What is still being built: switched on here to try it. It may change, or go." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仍在开发中的功能：在这里打开即可试用。它们可能会改变，也可能被移除。"
           }
         }
       }
@@ -13411,6 +14735,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "播放器在片段本身中的位置：片段自己的时间，而非时间线的"
+          }
+        }
+      }
+    },
+    "Where this Mac's own jobs run, task by task and model by model; and what it offers the other members." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "本机自己的任务在哪里运行（按任务、按模型设置），以及本机向其他成员提供什么。"
           }
         }
       }
@@ -13506,6 +14840,16 @@
         }
       }
     },
+    "Withhold" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不共享"
+          }
+        }
+      }
+    },
     "Words" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13522,6 +14866,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在为 %@ 处理舰队任务"
+          }
+        }
+      }
+    },
+    "Working…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "工作中…"
+          }
+        }
+      }
+    },
+    "Works On" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "处理对象"
           }
         }
       }
@@ -13820,6 +15184,16 @@
         }
       }
     },
+    "a new conversation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "新对话"
+          }
+        }
+      }
+    },
     "about %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13857,6 +15231,193 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "bf16 权重"
+          }
+        }
+      }
+    },
+    "core.agent_cloud_error" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{provider} stopped with an error: {why}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{provider} 因错误而停止：{why}"
+          }
+        }
+      }
+    },
+    "core.agent_cloud_refused" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{provider} refused the request (HTTP {status}): {why}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{provider} 拒绝了请求（HTTP {status}）：{why}"
+          }
+        }
+      }
+    },
+    "core.agent_cloud_unreachable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{url} could not be reached: {why}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法连接 {url}：{why}"
+          }
+        }
+      }
+    },
+    "core.agent_empty_request" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Say what the agent should do."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请说明要智能体做什么。"
+          }
+        }
+      }
+    },
+    "core.agent_keychain" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The Keychain did not keep the key ({status})."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "钥匙串未能保存该密钥（{status}）。"
+          }
+        }
+      }
+    },
+    "core.agent_no_cloud_model" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Name the cloud model in Settings › Agentic Helper."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请在“设置 › 智能助手”中填写云端模型。"
+          }
+        }
+      }
+    },
+    "core.agent_no_key" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No API key for {provider} is kept: add one in Settings › Agentic Helper."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尚未保存 {provider} 的 API 密钥：请在“设置 › 智能助手”中添加。"
+          }
+        }
+      }
+    },
+    "core.agent_no_session" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That agent session is not here any more."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "该智能体会话已不存在。"
+          }
+        }
+      }
+    },
+    "core.agent_step_not_waiting" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That step is not waiting for your word any more."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这一步已不再等待你的确认。"
+          }
+        }
+      }
+    },
+    "core.agent_stopped" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "That agent session has stopped: start another."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "该智能体会话已停止：请开始新的会话。"
+          }
+        }
+      }
+    },
+    "core.agent_too_many_turns" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "It took {turns} turns without finishing: say “go on” to let it continue."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它已进行了 {turns} 个回合仍未完成：说“继续”让它接着做。"
           }
         }
       }
@@ -13908,6 +15469,40 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "素材需要一个名称。"
+          }
+        }
+      }
+    },
+    "core.awaited_download_failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "It waited for {model} to download, and the download failed."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它在等待 {model} 下载完成，但下载失败了。"
+          }
+        }
+      }
+    },
+    "core.awaited_download_stopped" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "It waited for {model} to download, and the download was stopped."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它在等待 {model} 下载完成，但下载已停止。"
           }
         }
       }
@@ -14473,6 +16068,23 @@
         }
       }
     },
+    "core.fleet_only_no_member" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "It is set to run on the fleet only, and no member can take it now."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它被设为只在舰队上运行，而现在没有成员能接手。"
+          }
+        }
+      }
+    },
     "core.fleet_secret_short" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -14486,6 +16098,40 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "舰队的密钥至少有 8 个字符。"
+          }
+        }
+      }
+    },
+    "core.fleet_unknown_policy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“{policy}” is no offload policy: never, local-first, fleet-first or always."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“{policy}”不是分流策略：应为 never、local-first、fleet-first 或 always。"
+          }
+        }
+      }
+    },
+    "core.fleet_unknown_task" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“{name}” is no fleet task or model."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“{name}”不是舰队的任务或模型。"
           }
         }
       }
@@ -15782,6 +17428,52 @@
         }
       }
     },
+    "ctx %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上下文 %@"
+          }
+        }
+      }
+    },
+    "decode %@ s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "解码 %@ 秒"
+          }
+        }
+      }
+    },
+    "decode %@ tok" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "解码 %@ 词元"
+          }
+        }
+      }
+    },
+    "decode %@ tok · %@ tok/s" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "decode %1$@ tok · %2$@ tok/s"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "解码 %1$@ 词元 · %2$@ 词元/秒"
+          }
+        }
+      }
+    },
     "download a model to enable" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15963,6 +17655,32 @@
         }
       }
     },
+    "prefill %@ tok" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "预填充 %@ 词元"
+          }
+        }
+      }
+    },
+    "prefill %@ tok · %@ tok/s" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "prefill %1$@ tok · %2$@ tok/s"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "预填充 %1$@ 词元 · %2$@ 词元/秒"
+          }
+        }
+      }
+    },
     "presence penalty %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16033,6 +17751,26 @@
         }
       }
     },
+    "the cloud" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "云端"
+          }
+        }
+      }
+    },
+    "this Mac's helper" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这台 Mac 的助手"
+          }
+        }
+      }
+    },
     "top-k %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16049,6 +17787,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "top-p %@"
+          }
+        }
+      }
+    },
+    "turn %@ s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "本轮 %@ 秒"
           }
         }
       }

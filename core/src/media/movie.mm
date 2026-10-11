@@ -1,10 +1,12 @@
 #include "valtz/media/movie.h"
 
 #import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <vector>
 
 namespace valtz::media {
@@ -109,6 +111,102 @@ why(NSError* e)
            : std::string("unknown error");
 }
 
+// AAC as Apple's encoder takes it for `channels` of a sound at `rate` Hz:
+// at the sound's own rate where it encodes that one, else the nearest
+// above it that it does (48 kHz at most; the writer resamples), and at
+// the bit rate nearest `per_channel` a channel it allows there, never
+// above it. Asked for more than AAC carries -- 96 kb/s of an 8 kHz mono
+// sound, where it holds about 6 bits a sample -- the writer refused the
+// whole movie ("Cannot Encode Media"): a camcorder's AVI upscaled.
+NSDictionary*
+aac_settings(double rate, int channels, double per_channel)
+{
+  AudioFormatID aac = kAudioFormatMPEG4AAC;
+  double to = std::min(rate, 48000.0);
+  UInt32 size = 0;
+  if (AudioFormatGetPropertyInfo(
+          kAudioFormatProperty_AvailableEncodeSampleRates, sizeof(aac),
+          &aac, &size) == noErr && size >= sizeof(AudioValueRange)) {
+    // (Asked first, the size is the most it could be: the list is cut to
+    // what came back, which ends sooner -- zero ranges after.)
+    std::vector<AudioValueRange> rates(size / sizeof(AudioValueRange));
+    if (AudioFormatGetProperty(
+            kAudioFormatProperty_AvailableEncodeSampleRates, sizeof(aac),
+            &aac, &size, rates.data()) == noErr) {
+      rates.resize(size / sizeof(AudioValueRange));
+      std::erase_if(rates, [](const auto& r) { return r.mMaximum <= 0; });
+      const bool takes = std::ranges::any_of(rates, [&](const auto& r) {
+        return to >= r.mMinimum && to <= r.mMaximum;
+      });
+      if (!takes) {
+        double above = 0, below = 0;
+        for (const auto& r : rates) {
+          if (r.mMinimum > to && r.mMinimum <= 48000 &&
+              (above == 0 || r.mMinimum < above)) {
+            above = r.mMinimum;
+          }
+          if (r.mMaximum < to) {
+            below = std::max(below, r.mMaximum);
+          }
+        }
+        to = above > 0 ? above : below > 0 ? below : 48000;
+      }
+    }
+  }
+  // Its bit rates for that rate and channel count: a converter set up
+  // for them says.
+  const double want = per_channel * channels;
+  double bitrate = want;
+  AudioStreamBasicDescription pcm = {};
+  pcm.mSampleRate = to;
+  pcm.mFormatID = kAudioFormatLinearPCM;
+  pcm.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked;
+  pcm.mBitsPerChannel = 32;
+  pcm.mChannelsPerFrame = static_cast<UInt32>(channels);
+  pcm.mFramesPerPacket = 1;
+  pcm.mBytesPerFrame = pcm.mBytesPerPacket = 4 * pcm.mChannelsPerFrame;
+  AudioStreamBasicDescription enc = {};
+  enc.mSampleRate = to;
+  enc.mFormatID = aac;
+  enc.mChannelsPerFrame = static_cast<UInt32>(channels);
+  enc.mFramesPerPacket = 1024;
+  AudioConverterRef conv = nullptr;
+  if (AudioConverterNew(&pcm, &enc, &conv) == noErr) {
+    UInt32 n = 0;
+    if (AudioConverterGetPropertyInfo(
+            conv, kAudioConverterApplicableEncodeBitRates, &n, nullptr) ==
+            noErr && n >= sizeof(AudioValueRange)) {
+      std::vector<AudioValueRange> rates(n / sizeof(AudioValueRange));
+      if (AudioConverterGetProperty(
+              conv, kAudioConverterApplicableEncodeBitRates, &n,
+              rates.data()) == noErr) {
+        rates.resize(n / sizeof(AudioValueRange));
+        std::erase_if(rates, [](const auto& r) { return r.mMaximum <= 0; });
+        double below = 0;
+        double lowest = std::numeric_limits<double>::max();
+        for (const auto& r : rates) {
+          lowest = std::min(lowest, r.mMinimum);
+          if (r.mMinimum <= want) {
+            below = std::max(below, std::min(r.mMaximum, want));
+          }
+        }
+        if (below > 0) {
+          bitrate = below;
+        } else if (!rates.empty()) {
+          bitrate = lowest;
+        }
+      }
+    }
+    AudioConverterDispose(conv);
+  }
+  return @{
+    AVFormatIDKey : @(kAudioFormatMPEG4AAC),
+    AVSampleRateKey : @(to),
+    AVNumberOfChannelsKey : @(channels),
+    AVEncoderBitRateKey : @(std::lround(bitrate)),
+  };
+}
+
 }
 
 Status
@@ -194,19 +292,16 @@ add_soundtrack(const fs::path& video, const fs::path& audio,
     vin.transform = vt.preferredTransform;
     vin.expectsMediaDataInRealTime = NO;
 
-    // AAC at the sound's own rate and channel count: nothing resampled.
+    // AAC at the sound's own rate and channel count -- nothing resampled
+    // -- where AAC encodes that rate (aac_settings).
     const double rate = asbd ? asbd->mSampleRate : 48000;
     const int channels = asbd ? static_cast<int>(asbd->mChannelsPerFrame) : 2;
     if (channels < 1 || channels > 2) {
       return make_error(Code::Unsupported, std::format(
           "a soundtrack of {} channels is not supported", channels));
     }
-    NSDictionary* aac = aac_in ? nil : @{
-      AVFormatIDKey : @(kAudioFormatMPEG4AAC),
-      AVSampleRateKey : @(rate),
-      AVNumberOfChannelsKey : @(channels),
-      AVEncoderBitRateKey : @(96000 * channels),
-    };
+    NSDictionary* aac =
+        aac_in ? nil : aac_settings(rate, channels, 96000);
     // The hint describes what is APPENDED: the stored AAC when it is
     // passed through; for the encoder, the reader's float PCM speaks for
     // itself -- the file's own format (16-bit, say) would be misread.
@@ -360,13 +455,7 @@ write_sound(const fs::path& src, const fs::path& out,
       AVLinearPCMIsFloatKey : @NO,
       AVLinearPCMIsBigEndianKey : @NO,
       AVLinearPCMIsNonInterleaved : @NO,
-    } : @{
-      AVFormatIDKey : @(kAudioFormatMPEG4AAC),
-      // AAC's rates stop at 48 kHz.
-      AVSampleRateKey : @(std::min(rate, 48000.0)),
-      AVNumberOfChannelsKey : @(channels),
-      AVEncoderBitRateKey : @(128000 * channels),
-    };
+    } : aac_settings(rate, channels, 128000);
     AVAssetWriterInput* in =
         [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio
                                            outputSettings:settings];

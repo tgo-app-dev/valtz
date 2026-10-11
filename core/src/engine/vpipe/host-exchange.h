@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <atomic>
 #include <functional>
 #include <string>
 #include <thread>
@@ -84,13 +85,18 @@ public:
   // or refusing), and if not, why.
   bool reached_eos() const { return _eos; }
   const std::string& ended_by() const { return _why; }
+  // Its thread has stopped reading (end of stream, a stop, a refusal):
+  // safe to ask before join(), for a graph that will not end.
+  bool ended() const { return _ended; }
+  std::string stage_id() const;
 
 private:
   void run_();
 
   vpipe::StageHandle _stage;
   Fn                 _fn;
-  bool               _eos = false;
+  std::atomic<bool>  _eos{false};
+  std::atomic<bool>  _ended{false};
   std::string        _why;
   std::thread        _thread;
 };

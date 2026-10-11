@@ -316,6 +316,11 @@ struct VideoPlayerView: NSViewRepresentable {
                     let iv = NSImageView(frame: overlay.bounds)
                     iv.autoresizingMask = [.width, .height]
                     iv.imageScaling = .scaleProportionallyUpOrDown
+                    // Artwork only: an image view registers for drops
+                    // (refusing them, not editable), and AppKit hands a
+                    // drag to it, in front of the stage's -- a file
+                    // dropped on a clip was lost.
+                    iv.unregisterDraggedTypes()
                     overlay.addSubview(iv)
                     return iv
                 }()

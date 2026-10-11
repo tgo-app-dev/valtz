@@ -96,6 +96,15 @@ if(VALTZ_BUILD_APP AND VALTZ_HAVE_VPIPE)
     set(_dist_sparkle
         --sparkle-framework "${VALTZ_SPARKLE_DIR}/Sparkle.framework")
   endif()
+  # An LGPL FFmpeg bundled as a release bundles it (vpipe's
+  # apps/macos-app/build-lgpl-ffmpeg.sh; app/macos/check-ffmpeg.sh checks
+  # it is the one libvpipe was compiled against). Empty: left to the host.
+  set(VALTZ_FFMPEG_DIR "" CACHE PATH
+      "LGPL FFmpeg libraries for valtz-dist to bundle (empty: none)")
+  set(_dist_ffmpeg)
+  if(VALTZ_FFMPEG_DIR)
+    set(_dist_ffmpeg --ffmpeg-dir "${VALTZ_FFMPEG_DIR}")
+  endif()
   add_custom_target(valtz-dist
     COMMAND bash "${PROJECT_SOURCE_DIR}/app/macos/bundle-app.sh"
             --app-in "$<TARGET_BUNDLE_DIR:Valtz>"
@@ -107,6 +116,7 @@ if(VALTZ_BUILD_APP AND VALTZ_HAVE_VPIPE)
             --entitlements
               "${PROJECT_SOURCE_DIR}/app/macos/Valtz.entitlements"
             ${_dist_sparkle}
+            ${_dist_ffmpeg}
     DEPENDS Valtz valtzctl
     COMMENT "Assembling a relocatable Valtz.app (ad hoc) in dist/"
     VERBATIM)

@@ -299,9 +299,17 @@ struct ComposerStack: View {
         .animation(.smooth(duration: 0.2), value: dropTargeted)
     }
 
-    /// In the editor with the assistant's suggestion: the card split in
-    /// two halves (DESIGN §10c).
-    private var splitting: Bool { immersive && model.suggesting }
+    /// In the editor with the assistant's suggestion -- or the agent's
+    /// session in the Agent tab -- the card split in two halves (DESIGN
+    /// §10c).
+    private var splitting: Bool {
+        immersive && (model.suggesting || agentSession != nil)
+    }
+
+    /// The agent's session, in the Agent tab.
+    private var agentSession: AgentSession? {
+        model.activeModality == .agent ? model.agent : nil
+    }
 
     /// The text -- and, in the editor while there is a suggestion, beside
     /// it the suggestion's half, each with its header. The half opens
@@ -324,7 +332,13 @@ struct ComposerStack: View {
                     .fill(Color(nsColor: .separatorColor))
                     .frame(width: splitting ? 0.5 : 0)
                     .padding(.vertical, 14)
-                SuggestionPane(model: model)
+                Group {
+                    if let a = agentSession, !model.suggesting {
+                        AgentPane(model: model, session: a)
+                    } else {
+                        SuggestionPane(model: model)
+                    }
+                }
                     .frame(width: half)
                     .frame(width: splitting ? half : 0, alignment: .leading)
                     .clipped()
@@ -802,6 +816,9 @@ struct ComposerStack: View {
     /// What runs: "Edit · Qwen-Image 2.1", "Compose · …", "From picture ·
     /// MiniMax H3 FL2VA" or the model.
     private var summaryLead: String {
+        if model.activeModality == .agent {
+            return String(localized: "Agent · \(model.agentBackendLabel)")
+        }
         guard model.modalityRuns else {
             return model.activeModality == .audio
                 ? String(localized: "Audio · not available yet")
@@ -838,6 +855,12 @@ struct ComposerStack: View {
     /// locale separator gets into it. "mp" is a unit symbol, the same in
     /// every language, so it is not in the String Catalog.
     private var summaryTail: String {
+        // The agent: whether it asks first.
+        if model.activeModality == .agent {
+            return " · " + ((model.agentSettings?.review ?? true)
+                ? String(localized: "Ask First")
+                : String(localized: "Run on Their Own"))
+        }
         // Speech: " · about 10 s · Med".
         if model.speaks {
             return " · " + model.speechLengthText + " · "
@@ -977,7 +1000,7 @@ private struct ModalityTab: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(Modality.allCases) { segment($0) }
+            ForEach(model.modalities) { segment($0) }
         }
         .padding(4)
         // Found by search: marked as Find marks text, inside the tab.
@@ -1314,9 +1337,7 @@ private struct StartButton: View {
             if model.isGenerating {
                 Button(action: model.stop) {
                     ZStack {
-                        ProgressView(value: progress)
-                            .progressViewStyle(.circular)
-                            .controlSize(.small)
+                        ProgressPie(fraction: progress)
                         Image(systemName: "stop.fill")
                             .font(.system(size: 7))
                     }
@@ -1325,7 +1346,7 @@ private struct StartButton: View {
                 .buttonBorderShape(.circle)
                 .keyboardShortcut(".", modifiers: .command)
                 .help("Stop the task on the stage (⌘.)")
-                .transition(.scale.combined(with: .opacity))
+                .transition(Self.stopTransition)
             }
             Button(action: model.start) {
                 Text("Start")
@@ -1346,6 +1367,78 @@ private struct StartButton: View {
 
     /// The phase's count; a spinner while nothing is counted.
     private var progress: Double? { model.generationPhase?.fraction }
+
+    /// Stop forms where it stands: magnified from a dot at its centre,
+    /// a little past its size, settling -- quicker than the motion it
+    /// arrives with, which moves the card around it. Going, it shrinks
+    /// back into the dot.
+    private static let stopTransition = AnyTransition.asymmetric(
+        insertion: .scale(scale: 0.02, anchor: .center)
+            .animation(.spring(duration: 0.32 * AppModel.animationScale,
+                               bounce: 0.35)),
+        removal: .scale(scale: 0.02, anchor: .center)
+            .combined(with: .opacity)
+            .animation(.easeIn(duration: 0.15 * AppModel.animationScale)))
+}
+
+/// A task's progress as macOS draws a small determinate circle -- a pie
+/// filling clockwise from twelve on a pale disc -- or, while nothing is
+/// counted, an arc going round. Drawn by SwiftUI, not AppKit's spinner:
+/// a platform view does not scale about its own centre, and in Stop's
+/// arrival the spinner flew in, large, from the window's lower right.
+private struct ProgressPie: View {
+    var fraction: Double?
+    var diameter: CGFloat = 16
+
+    var body: some View {
+        ZStack {
+            Circle().fill(.quaternary)
+            Circle().strokeBorder(.tertiary, lineWidth: 0.5)
+            if let f = fraction {
+                Pie(fraction: f)
+                    .fill(.secondary)
+                    .padding(1.5)
+                    .animation(.linear(duration: 0.2), value: f)
+            } else {
+                TimelineView(.animation) { ctx in
+                    let t = ctx.date.timeIntervalSinceReferenceDate
+                    Circle()
+                        .trim(from: 0, to: 0.28)
+                        .stroke(.secondary,
+                                style: StrokeStyle(lineWidth: 2,
+                                                   lineCap: .round))
+                        .padding(2)
+                        .rotationEffect(.degrees(
+                            t.truncatingRemainder(dividingBy: 1) * 360))
+                }
+            }
+        }
+        .frame(width: diameter, height: diameter)
+    }
+
+    /// The wedge from twelve o'clock to `fraction` of the way round.
+    private struct Pie: Shape {
+        var fraction: Double
+
+        var animatableData: Double {
+            get { fraction }
+            set { fraction = newValue }
+        }
+
+        func path(in rect: CGRect) -> Path {
+            var p = Path()
+            let f = min(max(fraction, 0), 1)
+            guard f > 0 else { return p }
+            let c = CGPoint(x: rect.midX, y: rect.midY)
+            p.move(to: c)
+            // Clockwise as seen: SwiftUI's y runs down.
+            p.addArc(center: c, radius: min(rect.width, rect.height) / 2,
+                     startAngle: .degrees(-90),
+                     endAngle: .degrees(-90 + 360 * f), clockwise: false)
+            p.closeSubpath()
+            return p
+        }
+    }
 }
 
 /// The model field: AUTO first -- the core's pick for what Start does
@@ -1365,7 +1458,7 @@ struct ModelPicker: View {
             let options = model.modelOptions(for: model.activeModality)
             FilledPopUp(items: [("", autoLabel)]
                             + (options.isEmpty ? [] : [(nil, "")])
-                            + options.map { ($0.model, $0.name) },
+                            + options.map { ($0.model, Self.label($0)) },
                         selection: $model.modelChoice, width: width)
                 .accessibilityLabel(Text("Model"))
                 .fixedSize()
@@ -1375,7 +1468,7 @@ struct ModelPicker: View {
                 let options = model.modelOptions(for: model.activeModality)
                 if !options.isEmpty { Divider() }
                 ForEach(options, id: \.model) { o in
-                    Text(o.name).tag(o.model)
+                    Text(verbatim: Self.label(o)).tag(o.model)
                 }
             }
             .labelsHidden()
@@ -1393,10 +1486,20 @@ struct ModelPicker: View {
             : model.activeModality == .audio ? model.speechVoice != nil
                 && !model.autoPick("edit").isEmpty
             : model.hasEditPictures && !model.autoPick("edit").isEmpty
-        let id = model.autoPick(edits ? "edit" : "generate")
+        let op = edits ? "edit" : "generate"
+        let id = model.autoPick(op)
         // A quantized variant goes by its source's name.
-        return id.isEmpty ? String(localized: "Auto")
-                          : String(localized: "Auto (\(model.modelName(model.baseModel(id))))")
+        let name = model.modelName(model.baseModel(id))
+        if id.isEmpty { return String(localized: "Auto") }
+        return model.autoWaits(op)
+            ? String(localized: "Auto (\(name) · Downloading)")
+            : String(localized: "Auto (\(name))")
+    }
+
+    /// An option's name -- "Krea 2 Turbo · Downloading" while it downloads.
+    static func label(_ o: ModelOption) -> String {
+        o.downloading == true && o.state != "installed"
+            ? String(localized: "\(o.name) · Downloading") : o.name
     }
 }
 
@@ -1435,6 +1538,18 @@ private struct DrawerSettings: View {
     @State private var labelWidth: CGFloat = 0
 
     var body: some View {
+        // The Agent tab: its own few rows (DESIGN §9b).
+        if model.activeModality == .agent {
+            VStack(alignment: .leading, spacing: 12) {
+                AgentSettingsRows(model: model)
+            }
+            .controlSize(.regular)
+        } else {
+            generationBody
+        }
+    }
+
+    private var generationBody: some View {
         // Every control starts at the column's leading edge, and every
         // selector -- the segmented ones and the model's -- is as wide as
         // the widest of them needs (FilledSegments), so they and the

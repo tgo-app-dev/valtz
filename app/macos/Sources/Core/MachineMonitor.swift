@@ -12,6 +12,10 @@ import SwiftUI
 ///   memory (this process's physical footprint -- the engine runs in it,
 ///   models and all -- and the whole Mac's use, as Activity Monitor's
 ///   Memory Used counts it, of the Mac's), polled every second;
+/// * vpipe's FLOP/s meter: the arithmetic the GPU and the ANE achieve
+///   (TFLOP/s, as the models that report it credit it), the highest this
+///   run has seen -- and, in a fleet with a member connected, the same
+///   for the whole fleet, each member telling its own;
 /// * the macOS app's thermal row: a 600 ms sample of the GPU's clock
 ///   residency every 8 seconds. Busy AND clamped below its rated clock
 ///   is throttling; a low clock while idle is just DVFS. Where the GPU is
@@ -29,6 +33,27 @@ final class MachineMonitor {
         var footprint: Double?     // bytes, this process
         var systemUsed: Double?    // bytes, the whole Mac's use
         var total: Double?         // bytes, the Mac's
+        var flops: Flops?          // this Mac's arithmetic
+        var fleet: Flops?          // the fleet's, with a member connected
+    }
+
+    /// Arithmetic achieved: the GPU's and the ANE's TFLOP/s, and the
+    /// highest the two have reached together -- the meter's full scale.
+    struct Flops: Equatable {
+        var gpu: Double
+        var ane: Double
+        var peak: Double
+        /// A fleet's: each member's as it told them (nil: it does not).
+        var members: [Member] = []
+
+        struct Member: Equatable {
+            var name: String
+            var isSelf: Bool
+            var gpu: Double?
+            var ane: Double?
+        }
+
+        var total: Double { gpu + ane }
     }
 
     /// The GPU thermal sample (vpipe's `--gpu-thermal`).
@@ -111,8 +136,25 @@ final class MachineMonitor {
             gpu: j["gpu_util_pct"] as? Double,
             footprint: (j["phys_footprint_bytes"] as? NSNumber)?.doubleValue,
             systemUsed: (j["sys_used_bytes"] as? NSNumber)?.doubleValue,
-            total: (j["phys_total_bytes"] as? NSNumber)?.doubleValue)
+            total: (j["phys_total_bytes"] as? NSNumber)?.doubleValue,
+            flops: Self.flops(j),
+            fleet: (j["fleet"] as? [String: Any]).flatMap(Self.flops))
         if next != load { load = next }
+    }
+
+    private static func flops(_ j: [String: Any]) -> Flops? {
+        func num(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
+        guard let gpu = num(j["gpu_tflops"]) else { return nil }
+        let ane = num(j["ane_tflops"]) ?? 0
+        let members = (j["members"] as? [[String: Any]] ?? []).map {
+            Flops.Member(name: $0["name"] as? String ?? "",
+                         isSelf: $0["self"] as? Bool ?? false,
+                         gpu: num($0["gpu_tflops"]),
+                         ane: num($0["ane_tflops"]))
+        }
+        return Flops(gpu: gpu, ane: ane,
+                     peak: max(num(j["peak_tflops"]) ?? 0, gpu + ane),
+                     members: members)
     }
 
     private func take(thermal d: Data) {

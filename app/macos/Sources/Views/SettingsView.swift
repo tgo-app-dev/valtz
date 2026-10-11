@@ -13,6 +13,9 @@ import AppKit
 ///   Fleet         this Mac as a member of a fleet of Valtz Macs: joined,
 ///                 made, discoverable; the jobs it takes (FleetView)
 ///   Storage       what Valtz keeps on the internal SSD (StorageView)
+///   Permissions   what Valtz may ask macOS to use (PermissionsView)
+///   Experimental  what is still being built, switched on to try it --
+///                 the Agent (ExperimentalView)
 ///
 /// The sidebar is System Settings' measure -- 32 pt rows inset 10 pt, 20
 /// pt icons, 13 pt names -- with the selection in Valtz's own accent (a
@@ -21,17 +24,32 @@ import AppKit
 /// rows are drawn here; ↑ and ↓ move between them.
 struct SettingsView: View {
     @Bindable var model: AppModel
-    @State private var page: SettingsPage = SettingsView.firstPage
     @FocusState private var sidebarFocused: Bool
+
+    private var place: SettingsPlace { model.settingsHistory.current }
+
+    /// The sidebar's rows: every page -- or, while a search is typed, the
+    /// pages it finds and the pages under them it finds.
+    private var rows: [SettingsPlace] {
+        model.settingsSearch.isEmpty
+            ? SettingsPage.allCases.map { .page($0) }
+            : SettingsPlace.found(model.settingsSearch, model)
+    }
 
     var body: some View {
         NavigationSplitView {
             ScrollView {
                 VStack(spacing: 0) {
-                    ForEach(SettingsPage.allCases) { p in
-                        SidebarRow(page: p, selected: p == page) {
-                            page = p
+                    ForEach(rows, id: \.self) { r in
+                        SidebarRow(place: r, selected: selected(r)) {
+                            go(r)
                         }
+                    }
+                    if rows.isEmpty {
+                        Text("No Results")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 24)
                     }
                 }
                 .padding(.horizontal, 10)
@@ -44,23 +62,52 @@ struct SettingsView: View {
             .onKeyPress(.downArrow) { step(1) }
             .navigationSplitViewColumnWidth(Self.sidebarWidth)
             .background(SidebarWidthKeeper(width: Self.sidebarWidth))
+            .background(UnifiedToolbar())
             .toolbar(removing: .sidebarToggle)
         } detail: {
             Group {
-                switch page {
-                case .general: GeneralSettings(model: model)
-                case .capabilities: CapabilitiesView(model: model)
-                case .helper: HelperView(model: model)
-                case .fleet: FleetView(model: model)
-                case .storage: StorageView(model: model)
-                case .permissions: PermissionsView(model: model)
+                switch place {
+                case .page(.general): GeneralSettings(model: model)
+                case .page(.capabilities): CapabilitiesView(model: model)
+                case .page(.helper): HelperView(model: model)
+                case .page(.fleet): FleetView(model: model) { go($0) }
+                case .page(.storage): StorageView(model: model)
+                case .page(.permissions): PermissionsView(model: model)
+                case .page(.experimental): ExperimentalView(model: model)
+                case .fleetOffload: FleetOffloadView(model: model)
+                case .fleetSharing: FleetSharingView(model: model)
                 }
             }
-            // The page's card names it; the window keeps the title for
-            // the Window menu.
-            .navigationTitle(page.title)
-            .toolbar(removing: .title)
+            // Named beside the arrows, as System Settings names a pane
+            // (and for the Window menu).
+            .navigationTitle(place.title)
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    ControlGroup {
+                        Button {
+                            model.settingsHistory.back()
+                        } label: {
+                            Label("Back", systemImage: "chevron.left")
+                        }
+                        .disabled(!model.settingsHistory.canGoBack)
+                        .keyboardShortcut("[", modifiers: .command)
+                        .help("Back")
+                        Button {
+                            model.settingsHistory.forward()
+                        } label: {
+                            Label("Forward", systemImage: "chevron.right")
+                        }
+                        .disabled(!model.settingsHistory.canGoForward)
+                        .keyboardShortcut("]", modifiers: .command)
+                        .help("Forward")
+                    }
+                    .controlGroupStyle(.navigation)
+                }
+            }
         }
+        // Search at the top of the sidebar, as System Settings has it.
+        .searchable(text: $model.settingsSearch, placement: .sidebar,
+                    prompt: Text("Search"))
         .frame(minWidth: 860, idealWidth: 920, minHeight: 600,
                idealHeight: 680)
         // Controls take Valtz's accent, not the system's.
@@ -74,10 +121,21 @@ struct SettingsView: View {
         .onChange(of: model.settingsPageRequest) { _, _ in takeRequest() }
     }
 
+    private func go(_ p: SettingsPlace) {
+        model.settingsHistory.go(p)
+    }
+
+    /// The row of where Settings is -- or of the page it is under, unless
+    /// a search lists that page itself.
+    private func selected(_ r: SettingsPlace) -> Bool {
+        if r == place { return true }
+        return r == .page(place.page) && !rows.contains(place)
+    }
+
     private func takeRequest() {
         guard let r = model.settingsPageRequest,
-              let p = SettingsPage(rawValue: r) else { return }
-        page = p
+              let p = SettingsPlace(raw: r) else { return }
+        go(p)
         model.settingsPageRequest = nil
     }
 
@@ -85,22 +143,18 @@ struct SettingsView: View {
     static let sidebarWidth: CGFloat = 232
 
     private func step(_ by: Int) -> KeyPress.Result {
-        let all = SettingsPage.allCases
-        guard let i = all.firstIndex(of: page) else { return .ignored }
-        let j = min(all.count - 1, max(0, i + by))
-        page = all[j]
+        let all = rows
+        guard !all.isEmpty else { return .ignored }
+        let i = all.firstIndex(of: place)
+            ?? all.firstIndex(of: .page(place.page)) ?? 0
+        go(all[min(all.count - 1, max(0, i + by))])
         return .handled
-    }
-
-    /// A snapshot run can open on a page (VALTZ_SNAPSHOT_SETTINGS).
-    private static var firstPage: SettingsPage {
-        ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT_SETTINGS"]
-            .flatMap(SettingsPage.init(rawValue:)) ?? .general
     }
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
-    case general, capabilities, helper, fleet, storage, permissions
+    case general, capabilities, helper, fleet, storage, permissions,
+         experimental
     var id: String { rawValue }
 
     var title: String {
@@ -111,6 +165,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .fleet: String(localized: "Fleet")
         case .storage: String(localized: "Storage")
         case .permissions: String(localized: "Permissions")
+        case .experimental: String(localized: "Experimental")
         }
     }
 
@@ -122,6 +177,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .fleet: "point.3.connected.trianglepath.dotted"
         case .storage: "internaldrive.fill"
         case .permissions: "hand.raised.fill"
+        case .experimental: "flask.fill"
         }
     }
 
@@ -133,6 +189,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .fleet: .teal
         case .storage: .blue
         case .permissions: .indigo
+        case .experimental: .orange
         }
     }
 
@@ -151,6 +208,8 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
             String(localized: "What Valtz keeps on the internal SSD: models, projects and the cache, each sized.")
         case .permissions:
             String(localized: "What Valtz may ask macOS to use — the camera, the microphone, the Mac's sound, your folders — whether it is allowed now, and where Valtz needs it.")
+        case .experimental:
+            String(localized: "What is still being built: switched on here to try it. It may change, or go.")
         }
     }
 }
@@ -191,25 +250,56 @@ private struct SidebarWidthKeeper: NSViewRepresentable {
     }
 }
 
+/// System Settings' toolbar: the arrows at the page's leading edge, its
+/// name beside them, in the title bar's row. A Settings scene's window
+/// comes with the PREFERENCE style instead -- its items centred on a row
+/// of their own under the title.
+private struct UnifiedToolbar: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { Probe() }
+    func updateNSView(_ v: NSView, context: Context) {}
+
+    final class Probe: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            // At once, before the window's first layout: set later, the
+            // toolbar kept the items where the other style had them.
+            guard let w = window, w.toolbarStyle != .unified else { return }
+            w.toolbarStyle = .unified
+            w.titleVisibility = .visible
+        }
+    }
+}
+
 /// Valtz's accent, as its asset catalog has it: what the system's own
 /// accent colour, a person's choice in System Settings, does not replace.
 extension Color {
     static let valtzAccent = Color("AccentColor")
 }
 
-/// A page in the sidebar: its icon and name, the selected one on the
-/// accent, its name bold.
+/// A row of the sidebar: a page, its icon and name -- the selected one
+/// on the accent, its name bold; selected too while a page under it is
+/// shown -- or, found by a search, a page under one, set in under it.
 private struct SidebarRow: View {
-    let page: SettingsPage
+    let place: SettingsPlace
     let selected: Bool
     let action: () -> Void
     @Environment(\.colorScheme) private var scheme
 
+    private var below: Bool {
+        if case .page = place { return false }
+        return true
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 7) {
-                SettingsIcon(symbol: page.symbol, color: page.color)
-                Text(page.title)
+                if below {
+                    Spacer().frame(width: 20)
+                } else {
+                    SettingsIcon(symbol: place.page.symbol,
+                                 color: place.page.color)
+                }
+                Text(verbatim: place.title)
                     .font(.system(size: 13,
                                   weight: selected ? .semibold : .regular))
                     .foregroundStyle(selected
@@ -219,7 +309,7 @@ private struct SidebarRow: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 9)
-            .frame(height: 32)
+            .frame(height: below ? 28 : 32)
             .background {
                 if selected {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)

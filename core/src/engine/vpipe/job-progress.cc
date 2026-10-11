@@ -95,6 +95,13 @@ struct Item {
 
 }
 
+bool
+names_a_file(std::string_view desc)
+{
+  const auto dot = desc.rfind('.');
+  return dot != std::string_view::npos && dot > 0 && dot + 1 < desc.size();
+}
+
 float
 JobPhase::fraction() const
 {
@@ -257,6 +264,10 @@ JobProgress::read(const Json& doc, double now)
       }
       i.seq = jget<std::uint64_t>(it, "seq", 0);
       const auto desc = jget<std::string>(it, "desc", "");
+      // A download running beside a graph: the other lane's.
+      if (names_a_file(desc) != _download) {
+        continue;
+      }
       JobPhase& p = i.phase;
       p.done = jget<std::uint64_t>(it, "done", 0);
       p.total = jget<std::uint64_t>(it, "total", 0);

@@ -2,7 +2,7 @@
 // key and framing; and, with VALTZ_TEST_FLEET=1, two members on this Mac
 // over the loopback -- a job sent, its input asked for by hash, its
 // events and output back; a member that declines; another secret kept
-// out.
+// out; the members' arithmetic added up.
 
 #include "testing.h"
 
@@ -11,6 +11,7 @@
 #include "valtz/project/records.h"
 
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <condition_variable>
 #include <fstream>
@@ -120,6 +121,51 @@ TEST(fleet, the_configuration_keeps_its_key_not_its_secret)
   fs::remove_all(d);
 }
 
+// Where this Mac's jobs go (Config::offload): a model's own policy, else
+// its task's, else local first -- and what it shares (Config::shares):
+// all but what is withheld; both kept in its file, an unknown policy
+// read as none.
+TEST(fleet, offload_policies_and_sharing_are_kept)
+{
+  Config c;
+  CHECK(c.offload("generate-video", "minimax-h3-fl2va") == "local-first");
+  c.offload_tasks["generate-video"] = kOffloadFleetFirst;
+  c.offload_models["minimax-h3-ref2va"] = kOffloadAlways;
+  CHECK(c.offload("generate-video", "minimax-h3-fl2va") == "fleet-first");
+  CHECK(c.offload("generate-video", "minimax-h3-ref2va") == "always");
+  CHECK(c.offload("generate-image", "minimax-h3-ref2va") == "always");
+  CHECK(c.offload("chat", "") == "local-first");
+  CHECK(c.shares("chat", ""));
+  c.withheld_tasks.insert("chat");
+  c.withheld_models.insert("krea2-turbo");
+  CHECK(!c.shares("chat", ""));
+  CHECK(!c.shares("generate-image", "krea2-turbo"));
+  CHECK(c.shares("generate-image", "z-image-turbo"));
+  CHECK(is_offload_policy("never") && !is_offload_policy("sometimes"));
+
+  const fs::path d = temp_dir("offload");
+  const fs::path f = d / "fleet.json";
+  REQUIRE_OK(save_config(f, c));
+  auto back = load_config(f);
+  REQUIRE_OK(back);
+  CHECK(back->offload_tasks == c.offload_tasks);
+  CHECK(back->offload_models == c.offload_models);
+  CHECK(back->withheld_tasks == c.withheld_tasks);
+  CHECK(back->withheld_models == c.withheld_models);
+  const Json j = to_json(*back);
+  CHECK(jget<std::string>(jget(jget(j, "offload", Json::object()), "tasks",
+                               Json::object()),
+                          "generate-video", "") == "fleet-first");
+  // Written by hand: a policy that is none is dropped, not kept.
+  std::ofstream(f) << R"({"offload": {"tasks": {"chat": "sometimes",
+                     "generate-image": "never"}}})";
+  auto hand = load_config(f);
+  REQUIRE_OK(hand);
+  CHECK(hand->offload_tasks.size() == 1);
+  CHECK(hand->offload("generate-image", "") == "never");
+  fs::remove_all(d);
+}
+
 TEST(fleet, messages_are_framed_and_read_whole)
 {
   const Json a = {{"t", "hello"}, {"n", 1}};
@@ -219,8 +265,24 @@ public:
   void fleet_cancel(JobId) override {}
   void fleet_note(std::string, Json) override {}
 
+  Json
+  fleet_load() override
+  {
+    std::lock_guard lk(load_mu);
+    return load;
+  }
+
+  void
+  set_load(double gpu, double ane)
+  {
+    std::lock_guard lk(load_mu);
+    load = {{"gpu_tflops", gpu}, {"ane_tflops", ane}};
+  }
+
   std::string       served_from;
   std::atomic<bool> received = false;
+  std::mutex        load_mu;
+  Json              load = Json::object();
 };
 
 // A job's events, waited for.
@@ -339,12 +401,8 @@ TEST(fleet, a_job_goes_to_a_member_and_comes_back)
   Config sc = server->config();
   sc.accept = "never";
   REQUIRE_OK(server->set_config(sc));
-  REQUIRE(eventually([&] {
-    port = jget(server->status(), "port", 0);
-    return port > 0;
-  }, 10));
-  client->connect("127.0.0.1", port);
-  // Reached again, and heard to be not taking jobs.
+  // Heard over the link it has: not taking jobs (the connections are
+  // remade only for a new name, fleet, key or discoverability).
   REQUIRE(eventually([&] {
     const auto ms = client->members();
     return ms.size() == 1 &&
@@ -382,5 +440,69 @@ TEST(fleet, a_job_goes_to_a_member_and_comes_back)
   stranger->stop();
   client->stop();
   server->stop();
+  fs::remove_all(d);
+}
+
+// The FLEET'S ARITHMETIC (the status bar's Fleet meter): each member
+// tells its own TFLOP/s as they move, and each adds up its own and the
+// others' -- with the highest the sum reached kept when it falls.
+TEST(fleet, the_members_arithmetic_is_added_up)
+{
+  if (!std::getenv("VALTZ_TEST_FLEET")) {
+    SKIP("set VALTZ_TEST_FLEET=1 (two members on this Mac's loopback)");
+  }
+  const fs::path d = temp_dir("load");
+  const std::string key = derive_key("Load fleet", "a-long-test-secret");
+  auto made = [&](const char* name, bool discoverable) {
+    Config c;
+    c.member_id = Uuid::v7().str();
+    c.member_name = name;
+    c.fleet = "Load fleet";
+    c.key = key;
+    c.discoverable = discoverable;
+    (void)save_config(d / (std::string(name) + ".json"), c);
+  };
+  made("studio", true);
+  made("air", false);
+  FakeHost hs, ha;
+  hs.set_load(12.5, 1.5);
+  ha.set_load(3, 0);
+  auto studio = make_fleet(d / "studio.json", d / "studio-files", hs);
+  auto air = make_fleet(d / "air.json", d / "air-files", ha);
+  int port = 0;
+  REQUIRE(eventually([&] {
+    port = jget(studio->status(), "port", 0);
+    return port > 0;
+  }, 10));
+  // Alone: no member connected, its own figures only.
+  REQUIRE(eventually([&] {
+    return jget(studio->throughput(), "gpu_tflops", 0.0) == 12.5;
+  }, 5));
+  CHECK(jget(studio->throughput(), "connected", -1) == 0);
+  air->connect("127.0.0.1", port);
+  auto sums = [](const Json& t, double gpu, double ane) {
+    return jget(t, "connected", 0) == 1 &&
+           std::abs(jget(t, "gpu_tflops", 0.0) - gpu) < 1e-6 &&
+           std::abs(jget(t, "ane_tflops", 0.0) - ane) < 1e-6;
+  };
+  REQUIRE(eventually([&] { return sums(air->throughput(), 15.5, 1.5); },
+                     10));
+  REQUIRE(eventually([&] { return sums(studio->throughput(), 15.5, 1.5); },
+                     10));
+  const Json t = air->throughput();
+  CHECK(std::abs(jget(t, "peak_tflops", 0.0) - 17) < 1e-6);
+  const Json ms = jget(t, "members", Json::array());
+  REQUIRE(ms.size() == 2);
+  CHECK(jget(ms[0], "self", false));
+  CHECK(jget<std::string>(ms[0], "name", "") == "air");
+  CHECK(jget<std::string>(ms[1], "name", "") == "studio");
+  CHECK(jget(ms[1], "gpu_tflops", 0.0) == 12.5);
+
+  // The studio idles: told at once (it moved), the peak kept.
+  hs.set_load(0, 0);
+  REQUIRE(eventually([&] { return sums(air->throughput(), 3, 0); }, 5));
+  CHECK(std::abs(jget(air->throughput(), "peak_tflops", 0.0) - 17) < 1e-6);
+  air->stop();
+  studio->stop();
   fs::remove_all(d);
 }

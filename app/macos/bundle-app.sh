@@ -29,12 +29,15 @@ set -euo pipefail
 
 APP_IN=""; APP=""; LIBVPIPE=""; VALTZCTL=""; VPIPE_DOC=""; SOURCE_DIR=""
 ENTITLEMENTS=""; FFMPEG_DIR=""; SPARKLE_FRAMEWORK=""; SIGN_ID="-"
+FFMPEG_VERSION=""; FFMPEG_SOURCE_URL=""
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
 print_usage_() {
   cat <<'EOF'
 Usage: bundle-app.sh --app-in BUILT.app --app OUT.app --libvpipe PATH
                      --source-dir DIR [--valtzctl PATH] [--vpipe-doc DIR]
                      [--entitlements PATH] [--ffmpeg-dir DIR]
+                     [--ffmpeg-version V] [--ffmpeg-source-url URL]
                      [--sparkle-framework PATH] [--sign-identity ID]
 
   --app-in             the build's Valtz.app (left untouched)
@@ -47,8 +50,15 @@ Usage: bundle-app.sh --app-in BUILT.app --app OUT.app --libvpipe PATH
                        NOTICE, THIRD_PARTY_LICENSES.md) -> Licenses/vpipe
   --entitlements       entitlements for the executables (required with a
                        real identity)
-  --ffmpeg-dir         directory of LGPL libav*/libsw* dylibs to bundle.
-                       Omit to leave FFmpeg to the host.
+  --ffmpeg-dir         directory of LGPL libav*/libsw* dylibs to bundle
+                       (vpipe's apps/macos-app/build-lgpl-ffmpeg.sh makes
+                       one): checked by check-ffmpeg.sh -- LGPL only, and
+                       the FFmpeg libvpipe was compiled against. Omit to
+                       leave FFmpeg to the host.
+  --ffmpeg-version     its version, when no libavutil/ffversion.h is
+                       beside it (the notice names it; never guessed)
+  --ffmpeg-source-url  where its complete source is offered (default:
+                       vpipe's pinned tarball for that version)
   --sparkle-framework  Sparkle.framework to bundle (auto-update). Omit for
                        a build without it.
   --sign-identity      codesign identity; "-" (default) is ad hoc: fine
@@ -66,6 +76,8 @@ while [ $# -gt 0 ]; do
     --vpipe-doc)         VPIPE_DOC="$2"; shift 2 ;;
     --entitlements)      ENTITLEMENTS="$2"; shift 2 ;;
     --ffmpeg-dir)        FFMPEG_DIR="$2"; shift 2 ;;
+    --ffmpeg-version)    FFMPEG_VERSION="$2"; shift 2 ;;
+    --ffmpeg-source-url) FFMPEG_SOURCE_URL="$2"; shift 2 ;;
     --sparkle-framework) SPARKLE_FRAMEWORK="$2"; shift 2 ;;
     --sign-identity)     SIGN_ID="$2"; shift 2 ;;
     -h|--help)           print_usage_; exit 0 ;;
@@ -89,6 +101,17 @@ if [ "$SIGN_ID" != "-" ] && [ -z "$ENTITLEMENTS" ]; then
 fi
 if [ ! -d "$APP_IN/Contents/MacOS" ]; then
   echo "bundle-app.sh: '$APP_IN' is not a built app bundle" >&2; exit 1
+fi
+# An FFmpeg to bundle is checked BEFORE anything is assembled: LGPL only,
+# its exact version, the majors libvpipe was compiled against (see
+# check-ffmpeg.sh). Its source is offered where vpipe's with-ffmpeg
+# release offers it: one pinned tarball per version.
+if [ -n "$FFMPEG_DIR" ]; then
+  FFMPEG_VERSION="$(bash "$HERE/check-ffmpeg.sh" \
+      --ffmpeg-dir "$FFMPEG_DIR" --libvpipe "$LIBVPIPE" \
+      ${FFMPEG_VERSION:+--version "$FFMPEG_VERSION"})"
+  [ -n "$FFMPEG_SOURCE_URL" ] ||
+    FFMPEG_SOURCE_URL="https://github.com/tgo-app-dev/vpipe/releases/download/ffmpeg-source-${FFMPEG_VERSION}/ffmpeg-${FFMPEG_VERSION}.tar.xz"
 fi
 
 CONTENTS="$APP/Contents"
@@ -238,9 +261,41 @@ if [ -d "$FRAMEWORKS/Sparkle.framework" ]; then
   mkdir -p "$LICENSES/Sparkle"
   cp "$SOURCE_DIR/app/macos/licenses/MIT-Sparkle.txt" "$LICENSES/Sparkle/"
 fi
+# FFmpeg's notice, as vpipe's with-ffmpeg app words its own: what was
+# built, that the source is unmodified, where the complete corresponding
+# source is, and how to put another build in its place (LGPL-2.1
+# section 6). LAME's is added below if the relocation brings it in.
 if [ -n "$FFMPEG_DIR" ]; then
   mkdir -p "$LICENSES/FFmpeg"
   cp "$SOURCE_DIR/app/macos/licenses/LGPL-2.1.txt" "$LICENSES/FFmpeg/"
+  cat > "$LICENSES/FFmpeg/NOTICE.txt" <<NOTICE
+FFmpeg ${FFMPEG_VERSION} ........................ GNU LGPL, version 2.1 or later
+  Copyright (c) the FFmpeg developers.
+  Licence text: LGPL-2.1.txt
+
+  This is an LGPL-only build: it is configured --disable-gpl
+  --disable-nonfree --disable-version3, so none of FFmpeg's GPL
+  components (libx264, libx265, libpostproc, ...) are present.
+
+  MODIFICATIONS: the FFmpeg source is UNMODIFIED. The shipped
+  libraries differ from a stock build only in their recorded
+  install names, rewritten with install_name_tool so the bundle is
+  relocatable (app/macos/bundle-app.sh in the Valtz source).
+
+  COMPLETE CORRESPONDING SOURCE for the bundled libraries, together
+  with the script that configures and builds them
+  (apps/macos-app/build-lgpl-ffmpeg.sh in the vpipe source), is
+  available from:
+    ${FFMPEG_SOURCE_URL}
+
+  REPLACING THIS COPY: Valtz's engine, vpipe, loads FFmpeg with dlopen
+  and never links against it, so you may substitute your own build
+  without modifying or relinking this application. Set the
+  VPIPE_FFMPEG_DIR environment variable to a directory containing your
+  own libavcodec.dylib and the rest, and that build will be used in
+  place of the bundled one. (vpipe is compiled against FFmpeg
+  ${FFMPEG_VERSION}'s headers: use a build of the same major versions.)
+NOTICE
 fi
 
 # ---------------------------------------------------------------------
@@ -305,6 +360,50 @@ while : ; do
   fi
 done
 echo "bundle-app.sh: dependencies settled after $pass pass(es)"
+
+# What the relocation brought in besides libvpipe, FFmpeg and Sparkle
+# carries a notice, or the bundle is refused: an FFmpeg built to encode
+# MP3 brings LAME (libmp3lame), and Homebrew's LAME brings mpg123 -- both
+# LGPL, their notices beside FFmpeg's. Anything else would ship
+# unannounced (a GPL library among them, perhaps), so it stops here.
+unannounced=0
+for lib in "$FRAMEWORKS"/*.dylib; do
+  [ -e "$lib" ] || continue
+  base="$(basename "$lib")"
+  case "$base" in
+    libvpipe*|libav*|libsw*) continue ;;
+    libmp3lame*)
+      mkdir -p "$LICENSES/FFmpeg"
+      cp "$SOURCE_DIR/app/macos/licenses/LAME.txt" "$LICENSES/FFmpeg/"
+      cat >> "$LICENSES/FFmpeg/NOTICE.txt" <<'NOTICE'
+
+LAME (libmp3lame) ....................... GNU LGPL, version 2.1 or later
+  Copyright (c) the LAME developers.
+  Provides MP3 encoding to the FFmpeg build above.
+  Licence text: LGPL-2.1.txt; see also LAME.txt
+  Source: https://lame.sourceforge.io/
+NOTICE
+      echo "bundle-app.sh: + LAME's notice ($base came with FFmpeg)" ;;
+    libmpg123*)
+      mkdir -p "$LICENSES/FFmpeg"
+      cat >> "$LICENSES/FFmpeg/NOTICE.txt" <<'NOTICE'
+
+mpg123 (libmpg123) ...................... GNU LGPL, version 2.1 or later
+  Copyright (c) the mpg123 project.
+  Linked by LAME above (its MP3 decoding).
+  Licence text: LGPL-2.1.txt
+  Source: https://www.mpg123.de/
+NOTICE
+      echo "bundle-app.sh: + mpg123's notice ($base came with LAME)" ;;
+    *)
+      echo "bundle-app.sh: $base came into the bundle with no licence" \
+           "notice -- add its notice here, or keep it out" >&2
+      unannounced=$((unannounced + 1)) ;;
+  esac
+done
+if [ "$unannounced" -gt 0 ]; then
+  exit 1
+fi
 
 # Each Frameworks dylib calls itself @rpath/<name> -- unless it already
 # has an @rpath id (FFmpeg's is its soname, deliberately not its file).

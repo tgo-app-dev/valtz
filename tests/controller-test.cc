@@ -20,7 +20,10 @@
 #include <cstring>
 #include <format>
 #include <fstream>
+#include <functional>
+#include <deque>
 #include <map>
+#include <mutex>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -873,8 +876,61 @@ public:
   Status
   submit(engine::JobSpec spec, engine::JobSink sink) override
   {
+    std::lock_guard lk(_mu);
     _jobs.push_back({std::move(spec), std::move(sink)});
     return ok_status();
+  }
+
+  // The jobs of `op` held now (an agent's turns: submitted from its own
+  // thread).
+  std::vector<JobId>
+  held_of(std::string_view op)
+  {
+    std::lock_guard lk(_mu);
+    std::vector<JobId> ids;
+    for (const auto& j : _jobs) {
+      if (j.spec.op == op) {
+        ids.push_back(j.spec.id);
+      }
+    }
+    return ids;
+  }
+
+  // An agent's turn ended as the helper ends one: its record, the end.
+  void
+  turn(JobId id, Json record)
+  {
+    engine::JobSink sink;
+    {
+      std::lock_guard lk(_mu);
+      auto it = find(id);
+      sink = it->sink;
+      _jobs.erase(it);
+    }
+    engine::JobEvent ev;
+    ev.job = id;
+    ev.kind = engine::JobEventKind::Output;
+    ev.text = jget<std::string>(record, "text", "");
+    ev.data = std::move(record);
+    sink(ev);
+    engine::JobEvent end;
+    end.job = id;
+    end.kind = engine::JobEventKind::Finished;
+    sink(end);
+  }
+
+  void
+  drop_context(const std::string& key) override
+  {
+    std::lock_guard lk(_mu);
+    _dropped.push_back(key);
+  }
+
+  std::vector<std::string>
+  dropped()
+  {
+    std::lock_guard lk(_mu);
+    return _dropped;
   }
 
   // A queued job is dropped at once; a running one is only asked to
@@ -920,7 +976,7 @@ public:
     auto it = find(id);
     auto sink = it->sink;
     const fs::path out = it->spec.output_dir / std::format(
-        "{}.png", id.str());
+        "{}{}", id.str(), file.extension().string());
     fs::copy_file(file, out, fs::copy_options::overwrite_existing);
     _jobs.erase(it);
     engine::JobEvent ev;
@@ -935,6 +991,19 @@ public:
     end.job = id;
     end.kind = engine::JobEventKind::Finished;
     sink(end);
+  }
+
+  // Ended with nothing to hand over: a download done.
+  void
+  end(JobId id)
+  {
+    auto it = find(id);
+    auto sink = it->sink;
+    _jobs.erase(it);
+    engine::JobEvent ev;
+    ev.job = id;
+    ev.kind = engine::JobEventKind::Finished;
+    sink(ev);
   }
 
   std::size_t held() const { return _jobs.size(); }
@@ -969,6 +1038,8 @@ private:
     bool            running = false;
     bool            stop = false;
   };
+  std::mutex               _mu;
+  std::vector<std::string> _dropped;
   std::vector<Job>::iterator
   find(JobId id)
   {
@@ -978,6 +1049,233 @@ private:
   }
   std::vector<Job> _jobs;
 };
+
+// A fleet member for a controller to send to (DESIGN §11): it says it
+// runs pictures and chats with every catalog model, and keeps what it is
+// offered -- each served at once, and failed: where a job WENT is what
+// is looked at.
+class OfferedHost final : public fleet::Host {
+public:
+  Json
+  fleet_self() override
+  {
+    Json installed = Json::array();
+    if (auto cat = models::Catalog::builtin(); cat.ok()) {
+      for (const auto& m : cat->models()) {
+        installed.push_back(m.id);
+      }
+    }
+    return {{"ops", {"generate-image", "chat"}},
+            {"installed", installed},
+            {"runs", {"image/generate/krea2-turbo"}},
+            {"assistant", "qwen3.5-9b"},
+            {"busy", false},
+            {"machine", {{"chip", "test"}, {"ram_gb", 64}}}};
+  }
+
+  Status
+  fleet_serve(const fleet::Offer& o, const std::string&, const fs::path&,
+              engine::JobSink sink) override
+  {
+    {
+      std::lock_guard lk(mu);
+      offered.push_back(o.op + "/" + o.model);
+    }
+    std::thread([id = o.id, sink] {
+      engine::JobEvent e;
+      e.job = id;
+      e.kind = engine::JobEventKind::Failed;
+      e.error = Code::Io;
+      e.text = "served";
+      sink(e);
+    }).detach();
+    return ok_status();
+  }
+
+  void fleet_cancel(JobId) override {}
+  void fleet_note(std::string, Json) override {}
+
+  std::size_t
+  count()
+  {
+    std::lock_guard lk(mu);
+    return offered.size();
+  }
+
+  std::mutex               mu;
+  std::vector<std::string> offered;
+};
+
+bool
+eventually(const std::function<bool()>& f, int seconds)
+{
+  for (int i = 0; i < seconds * 20; ++i) {
+    if (f()) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  return false;
+}
+
+// Where this Mac's jobs run (DESIGN §11), as its OFFLOAD POLICIES say --
+// per task, a model's own first -- and what it SHARES: a controller on a
+// held engine and a member over the loopback.
+TEST(controller, offload_policies_send_jobs_and_sharing_withholds)
+{
+  if (!std::getenv("VALTZ_TEST_FLEET")) {
+    SKIP("set VALTZ_TEST_FLEET=1 (two members on this Mac's loopback)");
+  }
+  auto root = test::temp_dir("ctl-offload");
+  const fs::path krea = root / "models" / "krea" / "Krea-2-Turbo";
+  fs::create_directories(krea);
+  std::ofstream(krea / "model.safetensors") << "w";
+  const std::string key = fleet::derive_key("Offload", "a-long-test-secret");
+  auto conf = [&](const char* name, bool discoverable) {
+    fleet::Config c;
+    c.member_id = Uuid::v7().str();
+    c.member_name = name;
+    c.fleet = "Offload";
+    c.key = key;
+    c.discoverable = discoverable;
+    (void)fleet::save_config(root / (std::string(name) + ".json"), c);
+  };
+  conf("member", true);
+  conf("here", false);
+  OfferedHost host;
+  auto member = fleet::make_fleet(root / "member.json",
+                                  root / "member-files", host);
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.fleet = true;
+  cfg.fleet_config = root / "here.json";
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  int port = 0;
+  REQUIRE(eventually([&] {
+    port = jget(member->status(), "port", 0);
+    return port > 0;
+  }, 10));
+  ctl.fleet_connect("127.0.0.1", port);
+  auto connected = [&](bool accepting) {
+    return eventually([&] {
+      const Json ms = jget(ctl.fleet_status(), "members", Json::array());
+      return ms.size() == 1 &&
+             jget(jget(ms[0], "self", Json::object()), "accepting",
+                  !accepting) == accepting;
+    }, 15);
+  };
+  REQUIRE(connected(true));
+  auto pid = ctl.create_project(root / "O.valtz", "offload");
+  REQUIRE_OK(pid);
+  auto ask = [&](const char* words) {
+    GenerateImageRequest req;
+    req.project = *pid;
+    req.prompt = words;
+    req.model = "krea2-turbo";
+    req.width = 64;
+    req.height = 64;
+    return ctl.generate_image(req);
+  };
+  auto set = [&](const Json& j) { return ctl.fleet_configure(j); };
+
+  // Local first, the default: here while this Mac is free.
+  auto j1 = ask("a red fox");
+  REQUIRE_OK(j1);
+  CHECK(engine->held() == 1);
+  // Busy now (j1 waits here). Never sent: it waits here too.
+  REQUIRE_OK(set({{"offload", {{"tasks", {{"generate-image", "never"}}}}}}));
+  auto j2 = ask("a blue boat");
+  REQUIRE_OK(j2);
+  CHECK(engine->held() == 2);
+  CHECK(host.count() == 0);
+  // Local first again: busy, so the member takes it.
+  REQUIRE_OK(set({{"offload", {{"tasks", {{"generate-image", ""}}}}}}));
+  auto j3 = ask("a green kite");
+  REQUIRE_OK(j3);
+  CHECK(eventually([&] { return host.count() == 1; }, 15));
+  CHECK(engine->held() == 2);
+  engine->fail(*j1, "done");
+  engine->fail(*j2, "done");
+  // Free here; the member's job over. Fleet first, set on the model: the
+  // member takes it though this Mac is free.
+  REQUIRE(eventually([&] {
+    const Json ms = jget(ctl.fleet_status(), "members", Json::array());
+    return ms.size() == 1 &&
+           !jget(jget(ms[0], "self", Json::object()), "serving", true);
+  }, 15));
+  REQUIRE_OK(set({{"offload", {{"models", {{"krea2-turbo",
+                                            "fleet-first"}}}}}}));
+  auto j4 = ask("a grey heron");
+  REQUIRE_OK(j4);
+  CHECK(eventually([&] { return host.count() == 2; }, 15));
+  CHECK(engine->held() == 0);
+  {
+    std::lock_guard lk(host.mu);
+    CHECK(host.offered.back() == "generate-image/krea2-turbo");
+  }
+  // Always on the fleet, the member not taking jobs: refused, nothing run
+  // here -- and Krea 2 runs nowhere, for the model field.
+  const auto* k2 = ctl.catalog().find("krea2-turbo");
+  REQUIRE(k2 != nullptr);
+  fleet::Config mc = member->config();
+  mc.accept = "never";
+  REQUIRE_OK(member->set_config(mc));
+  REQUIRE(eventually([&] {
+    port = jget(member->status(), "port", 0);
+    return port > 0;
+  }, 10));
+  ctl.fleet_connect("127.0.0.1", port);
+  REQUIRE(connected(false));
+  REQUIRE_OK(set({{"offload", {{"models", {{"krea2-turbo", "always"}}}}}}));
+  CHECK(!ctl.runs(*k2, "image", "generate"));
+  auto j5 = ask("a white swan");
+  CHECK(!j5.ok());
+  CHECK(engine->held() == 0);
+  REQUIRE_OK(set({{"offload", {{"models", {{"krea2-turbo", ""}}}}}}));
+  CHECK(ctl.runs(*k2, "image", "generate"));
+  // A policy or a name that is none: refused, nothing changed.
+  CHECK(!set({{"offload", {{"tasks", {{"generate-image", "sometimes"}}}}}})
+             .ok());
+  CHECK(!set({{"share", {{"tasks", {{"bake-bread", false}}}}}}).ok());
+
+  // Sharing: chat and Krea 2 withheld -- this Mac no longer says it runs
+  // them, so no member offers them.
+  REQUIRE_OK(set({{"share", {{"tasks", {{"chat", false}}},
+                             {"models", {{"krea2-turbo", false}}}}}}));
+  const Json me = jget(ctl.fleet_status(), "self", Json::object());
+  auto has = [](const Json& list, const char* x) {
+    return std::ranges::find(list, Json(x)) != list.end();
+  };
+  CHECK(!has(jget(me, "ops", Json::array()), "chat"));
+  CHECK(has(jget(me, "ops", Json::array()), "generate-image"));
+  CHECK(!has(jget(me, "installed", Json::array()), "krea2-turbo"));
+  CHECK(jget<std::string>(me, "assistant", "x").empty());
+  const Json c = jget(ctl.fleet_status(), "config", Json::object());
+  CHECK(jget(jget(c, "withheld", Json::object()), "tasks", Json::array()) ==
+        Json::array({"chat"}));
+  // The member hears it.
+  CHECK(eventually([&] {
+    const auto ms = member->members();
+    return ms.size() == 1 &&
+           !has(jget(jget(ms[0], "self", Json::object()), "installed",
+                     Json::array()),
+                "krea2-turbo");
+  }, 15));
+  ctl.shutdown();
+  member->stop();
+  fs::remove_all(root);
+}
 
 // The TASK QUEUE (DESIGN §3a): each generation asked for is a task with
 // its asset from the request, listed in the order it runs; the project
@@ -1076,6 +1374,264 @@ TEST(controller, tasks_queue_and_are_withdrawn_by_undo)
   auto back = ctl.project(*pid)->asset(*a3);
   REQUIRE_OK(back);
   CHECK(back->head == 0);
+}
+
+// Downloads run BESIDE the work (DESIGN §3a): while one downloads, a
+// picture of a model that is here goes to the engine at once; one that
+// needs what is downloading waits for that alone -- out of the engine's
+// queue -- and goes on when it lands, resolved as it landed; its
+// download failing or stopped, it fails saying so; cancelled, it waits
+// no more. What is neither here nor coming is refused as before. Auto
+// and a preset's LoRA count what is on its way.
+TEST(controller, a_job_waits_only_for_what_it_needs_downloading)
+{
+  auto root = test::temp_dir("ctl-downloads");
+  const fs::path models = root / "models";
+  auto install = [&](const char* hf_path) {
+    fs::create_directories(models / hf_path);
+    std::ofstream(models / hf_path / "model.safetensors") << "w";
+  };
+  install("krea/Krea-2-Turbo");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "D.valtz", "downloads");
+  REQUIRE_OK(pid);
+  auto ask = [&](const char* words, const char* model) {
+    GenerateImageRequest req;
+    req.project = *pid;
+    req.prompt = words;
+    req.model = model;
+    req.width = 64;
+    req.height = 64;
+    return ctl.generate_image(req);
+  };
+  auto state = [&](JobId j) {
+    auto r = ctl.jobs().get(j);
+    return r ? r->state : JobState::Queued;
+  };
+
+  // Z-Image downloading: one job, however often asked.
+  auto dl = ctl.download_model("z-image-turbo");
+  REQUIRE_OK(dl);
+  CHECK(ctl.downloading("z-image-turbo"));
+  auto again = ctl.download_model("z-image-turbo");
+  REQUIRE_OK(again);
+  CHECK(*again == *dl);
+  CHECK(engine->held() == 1);
+
+  // Krea 2 is here: to the engine at once, beside the download.
+  auto k = ask("a red fox", "krea2-turbo");
+  REQUIRE_OK(k);
+  CHECK(engine->spec(*k) != nullptr);
+  // Z-Image is on its way: its picture waits, out of the engine's queue,
+  // listed after the one in line, saying what it waits for.
+  auto z = ask("a blue boat", "z-image-turbo");
+  REQUIRE_OK(z);
+  CHECK(engine->spec(*z) == nullptr);
+  CHECK(engine->held() == 2);
+  Json ts = ctl.tasks();
+  REQUIRE(ts.size() == 2);
+  CHECK(jget<std::string>(ts[0], "job", "") == k->str());
+  CHECK(!ts[0].contains("waiting"));
+  CHECK(jget<std::string>(ts[1], "job", "") == z->str());
+  CHECK(jget<std::string>(ts[1], "state", "") == "queued");
+  CHECK(jget<int>(ts[1], "position", -1) == 1);
+  CHECK(jget(ts[1], "waiting", Json::array()) ==
+        Json::array({"Z-Image Turbo"}));
+
+  // It lands: the job goes to the engine, its model where it landed.
+  install("Tongyi-MAI/Z-Image-Turbo");
+  engine->end(*dl);
+  CHECK(!ctl.downloading("z-image-turbo"));
+  const engine::JobSpec* zs = engine->spec(*z);
+  REQUIRE(zs != nullptr);
+  CHECK(zs->model.id == "z-image-turbo");
+  CHECK(zs->model.dir == models / "Tongyi-MAI/Z-Image-Turbo");
+  CHECK(!ctl.tasks()[1].contains("waiting"));
+
+  // Its download failing, a job waiting for it fails, saying why.
+  auto dq = ctl.download_model("qwen-image-2.1");
+  REQUIRE_OK(dq);
+  auto q = ask("a green kite", "qwen-image-2.1");
+  REQUIRE_OK(q);
+  CHECK(engine->spec(*q) == nullptr);
+  engine->fail(*dq, "HTTP 500");
+  CHECK(state(*q) == JobState::Failed);
+  CHECK(ctl.jobs().get(*q)->message.find("download failed") !=
+        std::string::npos);
+  CHECK(engine->spec(*q) == nullptr);
+
+  // Neither here nor coming: refused, as before.
+  CHECK(!ask("a grey whale", "flux2-klein-9b").ok());
+
+  // Cancelled while it waits: it waits no more, and the download landing
+  // sends nothing.
+  auto df = ctl.download_model("flux2-klein-9b");
+  REQUIRE_OK(df);
+  auto f = ask("a yellow tram", "flux2-klein-9b");
+  REQUIRE_OK(f);
+  REQUIRE_OK(ctl.cancel(*f));
+  CHECK(state(*f) == JobState::Cancelled);
+  install("black-forest-labs/FLUX.2-klein-9B");
+  engine->end(*df);
+  CHECK(engine->spec(*f) == nullptr);
+
+  // Auto: no clip model here, MiniMax H3 on its way -- Auto's pick,
+  // waiting for it. Pictures: Krea 2, which runs now, over one coming.
+  auto pick = [&](const char* modality, const char* op) {
+    for (const auto& a : ctl.auto_models()) {
+      if (a.modality == modality && a.op == op) {
+        return a;
+      }
+    }
+    return Controller::AutoPick{};
+  };
+  CHECK(pick("video", "generate").chosen.empty());
+  auto dh = ctl.download_model("minimax-h3-fl2va");
+  REQUIRE_OK(dh);
+  CHECK(pick("video", "generate").chosen == "minimax-h3-fl2va");
+  CHECK(pick("video", "generate").waits);
+  CHECK(pick("image", "generate").chosen == "krea2-turbo");
+  CHECK(!pick("image", "generate").waits);
+
+  // A preset's Turbo LoRA downloading is no longer missing: the preset
+  // runs with it, and its job will wait for it.
+  const auto* h3 = ctl.catalog().find("minimax-h3-fl2va");
+  REQUIRE(h3 != nullptr);
+  const Json before = ctl.preset_summary(*h3, "speed");
+  const Json miss = jget(before, "missing", Json::array());
+  REQUIRE(!miss.empty());
+  const auto lora = jget<std::string>(miss[0], "id", "");
+  REQUIRE_OK(ctl.download_model(lora));
+  const Json after = ctl.preset_summary(*h3, "speed");
+  CHECK(jget(after, "missing", Json::array()).empty());
+  CHECK(!jget<std::string>(after, "turbo", "").empty());
+}
+
+// The same with the REAL engine and a real download (DESIGN §3a; the
+// network): a model fetched into a scratch root -- VALTZ_TEST_DOWNLOAD
+// names it, `1` Qwen3-ASR 0.6B (1 GB) -- while Krea 2, installed here,
+// makes a small picture: the picture starts before the download ends
+// (the engine's two lanes), and both finish. Then Z-Image's download
+// (31 GB) begins, a Z-Image picture waits for it, and stopping the
+// download fails the picture saying so -- its partial files deleted
+// with the scratch root.
+TEST(controller, a_real_download_runs_beside_a_generation)
+{
+  const char* want = std::getenv("VALTZ_TEST_DOWNLOAD");
+  if (!want) {
+    SKIP("set VALTZ_TEST_DOWNLOAD=1 or a catalog id (downloads; Krea 2 "
+         "installed)");
+  }
+  const std::string fetch = std::string(want) == "1" ? "qwen3-asr-0.6b"
+                                                     : want;
+  auto root = test::temp_dir("ctl-real-download");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  // Downloads go to the scratch root; installed models are read where
+  // they are.
+  cfg.model_roots = {root / "models"};
+  for (const auto& r : models::ModelStore::default_roots(
+           AppPaths::standard().models)) {
+    cfg.model_roots.push_back(r);
+  }
+  cfg.extensions = false;
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  const auto* krea = ctl.catalog().find("krea2-turbo");
+  REQUIRE(krea != nullptr);
+  if (!ctl.runs_here(*krea, "image", "generate")) {
+    SKIP("Krea 2 Turbo is not installed (or no engine)");
+  }
+  const auto* got = ctl.catalog().find(fetch);
+  REQUIRE(got != nullptr);
+  // What is on disk, read afresh.
+  auto installed = [&](const models::ModelEntry& e) {
+    return models::ModelStore(cfg.model_roots).info(e);
+  };
+  if (installed(*got).state == models::InstallState::Installed) {
+    SKIP("the model to download is installed already: name another");
+  }
+  auto pid = ctl.create_project(root / "R.valtz", "real");
+  REQUIRE_OK(pid);
+  using clock = std::chrono::steady_clock;
+  const auto t0 = clock::now();
+  auto at = [&] {
+    return std::chrono::duration<double>(clock::now() - t0).count();
+  };
+  auto state = [&](JobId j) {
+    auto r = ctl.jobs().get(j);
+    return r ? r->state : JobState::Queued;
+  };
+  auto ended = [&](JobId j) {
+    const JobState s = state(j);
+    return s != JobState::Queued && s != JobState::Running;
+  };
+
+  auto dl = ctl.download_model(fetch);
+  REQUIRE_OK(dl);
+  REQUIRE(eventually([&] { return state(*dl) == JobState::Running; }, 30));
+  GenerateImageRequest req;
+  req.project = *pid;
+  req.prompt = "a red fox in snow";
+  req.model = "krea2-turbo";
+  req.width = 256;
+  req.height = 256;
+  auto gen = ctl.generate_image(req);
+  REQUIRE_OK(gen);
+  // The picture starts while the download runs: the lanes.
+  REQUIRE(eventually([&] { return state(*gen) != JobState::Queued; }, 60));
+  const double started = at();
+  const bool downloading = !ended(*dl);
+  std::printf("  picture started at %.1f s, the download %s\n", started,
+              downloading ? "still running" : "already over");
+  CHECK(downloading);
+  REQUIRE(eventually([&] { return ended(*gen) && ended(*dl); }, 600));
+  std::printf("  both over at %.1f s: picture %s, download %s\n", at(),
+              to_str(state(*gen)), to_str(state(*dl)));
+  CHECK(state(*gen) == JobState::Finished);
+  CHECK(state(*dl) == JobState::Finished);
+  CHECK(installed(*got).state == models::InstallState::Installed);
+  CHECK(installed(*got).dir.string().starts_with(
+      (root / "models").string()));
+
+  // A picture of a model downloading waits for it; the download stopped,
+  // it fails saying so.
+  auto dz = ctl.download_model("z-image-turbo");
+  REQUIRE_OK(dz);
+  REQUIRE(eventually([&] { return state(*dz) == JobState::Running; }, 30));
+  req.model = "z-image-turbo";
+  req.prompt = "a blue boat";
+  auto zj = ctl.generate_image(req);
+  REQUIRE_OK(zj);
+  Json ts = ctl.tasks();
+  REQUIRE(ts.size() == 1);
+  CHECK(jget(ts[0], "waiting", Json::array()) ==
+        Json::array({"Z-Image Turbo"}));
+  std::this_thread::sleep_for(std::chrono::seconds(3));
+  CHECK(state(*zj) == JobState::Queued);
+  REQUIRE_OK(ctl.cancel(*dz));
+  REQUIRE(eventually([&] { return ended(*zj) && ended(*dz); }, 60));
+  CHECK(state(*dz) == JobState::Cancelled);
+  CHECK(state(*zj) == JobState::Failed);
+  CHECK(ctl.jobs().get(*zj)->message.find("stopped") != std::string::npos);
+  ctl.shutdown();
+  std::error_code ec;
+  fs::remove_all(root, ec);
 }
 
 // A GATED model's download takes the person's Hugging Face token: it
@@ -3665,4 +4221,719 @@ TEST(controller, a_downloaded_rewriter_takes_the_guides_place)
   fs::remove_all(dir);
   (*c)->rescan_models();   // as Remove in Capabilities does
   CHECK((*c)->skill_text("qwen-image-2.1-edit") == ours);
+}
+
+// ---- THE AGENT (DESIGN §9b) ---------------------------------------------
+//
+// The loop, the tools, the review and a picture landing, with a model
+// SCRIPTED to make the calls a real one would: what each tool did is
+// read back from the document -- its layers, and its pixels.
+
+#include "valtz/agent/agent.h"
+
+namespace {
+
+// A model that answers as it is scripted: each turn the next reply (its
+// calls), then "Done." with none. What it was handed each turn is kept.
+class ScriptedBackend final : public agent::Backend {
+public:
+  struct Shared {
+    std::mutex                                    mu;
+    std::deque<std::vector<agent::ToolCall>>      replies;
+    std::vector<std::vector<agent::Message>>      seen;
+  };
+  explicit ScriptedBackend(std::shared_ptr<Shared> s) : _s(std::move(s)) {}
+
+  Json describe() const override { return {{"kind", "test"}}; }
+
+  Result<agent::Reply>
+  turn(const std::vector<agent::Message>& messages,
+       const std::vector<agent::ToolSpec>&,
+       const std::function<void(std::string_view)>& on_text,
+       const std::atomic<bool>&) override
+  {
+    std::lock_guard lk(_s->mu);
+    _s->seen.push_back(messages);
+    agent::Reply r;
+    const std::size_t n = _s->seen.size() - 1;
+    if (!_s->replies.empty()) {
+      r.calls = _s->replies.front();
+      _s->replies.pop_front();
+      for (std::size_t i = 0; i < r.calls.size(); ++i) {
+        r.calls[i].id = std::format("c{}-{}", n, i);
+      }
+      r.content = "Working on it.";
+      r.finish = "tool_calls";
+    } else {
+      r.content = "Done.";
+      r.finish = "stop";
+    }
+    r.raw = r.content;
+    if (on_text) {
+      on_text(r.content);
+    }
+    return r;
+  }
+
+private:
+  std::shared_ptr<Shared> _s;
+};
+
+agent::ToolCall
+call(std::string name, Json args)
+{
+  return {"", std::move(name), std::move(args)};
+}
+
+// The session's state once it is `state` (or anything after it ends),
+// waited for up to `seconds`.
+Json
+agent_wait(Controller& ctl, const std::string& id, const std::string& state,
+           double seconds = 20)
+{
+  const auto until = std::chrono::steady_clock::now() +
+                     std::chrono::milliseconds(
+                         static_cast<int>(seconds * 1000));
+  Json st;
+  while (std::chrono::steady_clock::now() < until) {
+    st = ctl.agent_state(id);
+    const std::string now = jget<std::string>(st, "state", "");
+    if (now == state || now == "stopped" || now == "failed") {
+      return st;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  return st;
+}
+
+}  // namespace
+
+// The tools build a two-page still: a composition, words on page 1 and a
+// shape on page 2, a picture placed in a box -- each as its tool says,
+// to the pixel; each one undoable command.
+TEST(agent, the_tools_build_a_deck)
+{
+  auto root = test::temp_dir("agent-deck");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "D.valtz", "deck");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "blue.png", 32, 18, {0, 0, 0xff, 0xff}));
+  auto blue = import_and_wait(ctl, *pid, root / "blue.png");
+  REQUIRE(blue.has_value());
+
+  script->replies = {
+      {call("create_composition",
+            {{"name", "Deck"}, {"width", 320}, {"height", 180},
+             {"pages", 2}})},
+      {call("add_text", {{"page", 1}, {"text", "Hello"}, {"x", 20},
+                         {"y", 20}, {"width", 200}, {"height", 60},
+                         {"size", 30}, {"color", "#ff0000"}}),
+       call("add_shape", {{"page", 2}, {"shape", "rect"}, {"x", 0},
+                          {"y", 0}, {"width", 160}, {"height", 180},
+                          {"fill", "#00ff00"}})},
+      {call("place_asset", {{"asset", blue->str()}, {"page", 1},
+                            {"x", 160}, {"y", 90}, {"width", 160},
+                            {"height", 90}})},
+      {call("get_composition", Json::object()),
+       call("no_such_tool", Json::object())}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A two-page deck";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  const Json st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  const AssetId comp =
+      *AssetId::parse(jget<std::string>(st, "composition", ""));
+  auto a = ctl.project(*pid)->asset(comp);
+  REQUIRE_OK(a);
+  CHECK(a->pages == 2);
+  CHECK(a->name == "Deck");
+  // Seven steps: the unknown tool is a step that failed, told so.
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 6);
+  CHECK(jget<std::string>(steps[5], "state", "") == "failed");
+  for (std::size_t i = 0; i < 5; ++i) {
+    CHECK(jget<std::string>(steps[i], "state", "") == "done");
+  }
+  // The words: on page 1's markup, read back by get_composition.
+  const std::string described = to_text(jget(steps[4], "result", Json()));
+  CHECK(described.find("Hello") != std::string::npos);
+  CHECK(described.find("\"markup\"") != std::string::npos);
+  // Page 2: the green half; page 1: the picture in its box.
+  const fs::path p1 = root / "p1.png", p2 = root / "p2.png";
+  REQUIRE_OK(ctl.flatten(*pid, comp, p2, std::nullopt, std::nullopt, {}, 1));
+  REQUIRE_OK(ctl.flatten(*pid, comp, p1, std::nullopt, std::nullopt, {}, 0));
+  CHECK(pixel_at(p2, 40, 90)[1] > 200);
+  CHECK(pixel_at(p2, 240, 90)[3] == 0);
+  CHECK(pixel_at(p1, 240, 135)[2] > 200);
+  CHECK(pixel_at(p1, 170, 100)[2] > 200);
+  CHECK(pixel_at(p1, 150, 135)[2] < 50);
+  CHECK(pixel_at(p1, 240, 80)[2] < 50);
+  // Its box, as the composition says it.
+  CHECK(described.find("\"x\":160") != std::string::npos);
+  CHECK(described.find("\"width\":160") != std::string::npos);
+  // Each edit one command, named by its tool.
+  const Json hist = ctl.undo_history(*pid);
+  int agent_steps = 0;
+  for (const auto& h : hist) {
+    if (jget<std::string>(h, "kind", "") == "agent") {
+      ++agent_steps;
+    }
+  }
+  CHECK(agent_steps == 4);
+  // The model was told each result, the unknown tool's error too.
+  std::lock_guard lk(script->mu);
+  const auto& last = script->seen.back();
+  int tools = 0;
+  for (const auto& m : last) {
+    tools += m.role == "tool";
+  }
+  CHECK(tools == 6);
+  CHECK(last.back().content.find("no tool") != std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// Each edit WAITS for the person: approved, it runs; skipped, it does
+// not, and the model is told why. A read never waits.
+TEST(agent, review_waits_and_a_skip_is_told)
+{
+  auto root = test::temp_dir("agent-review");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "R.valtz", "review");
+  REQUIRE_OK(pid);
+  auto comp = ctl.create_composition(*pid, project::AssetClass::Still,
+                                     {64, 64}, {0, 1}, "Doc");
+  REQUIRE_OK(comp);
+  script->replies = {
+      {call("get_project", Json::object()),
+       call("add_pages", {{"count", 2}})},
+      {call("remove_page", {{"page", 1}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "Three pages";
+  req.composition = *comp;
+  req.review = true;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "review");
+  REQUIRE(jget<std::string>(st, "state", "") == "review");
+  // The read ran on its own; the edit waits.
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 2);
+  CHECK(jget<std::string>(steps[0], "state", "") == "done");
+  CHECK(jget<std::string>(steps[1], "state", "") == "proposed");
+  CHECK(ctl.project(*pid)->asset(*comp)->pages == 1);
+  // A step not waiting is refused.
+  CHECK(!ctl.agent_review(*id, 1, "approve").ok());
+  REQUIRE_OK(ctl.agent_review(*id, 2, "approve"));
+  // The next one waits too: skipped, with the person's note.
+  for (int i = 0; i < 500; ++i) {
+    st = ctl.agent_state(*id);
+    if (jget(st, "steps", Json::array()).size() == 3 &&
+        jget<std::string>(st, "state", "") == "review") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(ctl.project(*pid)->asset(*comp)->pages == 3);
+  REQUIRE_OK(ctl.agent_review(*id, 3, "skip", Json(), "keep the first"));
+  st = agent_wait(ctl, *id, "done");
+  CHECK(jget<std::string>(st, "state", "") == "done");
+  CHECK(ctl.project(*pid)->asset(*comp)->pages == 3);
+  {
+    std::lock_guard lk(script->mu);
+    const auto& last = script->seen.back();
+    CHECK(last.back().role == "tool");
+    CHECK(last.back().content.find("keep the first") != std::string::npos);
+  }
+  // Done, the person says more: it goes on in the same conversation.
+  script->replies.push_back({call("add_pages", Json::object())});
+  REQUIRE_OK(ctl.agent_set_review(*id, false));
+  REQUIRE_OK(ctl.agent_say(*id, "One more page."));
+  for (int i = 0; i < 500; ++i) {
+    if (ctl.project(*pid)->asset(*comp)->pages == 4) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(ctl.project(*pid)->asset(*comp)->pages == 4);
+  REQUIRE_OK(ctl.agent_stop(*id));
+  st = agent_wait(ctl, *id, "stopped");
+  CHECK(jget<std::string>(st, "state", "") == "stopped");
+}
+
+// A picture it generates is a task: it LANDS on the page it named, in
+// its box, under everything -- while the model goes on -- and the model
+// is told where it went before it finishes.
+TEST(agent, a_generated_picture_lands_in_its_box)
+{
+  auto root = test::temp_dir("agent-land");
+  const fs::path krea = root / "models" / "krea" / "Krea-2-Turbo";
+  fs::create_directories(krea);
+  std::ofstream(krea / "model.safetensors") << "w";
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "L.valtz", "land");
+  REQUIRE_OK(pid);
+  script->replies = {
+      {call("create_composition",
+            {{"name", "Deck"}, {"width", 320}, {"height", 180},
+             {"pages", 2}})},
+      {call("generate_image", {{"prompt", "a red wall"}, {"page", 2},
+                               {"x", 160}, {"y", 0}, {"width", 160},
+                               {"height", 180}, {"below_all", true},
+                               {"model", "krea2-turbo"}}),
+       call("add_shape", {{"page", 2}, {"shape", "rect"}, {"x", 200},
+                          {"y", 60}, {"width", 40}, {"height", 40},
+                          {"fill", "#0000ff"}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A deck with a red wall";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  // The model finished with its picture still out: it waits for it.
+  Json st = agent_wait(ctl, *id, "waiting");
+  REQUIRE(jget<std::string>(st, "state", "") == "waiting");
+  REQUIRE(engine->held() == 1);
+  const JobId job =
+      *JobId::parse(jget<std::string>(jget(st, "steps", Json())[1], "job",
+                                      ""));
+  const engine::JobSpec* spec = engine->spec(job);
+  REQUIRE(spec != nullptr);
+  // Made at the box's shape.
+  const double made_w = jget(spec->params, "width", 0.0);
+  const double made_h = jget(spec->params, "height", 0.0);
+  REQUIRE(made_h > 0);
+  CHECK(std::abs(made_w / made_h - 160.0 / 180.0) < 0.02);
+  REQUIRE(write_png(root / "red.png", 80, 90, {0xff, 0, 0, 0xff}));
+  engine->start(job);
+  engine->finish(job, root / "red.png");
+  st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  const Json steps = jget(st, "steps", Json::array());
+  CHECK(jget<std::string>(steps[1], "state", "") == "done");
+  CHECK(jget(jget(steps[1], "result", Json()), "page", 0) == 2);
+  const AssetId comp =
+      *AssetId::parse(jget<std::string>(st, "composition", ""));
+  const fs::path p2 = root / "p2.png";
+  REQUIRE_OK(ctl.flatten(*pid, comp, p2, std::nullopt, std::nullopt, {}, 1));
+  CHECK(pixel_at(p2, 300, 170)[0] > 200);   // the picture, in its box
+  CHECK(pixel_at(p2, 80, 90)[3] == 0);      // left of it: nothing
+  CHECK(pixel_at(p2, 220, 80)[2] > 200);    // the shape, above it
+  // The model was told where it landed.
+  std::lock_guard lk(script->mu);
+  bool told = false;
+  for (const auto& m : script->seen.back()) {
+    told = told || (m.role == "user" &&
+                    m.content.find("has finished") != std::string::npos);
+  }
+  CHECK(told);
+}
+
+// A TIMELINE cut from clips (DESIGN §9b): parts of two clips, the second
+// dissolving out of the first, a picture after them, a title over the
+// first second, a clip's own sound turned down -- and music that LANDS
+// from the start, cut at its length and faded out. Times are seconds, as
+// the model gives them; what each tool did is read back from the layers.
+TEST(agent, the_tools_cut_a_timeline)
+{
+  auto root = test::temp_dir("agent-timeline");
+  for (const char* repo : {"m-a-p/YuE2-3B", "m-a-p/YuE2-Vae"}) {
+    const fs::path d = root / "models" / repo;
+    fs::create_directories(d);
+    std::ofstream(d / "model.safetensors") << "w";
+  }
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "V.valtz", "vlog");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 32, 32, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_png(root / "blue.png", 32, 32, {0, 0, 0xff, 0xff}));
+  REQUIRE(write_tone(root / "tone.wav", 2, 440, 0.5));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  auto blue = import_and_wait(ctl, *pid, root / "blue.png");
+  auto tone = import_and_wait(ctl, *pid, root / "tone.wav");
+  REQUIRE(red && blue && tone);
+  // Two clips of two seconds at 24, with sound: movies imported.
+  const auto clip = [&](AssetId pic, const char* name)
+      -> std::optional<AssetId> {
+    auto shot = ctl.create_composition(
+        *pid, project::AssetClass::Composition, {32, 32}, {24, 1}, name);
+    if (!shot.ok()) {
+      return std::nullopt;
+    }
+    auto in = ctl.instantiate(*pid, pic, *shot);
+    project::LayerTime two;
+    two.duration = 48;
+    if (!in.ok() || !ctl.set_layer_time(*pid, *shot, in->second, two).ok() ||
+        !ctl.instantiate(*pid, *tone, *shot).ok()) {
+      return std::nullopt;
+    }
+    auto file = ctl.rendered(*pid, *shot);
+    if (!file.ok()) {
+      return std::nullopt;
+    }
+    const fs::path to = root / (std::string(name) + ".mov");
+    fs::copy_file(*file, to);
+    return import_and_wait(ctl, *pid, to);
+  };
+  auto a = clip(*red, "beach");
+  auto b = clip(*blue, "market");
+  REQUIRE(a && b);
+
+  script->replies = {
+      {call("create_composition",
+            {{"name", "Trip"}, {"kind", "timeline"}, {"width", 64},
+             {"height", 36}, {"fps", 24}})},
+      {call("add_clip", {{"asset", a->str()}, {"in", 0.5}, {"out", 1.5}}),
+       // At the beach's end, as a model puts it: the dissolve still
+       // overlaps the beach.
+       call("add_clip", {{"asset", b->str()}, {"start", 1.0},
+                         {"transition", "dissolve"},
+                         {"transition_seconds", 0.25}})},
+      {call("add_text", {{"text", "Lisbon"}, {"start", 0}, {"duration", 1},
+                         {"x", 4}, {"y", 4}, {"width", 56}, {"height", 12},
+                         {"size", 8}}),
+       // Its panel, asked for after the words: behind them.
+       call("add_shape", {{"shape", "rect"}, {"start", 0}, {"duration", 1},
+                          {"x", 2}, {"y", 2}, {"width", 60}, {"height", 16},
+                          {"fill", "#00000080"}}),
+       call("add_clip", {{"asset", red->str()}, {"duration", 1}}),
+       call("set_layer_sound", {{"layer", "0"}, {"volume", 0.25}})},
+      {call("generate_music", {{"style", "lo-fi hip hop, mellow piano"},
+                               {"seconds", 3}, {"fade_out", 1}}),
+       call("set_layer_time", {{"layer", "1"}, {"out", 1.0}}),
+       // A dissolve between two that do not meet (the market now ends
+       // at 1.75, the picture starts at 2.75): the picture moves to
+       // overlap it by half a second.
+       call("set_transition", {{"from", "1"}, {"to", "3"},
+                               {"kind", "dissolve"}}),
+       call("get_composition", Json::object())}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A vlog of my trip with lo-fi music";
+  req.row = {*a, *b};
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  // The model finished with its music still out: it waits for it.
+  Json st = agent_wait(ctl, *id, "waiting");
+  REQUIRE(jget<std::string>(st, "state", "") == "waiting");
+  const auto songs = engine->held_of(engine::kOpGenerateAudio);
+  REQUIRE(songs.size() == 1);
+  // A little past its length: its cut fades out over music.
+  CHECK(jget(engine->spec(songs[0])->params, "max_seconds", 0.0) >= 4);
+  REQUIRE(write_tone(root / "song.wav", 5, 220, 0.5));
+  engine->start(songs[0]);
+  engine->finish(songs[0], root / "song.wav");
+  st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  const Json steps = jget(st, "steps", Json::array());
+  for (const auto& x : steps) {
+    CHECK(jget<std::string>(x, "state", "") == "done");
+  }
+  const AssetId tl =
+      *AssetId::parse(jget<std::string>(st, "composition", ""));
+  auto comp = ctl.project(*pid)->asset(tl);
+  REQUIRE_OK(comp);
+  CHECK(comp->cls == project::AssetClass::Composition);
+  CHECK(comp->rate == Rational(24, 1));
+  // Bottom first: the clips and the picture under the title, the music
+  // on top.
+  std::vector<std::string> ids;
+  for (const auto& l : comp->layers) {
+    ids.push_back(l.id);
+  }
+  REQUIRE(ids.size() == 5);
+  CHECK(ids[0] == "" && ids[1] == "1" && ids[2] == "3" && ids[3] == "2" &&
+        ids[4] == "4");
+  auto plan = ctl.sound_plan(*pid, tl);
+  REQUIRE_OK(plan);
+  const auto& L = plan->layers;
+  REQUIRE(L.size() == 5);
+  const auto near = [](double x, double y) { return std::abs(x - y) < 0.03; };
+  // The beach's part: 0.5-1.5 s of it, from 0.
+  CHECK(near(L[0].timing.start, 0) && near(L[0].timing.length, 1));
+  CHECK(near(L[0].timing.in, 0.5) && near(L[0].timing.out, 1.5));
+  // The market from 0.75 (dissolving out of the beach), trimmed to 1 s.
+  CHECK(near(L[1].timing.start, 0.75) && near(L[1].timing.length, 1));
+  REQUIRE(comp->transitions.size() == 2);
+  CHECK(comp->transitions[0].from == "" && comp->transitions[0].to == "1");
+  CHECK(comp->transitions[0].kind == "dissolve");
+  CHECK(comp->transitions[1].from == "1" && comp->transitions[1].to == "3");
+  // The picture, added after the market as it was (2.75), a second --
+  // moved to 1.25 by the dissolve asked into it.
+  CHECK(near(L[2].timing.start, 1.25) && near(L[2].timing.length, 1));
+  // The title over the first second, above the clips: its panel and its
+  // words on one markup, the panel drawn first.
+  CHECK(comp->layers[3].time.offset == 0);
+  CHECK(comp->layers[3].time.duration == 24);
+  {
+    auto mk = ctl.project(*pid)->asset(*comp->layers[3].source);
+    REQUIRE_OK(mk);
+    const Json objs = mk->markup ? mk->markup->objects : Json();
+    REQUIRE(objs.is_array() && objs.size() == 2);
+    CHECK(jget<std::string>(objs[0], "kind", "") == "rect");
+    CHECK(jget<std::string>(objs[1], "kind", "") == "text");
+  }
+  // The beach's own sound at a quarter.
+  const auto quiet = Controller::sound_keys_of(*comp, "");
+  REQUIRE(quiet.keys.size() == 1);
+  CHECK(near(quiet.keys[0].value.volume, 0.25));
+  // The music: from 0, asked for 3 s but cut where the clips end (the
+  // picture's 2.25), faded out over its last second.
+  CHECK(near(L[4].timing.start, 0) && near(L[4].timing.length, 2.25));
+  const auto music = Controller::sound_keys_of(*comp, "4");
+  REQUIRE(music.keys.size() == 3);
+  CHECK(music.keys[0].frame == 0 && near(music.keys[0].value.volume, 0.8));
+  CHECK(music.keys[1].frame == 30 && near(music.keys[1].value.volume, 0.8));
+  CHECK(music.keys[2].frame == 54 && music.keys[2].value.volume == 0);
+  // get_composition told it in seconds, the title's words with it.
+  const std::string told = to_text(jget(steps[10], "result", Json()));
+  CHECK(told.find("\"kind\":\"title\"") != std::string::npos);
+  CHECK(told.find("Lisbon") != std::string::npos);
+  CHECK(told.find("\"dissolve\"") != std::string::npos);
+  // Each edit one command -- and the music's landing one of its own,
+  // of its kind: the trim came after its request.
+  int edits = 0;
+  for (const auto& h : ctl.undo_history(*pid)) {
+    edits += jget<std::string>(h, "kind", "") == "agent";
+  }
+  CHECK(edits == 11);
+  // Shortened, the music running past the end is cut there, its fade
+  // moved with it.
+  script->replies.push_back(
+      {call("set_timeline_length", {{"seconds", 2.0}})});
+  REQUIRE_OK(ctl.agent_say(*id, "Make it two seconds."));
+  for (int i = 0; i < 500; ++i) {
+    st = ctl.agent_state(*id);
+    if (jget(st, "steps", Json::array()).size() == 12 &&
+        jget<std::string>(st, "state", "") == "done") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  auto shorter = ctl.project(*pid)->asset(tl);
+  REQUIRE_OK(shorter);
+  auto plan2 = ctl.sound_plan(*pid, tl);
+  REQUIRE_OK(plan2);
+  CHECK(near(plan2->layers[4].timing.length, 2.0));
+  const auto faded = Controller::sound_keys_of(*shorter, "4");
+  REQUIRE(faded.keys.size() == 3);
+  CHECK(faded.keys[1].frame == 24 && faded.keys[2].frame == 48);
+  // Undone: the length, then the landing -- its layer.
+  REQUIRE_OK(ctl.undo(*pid));
+  REQUIRE_OK(ctl.undo(*pid));
+  auto after = ctl.project(*pid)->asset(tl);
+  REQUIRE_OK(after);
+  CHECK(after->layers.size() == 4);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// A FLEET member runs the agent's turns (DESIGN §9b): a Mac with the
+// memory for the helper, beside this one, whose own tools work on the
+// document here. Every turn goes to the member that holds the
+// conversation, under the key it keeps it by in its own fleet folder, as
+// long as the lease; the session over, the member lets it go.
+TEST(agent, a_fleet_member_runs_the_turns)
+{
+  if (!std::getenv("VALTZ_TEST_FLEET")) {
+    SKIP("set VALTZ_TEST_FLEET=1 (two members on this Mac's loopback)");
+  }
+  auto root = test::temp_dir("agent-fleet");
+  const std::string key = fleet::derive_key("Studio", "a-long-test-secret");
+  auto conf = [&](const char* name, bool discoverable) {
+    fleet::Config c;
+    c.member_id = Uuid::v7().str();
+    c.member_name = name;
+    c.fleet = "Studio";
+    c.key = key;
+    c.discoverable = discoverable;
+    (void)fleet::save_config(root / (std::string(name) + ".json"), c);
+  };
+  conf("big", true);
+  conf("here", false);
+  // The member: a helper "installed" where it is looked for.
+  const fs::path helper =
+      root / "big-models" / "mlx-community" / "Qwen3.5-9B-OptiQ-4bit";
+  fs::create_directories(helper);
+  std::ofstream(helper / "config.json") << "{}";
+  std::ofstream(helper / "model.safetensors") << "w";
+  auto make = [&](const char* name, const fs::path& models,
+                  HeldEngine** e) {
+    ControllerConfig cfg;
+    cfg.support_root = root / (std::string(name) + "-support");
+    cfg.model_roots = {models};
+    cfg.with_engine = false;
+    cfg.extensions = false;
+    cfg.fleet = true;
+    cfg.fleet_config = root / (std::string(name) + ".json");
+    cfg.engine_factory = [e] {
+      auto x = std::make_unique<HeldEngine>();
+      *e = x.get();
+      return std::unique_ptr<engine::Engine>(std::move(x));
+    };
+    return Controller::create(cfg);
+  };
+  HeldEngine* big_engine = nullptr;
+  HeldEngine* here_engine = nullptr;
+  auto big = make("big", root / "big-models", &big_engine);
+  REQUIRE_OK(big);
+  auto here = make("here", root / "here-models", &here_engine);
+  REQUIRE_OK(here);
+  Controller& ctl = **here;
+  int port = 0;
+  REQUIRE(eventually([&] {
+    port = jget((*big)->fleet_status(), "port", 0);
+    return port > 0;
+  }, 10));
+  ctl.fleet_connect("127.0.0.1", port);
+  REQUIRE(eventually([&] {
+    for (const auto& m : jget(ctl.fleet_status(), "members", Json())) {
+      if (!jget<std::string>(jget(m, "self", Json::object()), "assistant",
+                             "").empty()) {
+        return true;
+      }
+    }
+    return false;
+  }, 15));
+  REQUIRE_OK(ctl.fleet_configure(
+      {{"offload", {{"tasks", {{"agent-turn", "always"}}}}}}));
+  auto pid = ctl.create_project(root / "F.valtz", "fleet agent");
+  REQUIRE_OK(pid);
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A deck";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  // The first turn: on the member, kept under its key in its folder.
+  std::vector<JobId> turns;
+  REQUIRE(eventually([&] {
+    turns = big_engine->held_of("agent-turn");
+    return !turns.empty();
+  }, 15));
+  CHECK(here_engine->held_of("agent-turn").empty());
+  std::string kept;
+  {
+    const engine::JobSpec* spec = big_engine->spec(turns[0]);
+    REQUIRE(spec != nullptr);
+    const Json conv = jget(spec->params, "conversation", Json::object());
+    kept = jget<std::string>(conv, "context", "");
+    CHECK(kept.starts_with("fleet-here-valtz-agent-"));
+    CHECK(jget<std::string>(conv, "context_dir", "").find("big-files") !=
+          std::string::npos);
+    CHECK(jget(spec->params, "keep_loaded", 0.0) >= 600);
+    CHECK(jget(conv, "messages", Json::array()).size() == 2);
+    CHECK(!jget(conv, "tools", Json::array()).empty());
+  }
+  big_engine->turn(turns[0],
+                   {{"text", "<tool_call>...</tool_call>"},
+                    {"content", ""},
+                    {"finish", "tool_calls"},
+                    {"tool_calls", Json::array(
+                        {{{"name", "create_composition"},
+                          {"arguments", "{\"name\":\"Deck\",\"width\":64,"
+                                        "\"height\":36}"}}})},
+                    {"restored", "new"}});
+  // Its tool ran HERE, on this Mac's document; the next turn went to the
+  // same member, the conversation one message longer each way.
+  REQUIRE(eventually([&] {
+    turns = big_engine->held_of("agent-turn");
+    return !turns.empty();
+  }, 15));
+  {
+    const engine::JobSpec* spec = big_engine->spec(turns[0]);
+    REQUIRE(spec != nullptr);
+    const Json conv = jget(spec->params, "conversation", Json::object());
+    CHECK(jget<std::string>(conv, "context", "") == kept);
+    const Json msgs = jget(conv, "messages", Json::array());
+    REQUIRE(msgs.size() == 4);
+    CHECK(msgs[2]["content"] == "<tool_call>...</tool_call>");
+    CHECK(msgs[3]["role"] == "tool");
+  }
+  Json st = ctl.agent_state(*id);
+  REQUIRE(jget(st, "steps", Json::array()).size() == 1);
+  CHECK(jget<std::string>(jget(st, "steps", Json())[0], "state", "") ==
+        "done");
+  CHECK(jget<std::string>(jget(st, "backend", Json()), "kind", "") ==
+        "fleet");
+  CHECK(jget<std::string>(jget(st, "backend", Json()), "where", "") ==
+        "big");
+  big_engine->turn(turns[0], {{"text", "Made it."},
+                              {"content", "Made it."},
+                              {"finish", "stop"},
+                              {"restored", "memory"}});
+  st = agent_wait(ctl, *id, "done");
+  CHECK(jget<std::string>(st, "state", "") == "done");
+  // Over: the member lets the conversation go.
+  REQUIRE_OK(ctl.agent_stop(*id));
+  CHECK(eventually([&] {
+    const auto d = big_engine->dropped();
+    return std::ranges::find(d, kept) != d.end();
+  }, 15));
 }

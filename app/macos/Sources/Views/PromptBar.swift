@@ -27,7 +27,7 @@ struct PromptBar: View {
                 set: { m in
                     withAnimation(AppModel.motion) { model.setModality(m) }
                 })) {
-                ForEach(Modality.allCases) { m in
+                ForEach(model.modalities) { m in
                     Image(systemName: m.symbol)
                         .accessibilityLabel(Text(m.label))
                         .tag(m)
@@ -37,8 +37,10 @@ struct PromptBar: View {
             .labelsHidden()
             .fixedSize()
             .help("What Start makes")
-            ModelPicker(model: model)
-                .help("The model Start runs -- the generation card's, one choice")
+            if model.activeModality != .agent {
+                ModelPicker(model: model)
+                    .help("The model Start runs -- the generation card's, one choice")
+            }
             settingsButton
             Divider().frame(height: 18)
             HStack(spacing: 2) {

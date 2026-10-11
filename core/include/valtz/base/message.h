@@ -205,6 +205,15 @@ inline constexpr Message kFleetNeedsSecret{
 inline constexpr Message kFleetSecretShort{
     "core.fleet_secret_short",
     "A fleet's secret has at least 8 characters."};
+inline constexpr Message kFleetOnlyNoMember{
+    "core.fleet_only_no_member",
+    "It is set to run on the fleet only, and no member can take it now."};
+inline constexpr Message kFleetUnknownTask{
+    "core.fleet_unknown_task", "“{name}” is no fleet task or model."};
+inline constexpr Message kFleetUnknownPolicy{
+    "core.fleet_unknown_policy",
+    "“{policy}” is no offload policy: never, local-first, fleet-first or "
+    "always."};
 inline constexpr Message kStretchNeedsStill{
     "core.stretch_needs_still",
     "Only a picture, a markup or a still composition is stretched: a "
@@ -279,6 +288,42 @@ inline constexpr Message kDownloadNotGranted{
     "core.download_not_granted",
     "Hugging Face refused the token for {model}: accept its license on its "
     "page with the same account, and check that the token can read."};
+inline constexpr Message kAwaitedDownloadFailed{
+    "core.awaited_download_failed",
+    "It waited for {model} to download, and the download failed."};
+inline constexpr Message kAwaitedDownloadStopped{
+    "core.awaited_download_stopped",
+    "It waited for {model} to download, and the download was stopped."};
+// The agent (DESIGN §9b).
+inline constexpr Message kAgentEmptyRequest{
+    "core.agent_empty_request", "Say what the agent should do."};
+inline constexpr Message kAgentNoSession{
+    "core.agent_no_session", "That agent session is not here any more."};
+inline constexpr Message kAgentStopped{
+    "core.agent_stopped", "That agent session has stopped: start another."};
+inline constexpr Message kAgentStepNotWaiting{
+    "core.agent_step_not_waiting",
+    "That step is not waiting for your word any more."};
+inline constexpr Message kAgentTooManyTurns{
+    "core.agent_too_many_turns",
+    "It took {turns} turns without finishing: say “go on” to let it "
+    "continue."};
+inline constexpr Message kAgentNoKey{
+    "core.agent_no_key",
+    "No API key for {provider} is kept: add one in Settings › Agentic "
+    "Helper."};
+inline constexpr Message kAgentNoCloudModel{
+    "core.agent_no_cloud_model",
+    "Name the cloud model in Settings › Agentic Helper."};
+inline constexpr Message kAgentCloudUnreachable{
+    "core.agent_cloud_unreachable", "{url} could not be reached: {why}"};
+inline constexpr Message kAgentCloudRefused{
+    "core.agent_cloud_refused",
+    "{provider} refused the request (HTTP {status}): {why}"};
+inline constexpr Message kAgentCloudError{
+    "core.agent_cloud_error", "{provider} stopped with an error: {why}"};
+inline constexpr Message kAgentKeychain{
+    "core.agent_keychain", "The Keychain did not keep the key ({status})."};
 inline constexpr Message kNoAssistantModel{
     "core.no_assistant_model", "No assistant model fits this Mac."};
 inline constexpr Message kNotAnAssistant{

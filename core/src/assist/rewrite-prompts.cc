@@ -12,6 +12,7 @@ extern const char kQwenImageT2iSkill[];
 extern const char kQwenImageEditSkill[];
 extern const char kYue2SongSkill[];
 extern const char kMossTtsSkill[];
+extern const char kValtzAgentSkill[];
 extern const char kMinimaxH3Skill[];
 extern const char kMinimaxH3BaseGuide[];
 extern const char kMinimaxH3RefGuide[];
@@ -52,6 +53,9 @@ rewrite_prompt(std::string_view name)
   }
   if (name == "moss-tts") {
     return resources::kMossTtsSkill;
+  }
+  if (name == "valtz-agent") {
+    return resources::kValtzAgentSkill;
   }
   if (name == "minimax-h3-base") {
     static const std::string s = h3_skill(false);

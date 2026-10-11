@@ -621,6 +621,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                        : m.assets.first(where: { $0.id == v }) {
                     m.usePrompt(a)
                 }
+                // Settings › Experimental's switches, for the run:
+                // "agent" (the Agent tab; VALTZ_SNAPSHOT_AGENT too).
+                if env["VALTZ_SNAPSHOT_EXPERIMENTAL"] == "agent"
+                    || env["VALTZ_SNAPSHOT_AGENT"] != nil {
+                    m.setAgentEnabled(true)
+                }
+                // Settings › Agentic Helper › Show Speed, for the run.
+                if env["VALTZ_SNAPSHOT_AGENT_SPEED"] == "1" {
+                    m.setAgentShowsSpeed(true)
+                }
                 // The generation card's Create row, then its model field
                 // (a model id; unset is Auto).
                 if let v = env["VALTZ_SNAPSHOT_MODALITY"],
@@ -1757,6 +1767,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Clicks posted to the window ("x,y" in points from its top
                 // left; ";" between), as the pointer's would come: each
                 // prints what has the focus after it.
+                // The status bar's context menu, opened by a right-click
+                // posted on the bar: its items printed (+ checked), then
+                // the one named picked ("-": only looked at).
+                if let m = model,
+                   let spec = env["VALTZ_SNAPSHOT_STATUS_MENU"] {
+                    try? await Task.sleep(for: .seconds(1))
+                    for pick in spec.split(separator: ";").map(String.init) {
+                        let items = await Self.statusMenu(
+                            pick: pick == "-" ? nil : pick)
+                        try? await Task.sleep(for: .milliseconds(400))
+                        FileHandle.standardError.write(Data(
+                            "snapshot: status-menu pick=\(pick) items=\(items) shown=\(Self.statusItems(m))\n".utf8))
+                    }
+                }
                 if let m = model, let spec = env["VALTZ_SNAPSHOT_CLICKS"] {
                     for c in spec.split(separator: ";") {
                         // "hint": the edit-base suggestion waited for.
@@ -2406,14 +2430,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     FileHandle.standardError.write(Data(
                         "snapshot: new-anonymous anonymous=\(m.isAnonymous) project=\(m.projectName.replacingOccurrences(of: " ", with: "_")) assets=\(m.assets.count)\n".utf8))
                 }
+                // A model downloaded at once (DESIGN §3a): it runs beside
+                // the work; the task steps print how far it is.
+                if let id = env["VALTZ_SNAPSHOT_DOWNLOAD"] {
+                    m.download(model: id)
+                    try? await Task.sleep(for: .milliseconds(1500))
+                    FileHandle.standardError.write(Data(
+                        "snapshot: download \(id) downloads=\(Self.downloadSummary(m)) options=\(m.modelOptions(for: m.activeModality).map(ModelPicker.label).joined(separator: "|").replacingOccurrences(of: " ", with: "_"))\n".utf8))
+                }
                 if env["VALTZ_SNAPSHOT_START"] != nil { m.start() }
                 // The TASK QUEUE (DESIGN §3a), in turn: "prompt:<text>",
                 // "start", "wait:<s>", "watch:<n>" (the task at T<n>, as a
                 // click on its row), "view:<asset id>|newest-image",
                 // "active:project", "cancel:<n>", "undo", "compare" (its
                 // button), "export:<format>:<file>", "idle:<s>" (until
-                // no task is left, at most s) -- each printing `snapshot:
-                // task <step> tasks= watched= stage=`.
+                // no task is left, at most s), "model:<id>" (the model
+                // field; empty: Auto) -- each printing `snapshot: task
+                // <step> tasks= watched= stage= downloads=`.
                 if let spec = env["VALTZ_SNAPSHOT_TASKS"] {
                     for step in spec.split(separator: ";").map(String.init) {
                         let kv = step.split(separator: ":", maxSplits: 1)
@@ -2422,6 +2455,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         switch kv[0] {
                         case "prompt": m.setPrompt(arg)
                         case "start": m.start()
+                        case "model": m.modelChoice = arg
                         case "wait":
                             try? await Task.sleep(
                                 for: .seconds(Double(arg) ?? 1))
@@ -2465,7 +2499,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                         try? await Task.sleep(for: .milliseconds(400))
                         FileHandle.standardError.write(Data(
-                            "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) stage=\(m.stageAssetId.flatMap { id in m.assets.first { $0.id == id }?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_"))\n".utf8))
+                            "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) stage=\(m.stageAssetId.flatMap { id in m.assets.first { $0.id == id }?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m))\n".utf8))
+                    }
+                }
+                // THE AGENT (DESIGN §9b), driven as its card drives it:
+                // "ask:<words>" (the Agent tab, the words, Start),
+                // "say:<words>", "wait:<state>@<s>" (until the session is
+                // in that state, at most <s> seconds), "approve",
+                // "skip:<note>", "all", "pause", "resume", "stop",
+                // "close", "sleep:<s>", "editor" (the Prompt Editor).
+                if let spec = env["VALTZ_SNAPSHOT_AGENT"] {
+                    for step in spec.split(separator: ";").map(String.init) {
+                        let kv = step.split(separator: ":", maxSplits: 1)
+                            .map(String.init)
+                        let arg = kv.count > 1 ? kv[1] : ""
+                        let proposed = m.agent?.proposed
+                        switch kv[0] {
+                        case "ask":
+                            m.setModality(.agent)
+                            m.setPrompt(arg)
+                            m.start()
+                        case "say":
+                            m.setPrompt(arg)
+                            m.start()
+                        case "wait":
+                            let w = arg.split(separator: "@").map(String.init)
+                            let want = w.first ?? "done"
+                            let limit = Double(w.count > 1 ? w[1] : "") ?? 120
+                            for _ in 0..<Int(limit * 4) {
+                                let st = m.agent?.state ?? ""
+                                if st == want || st == "stopped"
+                                    || (st == "failed" && want != "failed") {
+                                    break
+                                }
+                                try? await Task.sleep(for: .milliseconds(250))
+                            }
+                        case "approve": if let p = proposed { m.agentApprove(p) }
+                        case "skip":
+                            if let p = proposed {
+                                m.agentNote = arg
+                                m.agentSkip(p)
+                            }
+                        case "all": if let p = proposed { m.agentApproveAll(p) }
+                        case "pause", "resume", "stop": m.agentControl(kv[0])
+                        case "close": m.agentDismiss()
+                        case "editor": m.enterImmersivePrompt()
+                        case "sleep":
+                            try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
+                        default: break
+                        }
+                        try? await Task.sleep(for: .milliseconds(400))
+                        let a = m.agent
+                        FileHandle.standardError.write(Data(
+                            "snapshot: agent \(step.replacingOccurrences(of: " ", with: "_").prefix(40)) state=\(a?.state ?? "-") steps=\(a?.steps.count ?? 0) proposed=\(a?.proposed?.tool ?? "-") last=\(a?.steps.last.map { "\($0.tool):\($0.state)" } ?? "-") review=\(a?.review ?? false) backend=\(a?.backend?.kind ?? "-") composition=\(m.activeComposition?.name.replacingOccurrences(of: " ", with: "_") ?? "-") pages=\(m.activeComposition?.pages ?? 0) writing=\(m.agentWriting.count) error=\(a?.errorText?.replacingOccurrences(of: " ", with: "_").prefix(60) ?? "-") speed=\(a?.stats.flatMap { $0.isEmpty ? nil : $0.line.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
                     }
                 }
                 // Stop the generation after some seconds, as the Stop
@@ -2985,6 +3071,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 m.gatedDownload = nil
                 try? await Task.sleep(for: .milliseconds(600))
             }
+            // Settings' navigation (";" between): "go:<place>" (fleet,
+            // fleet-offload, fleet-sharing, ...), "back", "forward",
+            // "key:back" / "key:forward" (⌘[ / ⌘] posted to its window),
+            // "search:<text>", "clear", "pick:<n>" (the n-th row the
+            // sidebar lists, as its click does), "offload:<task|model>=
+            // <policy|default>", "share:<task|model>=on|off" -- each
+            // printing `snapshot: settings-nav <step> at= history= back=
+            // forward= search= rows= title= policies=`.
+            if settings, let spec = env["VALTZ_SNAPSHOT_SETTINGS_NAV"],
+               let m = model {
+                try? await Task.sleep(for: .milliseconds(1500))
+                let win = NSApp.windows.first(where: {
+                    $0.isVisible && $0.identifier?.rawValue
+                        .contains("Settings") == true
+                })
+                @MainActor func rows() -> [SettingsPlace] {
+                    m.settingsSearch.isEmpty
+                        ? SettingsPage.allCases.map { .page($0) }
+                        : SettingsPlace.found(m.settingsSearch, m)
+                }
+                for step in spec.split(separator: ";").map(String.init) {
+                    let kv = step.split(separator: ":", maxSplits: 1)
+                        .map(String.init)
+                    let arg = kv.count > 1 ? kv[1] : ""
+                    switch kv[0] {
+                    case "go":
+                        if let p = SettingsPlace(raw: arg) {
+                            m.settingsHistory.go(p)
+                        }
+                    case "back": m.settingsHistory.back()
+                    case "forward": m.settingsHistory.forward()
+                    case "key":
+                        let fwd = arg == "forward"
+                        if let w = win, let ev = NSEvent.keyEvent(
+                            with: .keyDown, location: .zero,
+                            modifierFlags: .command, timestamp: 0,
+                            windowNumber: w.windowNumber, context: nil,
+                            characters: fwd ? "]" : "[",
+                            charactersIgnoringModifiers: fwd ? "]" : "[",
+                            isARepeat: false, keyCode: fwd ? 30 : 33) {
+                            NSApp.postEvent(ev, atStart: false)
+                        }
+                    case "search": m.settingsSearch = arg
+                    case "clear": m.settingsSearch = ""
+                    case "pick":
+                        let r = rows()
+                        if let i = Int(arg), r.indices.contains(i) {
+                            m.settingsHistory.go(r[i])
+                        }
+                    case "offload", "share":
+                        let kv2 = arg.split(separator: "=").map(String.init)
+                        guard kv2.count == 2 else { break }
+                        let task = FleetTaskLabel.all.contains {
+                            $0.op == kv2[0]
+                        }
+                        if kv[0] == "offload" {
+                            let v = kv2[1] == "default" ? "" : kv2[1]
+                            if task {
+                                m.setFleetOffload(task: kv2[0], v)
+                            } else {
+                                m.setFleetOffload(model: kv2[0], v)
+                            }
+                        } else if task {
+                            m.setFleetShared(task: kv2[0], kv2[1] == "on")
+                        } else {
+                            m.setFleetShared(model: kv2[0], kv2[1] == "on")
+                        }
+                    default: break
+                    }
+                    try? await Task.sleep(for: .milliseconds(700))
+                    let h = m.settingsHistory
+                    let hist = h.places.enumerated().map {
+                        $0.offset == h.at ? "*" + $0.element.raw
+                                          : $0.element.raw
+                    }.joined(separator: ",")
+                    let p = m.fleet?.policies ?? FleetPolicies()
+                    var pairs: [String] = []
+                    for (k, v) in p.tasks.sorted(by: { $0.key < $1.key }) {
+                        pairs.append("\(k)=\(v)")
+                    }
+                    for (k, v) in p.models.sorted(by: { $0.key < $1.key }) {
+                        pairs.append("\(k)=\(v)")
+                    }
+                    let pol = pairs.isEmpty ? "-"
+                        : pairs.joined(separator: ",")
+                    let heldList: [String] = p.withheldTasks.sorted()
+                        + p.withheldModels.sorted()
+                    let held = heldList.isEmpty ? "-"
+                        : heldList.joined(separator: ",")
+                    let listed = rows().map(\.raw).joined(separator: ",")
+                    let title = win?.title ?? "-"
+                    var line = "snapshot: settings-nav \(step)"
+                    line += " at=\(h.current.raw) history=\(hist)"
+                    line += " back=\(h.canGoBack) forward=\(h.canGoForward)"
+                    line += " search=\(m.settingsSearch) rows=\(listed)"
+                    line += " title=\(title) policies=\(pol) withheld=\(held)"
+                    FileHandle.standardError.write(Data((line + "\n").utf8))
+                }
+            }
             // Clicks posted to the Settings window ("x,y" points from its
             // top left; ";" between) once it is open.
             if settings, let spec = env["VALTZ_SNAPSHOT_SETTINGS_CLICKS"] {
@@ -3062,6 +3247,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return w
                 }
                 return NSApp.windows.first(where: { $0.isVisible })
+            }
+            // VALTZ_SNAPSHOT_DROP_VIEWS=1: every AppKit view registered
+            // for drops, its frame in the window (points from the top
+            // left), its types -- beside the Assets list's frame: what
+            // AppKit may hand a Finder drag to instead of SwiftUI's view.
+            // (=assets: the inspector's Assets shown first.)
+            if env["VALTZ_SNAPSHOT_DROP_VIEWS"] == "assets", let m = model {
+                m.revealInspector(.assets)
+                try? await Task.sleep(for: .seconds(1))
+            }
+            if env["VALTZ_SNAPSHOT_DROP_VIEWS"] != nil,
+               let w = NSApp.windows.first(where: { $0.isVisible }),
+               let root = w.contentView?.superview ?? w.contentView {
+                let h = root.bounds.height
+                func walk(_ v: NSView, _ depth: Int) {
+                    if !v.registeredDraggedTypes.isEmpty {
+                        let r = v.convert(v.bounds, to: nil)
+                        let vis = v.convert(v.visibleRect, to: nil)
+                        let f = { (r: NSRect) in
+                            "\(Int(r.minX)),\(Int(h - r.maxY)) \(Int(r.width))x\(Int(r.height))"
+                        }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: drop-view depth=\(depth) \(type(of: v)) frame=\(f(r)) visible=\(f(vis)) hidden=\(v.isHiddenOrHasHiddenAncestor) types=\(v.registeredDraggedTypes.map(\.rawValue).sorted().joined(separator: ","))\n".utf8))
+                    }
+                    for sub in v.subviews { walk(sub, depth + 1) }
+                }
+                walk(root, 0)
+                let a = model?.assetListFrame ?? .zero
+                FileHandle.standardError.write(Data(
+                    "snapshot: drop-views assetList=\(Int(a.minX)),\(Int(a.minY)) \(Int(a.width))x\(Int(a.height))\n".utf8))
+                // VALTZ_SNAPSHOT_FAKE_DROP="<file>@x,y;...": a Finder-like
+                // drag of the file (a file URL on its own pasteboard)
+                // handed, as AppKit hands one, to the frontmost view
+                // registered for drops at that point -- entered, updated,
+                // performed -- printing what it said.
+                if let spec = env["VALTZ_SNAPSHOT_FAKE_DROP"] {
+                    for one in spec.split(separator: ";").map(String.init) {
+                        let parts = one.split(separator: "@").map(String.init)
+                        guard parts.count == 2 else { continue }
+                        let xy = parts[1].split(separator: ",")
+                            .compactMap { Double($0) }
+                        guard xy.count == 2 else { continue }
+                        let p = NSPoint(x: xy[0], y: h - xy[1])
+                        var hit: NSView?
+                        func front(_ v: NSView) {
+                            if !v.registeredDraggedTypes.isEmpty,
+                               !v.isHiddenOrHasHiddenAncestor,
+                               v.convert(v.bounds, to: nil).contains(p) {
+                                hit = v
+                            }
+                            for sub in v.subviews { front(sub) }
+                        }
+                        front(root)
+                        let before = model?.assets.count ?? 0
+                        // "row:<asset name>": a row of the list dragged,
+                        // as its drag carries it (text, "valtz-asset:id").
+                        let row = parts[0].hasPrefix("row:")
+                            ? model?.assets.first(where: {
+                                $0.name == String(parts[0].dropFirst(4))
+                            }) : nil
+                        let info = row.map {
+                            FakeDrag(text: AppModel.assetPrefix + $0.id,
+                                     at: p, window: w)
+                        } ?? FakeDrag(
+                            file: URL(fileURLWithPath: parts[0]),
+                            at: p, window: w)
+                        let entered = hit.map {
+                            ($0 as NSDraggingDestination)
+                                .draggingEntered?(info) ?? []
+                        } ?? []
+                        let updated = hit.map {
+                            ($0 as NSDraggingDestination)
+                                .draggingUpdated?(info) ?? []
+                        } ?? []
+                        let prepared = hit.map {
+                            ($0 as NSDraggingDestination)
+                                .prepareForDragOperation?(info) ?? true
+                        } ?? false
+                        let performed = prepared && (hit.map {
+                            ($0 as NSDraggingDestination)
+                                .performDragOperation?(info) ?? false
+                        } ?? false)
+                        if let hit {
+                            (hit as NSDraggingDestination)
+                                .concludeDragOperation?(info)
+                        }
+                        try? await Task.sleep(for: .seconds(3))
+                        var rowFolder = "-"
+                        if let r = row, let m = model,
+                           let now = m.assets.first(where: { $0.id == r.id }) {
+                            let fid = now.folder ?? ""
+                            rowFolder = fid.isEmpty ? "top"
+                                : (m.assetFolders.first { $0.id == fid }?
+                                    .name ?? fid)
+                        }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: fake-drop at=\(parts[1]) view=\(hit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") entered=\(entered.rawValue) updated=\(updated.rawValue) performed=\(performed) assets=\(before)>\(model?.assets.count ?? 0) rowFolder=\(rowFolder)\n".utf8))
+                    }
+                }
             }
             do {
                 // VALTZ_SNAPSHOT_APPKIT=1: skip ScreenCaptureKit, draw the
@@ -3149,6 +3433,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     + "suggests=\([m.suggestsShorterClip ? "length" : nil, m.suggestsSmallerSize ? "size" : nil, m.suggestsFewerReferences ? "refs" : nil].compactMap { $0 }.joined(separator: ",")) "
                     + "bypassed=\(m.bypassed.map { "\($0)" }.sorted()) "
                     + "statusBar=\(m.showsStatusBar) "
+                    + "statusItems=\(Self.statusItems(m)) "
+                    + "createTabs=\(m.modalities.map(\.rawValue).joined(separator: ",")) "
+                    + "agentSpeed=\(m.agentShowsSpeed ? "on" : "off") "
                     // The stage player's own controls: floating, or none
                     // (the timeline open).
                     + "playerControls=\(NSApp.windows.first { $0.isVisible }?.contentView.flatMap { Self.find(AVPlayerView.self, in: $0) }.map { $0.controlsStyle == .none ? "none" : "floating" } ?? "-") "
@@ -3159,6 +3446,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     + "fleetAsks=\(m.fleetAsks.count) "
                     + "localNetwork=\(m.fleet?.localNetwork.flatMap { $0.isEmpty ? nil : $0 } ?? "-") "
                     + "load=ane:\(m.monitor.load.ane.map { String(format: "%.1f", $0) } ?? "-"),gpu:\(m.monitor.load.gpu.map { String(format: "%.1f", $0) } ?? "-"),ram:\(m.monitor.load.footprint.map { String(format: "%.2fGB", $0 / 1e9) } ?? "-"),sys:\(m.monitor.load.systemUsed.map { String(format: "%.2fGB", $0 / 1e9) } ?? "-") "
+                    + "flops=\(Self.flopsSummary(m.monitor.load.flops)) "
+                    + "fleetFlops=\(Self.flopsSummary(m.monitor.load.fleet)) "
                     + "thermal=\(m.monitor.thermal?.verdict ?? "-"):\(m.monitor.thermalLabel.replacingOccurrences(of: " ", with: "_")) "
                     + "firstResponder=\(NSApp.windows.first { $0.isVisible }?.firstResponder.map { r in ((r as? NSTextView)?.delegate as? NSTextField).map { "field(\($0.placeholderString ?? $0.stringValue))" } ?? String(describing: type(of: r)) } ?? "-") "
                     + "stageA=\(m.stage.aLabel.replacingOccurrences(of: " ", with: "_")) stageB=\(m.stage.bLabel.replacingOccurrences(of: " ", with: "_")) "
@@ -3285,11 +3574,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return [a, b, c, d, e].joined(separator: " ")
     }
 
-    /// The task queue: "T0:running:generate,T1:queued:export".
+    /// The downloads: "z-image-turbo:running:0.42" -- each one's model,
+    /// state and progress.
+    /// "12.30+0.00/31.20" (GPU + ANE / the highest), or "-"; a fleet's
+    /// with its members after a colon ("Studio=12.30,Mini=-").
+    static func flopsSummary(_ f: MachineMonitor.Flops?) -> String {
+        guard let f else { return "-" }
+        var s = String(format: "%.2f+%.2f/%.2f", f.gpu, f.ane, f.peak)
+        if !f.members.isEmpty {
+            s += ":" + f.members.map { m in
+                m.name.replacingOccurrences(of: " ", with: "_") + "="
+                    + (m.gpu.map { String(format: "%.2f", $0 + (m.ane ?? 0)) }
+                       ?? "-")
+            }.joined(separator: ",")
+        }
+        return s
+    }
+
+    @MainActor
+    static func downloadSummary(_ m: AppModel) -> String {
+        let d = m.jobs.values.filter { $0.purpose == "download" }
+        return d.isEmpty ? "-" : d.map {
+            "\($0.model):\($0.state):\(String(format: "%.3f", $0.progress))"
+        }.sorted().joined(separator: ",")
+    }
+
+    /// The task queue: "T0:running:generate,T1:queued:export" -- one
+    /// waiting for a download "D:waiting:generate".
     @MainActor
     static func taskSummary(_ m: AppModel) -> String {
         m.tasks.isEmpty ? "-" : m.tasks.map {
-            "\($0.badge):\($0.state):\($0.kind)"
+            $0.waits ? "D:waiting:\($0.kind)"
+                : "\($0.badge):\($0.state):\($0.kind)"
         }.joined(separator: ",")
     }
 
@@ -3367,6 +3683,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         post(.leftMouseDown, 2)
         try? await Task.sleep(for: .milliseconds(60))
         post(.leftMouseUp, 2)
+    }
+
+    /// The status bar's items shown, "gpu,ram,..." ("-": none).
+    @MainActor
+    static func statusItems(_ m: AppModel) -> String {
+        let shown = StatusBarItem.allCases.filter { m.showsStatusItem($0) }
+        return shown.isEmpty ? "-" : shown.map(\.rawValue)
+            .joined(separator: ",")
+    }
+
+    /// A right-click posted on the status bar, at its left edge: the menu
+    /// it opens read as it tracks -- "+GPU,-ANE,...,Hide_Status_Bar" --
+    /// then shut, the item titled `pick` performed. "no-menu" when none
+    /// opened in three seconds.
+    @MainActor
+    static func statusMenu(pick: String?) async -> String {
+        guard let win = NSApp.windows.first(where: { $0.isVisible }) else {
+            return "no-window"
+        }
+        // What the closures share: the observer, the menu once it opened
+        // (AppKit's, used on the main thread alone), whether it is over.
+        final class Watch: @unchecked Sendable {
+            var token: NSObjectProtocol?
+            var menu: NSMenu?
+            var done = false
+        }
+        let watch = Watch()
+        return await withCheckedContinuation { cont in
+            @MainActor func finish(_ s: String) {
+                guard !watch.done else { return }
+                watch.done = true
+                if let t = watch.token {
+                    NotificationCenter.default.removeObserver(t)
+                }
+                cont.resume(returning: s)
+            }
+            watch.token = NotificationCenter.default.addObserver(
+                forName: NSMenu.didBeginTrackingNotification, object: nil,
+                queue: .main) { note in
+                watch.menu = note.object as? NSMenu
+                MainActor.assumeIsolated {
+                    guard let menu = watch.menu else { return }
+                    let items = menu.items.map { i in
+                        i.isSeparatorItem ? "|" :
+                            (i.state == .on ? "+" : i.action == nil ? ""
+                                : "-") + i.title
+                            .replacingOccurrences(of: " ", with: "_")
+                    }.joined(separator: ",")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        MainActor.assumeIsolated {
+                            guard let menu = watch.menu else { return }
+                            menu.cancelTrackingWithoutAnimation()
+                            if let pick, let i = menu.items.firstIndex(
+                                where: { $0.title == pick }) {
+                                menu.performActionForItem(at: i)
+                            }
+                            finish(items)
+                        }
+                    }
+                }
+            }
+            // In the bar's left padding: the bar's own, no meter's.
+            let p = NSPoint(x: 6, y: StatusBar.height / 2)
+            for type in [NSEvent.EventType.rightMouseDown, .rightMouseUp] {
+                if let ev = NSEvent.mouseEvent(
+                    with: type, location: p, modifierFlags: [],
+                    timestamp: 0, windowNumber: win.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1,
+                    pressure: 1) {
+                    NSApp.postEvent(ev, atStart: false)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                MainActor.assumeIsolated { finish("no-menu") }
+            }
+        }
     }
 
     /// A click -- down, then up -- posted to the window at (x, y) points
@@ -3522,4 +3914,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // close the project databases before the process exits.
         model?.shutdown()
     }
+}
+
+/// A drag as Finder makes one -- a file URL on its own pasteboard -- for
+/// VALTZ_SNAPSHOT_FAKE_DROP: handed straight to a drop view, since a run
+/// cannot move the pointer for a real one.
+@MainActor
+final class FakeDrag: NSObject, @preconcurrency NSDraggingInfo {
+    let pasteboard: NSPasteboard
+    let location: NSPoint
+    let window: NSWindow
+
+    init(file: URL, at: NSPoint, window: NSWindow) {
+        pasteboard = NSPasteboard(name: NSPasteboard.Name(
+            "valtz-fake-drag-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.writeObjects([file as NSURL])
+        location = at
+        self.window = window
+    }
+
+    /// A row's drag: its text, as NSItemProvider(object: NSString) has it.
+    init(text: String, at: NSPoint, window: NSWindow) {
+        pasteboard = NSPasteboard(name: NSPasteboard.Name(
+            "valtz-fake-drag-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        pasteboard.writeObjects([text as NSString])
+        location = at
+        self.window = window
+    }
+
+    var draggingDestinationWindow: NSWindow? { window }
+    var draggingSourceOperationMask: NSDragOperation { [.copy, .link, .generic] }
+    var draggingLocation: NSPoint { location }
+    var draggedImageLocation: NSPoint { location }
+    var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { pasteboard }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 4242 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    func enumerateDraggingItems(
+        options enumOpts: NSDraggingItemEnumerationOptions = [],
+        for view: NSView?,
+        classes classArray: [AnyClass],
+        searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+        using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>)
+            -> Void
+    ) {
+        let objects = pasteboard.readObjects(forClasses: classArray,
+                                             options: searchOptions) ?? []
+        var stop: ObjCBool = false
+        for (i, o) in objects.enumerated() {
+            guard let w = o as? NSPasteboardWriting else { continue }
+            block(NSDraggingItem(pasteboardWriter: w), i, &stop)
+            if stop.boolValue { break }
+        }
+    }
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
 }

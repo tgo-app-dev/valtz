@@ -47,12 +47,16 @@ set(VALTZ_CORE_SOURCES
   src/assist/rewrite-prompts.cc
   src/assist/transcript.cc
   src/assist/video-summary.cc
+  src/agent/agent.cc
+  src/agent/cloud.mm
   src/ext/extension.cc
   src/fleet/fleet-config.cc
   src/fleet/fleet.mm
   src/engine/engine.cc
   src/engine/tensor.cc
   src/engine/null-engine.cc
+  src/controller/agent.cc
+  src/controller/agent-tools.cc
   src/controller/compositions.cc
   src/controller/controller.cc
   src/controller/event-bus.cc
@@ -94,6 +98,9 @@ valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/model-catalog.json"
 # authors' examples (DESIGN §9).
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/yue2-song.md"
   kYue2SongSkill yue2-song-skill.cc)
+# The agent's guide to the editor's tools: Valtz's own (DESIGN §9b).
+valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/valtz-agent.md"
+  kValtzAgentSkill valtz-agent-skill.cc)
 # MOSS-TTS's voice director: Valtz's own, from the model's prompt fields
 # (TTS-Audio-Suite's MOSS_TTS_PROMPT_FIELDS_GUIDE; DESIGN §4g).
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/moss-tts.md"
@@ -153,7 +160,7 @@ target_compile_definitions(valtz_core PRIVATE
   $<$<BOOL:${VALTZ_HAVE_VPIPE}>:VALTZ_HAVE_VPIPE=1>)
 set_source_files_properties(
   src/media/camera.mm src/media/capture.mm
-  src/fleet/fleet.mm
+  src/fleet/fleet.mm src/agent/cloud.mm
   src/media/exif.mm src/media/markup.mm src/media/model-input.mm
   src/media/movie.mm
   src/media/probe.mm src/media/thumbnail.mm

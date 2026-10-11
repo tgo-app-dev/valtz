@@ -45,7 +45,7 @@ struct SettingsRow: Identifiable, Sendable {
             return [
                 SettingsRow(id: modality, panel: nil,
                             terms: [String(localized: "Create")]
-                                + Modality.allCases.map(\.label)),
+                                + m.modalities.map(\.label)),
                 SettingsRow(id: model, panel: .generate,
                             terms: [String(localized: "Model"),
                                     String(localized: "Auto")]
@@ -74,7 +74,7 @@ struct SettingsRow: Identifiable, Sendable {
             return [
                 SettingsRow(id: modality, panel: nil,
                             terms: [String(localized: "Create")]
-                                + Modality.allCases.map(\.label)),
+                                + m.modalities.map(\.label)),
                 SettingsRow(id: model, panel: .generate,
                             terms: [String(localized: "Model"),
                                     String(localized: "Auto")]
@@ -132,7 +132,7 @@ struct SettingsRow: Identifiable, Sendable {
         var rows = [
             SettingsRow(id: modality, panel: nil,
                         terms: [String(localized: "Create")]
-                            + Modality.allCases.map(\.label)),
+                            + m.modalities.map(\.label)),
             SettingsRow(id: model, panel: .generate,
                         terms: [String(localized: "Model"),
                                 String(localized: "Auto")]

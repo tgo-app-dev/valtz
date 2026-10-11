@@ -289,9 +289,11 @@ enum ZoomStep: Sendable {
 }
 
 /// What a generation makes: a picture, a clip or a sound -- a song (the
-/// tab over the prompt). Its raw value is the core's modality name.
+/// tab over the prompt). Its raw value is the core's modality name. The
+/// AGENT is the fourth: the prompt is a request the agent works on the
+/// document with the editor's tools (DESIGN §9b).
 enum Modality: String, CaseIterable, Identifiable, Sendable {
-    case video, image, audio
+    case video, image, audio, agent
     var id: String { rawValue }
 
     var label: String {
@@ -299,6 +301,7 @@ enum Modality: String, CaseIterable, Identifiable, Sendable {
         case .image: String(localized: "Image")
         case .video: String(localized: "Video")
         case .audio: String(localized: "Audio")
+        case .agent: String(localized: "Agent")
         }
     }
 
@@ -308,6 +311,7 @@ enum Modality: String, CaseIterable, Identifiable, Sendable {
         case .image: "photo"
         case .video: "video"
         case .audio: "waveform"
+        case .agent: "wand.and.stars"
         }
     }
 }
@@ -821,17 +825,106 @@ final class AppModel {
             }
         }
     }
+    /// The status bar's items its context menu unchecked: remembered as
+    /// the bar is.
+    var hiddenStatusItems = AppModel.storedHiddenStatusItems {
+        didSet {
+            if Self.keepsViewState {
+                UserDefaults.standard.set(
+                    hiddenStatusItems.map(\.rawValue).sorted(),
+                    forKey: Self.statusItemsKey)
+            }
+        }
+    }
+
+    /// Settings › Experimental › Agent: the prompt's Agent tab and its
+    /// mode (DESIGN §9b) -- off until switched on, remembered as the
+    /// status bar is (VALTZ_SNAPSHOT_AGENT switches it on for its run).
+    private(set) var agentEnabled = AppModel.storedAgentEnabled {
+        didSet {
+            if Self.keepsViewState {
+                UserDefaults.standard.set(agentEnabled,
+                                          forKey: Self.agentEnabledKey)
+            }
+        }
+    }
+
+    /// The Agent switched on or off. Off, its tab goes -- the prompt back
+    /// to pictures if it was there -- and a session at work stops.
+    func setAgentEnabled(_ on: Bool) {
+        guard on != agentEnabled else { return }
+        withAnimation(Self.motion) {
+            agentEnabled = on
+            if !on {
+                if modality == .agent { setModality(.image) }
+                agentDismiss()
+            }
+        }
+    }
+
+    /// Settings › Agentic Helper › Show Speed: each of the agent's turns
+    /// with its prefill and decode speed in small type under it, for
+    /// debugging -- off until switched on, remembered as the status bar is
+    /// (VALTZ_SNAPSHOT_AGENT_SPEED switches it on for its run).
+    private(set) var agentShowsSpeed = AppModel.storedAgentShowsSpeed {
+        didSet {
+            if Self.keepsViewState {
+                UserDefaults.standard.set(agentShowsSpeed,
+                                          forKey: Self.agentSpeedKey)
+            }
+        }
+    }
+
+    func setAgentShowsSpeed(_ on: Bool) {
+        guard on != agentShowsSpeed else { return }
+        withAnimation(Self.motion) { agentShowsSpeed = on }
+    }
+
+    /// The prompt's tabs: what a generation makes, and the Agent while it
+    /// is switched on.
+    var modalities: [Modality] {
+        Modality.allCases.filter { $0 != .agent || agentEnabled }
+    }
+
+    func showsStatusItem(_ item: StatusBarItem) -> Bool {
+        !hiddenStatusItems.contains(item)
+    }
+
+    func setStatusItem(_ item: StatusBarItem, shown: Bool) {
+        withAnimation(Self.motion) {
+            if shown {
+                hiddenStatusItems.remove(item)
+            } else {
+                hiddenStatusItems.insert(item)
+            }
+        }
+    }
     /// What the status bar shows (it polls only while the bar is shown).
     let monitor: MachineMonitor
     /// Auto-update (Sparkle, when built in): Check for Updates…, and
     /// Settings › General › Updates.
     let updater = Updater()
     private static let statusBarKey = "view.statusBar"
+    private static let statusItemsKey = "view.statusBarHidden"
+    private static let agentEnabledKey = "experimental.agent"
+    private static let agentSpeedKey = "helper.agentSpeed"
     private static var keepsViewState: Bool {
         ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] == nil
     }
     private static var storedStatusBar: Bool {
         keepsViewState && UserDefaults.standard.bool(forKey: statusBarKey)
+    }
+    private static var storedAgentEnabled: Bool {
+        keepsViewState && UserDefaults.standard.bool(forKey: agentEnabledKey)
+    }
+    private static var storedAgentShowsSpeed: Bool {
+        keepsViewState && UserDefaults.standard.bool(forKey: agentSpeedKey)
+    }
+    private static var storedHiddenStatusItems: Set<StatusBarItem> {
+        guard keepsViewState,
+              let raw = UserDefaults.standard.stringArray(
+                  forKey: statusItemsKey) else { return [] }
+        return Set(raw.compactMap(StatusBarItem.init(rawValue:)))
     }
     /// The pointer is over the title bar: its bottom edge shows, as in
     /// Preview.
@@ -866,6 +959,16 @@ final class AppModel {
     /// Settings › Agentic Helper: the helpers, the chosen one, the one in
     /// use.
     var helpers: HelperList?
+    /// Settings › Agentic Helper › Agent: where its model thinks, whether
+    /// each step is asked for, the cloud's provider and model.
+    var agentSettings: AgentSettings?
+    /// The AGENT's session the prompt shows (DESIGN §9b): the last one
+    /// started in this project, as the core last said it is; and its
+    /// words as they are written this turn.
+    var agent: AgentSession?
+    var agentWriting = ""
+    /// A step's note, typed before it is skipped (told to the model).
+    var agentNote = ""
     /// The fleet (DESIGN §11): this Mac's place in one, the job it serves
     /// for a member (its window given over to it, the mark in blue), the
     /// offers waiting for an answer.
@@ -1628,6 +1731,8 @@ final class AppModel {
         capabilityTree = DTO.decode(CapabilityTree.self,
                                     core.capabilityTreeJSON())
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+        agentSettings = DTO.decode(AgentSettings.self,
+                                   core.agentSettingsJSON())
         reloadFleet()
         // A chosen model that went away (deleted, moved) gives way to Auto.
         if !modelChoice.isEmpty,
@@ -1656,12 +1761,18 @@ final class AppModel {
         auto[(m ?? activeModality).rawValue]?[op]?.chosen ?? ""
     }
 
+    /// Auto's pick for `op` is downloading: its job waits for it.
+    func autoWaits(_ op: String, _ m: Modality? = nil) -> Bool {
+        auto[(m ?? activeModality).rawValue]?[op]?.waits == true
+    }
+
     /// The modality Start makes: the card's Create row.
     var activeModality: Modality { modality }
 
-    /// The models the field offers for a modality: installed, fitting
-    /// this Mac, in the core's ranking -- for pictures, the ones that
-    /// make or edit them; for clips, the video models.
+    /// The models the field offers for a modality: installed (or
+    /// downloading -- a job asked of one waits for it), fitting this Mac,
+    /// in the core's ranking -- for pictures, the ones that make or edit
+    /// them; for clips, the video models.
     func modelOptions(for m: Modality) -> [ModelOption] {
         // Clips: the models that make one from words or a picture
         // (Ref2VA's references have no graph yet).
@@ -1670,6 +1781,7 @@ final class AppModel {
         case .video: ["text-to-video", "image-to-video",
                       "reference-to-video"]
         case .audio: ["text-to-audio", "text-to-speech"]
+        case .agent: [String]()
         }
         // A quantized variant is its source, listed once by the source's
         // name: Favor picks which file runs (Fast and Med the 8-bit pack).
@@ -1677,7 +1789,8 @@ final class AppModel {
         var out: [ModelOption] = []
         for c in caps {
             for var o in capability(c)?.options ?? []
-            where o.state == "installed" && o.fits {
+            where (o.state == "installed" || o.downloading == true)
+                && o.fits {
                 let base = baseModel(o.model)
                 guard !seen.contains(base) else { continue }
                 seen.insert(base)
@@ -2036,7 +2149,7 @@ final class AppModel {
     /// Make pictures or clips. A model chosen for the other kind gives way
     /// to Auto.
     func setModality(_ m: Modality) {
-        guard m != modality else { return }
+        guard m != modality, m != .agent || agentEnabled else { return }
         otherShapes[modality] = outputShape
         outputShape = otherShapes[m] ?? OutputShape.defaults(for: m)
         modality = m
@@ -2283,6 +2396,11 @@ final class AppModel {
 
     /// Settings on its Capabilities page, `family` opened there.
     var settingsPageRequest: String?
+    /// Where Settings is, and where it has been: its ‹ › go back and
+    /// forth through this, as System Settings' do.
+    var settingsHistory = SettingsHistory(SettingsPlace.firstShown)
+    /// What Settings' sidebar search field holds.
+    var settingsSearch = ""
     var capabilitiesFamily: String?
     /// A gated model whose download sheet is open (Capabilities).
     var gatedDownload: CapabilityTree.Member?
@@ -3365,6 +3483,11 @@ final class AppModel {
                 return String(localized: "Describe the picture — or drop in pictures and say what to change")
             }
             return String(localized: "Describe the picture — subject, setting, light, style")
+        case .agent:
+            if agent?.listening == true {
+                return String(localized: "Tell the agent what to do next")
+            }
+            return String(localized: "Ask for something to make — “a five-slide deck on the water cycle, a picture on each”")
         }
     }
 
@@ -3952,7 +4075,12 @@ final class AppModel {
     }
 
     var canStart: Bool {
-        !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let words =
+            !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if activeModality == .agent {
+            return words && projectId != nil
+        }
+        return words
             && !(activeModality == .audio ? audioModel : imageModel).isEmpty
             && projectId != nil
     }
@@ -3976,6 +4104,10 @@ final class AppModel {
         }
         // The stage shows the work: a picture clicked in the row goes.
         clearReferenceFocus()
+        if activeModality == .agent {
+            startAgent()
+            return
+        }
         if activeModality == .video {
             startVideo()
             return
@@ -4334,10 +4466,20 @@ final class AppModel {
         guard jobs[job]?.state == "queued" else {
             return String(localized: "Preparing…")
         }
+        if let t = tasks.first(where: { $0.job == job }), t.waits {
+            return Self.waitingCaption(t)
+        }
         if let t = tasks.first(where: { $0.job == job }), t.position > 0 {
             return String(localized: "Queued · \(t.badge)")
         }
         return String(localized: "Waiting…")
+    }
+
+    /// "Waiting for Krea 2 Turbo to download": a task out of the line
+    /// until what it needs has downloaded (DESIGN §3a).
+    static func waitingCaption(_ t: TaskDTO) -> String {
+        let names = (t.waiting ?? []).joined(separator: ", ")
+        return String(localized: "Waiting for \(names) to download")
     }
 
     /// The asset each mention in the text names, in order; "" for one
@@ -5076,7 +5218,8 @@ final class AppModel {
     }
 
     var assistantEnabled: Bool {
-        guard enhanceJob == nil else { return false }
+        // The Agent tab's prompt is a request: nothing to enhance.
+        guard enhanceJob == nil, activeModality != .agent else { return false }
         return prompt.isEmpty ? outlineModel != nil : assistantReady
     }
 
@@ -6609,8 +6752,8 @@ final class AppModel {
         let next = DocumentState(
             dirty: p["dirty"] as? Bool ?? false,
             untitled: p["untitled"] as? Bool ?? false,
-            undo: (p["undo"] as? [String: Any])?["kind"] as? String,
-            redo: (p["redo"] as? [String: Any])?["kind"] as? String)
+            undo: Self.commandKind(p["undo"]),
+            redo: Self.commandKind(p["redo"]))
         if next != document { document = next }
     }
 
@@ -7411,8 +7554,23 @@ final class AppModel {
 
     /// What a command of the project's history is called, by its kind
     /// (core: Controller::command_).
+    /// A command's kind as commandName reads it: an agent's step is
+    /// named by its tool ("agent:add_text").
+    static func commandKind(_ any: Any?) -> String? {
+        guard let c = any as? [String: Any],
+              let kind = c["kind"] as? String else { return nil }
+        if kind == "agent",
+           let tool = (c["args"] as? [String: Any])?["tool"] as? String {
+            return "agent:" + tool
+        }
+        return kind
+    }
+
     static func commandName(_ kind: String) -> String {
-        switch kind {
+        if kind.hasPrefix("agent:") {
+            return agentToolTitle(String(kind.dropFirst(6)))
+        }
+        return switch kind {
         case "import": String(localized: "Import")
         case "generate.image": String(localized: "Generate Picture")
         case "edit.image": String(localized: "Edit Picture")
@@ -7861,6 +8019,11 @@ final class AppModel {
                 || p["purpose"] as? String == "export" {
                 reloadTasks()
             }
+            // A model on its way: the model field offers it (a job asked
+            // of it waits for the download), Auto may pick it.
+            if p["purpose"] as? String == "download" {
+                refreshRunnable()
+            }
             // A generation's prompt, captured: the box's words are it now
             // (the next Start keeps it for the same words).
             if ev.job == generationJob, let id = p["asset"] as? String {
@@ -7927,6 +8090,14 @@ final class AppModel {
                 } else if let img = ctx.preview {
                     showLive(img)
                 }
+            }
+        case "agent.changed":
+            if (p["agent"] as? String) == agent?.agent {
+                reloadAgent()
+            }
+        case "agent.text":
+            if (p["agent"] as? String) == agent?.agent {
+                agentWriting += p["text"] as? String ?? ""
             }
         case "assist.partial":
             if ev.job == enhanceJob {

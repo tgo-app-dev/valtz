@@ -117,6 +117,7 @@ to_json(Json& j, const CapabilityStatus& s)
       {"name", o.entry->name},
       {"state", to_str(o.install.state)},
       {"fits", o.fits},
+      {"downloading", o.downloading},
       {"disk_gb", o.entry->disk_gb},
       {"min_ram_gb", o.entry->min_ram_gb},
       {"dir", o.install.dir.string()},

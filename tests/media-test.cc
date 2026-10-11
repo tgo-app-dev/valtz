@@ -886,3 +886,48 @@ TEST(media, a_sound_is_cut_to_the_sample)
   CHECK(std::abs(info->duration.seconds() - 0.5) < 0.03);
   CHECK(!media::write_sound(src, dir / "x.mp3", "mp3").ok());
 }
+
+// A sound AAC cannot carry as first asked: 8 kHz mono -- a camcorder's
+// AVI, upscaled -- joined to the movie made of it. 96 kb/s a channel is
+// more than AAC holds at 8 kHz, and the writer refused the whole movie
+// ("Cannot Encode Media"). Each rate is encoded as the encoder allows,
+// at the sound's own rate where it takes it (37.8 kHz it does not: the
+// next it does), as a whole and as a span; an .m4a the same.
+TEST(media, a_low_rate_sound_is_encoded_as_aac_allows)
+{
+  const auto dir = test::temp_dir("low-rate-sound");
+  const auto png = dir / "grey.png";
+  REQUIRE(write_png_grey(png, 128));
+  media::MovieStack still;
+  still.canvas.frame_w = 64;
+  still.canvas.frame_h = 48;
+  still.frames = 48;
+  media::MovieLayer pic;
+  pic.file = png;
+  still.layers.push_back(pic);
+  const auto mov = dir / "picture.mov";
+  REQUIRE_OK(media::encode_movie_stack(still, {24, 1}, {64, 48}, {}, mov));
+  for (const int rate : {8000, 11025, 37800, 96000}) {
+    for (const int ch : {1, 2}) {
+      const auto wav = dir / std::format("s{}-{}.wav", rate, ch);
+      REQUIRE(write_ramp_wav(wav, rate, rate * 2, ch));
+      const auto out = dir / std::format("j{}-{}.mov", rate, ch);
+      REQUIRE_OK(media::add_soundtrack(mov, wav, out));
+      auto r = media::probe_file(out);
+      REQUIRE_OK(r);
+      CHECK(r->has_audio);
+      CHECK(r->audio_channels == ch);
+      CHECK(r->audio_sample_rate == (rate == 37800   ? 44100
+                                     : rate > 48000 ? 48000
+                                                    : rate));
+      CHECK(std::abs(r->duration.seconds() - 2.0) < 0.1);
+      const auto part = dir / std::format("p{}-{}.mov", rate, ch);
+      REQUIRE_OK(media::add_soundtrack(mov, wav, part, 0.5, 1.0));
+      const auto m4a = dir / std::format("s{}-{}.m4a", rate, ch);
+      REQUIRE_OK(media::write_sound(wav, m4a, "m4a"));
+      auto a = media::probe_file(m4a);
+      REQUIRE_OK(a);
+      CHECK(std::abs(a->duration.seconds() - 2.0) < 0.1);
+    }
+  }
+}

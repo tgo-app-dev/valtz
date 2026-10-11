@@ -81,6 +81,19 @@ inline constexpr std::string_view kOpUpscaleVideo = "upscale-video";
 // output is a 16-bit PNG.
 inline constexpr std::string_view kOpUpscaleImage = "upscale-image";
 inline constexpr std::string_view kOpChat = "chat";
+// One TURN of an AGENT's conversation (DESIGN §9b): param "conversation"
+// -- {"messages": [{role, content, name?}], "tools": [{name,
+// description, parameters}], "context": key, "context_dir": dir,
+// "max_new_tokens"} as vpipe's text-chat takes it -- and the helper's
+// own (mtp, sampling, keep_loaded, mtp_model, draft_model, draft_bits).
+// The context the turn ends on is kept under its key with the helper
+// (in memory while it is warm, saved to `context_dir` when it must go),
+// so the next turn prefills only what is new. Pictures (inputs, role
+// "image") are shown in the last user message. The Output event's data
+// is the turn: {"text" (the reply, raw: sent back as it is), "content",
+// "tool_calls": [{name, arguments}], "finish", "reused", "prefilled",
+// "restored": memory | disk | new, "ctx_pos", "ctx_bytes"}.
+inline constexpr std::string_view kOpAgentTurn = "agent-turn";
 // A sound -- a clip's -- transcribed: its speech and the sound events
 // heard (DESIGN §4h), a summary written as a text file.
 inline constexpr std::string_view kOpTranscribeAudio = "transcribe-audio";
@@ -286,6 +299,10 @@ public:
   // Ask a queued or running job to stop. Its sink still receives a
   // terminal event.
   virtual Status cancel(JobId) = 0;
+  // An agent's conversation is over: what its turns kept under `key`
+  // (kOpAgentTurn's "context") let go of now, rather than when the
+  // helper's warm hold ends. A context saved to disk is the caller's.
+  virtual void drop_context(const std::string& key) { (void)key; }
   // Stop everything and join engine threads. Idempotent.
   virtual void shutdown() = 0;
 
@@ -309,6 +326,15 @@ public:
     (void)window_ms;
     return Json::object();
   }
+  // THE ARITHMETIC it achieves (vpipe's FLOP/s meter, perf-flops/1):
+  // {"gpu_tflops", "ane_tflops" -- TFLOP/s over the last two seconds
+  // its credits reach, "peak_tflops" -- the two together at their
+  // highest this process has seen}. Work is credited as it retires, so
+  // a reading stands up to three seconds behind; an idle unit reads 0.
+  // Only the models that report count (vpipe credits the DiTs, not the
+  // VAEs or text encoders). Empty from an engine without the meter.
+  // Thread-safe.
+  virtual Json throughput() { return Json::object(); }
 
   // The EXTENSIONS' backends (EngineConfig::backends), as this engine
   // took them: [{"extension", "file", "state": "loaded" | "refused" (kept

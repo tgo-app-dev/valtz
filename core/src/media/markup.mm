@@ -291,6 +291,53 @@ draw_object(CGContextRef ctx, const Json& o)
 
 }
 
+TextFit
+text_fit(const Json& o)
+{
+  TextFit fit;
+  if (jget<std::string>(o, "kind", "") != "text") {
+    return fit;
+  }
+  const std::string text = jget<std::string>(o, "text", "");
+  const double bw = std::abs(finite_or(o, "x1", 0) - finite_or(o, "x0", 0));
+  const double bh = std::abs(finite_or(o, "y1", 0) - finite_or(o, "y0", 0));
+  NSString* s = [[NSString alloc] initWithBytes:text.data()
+                                         length:text.size()
+                                       encoding:NSUTF8StringEncoding];
+  if (s.length == 0 || bw <= 0 || bh <= 0) {
+    return fit;
+  }
+  CTFontRef f = font_of(jget(o, "font", Json::object()));
+  NSDictionary* a =
+      @{(__bridge NSString*)kCTFontAttributeName : (__bridge id)f};
+  NSAttributedString* as =
+      [[NSAttributedString alloc] initWithString:s attributes:a];
+  CTFramesetterRef fs = CTFramesetterCreateWithAttributedString(
+      (__bridge CFAttributedStringRef)as);
+  CFRange all{};
+  const CGSize need = CTFramesetterSuggestFrameSizeWithConstraints(
+      fs, CFRangeMake(0, 0), nullptr, CGSizeMake(bw, CGFLOAT_MAX), &all);
+  fit.needed_height = std::ceil(need.height);
+  CGPathRef path = CGPathCreateWithRect(CGRectMake(0, 0, bw, bh), nullptr);
+  CTFrameRef frame =
+      CTFramesetterCreateFrame(fs, CFRangeMake(0, 0), path, nullptr);
+  const CFRange shown = CTFrameGetVisibleStringRange(frame);
+  fit.fits = shown.location + shown.length >= static_cast<CFIndex>(s.length);
+  CFArrayRef lines = CTFrameGetLines(frame);
+  fit.lines = static_cast<int>(CFArrayGetCount(lines));
+  for (CFIndex i = 0; i < CFArrayGetCount(lines); ++i) {
+    auto l = static_cast<CTLineRef>(CFArrayGetValueAtIndex(lines, i));
+    const double w = CTLineGetTypographicBounds(l, nullptr, nullptr, nullptr) -
+                     CTLineGetTrailingWhitespaceWidth(l);
+    fit.widest = std::max(fit.widest, w);
+  }
+  CFRelease(frame);
+  CGPathRelease(path);
+  CFRelease(fs);
+  CFRelease(f);
+  return fit;
+}
+
 Stroke
 stroke_from_json(const Json& j)
 {

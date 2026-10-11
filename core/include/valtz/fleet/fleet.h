@@ -36,8 +36,10 @@
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -62,6 +64,17 @@ struct Schedule {
   bool open_at(std::time_t) const;
 };
 
+// Where this Mac's own jobs run, while it is in a fleet: NEVER on a
+// member; LOCAL FIRST -- here, unless this Mac cannot run the job or is
+// busy, then a free member that can (the default); FLEET FIRST -- a free
+// member that can, else here; ALWAYS on a member, never here (refused
+// when none can take it).
+inline constexpr const char* kOffloadNever = "never";
+inline constexpr const char* kOffloadLocalFirst = "local-first";
+inline constexpr const char* kOffloadFleetFirst = "fleet-first";
+inline constexpr const char* kOffloadAlways = "always";
+bool is_offload_policy(std::string_view);
+
 struct Config {
   std::string member_id;    // made once, kept
   std::string member_name;  // what the others call this Mac
@@ -70,10 +83,24 @@ struct Config {
   bool        discoverable = false;
   std::string accept = "always";  // always | ask | never
   Schedule    schedule;
+  // The offload policy of a TASK (an engine op) and of a MODEL (a
+  // catalog id); a model's own comes before its task's. Absent: local
+  // first.
+  std::map<std::string, std::string> offload_tasks;
+  std::map<std::string, std::string> offload_models;
+  // What this Mac does not offer the fleet: tasks and models WITHHELD
+  // (everything is offered -- a model installed later too -- until it
+  // is withheld).
+  std::set<std::string> withheld_tasks;
+  std::set<std::string> withheld_models;
 
   bool joined() const { return !fleet.empty() && !key.empty(); }
   // Takes fleet jobs at `t`: its policy, its schedule.
   bool accepting_at(std::time_t t) const;
+  // Where a job of `op` on `model` ("" none: a chat) goes.
+  std::string offload(std::string_view op, std::string_view model) const;
+  // Offered to the fleet: the task, and the model ("" none).
+  bool shares(std::string_view op, std::string_view model) const;
 };
 
 // The pre-shared key: HMAC-SHA256 of the fleet's name, keyed by its
@@ -138,6 +165,9 @@ public:
   // Something to tell the app: "fleet.changed" (members, state),
   // "fleet.ask" (a job waiting for an answer: answer()).
   virtual void fleet_note(std::string kind, Json data) = 0;
+  // The arithmetic this member achieves now: {"gpu_tflops",
+  // "ane_tflops"} (Engine::throughput), told the others each second.
+  virtual Json fleet_load() { return Json::object(); }
 };
 
 class Fleet {
@@ -155,6 +185,14 @@ public:
   // The members connected now, each as it says it is ("self", "id",
   // "name").
   virtual std::vector<Json> members() const = 0;
+  // The FLEET'S ARITHMETIC: {"connected" (members but this one),
+  // "gpu_tflops", "ane_tflops" (this member's and every connected one's
+  // that tells it, summed), "peak_tflops" (the two at their highest
+  // while in this fleet), "members": [{"id", "name", "self",
+  // "gpu_tflops", "ane_tflops" -- absent from a member that does not
+  // tell them}]}. Each member tells its own each second it changes, and
+  // with the heartbeat; empty out of a fleet.
+  virtual Json throughput() const = 0;
   // Look for fleets on the network (the Fleet page open), or stop: a
   // member looks for its own anyway.
   virtual void browse(bool on) = 0;

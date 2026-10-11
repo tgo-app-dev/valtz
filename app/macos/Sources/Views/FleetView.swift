@@ -5,10 +5,14 @@ import SwiftUI
 /// whether it is discoverable; the fleet it is in (its secret changed,
 /// left), or one found on the network joined, or one made; whether and
 /// when it takes the others' jobs; the members, each with what it runs
-/// and whether it is free; and what this Mac offers them. While the page
-/// is open the network is looked over for fleets to join.
+/// and whether it is free; and, on pages under it, where this Mac's own
+/// jobs run (Offload Policies) and what it offers them (Shared
+/// Capabilities). While the page is open the network is looked over for
+/// fleets to join.
 struct FleetView: View {
     @Bindable var model: AppModel
+    /// A page under this one opened (SettingsView's history).
+    let open: (SettingsPlace) -> Void
     @State private var name = ""
     @State private var newFleet = ""
     @State private var newSecret = ""
@@ -28,7 +32,7 @@ struct FleetView: View {
                     createSection
                 }
                 jobsSection(c)
-                offered(f)
+                pagesSection(f)
             } else {
                 Section {
                     Text("This Valtz takes part in no fleet.")
@@ -117,7 +121,7 @@ struct FleetView: View {
         } header: {
             Text("Members")
         } footer: {
-            Text("A job this Mac cannot run, or cannot run now because it is busy, goes to a member that can and is free — generations and the helper's prompts alike.")
+            Text("By default a job this Mac cannot run, or cannot run now because it is busy, goes to a member that can and is free — generations and the helper's prompts alike. Offload Policies set it task by task.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -214,27 +218,30 @@ struct FleetView: View {
         }
     }
 
-    @ViewBuilder
-    private func offered(_ f: FleetStatus) -> some View {
-        if let me = f.me {
-            Section("Offered to the Fleet") {
-                let features = me.features ?? []
-                if features.isEmpty {
-                    Text("Nothing: this Mac runs no model now.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(features.map { CapabilityStatus.localizedLabel($0) }
-                        .joined(separator: ", "))
-                        .foregroundStyle(.secondary)
-                }
-                LabeledContent("Models") {
-                    Text(String((me.installed ?? []).count))
-                }
-                if me.busy == true {
-                    Label("Busy now", systemImage: "hourglass")
-                        .foregroundStyle(.secondary)
-                }
+    // MARK: The pages under it
+
+    private func pagesSection(_ f: FleetStatus) -> some View {
+        let p = f.policies
+        let set = p.tasks.count + p.models.count
+        let held = p.withheldTasks.count + p.withheldModels.count
+        return Section {
+            SettingsLinkRow(
+                title: SettingsPlace.fleetOffload.title,
+                detail: set == 0 ? FleetOffload.localFirst.title
+                                 : String(localized: "Custom"),
+                symbol: "arrow.triangle.branch", color: .orange) {
+                open(.fleetOffload)
             }
+            SettingsLinkRow(
+                title: SettingsPlace.fleetSharing.title,
+                detail: held == 0 ? String(localized: "Everything")
+                    : String(localized: "\(String(held)) withheld"),
+                symbol: "square.and.arrow.up", color: .green) {
+                open(.fleetSharing)
+            }
+        } footer: {
+            Text("Where this Mac's own jobs run, task by task and model by model; and what it offers the other members.")
+                .foregroundStyle(.secondary)
         }
     }
 }

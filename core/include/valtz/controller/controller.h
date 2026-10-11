@@ -76,6 +76,10 @@
 
 namespace valtz {
 
+namespace agent {
+class Backend;
+}
+
 struct ControllerConfig {
   // Empty = ~/Library/Application Support/com.tgous.valtz (paths.h);
   // tests point it at a temp dir.
@@ -106,6 +110,9 @@ struct ControllerConfig {
   // (empty: $VALTZ_FLEET_CONFIG, else <support>/fleet.json).
   bool                               fleet = false;
   std::filesystem::path              fleet_config;
+  // The agent's model, in place of the helper or a cloud's (DESIGN §9b):
+  // a test's own, which answers as it is scripted to.
+  std::function<std::unique_ptr<agent::Backend>()> agent_backend;
 };
 
 // THE PROMPT IS AN ASSET (DESIGN §10c). Every generation request carries
@@ -366,6 +373,24 @@ struct EnhancePromptRequest {
   bool                   reference_sound = false;
 };
 
+// THE AGENT (agent/agent.h, DESIGN §9b): a request in words, worked on
+// the document by a language model calling the editor's tools.
+struct AgentRequest {
+  ProjectId              project;
+  std::string            prompt;        // what the person asked for
+  // What it works on: the composition the person has active; none -- it
+  // makes one when the request is for a new thing, else the project's.
+  std::optional<AssetId> composition;
+  // The prompt row's media: assets it may place or look at.
+  std::vector<AssetId>   row;
+  // Each step that changes the document waits for the person's word
+  // (agent_review); false: it runs on its own (Auto).
+  bool                   review = true;
+  // Where its model thinks: "" Settings'; "helper" -- this Mac's, or a
+  // fleet member's as agent turns' offload policy says; "cloud".
+  std::string            backend;
+};
+
 class Controller {
 public:
   static Result<std::unique_ptr<Controller>> create(ControllerConfig = {});
@@ -385,7 +410,10 @@ public:
   const models::HardwareInfo& hardware() const noexcept { return _hw; }
   // Its live load and whether its GPU is held back, as the engine reads
   // them (Engine::machine_status / gpu_thermal): the status bar's.
-  // gpu_thermal blocks for `window_ms`.
+  // machine_status carries the arithmetic achieved too -- this Mac's
+  // (Engine::throughput) and, with a member connected, the fleet's
+  // ("fleet": fleet::Fleet::throughput). gpu_thermal blocks for
+  // `window_ms`.
   Json machine_status();
   Json gpu_thermal(int window_ms = 600);
   // The Log view's rows (log-book.h): the engine's and Valtz's lines
@@ -459,11 +487,14 @@ public:
   // (video edits, until Ref2VA's graph lands). generate_image(),
   // generate_video() and generate_audio() use it whenever the request
   // names no model (or "auto"). Audio has a generate list only.
+  // With none that runs now, the first that will once its downloads
+  // land (`waits`): its job waits for them.
   struct AutoPick {
     std::string              modality;  // "image" | "video" | "audio"
     std::string              op;        // "generate" | "edit"
     std::vector<std::string> order;
     std::string              chosen;
+    bool                     waits = false;
   };
   std::vector<AutoPick> auto_models() const;
   // ---- compositions (DESIGN §6a) ---------------------------------------
@@ -918,6 +949,12 @@ public:
             std::string_view op) const;
   bool runs_here(const models::ModelEntry& m, std::string_view modality,
                  std::string_view op) const;
+  // Runs now, or will here once what it lacks has DOWNLOADED (DESIGN
+  // §3a): a job asked of it then waits for those downloads alone.
+  bool runs_soon(const models::ModelEntry& m, std::string_view modality,
+                 std::string_view op) const;
+  // A download of catalog model `id` queued or running.
+  bool downloading(const std::string& id) const;
   // The few-step adapter `m` runs with (its catalog `turbo.lora`) when it
   // is installed; else null.
   const models::ModelEntry* turbo_adapter(const models::ModelEntry& m) const;
@@ -999,6 +1036,11 @@ public:
   // reads $HF_TOKEN). Refused by Hugging Face, the job fails naming why
   // (kDownloadNeedsToken: none or not valid; kDownloadNotGranted: the
   // license not accepted by the token's account).
+  //
+  // Downloads run BESIDE the work (the engine's download lane, DESIGN
+  // §3a): a generation runs while one downloads, unless it needs what is
+  // downloading -- then it waits for that alone, and fails if the
+  // download does. Asked again while it downloads: the same job.
   Result<JobId> download_model(const std::string& model_id,
                                const std::string& hf_token = "");
   // A QUANTIZED VARIANT made here (catalog `quantize`): its source, which
@@ -1088,6 +1130,69 @@ public:
   Result<JobId> detect_intent(std::string text,
                               std::vector<assist::Attachment>,
                               bool use_model = true);
+
+  // ---- the AGENT (DESIGN §9b) -------------------------------------------
+  //
+  // A SESSION: the person's request, worked on in the project by the
+  // agent's model calling the editor's tools (agent_tools()) -- a turn
+  // of the model, its calls, their results, the next turn -- until it
+  // answers in words. Each call that changes the document is one undoable
+  // command ("agent", its tool's title). With `review`, each waits for
+  // the person (agent_review: approve -- its arguments edited, or not --
+  // skip with a note told to the model, or approve all from here); the
+  // ones that only read do not. Pictures it generates are TASKS like any
+  // (the queue's), landing by themselves on the page and in the box it
+  // asked for. PAUSED it stops between steps; STOPPED its turn in flight
+  // ends. Done, the person may say more (agent_say) and it goes on in
+  // the same conversation.
+  //
+  // Its model's memory: on this Mac the helper keeps the conversation's
+  // K/V between turns (vpipe's text-chat, the engine's kOpAgentTurn),
+  // and a picture's launch that needs the room has it saved to disk in
+  // the project's working copy and read back for the next turn. A fleet
+  // member running the turns keeps it in its own memory as long as the
+  // session's LEASE (Settings, renewed each turn).
+  //
+  // Events: "agent.changed" {agent, project, state, step?} -- state
+  // thinking | review | acting | waiting | paused | asking | done |
+  // failed | stopped -- and "agent.text" {agent, text}: the model's words
+  // as they are written.
+  Result<std::string> agent_start(AgentRequest);
+  // The person's next words: an answer to its question, more to do.
+  Status agent_say(const std::string& agent, const std::string& text);
+  // The person's word on a step waiting for it: "approve" (with `args`
+  // in place of the model's, when not null), "skip" (`note` told to the
+  // model), "approve_all" (this one and every one after: Auto).
+  Status agent_review(const std::string& agent, int step,
+                      const std::string& decision,
+                      const Json& args = Json(),
+                      const std::string& note = {});
+  Status agent_set_review(const std::string& agent, bool review);
+  Status agent_pause(const std::string& agent);
+  Status agent_resume(const std::string& agent);
+  Status agent_stop(const std::string& agent);
+  // {"agent", "project", "state", "review", "backend": {kind, model,
+  //  where}, "prompt", "composition", "error", "writing" (this turn's
+  //  words so far), "usage", "steps": [{"n", "tool", "title", "args",
+  //  "state" (proposed | running | waiting | done | failed | skipped),
+  //  "result", "error", "job"}], "messages": [{"role", "content"}]}
+  Json agent_state(const std::string& agent) const;
+  // The project's sessions, newest first, each as agent_state without
+  // its messages.
+  Json agents(ProjectId) const;
+  // Settings > Agentic Helper > Agent: {"backend": "helper" | "cloud",
+  // "review" (new sessions'), "lease" (s a fleet member keeps a session's
+  // context), "cloud": {"provider", "model", "base_url", "max_tokens"},
+  // "keys": {provider: bool (one is in the Keychain)}}. Kept in
+  // <support>/agent.json -- never a key.
+  Json agent_settings() const;
+  Status set_agent_settings(const Json&);
+  // A cloud provider's API key into the Keychain ("" removes it).
+  Status set_agent_key(const std::string& provider, const std::string& key);
+  // The tools as the model is given them, and its guide: {"tools":
+  // [{"name", "kind" (read | edit | generate), "title", "description",
+  // "parameters"}], "skill"}.
+  Json agent_tools() const;
 
   // ---- generation ---------------------------------------------------
 
@@ -1184,7 +1289,9 @@ public:
   // "title", "state" (queued | running), "position" (0, 1, ...: how many
   // run before it on its runner -- 0 the one running, T0 in the app),
   // "runner" ("local": this Mac; a fleet member's name -- each runs one
-  // at a time), "progress", "destination" (an export's file)}].
+  // at a time), "progress", "destination" (an export's file), "waiting"
+  // (the names of the models whose downloads it waits for; then it is
+  // in no line, its position its runner's next)}].
   Json tasks() const;
 
   // ---- the fleet (fleet/fleet.h, DESIGN §11) -------------------------
@@ -1193,12 +1300,17 @@ public:
   // "name", "state" (connected | found | refused), "self"}], "fleets":
   // [{"fleet", "members"}] (found on the network), "serving" (the job
   // this Mac runs for a member), "asking", "sent", "self" (this Mac as
-  // the others see it)}.
+  // the others see it), "tasks": [{"op", "runs" (this Mac's engine has
+  // it), "models": [{"id", "name", "family", "installed"}]}] (what the
+  // offload policies and the sharing are set for)}.
   Json fleet_status() const;
   // This Mac in its fleet: {"member_name", "discoverable", "accept"
   // (always | ask | never), "schedule": {"on", "days", "from", "to"}};
   // and a fleet made or joined -- "fleet" with its "secret" -- or left
-  // ("fleet": "").
+  // ("fleet": ""). "offload": {"tasks": {op: policy}, "models": {id:
+  // policy}} -- never | local-first | fleet-first | always, "" its
+  // task's (a model) or the default (a task) -- and "share": {"tasks":
+  // {op: bool}, "models": {id: bool}} change those named alone.
   Status fleet_configure(const Json&);
   // Fleets on the network looked for (the Fleet page open), or not.
   void fleet_browse(bool on);
@@ -1258,6 +1370,34 @@ private:
   // other's: {mtp, sampling, keep_loaded, mtp_model?, draft_model?,
   // draft_bits?}.
   Json helper_params_(const models::ModelEntry& m) const;
+  // ---- downloads (DESIGN §3a)
+  // Installed, or downloading: here by the time a job waiting for it
+  // runs.
+  bool coming_(const models::ModelEntry&) const;
+  // Where `e` is (installed), or will be once downloaded.
+  std::filesystem::path model_path_(const models::ModelEntry&) const;
+  bool runs_here_(const models::ModelEntry& m, std::string_view modality,
+                  std::string_view op, bool soon) const;
+  // A job that needs what is downloading: held (not in the engine's
+  // queue) until those downloads land, then resolved and submitted.
+  struct Waiting {
+    engine::JobSpec       spec;
+    engine::JobSink       sink;
+    std::string           model;
+    Json                  params;
+    std::set<std::string> awaits;  // catalog ids
+  };
+  // The catalog ids among `needs` not installed but downloading -- none
+  // when one is neither (the job cannot wait for it).
+  std::vector<std::string> awaited_(const std::vector<std::string>& needs)
+      const;
+  // A download of `model` ended: the jobs waiting for it go on (`ok`) or
+  // fail (`stopped`: it was cancelled).
+  void download_ended_(const std::string& model, bool ok, bool stopped);
+  bool waiting_(JobId) const;
+  // ---- the agent (agent.cc, agent-tools.cc)
+  class AgentHost;
+  friend class AgentHost;
   // ---- the fleet
   class FleetHost;
   // Busy: a job of its engine queued or running here.
@@ -1269,6 +1409,10 @@ private:
   std::vector<Json> fleet_candidates_(const std::string& op,
                                       const std::vector<std::string>& models,
                                       bool here) const;
+  // Where a job of `op` on `model` goes (fleet::Config::offload): its
+  // policies apply while this Mac is in a fleet; out of one, local first.
+  std::string offload_policy_(std::string_view op,
+                              std::string_view model) const;
   // A job sent to the first of `members` that takes it -- the next when
   // one declines or is gone before it starts, else here when `local`
   // can run, else it fails.
@@ -1545,6 +1689,11 @@ private:
   ControllerConfig                   _cfg;
   AppPaths                           _paths;
   bool                               _keep_working_copies = false;
+  // Downloads queued or running, by catalog id; the jobs waiting for
+  // them.
+  mutable std::mutex                 _downloads_mu;
+  std::map<std::string, JobId>       _downloads;
+  std::map<JobId, Waiting>           _waiting;
   // A job's command (UndoLog seq), by job: what its commit joins.
   std::map<JobId, std::uint64_t>     _job_commands;
   mutable std::mutex                 _job_commands_mu;
@@ -1575,6 +1724,8 @@ private:
   std::string                        _host;
   std::unique_ptr<FleetHost>         _fleet_host;
   std::unique_ptr<fleet::Fleet>      _fleet;
+  // After the engine and the fleet it uses: its threads joined first.
+  std::unique_ptr<AgentHost>         _agent;
 
   // A generation's phase clock (job-timing.h), while it runs; and the
   // last timing of each model and operation ("op|model"), its prior.

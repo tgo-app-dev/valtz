@@ -213,9 +213,19 @@ SinkReader::join()
   }
 }
 
+std::string
+SinkReader::stage_id() const
+{
+  return std::string(_stage.id());
+}
+
 void
 SinkReader::run_()
 {
+  struct Ended {
+    std::atomic<bool>& flag;
+    ~Ended() { flag = true; }
+  } ended{_ended};
   for (;;) {
     vpipe::CommandHandle cmd = _stage.command(ex::kCmdNext, FlexData());
     // A stop cancels the command, so this wait always ends.
@@ -223,6 +233,8 @@ SinkReader::run_()
     if (st != vpipe::CommandState::Replied) {
       _why = std::format("{}: {}", vpipe::command_state_name(st),
                          cmd.error());
+      VALTZ_LOG_DEBUG("engine", "{} stopped reading: {}", _stage.id(),
+                      _why);
       return;
     }
     bool eos = false;

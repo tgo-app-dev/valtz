@@ -25,6 +25,49 @@ day_on(int days, int wday)
   return (days >> ((wday + 6) % 7)) & 1;
 }
 
+// The policies kept, each a known one.
+std::map<std::string, std::string>
+policies_from_json(const Json& j)
+{
+  std::map<std::string, std::string> out;
+  if (!j.is_object()) {
+    return out;
+  }
+  for (const auto& [k, v] : j.items()) {
+    if (v.is_string() && is_offload_policy(v.get<std::string>())) {
+      out[k] = v.get<std::string>();
+    }
+  }
+  return out;
+}
+
+std::set<std::string>
+names_from_json(const Json& j)
+{
+  std::set<std::string> out;
+  if (!j.is_array()) {
+    return out;
+  }
+  for (const auto& v : j) {
+    if (v.is_string()) {
+      out.insert(v.get<std::string>());
+    }
+  }
+  return out;
+}
+
+Json
+offload_json(const Config& c)
+{
+  return {{"tasks", c.offload_tasks}, {"models", c.offload_models}};
+}
+
+Json
+withheld_json(const Config& c)
+{
+  return {{"tasks", c.withheld_tasks}, {"models", c.withheld_models}};
+}
+
 }  // namespace
 
 bool
@@ -52,6 +95,36 @@ bool
 Config::accepting_at(std::time_t t) const
 {
   return accept != "never" && schedule.open_at(t);
+}
+
+bool
+is_offload_policy(std::string_view p)
+{
+  return p == kOffloadNever || p == kOffloadLocalFirst ||
+         p == kOffloadFleetFirst || p == kOffloadAlways;
+}
+
+std::string
+Config::offload(std::string_view op, std::string_view model) const
+{
+  if (!model.empty()) {
+    if (auto it = offload_models.find(std::string(model));
+        it != offload_models.end()) {
+      return it->second;
+    }
+  }
+  if (auto it = offload_tasks.find(std::string(op));
+      it != offload_tasks.end()) {
+    return it->second;
+  }
+  return kOffloadLocalFirst;
+}
+
+bool
+Config::shares(std::string_view op, std::string_view model) const
+{
+  return !withheld_tasks.contains(std::string(op)) &&
+         (model.empty() || !withheld_models.contains(std::string(model)));
 }
 
 std::string
@@ -97,6 +170,8 @@ to_json(const Config& c)
           {"discoverable", c.discoverable},
           {"accept", c.accept},
           {"schedule", to_json(c.schedule)},
+          {"offload", offload_json(c)},
+          {"withheld", withheld_json(c)},
           {"joined", c.joined()},
           {"accepting", c.accepting_at(std::time(nullptr))}};
 }
@@ -123,6 +198,12 @@ load_config(const fs::path& path)
       c.accept = "always";
     }
     c.schedule = schedule_from_json(jget(j, "schedule", Json::object()));
+    const Json off = jget(j, "offload", Json::object());
+    c.offload_tasks = policies_from_json(jget(off, "tasks", Json()));
+    c.offload_models = policies_from_json(jget(off, "models", Json()));
+    const Json held = jget(j, "withheld", Json::object());
+    c.withheld_tasks = names_from_json(jget(held, "tasks", Json()));
+    c.withheld_models = names_from_json(jget(held, "models", Json()));
   }
   if (c.member_id.empty()) {
     c.member_id = Uuid::v7().str();
@@ -142,7 +223,9 @@ save_config(const fs::path& path, const Config& c)
             {"key", c.key},
             {"discoverable", c.discoverable},
             {"accept", c.accept},
-            {"schedule", to_json(c.schedule)}};
+            {"schedule", to_json(c.schedule)},
+            {"offload", offload_json(c)},
+            {"withheld", withheld_json(c)}};
   std::error_code ec;
   fs::create_directories(path.parent_path(), ec);
   const fs::path tmp = path.string() + ".tmp";

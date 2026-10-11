@@ -35,18 +35,27 @@ when the app is built with `-DVALTZ_SPARKLE_DIR` (see
 
 **License: MIT.** Text: `app/macos/licenses/MIT-Sparkle.txt`.
 
-## FFmpeg (optional)
+## FFmpeg (and LAME)
 
-Bundled as shared libraries in `Contents/Frameworks` only when the
-release is packaged with an FFmpeg directory (`--ffmpeg-dir`); otherwise
-vpipe loads it from the host, if present. Home page: <https://ffmpeg.org/>.
+Bundled as shared libraries in `Contents/Frameworks` in a `-with-ffmpeg`
+release, as vpipe's own with-ffmpeg release bundles it; a `-slim`
+release leaves it to the host, if present. vpipe loads FFmpeg with
+dlopen and never links against it. Home page: <https://ffmpeg.org/>.
 
-**License: GNU Lesser General Public License, version 2.1 or later**, for
-an FFmpeg configured without GPL or non-free components. Text:
-`app/macos/licenses/LGPL-2.1.txt`. A bundled copy must be one built that
-way (vpipe's `apps/macos-app/build-lgpl-ffmpeg.sh` builds one); its
-source is available from the FFmpeg project at the version recorded in
-the libraries.
+**License: GNU Lesser General Public License, version 2.1 or later.**
+Text: `app/macos/licenses/LGPL-2.1.txt`. Only an LGPL-only build is
+bundled -- configured `--disable-gpl --disable-nonfree
+--disable-version3` (vpipe's `apps/macos-app/build-lgpl-ffmpeg.sh`);
+`app/macos/check-ffmpeg.sh` refuses any other, and one of another
+version than the FFmpeg libvpipe was compiled against. The bundle's
+`Contents/Resources/Licenses/FFmpeg/NOTICE.txt` names the exact version,
+states that its source is unmodified, offers the complete corresponding
+source (vpipe's pinned tarball for that version, with the script that
+built it), and says how to substitute another build (`VPIPE_FFMPEG_DIR`).
+
+**LAME** (libmp3lame, MP3 encoding), when the FFmpeg build includes it:
+**GNU LGPL, version 2.1 or later**; its notice in the same folder
+(`app/macos/licenses/LAME.txt`). Source: <https://lame.sourceforge.io/>.
 
 ---
 

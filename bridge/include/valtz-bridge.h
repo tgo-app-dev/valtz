@@ -50,9 +50,12 @@ public:
   std::string hardware_json() const;
   // The machine's live load, as vpipe's status bar reads it: {"gpu_util_pct",
   // "ane_util_pct", "phys_footprint_bytes", "phys_total_bytes",
-  // "sys_used_bytes" (the whole Mac's, as Activity Monitor counts it), ...}
-  // (Controller::machine_status; each key absent when unavailable). Poll
-  // at a steady pace: the ANE's is a delta since the last call.
+  // "sys_used_bytes" (the whole Mac's, as Activity Monitor counts it),
+  // "gpu_tflops", "ane_tflops", "peak_tflops" (the arithmetic achieved,
+  // and its highest this run), "fleet" (the same for the fleet, with a
+  // member connected), ...} (Controller::machine_status; each key absent
+  // when unavailable). Poll at a steady pace: the ANE's is a delta since
+  // the last call.
   std::string machine_status_json() const;
   // Settings > Capabilities (Controller::capability_tree): the model
   // families, their features and members, where each member is.
@@ -89,6 +92,25 @@ public:
   std::string fleet_browse(const std::string& request_json);
   std::string fleet_answer(const std::string& request_json);
   std::string choose_assistant(const std::string& request_json);
+  // THE AGENT (Controller::agent_start, DESIGN §9b): agent_start
+  // ({"project", "prompt", "composition"?, "row": [ids], "review",
+  // "backend"?} -> {"agent"}); agent_say ({"agent", "text"});
+  // agent_review ({"agent", "step", "decision": approve | skip |
+  // approve_all, "args"?, "note"?}); agent_control ({"agent", "action":
+  // pause | resume | stop | review | auto}); agent_state ({"agent"} ->
+  // the session); agents ({"project"} -> {"agents": [...]});
+  // agent_settings / set_agent_settings (Settings > Agentic Helper >
+  // Agent); set_agent_key ({"provider", "key"}: into the Keychain).
+  // Events: "agent.changed", "agent.text".
+  std::string agent_start(const std::string& request_json);
+  std::string agent_say(const std::string& request_json);
+  std::string agent_review(const std::string& request_json);
+  std::string agent_control(const std::string& request_json);
+  std::string agent_state(const std::string& request_json) const;
+  std::string agents(const std::string& request_json) const;
+  std::string agent_settings() const;
+  std::string set_agent_settings(const std::string& request_json);
+  std::string set_agent_key(const std::string& request_json);
   // {"seq", "max"?} -> {"ok", "rows", "next", "first"}: the Log view's
   // rows after `seq` (Controller::log_since); clear_log empties it.
   std::string log_since(const std::string& request_json) const;

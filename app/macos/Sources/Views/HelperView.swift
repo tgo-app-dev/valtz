@@ -6,7 +6,8 @@ import SwiftUI
 /// by the core so valtzctl takes it too -- and how it runs: the sampler
 /// its model card recommends, and the drafter it decodes ahead with; and
 /// how often it looks when it watches a clip (a video summary, DESIGN
-/// §4i). More of the helper's settings will gather here.
+/// §4i); and, for debugging, whether the agent's turns show their speed.
+/// More of the helper's settings will gather here.
 struct HelperView: View {
     @Bindable var model: AppModel
 
@@ -67,6 +68,16 @@ struct HelperView: View {
                     Text("No helper is known to this build.")
                         .foregroundStyle(.secondary)
                 }
+            }
+            Section {
+                Toggle("Show Speed in the Agent's Output", isOn: Binding(
+                    get: { model.agentShowsSpeed },
+                    set: { model.setAgentShowsSpeed($0) }))
+            } header: {
+                Text("Debugging")
+            } footer: {
+                Text("Under each of the agent's turns, in small type: the tokens it read (prefill) and wrote (decode), how fast, and how much of the conversation it went on from. The Agent is in Settings › Experimental.")
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -248,5 +259,94 @@ struct HelperView: View {
         while s.hasSuffix("0") { s.removeLast() }
         if s.hasSuffix(".") { s.removeLast() }
         return s
+    }
+}
+
+/// Settings › Experimental › Agent (DESIGN §9b): where the agent's model
+/// thinks -- the helper (this Mac's, or a fleet member's, as Offload
+/// Policies send agent turns) or a cloud API -- whether each step it takes
+/// waits for the person, and a cloud's provider, model and key (into the
+/// Keychain, never kept here).
+struct AgentSettingsSection: View {
+    @Bindable var model: AppModel
+    /// The key typed, until it is saved: never written anywhere else.
+    @State private var key = ""
+
+    var body: some View {
+        if let s = model.agentSettings {
+            Section {
+                Picker("Thinks On", selection: Binding(
+                    get: { s.backend },
+                    set: { model.setAgentSettings(["backend": $0]) })) {
+                    Text("Agentic Helper").tag("helper")
+                    Text("Cloud").tag("cloud")
+                }
+                Toggle("Ask before each step", isOn: Binding(
+                    get: { s.review },
+                    set: { model.setAgentSettings(["review": $0]) }))
+                if s.backend == "helper" {
+                    Picker("A member keeps its context", selection: Binding(
+                        get: { s.lease },
+                        set: { model.setAgentSettings(["lease": $0]) })) {
+                        Text("5 minutes").tag(300.0)
+                        Text("10 minutes").tag(600.0)
+                        Text("30 minutes").tag(1800.0)
+                        Text("1 hour").tag(3600.0)
+                    }
+                } else {
+                    cloudRows(s)
+                }
+            } header: {
+                Text("Agent")
+            } footer: {
+                Text(s.backend == "cloud"
+                     ? "The agent's turns go to the provider: your requests, its steps and the names and words in the project. Pictures it looks at go too."
+                     : "Its turns run on this Mac's helper -- or on a fleet member's, as Offload Policies send Agent Turns: a Mac with the memory for the model, beside one with the GPU for the pictures. A member keeps the conversation in memory between turns, as long as set here.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func cloudRows(_ s: AgentSettings) -> some View {
+        Picker("Provider", selection: Binding(
+            get: { s.cloud.provider },
+            set: { model.setAgentSettings(["cloud": ["provider": $0,
+                                                     "model": ""]]) })) {
+            Text("Anthropic").tag("anthropic")
+            Text("OpenAI").tag("openai")
+            Text("OpenAI-compatible server").tag("openai-compatible")
+        }
+        TextField("Model", text: Binding(
+            get: { s.cloud.model },
+            set: { model.setAgentSettings(["cloud": ["model": $0]]) }))
+        if s.cloud.provider == "openai-compatible" {
+            TextField("Server", text: Binding(
+                get: { s.cloud.baseUrl },
+                set: { model.setAgentSettings(["cloud": ["base_url": $0]]) }),
+                prompt: Text(verbatim: "http://localhost:1234/v1"))
+        }
+        LabeledContent("API Key") {
+            HStack {
+                SecureField("API Key", text: $key)
+                    .labelsHidden()
+                    .frame(maxWidth: 220)
+                Button("Save") {
+                    model.setAgentKey(s.cloud.provider, key)
+                    key = ""
+                }
+                .disabled(key.isEmpty)
+                if s.keys[s.cloud.provider] == true {
+                    Button("Remove") {
+                        model.setAgentKey(s.cloud.provider, "")
+                    }
+                }
+            }
+        }
+        Text(s.keys[s.cloud.provider] == true
+             ? "A key is kept in your Keychain."
+             : "No key is kept yet.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
     }
 }

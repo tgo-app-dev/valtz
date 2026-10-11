@@ -1,5 +1,7 @@
 #include "valtz/controller/controller.h"
 
+#include "controller/agent-host.h"
+
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
@@ -255,6 +257,12 @@ public:
 
   void fleet_cancel(JobId id) override { (void)_c._engine->cancel(id); }
 
+  Json
+  fleet_load() override
+  {
+    return _c._engine ? _c._engine->throughput() : Json::object();
+  }
+
   void
   fleet_note(std::string kind, Json data) override
   {
@@ -390,6 +398,9 @@ Controller::create(ControllerConfig cfg)
       }
     }
   }
+  // The agent (DESIGN §9b): its sessions, and the turns it serves for
+  // a member's.
+  c->_agent = std::make_unique<AgentHost>(*c);
   VALTZ_LOG_INFO("controller", "valtz {} on {} ({} GB, {} GPU cores{}), "
                  "engine: {}", VALTZ_VERSION, c->_hw.chip, c->_hw.ram_gb(),
                  c->_hw.gpu_cores,
@@ -409,6 +420,10 @@ Controller::shutdown()
   if (_shutting_down.exchange(true)) {
     return;
   }
+  // The agent's sessions first: a turn in flight is a job of the engine.
+  if (_agent) {
+    _agent->shutdown();
+  }
   // A recording left running: stopped, its file let go.
   {
     std::lock_guard lk(_capture_mu);
@@ -423,6 +438,18 @@ Controller::shutdown()
   // The fleet first: no job comes in, none goes out.
   if (_fleet) {
     _fleet->stop();
+  }
+  // Jobs waiting for a download: cancelled, as the engine's queue is.
+  std::map<JobId, Waiting> waiting;
+  {
+    std::lock_guard lk(_downloads_mu);
+    waiting.swap(_waiting);
+  }
+  for (auto& [id, w] : waiting) {
+    engine::JobEvent ev;
+    ev.job = id;
+    ev.kind = engine::JobEventKind::Cancelled;
+    w.sink(ev);
   }
   if (_engine) {
     _engine->shutdown();
@@ -489,6 +516,21 @@ Controller::machine_status()
   if (!j.contains("phys_total_bytes")) {
     j["phys_total_bytes"] = _hw.ram_bytes;
   }
+  // The arithmetic achieved, here and -- with a member connected -- in
+  // the fleet.
+  if (_engine) {
+    const Json t = _engine->throughput();
+    for (const char* k : {"gpu_tflops", "ane_tflops", "peak_tflops"}) {
+      if (t.contains(k)) {
+        j[k] = t[k];
+      }
+    }
+  }
+  if (_fleet) {
+    if (Json f = _fleet->throughput(); jget(f, "connected", 0) > 0) {
+      j["fleet"] = std::move(f);
+    }
+  }
   return j;
 }
 
@@ -510,6 +552,11 @@ Controller::post_(std::string kind, JobId job, Json data,
                                kind == "job.failed" ||
                                kind == "job.cancelled" ||
                                kind == "models.changed");
+  // An agent's picture landing (on the agent's own thread).
+  if (_agent && (kind == "job.finished" || kind == "job.failed" ||
+                 kind == "job.cancelled")) {
+    _agent->on_event(kind, job, data);
+  }
   Event ev;
   ev.kind = std::move(kind);
   ev.job = job;
@@ -524,6 +571,15 @@ Controller::post_(std::string kind, JobId job, Json data,
 void
 Controller::finish_job_(JobId id, JobState st, std::string message)
 {
+  // A failure in the Log too: the app says it for a moment (an
+  // upscale's soundtrack refused flashed by, and the Log had nothing).
+  if (st == JobState::Failed) {
+    const auto r = _jobs.get(id);
+    VALTZ_LOG_WARN("jobs", "{} {} failed: {}",
+                   r ? (r->title.empty() ? r->op : r->title)
+                     : std::string("job"),
+                   id.str(), message);
+  }
   _jobs.update(id, [&](JobRecord& r) {
     r.state = st;
     r.message = std::move(message);
@@ -734,6 +790,12 @@ Controller::capabilities() const
           theirs.contains(models::to_str(c.capability))) {
         c.availability = models::Availability::Ready;
       }
+    }
+  }
+  // What is on its way: a job asked of it waits for its download.
+  for (auto& c : caps) {
+    for (auto& o : c.options) {
+      o.downloading = o.entry && downloading(o.entry->id);
     }
   }
   return caps;
@@ -1250,23 +1312,107 @@ Controller::remove_asset(ProjectId pid, AssetId aid)
   return ok_status();
 }
 
+namespace {
+
+// The TASKS of a fleet (DESIGN §11): the engine ops a member runs for
+// another -- what this Mac offers, what its offload policies are set for.
+constexpr std::string_view kFleetTasks[] = {
+    engine::kOpGenerateImage,   engine::kOpEditImage,
+    engine::kOpGenerateVideo,   engine::kOpGenerateAudio,
+    engine::kOpGenerateSpeech,  engine::kOpTranscribeAudio,
+    engine::kOpSummarizeVideo,  engine::kOpUpscaleVideo,
+    engine::kOpUpscaleImage,    engine::kOpChat,
+    engine::kOpAgentTurn};
+
+// A job of `op` can name `m` as its model. (A chat names none: a member
+// writes with its own helper.)
+bool
+does_task(const models::ModelEntry& m, std::string_view op)
+{
+  using models::Capability;
+  if (op == engine::kOpGenerateImage) return m.has(Capability::TextToImage);
+  if (op == engine::kOpEditImage) return m.has(Capability::ImageEdit);
+  if (op == engine::kOpGenerateVideo) {
+    return m.has(Capability::TextToVideo) ||
+           m.has(Capability::ImageToVideo) ||
+           m.has(Capability::ReferenceToVideo);
+  }
+  if (op == engine::kOpGenerateAudio) return m.has(Capability::TextToAudio);
+  if (op == engine::kOpGenerateSpeech) {
+    return m.has(Capability::TextToSpeech);
+  }
+  if (op == engine::kOpTranscribeAudio) return m.has(Capability::Transcribe);
+  if (op == engine::kOpSummarizeVideo) {
+    return m.has(Capability::VideoSummary);
+  }
+  if (op == engine::kOpUpscaleVideo) return m.has(Capability::UpscaleVideo);
+  if (op == engine::kOpUpscaleImage) return m.has(Capability::UpscaleImage);
+  return false;
+}
+
+// The engine op that runs `m` for "<modality>/<op>" (runs()' words).
+std::string_view
+task_of(const models::ModelEntry& m, std::string_view modality,
+        std::string_view op)
+{
+  if (modality == "image") {
+    return op == "edit" ? engine::kOpEditImage : engine::kOpGenerateImage;
+  }
+  if (modality == "video") {
+    return engine::kOpGenerateVideo;
+  }
+  return m.has(models::Capability::TextToSpeech) ? engine::kOpGenerateSpeech
+                                                 : engine::kOpGenerateAudio;
+}
+
+}  // namespace
+
 bool
 Controller::runs(const models::ModelEntry& m, std::string_view modality,
                  std::string_view op) const
 {
+  const std::string key = std::format("{}/{}/{}", modality, op, m.id);
+  // Set to run on the fleet only: where a member runs it.
+  if (offload_policy_(task_of(m, modality, op), m.id) ==
+      fleet::kOffloadAlways) {
+    return fleet_runs_(key);
+  }
   if (runs_here(m, modality, op)) {
     return true;
   }
   // A member taking jobs runs it (what it says it runs).
-  return fleet_runs_(std::format("{}/{}/{}", modality, op, m.id));
+  return fleet_runs_(key);
 }
 
 bool
 Controller::runs_here(const models::ModelEntry& m, std::string_view modality,
                       std::string_view op) const
 {
-  if (!_engine || !_engine->available() ||
-      _store->info(m).state != models::InstallState::Installed ||
+  return runs_here_(m, modality, op, false);
+}
+
+bool
+Controller::runs_soon(const models::ModelEntry& m, std::string_view modality,
+                      std::string_view op) const
+{
+  if (runs(m, modality, op)) {
+    return true;
+  }
+  return offload_policy_(task_of(m, modality, op), m.id) !=
+             fleet::kOffloadAlways &&
+         runs_here_(m, modality, op, true);
+}
+
+bool
+Controller::runs_here_(const models::ModelEntry& m, std::string_view modality,
+                       std::string_view op, bool soon) const
+{
+  // Installed -- or, `soon`, on its way.
+  const auto here = [&](const models::ModelEntry& e) {
+    return soon ? coming_(e)
+                : _store->info(e).state == models::InstallState::Installed;
+  };
+  if (!_engine || !_engine->available() || !here(m) ||
       _hw.ram_gb() < m.min_ram_gb) {
     return false;
   }
@@ -1286,8 +1432,7 @@ Controller::runs_here(const models::ModelEntry& m, std::string_view modality,
     // VAE, MOSS-TTS's audio tokenizer.
     const auto* d = _catalog.find(jget<std::string>(
         jget(m.engine, "vpipe", Json::object()), "decoder", ""));
-    const bool decodes =
-        !d || _store->info(*d).state == models::InstallState::Installed;
+    const bool decodes = !d || here(*d);
     // A song from words; speech from words -- or, with a voice to clone
     // (`edit`), speech alone.
     const bool song = op == "generate" &&
@@ -1332,16 +1477,21 @@ models::TuningContext
 Controller::tuning_context(const models::ModelEntry& m) const
 {
   const Json vp = jget(m.engine, "vpipe", Json::object());
-  auto installed = [&](const char* block, const char* key) {
-    const auto* e = _catalog.find(jget<std::string>(
+  // Installed -- or downloading: a job asked now waits for it (DESIGN
+  // §3a), so a preset is settled as it will run.
+  auto adapter = [&](const char* block, const char* key) {
+    return _catalog.find(jget<std::string>(
         jget(vp, block, Json::object()), key, ""));
-    return e && _store->info(*e).state == models::InstallState::Installed;
+  };
+  auto installed = [&](const char* block, const char* key) {
+    const auto* e = adapter(block, key);
+    return e && coming_(*e);
   };
   models::TuningContext c;
   c.turbo_installed = installed("turbo", "lora");
-  if (const auto* t = turbo_adapter(m)) {
+  if (const auto* t = adapter("turbo", "lora"); t && coming_(*t)) {
     c.turbo_name = t->name;
-    c.turbo_path = _store->info(*t).path().string();
+    c.turbo_path = model_path_(*t).string();
   }
   c.hyperflow_installed = installed("hyperflow", "lora");
   c.taomate_installed = installed("taomate", "lora");
@@ -1355,9 +1505,8 @@ Controller::tuning_context(const models::ModelEntry& m) const
     if (e.role != "lora" || e.family != m.family) {
       continue;
     }
-    const auto info = _store->info(e);
-    c.loras[e.id] = {e.name, info.state == models::InstallState::Installed
-                                 ? info.path().string() : std::string()};
+    c.loras[e.id] = {e.name,
+                     coming_(e) ? model_path_(e).string() : std::string()};
   }
   return c;
 }
@@ -1367,8 +1516,9 @@ Controller::check_preset_loras_(const models::ModelEntry& m,
                                 std::string_view preference,
                                 const Json& overrides) const
 {
-  // Not on this Mac: a fleet member runs it, with its own (DESIGN §11).
-  if (_store->info(m).state != models::InstallState::Installed) {
+  // Not on this Mac, nor on its way: a fleet member runs it, with its
+  // own (DESIGN §11).
+  if (!coming_(m)) {
     return ok_status();
   }
   // Custom's own LoRAs, or the adapter turned off, say otherwise.
@@ -1537,6 +1687,18 @@ Controller::auto_models() const
           break;
         }
       }
+      // None runs now: the first that will once downloaded -- the
+      // feature itself is on its way, and its job waits for it.
+      for (const auto& id : a.order) {
+        const auto* m = _catalog.find(id);
+        if (!a.chosen.empty()) {
+          break;
+        }
+        if (m && runs_soon(*m, modality, op)) {
+          a.chosen = id;
+          a.waits = true;
+        }
+      }
       out.push_back(std::move(a));
     }
   }
@@ -1606,6 +1768,13 @@ Controller::download_model(const std::string& model_id,
   if (!_engine->supports(engine::kOpFetchModel)) {
     return make_error(Code::Unsupported, msg::kNoEngineForDownload);
   }
+  // Asked again while it downloads: that download.
+  {
+    std::lock_guard lk(_downloads_mu);
+    if (auto it = _downloads.find(e->id); it != _downloads.end()) {
+      return it->second;
+    }
+  }
   // Its MTP drafter, shipped apart (engine.vpipe.mtp_drafter), comes with
   // it: a download of its own, queued after this one.
   const auto drafter = jget<std::string>(
@@ -1630,14 +1799,21 @@ Controller::download_model(const std::string& model_id,
   rec.title = std::format("Download {}", e->name);
   rec.created_ms = project::now_ms();
   _jobs.add(rec);
+  // On its way from now: what needs it waits for it -- before the
+  // engine has it, which may end it at once.
+  {
+    std::lock_guard lk(_downloads_mu);
+    _downloads[e->id] = spec.id;
+  }
   post_("job.queued", spec.id, {{"title", rec.title}, {"op", rec.op},
                                 {"purpose", rec.purpose},
                                 {"model", e->id}});
 
   const bool gated = e->gated;
   const std::string name = e->name;
-  VALTZ_TRY(_engine->submit(std::move(spec),
-                            [this, gated, name](const engine::JobEvent& ev) {
+  const std::string id = e->id;
+  Status submitted = _engine->submit(
+      std::move(spec), [this, gated, name, id](const engine::JobEvent& ev) {
     switch (ev.kind) {
     case engine::JobEventKind::Started:
       _jobs.update(ev.job, [](JobRecord& r) { r.state = JobState::Running; });
@@ -1658,12 +1834,14 @@ Controller::download_model(const std::string& model_id,
     case engine::JobEventKind::Finished:
       finish_job_(ev.job, JobState::Finished, "");
       _store->rescan();
+      download_ended_(id, true, false);
       post_("job.finished", ev.job);
       post_("models.changed", JobId{});
       break;
     case engine::JobEventKind::Failed: {
       finish_job_(ev.job, JobState::Failed, ev.text);
       _store->rescan();
+      download_ended_(id, false, false);
       // A gated repo refused: its file list is public, its files are
       // not -- vpipe names the status of the first one refused ("HTTP
       // 401": no token or not valid; 403: the license not accepted).
@@ -1681,17 +1859,150 @@ Controller::download_model(const std::string& model_id,
     }
     case engine::JobEventKind::Cancelled:
       finish_job_(ev.job, JobState::Cancelled, "");
+      _store->rescan();
+      download_ended_(id, false, true);
       post_("job.cancelled", ev.job);
+      post_("models.changed", JobId{});
       break;
     default:
       break;
     }
-  }));
+  });
+  if (!submitted.ok()) {
+    finish_job_(rec.id, JobState::Failed, submitted.error().message);
+    download_ended_(id, false, false);
+    return submitted.error();
+  }
   if (const auto* d = _catalog.find(drafter);
       d && _store->info(*d).state != models::InstallState::Installed) {
     (void)download_model(d->id);
   }
   return rec.id;
+}
+
+bool
+Controller::downloading(const std::string& id) const
+{
+  std::lock_guard lk(_downloads_mu);
+  return _downloads.contains(id);
+}
+
+bool
+Controller::coming_(const models::ModelEntry& e) const
+{
+  return _store->info(e).state == models::InstallState::Installed ||
+         downloading(e.id);
+}
+
+fs::path
+Controller::model_path_(const models::ModelEntry& e) const
+{
+  const auto info = _store->info(e);
+  if (info.state == models::InstallState::Installed) {
+    return info.path();
+  }
+  // Where its download puts it: <download root>/<hf_path>[/<subdir>],
+  // its file in it.
+  fs::path dir = _store->download_root() / e.hf_path;
+  if (!e.subdir.empty()) {
+    dir /= e.subdir;
+  }
+  return e.file.empty() ? dir : dir / e.file;
+}
+
+std::vector<std::string>
+Controller::awaited_(const std::vector<std::string>& needs) const
+{
+  std::vector<std::string> out;
+  for (const auto& id : needs) {
+    const auto* e = _catalog.find(id);
+    if (!e ||
+        _store->info(*e).state == models::InstallState::Installed) {
+      continue;
+    }
+    if (!downloading(id)) {
+      return {};  // lacking, and not coming: nothing to wait for
+    }
+    out.push_back(id);
+  }
+  return out;
+}
+
+bool
+Controller::waiting_(JobId job) const
+{
+  std::lock_guard lk(_downloads_mu);
+  return _waiting.contains(job);
+}
+
+void
+Controller::download_ended_(const std::string& model, bool ok, bool stopped)
+{
+  std::vector<Waiting> go;
+  std::vector<Waiting> fail;
+  {
+    std::lock_guard lk(_downloads_mu);
+    _downloads.erase(model);
+    for (auto it = _waiting.begin(); it != _waiting.end();) {
+      Waiting& w = it->second;
+      if (!w.awaits.contains(model)) {
+        ++it;
+        continue;
+      }
+      w.awaits.erase(model);
+      if (!ok) {
+        fail.push_back(std::move(w));
+      } else if (w.awaits.empty()) {
+        go.push_back(std::move(w));
+      } else {
+        ++it;
+        continue;
+      }
+      it = _waiting.erase(it);
+    }
+  }
+  const auto* e = _catalog.find(model);
+  const std::string name = e ? e->name : model;
+  const auto failed = [](Waiting& w, Code code, Json fields) {
+    engine::JobEvent ev;
+    ev.job = w.spec.id;
+    ev.kind = engine::JobEventKind::Failed;
+    ev.error = code;
+    ev.text = jget<std::string>(fields, "message", "");
+    ev.data = std::move(fields);
+    w.sink(ev);
+  };
+  for (auto& w : fail) {
+    VALTZ_LOG_INFO("build", "job {}: {} did not download", w.spec.id.str(),
+                   name);
+    failed(w, stopped ? Code::Cancelled : Code::NotFound,
+           message_fields(stopped ? msg::kAwaitedDownloadStopped
+                                  : msg::kAwaitedDownloadFailed,
+                          {{"model", name}}));
+  }
+  // Here now: its models resolved as they are on disk, and into the
+  // engine's queue.
+  for (auto& w : go) {
+    Json helpers = Json::object();
+    Status st = resolve_build_(w.model, w.params, w.spec.model, helpers);
+    if (!st.ok()) {
+      failed(w, st.code(), message_fields(st.error()));
+      continue;
+    }
+    w.spec.params.update(helpers);
+    VALTZ_LOG_INFO("build", "job {}: {} downloaded, queued",
+                   w.spec.id.str(), name);
+    const JobId id = w.spec.id;
+    engine::JobSink sink = w.sink;
+    if (Status sub = _engine->submit(std::move(w.spec), sink); !sub.ok()) {
+      engine::JobEvent ev;
+      ev.job = id;
+      ev.kind = engine::JobEventKind::Failed;
+      ev.error = sub.code();
+      ev.text = sub.error().message;
+      sink(ev);
+    }
+  }
 }
 
 Result<JobId>
@@ -2209,13 +2520,32 @@ Controller::tasks() const
       live.push_back(std::move(j));
     }
   }
+  // Those waiting for downloads, and the names of what they wait for.
+  std::map<JobId, Json> waits;
+  {
+    std::lock_guard lk(_downloads_mu);
+    for (const auto& [id, w] : _waiting) {
+      Json names = Json::array();
+      for (const auto& m : w.awaits) {
+        const auto* e = _catalog.find(m);
+        names.push_back(e ? e->name : m);
+      }
+      waits[id] = std::move(names);
+    }
+  }
   // The order the engine takes them: the running one, then as asked
-  // (an id is made in time order).
-  std::ranges::sort(live, [](const JobRecord& a, const JobRecord& b) {
+  // (an id is made in time order) -- and last those waiting for a
+  // download, which the engine has not been given.
+  std::ranges::sort(live, [&](const JobRecord& a, const JobRecord& b) {
     const bool ra = a.state == JobState::Running;
     const bool rb = b.state == JobState::Running;
     if (ra != rb) {
       return ra;
+    }
+    const bool wa = waits.contains(a.id);
+    const bool wb = waits.contains(b.id);
+    if (wa != wb) {
+      return wb;
     }
     if (a.created_ms != b.created_ms) {
       return a.created_ms < b.created_ms;
@@ -2223,10 +2553,12 @@ Controller::tasks() const
     return a.id.str() < b.id.str();
   });
   Json out = Json::array();
-  // Positions count per runner: each Mac runs one at a time.
+  // Positions count per runner: each Mac runs one at a time. One waiting
+  // for a download is in no line yet.
   std::map<std::string, int> positions;
   for (const auto& j : live) {
     const std::string runner = j.runner.empty() ? "local" : j.runner_name;
+    const auto wait = waits.find(j.id);
     const bool upscale = j.op == engine::kOpUpscaleVideo ||
                          j.op == engine::kOpUpscaleImage;
     const bool exp = j.purpose == "export";
@@ -2237,9 +2569,13 @@ Controller::tasks() const
               {"op", j.op},
               {"title", j.title},
               {"state", to_str(j.state)},
-              {"position", positions[runner]++},
+              {"position", wait != waits.end() ? positions[runner]
+                                               : positions[runner]++},
               {"runner", runner},
               {"progress", j.progress}};
+    if (wait != waits.end()) {
+      t["waiting"] = wait->second;
+    }
     if (exp) {
       t["source"] = j.asset.str();
       t["destination"] = j.destination;
@@ -2397,6 +2733,10 @@ Controller::is_ephemeral_(ProjectId id) const
 Status
 Controller::close_project(ProjectId id, bool discard)
 {
+  // Its agent sessions stopped: they work in it.
+  if (_agent) {
+    _agent->project_closing(id);
+  }
   std::unique_ptr<project::Workspace> ws;
   {
     std::lock_guard lk(_projects_mu);
@@ -2721,6 +3061,11 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
   auto spec = chat_spec_(id, text, images, max_new_tokens);
   const bool here = spec.ok() && _engine->supports(engine::kOpChat);
   auto members = fleet_candidates_(std::string(engine::kOpChat), {}, here);
+  const bool fleet_only =
+      offload_policy_(engine::kOpChat, "") == fleet::kOffloadAlways;
+  if (fleet_only && members.empty()) {
+    return make_error(Code::Unsupported, msg::kFleetOnlyNoMember);
+  }
   if (members.empty() && !spec.ok()) {
     return spec.error();
   }
@@ -2776,7 +3121,7 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
                      {{"text", text}, {"max_new_tokens", max_new_tokens}},
                      images};
   std::optional<engine::JobSpec> local;
-  if (here) {
+  if (here && !fleet_only) {
     local = std::move(*spec);
   }
   VALTZ_TRY(run_remote_(std::move(members), std::move(offer),
@@ -3581,10 +3926,10 @@ Controller::generate_video(GenerateVideoRequest req)
       }
     }
   }
-  if (refs && (!m || !runs(*m, "video", "edit"))) {
+  if (refs && (!m || !runs_soon(*m, "video", "edit"))) {
     return make_error(Code::NotFound, msg::kNoReferenceModel);
   }
-  if (!refs && (!m || !runs(*m, "video", "generate"))) {
+  if (!refs && (!m || !runs_soon(*m, "video", "generate"))) {
     return make_error(Code::NotFound, msg::kNoVideoModel);
   }
   const Json vp = jget(m->engine, "vpipe", Json::object());
@@ -3960,15 +4305,20 @@ Controller::upscale_layer(UpscaleRequest req)
     return std::max(2, static_cast<int>(std::lround(x / 2)) * 2);
   };
   const media::PixelSize to{even(from.width * sx), even(from.height * sy)};
-  // The upscaler: the one named, else the first installed that runs.
+  // The upscaler: the one named, else the first installed that runs --
+  // else one downloading (its job waits for it).
   const models::ModelEntry* m = nullptr;
-  for (const auto& e : _catalog.models()) {
-    if ((req.model.empty() || req.model == "auto" || req.model == e.id) &&
-        e.has(need) &&
-        _store->info(e).state == models::InstallState::Installed &&
-        engine_runs_(need)) {
-      m = &e;
-      break;
+  for (const bool soon : {false, true}) {
+    for (const auto& e : _catalog.models()) {
+      if (m) {
+        break;
+      }
+      if ((req.model.empty() || req.model == "auto" || req.model == e.id) &&
+          e.has(need) && engine_runs_(need) &&
+          (soon ? coming_(e)
+                : _store->info(e).state == models::InstallState::Installed)) {
+        m = &e;
+      }
     }
   }
   if (!m) {
@@ -4054,18 +4404,26 @@ Controller::transcribe(ProjectId pid, AssetId asset, std::string model,
     return make_error(Code::InvalidArgument, msg::kTranscribeNeedsSound,
                       {{"name", src.name}});
   }
-  // The speech model: the one named, else the best installed; its voice
-  // detector; the tagger when there is one.
+  // The speech model: the one named, else the best installed -- else
+  // the best downloading (its job waits for it); its voice detector; the
+  // tagger when there is one.
   const models::ModelEntry* m = nullptr;
-  for (const auto& e : _catalog.models()) {
-    if (!e.has(models::Capability::Transcribe) ||
-        (!model.empty() && model != "auto" && model != e.id) ||
-        _store->info(e).state != models::InstallState::Installed ||
-        !engine_runs_(models::Capability::Transcribe)) {
-      continue;
+  for (const bool soon : {false, true}) {
+    for (const auto& e : _catalog.models()) {
+      if (!e.has(models::Capability::Transcribe) ||
+          (!model.empty() && model != "auto" && model != e.id) ||
+          !(soon ? coming_(e)
+                 : _store->info(e).state ==
+                       models::InstallState::Installed) ||
+          !engine_runs_(models::Capability::Transcribe)) {
+        continue;
+      }
+      if (!m || e.rank > m->rank) {
+        m = &e;
+      }
     }
-    if (!m || e.rank > m->rank) {
-      m = &e;
+    if (m) {
+      break;
     }
   }
   if (!m) {
@@ -4075,7 +4433,7 @@ Controller::transcribe(ProjectId pid, AssetId asset, std::string model,
                            "listen", Json::object());
   const auto installed = [&](const std::string& id) {
     const auto* e = _catalog.find(id);
-    return e && _store->info(*e).state == models::InstallState::Installed;
+    return e && coming_(*e);
   };
   const auto vad = jget<std::string>(listen, "vad", "");
   if (vad.empty() || !installed(vad)) {
@@ -4128,8 +4486,9 @@ Controller::summarize_video(ProjectId pid, AssetId asset, std::string model,
     return make_error(Code::InvalidArgument, msg::kSummarizeNeedsPicture,
                       {{"name", src.name}});
   }
-  // The model: the one named; else the helper, when it watches video;
-  // else the best installed that does.
+  // The model: the one named (installed or downloading: its job waits
+  // for it); else the helper, when it watches video; else the best
+  // installed that does.
   const auto watches = [&](const models::ModelEntry& e) {
     return e.has(models::Capability::VideoSummary) &&
            _store->info(e).state == models::InstallState::Installed;
@@ -4137,7 +4496,7 @@ Controller::summarize_video(ProjectId pid, AssetId asset, std::string model,
   const models::ModelEntry* m = nullptr;
   if (!model.empty() && model != "auto") {
     m = _catalog.find(model);
-    if (m && !watches(*m)) {
+    if (m && !(m->has(models::Capability::VideoSummary) && coming_(*m))) {
       m = nullptr;
     }
   } else if (const auto* h = assistant_model(); h && watches(*h)) {
@@ -4330,7 +4689,7 @@ Controller::generate_audio(GenerateAudioRequest req)
     m = &weights_variant_(*m, models::resolve_tuning(
                                   *m, tuning_context(*m), req.preference,
                                   false, req.tuning));
-    if (!runs(*m, "audio", "generate")) {
+    if (!runs_soon(*m, "audio", "generate")) {
       return make_error(Code::NotFound, msg::kNoSpeechModel);
     }
     VALTZ_ASSIGN(project::RecipeInput pin,
@@ -4360,12 +4719,11 @@ Controller::generate_audio(GenerateAudioRequest req)
   }
   const Json vp = jget(m->engine, "vpipe", Json::object());
   const auto* decoder = _catalog.find(jget<std::string>(vp, "decoder", ""));
-  if (decoder &&
-      _store->info(*decoder).state != models::InstallState::Installed) {
+  if (decoder && !coming_(*decoder)) {
     return make_error(Code::NotFound, msg::kModelNotInstalled,
                       {{"model", decoder->name}});
   }
-  if (!runs(*m, "audio", "generate")) {
+  if (!runs_soon(*m, "audio", "generate")) {
     return make_error(Code::NotFound, msg::kNoAudioModel);
   }
   // A cap the model would pass anyway is no cap.
@@ -4545,6 +4903,17 @@ Controller::fleet_runs_(const std::string& key) const
   if (!_fleet) {
     return false;
   }
+  // Never sent: what only a member runs does not run.
+  const auto a = key.find('/');
+  const auto b = key.find('/', a + 1);
+  if (a != std::string::npos && b != std::string::npos) {
+    const auto* m = _catalog.find(key.substr(b + 1));
+    if (m && offload_policy_(task_of(*m, key.substr(0, a),
+                                     key.substr(a + 1, b - a - 1)),
+                             m->id) == fleet::kOffloadNever) {
+      return false;
+    }
+  }
   for (const auto& member : _fleet->members()) {
     const Json self = jget(member, "self", Json::object());
     if (jget(self, "accepting", false) &&
@@ -4641,7 +5010,20 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
   if (!own_files) {
     members = fleet_candidates_(r.op, needs, here.ok());
   }
-  if (members.empty() && !here.ok()) {
+  // Set to run on the fleet only: never here, and refused while no member
+  // can take it (a weight file of one's own included: it is not sent).
+  const bool fleet_only =
+      offload_policy_(r.op, r.model) == fleet::kOffloadAlways;
+  if (fleet_only && members.empty()) {
+    return make_error(Code::Unsupported, msg::kFleetOnlyNoMember);
+  }
+  // What it lacks here is downloading (DESIGN §3a): it waits for those
+  // downloads -- and nothing else does.
+  std::vector<std::string> awaits;
+  if (members.empty() && !here.ok() && _engine->supports(r.op)) {
+    awaits = awaited_(needs);
+  }
+  if (members.empty() && !here.ok() && awaits.empty()) {
     return here.error();
   }
 
@@ -4752,6 +5134,45 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
   engine::JobSink sink = [this](const engine::JobEvent& ev) {
     on_build_event_(ev);
   };
+  if (!awaits.empty()) {
+    std::string names;
+    for (const auto& id : awaits) {
+      names += (names.empty() ? "" : ", ") + _catalog.find(id)->name;
+    }
+    VALTZ_LOG_INFO("build", "job {}: waits for {} to download",
+                   rec.id.str(), names);
+    bool ended = false;
+    {
+      std::lock_guard lk(_downloads_mu);
+      // A download that ended since awaited_ looked: resolved below.
+      std::erase_if(awaits, [&](const std::string& id) {
+        return !_downloads.contains(id);
+      });
+      ended = awaits.empty();
+      if (!ended) {
+        _waiting.emplace(rec.id,
+                         Waiting{std::move(spec), std::move(sink), r.model,
+                                 r.params,
+                                 {awaits.begin(), awaits.end()}});
+      }
+    }
+    if (!ended) {
+      return rec.id;
+    }
+    // It ended before the job was held: as it ended for a waiting one.
+    if (Status st = resolve_build_(r.model, r.params, spec.model, helpers);
+        !st.ok()) {
+      engine::JobEvent ev;
+      ev.job = rec.id;
+      ev.kind = engine::JobEventKind::Failed;
+      ev.error = st.code();
+      ev.text = st.error().message;
+      ev.data = message_fields(st.error());
+      sink(ev);
+      return rec.id;
+    }
+    spec.params.update(helpers);
+  }
   if (members.empty()) {
     VALTZ_TRY(_engine->submit(std::move(spec), std::move(sink)));
     return rec.id;
@@ -4760,7 +5181,7 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
                      spec.inputs};
   const fs::path out = spec.output_dir;
   std::optional<engine::JobSpec> local;
-  if (here.ok()) {
+  if (here.ok() && !fleet_only) {
     local = std::move(spec);
   }
   VALTZ_TRY(run_remote_(std::move(members), std::move(offer), out,
@@ -5546,6 +5967,22 @@ Controller::on_export_event_(const engine::JobEvent& ev)
 Status
 Controller::cancel(JobId id)
 {
+  // Waiting for a download: it waits no more.
+  std::optional<Waiting> w;
+  {
+    std::lock_guard lk(_downloads_mu);
+    if (auto it = _waiting.find(id); it != _waiting.end()) {
+      w = std::move(it->second);
+      _waiting.erase(it);
+    }
+  }
+  if (w) {
+    engine::JobEvent ev;
+    ev.job = id;
+    ev.kind = engine::JobEventKind::Cancelled;
+    w->sink(ev);
+    return ok_status();
+  }
   // Sent to a fleet member: told to stop there.
   if (auto r = _jobs.get(id); r && !r->runner.empty() && _fleet) {
     _fleet->cancel(id);
@@ -5590,8 +6027,9 @@ bool
 Controller::busy_here_() const
 {
   for (const auto& j : _jobs.list()) {
+    // (One waiting for a download holds nothing yet.)
     if ((j.state == JobState::Queued || j.state == JobState::Running) &&
-        j.runner.empty() && holds_engine(j.op)) {
+        j.runner.empty() && holds_engine(j.op) && !waiting_(j.id)) {
       return true;
     }
   }
@@ -5612,7 +6050,15 @@ Controller::fleet_candidates_(const std::string& op,
     const char* e = std::getenv("VALTZ_FLEET_PREFER");
     return e != nullptr && std::string_view(e) == "remote";
   }();
-  if (here && !busy_here_() && !prefer) {
+  // Its offload policy (fleet::Config): never sent; sent when this Mac
+  // cannot run it or is busy (local first); else a member first.
+  const std::string policy =
+      offload_policy_(op, models.empty() ? "" : models.front());
+  if (policy == fleet::kOffloadNever) {
+    return out;
+  }
+  if (policy == fleet::kOffloadLocalFirst && here && !busy_here_() &&
+      !prefer) {
     return out;
   }
   const auto* m = models.empty() ? nullptr : _catalog.find(models.front());
@@ -5623,7 +6069,7 @@ Controller::fleet_candidates_(const std::string& op,
         !listed(jget(self, "ops", Json()), op)) {
       continue;
     }
-    if (op == engine::kOpChat) {
+    if (op == engine::kOpChat || op == engine::kOpAgentTurn) {
       if (jget<std::string>(self, "assistant", "").empty()) {
         continue;
       }
@@ -5648,6 +6094,16 @@ Controller::fleet_candidates_(const std::string& op,
     return ram(a) > ram(b);
   });
   return out;
+}
+
+std::string
+Controller::offload_policy_(std::string_view op, std::string_view model) const
+{
+  if (!_fleet) {
+    return fleet::kOffloadLocalFirst;
+  }
+  const fleet::Config c = _fleet->config();
+  return c.joined() ? c.offload(op, model) : fleet::kOffloadLocalFirst;
 }
 
 Status
@@ -5730,27 +6186,27 @@ Json
 Controller::fleet_self_() const
 {
   const bool up = _engine && _engine->available();
+  // What this Mac shares: a task or a model withheld is not said to be
+  // here, so a member never offers it (and one that does is declined).
+  const fleet::Config fc = _fleet ? _fleet->config() : fleet::Config{};
   Json ops = Json::array();
-  for (std::string_view op :
-       {engine::kOpGenerateImage, engine::kOpEditImage,
-        engine::kOpGenerateVideo, engine::kOpGenerateAudio,
-        engine::kOpGenerateSpeech, engine::kOpTranscribeAudio,
-        engine::kOpSummarizeVideo, engine::kOpUpscaleVideo,
-        engine::kOpUpscaleImage, engine::kOpChat}) {
-    if (up && _engine->supports(op)) {
+  for (std::string_view op : kFleetTasks) {
+    if (up && _engine->supports(op) && fc.shares(op, "")) {
       ops.push_back(std::string(op));
     }
   }
   Json installed = Json::array();
   Json runs = Json::array();
   for (const auto& m : _catalog.models()) {
-    if (_store->info(m).state != models::InstallState::Installed) {
+    if (_store->info(m).state != models::InstallState::Installed ||
+        fc.withheld_models.contains(m.id)) {
       continue;
     }
     installed.push_back(m.id);
     for (const char* modality : {"image", "video", "audio"}) {
       for (const char* op : {"generate", "edit"}) {
-        if (runs_here(m, modality, op)) {
+        if (runs_here(m, modality, op) &&
+            fc.shares(task_of(m, modality, op), m.id)) {
           runs.push_back(std::format("{}/{}/{}", modality, op, m.id));
         }
       }
@@ -5763,14 +6219,38 @@ Controller::fleet_self_() const
                                return engine_runs_(c);
                              })
                        : std::vector<models::CapabilityStatus>{};
+  // A feature is the task it is done by: withheld, it is not offered.
+  auto feature_task = [](models::Capability c) -> std::string_view {
+    using models::Capability;
+    switch (c) {
+    case Capability::TextToImage: return engine::kOpGenerateImage;
+    case Capability::ImageEdit: return engine::kOpEditImage;
+    case Capability::TextToVideo:
+    case Capability::ImageToVideo:
+    case Capability::ReferenceToVideo: return engine::kOpGenerateVideo;
+    case Capability::UpscaleImage: return engine::kOpUpscaleImage;
+    case Capability::UpscaleVideo: return engine::kOpUpscaleVideo;
+    case Capability::PromptEnhance:
+    case Capability::Intent:
+    case Capability::Caption: return engine::kOpChat;
+    case Capability::TextToAudio: return engine::kOpGenerateAudio;
+    case Capability::TextToSpeech: return engine::kOpGenerateSpeech;
+    case Capability::Transcribe: return engine::kOpTranscribeAudio;
+    case Capability::VideoSummary: return engine::kOpSummarizeVideo;
+    default: return {};
+    }
+  };
   for (const auto& c : caps) {
-    if (c.availability == models::Availability::Ready) {
+    const auto task = feature_task(c.capability);
+    if (c.availability == models::Availability::Ready &&
+        (task.empty() || fc.shares(task, ""))) {
       features.push_back(models::to_str(c.capability));
     }
   }
   const auto* a = up ? assistant_model() : nullptr;
-  const bool chat = a && _store->info(*a).state ==
-                             models::InstallState::Installed;
+  const bool chat = a && fc.shares(engine::kOpChat, a->id) &&
+                    _store->info(*a).state ==
+                        models::InstallState::Installed;
   return {{"ops", ops},
           {"installed", installed},
           {"runs", runs},
@@ -5788,8 +6268,21 @@ Status
 Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
                          const fs::path& out_dir, engine::JobSink sink)
 {
+  // A member's agent session over: what this Mac kept for it let go.
+  if (o.op == "agent-close") {
+    if (_agent) {
+      _agent->close_served(from, jget<std::string>(o.params, "context", ""));
+    }
+    engine::JobEvent done;
+    done.job = o.id;
+    done.kind = engine::JobEventKind::Finished;
+    sink(done);
+    return ok_status();
+  }
+  const Json me = fleet_self_();
   if (!_engine || !_engine->available() || !_engine->supports(o.op) ||
-      !listed(jget(fleet_self_(), "ops", Json()), o.op)) {
+      !listed(jget(me, "ops", Json()), o.op) ||
+      (!o.model.empty() && !listed(jget(me, "installed", Json()), o.model))) {
     return make_error(Code::Unsupported, msg::kEngineCannotRun,
                       {{"operation", o.op}});
   }
@@ -5808,6 +6301,8 @@ Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
                                                           ""),
                                   o.inputs,
                                   jget(o.params, "max_new_tokens", 512)));
+  } else if (o.op == engine::kOpAgentTurn) {
+    VALTZ_ASSIGN(spec, _agent->served_turn(o, from, out_dir));
   } else {
     engine::ModelRef ref;
     Json helpers = Json::object();
@@ -5883,6 +6378,26 @@ Controller::fleet_status() const
   Json s = _fleet->status();
   s["enabled"] = true;
   s["self"] = fleet_self_();
+  // The tasks, each with the models a job of it names: what the offload
+  // policies and the sharing are set for.
+  const bool up = _engine && _engine->available();
+  Json tasks = Json::array();
+  for (std::string_view op : kFleetTasks) {
+    Json ms = Json::array();
+    for (const auto& m : _catalog.models()) {
+      if (does_task(m, op)) {
+        ms.push_back({{"id", m.id},
+                      {"name", m.name},
+                      {"family", m.family},
+                      {"installed", _store->info(m).state ==
+                                        models::InstallState::Installed}});
+      }
+    }
+    tasks.push_back({{"op", std::string(op)},
+                     {"runs", up && _engine->supports(op)},
+                     {"models", std::move(ms)}});
+  }
+  s["tasks"] = std::move(tasks);
   return s;
 }
 
@@ -5918,6 +6433,50 @@ Controller::fleet_configure(const Json& j)
   if (j.contains("schedule")) {
     c.schedule = fleet::schedule_from_json(j["schedule"]);
   }
+  // Offload policies and sharing: those named change, the rest stay. A
+  // task is a fleet task; a model, one of the catalog's.
+  auto change = [&](const char* table, auto known,
+                    std::map<std::string, std::string>& policies,
+                    std::set<std::string>& withheld) -> Status {
+    const Json off = jget(jget(j, "offload", Json::object()), table,
+                          Json::object());
+    for (const auto& [k, v] : off.items()) {
+      const auto p = v.is_string() ? v.get<std::string>() : std::string();
+      if (!known(k)) {
+        return make_error(Code::InvalidArgument, msg::kFleetUnknownTask,
+                          {{"name", k}});
+      }
+      if (!p.empty() && !fleet::is_offload_policy(p)) {
+        return make_error(Code::InvalidArgument, msg::kFleetUnknownPolicy,
+                          {{"policy", p}});
+      }
+      if (p.empty()) {
+        policies.erase(k);
+      } else {
+        policies[k] = p;
+      }
+    }
+    const Json share = jget(jget(j, "share", Json::object()), table,
+                            Json::object());
+    for (const auto& [k, v] : share.items()) {
+      if (!known(k)) {
+        return make_error(Code::InvalidArgument, msg::kFleetUnknownTask,
+                          {{"name", k}});
+      }
+      if (v.is_boolean() && !v.get<bool>()) {
+        withheld.insert(k);
+      } else {
+        withheld.erase(k);
+      }
+    }
+    return ok_status();
+  };
+  VALTZ_TRY(change("tasks", [](const std::string& op) {
+    return std::ranges::find(kFleetTasks, op) != std::end(kFleetTasks);
+  }, c.offload_tasks, c.withheld_tasks));
+  VALTZ_TRY(change("models", [this](const std::string& id) {
+    return _catalog.find(id) != nullptr;
+  }, c.offload_models, c.withheld_models));
   // A fleet made or joined -- its name and secret -- or left.
   const std::string secret = jget<std::string>(j, "secret", "");
   if (!secret.empty() && secret.size() < 8) {
@@ -5943,6 +6502,10 @@ Controller::fleet_configure(const Json& j)
     c.key = fleet::derive_key(c.fleet, secret);
   }
   VALTZ_TRY(_fleet->set_config(c));
+  // What it offers told the members at once.
+  if (j.contains("share")) {
+    _fleet->self_changed();
+  }
   post_("fleet.changed", JobId{});
   return ok_status();
 }

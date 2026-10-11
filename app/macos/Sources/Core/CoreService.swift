@@ -105,6 +105,35 @@ final class CoreService: @unchecked Sendable {
     func assistantsJSON() -> Data {
         Data(String(core.assistants_json()).utf8)
     }
+    // ---- the agent (DESIGN §9b)
+    func agentStart(_ request: [String: Any]) -> CoreReply {
+        send(core.agent_start, request)
+    }
+    func agentSay(_ agent: String, _ text: String) -> CoreReply {
+        send(core.agent_say, ["agent": agent, "text": text])
+    }
+    func agentReview(_ agent: String, step: Int, decision: String,
+                     note: String = "") -> CoreReply {
+        send(core.agent_review, ["agent": agent, "step": step,
+                                 "decision": decision, "note": note])
+    }
+    /// pause | resume | stop | review | auto
+    func agentControl(_ agent: String, _ action: String) -> CoreReply {
+        send(core.agent_control, ["agent": agent, "action": action])
+    }
+    func agentState(_ agent: String) -> CoreReply {
+        send(core.agent_state, ["agent": agent])
+    }
+    func agentSettingsJSON() -> Data {
+        Data(String(core.agent_settings()).utf8)
+    }
+    func setAgentSettings(_ settings: [String: Any]) -> CoreReply {
+        send(core.set_agent_settings, settings)
+    }
+    func setAgentKey(_ provider: String, _ key: String) -> CoreReply {
+        send(core.set_agent_key, ["provider": provider, "key": key])
+    }
+
     func chooseAssistant(_ id: String) -> CoreReply {
         send(core.choose_assistant, ["model": id])
     }

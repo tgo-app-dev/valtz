@@ -84,12 +84,15 @@ set(VALTZ_APP_SOURCES
   Sources/Views/HelperView.swift
   Sources/Views/StorageView.swift
   Sources/Views/SettingsView.swift
+  Sources/Views/SettingsNavigation.swift
   Sources/Views/TitleBar.swift
   Sources/Views/VideoEncodingRows.swift
   Sources/Views/AppKitPopover.swift
   Sources/Views/FleetView.swift
+  Sources/Views/FleetPolicyViews.swift
   Sources/Views/FleetServing.swift
   Sources/Views/PermissionsView.swift
+  Sources/Views/ExperimentalView.swift
   Sources/Views/InspectorView.swift
   Sources/Views/CanvasSize.swift
   Sources/Views/ProjectOutput.swift
@@ -112,6 +115,8 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/PromptMarkdown.swift
   Sources/Simple/PromptStudio.swift
   Sources/Simple/SuggestionPane.swift
+  Sources/Simple/AgentModel.swift
+  Sources/Simple/AgentViews.swift
   Sources/Simple/ReferenceRow.swift
   Sources/Simple/Adjustments.swift
   Sources/Simple/SettingsSearch.swift

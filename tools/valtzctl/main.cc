@@ -361,6 +361,9 @@ usage()
       "        | fleet set [name=N] [discoverable=on|off]\n"
       "            [accept=always|ask|never]\n"
       "            [schedule=mon-fri@09:00-18:00|off]\n"
+      "        | fleet offload [<task|model> never|local-first|\n"
+      "            fleet-first|always|default]\n"
+      "        | fleet share [<task|model> on|off]\n"
       "        | fleet leave | fleet connect <host:port>\n"
       "        | fleet serve [--seconds N]\n"
       "         (the FLEET: Valtz on the Macs of one network as one --\n"
@@ -368,8 +371,22 @@ usage()
       "         $VALTZ_FLEET_SECRET), discoverable or not, taking jobs\n"
       "         or not; serve: a member at work until stopped. --fleet\n"
       "         on any command: a job this Mac cannot run, or not now,\n"
-      "         goes to a member that can. $VALTZ_FLEET_CONFIG: another\n"
-      "         member's configuration -- two on one Mac)\n"
+      "         goes to a member that can -- or as `fleet offload` says,\n"
+      "         per task (generate-image, ..., chat) and per model;\n"
+      "         `fleet share`: what this Mac offers the others.\n"
+      "         $VALTZ_FLEET_CONFIG: another member's configuration --\n"
+      "         two on one Mac)\n"
+      "  agent <project> <request> [--auto] [--backend helper|cloud]\n"
+      "        [--composition <id>] [--ref <file|asset-id>]... [--speed]\n"
+      "        | agent tools | agent settings [backend=helper|cloud]\n"
+      "            [review=on|off] [lease=<s>] [provider=anthropic|openai|\n"
+      "            openai-compatible] [model=<id>] [base_url=<url>]\n"
+      "        | agent key <provider> [--remove]\n"
+      "         (the AGENT: the request worked on in the project by the\n"
+      "         helper -- or a fleet member's, or a cloud model -- calling\n"
+      "         the editor's tools; each step asked for at the terminal\n"
+      "         unless --auto. key: a cloud provider's API key, asked for\n"
+      "         unechoed, kept in the Keychain)\n"
       "  download <model-id> [--hf-token]\n"
       "          (--hf-token: asks for a Hugging Face access token, not\n"
       "          echoed, for a GATED model -- used for this download only,\n"
@@ -893,6 +910,46 @@ print_fleet(const Json& s)
   }
 }
 
+// The offload policies: each task's, then each model set apart.
+void
+print_offload(const Json& s)
+{
+  const Json c = jget(s, "config", Json::object());
+  const Json off = jget(c, "offload", Json::object());
+  const Json tasks = jget(off, "tasks", Json::object());
+  std::printf("offload policies (while in a fleet%s)\n",
+              jget(c, "joined", false) ? "" : " -- this Mac is in none");
+  for (const auto& t : jget(s, "tasks", Json::array())) {
+    const auto op = jget<std::string>(t, "op", "");
+    std::printf("  %-18s %s\n", op.c_str(),
+                jget<std::string>(tasks, op.c_str(), "local-first").c_str());
+  }
+  const Json models = jget(off, "models", Json::object());
+  for (const auto& [id, p] : models.items()) {
+    std::printf("  model %-24s %s\n", id.c_str(),
+                p.get<std::string>().c_str());
+  }
+}
+
+// What this Mac offers the fleet: each task, the models withheld.
+void
+print_share(const Json& s)
+{
+  const Json held = jget(jget(s, "config", Json::object()), "withheld",
+                         Json::object());
+  const Json tasks = jget(held, "tasks", Json::array());
+  std::printf("shared with the fleet\n");
+  for (const auto& t : jget(s, "tasks", Json::array())) {
+    const auto op = jget<std::string>(t, "op", "");
+    const bool off = std::ranges::find(tasks, Json(op)) != tasks.end();
+    std::printf("  %-18s %s%s\n", op.c_str(), off ? "off" : "on",
+                jget(t, "runs", false) ? "" : "  (not run here)");
+  }
+  for (const auto& id : jget(held, "models", Json::array())) {
+    std::printf("  model %-24s off\n", id.get<std::string>().c_str());
+  }
+}
+
 int
 fleet_command(Controller& c, std::vector<std::string>& args)
 {
@@ -963,6 +1020,39 @@ fleet_command(Controller& c, std::vector<std::string>& args)
       }
     }
     return configure(j);
+  }
+  if (sub == "offload" || sub == "share") {
+    // <task|model> <value>: a task is a fleet task's op, else a model.
+    if (args.size() == 3) {
+      const Json st = c.fleet_status();
+      bool task = false;
+      for (const auto& t : jget(st, "tasks", Json::array())) {
+        task = task || jget<std::string>(t, "op", "") == args[1];
+      }
+      Json v;
+      if (sub == "offload") {
+        v = args[2] == "default" ? std::string() : args[2];
+      } else if (args[2] == "on" || args[2] == "off") {
+        v = args[2] == "on";
+      } else {
+        return usage();
+      }
+      const Json j = {{sub, {{task ? "tasks" : "models", {{args[1], v}}}}}};
+      if (auto r = c.fleet_configure(j); !r.ok()) {
+        return fail(r.error());
+      }
+    } else if (args.size() != 1) {
+      return usage();
+    }
+    const Json st = c.fleet_status();
+    if (as_json) {
+      std::cout << to_text(st, 2) << "\n";
+    } else if (sub == "offload") {
+      print_offload(st);
+    } else {
+      print_share(st);
+    }
+    return 0;
   }
   if (sub == "join" || sub == "create") {
     // The secret asked for at the terminal without echo, or
@@ -1054,6 +1144,311 @@ fleet_command(Controller& c, std::vector<std::string>& args)
     return 0;
   }
   return usage();
+}
+
+// A turn's speed as `agent --speed` prints it (agent::turn_stats):
+// "prefill 680 tok in 0.21 s = 3238.1 tok/s · decode 71 tok in 1.53 s =
+// 46.5 tok/s · 7700 reused (memory) · ctx 8501 · turn 2.10 s".
+std::string
+turn_speed_line(const Json& s)
+{
+  std::string out;
+  auto add = [&](const std::string& part) {
+    out += (out.empty() ? "" : " · ") + part;
+  };
+  for (const char* side : {"prefill", "decode"}) {
+    const std::string tokens = std::format("{}_tokens", side);
+    const std::string ms = std::format("{}_ms", side);
+    const std::string tps = std::format("{}_tps", side);
+    if (s.contains(tokens)) {
+      std::string p = std::format(
+          "{} {} tok", side, jget<std::int64_t>(s, tokens.c_str(), 0));
+      if (s.contains(ms)) {
+        p += std::format(" in {:.2f} s", jget(s, ms.c_str(), 0.0) / 1000.0);
+      }
+      if (s.contains(tps)) {
+        p += std::format(" = {:.1f} tok/s", jget(s, tps.c_str(), 0.0));
+      }
+      add(p);
+    } else if (s.contains(ms)) {
+      add(std::format("{} {:.2f} s", side,
+                      jget(s, ms.c_str(), 0.0) / 1000.0));
+    }
+  }
+  if (s.contains("cached_tokens")) {
+    add(std::format("{} cached", jget<std::int64_t>(s, "cached_tokens", 0)));
+  }
+  if (s.contains("reused")) {
+    add(std::format("{} reused ({})", jget<std::int64_t>(s, "reused", 0),
+                    jget<std::string>(s, "restored", "")));
+  }
+  if (s.contains("ctx_pos")) {
+    add(std::format("ctx {}", jget<std::int64_t>(s, "ctx_pos", 0)));
+  }
+  if (s.contains("first_ms") && !s.contains("prefill_tps")) {
+    add(std::format("first words {:.2f} s",
+                    jget(s, "first_ms", 0.0) / 1000.0));
+  }
+  add(std::format("turn {:.2f} s", jget(s, "turn_ms", 0.0) / 1000.0));
+  return out;
+}
+
+// THE AGENT at the terminal (DESIGN §9b): the request worked on in the
+// project, its words printed as they are written, each step that changes
+// the document asked for (Y / n / a / e / q) unless --auto; done, more
+// can be said at the prompt. --speed: each turn's prefill and decode.
+int
+agent_command(Controller& c, std::vector<std::string> args)
+{
+  if (args.empty()) {
+    return usage();
+  }
+  if (args[0] == "tools") {
+    std::cout << to_text(c.agent_tools(), 2) << "\n";
+    return 0;
+  }
+  if (args[0] == "settings") {
+    Json set = Json::object();
+    Json cloud = Json::object();
+    for (std::size_t i = 1; i < args.size(); ++i) {
+      const auto eq = args[i].find('=');
+      if (eq == std::string::npos) {
+        return usage();
+      }
+      const std::string k = args[i].substr(0, eq);
+      const std::string v = args[i].substr(eq + 1);
+      if (k == "backend") {
+        set["backend"] = v;
+      } else if (k == "review") {
+        set["review"] = v == "on" || v == "true";
+      } else if (k == "lease") {
+        set["lease"] = std::atof(v.c_str());
+      } else if (k == "provider" || k == "model" || k == "base_url") {
+        cloud[k] = v;
+      } else if (k == "max_tokens") {
+        cloud[k] = std::atoi(v.c_str());
+      } else {
+        return usage();
+      }
+    }
+    if (!cloud.empty()) {
+      set["cloud"] = cloud;
+    }
+    if (!set.empty()) {
+      if (auto st = c.set_agent_settings(set); !st.ok()) {
+        return fail(st.error());
+      }
+    }
+    std::cout << to_text(c.agent_settings(), 2) << "\n";
+    return 0;
+  }
+  if (args[0] == "key") {
+    if (args.size() < 2) {
+      return usage();
+    }
+    if (std::erase(args, std::string("--remove")) > 0) {
+      auto st = c.set_agent_key(args[1], "");
+      return st.ok() ? 0 : fail(st.error());
+    }
+    // Asked for unechoed -- never an argument, which the shell's
+    // history would keep -- and handed to the Keychain alone.
+    char buf[512];
+    const std::string q = args[1] + " API key: ";
+    if (!readpassphrase(q.c_str(), buf, sizeof buf, RPP_REQUIRE_TTY)) {
+      return fail(make_error(Code::InvalidArgument,
+                             "no terminal to ask for the key on"));
+    }
+    std::string key = buf;
+    std::fill(std::begin(buf), std::end(buf), '\0');
+    auto st = c.set_agent_key(args[1], key);
+    std::fill(key.begin(), key.end(), '\0');
+    return st.ok() ? 0 : fail(st.error());
+  }
+  if (args.size() < 2) {
+    return usage();
+  }
+  auto pid = open_or_fail(c, args[0]);
+  if (!pid.ok()) {
+    return fail(pid.error());
+  }
+  AgentRequest req;
+  req.project = *pid;
+  bool autonomous = false;
+  bool speed = false;
+  std::string prompt;
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    const std::string& a = args[i];
+    auto next = [&]() -> std::string {
+      return i + 1 < args.size() ? args[++i] : std::string();
+    };
+    if (a == "--auto") {
+      autonomous = true;
+    } else if (a == "--speed") {
+      speed = true;
+    } else if (a == "--backend") {
+      req.backend = next();
+    } else if (a == "--composition") {
+      auto id = AssetId::parse(next());
+      if (!id) {
+        return fail(make_error(Code::InvalidArgument, "not an asset id"));
+      }
+      req.composition = *id;
+    } else if (a == "--ref") {
+      auto r = reference_asset(c, *pid, next());
+      if (!r.ok()) {
+        return fail(r.error());
+      }
+      req.row.push_back(*r);
+    } else {
+      prompt += (prompt.empty() ? "" : " ") + a;
+    }
+  }
+  const bool tty = ::isatty(STDIN_FILENO) != 0;
+  if (!autonomous && !tty) {
+    return fail(make_error(Code::InvalidArgument,
+                           "no terminal to review the steps on: --auto"));
+  }
+  req.prompt = prompt;
+  req.review = !autonomous;
+  auto id = c.agent_start(req);
+  if (!id.ok()) {
+    return fail(id.error());
+  }
+  std::fprintf(stderr, "agent: %s\n", id->c_str());
+  auto line = [](const char* q) {
+    std::cout << q << std::flush;
+    std::string s;
+    if (!std::getline(std::cin, s)) {
+      return std::string("\x04");
+    }
+    return s;
+  };
+  std::map<int, std::string> printed;   // each step's state, as shown
+  int speed_shown = 0;                  // --speed: the turns printed
+  bool writing = false;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (;;) {
+    Event ev;
+    if (!c.events().wait(ev, 500)) {
+      continue;
+    }
+    if (ev.kind == "agent.text" &&
+        jget<std::string>(ev.data, "agent", "") == *id) {
+      // This Mac's helper: vpipe's own stream prints it already.
+      if (jget<std::string>(jget(c.agent_state(*id), "backend",
+                                 Json::object()),
+                            "kind", "") == "local") {
+        continue;
+      }
+      if (!writing) {
+        std::cout << "\n";
+        writing = true;
+      }
+      std::cout << jget<std::string>(ev.data, "text", "") << std::flush;
+      continue;
+    }
+    if (ev.kind != "agent.changed" ||
+        jget<std::string>(ev.data, "agent", "") != *id) {
+      continue;
+    }
+    const Json st = c.agent_state(*id);
+    const std::string state = jget<std::string>(st, "state", "");
+    if (writing && state != "thinking") {
+      std::cout << "\n";
+      writing = false;
+    }
+    if (speed && jget(st, "turns", 0) > speed_shown) {
+      speed_shown = jget(st, "turns", 0);
+      std::fprintf(stderr, "  · turn %d: %s\n", speed_shown,
+                   turn_speed_line(jget(st, "stats", Json::object()))
+                       .c_str());
+    }
+    for (const auto& step : jget(st, "steps", Json::array())) {
+      const int n = jget(step, "n", 0);
+      const std::string s = jget<std::string>(step, "state", "");
+      if (printed[n] == s || s == "proposed") {
+        continue;
+      }
+      printed[n] = s;
+      const std::string title = jget<std::string>(step, "title", "");
+      if (s == "running") {
+        std::fprintf(stderr, "  [%d] %s %s\n", n, title.c_str(),
+                     utf8_truncate(to_text(jget(step, "args", Json())),
+                                   200).c_str());
+      } else if (s == "done" || s == "waiting") {
+        std::fprintf(stderr, "      %s %s\n", s == "done" ? "ok" : "...",
+                     utf8_truncate(to_text(jget(step, "result", Json())),
+                                   240).c_str());
+      } else if (s == "failed") {
+        std::fprintf(stderr, "      failed: %s\n",
+                     jget<std::string>(step, "error", "").c_str());
+      } else if (s == "skipped") {
+        std::fprintf(stderr, "  [%d] %s skipped\n", n, title.c_str());
+      }
+    }
+    if (state == "review") {
+      for (const auto& step : jget(st, "steps", Json::array())) {
+        if (jget<std::string>(step, "state", "") != "proposed") {
+          continue;
+        }
+        const int n = jget(step, "n", 0);
+        std::cout << std::format("\n  [{}] {} {}\n", n,
+                                 jget<std::string>(step, "title", ""),
+                                 to_text(jget(step, "args", Json()), 2));
+        const std::string a =
+            line("  Run it? [Y]es / [n]o / [a]ll from here / [e]dit / "
+                 "[q]uit: ");
+        Status r = ok_status();
+        if (a == "\x04" || a == "q") {
+          r = c.agent_stop(*id);
+        } else if (a == "n") {
+          r = c.agent_review(*id, n, "skip", Json(),
+                             line("  Why (told to it; Enter: none)? "));
+        } else if (a == "a") {
+          r = c.agent_review(*id, n, "approve_all");
+        } else if (a == "e") {
+          const Json edited = Json::parse(line("  Its arguments (JSON): "),
+                                          nullptr, false);
+          r = edited.is_object() ? c.agent_review(*id, n, "approve", edited)
+                                 : c.agent_review(*id, n, "approve");
+        } else {
+          r = c.agent_review(*id, n, "approve");
+        }
+        if (!r.ok()) {
+          std::fprintf(stderr, "valtzctl: %s\n", r.error().message.c_str());
+        }
+      }
+    } else if (state == "asking") {
+      const Json steps = jget(st, "steps", Json::array());
+      const std::string q = steps.empty()
+          ? std::string()
+          : jget<std::string>(jget(steps.back(), "args", Json()),
+                              "question", "");
+      std::cout << "\n  It asks: " << q << "\n";
+      const std::string a = tty ? line("  > ") : std::string("\x04");
+      (void)(a == "\x04" ? c.agent_stop(*id) : c.agent_say(*id, a));
+    } else if (state == "done" || state == "failed") {
+      if (state == "failed") {
+        std::fprintf(stderr, "agent: %s\n",
+                     jget<std::string>(st, "error", "").c_str());
+      }
+      const double secs = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - t0).count();
+      std::fprintf(stderr, "agent: %s after %.0f s, %d turns, %zu steps; "
+                           "usage %s\n",
+                   state.c_str(), secs, jget(st, "turns", 0),
+                   jget(st, "steps", Json::array()).size(),
+                   to_text(jget(st, "usage", Json())).c_str());
+      const std::string more = tty ? line("\n> ") : std::string();
+      if (more.empty() || more == "\x04" || more == "q") {
+        (void)c.agent_stop(*id);
+      } else {
+        (void)c.agent_say(*id, more);
+      }
+    } else if (state == "stopped") {
+      return jget<std::string>(st, "error", "").empty() ? 0 : 1;
+    }
+  }
 }
 
 int
@@ -1157,7 +1552,7 @@ main(int argc, char** argv)
                     cmd == "status" || cmd == "families" ||
                     cmd == "enhance" ||
                     cmd == "intent" || cmd == "download" || cmd == "caps" ||
-                    cmd == "auto" ||
+                    cmd == "auto" || cmd == "agent" ||
                     (cmd == "export" &&
                      !(args.size() == 1 && args[0] == "--formats"));
   // "--fleet": a member of its fleet for this run (DESIGN §11) -- what
@@ -3641,6 +4036,9 @@ main(int argc, char** argv)
   }
   if (cmd == "fleet") {
     return fleet_command(c, args);
+  }
+  if (cmd == "agent") {
+    return agent_command(c, args);
   }
   if (cmd == "download") {
     // A gated model's token, asked for at the terminal without echo --

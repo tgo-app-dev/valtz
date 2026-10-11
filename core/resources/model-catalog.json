@@ -790,7 +790,7 @@
       "role": "upscale",
       "hf_path": "JunhaoZhuang/FlashVSR-v1.1",
       "capabilities": ["upscale-video"],
-      "engine": {"vpipe": {"upscale": {"grid": 128, "group": 25, "overlap": 4, "ahead": 1, "hidden": 1536}}},
+      "engine": {"vpipe": {"upscale": {"grid": 128, "group": 24, "clip_frames": 41, "blend_frames": 8, "ahead": 1, "hidden": 1536}}},
       "disk_gb": 12, "disk_measured": false,
       "min_ram_gb": 24, "rank": 1,
       "license": "apache-2.0"

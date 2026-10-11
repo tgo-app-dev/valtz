@@ -15,6 +15,7 @@
 #include "valtz-vpipe/exchange.h"
 #include "scene-cut.h"
 
+#include "common/perf-flops.h"
 #include "vpipe/vpipe.h"
 #include "stages/model-catalog.h"
 
@@ -461,6 +462,36 @@ TEST(engine_progress, phases_from_reports)
   CHECK(gap.label.empty() && gap.total == 0);
 }
 
+// A download runs beside the graphs (the engine's two lanes), its reports
+// in the same list: each job follows its own -- the download its files,
+// the generation its stages.
+TEST(engine_progress, a_download_beside_a_graph)
+{
+  CHECK(vp::names_a_file("model-00001-of-00004.safetensors"));
+  CHECK(vp::names_a_file("taeh3.pth"));
+  CHECK(!vp::names_a_file("denoise"));
+  CHECK(!vp::names_a_file("vae decode"));
+  CHECK(!vp::names_a_file(".hidden"));
+  CHECK(!vp::names_a_file("trailing."));
+  const Json both = reports({report(5, "model.safetensors", 3, 10, 50),
+                             report(6, "denoise", 2, 8, 49)});
+  vp::JobProgress gen(/*after=*/4, /*download=*/false);
+  vp::JobPhase g = gen.read(both, 0);
+  CHECK(g.phase == kPhaseDenoise);
+  CHECK(g.done == 2 && g.total == 8);
+  vp::JobProgress dl(/*after=*/4, /*download=*/true);
+  vp::JobPhase d = dl.read(both, 0);
+  CHECK(d.phase == kPhaseDownload);
+  CHECK(d.label == "model.safetensors" && d.done == 3);
+  // The download's file alone live: the generation is between its
+  // phases (preparing), not downloading.
+  vp::JobProgress fresh(/*after=*/4, /*download=*/false);
+  CHECK(fresh.read(reports({report(5, "model.safetensors", 4, 10)}), 0)
+            .phase == kPhasePrepare);
+  CHECK(dl.read(reports({report(6, "denoise", 3, 8)}), 0).phase ==
+        kPhaseDownload);
+}
+
 // A clip's writer ("save video") counts its frames: an export's phase,
 // counted; in a generation, the frames written after the decode --
 // finishing.
@@ -632,6 +663,53 @@ TEST(vpipe_plugin, a_refused_download_fails_in_words)
   CHECK(end->text.find("publishes 2 models") != std::string::npos);
   CHECK(end->text.find('\n') == std::string::npos);
   CHECK(!fs::exists(dir / "models" / "MiniMaxAI"));
+  e->shutdown();
+}
+
+// The FLOP/s meter as the status bar reads it (Engine::throughput): the
+// GPU's and the ANE's arithmetic over the two seconds their credits
+// reach; a unit idle past the hold reads zero; the peak is the highest
+// two seconds of the two together -- one nobody read at the time too.
+// The meter is the process's: the credits made here are what a model's
+// blocks credit as they retire.
+TEST(vpipe_plugin, throughput_is_the_meter_read)
+{
+  if (!plugin_present()) {
+    SKIP("valtz-vpipe.so not found");
+  }
+  namespace pf = vpipe::perf_flops;
+  REQUIRE(pf::available());
+  const auto dir = test::temp_dir("flops");
+  EngineConfig cfg;
+  cfg.state_dir = dir / "engine";
+  cfg.temp_dir = dir / "tmp";
+  cfg.log_level = "error";
+  auto e = make_vpipe_engine(cfg);
+  REQUIRE(e && e->available());
+  constexpr std::uint64_t kS = 1'000'000'000;
+  constexpr double kT = 1e12;
+  // Twenty seconds ago, for six: 20 TFLOP/s on the GPU, 5 on the ANE.
+  std::uint64_t now = pf::now_ns();
+  pf::credit(pf::kGpu, (std::uint64_t)(120 * kT), now - 20 * kS,
+             now - 14 * kS);
+  pf::credit(pf::kAne, (std::uint64_t)(30 * kT), now - 20 * kS,
+             now - 14 * kS);
+  Json t = e->throughput();
+  CHECK(jget(t, "gpu_tflops", -1.0) == 0);
+  CHECK(jget(t, "ane_tflops", -1.0) == 0);
+  CHECK(jget(t, "peak_tflops", 0.0) >= 25 - 1e-3);
+  const double peak = jget(t, "peak_tflops", 0.0);
+  // Now: 12 TFLOP in the GPU's last second, 2 on the ANE -- over the
+  // two-second window, 6 and 1.
+  now = pf::now_ns();
+  pf::credit(pf::kGpu, (std::uint64_t)(12 * kT), now - 3 * kS / 2,
+             now - kS / 2);
+  pf::credit(pf::kAne, (std::uint64_t)(2 * kT), now - 3 * kS / 2,
+             now - kS / 2);
+  t = e->throughput();
+  CHECK(std::abs(jget(t, "gpu_tflops", 0.0) - 6) < 0.01);
+  CHECK(std::abs(jget(t, "ane_tflops", 0.0) - 1) < 0.01);
+  CHECK(jget(t, "peak_tflops", 0.0) == peak);
   e->shutdown();
 }
 

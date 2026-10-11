@@ -311,6 +311,53 @@ TEST(graph_builder, a_transcription_hears_one_channel)
 // at the size given, the helper's model loaded as its chat loads it (its
 // drafters, its warm hold), its sampler on the stage's port, Valtz's own
 // words for the scenes and the whole.
+// FlashVSR, as vpipe restores a long source now: ONE STREAM across the
+// groups (or overlapping clips it cuts itself), so the groups are
+// consecutive -- 24, no overlap, none sent twice, the last short -- the
+// denoiser is planned for the biggest beat (a clip of 41, or a stream's
+// opening chunks), and the feed allows for what the encoder holds back
+// before anything comes out.
+TEST(graph_builder, an_upscale_streams_its_groups)
+{
+  JobSpec job = job_for("flashvsr", kOpUpscaleVideo);
+  job.params = {{"width", 1920}, {"height", 1088}};
+  JobInput in;
+  in.role = "source";
+  in.path = "/tmp/clip.mp4";
+  in.info.type = media::MediaType::Video;
+  in.info.frame.width = 960;
+  in.info.frame.height = 544;
+  in.info.frame_rate = {24, 1};
+  in.info.frame_count = 100;
+  job.inputs.push_back(in);
+  auto g = vp::build_upscale_video(job);
+  REQUIRE_OK(g);
+  const Json* stack = find_stage(g->spec, "stack");
+  const Json* enc = find_stage(g->spec, "encode");
+  const Json* gen = find_stage(g->spec, "generate");
+  const Json* tap = find_stage(g->spec, "tap");
+  REQUIRE(stack && enc && gen && tap);
+  CHECK(jget(config_of(stack), "group_size", 0) == 24);
+  CHECK(jget(config_of(stack), "overlap", -1) == 0);
+  CHECK(jget(config_of(enc), "clip_frames", 0) == 41);
+  CHECK(jget(config_of(enc), "blend_frames", 0) == 8);
+  CHECK(!config_of(enc).contains("continuity"));  // vpipe decides
+  CHECK(jget(config_of(gen), "frames", 0) == 41);
+  CHECK(jget(config_of(gen), "width", 0) == 1920);
+  CHECK(jget(config_of(gen), "height", 0) == 1152);
+  CHECK(jget(config_of(tap), ex::kTapMaxFrames, 0) == 100);
+  REQUIRE(g->movie);
+  CHECK(g->movie->gate.group == 24);
+  CHECK(g->movie->gate.lag == 40);
+  CHECK(g->movie->count == 100);
+  // A bigger group: a stream's beat is its six chunks, more than a clip.
+  job.params["group"] = 48;
+  auto big = vp::build_upscale_video(job);
+  REQUIRE_OK(big);
+  CHECK(jget(config_of(find_stage(big->spec, "generate")), "frames", 0) ==
+        48);
+}
+
 TEST(graph_builder, a_video_summary_reads_sparse)
 {
   JobSpec job;

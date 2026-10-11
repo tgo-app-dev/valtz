@@ -618,10 +618,11 @@ struct AssetsSection: View {
                 .onGeometryChange(for: CGRect.self) {
                     $0.frame(in: .global)
                 } action: { model.assetListFrame = $0 }
-                // Dropped on the list's open space: to its top.
-                .dropDestination(for: String.self) { items, _ in
-                    move(items, to: "")
-                }
+                // No drop destination of its own: the section's takes what
+                // is dropped on the list -- a row to the top, files
+                // imported. One for rows alone here lay in FRONT of it and
+                // AppKit hands a drag to the front one only: once the list
+                // had a row, a file from the Finder was refused over it.
             }
             if notes {
                 Text("Set an asset active to edit it. Drag it into the prompt to use it, onto the stage to place its layers in what is there, onto A or B under the stage to compare it, or onto a folder. A generation nothing uses any more is marked unused; it stays until you remove it.")
@@ -631,18 +632,65 @@ struct AssetsSection: View {
                     .padding(.bottom, 12)
             }
         }
-        // Files from the Finder: into the project. (A row of its own
-        // arrives as a URL too: to the top of the list.)
-        .dropDestination(for: URL.self) { urls, _ in
-            let ids = AppModel.draggedAssets(urls)
-            if !ids.isEmpty {
-                for id in ids { model.moveAsset(id, to: "") }
-                return true
+        // Files from the Finder: into the project; a row of its own: to
+        // the top of the list. The only drop destination over the list --
+        // see above.
+        .onDrop(of: Self.dropTypes, isTargeted: nil) { providers in
+            takeDrop(providers, into: "")
+        }
+    }
+
+    /// What the list and a folder's row take: files, and rows of the list
+    /// (their drag's text, "valtz-asset:<id>" -- which may come as a URL).
+    private static let dropTypes: [UTType] = [.fileURL, .url, .utf8PlainText]
+
+    /// A drop on the list -- or on a folder's row: `folder` ("" the top):
+    /// rows moved there, files from the Finder imported. One destination
+    /// takes both: AppKit hands a drag to the front destination only, and
+    /// one for rows alone in front of the files' refused every file over
+    /// the list once it had a row.
+    private func takeDrop(_ providers: [NSItemProvider],
+                          into folder: String) -> Bool {
+        let ours = providers.filter { p in
+            Self.dropTypes.contains {
+                p.hasItemConformingToTypeIdentifier($0.identifier)
             }
-            let files = urls.filter(\.isFileURL)
-            guard !files.isEmpty else { return false }
-            model.importFiles(files)
-            return true
+        }
+        guard !ours.isEmpty else { return false }
+        Task { @MainActor in
+            var files: [URL] = []
+            for p in ours {
+                if let s = await Self.loadText(p),
+                   let id = AppModel.draggedAsset(s) {
+                    model.moveAsset(id, to: folder)
+                } else if let u = await Self.loadURL(p) {
+                    if let id = AppModel.draggedAssets([u]).first {
+                        model.moveAsset(id, to: folder)
+                    } else if u.isFileURL {
+                        files.append(u)
+                    }
+                }
+            }
+            if !files.isEmpty { model.importFiles(files) }
+        }
+        return true
+    }
+
+    private static func loadText(_ p: NSItemProvider) async -> String? {
+        guard p.canLoadObject(ofClass: NSString.self) else { return nil }
+        return await withCheckedContinuation { c in
+            _ = p.loadObject(ofClass: NSString.self) { s, _ in
+                c.resume(returning: (s as? NSString) as String?)
+            }
+        }
+    }
+
+    private static func loadURL(_ p: NSItemProvider) async -> URL? {
+        guard p.canLoadObject(ofClass: NSURL.self) else { return nil }
+        return await withCheckedContinuation { c in
+            _ = p.loadObject(ofClass: NSURL.self) { u, _ in
+                c.resume(returning: (u as? NSURL) as URL?)
+            }
         }
     }
 
@@ -707,20 +755,18 @@ struct AssetsSection: View {
             guard renaming != f.id else { return }
             model.toggleFolder(f.id)
         }
-        .dropDestination(for: String.self) { items, _ in
-            move(items, to: f.id)
-        } isTargeted: { dropFolder = $0 ? f.id : nil }
+        // A row dropped on it goes in; a file from the Finder is imported,
+        // as on the list (a destination for rows alone refused it here).
+        .onDrop(of: Self.dropTypes, isTargeted: Binding(
+            get: { dropFolder == f.id },
+            set: { dropFolder = $0 ? f.id : nil })) { providers in
+            takeDrop(providers, into: f.id)
+        }
         .contextMenu {
             Button("Rename Folder") { renaming = f.id }
             Button("Delete Folder") { model.deleteFolder(f.id) }
         }
         .help("Its assets stay in the project when the folder is deleted")
-    }
-
-    private func move(_ items: [String], to folder: String) -> Bool {
-        let ids = items.compactMap { AppModel.draggedAsset($0) }
-        for id in ids { model.moveAsset(id, to: folder) }
-        return !ids.isEmpty
     }
 
     private func importFiles() {
@@ -1212,6 +1258,9 @@ private struct AssetRow: View {
                 } else {
                     doing = String(localized: "Preparing…")
                 }
+            } else if t.waits {
+                // Out of the line until what it needs has downloaded.
+                return AppModel.waitingCaption(t)
             } else if t.runner != "local" && t.position == 0 {
                 // Sent, not begun there yet.
                 return String(localized: "Sent to \(t.runner)")
@@ -1273,6 +1322,18 @@ private struct TaskBadge: View {
     let task: TaskDTO
 
     var body: some View {
+        if task.waits {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(height: 16)
+                .help(Text("Waiting for its model to download: it joins the queue then."))
+        } else {
+            number
+        }
+    }
+
+    private var number: some View {
         Text(verbatim: task.badge)
             .font(.system(size: 9, weight: .bold).monospacedDigit())
             .foregroundStyle(task.running ? Color.white : Color.accentColor)

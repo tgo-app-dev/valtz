@@ -18,10 +18,11 @@ namespace {
 // The helper's K/V pages, as its chat and a video summary both load it:
 // the page sizing is part of vpipe's model cache key, so alike, a model
 // kept warm by one is handed to the other. 16 tokens a page (text-chat's
-// own), up to 32,768 tokens -- a scene of 24 frames is ~4,500; Qwen's
-// pool grows as it fills, so the cap costs nothing held.
+// own), up to 65,536 tokens -- a scene of 24 frames is ~4,500, an
+// agent's conversation tens of thousands; Qwen's pool grows as it fills,
+// so the cap costs nothing held.
 constexpr int kHelperPageTokens = 16;
-constexpr int kHelperMaxPages = 2048;
+constexpr int kHelperMaxPages = 4096;
 
 Json
 port(std::string_view src, int oport = 0)
@@ -1082,6 +1083,137 @@ build_quantize_model(const JobSpec& job)
   return g;
 }
 
+namespace {
+
+// text-chat as the helper runs: loaded, kept and decoding as Settings
+// say, its K/V pages alike for every use (one model warm for all).
+Json
+helper_chat_config(const JobSpec& job)
+{
+  Json chat_cfg = {
+    {"hf_dir", job.model.dir.string()},
+    {"disable_thinking", jget(job.params, "disable_thinking", true)},
+    {"max_new_tokens", jget(job.params, "max_new_tokens", 1024)},
+    // Its MTP head drafting ahead, verified token for token -- greedy or
+    // sampled, penalties too (DESIGN §15 0k): the same reply, decoded
+    // faster. Where the model has no head, vpipe decodes as ever.
+    {"mtp", jget(job.params, "mtp", true)},
+    // Kept loaded after the graph (vpipe's warm hold, DESIGN §15 0l): the
+    // next request is handed the model -- no 16 GB read, no residency
+    // warmup -- until a generation needs other weights or the time runs
+    // out.
+    {"keep_loaded", jget(job.params, "keep_loaded", 0.0)},
+    // Its buffers wired as they load (vpipe's wire_weights, §15 0m): the
+    // compressor never takes the weights mid-read -- a 27B's first
+    // forward took 24-32 s bringing them back on a box short of free
+    // memory, 1.8 s wired.
+    {"wire_weights", true},
+    // The stream port a piece at a time (vpipe's default is ~20-word
+    // chunks for text-to-speech): the reply is watched as it is written.
+    {"stream_words", 0},
+    // Its K/V pages as every use of the helper has them: one model warm
+    // for all.
+    {"page_tokens", kHelperPageTokens},
+    {"max_pages", kHelperMaxPages},
+  };
+  // A drafter shipped apart from the model (its conversion dropped the
+  // head): vpipe's text-chat loads it beside the model.
+  if (auto mm = jget<std::string>(job.params, "mtp_model", "");
+      !mm.empty()) {
+    chat_cfg["mtp_model"] = mm;
+  }
+  // A DFlash 2 block drafter, chosen in Settings: it takes over from MTP
+  // (vpipe's draft_model), held at draft_bits; its round length adapts.
+  if (auto dm = jget<std::string>(job.params, "draft_model", "");
+      !dm.empty()) {
+    chat_cfg["draft_model"] = dm;
+    chat_cfg["draft_bits"] = jget(job.params, "draft_bits", 8);
+  }
+  return chat_cfg;
+}
+
+// The helper's own sampler (catalog engine.vpipe.sampling) on text-chat's
+// sampler port, its stage pushed onto `stages`; false when it has none
+// (greedy).
+bool
+helper_sampler(const JobSpec& job, Json& stages)
+{
+  const Json smp = jget(job.params, "sampling", Json::object());
+  if (!smp.is_object() || smp.empty()) {
+    return false;
+  }
+  Json cfg = Json::object();
+  for (const char* k : {"temperature", "top_k", "top_p", "min_p",
+                        "repetition_penalty", "presence_penalty"}) {
+    if (smp.contains(k) && smp[k].is_number()) {
+      cfg[k] = smp[k];
+    }
+  }
+  cfg["seed"] = jget<std::uint64_t>(smp, "seed", 0);
+  stages.push_back(stage("sampler", "sampler-select", Json::array(), cfg));
+  return true;
+}
+
+}  // namespace
+
+// An agent's turn (kOpAgentTurn): the whole conversation as text-chat's
+// conversation beat -- a FlexData object, through text-prompt's `value`
+// -- its pictures in the last user message as media markers.
+Result<BuiltGraph>
+build_agent_turn(const JobSpec& job)
+{
+  Json conv = jget(job.params, "conversation", Json::object());
+  if (!conv.is_object() || !conv.contains("messages") ||
+      !conv["messages"].is_array() || conv["messages"].empty()) {
+    return make_error(Code::InvalidArgument, "the conversation is empty");
+  }
+  // Each message's own pictures (its "images": indexes among the job's
+  // image inputs) ahead of its words -- the same text every turn, which
+  // is how vpipe knows the context it kept holds that message.
+  std::vector<const JobInput*> images;
+  for (const auto& in : job.inputs) {
+    if (in.role == "image") {
+      images.push_back(&in);
+    }
+  }
+  for (Json& m : conv["messages"]) {
+    std::string pictures;
+    for (const auto& i : jget(m, "images", Json::array())) {
+      const auto k = i.is_number_integer() ? i.get<std::size_t>()
+                                           : images.size();
+      if (k < images.size()) {
+        pictures += std::format("<|__vpipe_fs_im_start__|>{}"
+                                "<|__vpipe_fs_im_end__|>",
+                                images[k]->path.string());
+      }
+    }
+    m.erase("images");
+    if (!pictures.empty()) {
+      m["content"] = pictures + "\n" + jget<std::string>(m, "content", "");
+    }
+  }
+  BuiltGraph g;
+  g.text_sink = "text-sink";
+  g.result_sink = "result-sink";
+  Json chat_cfg = helper_chat_config(job);
+  chat_cfg["max_new_tokens"] = jget(conv, "max_new_tokens",
+                                    jget(job.params, "max_new_tokens", 2048));
+  Json stages = Json::array();
+  stages.push_back(stage("turn", "text-prompt", Json::array(),
+                         {{"value", conv}}));
+  Json chat_in = Json::array({port("turn")});
+  if (helper_sampler(job, stages)) {
+    chat_in.push_back(port("sampler"));
+  }
+  stages.push_back(stage("text-chat", "text-chat", chat_in, chat_cfg));
+  stages.push_back(sink(g.result_sink, port("text-chat", 0), false));
+  stages.push_back(sink(g.text_sink, port("text-chat", 1), false));
+  g.spec = {{"id", "valtz-" + job.id.str()},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
 Result<BuiltGraph>
 build_chat(const JobSpec& job)
 {
@@ -1107,45 +1239,7 @@ build_chat(const JobSpec& job)
   g.text_sink = "text-sink";
   g.result_sink = "result-sink";
 
-  Json chat_cfg = {
-    {"hf_dir", job.model.dir.string()},
-    {"disable_thinking", jget(job.params, "disable_thinking", true)},
-    {"max_new_tokens", jget(job.params, "max_new_tokens", 1024)},
-    // Its MTP head drafting ahead, verified token for token -- greedy or
-    // sampled, penalties too (DESIGN §15 0k): the same reply, decoded
-    // faster. Where the model has no head, vpipe decodes as ever.
-    {"mtp", jget(job.params, "mtp", true)},
-    // Kept loaded after the graph (vpipe's warm hold, DESIGN §15 0l): the
-    // next request is handed the model -- no 16 GB read, no residency
-    // warmup -- until a generation needs other weights or the time runs
-    // out.
-    {"keep_loaded", jget(job.params, "keep_loaded", 0.0)},
-    // Its buffers wired as they load (vpipe's wire_weights, §15 0m): the
-    // compressor never takes the weights mid-read -- a 27B's first
-    // forward took 24-32 s bringing them back on a box short of free
-    // memory, 1.8 s wired.
-    {"wire_weights", true},
-    // The stream port a piece at a time (vpipe's default is ~20-word
-    // chunks for text-to-speech): the suggestion is watched as it is
-    // written.
-    {"stream_words", 0},
-    // Its K/V pages as a video summary has them: one model warm for both.
-    {"page_tokens", kHelperPageTokens},
-    {"max_pages", kHelperMaxPages},
-  };
-  // A drafter shipped apart from the model (its conversion dropped the
-  // head): vpipe's text-chat loads it beside the model.
-  if (auto mm = jget<std::string>(job.params, "mtp_model", "");
-      !mm.empty()) {
-    chat_cfg["mtp_model"] = mm;
-  }
-  // A DFlash 2 block drafter, chosen in Settings: it takes over from MTP
-  // (vpipe's draft_model), held at draft_bits; its round length adapts.
-  if (auto dm = jget<std::string>(job.params, "draft_model", "");
-      !dm.empty()) {
-    chat_cfg["draft_model"] = dm;
-    chat_cfg["draft_bits"] = jget(job.params, "draft_bits", 8);
-  }
+  const Json chat_cfg = helper_chat_config(job);
   Json stages = Json::array();
   stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
                          {{"text", text}}));
@@ -1154,17 +1248,7 @@ build_chat(const JobSpec& job)
   // 0 is a fresh one each time: asked again, the assistant may answer
   // otherwise.
   Json chat_in = Json::array({port("text-prompt")});
-  if (const Json smp = jget(job.params, "sampling", Json::object());
-      smp.is_object() && !smp.empty()) {
-    Json cfg = Json::object();
-    for (const char* k : {"temperature", "top_k", "top_p", "min_p",
-                          "repetition_penalty", "presence_penalty"}) {
-      if (smp.contains(k) && smp[k].is_number()) {
-        cfg[k] = smp[k];
-      }
-    }
-    cfg["seed"] = jget<std::uint64_t>(smp, "seed", 0);
-    stages.push_back(stage("sampler", "sampler-select", Json::array(), cfg));
+  if (helper_sampler(job, stages)) {
     chat_in.push_back(port("sampler"));
   }
   stages.push_back(stage("text-chat", "text-chat", chat_in, chat_cfg));
@@ -1557,12 +1641,30 @@ build_upscale_video(const JobSpec& job)
   const int grid = std::max(16, jget(up, "grid", 128));
   const int PW = ceil_to(W, grid);
   const int PH = ceil_to(H, grid);
-  // A group of frames is one clip to the model: 8k + 1 of them (it takes
-  // eight per chunk after its opening), giving `group - overlap`.
-  const int G = std::max(9, jget(job.params, "group", jget(up, "group", 25)));
-  const int O = std::clamp(jget(job.params, "overlap",
-                                jget(up, "overlap", 4)), 0, G - 1);
-  const int S = G - O;
+  // A group is a unit of memory, not a clip: the source encoder carries
+  // one STREAM across the groups -- its projection, the denoiser's
+  // windows and the decode's carries -- or, where a stream does not fit
+  // the box, cuts the source into overlapping CLIPS of `clip_frames`
+  // whose shared `blend_frames` the decode cross-fades (vpipe decides:
+  // `continuity` auto). Either way it cuts the source itself, so the
+  // groups are consecutive, any size, and the last as short as the clip
+  // leaves it: the encoder pads the source's end and drops what that
+  // makes.
+  const int G = std::max(8, jget(job.params, "group", jget(up, "group", 24)));
+  const int L = std::max(25, jget(up, "clip_frames", 41));
+  const int B = std::clamp(jget(up, "blend_frames", 8), 0, L - 25);
+  // What it holds back of the frames given: a stream's opening chunk
+  // reads 25 frames, a clip L, before any comes out.
+  const int lag = L - 1;
+  // The most source frames one beat restores -- what the denoiser is
+  // planned for: a clip; or a stream's first beat (its opening chunk of
+  // 25 and the chunks of 8 the first groups complete past it), or a
+  // later one (a group's chunks).
+  const int first_beat = [&] {
+    const int fed = (25 + G - 1) / G * G;
+    return 25 + 8 * ((fed - 25) / 8);
+  }();
+  const int beat_frames = std::max({L, first_beat, 8 * ((G + 7) / 8)});
   const Rational rate = in.info.frame_rate.num > 0 ? in.info.frame_rate
                                                    : Rational{24, 1};
   const double fps = rate.to_double();
@@ -1579,8 +1681,6 @@ build_upscale_video(const JobSpec& job)
   if (count <= 0) {
     return make_error(Code::InvalidArgument, "the clip has no frames there");
   }
-  // Groups enough for every frame, the last filled to a whole group.
-  const std::int64_t groups = (count + S - 1) / S;
 
   BuiltGraph g;
   const std::string jid = job.id.str();
@@ -1623,11 +1723,11 @@ build_upscale_video(const JobSpec& job)
   const std::uint64_t group_bytes =
       2 * G * px * 3 +
       static_cast<std::uint64_t>((G - 1) / 4 + 1) * (px / 256) * hidden * 2 +
-      static_cast<std::uint64_t>(S) * 3 * 2 *
+      static_cast<std::uint64_t>(G) * 3 * 2 *
           (px + static_cast<std::uint64_t>(W) * H);
-  m.gate = {"tap", G, O,
+  m.gate = {"tap", G, lag,
             std::max(0, jget(job.params, "ahead", jget(up, "ahead", 0))),
-            groups, group_bytes};
+            group_bytes};
   g.movie = std::move(m);
 
   Json stages = Json::array();
@@ -1643,22 +1743,21 @@ build_upscale_video(const JobSpec& job)
                           {"algorithm", "bicubic"}}));
   const std::int64_t group_mb =
       static_cast<std::int64_t>(G) * PW * PH * 3 / (1 << 20) + 64;
-  // Whole groups only: the feeder sends each group's overlap again, so
-  // the stack keeps nothing back -- kept, its last frames would go out at
-  // the end as a group too short for the model.
+  // No overlap: the encoder cuts the source itself (one it was given
+  // twice it would drop, by the stack's `repeated`).
   stages.push_back(stage("stack", "temporal-stack",
                          Json::array({port("upsample")}),
                          {{"mode", "video"}, {"group_size", G},
-                          {"max_mb", group_mb}}));
+                          {"overlap", 0}, {"max_mb", group_mb}}));
   stages.push_back(stage("encode", "flashvsr-src-encoder",
                          Json::array({port("stack"), port("model-select")}),
-                         Json::object()));
+                         {{"clip_frames", L}, {"blend_frames", B}}));
   stages.push_back(stage("generate", "generate-video",
                          Json::array({port("encode"), unwired(),
                                       port("model-select")}),
                          merged({{"width", PW},
                                  {"height", PH},
-                                 {"frames", G},
+                                 {"frames", beat_frames},
                                  {"seed", jget<std::int64_t>(job.params,
                                                              "seed", 0)},
                                  {"unload_when_idle", "auto"}},
@@ -1676,7 +1775,7 @@ build_upscale_video(const JobSpec& job)
     last = "fit";
   }
   // The frames out are counted -- what the feed waits on -- and cut at
-  // the clip's own: the padded tail's frames go no further.
+  // the clip's own (the encoder drops its padding's: a guard).
   stages.push_back(stage("tap", ex::kTapType, Json::array({port(last)}),
                          {{ex::kTapMaxFrames, count}}));
   stages.push_back(stage("write", "avf-save-video",

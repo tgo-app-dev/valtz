@@ -19,6 +19,8 @@
 #include "valtz/base/log.h"
 #include "valtz/project/records.h"
 
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <deque>
 #include <format>
@@ -51,6 +53,11 @@ constexpr const char kIdentity[] = "valtz-fleet";
 constexpr double kAskSeconds = 60;
 // How often a member tells the others its state.
 constexpr double kBeatSeconds = 5;
+// How often it reads the arithmetic it achieves, telling the others when
+// it changed by more than kLoadStep TFLOP/s (with every heartbeat
+// anyway); a member's not told for three heartbeats is not counted.
+constexpr double kLoadSeconds = 1;
+constexpr double kLoadStep = 0.05;
 // A connection that has not said hello by then is let go: a handshake
 // with another secret is refused by the other side, but this one is not
 // always told -- it waits on in its handshake.
@@ -167,6 +174,9 @@ struct Link {
   Json            self = Json::object();
   bool            accepting = false;
   bool            serving = false;
+  // Its arithmetic, as it last told it ("load"); none told yet: absent.
+  std::optional<std::pair<double, double>> load;  // GPU, ANE TFLOP/s
+  std::chrono::steady_clock::time_point     load_at;
   std::deque<Outgoing> outbox;
   bool            sending = false;
 };
@@ -240,6 +250,18 @@ public:
       }
     });
     dispatch_resume(_beat);
+    _load_timer =
+        dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _q);
+    dispatch_source_set_timer(
+        _load_timer, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+        static_cast<std::uint64_t>(kLoadSeconds * NSEC_PER_SEC),
+        NSEC_PER_SEC / 10);
+    dispatch_source_set_event_handler(_load_timer, ^{
+      if (*alive) {
+        load_tick_();
+      }
+    });
+    dispatch_resume(_load_timer);
   }
 
   ~FleetImpl() override { stop(); }
@@ -255,11 +277,31 @@ public:
   set_config(const Config& c) override
   {
     VALTZ_TRY(save_config(_config_path, c));
+    bool network = false;
     {
       std::lock_guard lk(_mu);
+      // Only who this Mac is on the network -- its name, its fleet and
+      // key, discoverable or not -- remakes the connections. The rest --
+      // the jobs it takes and when, its offload policies, what it shares
+      // -- is told the members over them: remade, each change dropped
+      // every member, and a job running on one with it.
+      network = c.member_name != _config.member_name ||
+                c.fleet != _config.fleet || c.key != _config.key ||
+                c.discoverable != _config.discoverable;
       _config = c;
     }
-    dispatch_async(_q, ^{ rebuild_(); });
+    if (network) {
+      dispatch_async(_q, ^{ rebuild_(); });
+    } else {
+      dispatch_async(_q, ^{
+        {
+          std::lock_guard lk(_mu);
+          _qc = _config;
+        }
+        tell_all_();
+        publish_();
+      });
+    }
     return ok_status();
   }
 
@@ -283,6 +325,13 @@ public:
       }
     }
     return out;
+  }
+
+  Json
+  throughput() const override
+  {
+    std::lock_guard lk(_mu);
+    return _load;
   }
 
   void
@@ -356,6 +405,7 @@ public:
     dispatch_sync(_q, ^{
       *_alive = false;
       dispatch_source_cancel(_beat);
+      dispatch_source_cancel(_load_timer);
       teardown_("stopped");
       if (_browser) {
         nw_browser_cancel(_browser);
@@ -445,6 +495,10 @@ private:
     teardown_("left");
     {
       std::lock_guard lk(_mu);
+      // Another fleet, or none: its highest is its own.
+      if (_config.fleet != _qc.fleet || _config.key != _qc.key) {
+        _load_peak = 0;
+      }
       _qc = _config;
     }
     if (_qc.joined()) {
@@ -997,7 +1051,75 @@ private:
       chunk_(l, m);
     } else if (t == "cancel") {
       cancelled_(l, m);
+    } else if (t == "load") {
+      l.load = std::pair(jget(m, "gpu_tflops", 0.0),
+                         jget(m, "ane_tflops", 0.0));
+      l.load_at = std::chrono::steady_clock::now();
     }
+  }
+
+  // ---- the fleet's arithmetic ----------------------------------------
+  //
+  // This member's own figures told the members when they move (or with
+  // the heartbeat), theirs summed with them as they told them: the
+  // status bar's Fleet meter. A member of before (no "load") is listed
+  // without figures and counted as nothing.
+
+  void
+  load_tick_()
+  {
+    if (!_qc.joined()) {
+      std::lock_guard lk(_mu);
+      _load = Json::object();
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const Json mine = _host.fleet_load();
+    const double gpu = jget(mine, "gpu_tflops", 0.0);
+    const double ane = jget(mine, "ane_tflops", 0.0);
+    const bool moved = std::abs(gpu - _told.first) > kLoadStep ||
+                       std::abs(ane - _told.second) > kLoadStep;
+    const auto beat = std::chrono::duration<double>(kBeatSeconds);
+    const bool tell = moved || now - _told_at >= beat;
+    Json members = Json::array();
+    members.push_back({{"id", _qc.member_id}, {"name", _qc.member_name},
+                       {"self", true}, {"gpu_tflops", gpu},
+                       {"ane_tflops", ane}});
+    double sum_gpu = gpu, sum_ane = ane;
+    int connected = 0;
+    std::set<std::string> listed;
+    const Json m = {{"t", "load"}, {"gpu_tflops", gpu},
+                    {"ane_tflops", ane}};
+    for (auto& [k, l] : _links) {
+      if (l->state != "connected" || listed.contains(l->id)) {
+        continue;
+      }
+      listed.insert(l->id);
+      ++connected;
+      if (tell) {
+        queue_(*l, m);
+      }
+      Json one = {{"id", l->id}, {"name", l->name}, {"self", false}};
+      if (l->load && now - l->load_at < 3 * beat) {
+        one["gpu_tflops"] = l->load->first;
+        one["ane_tflops"] = l->load->second;
+        sum_gpu += l->load->first;
+        sum_ane += l->load->second;
+      }
+      members.push_back(std::move(one));
+    }
+    if (tell) {
+      _told = {gpu, ane};
+      _told_at = now;
+    }
+    auto r3 = [](double x) { return std::round(x * 1000) / 1000; };
+    std::lock_guard lk(_mu);
+    _load_peak = std::max(_load_peak, sum_gpu + sum_ane);
+    _load = {{"connected", connected},
+             {"gpu_tflops", r3(sum_gpu)},
+             {"ane_tflops", r3(sum_ane)},
+             {"peak_tflops", r3(_load_peak)},
+             {"members", std::move(members)}};
   }
 
   void
@@ -1021,6 +1143,7 @@ private:
     l.name = jget<std::string>(m, "name", "");
     l.self = jget(m, "self", Json::object());
     l.state = "connected";
+    _told_at = {};  // told our arithmetic at the next tick
     VALTZ_LOG_INFO("fleet", "{} joined us in {}", l.name, _qc.fleet);
     publish_();
     _host.fleet_note("fleet.changed", Json::object());
@@ -1043,6 +1166,17 @@ private:
       return;
     }
     Offer offer = std::move(*o);
+    // An agent session's end is not a job: what this Mac keeps for it is
+    // let go, whatever it is doing (DESIGN §9b).
+    if (offer.op == "agent-close") {
+      auto job = std::make_shared<InJob>();
+      job->link = l.key;
+      job->from = l.name;
+      job->offer = std::move(offer);
+      _in[job->offer.id] = job;
+      accept_(*job);
+      return;
+    }
     if (!_qc.accepting_at(std::time(nullptr))) {
       decline_(l, offer.id, _qc.accept == "never" ? "not-accepting"
                                                       : "schedule");
@@ -1589,12 +1723,17 @@ private:
   mutable std::mutex _mu;
   Config   _config;  // the controller's, under _mu
   Json     _snapshot = Json::object();
+  Json     _load = Json::object();  // throughput(), under _mu
+  double   _load_peak = 0;          // under _mu
   std::shared_ptr<bool> _alive;
 
   // On the queue alone.
   Config            _qc;  // _config, as the network was last made for
   dispatch_queue_t  _q;
   dispatch_source_t _beat;
+  dispatch_source_t _load_timer;
+  std::pair<double, double> _told{-1, -1};  // GPU, ANE as last told
+  std::chrono::steady_clock::time_point _told_at;
   nw_parameters_t   _params;
   nw_listener_t     _listener;
   nw_browser_t      _browser;

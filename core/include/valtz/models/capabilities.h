@@ -32,6 +32,9 @@ struct ModelOption {
   const ModelEntry* entry = nullptr;
   InstallInfo       install;
   bool              fits = false;
+  // Being downloaded now (the controller says: a job asked of it waits
+  // for the download).
+  bool              downloading = false;
 };
 
 struct CapabilityStatus {

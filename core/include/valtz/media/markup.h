@@ -79,6 +79,17 @@ Status paste_drawing(const std::filesystem::path& raster, PixelSize canvas,
                      const std::filesystem::path& drawing, double dx,
                      double dy, const std::filesystem::path& out);
 
+// How a TEXT BOX's words lie in it, as it is drawn: the lines set, whether
+// every word is, the height all of them need at its width, and its widest
+// line -- what the agent is told, so it can size a box to its words.
+struct TextFit {
+  bool   fits = true;
+  int    lines = 0;
+  double needed_height = 0;
+  double widest = 0;
+};
+TextFit text_fit(const Json& object);
+
 // A markup layer's picture: its raster (empty: none) with its objects
 // drawn over it, those in `hidden` left out (the app draws the ones it is
 // editing), the canvas's size, to `out` as an 8-bit sRGB PNG.

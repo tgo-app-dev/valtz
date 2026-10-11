@@ -130,23 +130,22 @@ struct MovieFeed {
   // 8-bit for a model that reads bytes (an upscaler's source).
   media::Sample           sample = media::Sample::F16;
   // FED BY WHAT COMES OUT (an upscaler, DESIGN §4f): the graph takes the
-  // clip in `groups` groups of `group` frames, each starting `overlap`
-  // frames before the last one ended -- the feeder sends those again, so
-  // every group is whole and nothing is left over at the end -- and
-  // gives group - overlap frames per group past `tap` (a valtz-tap). A
-  // group is fed only once the groups before it have come out -- but up
-  // to `ahead` of them, while the memory left (reclaimable RAM, sensed at
-  // each group) holds twice `group_bytes` per group ahead and a reserve:
-  // the next group's frames, rows and decode then overlap the last's, and
-  // no more is ever upscaled inside the graph than that. The last group
-  // is filled with the clip's last frame; the tap cuts what those make.
+  // clip in consecutive groups of `group` frames, the last as
+  // short as the clip leaves it -- the restorer cuts its source itself
+  // and pads its end -- and gives them back past `tap` (a valtz-tap),
+  // holding at most `lag` of the frames it was given before they come
+  // out (what it waits for to restore a chunk, or a clip). A group is fed
+  // only once the groups before it, but `lag` frames, have come out --
+  // but up to `ahead` groups more, while the memory left (reclaimable
+  // RAM, sensed at each group) holds twice `group_bytes` per group ahead
+  // and a reserve: the next group's frames, rows and decode then overlap
+  // the last's, and no more is ever upscaled inside the graph than that.
   // group 0: not gated.
   struct Gate {
     std::string   tap;
     int           group = 0;
-    int           overlap = 0;
+    int           lag = 0;
     int           ahead = 0;
-    std::int64_t  groups = 0;
     std::uint64_t group_bytes = 0;
   };
   Gate                    gate;
@@ -212,12 +211,12 @@ Result<BuiltGraph> build_text_to_image(const JobSpec&);
 // upscale-video (DESIGN §4f): a clip -- input "source", its span `first`,
 // `count` -- restored at `width` x `height` by FlashVSR, as vpipe's own
 // graph does it (docs/pipelines/flashvsr-upscale-*): resampled to the
-// model's grid, stacked `group` frames at a time overlapping by
-// `overlap` (the feeder sends the overlap again), projected, denoised,
-// decoded, fitted to the size. The frames
-// go in 8-bit through a valtz-source GATED by a valtz-tap before the
-// writer (MovieFeed::Gate); the tap cuts the padded tail. The sound, the
-// source's own span, is joined after.
+// model's grid, stacked `group` frames at a time (no overlap: the source
+// encoder carries one stream across the groups, or cuts overlapping
+// clips itself), projected, denoised, decoded, fitted to the size. The
+// frames go in 8-bit through a valtz-source GATED by a valtz-tap before
+// the writer (MovieFeed::Gate). The sound, the source's own span, is
+// joined after.
 Result<BuiltGraph> build_upscale_video(const JobSpec&);
 // upscale-image (DESIGN §4f): a picture -- input "source" -- restored at
 // `width` x `height` by VOSR, as vpipe's own graph does it
@@ -269,6 +268,11 @@ Result<BuiltGraph> build_speech(const JobSpec&);
 // "output" ("bits", "group_size").
 Result<BuiltGraph> build_quantize_model(const JobSpec&);
 Result<BuiltGraph> build_chat(const JobSpec&);
+// agent-turn (DESIGN §9b): the conversation so far into vpipe's text-chat
+// as its conversation beat (text-prompt's `value`), the helper loaded and
+// decoding as a chat's; the turn record out of result-sink, the reply as
+// it is written out of text-sink.
+Result<BuiltGraph> build_agent_turn(const JobSpec&);
 // A sound TRANSCRIBED (DESIGN §4h) from `wav` -- one channel at 16 kHz,
 // the engine's (media::mono_sound): its speech line by line, and its
 // sound events when the job names a tagger.

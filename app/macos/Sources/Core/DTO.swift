@@ -38,6 +38,8 @@ struct ModelOption: Decodable, Sendable, Hashable {
     var name: String
     var state: String      // missing | partial | installed
     var fits: Bool
+    /// Being downloaded: a job asked of it waits for the download.
+    var downloading: Bool?
     var diskGb: Double
     var minRamGb: Int
     var dir: String
@@ -53,6 +55,8 @@ struct AutoChoice: Decodable, Sendable {
         var runs: Bool
     }
     var chosen: String
+    /// `chosen` is downloading (none runs now): its job waits for it.
+    var waits: Bool?
     var models: [Model]
 }
 
@@ -516,8 +520,12 @@ struct TaskDTO: Decodable, Sendable, Hashable, Identifiable {
     var runner: String
     var progress: Double
     var destination: String?
+    /// What it waits for to download (none: it is in line).
+    var waiting: [String]?
 
     var id: String { job }
+    /// Waiting for a download, before it joins the line.
+    var waits: Bool { !(waiting ?? []).isEmpty }
     var running: Bool { state == "running" }
     /// "T0", "T1", ...: its place in its runner's queue.
     var badge: String { "T\(position)" }
@@ -1284,4 +1292,192 @@ struct MemoryFailure: Sendable, Equatable {
         default: n
         }
     }
+}
+
+// ---- the agent (Controller::agent_state, DESIGN §9b) --------------------
+
+/// Where the agent's model thinks: this Mac's helper, a fleet member's,
+/// or a cloud API.
+struct AgentBackendInfo: Decodable, Sendable, Equatable {
+    var kind: String?      // local | fleet | cloud
+    var model: String?
+    var `where`: String?   // a member's name, a provider
+}
+
+/// One step: a call the model made to a tool, as it went.
+struct AgentStep: Decodable, Sendable, Equatable, Identifiable {
+    var n: Int
+    var tool: String
+    var title: String
+    /// proposed | running | waiting | done | failed | skipped
+    var state: String
+    var argsText: String?
+    var resultText: String?
+    var error: String?
+    var job: String?
+    var question: String?
+    var id: Int { n }
+}
+
+/// A core message's fields: what L10n.coreMessage words.
+struct AgentMessageFields: Decodable, Sendable, Equatable {
+    var message: String?
+    var key: String?
+    var args: [String: String]?
+
+    var text: String {
+        L10n.coreMessage(["message": message ?? "", "key": key as Any,
+                          "args": args ?? [:]])
+    }
+}
+
+/// A message of its conversation, as the app shows it.
+struct AgentMessage: Decodable, Sendable, Equatable {
+    var role: String
+    var content: String
+    var calls: [String]?
+    var name: String?
+    /// An assistant's: what its turn cost and how fast it went.
+    var stats: AgentTurnStats?
+}
+
+/// A turn's cost and speed (the core's agent::turn_stats): what it read
+/// (prefill) and wrote (decode) -- tokens, time, tokens a second -- by
+/// vpipe's clock for the helper, a cloud's first words for its prefill;
+/// the conversation it went on from; the whole turn. Shown in small type
+/// under the turn while Settings › Agentic Helper › Show Speed is on.
+struct AgentTurnStats: Decodable, Sendable, Equatable {
+    var prefillTokens: Double?
+    var prefillMs: Double?
+    var prefillTps: Double?
+    var decodeTokens: Double?
+    var decodeMs: Double?
+    var decodeTps: Double?
+    var cachedTokens: Double?
+    var reused: Double?
+    /// memory | disk | stage | new: where the conversation came from.
+    var restored: String?
+    var ctxPos: Double?
+    var firstMs: Double?
+    var turnMs: Double?
+
+    var isEmpty: Bool { turnMs == nil }
+
+    /// The line under the turn: "prefill 680 tok · 3,400 tok/s   decode
+    /// 69 tok · 46.0 tok/s   7,700 reused, in memory · ctx 8,501 · turn
+    /// 2.1 s".
+    var line: String {
+        var parts: [String] = []
+        if let n = prefillTokens {
+            if let r = prefillTps {
+                parts.append(String(localized: "prefill \(Self.count(n)) tok · \(Self.rate(r)) tok/s"))
+            } else {
+                parts.append(String(localized: "prefill \(Self.count(n)) tok"))
+            }
+        }
+        if let n = decodeTokens {
+            if let r = decodeTps {
+                parts.append(String(localized: "decode \(Self.count(n)) tok · \(Self.rate(r)) tok/s"))
+            } else {
+                parts.append(String(localized: "decode \(Self.count(n)) tok"))
+            }
+        } else if let ms = decodeMs {
+            // A vpipe that says how long it wrote, not how much.
+            parts.append(String(localized: "decode \(Self.seconds(ms)) s"))
+        }
+        var more: [String] = []
+        if let n = cachedTokens {
+            more.append(String(localized: "\(Self.count(n)) cached"))
+        }
+        if let n = reused {
+            switch restored {
+            case "memory":
+                more.append(String(localized: "\(Self.count(n)) reused, in memory"))
+            case "disk":
+                more.append(String(localized: "\(Self.count(n)) reused, read from disk"))
+            default:
+                if n > 0 {
+                    more.append(String(localized: "\(Self.count(n)) reused"))
+                } else {
+                    more.append(String(localized: "a new conversation"))
+                }
+            }
+        }
+        if let n = ctxPos {
+            more.append(String(localized: "ctx \(Self.count(n))"))
+        }
+        if let ms = turnMs {
+            more.append(String(localized: "turn \(Self.seconds(ms)) s"))
+        }
+        if !more.isEmpty { parts.append(more.joined(separator: " · ")) }
+        return parts.joined(separator: "   ")
+    }
+
+    private static func count(_ n: Double) -> String {
+        Int(n.rounded()).formatted()
+    }
+
+    private static func rate(_ r: Double) -> String {
+        r.formatted(.number.precision(.fractionLength(r >= 100 ? 0 : 1)))
+    }
+
+    private static func seconds(_ ms: Double) -> String {
+        (ms / 1000).formatted(.number.precision(.fractionLength(ms >= 10000 ? 0 : 1)))
+    }
+}
+
+/// A session: the request, its state, its steps.
+struct AgentSession: Decodable, Sendable, Equatable {
+    var agent: String
+    var project: String
+    /// thinking | review | acting | waiting | paused | asking | done |
+    /// failed | stopped (starting, before its first turn)
+    var state: String
+    var review: Bool
+    var backend: AgentBackendInfo?
+    var prompt: String
+    var composition: String?
+    var error: String?
+    /// Its message as the core gave it ({message, key, args}): worded in
+    /// the UI's language (L10n.coreMessage).
+    var errorFields: AgentMessageFields?
+    var writing: String?
+    var turns: Int?
+    var pending: Int?
+    var steps: [AgentStep]
+    var messages: [AgentMessage]?
+    /// The last turn's cost and speed.
+    var stats: AgentTurnStats?
+
+    /// Working on its own: the person need not answer.
+    var busy: Bool {
+        ["starting", "thinking", "acting", "waiting"].contains(state)
+    }
+    /// Over: a new request starts another.
+    var ended: Bool { state == "stopped" }
+    /// Waiting for the person's words: done, failed, asking.
+    var listening: Bool { ["done", "failed", "asking"].contains(state) }
+    /// The step waiting for the person's word.
+    var proposed: AgentStep? { steps.last { $0.state == "proposed" } }
+    /// What stopped it, in the UI's language; nil when nothing did.
+    var errorText: String? {
+        guard let e = error, !e.isEmpty else { return nil }
+        return errorFields?.text ?? e
+    }
+}
+
+/// Settings › Agentic Helper › Agent.
+struct AgentCloudSettings: Decodable, Sendable, Equatable {
+    var provider: String
+    var model: String
+    var baseUrl: String
+    var maxTokens: Int?
+}
+
+struct AgentSettings: Decodable, Sendable, Equatable {
+    var backend: String     // helper | cloud
+    var review: Bool
+    var lease: Double
+    var cloud: AgentCloudSettings
+    var keys: [String: Bool]
 }

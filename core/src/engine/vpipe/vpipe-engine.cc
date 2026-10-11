@@ -6,13 +6,24 @@
 // and a DiT in two sessions would each size the machine as if the other
 // did not exist.
 //
-// Jobs run one at a time on a single control thread. vpipe's own worker
-// pool does the parallel work inside a graph; serializing GRAPHS is the
+// Jobs run in two LANES, each a queue and a control thread taking its
+// jobs one at a time. The WORK lane runs every graph that loads a model,
+// an export, a quantize: one at a time, as vpipe's own worker pool does
+// the parallel work inside a graph -- serializing those graphs is the
 // memory policy for now (on a 16 GB Mac a DiT and a 9B LLM do not both
-// fit), and it keeps launch/wait/stop on one thread, which
-// SessionIntf::wait_pipelines requires. The queue is the app's TASK
-// QUEUE (DESIGN §3a): in the order asked, but a chat -- someone waiting
-// at the prompt -- goes before the work still queued.
+// fit). Its queue is the app's TASK QUEUE (DESIGN §3a): in the order
+// asked, but a chat -- someone waiting at the prompt -- goes before the
+// work still queued. The DOWNLOAD lane runs model fetches: the network
+// and the disk, no model loaded, so a download no longer holds up a
+// generation (nor one a download). Each lane waits for its own graph
+// (SessionIntf::wait_pipeline): waiting for every pipeline, a lane never
+// saw its own end while the other ran, and could find the other's
+// unloaded under it.
+//
+// The two share the session's progress list and log. A download's
+// reports are named by its files, a stage's by what it does
+// (job-progress.h); a fetch's errors name ModelFetchStage, and an error
+// while one lane alone runs is that lane's.
 //
 // Data crosses through the valtz-vpipe PLUGIN (vpipe-plugin/), which
 // vpipe loads into this process from the session config: its
@@ -40,12 +51,14 @@
 
 #include "valtz-vpipe/exchange.h"
 
+#include "common/perf-flops.h"
 #include "vpipe/system-monitor.h"
 #include "vpipe/vpipe.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <condition_variable>
 #include <cstdlib>
@@ -66,6 +79,28 @@ namespace fs = std::filesystem;
 struct Queued {
   JobSpec spec;
   JobSink sink;
+};
+
+// The FLOP/s reading (throughput()): an average over two seconds, which
+// stands as far back as three -- a block's arithmetic is credited when
+// it retires, and the blocks that report take well under that. The peak
+// looks back an hour at most (the meter's ring holds minutes).
+constexpr std::uint64_t kFlopsWindowNs = 2'000'000'000;
+constexpr std::uint64_t kFlopsHoldNs = 3'000'000'000;
+constexpr std::size_t   kFlopsScanWindows = 1800;
+
+// A queue of jobs and the control thread that runs them, one at a time.
+struct Lane {
+  explicit Lane(const char* n) : name(n) {}
+  const char*         name;
+  std::thread         worker;
+  std::deque<Queued>  queue;     // under the engine's _mu
+  JobId               running;   // under _mu
+  std::atomic<bool>   busy{false};
+  std::atomic<bool>   cancel{false};
+  // The first error vpipe logged while its graph ran (under _err_mu):
+  // the log listener writes it, on whichever thread reports.
+  std::string         run_error;
 };
 
 class VpipeEngine final : public Engine {
@@ -129,14 +164,15 @@ public:
       return;
     }
     // vpipe's log, to the host as well as to stdout (the Log view); its
-    // first error in a graph kept, for the job it fails (run_error_).
+    // first error in a graph kept, for the job it fails (Lane::run_error).
     _session->set_log_listener(
         [this, on_log = cfg.on_log](int level, std::string_view text) {
           if (level == 0) {
             std::lock_guard lk(_err_mu);
-            if (_run_error.empty()) {
-              _run_error = utf8_prefix(text.substr(0, text.find('\n')),
-                                       400);
+            Lane& l = error_lane_(text);
+            if (l.run_error.empty()) {
+              l.run_error = utf8_prefix(text.substr(0, text.find('\n')),
+                                        400);
             }
           }
           if (on_log) {
@@ -189,7 +225,9 @@ public:
     _desc = std::format("vpipe {} ({})", vpipe::vpipe_version_number(),
                         vpipe::vpipe_build_hash());
     VALTZ_LOG_INFO("engine", "{} ready, plugin {}", _desc, plugin.string());
-    _worker = std::thread([this] { run_loop_(); });
+    for (Lane* l : {&_work, &_downloads}) {
+      l->worker = std::thread([this, l] { run_loop_(*l); });
+    }
   }
 
   ~VpipeEngine() override { shutdown(); }
@@ -215,13 +253,64 @@ public:
     return vp::from_flex(vpipe::SystemMonitor::gpu_thermal(window_ms));
   }
 
+  Json
+  throughput() override
+  {
+    namespace pf = vpipe::perf_flops;
+    if (!pf::available()) {
+      return Json::object();
+    }
+    std::lock_guard lk(_flops_mu);
+    const std::uint64_t now = pf::now_ns();
+    // A unit's window ends where its credits reach -- the newest work is
+    // credited when it retires -- but never further back than the hold,
+    // so a unit that stopped falls to zero.
+    const std::uint64_t floor = now > kFlopsHoldNs ? now - kFlopsHoldNs : 0;
+    auto end_of = [&](pf::Unit u) {
+      return std::clamp(pf::totals(u).latest_ns, floor, now);
+    };
+    const double per = 1e12 * (double)kFlopsWindowNs / 1e9;
+    auto rate = [&](pf::Unit u, std::uint64_t end) {
+      double f = 0;
+      pf::series(u, end, kFlopsWindowNs, 1, &f);
+      return f / per;
+    };
+    const std::uint64_t gpu_end = end_of(pf::kGpu);
+    const std::uint64_t ane_end = end_of(pf::kAne);
+    const double gpu = rate(pf::kGpu, gpu_end);
+    const double ane = rate(pf::kAne, ane_end);
+    // The peak: every window since the last reading, on a grid both
+    // units have settled -- so one reached while nobody looked counts.
+    const std::uint64_t grid =
+        std::min(gpu_end, ane_end) / kFlopsWindowNs * kFlopsWindowNs;
+    if (grid > _flops_scanned) {
+      const std::uint64_t span = kFlopsWindowNs * kFlopsScanWindows;
+      const std::uint64_t from =
+          std::max(_flops_scanned, grid > span ? grid - span : 0);
+      const std::size_t n = (grid - from) / kFlopsWindowNs;
+      std::vector<double> g(n), a(n);
+      pf::series(pf::kGpu, grid, kFlopsWindowNs, n, g.data());
+      pf::series(pf::kAne, grid, kFlopsWindowNs, n, a.data());
+      for (std::size_t i = 0; i < n; ++i) {
+        _flops_peak = std::max(_flops_peak, (g[i] + a[i]) / per);
+      }
+      _flops_scanned = grid;
+    }
+    _flops_peak = std::max(_flops_peak, gpu + ane);
+    auto r3 = [](double x) { return std::round(x * 1000) / 1000; };
+    return {{"gpu_tflops", r3(gpu)},
+            {"ane_tflops", r3(ane)},
+            {"peak_tflops", r3(_flops_peak)}};
+  }
+
   bool
   supports(std::string_view op) const override
   {
     return op == kOpGenerateImage || op == kOpEditImage ||
            op == kOpGenerateVideo || op == kOpGenerateAudio ||
            op == kOpGenerateSpeech || op == kOpQuantizeModel ||
-           op == kOpChat || op == kOpFetchModel || op == kOpExportMedia ||
+           op == kOpChat || op == kOpAgentTurn || op == kOpFetchModel ||
+           op == kOpExportMedia ||
            op == kOpUpscaleVideo || op == kOpUpscaleImage ||
            op == kOpTranscribeAudio || op == kOpSummarizeVideo;
   }
@@ -244,16 +333,25 @@ public:
       // An enhance or an intent is the person waiting at the prompt: it
       // goes before the TASKS still queued (DESIGN §3a), after the one
       // running -- a graph does not share the machine.
-      auto at = _queue.end();
+      std::deque<Queued>& queue = lane_for_(spec.op).queue;
+      auto at = queue.end();
       if (spec.op == kOpChat) {
-        at = std::ranges::find_if(_queue, [](const Queued& q) {
+        at = std::ranges::find_if(queue, [](const Queued& q) {
           return q.spec.op != kOpChat;
         });
       }
-      _queue.insert(at, {std::move(spec), std::move(sink)});
+      queue.insert(at, {std::move(spec), std::move(sink)});
     }
-    _cv.notify_one();
+    _cv.notify_all();
     return ok_status();
+  }
+
+  void
+  drop_context(const std::string& key) override
+  {
+    if (_session) {
+      (void)_session->drop_chat_context(key);
+    }
   }
 
   Status
@@ -263,15 +361,20 @@ public:
     bool found = false;
     {
       std::lock_guard lk(_mu);
-      if (_running == id) {
-        _cancel.store(true);
-        return ok_status();
-      }
-      for (auto it = _queue.begin(); it != _queue.end(); ++it) {
-        if (it->spec.id == id) {
-          dropped = std::move(*it);
-          _queue.erase(it);
-          found = true;
+      for (Lane* l : {&_work, &_downloads}) {
+        if (l->running == id) {
+          l->cancel.store(true);
+          return ok_status();
+        }
+        for (auto it = l->queue.begin(); it != l->queue.end(); ++it) {
+          if (it->spec.id == id) {
+            dropped = std::move(*it);
+            l->queue.erase(it);
+            found = true;
+            break;
+          }
+        }
+        if (found) {
           break;
         }
       }
@@ -295,11 +398,14 @@ public:
         return;
       }
       _stop = true;
-      _cancel.store(true);
+      _work.cancel.store(true);
+      _downloads.cancel.store(true);
     }
     _cv.notify_all();
-    if (_worker.joinable()) {
-      _worker.join();
+    for (Lane* l : {&_work, &_downloads}) {
+      if (l->worker.joinable()) {
+        l->worker.join();
+      }
     }
     if (_session) {
       _session->set_log_listener({});
@@ -332,31 +438,53 @@ private:
     return ok;
   }
 
+  // The lane a job runs in: a download in its own, all else in the work.
+  Lane&
+  lane_for_(std::string_view op)
+  {
+    return op == kOpFetchModel ? _downloads : _work;
+  }
+
+  // Whose an error in vpipe's log is: a fetch's names its stage; any
+  // other is the work lane's -- or, while only a download runs, the
+  // download's (whatever a fetch graph logs beside its stage).
+  Lane&
+  error_lane_(std::string_view text)
+  {
+    if (text.find("ModelFetch") != std::string_view::npos) {
+      return _downloads;
+    }
+    return _downloads.busy.load() && !_work.busy.load() ? _downloads
+                                                        : _work;
+  }
+
   void
-  run_loop_()
+  run_loop_(Lane& lane)
   {
     for (;;) {
       Queued q;
       {
         std::unique_lock lk(_mu);
-        _cv.wait(lk, [&] { return _stop || !_queue.empty(); });
+        _cv.wait(lk, [&] { return _stop || !lane.queue.empty(); });
         if (_stop) {
           break;
         }
-        q = std::move(_queue.front());
-        _queue.pop_front();
-        _running = q.spec.id;
-        _cancel.store(false);
+        q = std::move(lane.queue.front());
+        lane.queue.pop_front();
+        lane.running = q.spec.id;
+        lane.cancel.store(false);
+        lane.busy.store(true);
       }
-      run_job_(q);
+      run_job_(lane, q);
       std::lock_guard lk(_mu);
-      _running = JobId{};
+      lane.running = JobId{};
+      lane.busy.store(false);
     }
     // Fail whatever is still queued.
     std::deque<Queued> rest;
     {
       std::lock_guard lk(_mu);
-      rest.swap(_queue);
+      rest.swap(lane.queue);
     }
     for (auto& q : rest) {
       JobEvent ev;
@@ -438,7 +566,7 @@ private:
   // the job is AVFoundation's (media::write_sound), cut to the sample.
   // Files in, a file out, as any export.
   void
-  export_sound_(Queued& q, const ExportFormat& f)
+  export_sound_(Lane& lane, Queued& q, const ExportFormat& f)
   {
     const JobSpec& spec = q.spec;
     if (spec.inputs.size() != 1) {
@@ -473,7 +601,7 @@ private:
       fail_(q, st.code(), st.error().message);
       return;
     }
-    if (_cancel.load()) {
+    if (lane.cancel.load()) {
       fs::remove(out, ec);
       JobEvent ev;
       ev.job = spec.id;
@@ -497,14 +625,14 @@ private:
   }
 
   void
-  run_job_(Queued& q)
+  run_job_(Lane& lane, Queued& q)
   {
     const JobSpec& spec = q.spec;
     if (spec.op == kOpExportMedia) {
       const auto* f = export_format(jget<std::string>(spec.params,
                                                       "format", ""));
       if (f && f->sound) {
-        export_sound_(q, *f);
+        export_sound_(lane, q, *f);
         return;
       }
     }
@@ -551,6 +679,8 @@ private:
       built = vp::build_upscale_image(spec);
     } else if (spec.op == kOpChat) {
       built = vp::build_chat(spec);
+    } else if (spec.op == kOpAgentTurn) {
+      built = vp::build_agent_turn(spec);
     } else if (spec.op == kOpTranscribeAudio) {
       built = vp::build_transcribe(spec, mono);
     } else if (spec.op == kOpSummarizeVideo) {
@@ -584,6 +714,9 @@ private:
     // What the sinks deliver, turned into job events. Called on the
     // SinkReader threads, which are joined before the terminal event.
     std::string result_text;
+    Json result_turn = Json::object();   // an agent's turn, whole
+    // When a helper's turn came out: its graph ends right after.
+    std::optional<std::chrono::steady_clock::time_point> turned_at;
     std::mutex result_mu;
     auto on_preview = [&](vp::SinkBeat&& b) {
       JobEvent ev;
@@ -619,6 +752,10 @@ private:
     auto on_result = [&](vp::SinkBeat&& b) {
       std::lock_guard lk(result_mu);
       result_text += jget<std::string>(b.meta, "text", "");
+      if (b.meta.is_object()) {
+        result_turn = b.meta;
+      }
+      turned_at = std::chrono::steady_clock::now();
     };
     // A sound transcribed: its lines of speech -- how far into the sound
     // they reach is its progress -- and the tagger's windows.
@@ -703,9 +840,8 @@ private:
     // An upscale's writer counts a group's frames at once: its restore
     // is estimated a group at a time.
     const std::uint64_t group =
-        g.movie && g.movie->gate.group > g.movie->gate.overlap
-            ? static_cast<std::uint64_t>(g.movie->gate.group -
-                                         g.movie->gate.overlap)
+        g.movie && g.movie->gate.group > 1
+            ? static_cast<std::uint64_t>(g.movie->gate.group)
             : 0;
     vp::JobProgress progress(
         vp::JobProgress::last_id(vp::from_flex(_session->progress())),
@@ -743,7 +879,7 @@ private:
     };
     // A chat's progress is its streamed text; a transcription's, how far
     // its lines reach; a summary's, how far its scenes do.
-    const bool reports = spec.op != kOpChat &&
+    const bool reports = spec.op != kOpChat && spec.op != kOpAgentTurn &&
                          spec.op != kOpTranscribeAudio &&
                          spec.op != kOpSummarizeVideo;
 
@@ -793,11 +929,12 @@ private:
       };
     }
 
-    // Reports from here on are this job's: one graph runs at a time.
+    // Reports from here on are this job's: the work lane runs one graph
+    // at a time, and a download reports none (its refusals are words).
     const std::uint64_t reports_from = _session->reports_version();
     {
       std::lock_guard lk(_err_mu);
-      _run_error.clear();
+      lane.run_error.clear();
     }
     // The graph goes in as a document, converted node by node: its number
     // kinds intact, no JSON text written or parsed.
@@ -845,7 +982,8 @@ private:
         report(/*force=*/false);
       }
     };
-    if (auto st = feed_references_(h, g, fed, &fed_preview); !st.ok()) {
+    if (auto st = feed_references_(h, g, fed, &fed_preview, lane.cancel);
+        !st.ok()) {
       _session->stop_pipeline(h);  // ends the readers' waits
       readers.clear();
       _session->unload_pipeline(h);
@@ -856,14 +994,39 @@ private:
     // vpipe's own renderers repaint at 10 Hz; so does this.
     bool cancelled = false;
     for (;;) {
-      auto w = _session->wait_pipelines(100);
+      auto w = _session->wait_pipeline(h, 100);
       if (w.code == 0) {
         break;
       }
-      if (_cancel.load()) {
+      if (lane.cancel.load()) {
         _session->stop_pipeline(h);
         cancelled = true;
         break;
+      }
+      // A helper's turn whole in hand and its graph still not ended: it
+      // is stopped, the turn kept, and what held it said. (Found once in
+      // a long agent session: the graph never went idle after its turn.)
+      if (spec.op == kOpAgentTurn || spec.op == kOpChat) {
+        std::optional<std::chrono::steady_clock::time_point> at;
+        {
+          std::lock_guard lk(result_mu);
+          at = turned_at;
+        }
+        if (at && std::chrono::steady_clock::now() - *at >
+                      std::chrono::seconds(20)) {
+          std::string open;
+          for (const auto& r : readers) {
+            if (!r->ended()) {
+              open += (open.empty() ? "" : ", ") + r->stage_id();
+            }
+          }
+          VALTZ_LOG_WARN("engine", "{}: its turn came out 20 s ago and "
+                                   "the graph has not ended (sinks still "
+                                   "open: {}); stopped, the turn kept",
+                         spec.id.str(), open.empty() ? "none" : open);
+          _session->stop_pipeline(h);
+          break;
+        }
       }
       if (reports) {
         report(/*force=*/false);
@@ -896,8 +1059,11 @@ private:
     }
 
     // A stage that refused for memory: that is the failure, with what
-    // was asked for and what the machine had, not a missing file.
-    if (Json m = memory_refusal_(reports_from); !m.is_null()) {
+    // was asked for and what the machine had, not a missing file. (A
+    // download asks for none: a refusal then is a graph's beside it.)
+    if (Json m = spec.op == kOpFetchModel ? Json()
+                                          : memory_refusal_(reports_from);
+        !m.is_null()) {
       std::string why = memory_sentence_(m);
       fail_(q, Code::OutOfMemory, std::move(why), {{"memory", std::move(m)}});
       return;
@@ -909,7 +1075,7 @@ private:
       std::string why;
       {
         std::lock_guard lk(_err_mu);
-        why = _run_error;
+        why = lane.run_error;
       }
       if (!why.empty()) {
         fail_(q, Code::Engine, std::move(why));
@@ -1035,6 +1201,25 @@ private:
       out.job = spec.id;
       out.kind = JobEventKind::Output;
       out.text = result_text;
+      q.sink(out);
+    } else if (spec.op == kOpAgentTurn) {
+      // A turn may be its tool calls alone, with no words: what decides
+      // is that a turn came out.
+      if (result_turn.empty() || !result_turn.contains("finish")) {
+        std::string why;
+        {
+          std::lock_guard lk(_err_mu);
+          why = lane.run_error;
+        }
+        fail_(q, Code::Engine,
+              why.empty() ? "the helper returned no turn" : std::move(why));
+        return;
+      }
+      JobEvent out;
+      out.job = spec.id;
+      out.kind = JobEventKind::Output;
+      out.text = jget<std::string>(result_turn, "text", "");
+      out.data = result_turn;
       q.sink(out);
     }
     JobEvent done;
@@ -1194,7 +1379,8 @@ private:
   Status
   feed_references_(vpipe::PipelineHandle& h, const vp::BuiltGraph& g,
                    const std::function<void()>& fed,
-                   const media::FramePreview* preview)
+                   const media::FramePreview* preview,
+                   const std::atomic<bool>& cancel)
   {
     for (const auto& f : g.references) {
       vp::SourceWriter src(h.stage(f.stage));
@@ -1232,36 +1418,20 @@ private:
       vp::SourceWriter src(h.stage(m.stage));
       std::optional<vp::SourceWriter::Lease> lease;
       const bool u8 = m.sample == media::Sample::U8;
-      // GATED (an upscaler, MovieFeed::Gate): whole groups, each fed
-      // only once the groups before it -- but `ahead` -- have come out
-      // past the tap; each but the first opens with the last group's
-      // closing `overlap` frames again. Waiting, the job still reports
-      // and still hears a cancel.
+      // GATED (an upscaler, MovieFeed::Gate): consecutive groups, each
+      // fed only once the groups before it -- but `ahead`, and the `lag`
+      // frames the restorer holds back -- have come out past the tap.
+      // Waiting, the job still reports and still hears a cancel.
       const vp::MovieFeed::Gate& gate = m.gate;
       const bool gated = gate.group > 0;
-      const int step = gate.group - gate.overlap;
       std::int64_t group = 0;     // the group being fed
       int in_group = 0;           // its frames fed so far
-      std::deque<std::vector<std::uint8_t>> tail;  // the last `overlap`
-      std::vector<std::uint8_t> last;              // the clip's last frame
       const auto lease_raw = [&]() -> Status {
         VALTZ_ASSIGN(auto l, src.lease(
             u8 ? Tensor::DType::U8 : Tensor::DType::F16,
             {3, m.size.height, m.size.width}, m.tags));
         lease = std::move(l);
         return ok_status();
-      };
-      const auto keep = [&](const std::uint8_t* p, std::size_t n) {
-        if (!gated) {
-          return;
-        }
-        last.assign(p, p + n);
-        if (gate.overlap > 0) {
-          tail.emplace_back(p, p + n);
-          while (tail.size() > static_cast<std::size_t>(gate.overlap)) {
-            tail.pop_front();
-          }
-        }
       };
       // How many groups it may run ahead now: up to `gate.ahead` while
       // the memory left holds twice a group per group ahead, and a
@@ -1297,19 +1467,22 @@ private:
         }
         return a;
       };
-      // A group full: the next one starts once enough has come out, with
-      // the overlap sent again.
+      // A group full: the next one starts once enough has come out --
+      // the groups before it but those ahead, less what the restorer
+      // holds back (frames short of a chunk, or of a clip).
       const auto next_group = [&]() -> Status {
         if (!gated || in_group < gate.group) {
           return ok_status();
         }
         ++group;
         in_group = 0;
-        if (const std::int64_t done = group - ahead_now(); done > 0) {
-          const auto want = static_cast<std::uint64_t>(done * step);
+        const std::int64_t done = group - ahead_now();
+        const std::int64_t frames = done * gate.group - gate.lag;
+        if (done > 0 && frames > 0) {
+          const auto want = static_cast<std::uint64_t>(frames);
           VALTZ_ASSIGN(auto n, vp::tap_wait(h.stage(gate.tap), want, [&] {
             fed();
-            return !_cancel.load();
+            return !cancel.load();
           }));
           if (n.passed < want && n.eos) {
             return make_error(Code::Engine, std::format(
@@ -1317,19 +1490,11 @@ private:
                 n.passed));
           }
         }
-        for (const auto& f : tail) {
-          VALTZ_TRY(lease_raw());
-          std::memcpy(lease->data(), f.data(),
-                      std::min(lease->size(), f.size()));
-          lease->commit();
-          lease.reset();
-          ++in_group;
-        }
         return ok_status();
       };
       const auto lease_frame =
           [&](std::int64_t) -> Result<media::FrameBuffer> {
-            if (_cancel.load()) {
+            if (cancel.load()) {
               return make_error(Code::Cancelled, "cancelled");
             }
             VALTZ_TRY(next_group());
@@ -1339,7 +1504,6 @@ private:
                 {lease->mtl_buffer(), lease->mtl_offset()}};
           };
       const auto frame_done = [&](std::int64_t) -> Status {
-        keep(lease->data(), lease->size());
         lease->commit();
         lease.reset();
         ++in_group;
@@ -1355,19 +1519,8 @@ private:
           : media::decode_movie(m.path, m.adjust, m.crop, m.rate, m.first,
                                 m.count, m.size, lease_frame, frame_done,
                                 preview, m.sample);
-      // The last group made whole with the clip's last frame: what the
-      // model makes of them, the tap cuts.
-      while (st.ok() && gated && !last.empty() &&
-             (group < gate.groups - 1 || in_group < gate.group)) {
-        auto buf = lease_frame(-1);
-        if (!buf.ok()) {
-          st = buf.error();
-          break;
-        }
-        std::memcpy(buf->data, last.data(),
-                    std::min(buf->size, last.size()));
-        st = frame_done(-1);
-      }
+      // The last group goes as short as it is: the restorer pads the
+      // source's end itself and drops what the padding makes.
       if (st.ok()) {
         st = src.finish();
       }
@@ -1385,7 +1538,7 @@ private:
       std::optional<vp::SourceWriter::Lease> lease;
       const auto target =
           [&](std::int64_t, double t) -> Result<media::FrameBuffer> {
-            if (_cancel.load()) {
+            if (cancel.load()) {
               return make_error(Code::Cancelled, "cancelled");
             }
             // Its time, as vpipe's own stages tag a frame's.
@@ -1438,19 +1591,18 @@ private:
   vpipe::SessionIntf*     _session = nullptr;
   std::string             _desc = "vpipe";
   Json                    _backends = Json::array();  // backends()
-  std::thread             _worker;
   std::mutex              _mu;
   std::condition_variable _cv;
-  std::deque<Queued>      _queue;
   bool                    _stop = false;
-  JobId                   _running;
-  std::atomic<bool>       _cancel{false};
-  // The first error vpipe logged in the graph running: the listener
-  // writes it, on whichever thread reports.
-  std::mutex              _err_mu;
-  std::string             _run_error;
+  Lane                    _work{"work"};
+  Lane                    _downloads{"downloads"};
+  std::mutex              _err_mu;  // the lanes' run_error
   std::once_flag                        _monitor_once;
   std::unique_ptr<vpipe::SystemMonitor> _monitor;
+  // throughput(): the highest reading, and how far its scan has gone.
+  std::mutex                            _flops_mu;
+  double                                _flops_peak = 0;
+  std::uint64_t                         _flops_scanned = 0;
 };
 
 }

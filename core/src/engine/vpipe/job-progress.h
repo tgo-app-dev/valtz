@@ -9,7 +9,11 @@
 // rather than once per denoise step.
 //
 // The list is the SESSION's: reports from before this job (ids up to
-// `after`) are not its. Of the live ones it follows the oldest still
+// `after`) are not its, and a DOWNLOAD runs beside the graphs (the
+// engine's two lanes) -- its reports, named by the file it fetches
+// ("model-00001-of-00004.safetensors"), are a download's only, where a
+// stage's name what it does ("denoise", "vae decode") and never hold a
+// dot. Of the live ones it follows the oldest still
 // counting -- a decode and its soundtrack can run side by side, and
 // following the most recently moved would flicker between them -- and,
 // when every one has reached its total, the newest. With nothing live the
@@ -41,9 +45,10 @@
 // walking it past the truth, and the next real count meets or passes it,
 // so it never goes backwards.
 //
-// GROUPS. An upscale's writer counts a group's frames at once (FlashVSR's
-// 21; in pieces, a frame or two behind), so frame by frame the bar stood
-// still for a group and jumped 17% on a 5 s clip. Its restore is
+// GROUPS. An upscale's writer counts a beat's frames at once (FlashVSR
+// restores a group's chunks -- about a group of frames -- or a clip of
+// them at a time; in pieces, a frame or two behind), so frame by frame
+// the bar stood still for a group and jumped 17% on a 5 s clip. Its restore is
 // estimated by GROUP instead: from the last group boundary its count
 // crossed toward the next, at the pace of the last group (the time
 // between the last two crossings) -- never past the next boundary, the
@@ -59,6 +64,7 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace valtz::engine::vp {
@@ -93,6 +99,9 @@ struct JobPhase {
   Json data() const;  // a Progress event's data
 };
 
+// vpipe's report names a file: a download's.
+bool names_a_file(std::string_view desc);
+
 class JobProgress {
 public:
   // `after`: the newest report id when the job started (last_id()).
@@ -100,7 +109,7 @@ public:
   // an export-media job; `restoring` an upscale, whose frames written
   // are the whole of it (kPhaseRestore) -- each group's own denoise and
   // decode show only before the first frame is out.
-  // `group`: an upscale's frames a group, past its overlap -- what its
+  // `group`: an upscale's frames a group -- about what its
   // writer's count moves by (see GROUPS above).
   JobProgress(std::uint64_t after, bool download, bool exporting = false,
               bool restoring = false, std::uint64_t group = 0)

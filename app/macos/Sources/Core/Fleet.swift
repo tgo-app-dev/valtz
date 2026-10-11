@@ -20,11 +20,57 @@ struct FleetStatus: Decodable, Sendable, Equatable {
     var asking: [FleetJob]?
     /// This Mac as the others see it.
     var me: FleetSelf?
+    /// The fleet's tasks, each with the models a job of it names.
+    var tasks: [FleetTask]?
+    /// This Mac's offload policies and what it withholds: read from the
+    /// raw JSON (FleetPolicies), not decoded.
+    var policies = FleetPolicies()
 
     enum CodingKeys: String, CodingKey {
         case enabled, config, port, browsing, localNetwork, members, fleets,
-             serving, asking, me = "self"
+             serving, asking, tasks, me = "self"
     }
+}
+
+/// A task of the fleet -- an engine op a member runs for another -- and
+/// the catalog models a job of it names.
+struct FleetTask: Decodable, Sendable, Equatable, Identifiable {
+    struct Model: Decodable, Sendable, Equatable, Identifiable {
+        var id: String
+        var name: String
+        var family: String
+        var installed: Bool
+    }
+    var op: String
+    /// This Mac's engine runs it.
+    var runs: Bool
+    var models: [Model]
+    var id: String { op }
+}
+
+/// Where this Mac's own jobs go -- per task, per model -- and what it
+/// does not offer the fleet. Kept apart from the decoded status: its
+/// tables are keyed by model ids, which the snake-case decoding would
+/// rewrite at an underscore.
+struct FleetPolicies: Equatable, Sendable {
+    var tasks: [String: String] = [:]
+    var models: [String: String] = [:]
+    var withheldTasks: Set<String> = []
+    var withheldModels: Set<String> = []
+
+    init() {}
+
+    init(config c: [String: Any]) {
+        let off = c["offload"] as? [String: Any] ?? [:]
+        tasks = off["tasks"] as? [String: String] ?? [:]
+        models = off["models"] as? [String: String] ?? [:]
+        let held = c["withheld"] as? [String: Any] ?? [:]
+        withheldTasks = Set(held["tasks"] as? [String] ?? [])
+        withheldModels = Set(held["models"] as? [String] ?? [])
+    }
+
+    /// A task's policy (local first unless set).
+    func task(_ op: String) -> String { tasks[op] ?? "local-first" }
 }
 
 struct FleetConfig: Decodable, Sendable, Equatable {
@@ -118,7 +164,13 @@ extension AppModel {
     /// The core's account of the fleet, read again.
     func reloadFleet() {
         guard let core else { return }
-        fleet = DTO.decode(FleetStatus.self, core.fleetStatusJSON())
+        let data = core.fleetStatusJSON()
+        fleet = DTO.decode(FleetStatus.self, data)
+        if let raw = try? JSONSerialization.jsonObject(with: data)
+            as? [String: Any],
+           let c = raw["config"] as? [String: Any] {
+            fleet?.policies = FleetPolicies(config: c)
+        }
         // An offer waiting is asked for; one gone is not.
         let asking = fleet?.asking ?? []
         fleetAsks = fleetAsks.filter { a in asking.contains { $0.job == a.job } }
@@ -143,6 +195,27 @@ extension AppModel {
         if !r.ok { flash(r.message) }
         reloadFleet()
         return r.ok
+    }
+
+    /// Where a task's jobs go: never | local-first | fleet-first |
+    /// always.
+    func setFleetOffload(task op: String, _ policy: String) {
+        configureFleet(["offload": ["tasks": [op: policy]]])
+    }
+
+    /// Where a model's jobs go -- "" its task's policy.
+    func setFleetOffload(model id: String, _ policy: String) {
+        configureFleet(["offload": ["models": [id: policy]]])
+    }
+
+    /// A task offered to the fleet, or withheld.
+    func setFleetShared(task op: String, _ on: Bool) {
+        configureFleet(["share": ["tasks": [op: on]]])
+    }
+
+    /// A model offered to the fleet, or withheld.
+    func setFleetShared(model id: String, _ on: Bool) {
+        configureFleet(["share": ["models": [id: on]]])
     }
 
     /// The network looked over for fleets to join (the Fleet page open).
