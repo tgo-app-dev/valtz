@@ -225,6 +225,16 @@
         }
       }
     },
+    "%@ is not downloaded yet: these apply once it is." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 尚未下载：下载后即按这些设置运行。"
+          }
+        }
+      }
+    },
     "%@ is not downloaded: %@ runs until it is." : {
       "localizations" : {
         "en" : {
@@ -492,6 +502,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 步"
+          }
+        }
+      }
+    },
+    "%@ steps, its own shifts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 步，使用它自己的偏移"
           }
         }
       }
@@ -1147,6 +1167,16 @@
         }
       }
     },
+    "A few-step LoRA distilled from the model: picked, it runs at the steps and shifts it was made for. HyperFlow and TaoMate have switches of their own." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "由模型蒸馏而来的少步 LoRA：选中后按它被训练时的步数和偏移运行。HyperFlow 与 TaoMate 有各自的开关。"
+          }
+        }
+      }
+    },
     "A flat asset of it as it looks: a picture, a movie or a sound" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1408,6 +1438,16 @@
         }
       }
     },
+    "Acceleration" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "加速"
+          }
+        }
+      }
+    },
     "Accept" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1524,6 +1564,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "添加页面"
+          }
+        }
+      }
+    },
+    "Add Page Progress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加页面进度条"
           }
         }
       }
@@ -1840,6 +1890,106 @@
         }
       }
     },
+    "Align" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "对齐"
+          }
+        }
+      }
+    },
+    "Align Bottom Edges" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "底边对齐"
+          }
+        }
+      }
+    },
+    "Align Horizontal Centers" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "水平居中对齐"
+          }
+        }
+      }
+    },
+    "Align Left" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "左对齐"
+          }
+        }
+      }
+    },
+    "Align Left Edges" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "左边对齐"
+          }
+        }
+      }
+    },
+    "Align Right" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "右对齐"
+          }
+        }
+      }
+    },
+    "Align Right Edges" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "右边对齐"
+          }
+        }
+      }
+    },
+    "Align Top Edges" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "顶边对齐"
+          }
+        }
+      }
+    },
+    "Align Vertical Centers" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "垂直居中对齐"
+          }
+        }
+      }
+    },
+    "Alignment" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "对齐"
+          }
+        }
+      }
+    },
     "All of the picture on the canvas" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1908,6 +2058,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "定位点"
+          }
+        }
+      }
+    },
+    "Angle" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "角度"
           }
         }
       }
@@ -1992,12 +2152,32 @@
         }
       }
     },
+    "Arrange" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "排列"
+          }
+        }
+      }
+    },
     "Arrange Layer" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "排列图层"
+          }
+        }
+      }
+    },
+    "Arrange: the order, alignment and spacing of the selected objects" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "排列：所选对象的层叠顺序、对齐与间距"
           }
         }
       }
@@ -2634,6 +2814,16 @@
         }
       }
     },
+    "Blur" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模糊"
+          }
+        }
+      }
+    },
     "Bold" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2880,6 +3070,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已存入素材"
+          }
+        }
+      }
+    },
+    "Center" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "居中"
           }
         }
       }
@@ -4055,6 +4255,26 @@
         }
       }
     },
+    "Deselect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "取消选择"
+          }
+        }
+      }
+    },
+    "Deselect (⌘D)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "取消选择（⌘D）"
+          }
+        }
+      }
+    },
     "Detected by the assistant" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -4142,6 +4362,46 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Display P3"
+          }
+        }
+      }
+    },
+    "Distance" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "距离"
+          }
+        }
+      }
+    },
+    "Distribute" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分布"
+          }
+        }
+      }
+    },
+    "Distribute Horizontally" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "水平分布"
+          }
+        }
+      }
+    },
+    "Distribute Vertically" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "垂直分布"
           }
         }
       }
@@ -4314,6 +4574,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "草稿模型"
+          }
+        }
+      }
+    },
+    "Drag along to move, down off the bar to remove" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "左右拖动以移动，向下拖离色条以移除"
+          }
+        }
+      }
+    },
+    "Drag its ends on the picture" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在画面上拖动它的两端"
           }
         }
       }
@@ -4647,6 +4927,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "编辑器"
+          }
+        }
+      }
+    },
+    "Effects" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "效果"
+          }
+        }
+      }
+    },
+    "Effects: a shadow, a glow" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "效果：阴影、发光"
+          }
+        }
+      }
+    },
+    "Eight LoRAs run at a time" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "一次最多运行八个 LoRA"
           }
         }
       }
@@ -5613,6 +5923,16 @@
         }
       }
     },
+    "Generate a Shot" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成镜头"
+          }
+        }
+      }
+    },
     "Generate an image to see its details here." : {
       "localizations" : {
         "zh-Hans" : {
@@ -5713,6 +6033,16 @@
         }
       }
     },
+    "Glow" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "发光"
+          }
+        }
+      }
+    },
     "Go to its start" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5809,6 +6139,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已抓取到素材中"
+          }
+        }
+      }
+    },
+    "Gradient" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "渐变"
+          }
+        }
+      }
+    },
+    "Gradient: linear or radial, in place of the fill" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "渐变：线性或径向，代替填充色"
           }
         }
       }
@@ -6195,12 +6545,42 @@
         }
       }
     },
+    "Horizontally" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "水平"
+          }
+        }
+      }
+    },
     "How It Runs" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "运行方式"
+          }
+        }
+      }
+    },
+    "How Render Upscaled restores a layer at the size it is shown — FlashVSR for clips, VOSR for pictures: the arithmetic each runs with." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“渲染放大版本”如何按图层显示的尺寸还原它——视频片段用 FlashVSR，图片用 VOSR：各自运行时采用的运算方式。"
+          }
+        }
+      }
+    },
+    "How a keyframe goes on to the next: move the playhead to a keyframe" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关键帧到下一个关键帧的过渡方式：请将播放头移到关键帧上"
           }
         }
       }
@@ -6221,6 +6601,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "生成方式"
+          }
+        }
+      }
+    },
+    "How the text's lines lie in its box" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "文字各行在文本框中的对齐方式"
           }
         }
       }
@@ -6515,6 +6905,16 @@
         }
       }
     },
+    "Interpolation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "插值"
+          }
+        }
+      }
+    },
     "It asks you" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6725,6 +7125,16 @@
         }
       }
     },
+    "Justify" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "两端对齐"
+          }
+        }
+      }
+    },
     "Keep Loaded" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6884,6 +7294,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放大文字"
+          }
+        }
+      }
+    },
+    "Lay Out Text" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "排版文本"
           }
         }
       }
@@ -7089,12 +7509,42 @@
         }
       }
     },
+    "Line Spacing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "行距"
+          }
+        }
+      }
+    },
+    "Linear" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "线性"
+          }
+        }
+      }
+    },
     "Linear attention for long, large clips" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "用于长而大的视频的线性注意力"
+          }
+        }
+      }
+    },
+    "Linear: changed at an even pace to the next keyframe" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "线性：匀速变化到下一个关键帧"
           }
         }
       }
@@ -7187,6 +7637,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "仅 LoRA"
+          }
+        }
+      }
+    },
+    "LoRAs" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "LoRA"
           }
         }
       }
@@ -7885,6 +8345,16 @@
         }
       }
     },
+    "Move Down" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "下移一层"
+          }
+        }
+      }
+    },
     "Move Layer" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7901,6 +8371,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "移到"
+          }
+        }
+      }
+    },
+    "Move Up" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上移一层"
           }
         }
       }
@@ -7935,12 +8415,32 @@
         }
       }
     },
+    "Move to Bottom" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移到最底层"
+          }
+        }
+      }
+    },
     "Move to Folder" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "移到文件夹"
+          }
+        }
+      }
+    },
+    "Move to Top" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移到最顶层"
           }
         }
       }
@@ -8409,12 +8909,32 @@
         }
       }
     },
+    "No upscaler is known to this build." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此版本不认识任何放大模型。"
+          }
+        }
+      }
+    },
     "None" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无"
+          }
+        }
+      }
+    },
+    "None: held until the next keyframe, then changed at once" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无：保持不变，到下一个关键帧时立即切换"
           }
         }
       }
@@ -8838,6 +9358,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "前进一帧并试听（→）"
+          }
+        }
+      }
+    },
+    "On the picture" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "相对画面"
           }
         }
       }
@@ -9615,6 +10145,16 @@
         }
       }
     },
+    "Polygon" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "多边形"
+          }
+        }
+      }
+    },
     "Port %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10053,6 +10593,26 @@
         }
       }
     },
+    "Radial" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "径向"
+          }
+        }
+      }
+    },
+    "Radius" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "半径"
+          }
+        }
+      }
+    },
     "Random" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10079,6 +10639,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "码率："
+          }
+        }
+      }
+    },
+    "Read and edit the suggestion beside the prompt, in the Prompt Editor (⇧⌘E)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在提示词编辑器中，于提示词旁阅读并编辑建议（⇧⌘E）"
           }
         }
       }
@@ -10445,6 +11015,16 @@
         }
       }
     },
+    "Remove this colour" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除此颜色"
+          }
+        }
+      }
+    },
     "Remove this page, and the layers only it has" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10645,6 +11225,36 @@
         }
       }
     },
+    "Restore Defaults" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "恢复默认设置"
+          }
+        }
+      }
+    },
+    "Restores a clip a group of frames at a time, in one step each. Its attention is already sparse by its own weights, so it takes no Sol-Attn." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每次还原视频片段中的一组帧，每组一步完成。它的注意力已由自身权重稀疏化，因此不使用 Sol-Attn。"
+          }
+        }
+      }
+    },
+    "Restores a picture in one step, in tiles past the size it was trained at; DINOv2 reads it first." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "一步还原图片；超过训练尺寸时分块处理；先由 DINOv2 读取图片。"
+          }
+        }
+      }
+    },
     "Restoring detail" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10733,6 +11343,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在访达中显示"
+          }
+        }
+      }
+    },
+    "Reverse the gradient" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "反转渐变"
           }
         }
       }
@@ -11351,6 +11971,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "设置"
+          }
+        }
+      }
+    },
+    "Shadow" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "阴影"
           }
         }
       }
@@ -12054,6 +12684,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "速度"
+          }
+        }
+      }
+    },
+    "Spline" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "样条"
+          }
+        }
+      }
+    },
+    "Spline: eased along a smooth curve through the keyframes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "样条：沿穿过各关键帧的平滑曲线缓入缓出"
           }
         }
       }
@@ -12920,6 +13570,16 @@
         }
       }
     },
+    "The defaults are Med's: int8 GEMMs on an M5 or later, the rest off. An upscale already queued keeps what it was asked with; its recipe records them." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "默认设置与“均衡”相同：在 M5 及更新的机型上开启 int8 GEMM，其余关闭。已排队的放大任务保持提交时的设置，并记录在其配方中。"
+          }
+        }
+      }
+    },
     "The file as it is, nothing re-encoded" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13047,6 +13707,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "模型的少步 LoRA：开启或关闭时，步数随预设而定"
+          }
+        }
+      }
+    },
+    "The model's own steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型自身的步数"
           }
         }
       }
@@ -13472,6 +14142,16 @@
         }
       }
     },
+    "Three or more objects" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "需三个或更多对象"
+          }
+        }
+      }
+    },
     "Throttling" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13562,6 +14242,16 @@
         }
       }
     },
+    "To each other" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "相互对齐"
+          }
+        }
+      }
+    },
     "To edit" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13578,6 +14268,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "要让它放得下"
+          }
+        }
+      }
+    },
+    "To the next keyframe -- %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "到下一个关键帧 —— %@"
           }
         }
       }
@@ -13824,6 +14524,7 @@
       }
     },
     "Two LoRAs run at a time" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -14083,6 +14784,16 @@
         }
       }
     },
+    "Upscaling" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放大"
+          }
+        }
+      }
+    },
     "Use Prompt" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14283,6 +14994,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "垂直擦除对比"
+          }
+        }
+      }
+    },
+    "Vertically" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "垂直"
           }
         }
       }
@@ -14680,11 +15401,22 @@
       }
     },
     "What rectangles and ellipses are filled with" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "矩形和椭圆的填充"
+          }
+        }
+      }
+    },
+    "What rectangles, ellipses and polygons are filled with" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "矩形、椭圆和多边形的填充色"
           }
         }
       }

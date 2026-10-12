@@ -776,6 +776,9 @@ final class CompareCanvas: NSView {
         super.mouseMoved(with: event)
         pointerAt = convert(event.locationInWindow, from: nil)
         updateBrushRing()
+        // Where the pointer is, for a tool that shows it (a polygon's next
+        // edge).
+        if markupHere { markupPointer(.hover, event) }
     }
 
     override func mouseEntered(with event: NSEvent) {
@@ -851,6 +854,9 @@ final class CompareCanvas: NSView {
                 return
             case 53:        // escape
                 onMarkupKey?(.escape)
+                return
+            case 36, 76 where canMarkupKey?(.enter) ?? false:  // return
+                onMarkupKey?(.enter)
                 return
             default:
                 break

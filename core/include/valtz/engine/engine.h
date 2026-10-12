@@ -35,6 +35,12 @@
 
 namespace valtz::engine {
 
+// The runtime LoRA slots vpipe applies at once to an image or video DiT:
+// its stages' `lora`, `lora2` .. `lora8`, a slot its index in the order
+// given (vpipe's stages/lora-slots.h). The tuning's count
+// (models::kLoraSlots) is held equal to it.
+inline constexpr int kLoraSlots = 8;
+
 // Operations.
 inline constexpr std::string_view kOpGenerateImage = "generate-image";
 // An image from a prompt and one or more reference pictures (inputs with
@@ -169,9 +175,11 @@ struct ModelRef {
   // of MiniMax H3's Turbo LoRA or HyperFlow), as its file; empty when
   // none.
   std::filesystem::path lora;
-  // The second LoRA slot (param "lora2_file", "lora2_scale": a style or
-  // identity adapter of one's own); empty when none.
-  std::filesystem::path lora2;
+  // The LoRA slots after it (params "lora2_file" .. "lora8_file", each
+  // with its "_scale": style or identity adapters of one's own), slot 2
+  // first: a slot is its index, so one left out is an empty path in its
+  // place. At most kLoraSlots - 1.
+  std::vector<std::filesystem::path> more_loras;
   // Community checkpoints in place of the model's own parts (params
   // "dit_file", "vae_file"): a .safetensors or a folder; empty when none.
   // A generator decoded by a checkpoint of its own (YuE2: catalog

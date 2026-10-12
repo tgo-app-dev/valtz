@@ -246,6 +246,14 @@ struct MediaInfoDTO: Decodable, Sendable, Hashable {
         return Double(d[0]) / Double(d[1])
     }
 
+    /// A clip's length as a layer runs it: its PICTURE's frames (the
+    /// movie's duration is its longest track, a soundtrack may run on
+    /// past the last frame); without a count, the duration.
+    var pictureSeconds: Double? {
+        if let n = frames, n > 0, let r = frameRate { return Double(n) / r.fps }
+        return seconds
+    }
+
     var frameRate: FrameRate? {
         guard let f = fps, f.count == 2, f[0] > 0, f[1] > 0 else {
             return nil
@@ -382,6 +390,9 @@ struct RecipeParamsDTO: Decodable, Sendable, Hashable {
     /// catalog id).
     var frames: Int?
     var lora: String?
+    /// The LoRAs of one's own it ran with, by their files, in their slots'
+    /// order ("lora_file", "lora2_file" .. "lora8_file": vpipe's eight).
+    var loraFiles: [String] = []
     /// A song's: the score it planned (SongPlan's raw value) and the
     /// longest it was let run, seconds.
     var cot: String?
@@ -390,6 +401,14 @@ struct RecipeParamsDTO: Decodable, Sendable, Hashable {
     private enum K: String, CodingKey {
         case prompt, negative, seed, steps, width, height, frames, lora
         case cot, maxSeconds
+    }
+
+    /// Any key: the slots' files, read by name.
+    private struct AnyKey: CodingKey {
+        var stringValue: String
+        var intValue: Int? { nil }
+        init(stringValue: String) { self.stringValue = stringValue }
+        init?(intValue: Int) { nil }
     }
 
     init(from decoder: Decoder) throws {
@@ -403,6 +422,13 @@ struct RecipeParamsDTO: Decodable, Sendable, Hashable {
         height = try? c.decode(Int.self, forKey: .height)
         frames = try? c.decode(Int.self, forKey: .frames)
         lora = try? c.decode(String.self, forKey: .lora)
+        // (Keys arrive camel-cased: "lora2_file" is "lora2File".)
+        if let all = try? decoder.container(keyedBy: AnyKey.self) {
+            loraFiles = (1...8).compactMap { k in
+                try? all.decode(String.self, forKey: AnyKey(
+                    stringValue: k == 1 ? "loraFile" : "lora\(k)File"))
+            }
+        }
         cot = try? c.decode(String.self, forKey: .cot)
         maxSeconds = try? c.decode(Double.self, forKey: .maxSeconds)
     }
@@ -743,7 +769,9 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
         guard let m = modifiers?.first(where: {
             $0.kind == "adjust" && $0.layer == layer
         }) else { return Keyframes() }
-        return Keyframes(m.keys ?? [m.params]) { ImageAdjustments($0) }
+        return Keyframes(m.keys ?? [m.params], interps: m.keyInterps) {
+            ImageAdjustments($0)
+        }
     }
 
     func cropKeys(layer: String) -> ClipCrop {
@@ -873,6 +901,10 @@ struct ModifierDTO: Decodable, Sendable, Hashable {
     var keys: [[String: Double]]?
     /// A clip's crop: its rotation's own keys ({"frame", "rotate"}).
     var rotateKeys: [[String: Double]]?
+    /// Each key's way on to the next ("hold", "spline"; nil linear), in
+    /// the order of `keys` / `rotateKeys` -- the one string in a key.
+    var keyInterps: [String?]?
+    var rotateInterps: [String?]?
 
     private enum K: String, CodingKey { case kind, layer, params }
     /// "keys" and "rotate_keys" -- the decoder converts snake case, so
@@ -881,6 +913,10 @@ struct ModifierDTO: Decodable, Sendable, Hashable {
     private struct Track: Decodable {
         var keys: [[String: LenientNumber]]?
         var rotateKeys: [[String: LenientNumber]]?
+    }
+    private struct Interps: Decodable {
+        var keys: [KeyInterpDTO]?
+        var rotateKeys: [KeyInterpDTO]?
     }
 
     init(from decoder: Decoder) throws {
@@ -897,6 +933,20 @@ struct ModifierDTO: Decodable, Sendable, Hashable {
             keys = t.keys?.map { $0.compactMapValues(\.value) }
             rotateKeys = t.rotateKeys?.map { $0.compactMapValues(\.value) }
         }
+        if let t = try? c.decode(Interps.self, forKey: .params) {
+            keyInterps = t.keys?.map(\.interp)
+            rotateInterps = t.rotateKeys?.map(\.interp)
+        }
+    }
+}
+
+/// A key's "interp", or nil for anything else.
+private struct KeyInterpDTO: Decodable {
+    let interp: String?
+    private enum K: String, CodingKey { case interp }
+    init(from decoder: Decoder) throws {
+        interp = try? decoder.container(keyedBy: K.self)
+            .decode(String.self, forKey: .interp)
     }
 }
 
@@ -973,6 +1023,11 @@ struct TuningOption: Identifiable, Equatable, Sendable {
     let names: [String: String]
     let stepsOn: Int?
     let stepsOff: Int?
+    /// The model's ACCELERATION LoRAs (the LoRA list's), for the quick
+    /// pick -- its few-step adapters, not HyperFlow's or TaoMate's -- and
+    /// the shifts the model runs at without one.
+    let fast: [FastLoRA]
+    let shiftOff: [String: Double]
     /// An extension's own option (catalog `engine.vpipe.options`): the
     /// text it goes by, read by the core in the UI's language -- the app
     /// has none of its own for it -- and the group it is listed in. nil
@@ -997,11 +1052,14 @@ struct TuningOption: Identifiable, Equatable, Sendable {
             ($0 as? NSNumber)?.doubleValue
         }
         needs = j["needs"] as? String
-        slots = j["slots"] as? Int ?? 2
+        slots = j["slots"] as? Int ?? 8
         turbo = j["turbo"] as? String ?? ""
         names = j["names"] as? [String: String] ?? [:]
         stepsOn = j["steps_on"] as? Int
         stepsOff = j["steps_off"] as? Int
+        fast = (j["fast"] as? [[String: Any]] ?? []).map(FastLoRA.init)
+        shiftOff = ((j["shift_off"] as? [String: Any]) ?? [:])
+            .compactMapValues { ($0 as? NSNumber)?.doubleValue }
         let declared = j["declared"] as? Bool ?? false
         func text(_ k: String) -> String? {
             guard declared, let s = j[k] as? String, !s.isEmpty else { return nil }
@@ -1014,8 +1072,30 @@ struct TuningOption: Identifiable, Equatable, Sendable {
     }
 }
 
+/// A few-step ACCELERATION LoRA a model takes (core models/tuning.h's
+/// "fast"): Capabilities' name for it, its file ("" not installed), the
+/// steps and shifts it runs at.
+struct FastLoRA: Equatable, Sendable, Identifiable {
+    let id: String
+    let name: String
+    let path: String
+    let steps: Int
+    let config: [String: Double]
+
+    init(_ j: [String: Any]) {
+        id = j["id"] as? String ?? ""
+        name = j["name"] as? String ?? id
+        path = j["path"] as? String ?? ""
+        steps = j["steps"] as? Int ?? 8
+        config = ((j["config"] as? [String: Any]) ?? [:])
+            .compactMapValues { ($0 as? NSNumber)?.doubleValue }
+    }
+
+    var installed: Bool { !path.isEmpty }
+}
+
 /// A LoRA in Custom's list -- the catalog's Turbo LoRA among them, by its
-/// file: up to two on (vpipe's two slots).
+/// file: up to eight on (vpipe's slots).
 struct TuningLoRA: Equatable, Codable, Sendable, Identifiable {
     var path: String
     var scale: Double = 1

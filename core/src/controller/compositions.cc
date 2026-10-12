@@ -72,15 +72,25 @@ next_layer_id(const std::vector<project::Layer>& ls)
   return std::to_string(next);
 }
 
+// How long a source runs: a clip shown as a clip its PICTURE's frames --
+// a movie's duration is its longest track, and a soundtrack running on
+// past the last frame held the layer a frame longer than its frames (a
+// 124-frame clip still showing at frame 124, where the next one starts);
+// a sound, or a clip heard alone, its whole duration.
 double
-seconds_of(const project::AssetVersion& v)
+seconds_of(const project::AssetVersion& v, bool picture = false)
 {
+  const double fps = v.info.frame_rate.to_double();
+  const double frames = fps > 0 && v.info.frame_count > 0
+                            ? static_cast<double>(v.info.frame_count) / fps
+                            : 0.0;
+  if (picture && frames > 0) {
+    return frames;
+  }
   if (v.info.duration.valid() && v.info.duration.seconds() > 0) {
     return v.info.duration.seconds();
   }
-  const double fps = v.info.frame_rate.to_double();
-  return fps > 0 && v.info.frame_count > 0
-             ? static_cast<double>(v.info.frame_count) / fps : 0.0;
+  return frames;
 }
 
 // The modifiers of one layer, renamed to another.
@@ -137,7 +147,8 @@ pin_key(media::Keyed<T>& k, std::int64_t f)
       })) {
     return;
   }
-  k.keys.push_back({f, k.at(static_cast<double>(f))});
+  const auto at = static_cast<double>(f);
+  k.keys.push_back({f, k.at(at), k.interp_at(at)});
   std::ranges::sort(k.keys, {}, &media::Keyframe<T>::frame);
 }
 
@@ -1610,6 +1621,35 @@ Controller::set_markup_objects(ProjectId pid, AssetId aid,
 }
 
 Status
+Controller::arrange_markup(ProjectId pid, AssetId aid,
+                           const std::string& layer,
+                           const std::vector<std::string>& objects,
+                           const std::string& how)
+{
+  const char* kind = how.starts_with("distribute") ? "markup.distribute"
+                     : how == "to-top" || how == "to-bottom" ||
+                             how == "up" || how == "down"
+                         ? "markup.arrange"
+                         : "markup.align";
+  auto undo = command_(pid, kind, aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
+  auto& [mid, mk] = at;
+  VALTZ_ASSIGN(Json arranged,
+               media::arrange_objects(mk.objects, objects, how,
+                                      {mk.width, mk.height}));
+  if (arranged == mk.objects) {
+    return ok_status();
+  }
+  mk.objects = std::move(arranged);
+  return put_markup_(pid, *p, aid, mid, std::move(mk));
+}
+
+Status
 Controller::materialize_markup(ProjectId pid, AssetId aid,
                                const std::string& layer,
                                const std::vector<std::string>& objects)
@@ -2227,7 +2267,7 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
   t.video = s.kind == AssetKind::Video && !clip_sound;
   t.audio_only = s.kind == AssetKind::Audio || clip_sound;
   if (t.video || t.audio_only) {
-    t.seconds = seconds_of(v);
+    t.seconds = seconds_of(v, t.video);
     t.mark_rate = t.video && v.info.frame_rate.num > 0
                       ? v.info.frame_rate : Rational{1000, 1};
   }
@@ -2935,7 +2975,7 @@ Controller::split_layer(ProjectId pid, AssetId aid, const std::string& layer,
   // The source's own frames: a clip's rate, a sound's milliseconds.
   const Rational raw_rate = video && rv.info.frame_rate.num > 0
                                 ? rv.info.frame_rate : Rational{1000, 1};
-  const double raw_seconds = seconds_of(rv);
+  const double raw_seconds = seconds_of(rv, video);
   // Keyed along it, a look would have to be cut too: not yet.
   const auto crop = crop_keys_of(c, cut.id);
   if (adjustment_keys_of(c, cut.id).keys.size() > 1 ||
@@ -3682,8 +3722,10 @@ Controller::decompose(ProjectId pid, AssetId aid, const std::string& layer)
         }
         media::Crop place = *cr;
         place.rotate = 0;
-        out.place.keys.push_back({f, place});
-        out.turn.keys.push_back({f, {cr->rotate}});
+        // Each track on as the inner one went on from there.
+        const auto at = static_cast<double>(f);
+        out.place.keys.push_back({f, place, kc.place.interp_at(at)});
+        out.turn.keys.push_back({f, {cr->rotate}, kc.turn.interp_at(at)});
       }
       out.pad = {0, 0, 0, 0};
       kid_mods.push_back({"crop", n.id, media::to_json(out)});

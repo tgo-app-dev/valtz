@@ -167,7 +167,9 @@ usage()
       "  keys <project.valtz> <comp-id> adjust|crop|rotate|speed|audio\n"
       "       [--layer L] [--follow-speed on|off] [<frame>:k=v,...]...\n"
       "         (a layer's track: keyframes from its own start, linear\n"
-      "         between; adjust keys as for adjust; crop keys offset_x,\n"
+      "         between -- or a key's interp=hold|spline on to the\n"
+      "         next, adjust, crop and rotate; adjust keys as for\n"
+      "         adjust; crop keys offset_x,\n"
       "         offset_y, scale_x, scale_y (pad_* in any is its\n"
       "         background); rotate keys rotate=degrees; speed keys\n"
       "         rate=1.5; audio keys volume=0..4,pitch=semitones. None\n"
@@ -283,7 +285,21 @@ usage()
       "                 [stroke=#..,fill=#..,width=4]\n"
       "         | text <layer> <x,y|x0,y0,x1,y1> <text> [font=Name,size=48,\n"
       "                 bold,italic,underline,color=#..]\n"
-      "                 (a box: wrapped in it, the lines that fit whole)\n"
+      "                 (a box: wrapped in it, the lines that fit whole;\n"
+      "                 align=left|center|right|justified, spacing=1.4)\n"
+      "         | style <layer> <object-id> <options>  (a text's or\n"
+      "                 shape's: color, fill, width, font, size, bold,\n"
+      "                 italic, align, spacing, and effects -- shadow[=#..\n"
+      "                 |none],shadow_blur=,shadow_x=,shadow_y=, glow[=#..\n"
+      "                 |none],glow_radius=; a gradient -- gradient=linear|\n"
+      "                 radial|none,stops=#..@0/#..@1,from=u:v,to=u:v;\n"
+      "                 text and shape take them too)\n"
+      "         | shape <layer> polygon <x,y;x,y;x,y...> [options]\n"
+      "                 (a polygon through its corners)\n"
+      "         | arrange <layer> <how> <object-id...>  (the order:\n"
+      "                 to-top|to-bottom|up|down; lined up: left|center|\n"
+      "                 right|top|middle|bottom -- one object on the\n"
+      "                 canvas; spaced: distribute-h|distribute-v)\n"
       "         | materialize <layer> [object-id...]\n"
       "         | duplicate <layer> [name]  (a copy right above it: a\n"
       "                 markup's drawing and objects its own)\n"
@@ -312,17 +328,20 @@ usage()
       "         first, as frames -- where their pages went; export writes\n"
       "         one file a page, name-1.png, name-2.png ...)\n"
       "  flatten <project.valtz> <picture-id> -o <file.png> [--page P]\n"
-      "  tuning <model-id> [--speed|--quality] [--edit] [--tune k=v,...]\n"
+      "  tuning <model-id> [--speed|--quality] [--edit] [--continues]\n"
+      "         [--tune k=v,...]\n"
       "         [--turbo none|<id>|<file>] [--lora <file>[:scale]]...\n"
       "         [--dit <file|folder>] [--vae <file|folder>]\n"
       "         (Favor's options for the model -- their values at the\n"
       "         preference, with --tune's laid on as Custom does, their\n"
-      "         ranges and what this Mac can have. --tune on generate and\n"
-      "         video sets them: steps, hyperflow, vdn, sol_attn, sol_tau,\n"
-      "         sage_attn, i8_gemm, motion_cache, video_shift, audio_shift,\n"
-      "         shift -- true/false or a number; --turbo the catalog's\n"
+      "         ranges and what this Mac can have; --continues: as for a\n"
+      "         clip continued, its continuation presets. --tune on\n"
+      "         generate and video sets them: steps, hyperflow, vdn,\n"
+      "         sol_attn, sol_tau, sage_attn, i8_gemm, motion_cache,\n"
+      "         video_shift, audio_shift, shift -- true/false or a\n"
+      "         number; --turbo the catalog's\n"
       "         few-step LoRA off (none) or on, or a file in its place;\n"
-      "         --lora adds one -- two run, the first on)\n"
+      "         --lora adds one -- eight run, the first on)\n"
       "  export <project.valtz> <asset-id|file> --format F -o <file>\n"
       "         [--quality 1..100]\n"
       "         [--bitrate 20M] [--max-bitrate 30M] [--video-quality 0..1]\n"
@@ -355,6 +374,9 @@ usage()
       "  upscale <project> <composition> [--layer L] [--model id]\n"
       "          [--seed n]   the layer's clip rendered at its scale\n"
       "          (FlashVSR), the layer then showing it at scale 1\n"
+      "  upscaler [<model-id> [k=v,...] [--reset]]   Settings >\n"
+      "          Upscaling: each upscaler's int8 GEMM, Sage, Sol (on|off),\n"
+      "          kept for every later upscale\n"
       "  intent <text> [--image name]...\n"
       "  fleet [status] [--json] | fleet browse [--seconds N]\n"
       "        | fleet create|join <name> [--discoverable]\n"
@@ -478,6 +500,154 @@ options_arg(const std::string& v)
     start = end + 1;
   }
   return out;
+}
+
+// A markup object's STYLE from its options (media/markup.h): a text's
+// align= and spacing=, color= (a text's, a line's, an outline's), fill=,
+// width=, size=, font=, bold, italic; and its EFFECTS -- shadow (or
+// shadow=#rrggbbaa; none takes it off) with shadow_blur=, shadow_x=,
+// shadow_y= (pixels, y down), and glow (=#rrggbbaa | none) with
+// glow_radius= -- the glow kept inside the shadow, as the app keeps them.
+void
+style_opts(Json& obj, const Json& o)
+{
+  const bool text = jget<std::string>(obj, "kind", "") == "text";
+  if (text && o.contains("align")) {
+    obj["align"] = jget<std::string>(o, "align", "left");
+  }
+  if (text && o.contains("spacing")) {
+    obj["line_spacing"] = jget(o, "spacing", 1.0);
+  }
+  if (Json col = rgba_arg(jget<std::string>(o, "color", ""));
+      !col.is_null()) {
+    obj["stroke"] = col;
+  }
+  if (Json f = rgba_arg(jget<std::string>(o, "fill", "")); !f.is_null()) {
+    obj["fill"] = f;
+  }
+  if (o.contains("width")) {
+    obj["width"] = jget(o, "width", 4.0);
+  }
+  if (text) {
+    Json font = jget(obj, "font", Json::object());
+    if (o.contains("font")) {
+      font["family"] = jget<std::string>(o, "font", "Helvetica Neue");
+    }
+    if (o.contains("size")) {
+      font["size"] = jget(o, "size", 48.0);
+    }
+    for (const char* k : {"bold", "italic", "underline"}) {
+      if (o.contains(k)) {
+        font[k] = jget(o, k, false);
+      }
+    }
+    obj["font"] = font;
+  }
+  // A GRADIENT: gradient=linear|radial|none, its colours
+  // stops=#rrggbbaa@0/#rrggbbaa@1 (two at least; none given: the
+  // object's colour to white), its ends from=u:v, to=u:v in its box's
+  // units.
+  if (o.contains("gradient") || o.contains("stops") ||
+      o.contains("from") || o.contains("to")) {
+    const auto kind = jget<std::string>(
+        o, "gradient", jget<std::string>(jget(obj, "gradient", Json()),
+                                         "kind", "linear"));
+    if (kind == "none") {
+      obj.erase("gradient");
+    } else if (jget<std::string>(obj, "kind", "") != "line") {
+      Json g = jget(obj, "gradient", Json::object());
+      g["kind"] = kind == "radial" ? "radial" : "linear";
+      if (o.contains("stops")) {
+        Json stops = Json::array();
+        const auto spec = jget<std::string>(o, "stops", "");
+        std::size_t at = 0;
+        while (at <= spec.size()) {
+          const auto end = spec.find('/', at);
+          const auto one = spec.substr(at, end - at);
+          if (const auto a = one.find('@'); a != std::string::npos) {
+            if (Json c = rgba_arg(one.substr(0, a)); !c.is_null()) {
+              stops.push_back({{"at", std::atof(one.c_str() + a + 1)},
+                               {"color", c}});
+            }
+          }
+          if (end == std::string::npos) {
+            break;
+          }
+          at = end + 1;
+        }
+        g["stops"] = std::move(stops);
+      }
+      if (jget(g, "stops", Json::array()).size() < 2) {
+        const Json own = jget<std::string>(obj, "kind", "") == "text"
+                             ? jget(obj, "stroke", Json::array({0, 0, 0, 1}))
+                             : jget(obj, "fill", Json::array({0, 0, 0, 1}));
+        g["stops"] = Json::array({{{"at", 0}, {"color", own}},
+                                  {{"at", 1},
+                                   {"color", Json::array({1, 1, 1, 1})}}});
+      }
+      for (const char* k : {"from", "to"}) {
+        if (o.contains(k)) {
+          const auto v = jget<std::string>(o, k, "");
+          const auto c = v.find(':');
+          if (c != std::string::npos) {
+            g[k] = {std::atof(v.c_str()), std::atof(v.c_str() + c + 1)};
+          }
+        }
+      }
+      obj["gradient"] = std::move(g);
+    }
+  }
+  Json fx = jget(obj, "effects", Json::array());
+  auto replace = [&](const std::string& kind, Json made) {
+    Json out = Json::array();
+    for (const auto& e : fx) {
+      if (jget<std::string>(e, "kind", "") != kind) {
+        out.push_back(e);
+      }
+    }
+    if (!made.is_null()) {
+      out.push_back(std::move(made));
+    }
+    fx = std::move(out);
+  };
+  for (const std::string kind : {"shadow", "glow"}) {
+    if (!o.contains(kind)) {
+      continue;
+    }
+    const Json v = o[kind];
+    if (v.is_string() && v.get<std::string>() == "none") {
+      replace(kind, Json());
+      continue;
+    }
+    Json col = v.is_string() ? rgba_arg(v.get<std::string>()) : Json();
+    if (col.is_null()) {
+      col = kind == "glow" ? jget(obj, "stroke", Json::array({1, 1, 1, 1}))
+                           : Json::array({0, 0, 0, 0.5});
+    }
+    replace(kind, kind == "glow"
+                      ? Json{{"kind", "glow"}, {"color", col},
+                             {"radius", jget(o, "glow_radius", 12.0)}}
+                      : Json{{"kind", "shadow"}, {"color", col},
+                             {"blur", jget(o, "shadow_blur", 8.0)},
+                             {"dx", jget(o, "shadow_x", 4.0)},
+                             {"dy", jget(o, "shadow_y", 4.0)}});
+  }
+  Json ordered = Json::array();
+  for (const auto& e : fx) {
+    if (jget<std::string>(e, "kind", "") == "glow") {
+      ordered.push_back(e);
+    }
+  }
+  for (const auto& e : fx) {
+    if (jget<std::string>(e, "kind", "") != "glow") {
+      ordered.push_back(e);
+    }
+  }
+  if (ordered.empty()) {
+    obj.erase("effects");
+  } else {
+    obj["effects"] = std::move(ordered);
+  }
 }
 
 // "a,b;c,d;..." as numbers.
@@ -2106,8 +2276,16 @@ main(int argc, char** argv)
       if (colon == std::string::npos) {
         return usage();
       }
-      Json k = key_values(args[i].substr(colon + 1));
+      const std::string spec = args[i].substr(colon + 1);
+      Json k = key_values(spec);
       k["frame"] = std::atoll(args[i].substr(0, colon).c_str());
+      // "interp=hold|linear|spline": how it goes on to the next key.
+      if (const auto at = spec.find("interp="); at != std::string::npos) {
+        const auto end = spec.find(',', at);
+        k["interp"] = spec.substr(at + 7, end == std::string::npos
+                                              ? std::string::npos
+                                              : end - at - 7);
+      }
       if (args[2] == "crop" || args[2] == "rotate") {
         k["content_w"] = content.width;
         k["content_h"] = content.height;
@@ -2599,7 +2777,35 @@ main(int argc, char** argv)
         }
       }
       Json obj;
-      if (op == "shape") {
+      if (op == "shape" && arg == "polygon") {
+        // A POLYGON through its corners "x,y;x,y;...": its box their
+        // bounds, its points in the box's units (media/markup.h).
+        const auto xy = numbers_arg(args.size() > 5 ? args[5] : "");
+        const Json o = options_arg(args.size() > 6 ? args[6] : "");
+        if (xy.size() < 6 || xy.size() % 2 != 0) {
+          return usage();
+        }
+        double x0 = xy[0], y0 = xy[1], x1 = xy[0], y1 = xy[1];
+        for (std::size_t i = 0; i < xy.size(); i += 2) {
+          x0 = std::min(x0, xy[i]);
+          x1 = std::max(x1, xy[i]);
+          y0 = std::min(y0, xy[i + 1]);
+          y1 = std::max(y1, xy[i + 1]);
+        }
+        Json pts = Json::array();
+        for (std::size_t i = 0; i < xy.size(); i += 2) {
+          pts.push_back({x1 > x0 ? (xy[i] - x0) / (x1 - x0) : 0.5,
+                         y1 > y0 ? (xy[i + 1] - y0) / (y1 - y0) : 0.5});
+        }
+        obj = {{"kind", "polygon"}, {"x0", x0}, {"y0", y0},
+               {"x1", x1}, {"y1", y1}, {"points", std::move(pts)},
+               {"width", jget(o, "width", 4.0)}};
+        if (Json st = rgba_arg(jget<std::string>(o, "stroke", ""));
+            !st.is_null()) {
+          obj["stroke"] = st;
+        }
+        style_opts(obj, o);
+      } else if (op == "shape") {
         const auto xy = numbers_arg(args.size() > 5 ? args[5] : "");
         const Json o = options_arg(args.size() > 6 ? args[6] : "");
         if (xy.size() != 4) {
@@ -2616,6 +2822,7 @@ main(int argc, char** argv)
             !f.is_null()) {
           obj["fill"] = f;
         }
+        style_opts(obj, o);  // its effects
       } else {
         const auto xy = numbers_arg(arg);
         const Json o = options_arg(args.size() > 6 ? args[6] : "");
@@ -2636,13 +2843,48 @@ main(int argc, char** argv)
           obj["y1"] = xy[3];
           obj["box"] = true;
         }
-        if (Json col = rgba_arg(jget<std::string>(o, "color", ""));
-            !col.is_null()) {
-          obj["stroke"] = col;
-        }
+        // Its colour, alignment, spacing, effects.
+        style_opts(obj, o);
       }
       objects.push_back(std::move(obj));
       st = c.set_markup_objects(*pid, *aid, layer, objects);
+    } else if (op == "style") {
+      // An object's style changed: style <layer> <object-id> <options>.
+      auto a = c.project(*pid)->asset(*aid);
+      if (!a.ok()) {
+        return fail(a.error());
+      }
+      Json objects = Json::array();
+      for (const auto& l : a->layers) {
+        if (l.id == layer && l.source) {
+          if (auto m = c.project(*pid)->asset(*l.source);
+              m.ok() && m->markup) {
+            objects = m->markup->objects;
+          }
+        }
+      }
+      bool found = false;
+      for (auto& obj : objects) {
+        if (jget<std::string>(obj, "id", "") == arg) {
+          style_opts(obj, options_arg(args.size() > 5 ? args[5] : ""));
+          found = true;
+        }
+      }
+      if (!found) {
+        return fail(make_error(Code::NotFound,
+                               std::format("layer {} has no object '{}'",
+                                           layer.empty() ? "0" : layer,
+                                           arg)));
+      }
+      st = c.set_markup_objects(*pid, *aid, layer, objects);
+    } else if (op == "arrange") {
+      // arrange <layer> <how> <object-id>...: up or down the order, lined
+      // up, spaced evenly (media::arrange_objects).
+      if (plain.size() < 6) {
+        return usage();
+      }
+      st = c.arrange_markup(*pid, *aid, layer,
+                            {plain.begin() + 5, plain.end()}, arg);
     } else if (op == "materialize") {
       std::vector<std::string> ids(args.begin() + std::min<std::size_t>(
                                                       4, args.size()),
@@ -2743,6 +2985,41 @@ main(int argc, char** argv)
                   it->name.empty() ? "-" : it->name.c_str(),
                   what.c_str(), when.c_str(),
                   it->mask ? "  -- masks the layer below" : "", in.c_str());
+      // A markup's objects, by id (what `style` and `arrange` name),
+      // bottom first: kind, a text's words and alignment, effects, where
+      // it lies (its bounds, as the stage outlines it).
+      auto src = it->source ? c.project(*pid)->asset(*it->source)
+                            : Result<project::Asset>(make_error(
+                                  Code::NotFound, "none"));
+      if (src.ok() && src->markup) {
+        for (const auto& o : src->markup->objects) {
+          std::string more;
+          if (auto t = jget<std::string>(o, "text", ""); !t.empty()) {
+            more += std::format(" \"{}\"", one_line(utf8_truncate(t, 32)));
+          }
+          if (auto al = jget<std::string>(o, "align", ""); !al.empty()) {
+            more += " " + al;
+          }
+          for (const auto& e : jget(o, "effects", Json::array())) {
+            more += " +" + jget<std::string>(e, "kind", "?");
+          }
+          if (const Json g = jget(o, "gradient", Json()); g.is_object()) {
+            more += std::format(" {} gradient ({} stops)",
+                                jget<std::string>(g, "kind", "linear"),
+                                jget(g, "stops", Json::array()).size());
+          }
+          if (const Json pts = jget(o, "points", Json()); pts.is_array()) {
+            more += std::format(" {} corners", pts.size());
+          }
+          const auto r = media::object_bounds(o);
+          more += std::format(" at {:.4g},{:.4g} {:.4g}x{:.4g}", r[0], r[1],
+                              r[2], r[3]);
+          std::printf("        %s %s%s\n",
+                      jget<std::string>(o, "id", "").c_str(),
+                      jget<std::string>(o, "kind", "").c_str(),
+                      more.c_str());
+        }
+      }
     }
     for (const auto& t : a->transitions) {
       std::printf("  %s %s -> %s\n", t.kind.c_str(),
@@ -2828,15 +3105,60 @@ main(int argc, char** argv)
     }
     return 0;
   }
+  if (cmd == "upscaler") {
+    // Settings > Upscaling: an upscaler's values laid on the kept ones
+    // ("k=v,..."), or its defaults again (--reset); then every one's.
+    if (!args.empty()) {
+      bool reset = false;
+      Json values = Json::object();
+      for (std::size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--reset") {
+          reset = true;
+        } else {
+          values.update(tune_spec(args[i]));
+        }
+      }
+      if (auto st = c.set_upscale_tuning(args[0], values, reset);
+          !st.ok()) {
+        return fail(st.error());
+      }
+    }
+    const Json all = c.upscale_settings();
+    for (const auto& u : all["upscalers"]) {
+      std::printf("%-10s %-14s %-6s %s%s\n",
+                  u["id"].get<std::string>().c_str(),
+                  u["name"].get<std::string>().c_str(),
+                  u["kind"].get<std::string>().c_str(),
+                  u["state"].get<std::string>().c_str(),
+                  jget(u, "custom", false) ? "  (changed)" : "");
+      const Json& t = u["tuning"];
+      for (const auto& o : t["options"]) {
+        const auto key = o["key"].get<std::string>();
+        const auto why = jget<std::string>(o, "why", "");
+        if (why == "not-for-model") {
+          continue;
+        }
+        const Json v = jget(t["values"], key.c_str(), Json());
+        std::string shown = v.is_boolean() ? (v.get<bool>() ? "on" : "off")
+                                           : to_text(v);
+        std::printf("  %-12s %s%s\n", key.c_str(), shown.c_str(),
+                    why.empty() ? "" : std::format("  ({})", why).c_str());
+      }
+    }
+    return 0;
+  }
   if (cmd == "tuning") {
     if (args.empty()) {
       return usage();
     }
     std::string pref = "balanced";
     bool edit = false;
+    bool continues = false;
     Json tune = Json::object();
     for (std::size_t i = 1; i < args.size(); ++i) {
-      if (args[i] == "--speed") {
+      if (args[i] == "--continues") {
+        continues = true;
+      } else if (args[i] == "--speed") {
         pref = "speed";
       } else if (args[i] == "--quality") {
         pref = "quality";
@@ -2853,7 +3175,7 @@ main(int argc, char** argv)
         return usage();
       }
     }
-    auto r = c.tuning(args[0], pref, edit, tune);
+    auto r = c.tuning(args[0], pref, edit, tune, continues);
     if (!r.ok()) {
       return fail(r.error());
     }

@@ -595,6 +595,12 @@ public:
   // Its vector objects, as the app now has them: kept normalized.
   Status set_markup_objects(ProjectId, AssetId, const std::string& layer,
                             const Json& objects);
+  // Its objects ARRANGED (media::arrange_objects): `objects` (ids) moved
+  // up or down the order, lined up or spaced evenly -- one command,
+  // "Arrange", "Align" or "Distribute".
+  Status arrange_markup(ProjectId, AssetId, const std::string& layer,
+                        const std::vector<std::string>& objects,
+                        const std::string& how);
   // Objects made pixels: drawn into its raster and gone from its objects.
   Status materialize_markup(ProjectId, AssetId, const std::string& layer,
                             const std::vector<std::string>& objects);
@@ -967,12 +973,31 @@ public:
                 bool edit = false, bool turbo = true) const;
   // Favor's options for model `model_id` at `preference` -- their values,
   // ranges and whether this Mac and install can have them -- with
-  // `overrides` (Custom's) settled in: models::tuning_options.
+  // `overrides` (Custom's) settled in: models::tuning_options. A request
+  // that continues a clip (`continuation`) has the catalog's continuation
+  // presets (TuningContext::continuation).
   Result<Json> tuning(const std::string& model_id,
                       std::string_view preference, bool edit,
-                      const Json& overrides = Json::object()) const;
+                      const Json& overrides = Json::object(),
+                      bool continuation = false) const;
   // What decides the options beyond the catalog, for `m`.
   models::TuningContext tuning_context(const models::ModelEntry& m) const;
+  // THE UPSCALERS' OPTIONS (Settings › Upscaling, DESIGN §4f): what
+  // Favor's Custom is to a generation, for jobs that have no card to set
+  // them on -- each upscaler's acceleration tiers (int8 GEMM, Sage, Sol
+  // where it takes it), settled from Med's preset (int8 GEMMs where the
+  // GPU has matrix cores) with the person's own laid on, kept in
+  // <support>/upscale.json: {"upscalers": [{"id", "name", "kind":
+  // "video" | "image", "state", "tuning": models::tuning_options}]}.
+  Json upscale_settings() const;
+  // `model`'s own values ({key: value}, as tuning_options lists them)
+  // laid on the ones kept -- `reset`: on its defaults, so {} restores
+  // them. A value as the default is not kept.
+  Status set_upscale_tuning(const std::string& model, const Json& values,
+                            bool reset = false);
+  // What an upscale by `m` runs with: models::resolve_tuning over the
+  // kept values -- the recipe's "tuning".
+  Json upscale_tuning(const models::ModelEntry& m) const;
   // What `preference` runs `m` with, as the Favor selector says it: {"steps",
   // "turbo": its adapter's name ("" none), "missing": [{"id", "name"}] --
   // the LoRAs it needs that are not installed -- and the switches it sets,
@@ -1431,7 +1456,8 @@ private:
   // LoRAs or turns the adapter off.
   Status check_preset_loras_(const models::ModelEntry& m,
                              std::string_view preference,
-                             const Json& overrides) const;
+                             const Json& overrides,
+                             bool continuation = false) const;
   // Favor's settled options `t` into recipe `r`: its steps (`steps` when
   // the request names them), the adapter and branch they name by catalog
   // id, and all of them as "tuning".
@@ -1496,6 +1522,9 @@ private:
   };
   mutable std::mutex                 _upscale_mu;
   std::map<AssetId, UpscaleTarget>   _upscale_targets;
+  // Settings › Upscaling's values by model (<support>/upscale.json).
+  mutable std::mutex                 _upscale_tuning_mu;
+  Json                               _upscale_tuning = Json::object();
   // The recording running (capture_*): its project, composition, the
   // source's name.
   mutable std::mutex                   _camera_mu;

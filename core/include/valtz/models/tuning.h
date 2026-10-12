@@ -24,8 +24,8 @@
 //   loras          list    the LoRAs: [{"path", "scale", "on"}] -- a
 //                          preset's is the catalog's few-step Turbo LoRA
 //                          (`turbo.lora`, its file), on; others are
-//                          one's own. Up to two on: vpipe's two slots,
-//                          `lora` and `lora2` (one with HyperFlow, which
+//                          one's own. Up to eight on: vpipe's slots,
+//                          `lora` .. `lora8` (seven with HyperFlow, which
 //                          takes the other). An older "turbo" override
 //                          (true / false / the catalog's id / a file)
 //                          still reads, into the list
@@ -71,7 +71,10 @@
 // A family offers the ones its catalog `engine.vpipe` block names: the
 // acceleration tiers vpipe applies to it (`accel`), its adapters and
 // branch (`turbo`, `hyperflow`, `vdn`), its shifts (`config`'s, or a
-// `scheduler`).
+// `scheduler`). An UPSCALER (role "upscale": FlashVSR, VOSR) offers its
+// acceleration tiers alone -- it restores in its own step, with no
+// adapter or checkpoint of one's own -- and Settings › Upscaling sets
+// them (Controller::upscale_settings), there being no card to.
 
 #ifndef VALTZ_MODELS_TUNING_H
 #define VALTZ_MODELS_TUNING_H
@@ -87,6 +90,11 @@
 
 namespace valtz::models {
 
+// How many runtime LoRAs vpipe applies at once to an image or video DiT:
+// its stages' slots, `lora`, `lora2` .. `lora8` (engine::kLoraSlots, the
+// engine's half, is held equal to it).
+inline constexpr int kLoraSlots = 8;
+
 // What decides availability beyond the catalog: this install and Mac.
 struct TuningContext {
   bool turbo_installed = false;      // the catalog `turbo.lora` entry
@@ -101,12 +109,20 @@ struct TuningContext {
   std::uint32_t gpu_cores = 0;
   std::uint32_t ane_cores = 0;
   std::uint32_t ram_gb = 0;
+  // The request CONTINUES a clip (a Ref2VA continuation): a preset is
+  // the catalog's `continuation.<preference>` laid over its
+  // `presets.<preference>` -- a few-step adapter that keeps a picture
+  // well may not keep a clip's place.
+  bool continuation = false;
   // Every LoRA of the model's family the catalog lists, by id: its name,
   // and its file when installed ("" when not) -- what a preset's table
   // picks its adapter from.
   struct Lora {
     std::string name;
     std::string path;
+    // As Settings > Capabilities lists it ("8-step Turbo LoRA, FL2VA
+    // (lightx2v)"); "": its name.
+    std::string label = {};
   };
   std::map<std::string, Lora> loras;
 };
@@ -141,7 +157,13 @@ Json missing_loras(const ModelEntry& m, const TuningContext& ctx,
 //                 "needs": key it refines (sol_tau: sol_attn),
 //                 "extra": the loras list's {"slots", "turbo" (the
 //                   catalog Turbo LoRA's file), "names" (file: name),
-//                   "steps_on", "steps_off"}}, ...]}
+//                   "steps_on", "steps_off", "shift_off", "fast": the
+//                   model's ACCELERATION LoRAs -- its `turbo` block's
+//                   and its presets' candidates, not HyperFlow's or
+//                   TaoMate's (switches of their own) -- each {"id",
+//                   "name", "path" ("" not installed), "steps",
+//                   "config": the shifts it runs at}, fewest steps
+//                   first: Custom's quick pick}}, ...]}
 // in the order a panel lists them.
 Json tuning_options(const ModelEntry& m, const TuningContext& ctx,
                     std::string_view preference, bool edit,

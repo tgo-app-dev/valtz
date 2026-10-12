@@ -82,6 +82,23 @@ preset_table(const Json& vp, std::string_view preference)
   return t.is_object() ? t : Json::object();
 }
 
+// ...and for a request that CONTINUES a clip, its `continuation` table's
+// keys laid over it.
+Json
+preset_table(const Json& vp, std::string_view preference,
+             const TuningContext& ctx)
+{
+  Json t = preset_table(vp, preference);
+  if (ctx.continuation) {
+    const Json c = jget(jget(vp, "continuation", Json::object()),
+                        std::string(preference).c_str(), Json::object());
+    for (auto it = c.begin(); c.is_object() && it != c.end(); ++it) {
+      t[it.key()] = it.value();
+    }
+  }
+  return t;
+}
+
 // Whether `preference` runs TaoMate's method: its table says so (none
 // does: it is Custom's alternative, DESIGN §10a), its adapter is here,
 // and the Mac has the memory its table asks (`taomate.min_ram_gb`).
@@ -91,7 +108,7 @@ taomate_preset(const Json& vp, const TuningContext& ctx,
 {
   const Json tm = jget(vp, "taomate", Json());
   return tm.is_object() && ctx.taomate_installed &&
-         jget(preset_table(vp, preference), "taomate", false) &&
+         jget(preset_table(vp, preference, ctx), "taomate", false) &&
          ctx.ram_gb >= jget(tm, "min_ram_gb", 0u);
 }
 
@@ -110,7 +127,7 @@ pick_turbo(const ModelEntry& m, const TuningContext& ctx,
            std::string_view preference)
 {
   const Json vp = vpipe_block(m);
-  const Json p = preset_table(vp, preference);
+  const Json p = preset_table(vp, preference, ctx);
   TurboPick t;
   if (p.contains("turbo")) {
     const Json c = p["turbo"];
@@ -173,7 +190,7 @@ largest_weights(const std::filesystem::path& dir)
 
 // The LoRAs a Custom names (its "loras"), as they can be used: each by
 // its file, once; a file that is not there kept, marked missing and off.
-// How many may be on -- vpipe's two slots -- is settled after
+// How many may be on -- vpipe's slots, kLoraSlots -- is settled after
 // (settle_loras).
 Json
 loras_of(const Json& in)
@@ -316,7 +333,7 @@ offers(const ModelEntry& m, const TuningContext& ctx,
 {
   const Json vp = vpipe_block(m);
   const Json cfg = jget(vp, "config", Json::object());
-  const Json table = preset_table(vp, preference);
+  const Json table = preset_table(vp, preference, ctx);
   const TurboPick pick = pick_turbo(m, ctx, preference);
   const bool turbo_on = !pick.path.empty();
   // Its steps on, and off: its own count, else the turbo block's table.
@@ -326,6 +343,10 @@ offers(const ModelEntry& m, const TuningContext& ctx,
   // A song's generator (YuE2) takes no LoRA and no DiT of one's own, and
   // its flow matching schedules itself; its decoder may be another.
   const bool sound = m.role == "audio";
+  // An upscaler (FlashVSR, VOSR) restores in its own one step: only its
+  // arithmetic is anyone's to choose -- no adapter, no checkpoint in its
+  // model's place, no schedule.
+  const bool upscale = m.role == "upscale";
   std::vector<Offer> out;
 
   // Speech (MOSS-TTS) samples a token a frame: no steps to take; nor
@@ -464,10 +485,10 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     o.preset = false;
     out.push_back(std::move(o));
   }
-  if (!sound) {
+  if (!sound && !upscale) {
     // LoRAs, the few-step one among them: a preset's is the catalog's
     // Turbo LoRA (when installed), on; others are one's own. Up to two
-    // on -- vpipe's two slots, `lora` and `lora2`.
+    // on -- vpipe's slots, `lora` .. `lora8` (kLoraSlots).
     Offer o{"loras", Kind::List, 0.0, 2.0, 0.05};
     const double scale = jget(jget(vp, "turbo", Json::object()), "scale",
                               1.0);
@@ -489,19 +510,68 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     Json names = Json::object();
     for (const auto& [id, l] : ctx.loras) {
       if (!l.path.empty()) {
-        names[lora_file(l.path)] = l.name;
+        names[lora_file(l.path)] = l.label.empty() ? l.name : l.label;
       }
     }
-    if (turbo_on) {
+    if (turbo_on && !names.contains(lora_file(pick.path))) {
       names[lora_file(pick.path)] = pick.name;
-    } else if (listed_off) {
+    } else if (listed_off && !names.contains(listed)) {
       names[listed] = ctx.turbo_name;
+    }
+    // Its ACCELERATION LoRAs, for Custom's quick pick: the `turbo`
+    // block's and every preset's candidates, each at the steps and shifts
+    // it runs with -- not HyperFlow's or TaoMate's adapter, which have
+    // switches of their own.
+    Json fast = Json::array();
+    {
+      std::set<std::string> taken;
+      for (const char* own : {"hyperflow", "taomate"}) {
+        taken.insert(
+            jget<std::string>(jget(vp, own, Json::object()), "lora", ""));
+      }
+      auto offer = [&](const std::string& id, int steps, Json config) {
+        if (id.empty() || !taken.insert(id).second) {
+          return;
+        }
+        const auto it = ctx.loras.find(id);
+        const bool known = it != ctx.loras.end();
+        fast.push_back(
+            {{"id", id},
+             {"name", !known                  ? id
+                      : it->second.label.empty() ? it->second.name
+                                                 : it->second.label},
+             {"path", known && !it->second.path.empty()
+                          ? lora_file(it->second.path)
+                          : std::string()},
+             {"steps", steps},
+             {"config", config.is_object() ? config : Json::object()}});
+      };
+      if (block.is_object()) {
+        const Json st = jget(block, "steps", Json());
+        offer(jget<std::string>(block, "lora", ""),
+              st.is_object()
+                  ? jget(st, std::string(preference).c_str(),
+                         jget(st, "balanced", steps_on))
+                  : steps_on,
+              jget(block, "config", Json::object()));
+      }
+      for (const char* p : {"speed", "balanced", "quality"}) {
+        const Json cands = jget(preset_table(vp, p), "turbo", Json());
+        for (const auto& c : cands.is_array() ? cands : Json::array()) {
+          offer(jget<std::string>(c, "lora", ""), jget(c, "steps", steps_on),
+                jget(c, "config", Json::object()));
+        }
+      }
+      std::stable_sort(fast.begin(), fast.end(),
+                       [](const Json& a, const Json& b) {
+                         return jget(a, "steps", 0) < jget(b, "steps", 0);
+                       });
     }
     // The steps with the preset's few-step LoRA on, and with it off: its
     // counts are what it was distilled for, not a scaling of the model's.
     // An adapter distilled at its own shift (lightx2v's 768p ones: video
     // 6.0) brings it, and gives it back when turned off.
-    o.extra = {{"slots", 2},
+    o.extra = {{"slots", kLoraSlots},
                {"shift_on", turbo_on ? pick.config
                                      : jget(block, "config",
                                             Json::object())},
@@ -517,7 +587,8 @@ offers(const ModelEntry& m, const TuningContext& ctx,
                {"turbo_scale", scale},
                {"names", std::move(names)},
                {"steps_on", steps_on},
-               {"steps_off", steps_off}};
+               {"steps_off", steps_off},
+               {"fast", std::move(fast)}};
     out.push_back(std::move(o));
   }
   // Community checkpoints for the DiT and the VAE, in place of the
@@ -525,7 +596,8 @@ offers(const ModelEntry& m, const TuningContext& ctx,
   // Speech has neither: its codec is its own.
   const bool speech = jget(vp, "speech", Json()).is_object();
   for (const char* part : {"dits", "vaes"}) {
-    if (speech || (sound && std::string_view(part) == "dits")) {
+    if (speech || upscale ||
+        (sound && std::string_view(part) == "dits")) {
       continue;
     }
     Offer o{part, Kind::List};
@@ -544,7 +616,7 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     Offer a{"audio_shift", Kind::Int, 1, 30, 1};
     a.preset = static_cast<int>(std::lround(jget(cfg, "audio_shift", 3.0)));
     out.push_back(std::move(a));
-  } else if (!sound) {
+  } else if (!sound && !upscale) {
     // An image family's scheduler shift. One that schedules itself
     // (no `scheduler` stage: FLUX.2) has none to change.
     const Json sched = jget(vp, "scheduler", Json());
@@ -662,7 +734,7 @@ settle_loras(const Offer& o, Json& values, const Json& overrides)
       }
     }
   }
-  int slots = jget(o.extra, "slots", 2);
+  int slots = jget(o.extra, "slots", kLoraSlots);
   // HyperFlow's adapter, or TaoMate's, takes the first slot -- and the
   // Turbo LoRA's place.
   const bool adapter = jget(values, "hyperflow", false) ||

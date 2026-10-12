@@ -39,6 +39,22 @@ steady_seconds()
       .count();
 }
 
+// The tuning's slots and the engine's are one count: vpipe's.
+static_assert(models::kLoraSlots == engine::kLoraSlots);
+
+// A recipe's params that name a weight file of one's own -- each LoRA
+// slot's, a DiT's, a VAE's: never sent to a fleet member, nor taken from
+// one.
+std::vector<std::string>
+own_file_keys()
+{
+  std::vector<std::string> keys = {"lora_file", "dit_file", "vae_file"};
+  for (int k = 2; k <= engine::kLoraSlots; ++k) {
+    keys.push_back(std::format("lora{}_file", k));
+  }
+  return keys;
+}
+
 // `what` among a list of strings (a fleet member's ops, models).
 bool
 listed(const Json& list, std::string_view what)
@@ -316,6 +332,7 @@ Controller::create(ControllerConfig cfg)
         jget(helper, "drafter_bits", 8) == 4 ? 4 : 8;
     c->_video_every = std::max(0.0, jget(helper, "video_every", 0.0));
   }
+  c->_upscale_tuning = read_settings(paths.support / "upscale.json");
 
   char host[256] = {};
   gethostname(host, sizeof(host) - 1);
@@ -1500,13 +1517,23 @@ Controller::tuning_context(const models::ModelEntry& m) const
   c.gpu_cores = _hw.gpu_cores;
   c.ane_cores = _hw.ane_cores;
   c.ram_gb = _hw.ram_gb();
-  // The family's LoRAs: what a preset's table picks its adapter from.
+  // The family's LoRAs: what a preset's table picks its adapter from --
+  // each labelled as Settings > Capabilities lists it.
   for (const auto& e : _catalog.models()) {
     if (e.role != "lora" || e.family != m.family) {
       continue;
     }
+    std::string label;
+    for (const auto& f : _catalog.families()) {
+      for (const auto& mem : f.members) {
+        if (mem.model == e.id) {
+          label = mem.label;
+        }
+      }
+    }
     c.loras[e.id] = {e.name,
-                     coming_(e) ? model_path_(e).string() : std::string()};
+                     coming_(e) ? model_path_(e).string() : std::string(),
+                     label};
   }
   return c;
 }
@@ -1514,7 +1541,8 @@ Controller::tuning_context(const models::ModelEntry& m) const
 Status
 Controller::check_preset_loras_(const models::ModelEntry& m,
                                 std::string_view preference,
-                                const Json& overrides) const
+                                const Json& overrides,
+                                bool continuation) const
 {
   // Not on this Mac, nor on its way: a fleet member runs it, with its
   // own (DESIGN §11).
@@ -1526,8 +1554,9 @@ Controller::check_preset_loras_(const models::ModelEntry& m,
       (overrides.contains("loras") || overrides.contains("turbo"))) {
     return ok_status();
   }
-  const Json miss =
-      models::missing_loras(m, tuning_context(m), preference, overrides);
+  auto ctx = tuning_context(m);
+  ctx.continuation = continuation;
+  const Json miss = models::missing_loras(m, ctx, preference, overrides);
   if (miss.empty()) {
     return ok_status();
   }
@@ -1554,10 +1583,10 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
     r.params["steps"] = jget(jget(vp, "defaults", Json::object()), "steps",
                              8);
   }
-  // The two LoRA slots: HyperFlow's adapter first when it is on, then the
-  // LoRAs on, in list order. The catalog's Turbo LoRA in the first is
-  // recorded by its id; anything else by its file. The job is given the
-  // files.
+  // The LoRA slots (vpipe's eight): HyperFlow's adapter first when it is
+  // on, then the LoRAs on, in list order. The catalog's Turbo LoRA in the
+  // first is recorded by its id; anything else by its file. The job is
+  // given the files.
   struct Slot {
     std::string id, file;
     double      scale = 1.0;
@@ -1581,7 +1610,7 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
     }
   }
   for (const auto& l : jget(t, "loras", Json::array())) {
-    if (slots.size() >= 2) {
+    if (slots.size() >= static_cast<std::size_t>(engine::kLoraSlots)) {
       break;
     }
     if (jget(l, "on", false)) {
@@ -1600,18 +1629,19 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
     }
     r.params["lora_scale"] = slots[0].scale;
   }
-  if (slots.size() > 1) {
-    // The second slot takes a file (a catalog adapter by its file too).
-    std::string file = slots[1].file;
+  // The slots after it take files (a catalog adapter by its file too):
+  // "lora2_file" .. "lora8_file".
+  for (std::size_t i = 1; i < slots.size(); ++i) {
+    std::string file = slots[i].file;
     if (file.empty()) {
       for (const auto& [f, id] : catalog_ids) {
-        if (id == slots[1].id) {
+        if (id == slots[i].id) {
           file = f;
         }
       }
     }
-    r.params["lora2_file"] = file;
-    r.params["lora2_scale"] = slots[1].scale;
+    r.params[std::format("lora{}_file", i + 1)] = file;
+    r.params[std::format("lora{}_scale", i + 1)] = slots[i].scale;
   }
   // Community checkpoints in place of the model's DiT and VAE: the one on
   // in each list.
@@ -1657,15 +1687,122 @@ Controller::preset_summary(const models::ModelEntry& m,
 
 Result<Json>
 Controller::tuning(const std::string& model_id, std::string_view preference,
-                   bool edit, const Json& overrides) const
+                   bool edit, const Json& overrides,
+                   bool continuation) const
 {
   const auto* m = _catalog.find(model_id);
   if (!m) {
     return make_error(Code::NotFound, msg::kUnknownModel,
                       {{"model", model_id}});
   }
-  return models::tuning_options(*m, tuning_context(*m), preference, edit,
-                                overrides);
+  auto ctx = tuning_context(*m);
+  ctx.continuation = continuation;
+  return models::tuning_options(*m, ctx, preference, edit, overrides);
+}
+
+// ---- the upscalers' options (Settings › Upscaling) ---------------------
+
+namespace {
+
+// An upscale runs as Med would: int8 GEMMs where the GPU has matrix
+// cores, the rest off -- unless Settings › Upscaling says otherwise.
+constexpr std::string_view kUpscalePreference = "balanced";
+
+}
+
+Json
+Controller::upscale_settings() const
+{
+  Json list = Json::array();
+  for (const auto& e : _catalog.models()) {
+    if (e.role != "upscale") {
+      continue;
+    }
+    Json kept;
+    {
+      std::lock_guard lk(_upscale_tuning_mu);
+      kept = jget(_upscale_tuning, e.id.c_str(), Json::object());
+    }
+    list.push_back(
+        {{"id", e.id},
+         {"name", e.name},
+         {"kind", e.has(models::Capability::UpscaleVideo) ? "video"
+                                                          : "image"},
+         {"state", models::to_str(_store->info(e).state)},
+         {"custom", kept.is_object() && !kept.empty()},
+         {"tuning", models::tuning_options(e, tuning_context(e),
+                                           kUpscalePreference, false,
+                                           kept)}});
+  }
+  return {{"upscalers", std::move(list)}};
+}
+
+Status
+Controller::set_upscale_tuning(const std::string& model, const Json& values,
+                               bool reset)
+{
+  const auto* m = _catalog.find(model);
+  if (!m) {
+    return make_error(Code::NotFound, msg::kUnknownModel, {{"model", model}});
+  }
+  if (m->role != "upscale") {
+    return make_error(Code::InvalidArgument,
+                      std::format("{} is not an upscaler", m->name));
+  }
+  if (!values.is_object()) {
+    return make_error(Code::InvalidArgument,
+                      "an upscaler's options are {key: value}");
+  }
+  const fs::path file = _paths.support / "upscale.json";
+  const auto ctx = tuning_context(*m);
+  const Json defaults = models::resolve_tuning(*m, ctx, kUpscalePreference,
+                                               false);
+  Json kept = Json::object();
+  {
+    std::lock_guard lk(_upscale_tuning_mu);
+    Json all = read_settings(file);
+    // The values kept, these laid on them -- as it would run: a key it
+    // does not take, a value out of range, one this Mac cannot have, is
+    // not kept -- and only where they differ from the defaults: none
+    // kept, none changed.
+    Json asked = reset ? Json::object()
+                       : jget(all, model.c_str(), Json::object());
+    if (!asked.is_object()) {
+      asked = Json::object();
+    }
+    for (const auto& [k, v] : values.items()) {
+      asked[k] = v;
+    }
+    const Json settled = models::resolve_tuning(*m, ctx, kUpscalePreference,
+                                                false, asked);
+    for (const auto& [k, v] : asked.items()) {
+      if (settled.contains(k) &&
+          settled[k] != jget(defaults, k.c_str(), Json())) {
+        kept[k] = settled[k];
+      }
+    }
+    if (kept.empty()) {
+      all.erase(model);
+    } else {
+      all[model] = kept;
+    }
+    VALTZ_TRY(write_settings(file, all));
+    _upscale_tuning = std::move(all);
+  }
+  post_("upscale.changed", JobId{}, {{"model", model}, {"values", kept}});
+  return ok_status();
+}
+
+Json
+Controller::upscale_tuning(const models::ModelEntry& m) const
+{
+  Json kept;
+  {
+    std::lock_guard lk(_upscale_tuning_mu);
+    kept = jget(_upscale_tuning, m.id.c_str(), Json::object());
+  }
+  return models::resolve_tuning(m, tuning_context(m), kUpscalePreference,
+                                false, kept);
 }
 
 std::vector<Controller::AutoPick>
@@ -3975,7 +4112,12 @@ Controller::generate_video(GenerateVideoRequest req)
   if (req.first && !jget(overrides, "taomate_lora", false)) {
     overrides["taomate"] = false;
   }
-  VALTZ_TRY(check_preset_loras_(*m, req.preference, overrides));
+  // A clip CONTINUED is settled as one (TuningContext::continuation): the
+  // catalog's continuation presets, not the ones that keep a picture.
+  auto tctx = tuning_context(*m);
+  tctx.continuation = req.continue_from.has_value();
+  VALTZ_TRY(check_preset_loras_(*m, req.preference, overrides,
+                                tctx.continuation));
 
   project::Recipe r;
   r.op = std::string(engine::kOpGenerateVideo);
@@ -3990,9 +4132,8 @@ Controller::generate_video(GenerateVideoRequest req)
   stamp_origin(r, *m);
   // The adapter or branch is part of what made the clip: a rebuild
   // applies it too.
-  apply_tuning_(r, *m, models::resolve_tuning(*m, tuning_context(*m),
-                                              req.preference, false,
-                                              overrides),
+  apply_tuning_(r, *m, models::resolve_tuning(*m, tctx, req.preference,
+                                              false, overrides),
                 req.steps);
   if (req.first) {
     // The picture it opens on is <Picture 1> to the model (H3's I2VA:
@@ -4364,6 +4505,9 @@ Controller::upscale_layer(UpscaleRequest req)
       r.params["encoder"] = enc;
     }
   }
+  // Its arithmetic, as Settings › Upscaling has it: the stages' int8
+  // GEMMs, Sage, Sol (graph-builder's accel_of).
+  r.params["tuning"] = upscale_tuning(*m);
   r.inputs.push_back({"source", src.id, v.number});
   stamp_origin(r, *m);
   VALTZ_ASSIGN(project::Asset a, p->define_derived(
@@ -4996,8 +5140,9 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
                                         msg::kEngineCannotRun,
                                         {{"operation", r.op}}));
   bool own_files = false;
-  for (const char* k : {"lora_file", "lora2_file", "dit_file", "vae_file"}) {
-    own_files = own_files || !jget<std::string>(r.params, k, "").empty();
+  for (const auto& k : own_file_keys()) {
+    own_files = own_files ||
+                !jget<std::string>(r.params, k.c_str(), "").empty();
   }
   std::vector<std::string> needs = {r.model};
   for (const char* k : {"lora", "decoder", "encoder", "branch", "vad",
@@ -5222,11 +5367,13 @@ Controller::resolve_build_(const std::string& model, const Json& params,
     }
     ref.lora = li.path();
   }
-  // LoRAs by their files, in the two slots.
-  for (const auto& [key, slot] :
-       {std::pair{"lora_file", &ref.lora}, std::pair{"lora2_file",
-                                                     &ref.lora2}}) {
-    const auto f = jget<std::string>(rp, key, "");
+  // LoRAs by their files, in their slots: "lora_file" the first,
+  // "lora2_file" .. "lora8_file" the rest -- a slot left out kept empty
+  // in its place (a slot is its index).
+  for (int k = 1; k <= engine::kLoraSlots; ++k) {
+    const std::string key =
+        k == 1 ? std::string("lora_file") : std::format("lora{}_file", k);
+    const auto f = jget<std::string>(rp, key.c_str(), "");
     if (f.empty()) {
       continue;
     }
@@ -5234,7 +5381,13 @@ Controller::resolve_build_(const std::string& model, const Json& params,
     if (!fs::is_regular_file(f, ec)) {
       return make_error(Code::NotFound, msg::kLoraMissing, {{"file", f}});
     }
-    *slot = f;
+    if (k == 1) {
+      ref.lora = f;
+    } else {
+      ref.more_loras.resize(std::max<std::size_t>(ref.more_loras.size(),
+                                                  k - 1));
+      ref.more_loras[k - 2] = f;
+    }
   }
   // A generator's own decoder (YuE2's VAE), by its folder -- unless a
   // checkpoint of one's own takes its place (below).
@@ -6288,8 +6441,11 @@ Controller::fleet_serve_(const fleet::Offer& o, const std::string& from,
   }
   // Files of the sender's own are never sent, so never named: a path in
   // a job from elsewhere is refused.
-  for (const char* k : {"lora_file", "lora2_file", "dit_file", "vae_file",
-                        "mtp_model", "draft_model", "output"}) {
+  auto named = own_file_keys();
+  for (const char* k : {"mtp_model", "draft_model", "output"}) {
+    named.emplace_back(k);
+  }
+  for (const auto& k : named) {
     if (o.params.contains(k)) {
       return make_error(Code::InvalidArgument,
                         std::format("a fleet job names a file ({})", k));

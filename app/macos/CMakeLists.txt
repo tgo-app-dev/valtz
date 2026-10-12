@@ -82,6 +82,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/RootView.swift
   Sources/Views/CapabilitiesView.swift
   Sources/Views/HelperView.swift
+  Sources/Views/UpscalingView.swift
   Sources/Views/StorageView.swift
   Sources/Views/SettingsView.swift
   Sources/Views/SettingsNavigation.swift

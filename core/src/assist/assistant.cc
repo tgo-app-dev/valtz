@@ -1,5 +1,7 @@
 #include "valtz/assist/assistant.h"
 
+#include "valtz/base/text.h"
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -1364,6 +1366,274 @@ clip_sections(const std::map<std::string, std::string>& given)
     }
   }
   return out;
+}
+
+namespace {
+
+// "00:04.000" (or "4.5", "1:02") as seconds; false when it is not one.
+bool
+clock_seconds(std::string_view t, double& out)
+{
+  double total = 0;
+  double part = 0;
+  bool any = false;
+  bool frac = false;
+  double scale = 0.1;
+  for (const char c : t) {
+    if (c >= '0' && c <= '9') {
+      any = true;
+      if (frac) {
+        part += (c - '0') * scale;
+        scale /= 10;
+      } else {
+        part = part * 10 + (c - '0');
+      }
+    } else if (c == ':' && !frac) {
+      total = (total + part) * 60;
+      part = 0;
+    } else if (c == '.' && !frac) {
+      frac = true;
+    } else {
+      return false;
+    }
+  }
+  out = total + part;
+  return any;
+}
+
+// A shot's description as its own clip counts it: its shots numbered
+// from [Shot 1], the first untimed, the later ones' times from where the
+// first began. A model writing a scene numbers the shots through the
+// scene ("[Shot 2] At 00:04.000, ..."), which in a clip of its own would
+// be a cut four seconds in.
+std::string
+shots_from_one(std::string_view d)
+{
+  std::string out;
+  int n = 0;
+  double first_at = 0;
+  std::size_t i = 0;
+  while (i < d.size()) {
+    const std::size_t at = d.find("[Shot ", i);
+    const std::size_t close =
+        at == std::string_view::npos ? at : d.find(']', at);
+    if (close == std::string_view::npos) {
+      out.append(d.substr(i));
+      break;
+    }
+    const std::string_view num = d.substr(at + 6, close - at - 6);
+    if (num.empty() || !std::ranges::all_of(num, [](char c) {
+          return c >= '0' && c <= '9';
+        })) {
+      out.append(d.substr(i, close + 1 - i));
+      i = close + 1;
+      continue;
+    }
+    out.append(d.substr(i, at - i));
+    out += std::format("[Shot {}]", ++n);
+    i = close + 1;
+    // Its time: " At MM:SS.mmm,".
+    std::size_t j = i;
+    while (j < d.size() && d[j] == ' ') {
+      ++j;
+    }
+    if (!d.substr(j).starts_with("At ")) {
+      continue;
+    }
+    std::size_t e = j + 3;
+    while (e < d.size() && (std::isdigit(static_cast<unsigned char>(d[e])) ||
+                            d[e] == ':' || d[e] == '.')) {
+      ++e;
+    }
+    double t = 0;
+    if (!clock_seconds(d.substr(j + 3, e - j - 3), t)) {
+      continue;
+    }
+    if (e < d.size() && d[e] == ',') {
+      ++e;
+    }
+    i = e;
+    if (n == 1) {
+      first_at = t;
+    } else if (t - first_at > 0) {
+      out += std::format(" At {},", timecode(t - first_at));
+    }
+  }
+  return out;
+}
+
+// What a shot's description says happens, for a summary none was given:
+// its first sentences (two, 300 bytes at most), its shots' markers and
+// times left out.
+std::string
+gist(std::string_view d)
+{
+  std::string flat;
+  for (std::size_t i = 0; i < d.size();) {
+    if (d.substr(i).starts_with("[Shot ")) {
+      const std::size_t close = d.find(']', i);
+      i = close == std::string_view::npos ? d.size() : close + 1;
+      std::size_t j = i;
+      while (j < d.size() && d[j] == ' ') {
+        ++j;
+      }
+      if (d.substr(j).starts_with("At ")) {
+        const std::size_t comma = d.find(',', j);
+        if (comma != std::string_view::npos && comma - j < 16) {
+          i = comma + 1;
+        }
+      }
+      continue;
+    }
+    const char c = d[i++] == '\n' ? ' ' : d[i - 1];
+    if (c != ' ' || (!flat.empty() && flat.back() != ' ')) {
+      flat += c;
+    }
+  }
+  std::string out;
+  int sentences = 0;
+  for (std::size_t i = 0; i < flat.size() && sentences < 2; ++i) {
+    out += flat[i];
+    if ((flat[i] == '.' || flat[i] == '!' || flat[i] == '?') &&
+        (i + 1 == flat.size() || flat[i + 1] == ' ')) {
+      ++sentences;
+    }
+  }
+  return std::string(utf8_prefix(trimmed(out), 300));
+}
+
+}
+
+std::string
+shot_prompt(const ShotText& t)
+{
+  const std::string music =
+      trimmed(t.music).empty() ? "N/A" : std::string(trimmed(t.music));
+  const bool full = !t.continued.empty() || !t.pictures.empty();
+  const std::string described = shots_from_one(t.description);
+  std::map<std::string, std::string> s;
+  if (!full) {
+    s["integrated_multimodal_description"] = described;
+    s["overall_soundscape"] = t.soundscape;
+    s["non_diegetic_music"] = music;
+    std::string out = clip_sections(s);
+    // The guide's I2VA instruction, word for word.
+    if (!t.first.empty()) {
+      out = std::format("For the target video, at 0.00 seconds into the "
+                        "target video, {} (from [Shot 1]) is fully "
+                        "referenced.\n\n",
+                        t.first) +
+            out;
+    }
+    return out;
+  }
+  // The subjects as given -- none given, everyone and everything a
+  // reference shows -- then what each clip and sound is to the target
+  // video, in the words of vpipe's continuation prompts.
+  std::string defs(trimmed(t.subjects));
+  auto add = [](std::string& to, const std::string& line) {
+    to += (to.empty() ? "" : "\n") + line;
+  };
+  if (defs.empty()) {
+    int n = 0;
+    for (const auto& pic : t.pictures) {
+      add(defs, std::format("<Subject {}> is who or what {} shows.", ++n,
+                            pic));
+    }
+    if (!t.continued.empty()) {
+      add(defs, std::format("<Subject {}> is everyone and everything seen "
+                            "in {}, as they look there.",
+                            ++n, t.continued));
+    }
+  }
+  if (!t.continued.empty()) {
+    add(defs, std::format("{} is the source video whose final moment the "
+                          "target video continues from.",
+                          t.continued));
+  }
+  if (!t.continued_sound.empty()) {
+    add(defs, std::format("{} is the synchronized audio track of {}, its "
+                          "ambience and score to continue.",
+                          t.continued_sound, t.continued));
+  }
+  // The task, from how the references are used -- unless the summary
+  // opens with one.
+  std::string tasks;
+  auto task = [&](bool on, const char* name) {
+    if (on) {
+      tasks += (tasks.empty() ? "" : " + ") + std::string(name);
+    }
+  };
+  task(!t.continued.empty(), "video continuation");
+  task(!t.pictures.empty(), "reference generation");
+  task(!t.continued_sound.empty(), "audio reference");
+  // None given: what its description says happens.
+  std::string summary(trimmed(t.summary));
+  if (summary.empty()) {
+    summary = gist(described);
+  }
+  if (!summary.starts_with('[')) {
+    std::string lead = "[" + tasks + "] ";
+    if (!t.continued.empty() &&
+        summary.find(t.continued) == std::string::npos) {
+      lead += std::format("The target video continues directly from the "
+                          "end of {}. ",
+                          t.continued);
+    }
+    summary = lead + summary;
+  }
+  // What is kept: each subject named in the definitions, once, in order;
+  // the clip's last frame where the shot starts; its sound followed.
+  std::string keep;
+  std::vector<std::string> seen;
+  for (std::size_t at = defs.find("<Subject "); at != std::string::npos;
+       at = defs.find("<Subject ", at + 1)) {
+    const std::size_t end = defs.find('>', at);
+    if (end == std::string::npos) {
+      break;
+    }
+    std::string name = defs.substr(at, end - at + 1);
+    if (std::ranges::find(seen, name) == seen.end()) {
+      seen.push_back(name);
+      add(keep, std::format("{} (appears in [Shot 1]): fully_preserved - "
+                            "identity, look and clothing are retained.",
+                            name));
+    }
+  }
+  if (!t.continued.empty()) {
+    add(keep, std::format("{} (continuation starting point): "
+                          "fully_preserved - [Shot 1] starts from the "
+                          "final framing, pose, and lighting of {}.",
+                          t.continued, t.continued));
+  }
+  if (!t.continued_sound.empty()) {
+    add(keep, std::format("{}: reference - its ambience and score continue "
+                          "in the same timbre and tempo without copying "
+                          "the original signal.",
+                          t.continued_sound));
+  }
+  // A continuation's first shot says where it picks up.
+  std::string detail = described;
+  if (!t.continued.empty() &&
+      detail.find(t.continued) == std::string::npos) {
+    const std::string first = "[Shot 1]";
+    const std::size_t at = detail.find(first);
+    const std::string says = std::format("The shot continues seamlessly "
+                                         "from the final moment of {}.",
+                                         t.continued);
+    if (at != std::string::npos) {
+      detail.insert(at + first.size(), " " + says);
+    } else {
+      detail = first + " " + says + " " + std::string(trimmed(detail));
+    }
+  }
+  s["subject_definitions"] = defs;
+  s["summary"] = summary;
+  s["retention_analysis"] = keep;
+  s["detailed_description"] = detail;
+  s["overall_soundscape"] = t.soundscape;
+  s["non_diegetic_music"] = music;
+  return clip_sections(s);
 }
 
 Result<EnhanceResult>

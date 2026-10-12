@@ -530,6 +530,7 @@
             "steps": {"speed": 8, "balanced": 8, "quality": 8},
             "config": {"video_shift": 6.0}
           },
+          "hyperflow": {"lora": "minimax-h3-hyperflow", "steps": 8},
           "presets": {
             "speed": {
               "turbo": [
@@ -550,6 +551,10 @@
               "turbo": [], "sage_attn": true, "i8_gemm": true,
               "motion_cache": true
             }
+          },
+          "continuation": {
+            "speed": {"turbo": [], "hyperflow": true},
+            "balanced": {"turbo": [], "hyperflow": true, "sol_attn": false}
           },
           "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
@@ -790,7 +795,11 @@
       "role": "upscale",
       "hf_path": "JunhaoZhuang/FlashVSR-v1.1",
       "capabilities": ["upscale-video"],
-      "engine": {"vpipe": {"upscale": {"grid": 128, "group": 24, "clip_frames": 41, "blend_frames": 8, "ahead": 1, "hidden": 1536}}},
+      "engine": {"vpipe": {
+        "upscale": {"grid": 128, "group": 24, "clip_frames": 41, "blend_frames": 8, "ahead": 1, "hidden": 1536},
+        "accel": ["sage_attn", "i8_gemm"],
+        "steps_fixed": true, "defaults": {"steps": 1}
+      }},
       "disk_gb": 12, "disk_measured": false,
       "min_ram_gb": 24, "rank": 1,
       "license": "apache-2.0"
@@ -802,7 +811,11 @@
       "role": "upscale",
       "hf_path": "CSWRY/VOSR",
       "capabilities": ["upscale-image"],
-      "engine": {"vpipe": {"upscale": {"grid": 16, "encoder": "dinov2-large"}}},
+      "engine": {"vpipe": {
+        "upscale": {"grid": 16, "encoder": "dinov2-large"},
+        "accel": ["sol_attn", "sage_attn", "i8_gemm"],
+        "steps_fixed": true, "defaults": {"steps": 1}
+      }},
       "disk_gb": 6, "disk_measured": false,
       "min_ram_gb": 16, "rank": 1,
       "requires": ["dinov2-large"],

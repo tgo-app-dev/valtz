@@ -45,6 +45,11 @@ struct ComposerStack: View {
     /// suggestion is beside the prompt and the inspector is shut).
     var cardWidth: CGFloat = 680
     @State private var promptHeight: CGFloat = 60
+    /// Its height not compact: what a tray closing grows it back to.
+    @State private var promptFullHeight: CGFloat = 60
+    /// Each card's body as laid out, open or not: how much taller the
+    /// composer stands with it open.
+    @State private var panelHeights: [ComposerPanel: CGFloat] = [:]
     @State private var promptLines = 1
     @State private var dropTargeted = false
     /// The attach capture's card, where it lies in the prompt card; and
@@ -126,13 +131,20 @@ struct ComposerStack: View {
                 }
             }
         }
-        .onChange(of: model.openPanel) { _, p in
+        .onChange(of: model.openPanel) { was, p in
             // Custom's panel belongs to the generation card.
             if p != .generate { model.showsTuning = false }
             if let p { lastPanel = p }
             // The Crop card shows the whole canvas.
             if p == .crop { model.stage.fitRequest += 1 }
-            model.panelChanged(to: p)
+            // What the composer gains: the card opened, less the one it
+            // replaces -- and the box, should it grow back.
+            let body = { (p: ComposerPanel?) in
+                p.flatMap { panelHeights[$0] } ?? 0
+            }
+            model.panelChanged(to: p, grows: body(p) - body(was),
+                               regrows: max(0, promptFullHeight
+                                               - promptHeight))
         }
         // The generation card goes with the prompt.
         .onChange(of: model.timelineOpen) { _, open in
@@ -353,6 +365,7 @@ struct ComposerStack: View {
                      dropTargeted: $dropTargeted, lines: $promptLines,
                      compact: model.promptCompact,
                      maxHeight: maxPromptHeight,
+                     fullHeight: $promptFullHeight,
                      highlight: model.searchText)
             .frame(height: immersive ? nil : promptHeight)
             .frame(maxHeight: immersive ? .infinity : nil)
@@ -613,6 +626,9 @@ struct ComposerStack: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 18)
             .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                panelHeights[p] = $0
+            }
             .frame(height: open ? nil : 0, alignment: .bottom)
             .clipped()
             .allowsHitTesting(open)

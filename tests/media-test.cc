@@ -625,6 +625,95 @@ TEST(media, keyframes_interpolate_linearly)
   CHECK(split.place.keys[1].value.rotate == 0);
 }
 
+// How a key goes on to the next: HELD (its value to the next key's frame,
+// then the next's), linear, or along a SPLINE -- eased in and out between
+// two keys, smooth through a key the values run on past, level where they
+// turn, never past either key; kept through JSON on the look's tracks,
+// linear on a speed's.
+TEST(media, keyframes_hold_or_ease_on)
+{
+  auto adj = [](double e) {
+    media::Adjustments a;
+    a.exposure = e;
+    return a;
+  };
+  using media::Interp;
+  media::KeyedAdjustments k;
+  k.rate = Rational{24, 1};
+  k.keys = {{10, adj(0), Interp::Hold}, {30, adj(1)}};
+  CHECK(k.at(5).exposure == 0 && k.at(29.9).exposure == 0);
+  CHECK(k.at(30).exposure == 1);
+  // Two keys alone: an ease in and out, through the middle.
+  k.keys[0].interp = Interp::Spline;
+  CHECK(std::abs(k.at(20).exposure - 0.5) < 1e-12);
+  CHECK(std::abs(k.at(15).exposure - 0.15625) < 1e-12);  // 3t² - 2t³
+  CHECK(std::abs(k.at(25).exposure - 0.84375) < 1e-12);
+  // Through a key the values run on past: the same slope either side.
+  k.keys = {{0, adj(0), Interp::Spline}, {10, adj(1), Interp::Spline},
+            {20, adj(2)}};
+  auto slope = [&](double f, double d) {
+    return (k.at(f + d).exposure - k.at(f).exposure) / d;
+  };
+  CHECK(std::abs(k.at(10).exposure - 1) < 1e-12);
+  CHECK(std::abs(slope(10 - 1e-6, 1e-6) - slope(10, 1e-6)) < 1e-4);
+  CHECK(std::abs(k.at(5).exposure - 0.375) < 1e-12);
+  // Where they turn: level, never above the peak; a near-level run never
+  // past its keys.
+  k.keys = {{0, adj(0), Interp::Spline}, {10, adj(1), Interp::Spline},
+            {20, adj(0)}};
+  for (double f = 0; f <= 20; f += 0.25) {
+    CHECK(k.at(f).exposure <= 1 + 1e-12 && k.at(f).exposure >= -1e-12);
+  }
+  k.keys = {{0, adj(0), Interp::Spline}, {10, adj(1), Interp::Spline},
+            {20, adj(1.05)}};
+  for (double f = 10; f <= 20; f += 0.25) {
+    CHECK(k.at(f).exposure >= 1 - 1e-12 && k.at(f).exposure <= 1.05 + 1e-12);
+  }
+  // Next to a held key the curve starts level: as two keys alone.
+  k.keys = {{0, adj(0.8), Interp::Hold}, {10, adj(0), Interp::Spline},
+            {20, adj(1)}};
+  CHECK(std::abs(k.at(15).exposure - 0.5) < 1e-12);
+  CHECK(std::abs(k.at(12.5).exposure - 0.15625) < 1e-12);
+  // A key made inside a span takes its way on.
+  CHECK(k.interp_at(5) == Interp::Hold && k.interp_at(10) == Interp::Spline);
+  CHECK(k.interp_at(-1) == Interp::Linear);
+
+  // JSON: written unless linear, read back.
+  const Json j = media::to_json(k);
+  CHECK(j["keys"][0]["interp"] == "hold");
+  CHECK(j["keys"][1]["interp"] == "spline");
+  CHECK(!j["keys"][2].contains("interp"));
+  CHECK(media::keyed_adjustments_from_json(j) == k);
+  // A crop's two tracks, each its own; one keyed whole: the turn the
+  // placement's.
+  media::KeyedCrop c;
+  media::Crop c0, c1;
+  c0.content = c1.content = {800, 600};
+  c1.scale_x = 0.5;
+  c.place.keys = {{0, c0, Interp::Spline}, {40, c1}};
+  c.turn.keys = {{0, {0}, Interp::Hold}, {20, {20}}};
+  c.rate = c.place.rate = c.turn.rate = Rational{24, 1};
+  CHECK(media::keyed_crop_from_json(media::to_json(c)) == c);
+  CHECK(c.at(10).rotate == 0 && c.at(20).rotate == 20);
+  CHECK(std::abs(c.at(20).scale_x - 0.75) < 1e-12);
+  CHECK(c.at(10).scale_x > 0.875);  // eased: slower out of the first key
+  const Json whole = {
+      {"keys", Json::array({{{"frame", 0}, {"content_w", 800},
+                             {"interp", "hold"}},
+                            {{"frame", 40}, {"rotate", 30},
+                             {"content_w", 800}}})}};
+  const auto split = media::keyed_crop_from_json(whole);
+  CHECK(split.turn.keys[0].interp == Interp::Hold);
+  CHECK(split.turn.at(39).degrees == 0);
+  // A speed's (and a sound's) keys are linear whatever they say.
+  const auto sp = media::keyed_speed_from_json(
+      {{"keys", Json::array({{{"frame", 0}, {"rate", 1},
+                              {"interp", "hold"}},
+                             {{"frame", 10}, {"rate", 2}}})}});
+  CHECK(sp.keys[0].interp == Interp::Linear);
+  CHECK(std::abs(sp.at(5).rate - 1.5) < 1e-12);
+}
+
 // A clip's frames, each with its look at its own frame: as many frames
 // as asked for, from where it is asked, at the size asked.
 TEST(media, a_clip_decodes_with_its_look)

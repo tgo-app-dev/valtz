@@ -19,6 +19,17 @@ mix(int a, int b, double t)
                                           static_cast<double>(b), t)));
 }
 
+// A key's frame and how it goes on, into its value's JSON.
+template <class T>
+void
+key_json(Json& v, const Keyframe<T>& key)
+{
+  v["frame"] = key.frame;
+  if (key.interp != Interp::Linear) {
+    v["interp"] = to_str(key.interp);
+  }
+}
+
 // A track's JSON from its keys' own: each key's value, with its frame.
 template <class T, class ValueJson>
 Json
@@ -33,7 +44,7 @@ track_json(const Keyed<T>& k, ValueJson value_json)
     if (!v.is_object()) {
       v = Json::object();
     }
-    v["frame"] = key.frame;
+    key_json(v, key);
     keys.push_back(std::move(v));
   }
   return {{"keys", std::move(keys)},
@@ -41,9 +52,11 @@ track_json(const Keyed<T>& k, ValueJson value_json)
           {"rate_den", k.rate.den}};
 }
 
+// `eased`: the keys' "interp" read (the look's tracks); else linear.
 template <class T, class ValueFromJson>
 Keyed<T>
-track_from_json(const Json& j, ValueFromJson value_from_json)
+track_from_json(const Json& j, ValueFromJson value_from_json,
+                bool eased = true)
 {
   Keyed<T> k;
   if (!j.is_object()) {
@@ -63,7 +76,10 @@ track_from_json(const Json& j, ValueFromJson value_from_json)
     }
     const auto f = std::max<std::int64_t>(0, jget<std::int64_t>(v, "frame",
                                                                  0));
-    k.keys.push_back({f, value_from_json(v)});
+    k.keys.push_back({f, value_from_json(v),
+                      eased ? interp_from_str(jget<std::string>(v, "interp",
+                                                                ""))
+                            : Interp::Linear});
   }
   std::stable_sort(k.keys.begin(), k.keys.end(),
                    [](const Keyframe<T>& a, const Keyframe<T>& b) {
@@ -80,6 +96,163 @@ track_from_json(const Json& j, ValueFromJson value_from_json)
   return k;
 }
 
+// Each number of `a` made by `f` from it and the same number of `p`,
+// `b` and `n`; `a`'s other parts kept (as each lerp keeps them).
+template <class F>
+Speed
+zip(const Speed& p, const Speed& a, const Speed& b, const Speed& n, F f)
+{
+  return {f(p.rate, a.rate, b.rate, n.rate)};
+}
+
+template <class F>
+Sound
+zip(const Sound& p, const Sound& a, const Sound& b, const Sound& n, F f)
+{
+  return {f(p.volume, a.volume, b.volume, n.volume),
+          f(p.pitch, a.pitch, b.pitch, n.pitch)};
+}
+
+template <class F>
+Adjustments
+zip(const Adjustments& p, const Adjustments& a, const Adjustments& b,
+    const Adjustments& n, F f)
+{
+  Adjustments o;
+  for (double Adjustments::*m :
+       {&Adjustments::exposure, &Adjustments::contrast,
+        &Adjustments::highlights, &Adjustments::shadows,
+        &Adjustments::vibrance, &Adjustments::saturation,
+        &Adjustments::temperature, &Adjustments::tint}) {
+    o.*m = f(p.*m, a.*m, b.*m, n.*m);
+  }
+  return o;
+}
+
+template <class F>
+Crop
+zip(const Crop& p, const Crop& a, const Crop& b, const Crop& n, F f)
+{
+  Crop o = a.content.width > 0 ? a : b;
+  auto whole = [&](int pv, int av, int bv, int nv) {
+    return static_cast<int>(std::lround(f(pv, av, bv, nv)));
+  };
+  o.canvas = {whole(p.canvas.width, a.canvas.width, b.canvas.width,
+                    n.canvas.width),
+              whole(p.canvas.height, a.canvas.height, b.canvas.height,
+                    n.canvas.height)};
+  for (double Crop::*m : {&Crop::scale_x, &Crop::scale_y, &Crop::offset_x,
+                          &Crop::offset_y, &Crop::rotate}) {
+    o.*m = f(p.*m, a.*m, b.*m, n.*m);
+  }
+  for (int i = 0; i < 4; ++i) {
+    o.pad[i] = f(p.pad[i], a.pad[i], b.pad[i], n.pad[i]);
+  }
+  return o;
+}
+
+template <class F>
+Rotation
+zip(const Rotation& p, const Rotation& a, const Rotation& b,
+    const Rotation& n, F f)
+{
+  return {f(p.degrees, a.degrees, b.degrees, n.degrees)};
+}
+
+template <class T>
+T
+spline_of(const T& p, const T& a, const T& b, const T& n,
+          const SplineSpan& s)
+{
+  return zip(p, a, b, n, [&](double pv, double av, double bv, double nv) {
+    return spline(pv, av, bv, nv, s);
+  });
+}
+
+}
+
+const char*
+to_str(Interp i)
+{
+  switch (i) {
+    case Interp::Hold: return "hold";
+    case Interp::Spline: return "spline";
+    case Interp::Linear: break;
+  }
+  return "linear";
+}
+
+Interp
+interp_from_str(const std::string& s)
+{
+  return s == "hold" ? Interp::Hold
+         : s == "spline" ? Interp::Spline
+                         : Interp::Linear;
+}
+
+double
+spline(double p, double a, double b, double n, const SplineSpan& s)
+{
+  const double h = std::max(1e-9, s.h);
+  const double d = (b - a) / h;  // the span's slope, a frame
+  // A key's slope (Fritsch and Butland): the weighted harmonic mean of
+  // the slopes either side -- never steeper than three times the
+  // shallower, so the curve stays between its keys -- or level where
+  // they turn (or one is level).
+  auto slope = [](double d0, double d1, double h0, double h1) {
+    if (d0 * d1 <= 0) {
+      return 0.0;
+    }
+    return 3 * (h0 + h1) / ((2 * h1 + h0) / d0 + (h1 + 2 * h0) / d1);
+  };
+  const double m0 =
+      s.before ? slope((a - p) / std::max(1e-9, s.h_before), d,
+                       s.h_before, h)
+               : 0.0;
+  const double m1 =
+      s.after ? slope(d, (n - b) / std::max(1e-9, s.h_after), h, s.h_after)
+              : 0.0;
+  // The cubic Hermite (a Bezier's handles a third of a span along the
+  // slopes).
+  const double t = std::clamp(s.t, 0.0, 1.0);
+  const double t2 = t * t, t3 = t2 * t;
+  return (2 * t3 - 3 * t2 + 1) * a + (t3 - 2 * t2 + t) * h * m0 +
+         (-2 * t3 + 3 * t2) * b + (t3 - t2) * h * m1;
+}
+
+Speed
+spline(const Speed& p, const Speed& a, const Speed& b, const Speed& n,
+       const SplineSpan& s)
+{
+  return spline_of(p, a, b, n, s);
+}
+
+Sound
+spline(const Sound& p, const Sound& a, const Sound& b, const Sound& n,
+       const SplineSpan& s)
+{
+  return spline_of(p, a, b, n, s);
+}
+
+Adjustments
+spline(const Adjustments& p, const Adjustments& a, const Adjustments& b,
+       const Adjustments& n, const SplineSpan& s)
+{
+  return spline_of(p, a, b, n, s);
+}
+
+Crop
+spline(const Crop& p, const Crop& a, const Crop& b, const Crop& n,
+       const SplineSpan& s)
+{
+  return spline_of(p, a, b, n, s);
+}
+
+Rotation
+spline(const Rotation& p, const Rotation& a, const Rotation& b,
+       const Rotation& n, const SplineSpan& s)
+{
+  return spline_of(p, a, b, n, s);
 }
 
 Speed
@@ -108,21 +281,30 @@ to_json(const KeyedSound& k)
   });
 }
 
+// Linear whatever a key says: a speed's integral and the player's
+// volume ramps are a straight ramp's.
 KeyedSpeed
 keyed_speed_from_json(const Json& j)
 {
-  return track_from_json<Speed>(j, [](const Json& v) {
-    return Speed{std::clamp(jget(v, "rate", 1.0), kMinSpeed, kMaxSpeed)};
-  });
+  return track_from_json<Speed>(
+      j,
+      [](const Json& v) {
+        return Speed{std::clamp(jget(v, "rate", 1.0), kMinSpeed, kMaxSpeed)};
+      },
+      false);
 }
 
 KeyedSound
 keyed_sound_from_json(const Json& j)
 {
-  return track_from_json<Sound>(j, [](const Json& v) {
-    return Sound{std::clamp(jget(v, "volume", 1.0), 0.0, kMaxVolume),
-                 std::clamp(jget(v, "pitch", 0.0), -kMaxPitch, kMaxPitch)};
-  });
+  return track_from_json<Sound>(
+      j,
+      [](const Json& v) {
+        return Sound{
+            std::clamp(jget(v, "volume", 1.0), 0.0, kMaxVolume),
+            std::clamp(jget(v, "pitch", 0.0), -kMaxPitch, kMaxPitch)};
+      },
+      false);
 }
 
 Adjustments
@@ -183,19 +365,22 @@ to_json(const KeyedCrop& k)
   Json keys = Json::array();
   for (const auto& key : k.place.keys) {
     const Crop& c = key.value;
-    keys.push_back({{"frame", key.frame},
-                    {"content_w", c.content.width},
-                    {"content_h", c.content.height},
-                    {"canvas_w", c.canvas.width},
-                    {"canvas_h", c.canvas.height},
-                    {"scale_x", c.scale_x},
-                    {"scale_y", c.scale_y},
-                    {"offset_x", c.offset_x},
-                    {"offset_y", c.offset_y}});
+    Json v = {{"content_w", c.content.width},
+              {"content_h", c.content.height},
+              {"canvas_w", c.canvas.width},
+              {"canvas_h", c.canvas.height},
+              {"scale_x", c.scale_x},
+              {"scale_y", c.scale_y},
+              {"offset_x", c.offset_x},
+              {"offset_y", c.offset_y}};
+    key_json(v, key);
+    keys.push_back(std::move(v));
   }
   Json turns = Json::array();
   for (const auto& key : k.turn.keys) {
-    turns.push_back({{"frame", key.frame}, {"rotate", key.value.degrees}});
+    Json v = {{"rotate", key.value.degrees}};
+    key_json(v, key);
+    turns.push_back(std::move(v));
   }
   return {{"keys", std::move(keys)},
           {"rotate_keys", std::move(turns)},
@@ -234,7 +419,7 @@ keyed_crop_from_json(const Json& j)
     });
   } else {
     for (const auto& key : k.place.keys) {
-      k.turn.keys.push_back({key.frame, {key.value.rotate}});
+      k.turn.keys.push_back({key.frame, {key.value.rotate}, key.interp});
     }
   }
   k.turn.rate = k.rate;

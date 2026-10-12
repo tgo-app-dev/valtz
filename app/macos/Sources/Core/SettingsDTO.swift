@@ -59,6 +59,39 @@ struct CapabilityTree: Decodable, Sendable {
     }
 }
 
+/// Settings › Upscaling (core Controller::upscale_settings): an
+/// upscaler -- FlashVSR for clips, VOSR for pictures -- and the arithmetic
+/// it runs with, as Favor's Custom lists a model's options: settled by
+/// the core from Med's preset with the person's own laid on.
+struct UpscalerSettings: Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let kind: String        // "video" | "image"
+    let state: String       // "installed", "not-installed", ...
+    let custom: Bool        // anything set apart from the defaults
+    let info: TuningInfo
+
+    init?(_ j: [String: Any]) {
+        guard let id = j["id"] as? String,
+              let t = j["tuning"] as? [String: Any],
+              let values = t["values"] as? [String: Any],
+              let opts = t["options"] as? [[String: Any]] else { return nil }
+        self.id = id
+        name = j["name"] as? String ?? id
+        kind = j["kind"] as? String ?? "image"
+        state = j["state"] as? String ?? ""
+        custom = j["custom"] as? Bool ?? false
+        let options = opts.map(TuningOption.init)
+        info = TuningInfo(family: t["family"] as? String ?? "",
+                          tuning: Tuning(values, options), options: options)
+    }
+
+    /// What the page lists: the options this upscaler takes at all.
+    var options: [TuningOption] {
+        info.options.filter { $0.why != "not-for-model" && $0.type != "list" }
+    }
+}
+
 /// Settings › Agentic Helper (core Controller::assistants): the models
 /// that write and read prompts with the person, the one chosen ("" Auto),
 /// Auto's pick and the one in use -- Auto's while the chosen one is not

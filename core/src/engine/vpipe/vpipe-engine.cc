@@ -506,6 +506,32 @@ private:
     q.sink(ev);
   }
 
+  // A job's graph let go -- and with it every model checkpoint nothing
+  // else is using, given back now rather than kept for a later run
+  // (vpipe would keep it, parked). Kept, a picture model's DiT trunk and
+  // VAE held about 1.3 GB each run after run, a model at a time, and
+  // nothing freed them -- not Start Over, not the system's memory
+  // pressure; re-reading them costs a fraction of a second against a
+  // model that streams 10 GB and more. The helper kept warm (Settings ›
+  // Agentic Helper › Keep Loaded) is in use and stays. (A Mac with the
+  // memory for several models could keep them: memory-size based, later.)
+  void
+  release_idle_models_()
+  {
+    const std::size_t freed = _session->release_idle_models();
+    if (freed > 0) {
+      VALTZ_LOG_INFO("engine", "{} MB of idle model weights given back",
+                     freed >> 20);
+    }
+  }
+
+  void
+  unload_(vpipe::PipelineHandle& h)
+  {
+    _session->unload_pipeline(h);
+    release_idle_models_();
+  }
+
   // What vpipe reported about memory since `from` (SessionIntf::reports,
   // DESIGN §15 0h): the refusal -- a stage that could not fit its work,
   // part by part, each budget's need and room -- and the resource plan's
@@ -940,12 +966,13 @@ private:
     // kinds intact, no JSON text written or parsed.
     vpipe::PipelineHandle h = _session->load_pipeline(vp::to_flex(g.spec));
     if (!h) {
+      release_idle_models_();   // what its stages opened before refusing
       fail_(q, Code::Engine,
             "vpipe rejected the graph (details are in the log)");
       return;
     }
     if (auto st = _session->launch_pipeline(h); st.code != 0) {
-      _session->unload_pipeline(h);
+      unload_(h);
       // vpipe::to_str(Status) is declared in vpipe/status.h but not
       // defined in libvpipe; report the numeric code.
       fail_(q, Code::Engine, std::format("vpipe launch failed (status {})",
@@ -986,7 +1013,7 @@ private:
         !st.ok()) {
       _session->stop_pipeline(h);  // ends the readers' waits
       readers.clear();
-      _session->unload_pipeline(h);
+      unload_(h);
       fail_(q, st.code(), st.error().message);
       return;
     }
@@ -1048,7 +1075,7 @@ private:
     // Every sink has answered end of stream, or the stop cancelled its
     // reader's command: the joins are prompt.
     readers.clear();
-    _session->unload_pipeline(h);
+    unload_(h);
 
     if (cancelled) {
       JobEvent ev;

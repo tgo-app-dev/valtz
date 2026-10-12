@@ -1870,8 +1870,30 @@ Core::tuning(const std::string& request_json) const
     auto r = _impl->ctl->tuning(
         jget<std::string>(*j, "model", ""),
         jget<std::string>(*j, "preference", "balanced"),
-        jget(*j, "edit", false), jget(*j, "tuning", Json::object()));
+        jget(*j, "edit", false), jget(*j, "tuning", Json::object()),
+        jget(*j, "continues", false));
     return r.ok() ? ok(*r) : err(r.error());
+  });
+}
+
+std::string
+Core::upscale_settings() const
+{
+  return guarded([&] { return ok(_impl->ctl->upscale_settings()); });
+}
+
+std::string
+Core::set_upscale_tuning(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->set_upscale_tuning(
+        jget<std::string>(*j, "model", ""),
+        jget(*j, "values", Json::object()), jget(*j, "reset", false));
+    return st.ok() ? ok(_impl->ctl->upscale_settings()) : err(st.error());
   });
 }
 
@@ -2032,6 +2054,10 @@ Core::layer_op(const std::string& request_json)
     } else if (op == "objects") {
       st = c.set_markup_objects(*pid, *aid, layer,
                                 jget(*j, "objects", Json::array()));
+    } else if (op == "arrange") {
+      st = c.arrange_markup(*pid, *aid, layer,
+                            strings(jget(*j, "objects", Json())),
+                            jget<std::string>(*j, "how", ""));
     } else if (op == "materialize") {
       st = c.materialize_markup(*pid, *aid, layer,
                                 strings(jget(*j, "objects", Json())));

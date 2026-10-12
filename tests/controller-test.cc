@@ -7,8 +7,10 @@
 #include "valtz/media/camera.h"
 #include "valtz/media/markup.h"
 #include "valtz/media/model-input.h"
+#include "valtz/media/movie.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/sound.h"
+#include "valtz/media/text-flow.h"
 #include "valtz/project/migrate.h"
 #include "valtz/project/project-file.h"
 
@@ -2131,6 +2133,320 @@ TEST(media, a_text_box_wraps_and_cuts_at_a_line)
   CHECK(!ink(0, 400, 120, 200));
 }
 
+// A text box measured LINE BY LINE (text_fit's all_lines): a box as tall
+// as the height told for k lines sets exactly those k lines -- the bytes
+// told -- whatever its line and paragraph spacing; a pixel less, one
+// fewer. Its first line stands at the box's top however far apart its
+// lines are (the spacing lies between them).
+TEST(media, a_text_is_measured_line_by_line)
+{
+  Json box = {
+    {"id", "t"}, {"kind", "text"}, {"box", true},
+    {"x0", 0}, {"y0", 0}, {"x1", 260}, {"y1", 1},
+    {"stroke", {0, 0, 0, 1}},
+    {"text", "Wrapped words wrapped words wrapped words wrapped words "
+             "wrapped words wrapped words\nA second paragraph of words "
+             "wrapped in the box."},
+    {"font", {{"family", "Georgia"}, {"size", 24}}},
+    {"align", "justified"}, {"line_spacing", 1.6},
+    {"paragraph_spacing", 14}};
+  const auto all = media::text_fit(box, true);
+  REQUIRE(all.line_ends.size() >= 4);
+  REQUIRE(all.line_heights.size() == all.line_ends.size());
+  CHECK(all.line_ends.back() ==
+        jget<std::string>(box, "text", "").size());
+  for (std::size_t k = 1; k < all.line_heights.size(); ++k) {
+    CHECK(all.line_heights[k] > all.line_heights[k - 1]);
+    Json b = box;
+    b["y1"] = all.line_heights[k - 1];
+    const auto f = media::text_fit(b);
+    CHECK(f.lines == static_cast<int>(k));
+    CHECK(f.shown == all.line_ends[k - 1]);
+    b["y1"] = all.line_heights[k - 1] - 1;
+    CHECK(media::text_fit(b).lines == static_cast<int>(k) - 1);
+  }
+  // Wider apart, the first line where it was: the height of one line the
+  // same, of two more.
+  Json tight = box;
+  tight["line_spacing"] = 1.0;
+  const auto t = media::text_fit(tight, true);
+  CHECK(std::abs(t.line_heights[0] - all.line_heights[0]) <= 1);
+  CHECK(all.line_heights[1] - t.line_heights[1] > 24 * 0.5);
+  // Kept by normalizing; an unknown alignment is left-set.
+  Json odd = box;
+  odd["align"] = "sideways";
+  const Json n = media::normalize_objects(Json::array({box, odd}));
+  CHECK(jget<std::string>(n[0], "align", "") == "justified");
+  CHECK(jget(n[0], "line_spacing", 0.0) == 1.6);
+  CHECK(jget(n[0], "paragraph_spacing", 0.0) == 14);
+  CHECK(jget<std::string>(n[1], "align", "") == "left");
+}
+
+// EFFECTS on a markup object (media/markup.h): a shadow where it is put
+// -- `dy` DOWN on the canvas, whatever the bitmap's own y -- as sharp or
+// as blurred as asked; a glow around a shape; the object drawn ONCE (a
+// translucent fill not darkened by its passes). Kept by normalizing, a
+// kind not known kept as it is.
+TEST(media, a_markup_object_casts_a_shadow_and_glows)
+{
+  const auto root = test::temp_dir("markup-fx");
+  const Json shadowed = {
+    {"id", "s"}, {"kind", "rect"},
+    {"x0", 100}, {"y0", 100}, {"x1", 200}, {"y1", 200},
+    {"fill", {1, 0, 0, 0.5}}, {"width", 0},
+    {"effects", Json::array({{{"kind", "shadow"}, {"color", {0, 0, 1, 1}},
+                               {"blur", 0}, {"dx", 150}, {"dy", 120}}})}};
+  const Json glowing = {
+    {"id", "g"}, {"kind", "ellipse"},
+    {"x0", 300}, {"y0", 60}, {"x1", 360}, {"y1", 120},
+    {"fill", {1, 1, 1, 1}}, {"width", 0},
+    {"effects", Json::array({{{"kind", "glow"}, {"color", {0, 1, 0, 1}},
+                               {"radius", 12}}})}};
+  const auto out = root / "fx.png";
+  REQUIRE_OK(media::render_markup({}, {420, 340}, Json::array({shadowed,
+                                                                glowing}),
+                                  {}, out));
+  // The fill, translucent: drawn once (half its alpha, not three
+  // quarters). Its shadow: 150 right, 120 down -- blue, sharp.
+  const auto in = pixel_at(out, 150, 150);
+  CHECK(in[3] >= 120 && in[3] <= 136);
+  // (The shadow of a half-clear fill is half clear.)
+  const auto sh = pixel_at(out, 300, 270);
+  CHECK(sh[2] >= 120 && sh[3] >= 120 && sh[3] <= 136 && sh[0] < 10);
+  CHECK(pixel_at(out, 300, 205)[3] == 0);  // above where it lies
+  CHECK(pixel_at(out, 60, 60)[3] == 0);
+  // The glow: green just outside the ellipse, fading, none far off.
+  const auto near = pixel_at(out, 330, 126);
+  CHECK(near[1] > 60 && near[3] > 60 && near[0] < 10);
+  CHECK(pixel_at(out, 330, 170)[3] == 0);
+  CHECK(pixel_at(out, 330, 90)[0] > 240);  // the white inside
+  // Kept: ranges held, an unknown kind as it is.
+  Json odd = glowing;
+  odd["effects"] = Json::array({{{"kind", "glow"}, {"radius", -5}},
+                                {{"kind", "bevel"}, {"depth", 3}}});
+  const Json n = media::normalize_objects(Json::array({shadowed, odd}));
+  REQUIRE(n[0]["effects"].size() == 1);
+  CHECK(jget(n[0]["effects"][0], "dy", 0.0) == 120);
+  REQUIRE(n[1]["effects"].size() == 2);
+  CHECK(jget(n[1]["effects"][0], "radius", -1.0) == 0);
+  CHECK(jget(n[1]["effects"][1], "depth", 0) == 3);
+}
+
+// A POLYGON (its corners in its box's units: the box moved, they move)
+// and GRADIENTS (media/markup.h): a linear one red to blue across a
+// rectangle, carried on past its ends; a radial one white at its centre
+// to black at its edge; a text box's words in a gradient, nothing
+// between them. Kept by normalizing, stops sorted; one stop is none.
+TEST(media, a_polygon_and_gradients_are_drawn)
+{
+  const auto root = test::temp_dir("markup-grad");
+  const Json tri = {
+    {"id", "p"}, {"kind", "polygon"},
+    {"x0", 20}, {"y0", 20}, {"x1", 120}, {"y1", 120},
+    {"points", {{0.5, 0}, {1, 1}, {0, 1}}},
+    {"fill", {0, 1, 0, 1}}, {"stroke", {0, 0, 0, 1}}, {"width", 0}};
+  const Json lin = {
+    {"id", "l"}, {"kind", "rect"},
+    {"x0", 150}, {"y0", 20}, {"x1", 350}, {"y1", 70}, {"width", 0},
+    {"fill", {0, 0, 0, 0}},
+    {"gradient", {{"kind", "linear"},
+                  {"stops", {{{"at", 1}, {"color", {0, 0, 1, 1}}},
+                             {{"at", 0}, {"color", {1, 0, 0, 1}}}}},
+                  {"from", {0.25, 0.5}}, {"to", {0.75, 0.5}}}}};
+  const Json rad = {
+    {"id", "r"}, {"kind", "ellipse"},
+    {"x0", 150}, {"y0", 100}, {"x1", 250}, {"y1", 200}, {"width", 0},
+    {"gradient", {{"kind", "radial"},
+                  {"stops", {{{"at", 0}, {"color", {1, 1, 1, 1}}},
+                             {{"at", 1}, {"color", {0, 0, 0, 1}}}}},
+                  {"from", {0.5, 0.5}}, {"to", {1, 0.5}}}}};
+  const Json words = {
+    {"id", "t"}, {"kind", "text"}, {"box", true},
+    {"x0", 20}, {"y0", 220}, {"x1", 380}, {"y1", 300},
+    {"text", "MMMM"}, {"stroke", {0, 0, 0, 1}},
+    {"font", {{"family", "Helvetica"}, {"size", 64}, {"bold", true}}},
+    {"gradient", {{"kind", "linear"},
+                  {"stops", {{{"at", 0}, {"color", {1, 0, 0, 1}}},
+                             {{"at", 1}, {"color", {0, 0, 1, 1}}}}}}}};
+  const auto out = root / "grad.png";
+  REQUIRE_OK(media::render_markup({}, {400, 320},
+                                  Json::array({tri, lin, rad, words}), {},
+                                  out));
+  // The triangle: inside green, outside its edges clear.
+  CHECK(pixel_at(out, 70, 100)[1] > 240);
+  CHECK(pixel_at(out, 30, 30)[3] == 0);
+  CHECK(pixel_at(out, 110, 30)[3] == 0);
+  // Linear: red up to a quarter in, blue from three quarters, between a
+  // blend; carried on past both ends.
+  const auto l0 = pixel_at(out, 160, 45), l1 = pixel_at(out, 340, 45);
+  const auto lm = pixel_at(out, 250, 45);
+  CHECK(l0[0] > 240 && l0[2] < 15);
+  CHECK(l1[2] > 240 && l1[0] < 15);
+  CHECK(lm[0] > 90 && lm[0] < 170 && lm[2] > 90 && lm[2] < 170);
+  // Radial: white at the centre, darker toward the edge, clipped to the
+  // ellipse.
+  CHECK(pixel_at(out, 200, 150)[0] > 240);
+  CHECK(pixel_at(out, 240, 150)[0] < 60);
+  CHECK(pixel_at(out, 152, 102)[3] == 0);
+  // The words: red at their left, blue at their right; none between the
+  // lines' bottom and the box's.
+  int reds = 0, blues = 0;
+  for (int x = 20; x < 380; ++x) {
+    for (int y = 225; y < 290; y += 2) {
+      const auto px = pixel_at(out, x, y);
+      if (px[3] > 200 && x < 80 && px[0] > 180 && px[2] < 80) {
+        ++reds;
+      }
+      if (px[3] > 200 && x > 150 && x < 280 && px[2] > px[0]) {
+        ++blues;
+      }
+    }
+  }
+  CHECK(reds > 20);
+  CHECK(blues > 20);
+  // Kept: the stops sorted; a polygon's points; one stop: no gradient.
+  Json one = lin;
+  one["gradient"]["stops"] = Json::array({{{"at", 0.5},
+                                           {"color", {1, 0, 0, 1}}}});
+  const Json n = media::normalize_objects(Json::array({tri, lin, one}));
+  REQUIRE(n.size() == 3);
+  CHECK(n[0]["points"].size() == 3);
+  CHECK(jget(n[1]["gradient"]["stops"][0], "at", -1.0) == 0);
+  CHECK(jget<std::string>(n[1]["gradient"], "kind", "") == "linear");
+  CHECK(!n[2].contains("gradient"));
+}
+
+// A LONG TEXT read as light Markdown and FLOWED onto pages
+// (media/text-flow.h): every word placed once, in order; each box in the
+// area; a paragraph cut at a line with two lines at least either side;
+// a heading kept with what follows it.
+TEST(media, a_long_text_flows_onto_pages)
+{
+  using K = media::FlowBlock::Kind;
+  bool found = false;
+  auto marked = media::read_flow_blocks(
+      "# The Lighthouse\n\nIt stood on the **rock** for a *hundred* "
+      "years,\nits lamp turning.\n\n## The keeper\n\n- [Oil](http://x) "
+      "and wicks\n- Bread\n\n> Not tonight.\n\nsnake_case stays; 5 * 3 "
+      "too.",
+      false, true, &found);
+  REQUIRE(marked.size() == 7);
+  CHECK(marked[0].kind == K::Title);
+  CHECK(marked[1].text ==
+        "It stood on the rock for a hundred years, its lamp turning.");
+  CHECK(marked[2].kind == K::Heading);
+  CHECK(marked[3].kind == K::Item && marked[3].text == "Oil and wicks");
+  CHECK(marked[5].kind == K::Quote);
+  CHECK(marked[6].text == "snake_case stays; 5 * 3 too.");
+  CHECK(!found);
+  // No blank line: a paragraph a line; a short line before a longer
+  // paragraph, ending no sentence, a heading (the first the title).
+  const std::string para =
+      "The sea came in grey under a low sky, and the gulls rode the wind "
+      "over the harbour wall while the boats came home one by one.";
+  auto plain = media::read_flow_blocks(
+      "Storm Night\n" + para + "\nThe Morning After\n" + para + "\n" +
+          para,
+      false, true, &found);
+  REQUIRE(plain.size() == 5);
+  CHECK(found);
+  CHECK(plain[0].kind == K::Title);
+  CHECK(plain[2].kind == K::Heading);
+  CHECK(plain[4].kind == K::Paragraph);
+  // Kept line breaks: a poem's lines stay lines.
+  auto poem = media::read_flow_blocks("Roses red,\nviolets blue.\n\nMore.",
+                                      true, false);
+  REQUIRE(poem.size() == 2);
+  CHECK(poem[0].text == "Roses red,\nviolets blue.");
+
+  // A long text: twenty paragraphs under headings, in two columns.
+  std::string text = "# A Long Text\n\n";
+  std::vector<std::string> words;
+  for (int i = 0; i < 20; ++i) {
+    if (i % 5 == 0) {
+      text += std::format("## Part {}\n\n", i / 5 + 1);
+    }
+    std::string p;
+    for (int w = 0; w < 30 + (i * 13) % 50; ++w) {
+      p += std::format("{}w{}x{} ", w == 0 ? "" : "", i, w);
+    }
+    text += p + "\n\n";
+  }
+  media::FlowSpec spec;
+  spec.blocks = media::read_flow_blocks(text, false, true);
+  spec.area = {80, 100, 1040, 560};
+  spec.columns = 2;
+  spec.gutter = 40;
+  spec.first_top = 300;
+  spec.body.size = 22;
+  spec.body.align = "justified";
+  spec.title.size = 44;
+  spec.title.bold = true;
+  spec.heading.size = 30;
+  const auto r = media::flow_text(spec);
+  REQUIRE(r.pages.size() >= 3);
+  CHECK(r.left == 0);
+  CHECK(r.headings.size() == 5);
+  CHECK(r.headings[0].title && r.headings[0].page == 0);
+  // Every word once, in order -- the markers aside.
+  std::string laid;
+  int cut = 0;
+  for (std::size_t pg = 0; pg < r.pages.size(); ++pg) {
+    const auto& page = r.pages[pg];
+    CHECK(!page.starts.empty());
+    for (const auto& o : page.objects) {
+      if (jget<std::string>(o, "kind", "") != "text") {
+        continue;
+      }
+      CHECK(jget(o, "y1", 0.0) <= 660 + 0.5);
+      CHECK(jget(o, "y0", 0.0) >= (pg == 0 ? 300 : 100) - 0.5);
+      CHECK(jget(o, "x0", 0.0) >= 80 && jget(o, "x1", 0.0) <= 1120.5);
+      const auto f = media::text_fit(o);
+      CHECK(f.fits);
+      if (jget(o, "justify_last", false)) {
+        ++cut;
+        CHECK(f.lines >= 2);
+      }
+      laid += jget<std::string>(o, "text", "") + " ";
+    }
+  }
+  CHECK(cut >= 1);
+  std::string want;
+  for (const auto& b : spec.blocks) {
+    want += b.text + " ";
+  }
+  auto squash = [](std::string s) {
+    std::string o;
+    for (char c : s) {
+      if (c == ' ' || c == '\n') {
+        if (!o.empty() && o.back() != ' ') {
+          o += ' ';
+        }
+      } else {
+        o += c;
+      }
+    }
+    return o;
+  };
+  CHECK(squash(laid) == squash(want));
+  // A chapter a page: each part on a page of its own, the title kept
+  // with the first.
+  media::FlowSpec chapters = spec;
+  chapters.page_per_heading = true;
+  const auto ch = media::flow_text(chapters);
+  REQUIRE(ch.headings.size() == 5);
+  CHECK(ch.headings[1].page == 0);
+  for (std::size_t i = 2; i < ch.headings.size(); ++i) {
+    CHECK(ch.headings[i].page > ch.headings[i - 1].page);
+  }
+  CHECK(ch.left == 0);
+  // A page's cap: what is left is told.
+  spec.max_pages = 1;
+  const auto one = media::flow_text(spec);
+  CHECK(one.pages.size() == 1);
+  CHECK(one.left > 0);
+}
+
 // A long SOFT stroke paints in a moment, and only where it went: each
 // dab's gradient is drawn in its own square -- unclipped, Core Graphics
 // shaded the whole canvas for every dab, and a 600-point stroke on a
@@ -2645,6 +2961,127 @@ TEST(composition, markup_masks_and_merge)
   }
 }
 
+// ARRANGE (media::arrange_objects): objects up and down their layer's
+// order -- a run together -- their bounds' edges and middles lined up
+// (one alone on the canvas), three spaced evenly; one command each,
+// undone whole.
+TEST(composition, markup_objects_are_arranged)
+{
+  const Json objs = Json::array({
+      {{"id", "a"}, {"kind", "rect"}, {"x0", 10}, {"y0", 10}, {"x1", 30},
+       {"y1", 20}, {"width", 0}},
+      {{"id", "b"}, {"kind", "rect"}, {"x0", 50}, {"y0", 40}, {"x1", 90},
+       {"y1", 60}, {"width", 4}},
+      {{"id", "c"}, {"kind", "polygon"}, {"x0", 120}, {"y0", 5},
+       {"x1", 140}, {"y1", 95}, {"width", 0},
+       {"points", {{0.5, 0}, {1, 1}, {0, 1}}},
+       {"gradient", {{"kind", "radial"}, {"from", {0.2, 0.5}}}}},
+      {{"id", "d"}, {"kind", "text"}, {"box", true}, {"x0", 150},
+       {"y0", 70}, {"x1", 190}, {"y1", 90}, {"text", "d"}}});
+  const media::PixelSize canvas{200, 100};
+  auto order = [](const Json& os) {
+    std::string s;
+    for (const auto& o : os) {
+      s += o["id"].get<std::string>();
+    }
+    return s;
+  };
+  auto arranged = [&](const Json& os, std::vector<std::string> ids,
+                      const std::string& how) -> Json {
+    auto r = media::arrange_objects(os, ids, how, canvas);
+    CHECK(r.ok());
+    return r.ok() ? *r : Json();
+  };
+  auto by_id = [](const Json& os, const std::string& id) {
+    for (const auto& o : os) {
+      if (o["id"] == id) {
+        return o;
+      }
+    }
+    return Json();
+  };
+  // The order.
+  const Json up = arranged(objs, {"a", "c"}, "up");
+  CHECK(order(up) == "badc");
+  CHECK(order(arranged(up, {"a", "c"}, "down")) == "abcd");
+  CHECK(order(arranged(objs, {"a", "c"}, "to-top")) == "bdac");
+  CHECK(order(arranged(objs, {"c"}, "to-bottom")) == "cabd");
+  CHECK(order(arranged(objs, {"c", "d"}, "up")) == "abcd");   // on top
+  CHECK(order(arranged(objs, {"b", "a"}, "down")) == "abcd");
+  // Lined up, by their bounds (b's outline 2 px round its box).
+  const Json left = arranged(objs, {"a", "b"}, "left");
+  CHECK(by_id(left, "a")["x0"] == 10);
+  CHECK(by_id(left, "b")["x0"] == 12 && by_id(left, "b")["x1"] == 52);
+  CHECK(by_id(left, "c") == by_id(objs, "c"));
+  const Json right = arranged(objs, {"a", "b"}, "right");
+  CHECK(by_id(right, "a")["x1"] == 92 && by_id(right, "b")["x0"] == 50);
+  const Json mid = arranged(objs, {"a", "b"}, "middle");
+  CHECK(by_id(mid, "a")["y0"] == 31 && by_id(mid, "b")["y0"] == 26);
+  CHECK(by_id(mid, "a")["x0"] == 10);
+  // One alone: on the canvas; its corners and gradient in its box's
+  // units, moved with it.
+  const Json alone = arranged(objs, {"c"}, "center");
+  CHECK(by_id(alone, "c")["x0"] == 90 && by_id(alone, "c")["x1"] == 110);
+  CHECK(by_id(alone, "c")["points"] == by_id(objs, "c")["points"]);
+  CHECK(by_id(alone, "c")["gradient"] == by_id(objs, "c")["gradient"]);
+  CHECK(by_id(arranged(objs, {"d"}, "bottom"), "d")["y1"] == 100);
+  // Spaced: a, b, c by their middles; a and c stay, 23 px between.
+  const Json spaced = arranged(objs, {"c", "a", "b"}, "distribute-h");
+  CHECK(by_id(spaced, "a")["x0"] == 10);
+  CHECK(by_id(spaced, "b")["x0"] == 55);
+  CHECK(by_id(spaced, "c")["x0"] == 120);
+  CHECK(arranged(objs, {"a", "b"}, "distribute-v") == objs);  // two
+  CHECK(!media::arrange_objects(objs, {"a"}, "sideways", canvas).ok());
+  // A text without a box: its lines as set.
+  const auto tb = media::object_bounds(
+      {{"kind", "text"}, {"x0", 5}, {"y0", 6}, {"text", "Hi\nthere"},
+       {"font", {{"family", "Helvetica"}, {"size", 20}}}});
+  CHECK(tb[0] == 5 && tb[1] == 6);
+  CHECK(tb[2] > 30 && tb[2] < 80 && tb[3] > 36 && tb[3] < 60);
+
+  // On a project: one command, of its kind; undone whole.
+  Bench b("comp-arrange");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto pic = b.png("base.png", 200, 100, {0x80, 0x80, 0x80, 0xff});
+  REQUIRE(pic);
+  auto comp = ctl.derive_modified(pid, *pic);
+  REQUIRE_OK(comp);
+  auto layer = ctl.markup_layer(pid, *comp, {""});
+  REQUIRE_OK(layer);
+  REQUIRE_OK(ctl.set_markup_objects(pid, *comp, *layer, objs));
+  auto objects = [&] {
+    for (const auto& l : b.layers(*comp)) {
+      if (l.id == *layer && l.source) {
+        auto m = b.p().asset(*l.source);
+        if (m.ok() && m->markup) {
+          return m->markup->objects;
+        }
+      }
+    }
+    return Json();
+  };
+  auto undo_kind = [&] {
+    return jget<std::string>(
+        jget(ctl.project_state(pid), "undo", Json::object()), "kind", "");
+  };
+  REQUIRE_OK(ctl.arrange_markup(pid, *comp, *layer, {"a", "c"}, "to-top"));
+  CHECK(order(objects()) == "bdac" && undo_kind() == "markup.arrange");
+  REQUIRE_OK(ctl.arrange_markup(pid, *comp, *layer, {"a", "b", "c"},
+                                "top"));
+  CHECK(by_id(objects(), "b")["y0"] == 7 && undo_kind() == "markup.align");
+  REQUIRE_OK(ctl.arrange_markup(pid, *comp, *layer, {"a", "b", "c"},
+                                "distribute-h"));
+  CHECK(undo_kind() == "markup.distribute");
+  REQUIRE_OK(ctl.undo(pid));
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(by_id(objects(), "b")["y0"] == 40);
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(order(objects()) == "abcd");
+  CHECK(!ctl.arrange_markup(pid, *comp, *layer, {"a"}, "sideways").ok());
+}
+
 // TIME (media/timing.h): a layer's source time through its marks and a
 // speed ramp, its natural length, the transitions' weights, the
 // player's segments and volume ramps.
@@ -3146,6 +3583,64 @@ TEST(composition, a_sound_composition_takes_a_clips_sound)
   CHECK(!tmix->empty());
   auto dec = ctl.decompose(pid, *tl, put->second);
   CHECK(!dec.ok() && dec.error().key == msg::kDecomposeClipSound.key);
+}
+
+// A clip whose soundtrack runs on past its last frame (an H3 clip's AAC
+// does, by a frame or so) runs on a timeline for its PICTURE's frames: a
+// 24-frame clip ends at frame 24, where the next one starts -- its
+// movie's duration, the longest track's, held it into frame 24. In a
+// composition of sound it is its sound, whole.
+TEST(composition, a_clip_runs_its_frames_not_its_sound)
+{
+  Bench b("comp-clip-frames");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  // A second of picture, then a second and a half of sound under it.
+  auto shot = ctl.create_composition(
+      pid, project::AssetClass::Composition, {16, 16}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto pic = ctl.instantiate(pid, *red, *shot);
+  REQUIRE_OK(pic);
+  project::LayerTime one;
+  one.duration = 24;
+  REQUIRE_OK(ctl.set_layer_time(pid, *shot, pic->second, one));
+  auto file = ctl.rendered(pid, *shot);
+  REQUIRE_OK(file);
+  REQUIRE(write_tone(b.root / "tone.wav", 1.5, 440, 0.5));
+  const auto with_sound = b.root / "long-sound.mov";
+  REQUIRE_OK(media::add_soundtrack(*file, b.root / "tone.wav", with_sound));
+  auto clip = import_and_wait(ctl, pid, with_sound);
+  REQUIRE(clip);
+  auto v = b.p().version(*clip);
+  REQUIRE_OK(v);
+  REQUIRE(v->info.frame_count == 24);
+  REQUIRE(v->info.duration.seconds() > 1.4);
+  // On a timeline: its 24 frames.
+  auto tl = ctl.create_composition(
+      pid, project::AssetClass::Composition, {16, 16}, {24, 1}, "tl");
+  REQUIRE_OK(tl);
+  auto in = ctl.instantiate(pid, *clip, *tl);
+  REQUIRE_OK(in);
+  auto len = ctl.composition_length(pid, *tl);
+  REQUIRE_OK(len);
+  CHECK(*len == 24);
+  auto m = ctl.movie_stack(pid, *tl);
+  REQUIRE_OK(m);
+  REQUIRE(m->layers.size() == 1);
+  CHECK(std::abs(m->layers[0].timing.length - 1.0) < 1e-9);
+  CHECK(m->layers[0].timing.active(23.0 / 24));
+  CHECK(!m->layers[0].timing.active(24.0 / 24));
+  // Its sound alone: a second and a half.
+  auto snd = ctl.create_composition(pid, project::AssetClass::Composition,
+                                    {0, 0}, {}, "sound");
+  REQUIRE_OK(snd);
+  REQUIRE_OK(ctl.instantiate(pid, *clip, *snd, std::string()));
+  len = ctl.composition_length(pid, *snd);
+  REQUIRE_OK(len);
+  CHECK(std::abs(*len - 1500) <= 25);
 }
 
 // Layer FOLDERS (DESIGN §6a): layers gathered under a folder lie together
@@ -4115,6 +4610,132 @@ TEST(controller, the_chosen_helper_is_kept_and_falls_back_to_auto)
   CHECK((*third)->assistants()["choice"] == "");
 }
 
+// THE UPSCALERS' OPTIONS (Settings › Upscaling, DESIGN §4f): an upscale
+// has no generation card, so each upscaler's arithmetic -- int8 GEMMs,
+// Sage, Sol where it takes it -- is set once, kept in the support folder
+// for later runs, and every upscale's recipe carries it as settled. A
+// value as the default is not kept; a reset brings the defaults back.
+TEST(controller, upscalers_run_as_settings_have_them)
+{
+  auto root = test::temp_dir("ctl-upscale-settings");
+  // VOSR and the DINOv2 it reads with, "installed".
+  for (const char* repo : {"CSWRY/VOSR", "facebook/dinov2-large"}) {
+    const fs::path d = root / "models" / repo;
+    fs::create_directories(d);
+    std::ofstream(d / "model.safetensors") << "w";
+  }
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  const bool m5 = ctl.hardware().gpu_matrix_cores;
+  // Both listed, each with only what it takes: FlashVSR no Sol (its
+  // attention is routed by its own weights), neither steps nor LoRAs.
+  auto find = [&](const char* id) {
+    const Json all = ctl.upscale_settings();
+    for (const auto& u : all["upscalers"]) {
+      if (u["id"] == id) {
+        return u;
+      }
+    }
+    return Json();
+  };
+  const Json fv = find("flashvsr");
+  const Json vo = find("vosr");
+  REQUIRE(fv.is_object() && vo.is_object());
+  CHECK(fv["kind"] == "video" && vo["kind"] == "image");
+  CHECK(vo["state"] == "installed");
+  CHECK(!jget(vo, "custom", true));
+  auto offered = [](const Json& u) {
+    std::vector<std::string> keys;
+    for (const auto& o : u["tuning"]["options"]) {
+      if (jget<std::string>(o, "why", "") != "not-for-model") {
+        keys.push_back(o["key"].get<std::string>());
+      }
+    }
+    return keys;
+  };
+  CHECK((offered(fv) == std::vector<std::string>{"sage_attn", "i8_gemm"}));
+  CHECK((offered(vo) == std::vector<std::string>{"sol_attn", "sol_tau",
+                                                 "sage_attn", "i8_gemm"}));
+  // Med's: int8 GEMMs where the GPU has matrix cores, the rest off.
+  CHECK(vo["tuning"]["values"]["i8_gemm"] == m5);
+  CHECK(vo["tuning"]["values"]["sol_attn"] == false);
+  // Set: Sol on at a threshold of its own, int8 off. The threshold's
+  // default is not kept.
+  REQUIRE_OK(ctl.set_upscale_tuning("vosr", {{"sol_attn", true},
+                                             {"sol_tau", 1.0}}));
+  REQUIRE_OK(ctl.set_upscale_tuning("vosr", {{"i8_gemm", !m5}}));
+  {
+    const Json v = find("vosr");
+    CHECK(jget(v, "custom", false));
+    CHECK(v["tuning"]["values"]["sol_attn"] == true);
+    CHECK(v["tuning"]["values"]["i8_gemm"] == !m5);
+  }
+  CHECK(ctl.set_upscale_tuning("krea2-turbo", Json::object()).code() ==
+        Code::InvalidArgument);
+  CHECK(ctl.set_upscale_tuning("no-such", Json::object()).code() ==
+        Code::NotFound);
+  // A picture on a still, scaled 2x: its upscale carries them.
+  auto pid = ctl.create_project(root / "U.valtz", "upscale");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "small.png", 32, 24, {0x40, 0x80, 0xc0, 0xff}));
+  auto pic = import_and_wait(ctl, *pid, root / "small.png");
+  REQUIRE(pic);
+  auto still = ctl.create_composition(*pid, project::AssetClass::Still,
+                                      {64, 48});
+  REQUIRE_OK(still);
+  auto placed = ctl.instantiate(*pid, *pic, *still);
+  REQUIRE_OK(placed);
+  media::Crop twice;
+  twice.scale_x = twice.scale_y = 2;
+  REQUIRE_OK(ctl.set_crop(*pid, *still, twice, placed->second));
+  UpscaleRequest up;
+  up.project = *pid;
+  up.composition = *still;
+  up.layer = placed->second;
+  auto job = ctl.upscale_layer(up);
+  REQUIRE_OK(job);
+  const engine::JobSpec* spec = engine->spec(*job);
+  REQUIRE(spec != nullptr);
+  CHECK(spec->op == engine::kOpUpscaleImage);
+  const Json t = jget(spec->params, "tuning", Json());
+  CHECK(t["sol_attn"] == true);
+  CHECK(t["i8_gemm"] == !m5);
+  CHECK(!t.contains("loras") && !t.contains("steps"));
+  // Kept for a later run over the same support folder.
+  ControllerConfig again = cfg;
+  again.engine_factory = nullptr;
+  {
+    auto later = Controller::create(again);
+    REQUIRE_OK(later);
+    const Json v = (*later)->upscale_settings()["upscalers"];
+    bool seen = false;
+    for (const auto& u : v) {
+      if (u["id"] == "vosr") {
+        seen = true;
+        CHECK(u["tuning"]["values"]["sol_attn"] == true);
+      }
+    }
+    CHECK(seen);
+  }
+  // Reset: the defaults, nothing kept.
+  REQUIRE_OK(ctl.set_upscale_tuning("vosr", Json::object(), true));
+  CHECK(!jget(find("vosr"), "custom", true));
+  CHECK(find("vosr")["tuning"]["values"]["sol_attn"] == false);
+}
+
 // A continuation's GUIDE (continuation_guide): the clip's last seconds,
 // rounded UP to the model's grid -- 17n + 5 frames for H3 at 24 fps, so
 // 2 s is 56 frames -- and down again to what the clip holds, on a
@@ -4404,6 +5025,299 @@ TEST(agent, the_tools_build_a_deck)
   }
   CHECK(tools == 6);
   CHECK(last.back().content.find("no tool") != std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// A LONG TEXT laid on pages (flow_text, DESIGN §9b): a cover made, a
+// background and a header on every page, the person's passage -- named
+// by its first and last words, loosely -- flowed from page 2 onto pages
+// added as it needs them, every word once and in order; then a page
+// progress bar, made again (it replaces the first). The cover's words
+// stay on the cover: a one-page still's layers are its page's alone.
+TEST(agent, a_long_text_is_laid_on_pages)
+{
+  auto root = test::temp_dir("agent-flow");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "F.valtz", "flow");
+  REQUIRE_OK(pid);
+
+  std::string passage = "It was the first, of everything.\n\n";
+  for (int i = 0; i < 18; ++i) {
+    if (i % 6 == 0) {
+      passage += std::format("## Part {}\n\n", i / 6 + 1);
+    }
+    for (int w = 0; w < 40 + (i * 17) % 45; ++w) {
+      passage += std::format("{}w{}x{}", w ? " " : "", i, w);
+    }
+    passage += ".\n\n";
+  }
+  passage += "These are the last words.";
+  script->replies = {
+      {call("create_composition",
+            {{"name", "Booklet"}, {"width", 600}, {"height", 800}})},
+      {call("add_text", {{"page", 1}, {"text", "The Title"}, {"x", 40},
+                         {"y", 300}, {"width", 520}, {"height", 80},
+                         {"size", 48}, {"color", "#000000"}}),
+       call("add_shape", {{"every_page", true}, {"below_all", true},
+                          {"shape", "rect"}, {"x", 0}, {"y", 0},
+                          {"width", 600}, {"height", 800},
+                          {"fill", "#f4efe6"}}),
+       call("add_text", {{"every_page", true}, {"text", "BOOKLET"},
+                         {"x", 40}, {"y", 16}, {"width", 520},
+                         {"height", 30}, {"size", 18}, {"align", "right"},
+                         {"color", "#202020"}}),
+       // A rule on every page, inside the text's area: kept clear of.
+       call("add_shape", {{"every_page", true}, {"shape", "line"},
+                          {"x", 40}, {"y", 80}, {"width", 520},
+                          {"height", 2}, {"stroke", "#aa3300"}})},
+      {call("flow_text", {{"from_words", "it was the first of"},
+                          {"to_words", "the last words"},
+                          {"first_page", 2}, {"size", 18},
+                          {"align", "justified"},
+                          {"color", "#111111"}})},
+      {call("add_page_progress", {{"from_page", 2}, {"numbers", true},
+                                  {"fill", "#aa3300"},
+                                  {"track", "#aa330033"}})},
+      {call("add_page_progress", {{"from_page", 2}, {"style", "segments"},
+                                  {"fill", "#aa3300"},
+                                  {"track", "#aa330033"}}),
+       call("get_composition", {{"page", 2}}),
+       call("flow_text", {{"from_words", "words nobody wrote here"}})}};
+  // The passage RETYPED by the model (a word changed on the way): laid
+  // as the person wrote it. And words over the cover's: told.
+  std::string retyped =
+      passage.substr(0, passage.find("w3x0 "));
+  retyped.replace(retyped.find("w1x5 "), 4, "CHANGED");
+  script->replies.push_back(
+      {call("add_text", {{"page", 1}, {"text", "Over"}, {"x", 60},
+                         {"y", 310}, {"width", 200}, {"height", 40},
+                         {"color", "#000000"}, {"shadow", true},
+                         {"glow", true}, {"glow_color", "#ffcc00"}}),
+       call("create_composition",
+            {{"name", "Retyped"}, {"width", 600}, {"height", 800}}),
+       call("flow_text", {{"text", retyped}}),
+       // A passage stopping short of the text: the rest is told.
+       call("flow_text", {{"from_words", "w1x0 w1x1"}, {"asset", ""},
+                          {"to_words", "w1x3"}, {"first_page", 2}}),
+       // Nothing being made: a wait says so; a second is refused.
+       call("wait_for_generations", Json::object()),
+       call("wait_for_generations", Json::object())});
+  // A polygon -- a badge -- in a three-colour radial gradient.
+  script->replies.push_back(
+      {call("add_shape", {{"page", 1}, {"shape", "polygon"},
+                          {"points", {{300, 40}, {360, 140}, {240, 140}}},
+                          {"gradient", {"#ff0000", "#00ff00", "#0000ff"}},
+                          {"gradient_type", "radial"}})});
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "Lay this out as a booklet:\n\n" + passage;
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  const Json st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 17);
+  for (std::size_t i = 0; i < 17; ++i) {
+    CHECK(jget<std::string>(steps[i], "state", "") ==
+          (i == 9 || i == 15 ? "failed" : "done"));
+  }
+  CHECK(jget(steps[14], "result", Json()).contains("note"));
+  {
+    // The badge: its box from its corners, they in its units, its
+    // gradient's colours spread evenly round its middle.
+    const AssetId re = *AssetId::parse(jget<std::string>(
+        jget(steps[11], "result", Json()), "composition", ""));
+    auto ra = ctl.project(*pid)->asset(re);
+    REQUIRE_OK(ra);
+    bool seen = false;
+    for (const auto& l : ra->layers) {
+      auto m = ctl.project(*pid)->asset(*l.source);
+      for (const auto& o : m.ok() && m->markup ? m->markup->objects
+                                               : Json::array()) {
+        if (jget<std::string>(o, "kind", "") != "polygon") {
+          continue;
+        }
+        seen = true;
+        CHECK(jget(o, "x0", 0.0) == 240 && jget(o, "x1", 0.0) == 360);
+        CHECK(o["points"].size() == 3);
+        CHECK(o["points"][0][0].get<double>() == 0.5);
+        const Json g = jget(o, "gradient", Json());
+        CHECK(jget<std::string>(g, "kind", "") == "radial");
+        REQUIRE(g["stops"].size() == 3);
+        CHECK(jget(g["stops"][1], "at", 0.0) == 0.5);
+      }
+    }
+    CHECK(seen);
+  }
+  // A passage not in the person's message: refused, told so. Words laid
+  // over the cover's: told so.
+  CHECK(to_text(jget(steps[9], "error", Json())).find("not in") !=
+        std::string::npos);
+  CHECK(to_text(jget(steps[10], "result", Json())).find("The Title") !=
+        std::string::npos);
+  {
+    const AssetId re = *AssetId::parse(jget<std::string>(
+        jget(steps[11], "result", Json()), "composition", ""));
+    auto ra = ctl.project(*pid)->asset(re);
+    REQUIRE_OK(ra);
+    std::string words;
+    for (const auto& l : ra->layers) {
+      if (auto m = ctl.project(*pid)->asset(*l.source); m.ok()) {
+        words += to_text(m->markup->objects);
+      }
+    }
+    CHECK(words.find("CHANGED") == std::string::npos);
+    CHECK(words.find("w1x5 ") != std::string::npos);
+    CHECK(words.find("w2x0 ") != std::string::npos);
+  }
+  {
+    // Its words found though an empty asset was given too; what the
+    // message has before and after the passage told.
+    const Json r13 = jget(steps[13], "result", Json());
+    const Json more = jget(r13, "more_in_message", Json());
+    CHECK(jget<std::string>(more, "next_words", "").starts_with("w1x4"));
+    CHECK(jget(more, "words", 0) > 500);
+    const Json before = jget(r13, "before_in_message", Json());
+    CHECK(jget<std::string>(before, "starts", "").starts_with("It was"));
+  }
+  const Json flowed = jget(steps[5], "result", Json());
+  // Below the rule: 80 and a margin. The whole passage: nothing more.
+  CHECK(jget(jget(flowed, "area", Json()), "y", 0) >= 82);
+  CHECK(!flowed.contains("more_in_message"));
+  CHECK(jget(flowed, "first_page", 0) == 2);
+  const int last = jget(flowed, "last_page", 0);
+  CHECK(last >= 4);
+  CHECK(jget(flowed, "composition_pages", 0) == last);
+  CHECK(jget(flowed, "headings", Json::array()).size() == 3);
+  CHECK(jget(flowed, "columns", 0) == 1);
+
+  const AssetId comp = *AssetId::parse(jget<std::string>(
+      jget(steps[0], "result", Json()), "composition", ""));
+  auto a = ctl.project(*pid)->asset(comp);
+  REQUIRE_OK(a);
+  CHECK(a->pages == last);
+  // The every-page markups: the background at the bottom, the header
+  // across every page; the cover's words on page 1 alone.
+  REQUIRE(!a->layers.empty());
+  CHECK(a->layers.front().name == "Every Page (Background)");
+  CHECK(a->layers.front().time.offset == 0);
+  CHECK(a->layers.front().time.duration == 0);
+  int fronts = 0, progress = 0;
+  std::string folder;
+  for (const auto& f : a->layer_folders) {
+    if (f.name == "Page Progress") {
+      folder = f.id;
+    }
+  }
+  CHECK(a->layer_folders.size() == 1);
+  std::string laid;
+  for (const auto& l : a->layers) {
+    if (l.name == "Every Page") {
+      ++fronts;
+      CHECK(l.time.duration == 0);
+      continue;
+    }
+    if (!folder.empty() && l.folder == folder) {
+      ++progress;
+      continue;
+    }
+    if (l.name.starts_with("Every Page") || !l.source) {
+      continue;
+    }
+    // Every other layer is its page's alone.
+    CHECK(l.time.duration == 1);
+    auto m = ctl.project(*pid)->asset(*l.source);
+    REQUIRE_OK(m);
+    if (l.time.offset == 0) {
+      const std::string cover = to_text(m->markup->objects);
+      CHECK(cover.find("The Title") != std::string::npos);
+      CHECK(cover.find("w0x0") == std::string::npos);
+      // "Over": a glow in the colour asked, inside a shadow.
+      for (const auto& o : m->markup->objects) {
+        if (jget<std::string>(o, "text", "") == "Over") {
+          const Json fx = jget(o, "effects", Json::array());
+          REQUIRE(fx.size() == 2);
+          CHECK(jget<std::string>(fx[0], "kind", "") == "glow");
+          CHECK(jget<std::string>(fx[1], "kind", "") == "shadow");
+          CHECK(jget(fx[0], "color", Json::array())[1].get<double>() > 0.7);
+          CHECK(jget(fx[1], "dy", 0.0) > 0);
+        }
+      }
+      continue;
+    }
+    for (const auto& o : m->markup->objects) {
+      if (jget<std::string>(o, "kind", "") == "text") {
+        laid += jget<std::string>(o, "text", "") + " ";
+        CHECK(jget(o, "y0", 0.0) > 82);
+      }
+    }
+  }
+  CHECK(fronts == 1);
+  CHECK(progress == last - 1);  // the second bar replaced the first
+  // Every word of the passage, once, in order (the headings' marks and
+  // the inline punctuation as read).
+  auto squash = [](const std::string& t) {
+    std::string o;
+    for (char c : t) {
+      if (c == '#') {
+        continue;
+      }
+      if (c == ' ' || c == '\n') {
+        if (!o.empty() && o.back() != ' ') {
+          o += ' ';
+        }
+      } else {
+        o += c;
+      }
+    }
+    while (!o.empty() && o.back() == ' ') {
+      o.pop_back();
+    }
+    while (!o.empty() && o.front() == ' ') {
+      o.erase(o.begin());
+    }
+    return o;
+  };
+  // Pages are listed by layer, a page at a time, in order.
+  CHECK(squash(laid) == squash(passage));
+  // Drawn: the background and the header on a text page; the segments
+  // filled to the page -- all on the last, the first alone on page 2.
+  const fs::path p2 = root / "p2.png", pl = root / "pl.png";
+  REQUIRE_OK(ctl.flatten(*pid, comp, p2, std::nullopt, std::nullopt, {}, 1));
+  REQUIRE_OK(ctl.flatten(*pid, comp, pl, std::nullopt, std::nullopt, {},
+                         last - 1));
+  const auto bg = pixel_at(p2, 5, 400);
+  CHECK(bg[0] == 0xf4 && bg[1] == 0xef && bg[2] == 0xe6);
+  int header = 0;
+  for (int x = 300; x < 560; x += 2) {
+    header += pixel_at(p2, x, 30)[0] < 0x80;
+  }
+  CHECK(header > 0);
+  // The bar: 48 px margins, near the foot.
+  const int y = 800 - 36 - 5 + 2;
+  CHECK(pixel_at(pl, 60, y)[0] > 0x90 && pixel_at(pl, 60, y)[1] < 0x50);
+  CHECK(pixel_at(pl, 540, y)[0] > 0x90 && pixel_at(pl, 540, y)[1] < 0x50);
+  CHECK(pixel_at(p2, 60, y)[1] < 0x50);
+  CHECK(pixel_at(p2, 540, y)[1] > 0x90);
+  // Each edit one command.
+  int agent_steps = 0;
+  for (const auto& h : ctl.undo_history(*pid)) {
+    agent_steps += jget<std::string>(h, "kind", "") == "agent";
+  }
+  CHECK(agent_steps == 13);
   REQUIRE_OK(ctl.agent_stop(*id));
 }
 
@@ -4791,6 +5705,264 @@ TEST(agent, the_tools_cut_a_timeline)
   auto after = ctl.project(*pid)->asset(tl);
   REQUIRE_OK(after);
   CHECK(after->layers.size() == 4);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// A LONG SCENE, shot after shot (DESIGN §9b): the model splits it into
+// shots and asks for each with generate_video -- the first from its words
+// (FL2VA), each next one CARRYING ON from the end of the one before it
+// (Ref2VA, its tail picture and sound) and asked for while that one is
+// still being made: held, and sent the moment it lands; a cut drawing on
+// a picture of the character. Each prompt is put together in MiniMax H3's
+// guide form, its references by the model's names. The shots land in
+// order end to end, however they finish; one whose shot before it fails
+// fails with it.
+TEST(agent, a_long_scene_is_shot_after_shot)
+{
+  auto root = test::temp_dir("agent-scene");
+  for (const char* f :
+       {"MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors",
+        "MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors"}) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  }
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "S.valtz", "scene");
+  REQUIRE_OK(pid);
+  // The keeper's picture, and what each shot comes back as: a 2 s clip
+  // with sound.
+  REQUIRE(write_png(root / "keeper.png", 32, 32, {0x30, 0x60, 0x90, 0xff}));
+  REQUIRE(write_tone(root / "tone.wav", 2, 330, 0.5));
+  auto keeper = import_and_wait(ctl, *pid, root / "keeper.png");
+  auto tone = import_and_wait(ctl, *pid, root / "tone.wav");
+  REQUIRE(keeper && tone);
+  fs::path shot_file;
+  {
+    auto c = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                    {32, 32}, {24, 1}, "made");
+    REQUIRE_OK(c);
+    auto in = ctl.instantiate(*pid, *keeper, *c);
+    REQUIRE_OK(in);
+    project::LayerTime two;
+    two.duration = 48;
+    REQUIRE_OK(ctl.set_layer_time(*pid, *c, in->second, two));
+    REQUIRE_OK(ctl.instantiate(*pid, *tone, *c));
+    auto file = ctl.rendered(*pid, *c);
+    REQUIRE_OK(file);
+    shot_file = root / "shot.mov";
+    fs::copy_file(*file, shot_file);
+  }
+  const Json style = "[Shot 1] A lighthouse keeper climbs a spiral stair.";
+  script->replies = {
+      {call("create_composition",
+            {{"name", "Lighthouse"}, {"kind", "timeline"}, {"width", 960},
+             {"height", 544}, {"fps", 24}})},
+      {call("generate_video",
+            {{"description", style},
+             {"soundscape", "Wind, footsteps on iron."},
+             {"seconds", 2}}),
+       call("generate_video",
+            {{"continues", true},
+             {"subjects", "<Subject 1> is the lighthouse keeper, grey "
+                          "beard, yellow oilskin, in <Video 1>."},
+             {"summary", "<Subject 1> reaches the lamp room."},
+             {"description", "[Shot 1] He opens the hatch."},
+             {"seconds", 2}}),
+       // As a model writes a scene: no subjects (the shot before's are
+       // carried on), a start in the scene's seconds (it lands after the
+       // shot before all the same).
+       call("generate_video",
+            {{"continues", true},
+             {"summary", "<Subject 1> lights the lamp."},
+             {"description", "[Shot 1] He strikes a match."},
+             {"music", "Low strings swell."},
+             {"start", 1.0},
+             {"seconds", 2}}),
+       call("generate_video",
+            {{"references", Json::array({keeper->str()})},
+             {"subjects", "<Subject 1> is the lighthouse keeper in "
+                          "<Picture 1>."},
+             {"summary", "<Subject 1> looks out to sea from the gallery."},
+             {"description", "[Shot 1] Wide shot from the sea at dusk."},
+             {"seconds", 2}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A lighthouse keeper lights the lamp at dusk";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "waiting");
+  REQUIRE(jget<std::string>(st, "state", "") == "waiting");
+  // Sent now: the first shot (words) and the cut (a picture); the two
+  // carrying on are held.
+  auto clips = engine->held_of(engine::kOpGenerateVideo);
+  REQUIRE(clips.size() == 2);
+  const engine::JobSpec* s1 = engine->spec(clips[0]);
+  const engine::JobSpec* s4 = engine->spec(clips[1]);
+  REQUIRE(s1 && s4);
+  CHECK(s1->model.id == "minimax-h3-fl2va");
+  CHECK(s4->model.id == "minimax-h3-ref2va");
+  CHECK(jget(s1->params, "frames", 0) == 56);  // 2 s, up to 17n + 5
+  CHECK(jget(s1->params, "width", 0) == 960);
+  CHECK(jget(s1->params, "height", 0) == 544);
+  const auto p1 = jget<std::string>(s1->params, "prompt", "");
+  CHECK(p1.find("integrated_multimodal_description: [Shot 1] A "
+                "lighthouse keeper") != std::string::npos);
+  CHECK(p1.find("overall_soundscape: Wind") != std::string::npos);
+  CHECK(p1.find("non_diegetic_music: N/A") != std::string::npos);
+  const auto p4 = jget<std::string>(s4->params, "prompt", "");
+  CHECK(p4.find("[reference generation] <Subject 1> looks out") !=
+        std::string::npos);
+  CHECK(p4.find("<Subject 1> (appears in [Shot 1]): fully_preserved") !=
+        std::string::npos);
+  CHECK(p4.find("video continuation") == std::string::npos);
+  {
+    const Json steps = jget(st, "steps", Json::array());
+    REQUIRE(steps.size() == 5);
+    for (int i : {1, 2, 3, 4}) {
+      CHECK(jget<std::string>(steps[i], "state", "") == "waiting");
+    }
+    CHECK(jget(jget(steps[2], "result", Json()), "after_step", 0) == 2);
+    CHECK(jget(jget(steps[3], "result", Json()), "after_step", 0) == 3);
+  }
+  // The cut lands first -- in its place, after the third shot.
+  engine->start(clips[1]);
+  engine->finish(clips[1], shot_file);
+  // The first lands: the second is sent, carrying on from it.
+  engine->start(clips[0]);
+  engine->finish(clips[0], shot_file);
+  std::vector<JobId> next;
+  for (int i = 0; i < 200 && next.empty(); ++i) {
+    next = engine->held_of(engine::kOpGenerateVideo);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(next.size() == 1);
+  st = ctl.agent_state(*id);
+  const auto shot1 = AssetId::parse(jget<std::string>(
+      jget(jget(st, "steps", Json())[1], "result", Json()), "asset", ""));
+  REQUIRE(shot1);
+  const engine::JobSpec* s2 = engine->spec(next[0]);
+  REQUIRE(s2);
+  CHECK(s2->model.id == "minimax-h3-ref2va");
+  const auto p2 = jget<std::string>(s2->params, "prompt", "");
+  CHECK(p2.find("subject_definitions:\n<Subject 1> is the lighthouse "
+                "keeper") != std::string::npos);
+  CHECK(p2.find("<Video 1> is the source video whose final moment") !=
+        std::string::npos);
+  CHECK(p2.find("<Audio 1> is the synchronized audio track of <Video 1>") !=
+        std::string::npos);
+  CHECK(p2.find("[video continuation + audio reference] The target video "
+                "continues directly from the end of <Video 1>.") !=
+        std::string::npos);
+  CHECK(p2.find("[Shot 1] The shot continues seamlessly from the final "
+                "moment of <Video 1>. He opens the hatch.") !=
+        std::string::npos);
+  bool continues = false;
+  for (const auto& e : jget(s2->params, "reference_media", Json())) {
+    continues = continues ||
+                (jget<std::string>(e, "role", "") == "continue" &&
+                 jget<std::string>(e, "asset", "") == shot1->str());
+  }
+  CHECK(continues);
+  engine->start(next[0]);
+  engine->finish(next[0], shot_file);
+  // ...and the third from the second.
+  next.clear();
+  for (int i = 0; i < 200 && next.empty(); ++i) {
+    next = engine->held_of(engine::kOpGenerateVideo);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(next.size() == 1);
+  {
+    const auto p3 =
+        jget<std::string>(engine->spec(next[0])->params, "prompt", "");
+    CHECK(p3.find("non_diegetic_music:\nLow strings swell.") !=
+          std::string::npos);
+    CHECK(p3.find("subject_definitions:\n<Subject 1> is the lighthouse "
+                  "keeper, grey beard") != std::string::npos);
+  }
+  engine->start(next[0]);
+  engine->finish(next[0], shot_file);
+  st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  for (const auto& x : jget(st, "steps", Json::array())) {
+    CHECK(jget<std::string>(x, "state", "") == "done");
+  }
+  // End to end, in the order asked: each where the one before it was
+  // booked to end (2.33 s a shot), whatever order they finished in.
+  const AssetId tl =
+      *AssetId::parse(jget<std::string>(st, "composition", ""));
+  auto plan = ctl.sound_plan(*pid, tl);
+  REQUIRE_OK(plan);
+  std::vector<double> starts;
+  for (const auto& l : plan->layers) {
+    starts.push_back(l.timing.start);
+  }
+  std::ranges::sort(starts);
+  REQUIRE(starts.size() == 4);
+  const double shot = 56.0 / 24.0;
+  for (int i = 0; i < 4; ++i) {
+    CHECK(std::abs(starts[static_cast<std::size_t>(i)] - i * shot) < 0.05);
+  }
+  {
+    auto comp = ctl.project(*pid)->asset(tl);
+    REQUIRE_OK(comp);
+    CHECK(comp->layers.size() == 4);
+  }
+
+  // More: a shot, and one held behind it -- the first fails, and the
+  // held one fails with it, never sent.
+  script->replies.push_back(
+      {call("generate_video", {{"description", "[Shot 1] Dawn."},
+                               {"seconds", 2}}),
+       call("generate_video", {{"continues", true},
+                               {"subjects", "<Subject 1> is the sea in "
+                                            "<Video 1>."},
+                               {"summary", "The sun rises."},
+                               {"description", "[Shot 1] Sunrise."}})});
+  REQUIRE_OK(ctl.agent_say(*id, "Add the dawn after it."));
+  next.clear();
+  for (int i = 0; i < 200 && next.empty(); ++i) {
+    next = engine->held_of(engine::kOpGenerateVideo);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(next.size() == 1);
+  st = agent_wait(ctl, *id, "waiting");
+  engine->start(next[0]);
+  engine->fail(next[0], "out of memory");
+  st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 7);
+  CHECK(jget<std::string>(steps[5], "state", "") == "failed");
+  CHECK(jget<std::string>(steps[6], "state", "") == "failed");
+  CHECK(jget<std::string>(steps[6], "error", "").find("was not made") !=
+        std::string::npos);
+  CHECK(engine->held_of(engine::kOpGenerateVideo).empty());
   REQUIRE_OK(ctl.agent_stop(*id));
 }
 

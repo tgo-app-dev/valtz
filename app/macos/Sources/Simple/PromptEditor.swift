@@ -662,6 +662,8 @@ struct PromptEditor: NSViewRepresentable {
     var compact = false
     var minHeight: CGFloat = 60
     var maxHeight: CGFloat = 240
+    /// How tall the box would be not compact: what it grows back to.
+    var fullHeight: Binding<CGFloat>?
     /// Text to mark wherever it occurs (the title bar's search).
     var highlight = ""
     /// Room around the text: the box's own, or immersive editing's wider
@@ -946,6 +948,11 @@ struct PromptEditor: NSViewRepresentable {
                             + inset)
             let cap = parent.compact ? rows : max(rows, parent.maxHeight)
             let h = min(max(parent.minHeight, ceil(used)), cap)
+            let full = min(max(parent.minHeight, ceil(used)),
+                           max(rows, parent.maxHeight))
+            if let f = parent.fullHeight, abs(full - f.wrappedValue) > 0.5 {
+                DispatchQueue.main.async { f.wrappedValue = full }
+            }
             // Switching size keeps the caret in view -- once the box has
             // its new height, or the clip view keeps the first lines.
             let reveal = parent.compact != wasCompact

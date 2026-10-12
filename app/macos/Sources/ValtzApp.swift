@@ -75,6 +75,115 @@ struct ValtzApp: App {
             f.underline = p.contains("underline")
             mk.font = f
             m.editSelection { if $0.kind == .text { $0.font = f } }
+        // A text box's alignment and line spacing, as the toolbar sets
+        // them: "align=center", "spacing=1.5".
+        case "align":
+            mk.align = arg
+            m.editSelection {
+                if $0.kind == .text { $0.align = arg == "left" ? nil : arg }
+            }
+        case "spacing":
+            let v = min(3, max(1, Double(arg) ?? 1))
+            mk.lineSpacing = v
+            m.editSelection {
+                if $0.kind == .text { $0.lineSpacing = v == 1 ? nil : v }
+            }
+        // Effects, as the Effects panel sets them: "shadow=off",
+        // "shadow=#rrggbbaa,blur,dx,dy", "glow=off", "glow=#rrggbbaa,radius".
+        // The Effects panel opened, as its button opens it.
+        case "effects":
+            mk.effectsOpen = arg != "close"
+        // ARRANGE, as its panel does: "arrange=to-top" (up, down,
+        // to-bottom, left, center, right, top, middle, bottom,
+        // distribute-h, distribute-v), or "open" / "close" the panel;
+        // prints what it could do, the layer's order and where the
+        // selected objects are.
+        case "arrange":
+            if arg == "open" || arg == "close" {
+                mk.arrangeOpen = arg == "open"
+                return
+            }
+            guard let how = MarkupArrange(rawValue: arg) else { return }
+            let can = MarkupArrange.allCases.filter { m.markupCanArrange($0) }
+            m.arrangeSelection(how)
+            let layer = mk.selectionLayer
+            let objects = m.markupAsset?.layerStack
+                .first { $0.id == layer }?.markup?.objects ?? []
+            let at = mk.selection.map { o in
+                let b = MarkupRender.bounds(o)
+                return String(format: "%@@%.0f,%.0f", o.id, b.minX, b.minY)
+            }
+            print("snapshot: arrange \(arg) can=\(can.map(\.rawValue).joined(separator: ",")) order=\(objects.map(\.id).joined(separator: ",")) selected=\(at.joined(separator: ";")) undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_"))")
+        // A GRADIENT, as its editor sets it: "gradient=linear|radial|none"
+        // (or "open" / "close" the editor); "stops=#rrggbbaa@0;#..@1" its
+        // colours; "stop=add:0.5", "stop=move:1:0.3", "stop=remove:1",
+        // "stop=color:1:#rrggbbaa"; "gradfrom=u,v" / "gradto=u,v" its
+        // ends in the box's units (as dragged on the picture).
+        case "gradient":
+            switch arg {
+            case "open": mk.gradientOpen = true
+            case "close": mk.gradientOpen = false
+            default:
+                let kind = MarkupGradient.Kind(rawValue: arg)
+                m.setMarkupGradient(kind.map { k in
+                    m.markupGradient.map {
+                        MarkupGradient(kind: k, stops: $0.stops)
+                    } ?? AppModel.newGradient(k, from: m.markupGradientBase)
+                })
+            }
+        case "stops":
+            guard var g = m.markupGradient else { return }
+            g.stops = arg.split(separator: ";").compactMap { st in
+                let p = st.split(separator: "@").map(String.init)
+                guard p.count == 2, let c = rgba(p[0]),
+                      let at = Double(p[1]) else { return nil }
+                return MarkupGradient.Stop(at: at, color: c)
+            }
+            if g.stops.count >= 2 { m.setMarkupGradient(g) }
+        case "stop":
+            guard var g = m.markupGradient else { return }
+            let p = arg.split(separator: ":").map(String.init)
+            let i = p.count > 1 ? Int(p[1]) ?? 0 : 0
+            switch p.first ?? "" {
+            case "add":
+                let t = Double(p.count > 1 ? p[1] : "0.5") ?? 0.5
+                g.stops.append(.init(at: t, color: g.color(at: t)))
+            case "move" where i < g.stops.count && p.count > 2:
+                g.stops[i].at = min(1, max(0, Double(p[2]) ?? 0))
+            case "remove" where i < g.stops.count && g.stops.count > 2:
+                g.stops.remove(at: i)
+            case "color" where i < g.stops.count && p.count > 2:
+                if let c = rgba(p[2]) { g.stops[i].color = c }
+            default: return
+            }
+            m.setMarkupGradient(g)
+        case "gradfrom", "gradto":
+            let v = arg.split(separator: ",").compactMap { Double($0) }
+            guard var g = m.markupGradient, v.count == 2 else { return }
+            if kv[0] == "gradfrom" {
+                g.from = CGPoint(x: v[0], y: v[1])
+            } else {
+                g.to = CGPoint(x: v[0], y: v[1])
+            }
+            m.setMarkupGradient(g)
+        case "shadow", "glow":
+            let kind: MarkupEffect.Kind = kv[0] == "glow" ? .glow : .shadow
+            let p = arg.split(separator: ",").map(String.init)
+            var fx = (mk.selection.first?.effects ?? mk.effects)
+                .filter { $0.kind != kind }
+            if arg != "off", let c = p.first.flatMap(rgba) {
+                let n = p.dropFirst().compactMap { Double($0) }
+                fx.append(kind == .glow
+                    ? MarkupEffect(kind: .glow, color: c,
+                                   radius: n.first ?? 12)
+                    : MarkupEffect(kind: .shadow, color: c,
+                                   blur: n.first ?? 8,
+                                   dx: n.count > 1 ? n[1] : 4,
+                                   dy: n.count > 2 ? n[2] : 4))
+            }
+            fx = fx.filter { $0.kind == .glow } + fx.filter { $0.kind != .glow }
+            mk.effects = fx
+            m.editSelection { $0.effects = fx }
         // A long stroke as a hand draws it: "scribble=W,H,N" -- N points
         // zigzagging over W x H canvas pixels, one every 8 ms (120 Hz);
         // prints the overlay's draws, how late the stroke ran, and what
@@ -135,26 +244,82 @@ struct ValtzApp: App {
                 pointer(.up, p, clicks: n, shift: kv[0] == "sclick")
             }
         case "key":
-            m.markupKey(arg == "delete" ? .delete : .escape)
+            m.markupKey(arg == "delete" ? .delete
+                        : arg == "enter" ? .enter : .escape)
+        // The pointer moved with no button down (a polygon's next edge).
+        case "hover":
+            if let p = points(arg).first { pointer(.hover, p) }
         // A key pressed as the keyboard would -- through the app's event
         // path, its monitors included: "[" "]" "{" (⇧[) "}" (⇧]).
         case "press":
-            let shift = arg == "{" || arg == "}"
-            let code: UInt16 = arg == "[" || arg == "{" ? 33 : 30
+            // "⌘]" (⌘[ ⌘} ⌘{): with ⌘, as the Arrange menu's keys.
+            let command = arg.hasPrefix("⌘")
+            let key = command ? String(arg.dropFirst()) : arg
+            let shift = key == "{" || key == "}"
+            // A tool's letter (v b e l r c) at its own key; [ ] { } theirs.
+            let tool = MarkupTool.allCases.first {
+                $0.key.map { String($0) } == key }
+            let code: UInt16 = tool?.keyCode
+                ?? (key == "d" ? 2 : key == "[" || key == "{" ? 33 : 30)
+            var flags: NSEvent.ModifierFlags = shift ? [.shift] : []
+            if command { flags.insert(.command) }
+            var viaMenu = "-"
+            // The menu items with that key: their titles, enabled or not.
+            func items(_ menu: NSMenu?) -> [NSMenuItem] {
+                (menu?.items ?? []).flatMap { [$0] + items($0.submenu) }
+            }
+            let matching = command ? items(NSApp.mainMenu).filter {
+                $0.keyEquivalent == key
+                    && $0.keyEquivalentModifierMask.contains(.command)
+            }.map { "\($0.title):\($0.isEnabled ? "on" : "off")" }
+                .joined(separator: ",") : "-"
             if let w = m.editorWindow,
                let e = NSEvent.keyEvent(
                    with: .keyDown, location: .zero,
-                   modifierFlags: shift ? [.shift] : [], timestamp: 0,
+                   modifierFlags: flags, timestamp: 0,
                    windowNumber: w.windowNumber, context: nil,
-                   characters: arg, charactersIgnoringModifiers: arg,
+                   characters: key, charactersIgnoringModifiers: key,
                    isARepeat: false, keyCode: code) {
-                NSApp.postEvent(e, atStart: false)
+                // ⌘D is posted all the same: the window's key monitor
+                // takes it before any menu, as a real key's.
+                if command && !NSApp.isActive && key != "d" {
+                    // An app not in front has no key window: its menu's
+                    // keys are matched as AppKit would match them.
+                    viaMenu = "\(NSApp.mainMenu?.performKeyEquivalent(with: e) ?? false)"
+                } else {
+                    NSApp.postEvent(e, atStart: false)
+                }
             }
             try? await Task.sleep(for: .milliseconds(150))
             let fr = m.editorWindow?.firstResponder.map {
                 String(describing: type(of: $0))
             } ?? "-"
-            print("snapshot: press \(arg) radius=\(mk.radius) softness=\(mk.softness) focus=\(fr)")
+            let layer = mk.selectionLayer
+            let order = (m.markupAsset?.layerStack.first { $0.id == layer }?
+                .markup?.objects ?? []).map(\.id).joined(separator: ",")
+            print("snapshot: press \(arg) tool=\(mk.tool.rawValue) radius=\(mk.radius) softness=\(mk.softness) focus=\(fr) order=\(order.isEmpty ? "-" : order) active=\(NSApp.isActive) menu=\(viaMenu) items=\(matching.isEmpty ? "-" : matching.replacingOccurrences(of: " ", with: "_")) selected=\(mk.selection.count)\(mk.drawing ? "+drawing" : "")")
+        // The project's undo and redo (the text window's are "undo",
+        // "redo"): printing what stays selected.
+        case "pundo", "predo":
+            let before = mk.selection.count
+            if kv[0] == "pundo" { m.undoProject() } else { m.redoProject() }
+            try? await Task.sleep(for: .milliseconds(300))
+            print("snapshot: \(kv[0]) layers=\(m.markupAsset?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")" }.joined(separator: ",") ?? "-") selected=\(before)>\(mk.selection.count)\(mk.drawing ? "+drawing" : "")")
+        // The toolbar's Deselect, beside Select (what ⌘D does).
+        case "deselect":
+            let can = m.markupCanDeselect
+            m.deselectMarkup()
+            print("snapshot: deselect can=\(can) selected=\(mk.selection.count)\(mk.drawing ? "+drawing" : "") canNow=\(m.markupCanDeselect)")
+        // A layer hidden ("hide=1"; layer 0 "0"; "sel" the selection's),
+        // as its eye does -- "show=1" shown again.
+        case "hide", "show":
+            let id = arg == "sel" ? mk.selectionLayer ?? ""
+                : arg == "0" ? "" : arg
+            let before = mk.selection.count
+            m.setLayerVisible(id, kv[0] == "show")
+            try? await Task.sleep(for: .milliseconds(300))
+            let l = m.markupAsset?.layerStack.first { $0.id == id }
+            print("snapshot: \(kv[0]) layer=\(arg) visible=\(l?.visible ?? false) selected=\(before)>\(mk.selection.count)\(mk.drawing ? "+drawing" : "") selectionLayer=\(mk.selectionLayer.map { $0.isEmpty ? "0" : $0 } ?? "-")")
         // The pointer over a canvas pixel, its outline drawn; "zoom=2"
         // the stage zoomed by as much first. Prints the outline's radius
         // in points against the brush's in pixels.
@@ -346,6 +511,13 @@ struct ValtzApp: App {
                     .keyboardShortcut("e")
                     .disabled(model.currentAsset?.url == nil)
             }
+            // The markup's selection let go, as Photoshop's ⌘D (the
+            // markup toolbar's button beside Select).
+            CommandGroup(after: .pasteboard) {
+                Button("Deselect") { model.deselectMarkup() }
+                    .keyboardShortcut("d")
+                    .disabled(!model.markupCanDeselect)
+            }
             CommandGroup(after: .textEditing) {
                 Button("Find") { model.findRequest += 1 }
                     .keyboardShortcut("f")
@@ -419,6 +591,17 @@ struct ValtzApp: App {
                     }
                 }
                 .keyboardShortcut("/")
+            }
+            // The selected markup objects' order, by Photoshop's keys (the
+            // toolbar's Arrange panel has the rest).
+            CommandMenu("Arrange") {
+                ForEach(MarkupArrange.order) { how in
+                    if let key = how.shortcut {
+                        Button(how.label) { model.arrangeSelection(how) }
+                            .keyboardShortcut(key)
+                            .disabled(!model.markupCanArrange(how))
+                    }
+                }
             }
             CommandGroup(before: .sidebar) {
                 Button(model.navOpen ? "Hide Navigation" : "Show Navigation") {
@@ -664,6 +847,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 m.setLoRA(p, on: !["off", "false", "none"]
                                               .contains(kv[1]))
                             }
+                            continue
+                        }
+                        // "fast=<catalog id>" (or none): the Acceleration
+                        // pick.
+                        if kv[0] == "fast" {
+                            m.setFastLoRA(kv[1] == "none" ? nil : kv[1])
                             continue
                         }
                         switch kv[1] {
@@ -1371,9 +1560,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     for _ in 0..<Int(delay * 4) where m.enhanced == nil {
                         try? await Task.sleep(for: .milliseconds(250))
                     }
+                    // The box's card: how tall its words stand, how tall
+                    // they are, its scroll bar ("snapshot: suggestion-card
+                    // text= doc= bar= cap=").
+                    try? await Task.sleep(for: .milliseconds(600))
+                    if let root = NSApp.windows.first(where: \.isVisible)?
+                        .contentView?.superview,
+                       let sv = Self.find(SuggestionScrollView.self,
+                                          in: root) {
+                        FileHandle.standardError.write(Data(
+                            "snapshot: suggestion-card text=\(Int(sv.frame.height)) doc=\(Int(sv.documentView?.frame.height ?? 0)) bar=\(sv.scrollerStyle == .legacy ? "legacy" : "overlay") cap=\(Int(SuggestionCard.textCap(window: m.editorRoom))) pictureRoom=\(Int(m.pictureRoom))/\(Int(m.editorRoom))\n".utf8))
+                    }
                     if e == "accept" {
                         m.acceptEnhanced()
                         try? await Task.sleep(for: .milliseconds(600))
+                    }
+                    // "review": the card's Prompt Editor button.
+                    if e == "review" {
+                        withAnimation(AppModel.motion) {
+                            m.enterImmersivePrompt()
+                        }
+                        try? await Task.sleep(for: .milliseconds(800))
+                        FileHandle.standardError.write(Data(
+                            "snapshot: suggestion-review immersive=\(m.promptImmersive) suggesting=\(m.suggesting) pane=\(Self.find(SuggestionTextView.self, in: NSApp.windows.first(where: \.isVisible)?.contentView?.superview ?? NSView()).map { $0.string.count } ?? -1)\n".utf8))
                     }
                 }
                 // The suggestion beside the prompt, in the Prompt Editor:
@@ -2073,6 +2282,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // "click=60@0" (a frame on a row, from the top),
                 // "drag=0:12>40" (a row's clip by its frame 12, to 40),
                 // "undo", "redo", "panel=trim" (a card under it; "none"),
+                // "continue=2" (the clip's Continue from its last 2 s),
                 // "editor" (the Prompt Editor in or out),
                 // "eye=1" (a row's eye clicked), "fold=0" (a folder's
                 // fold), "hdrag=0>2" (a header dragged to the gap above
@@ -2265,6 +2475,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     : arg == "trim" ? .trim
                                     : arg == "generate" ? .generate : nil
                             }
+                        // The clip carried on from its last N seconds
+                        // ("continue=1": as it is) -- the prompt back.
+                        case "continue":
+                            print("snapshot: timeline-continue can=\(m.canContinueClip)")
+                            if let s = Int(arg), s >= 2 {
+                                m.continueClip(seconds: s)
+                            } else {
+                                m.continueClip()
+                            }
                         case "wait": wait = Double(arg) ?? 1
                         default: break
                         }
@@ -2291,6 +2510,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      : f[0] == "rotate" ? .turn : .adjust,
                                  at: frame, kv)
                     }
+                }
+                // How a key goes on, as the key bar's pop-up sets it:
+                // "adjust@0:spline;crop@10:hold" (a key's frame, from the
+                // layer's start; none: where the player is). Prints the
+                // keys and the track's curve as the panels have it --
+                // exposure, scale X, degrees -- every few frames.
+                if let spec = env["VALTZ_SNAPSHOT_KEY_INTERP"] {
+                    for part in spec.split(separator: ";") {
+                        let f = part.split(separator: ":")
+                        let what = f.first?.split(separator: "@") ?? []
+                        guard f.count == 2, let name = what.first,
+                              let how = KeyInterp(rawValue: String(f[1]))
+                        else { continue }
+                        let track: KeyTrack = name == "crop" ? .place
+                            : name == "rotate" ? .turn : .adjust
+                        m.setKeyInterp(track, how,
+                                       at: what.count > 1 ? Int(what[1]) : nil)
+                        func curve<T>(_ k: Keyframes<T>,
+                                      _ v: (T) -> Double) -> String {
+                            guard let a = k.keys.first?.frame,
+                                  let b = k.keys.last?.frame, b > a else {
+                                return "-"
+                            }
+                            let step = max(1, (b - a) / 12)
+                            return stride(from: a, through: b, by: step)
+                                .map { f in
+                                    String(format: "%d:%.3f", f,
+                                           k.value(at: f).map(v) ?? 0)
+                                }.joined(separator: ",")
+                        }
+                        func keys<T>(_ k: Keyframes<T>) -> String {
+                            k.keys.map { "\($0.frame):\($0.interp.rawValue)" }
+                                .joined(separator: ",")
+                        }
+                        let (ks, c) = switch track {
+                        case .adjust:
+                            (keys(m.clipAdjustKeys),
+                             curve(m.clipAdjustKeys) { $0.exposure })
+                        case .place:
+                            (keys(m.clipCropKeys.place),
+                             curve(m.clipCropKeys.place) { $0.scaleX })
+                        case .turn:
+                            (keys(m.clipCropKeys.turn),
+                             curve(m.clipCropKeys.turn) { $0.degrees })
+                        }
+                        let shown = m.keyInterp(track).map {
+                            "\($0.frame):\($0.interp.rawValue)" } ?? "-"
+                        print("snapshot: key-interp \(part) keys=\(ks) popup=\(shown) curve=\(c)")
+                    }
+                    try? await Task.sleep(for: .milliseconds(600))
                 }
                 // Render Upscaled (the Crop panel's), once the stage's layer
                 // is scaled up: whether it is offered, its size, the job.
@@ -2522,6 +2791,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         case "say":
                             m.setPrompt(arg)
                             m.start()
+                        // Words typed into the box as the keyboard types
+                        // them, then Start pressed: the text view holds
+                        // them, as a person's do.
+                        case "type":
+                            if let win = NSApp.windows.first(where: { $0.isVisible }),
+                               let root = win.contentView?.superview,
+                               let tv = Self.find(PromptTextView.self, in: root) {
+                                win.makeFirstResponder(tv)
+                                tv.setSelectedRange(NSRange(
+                                    location: tv.string.utf16.count, length: 0))
+                                for ch in arg {
+                                    tv.insertText(String(ch),
+                                                  replacementRange: tv.selectedRange())
+                                }
+                            }
+                        case "start": m.start()
                         case "wait":
                             let w = arg.split(separator: "@").map(String.init)
                             let want = w.first ?? "done"
@@ -2550,6 +2835,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                         try? await Task.sleep(for: .milliseconds(400))
                         let a = m.agent
+                        // What the box's text view shows, and whether the
+                        // empty box's hint is drawn over it.
+                        let box = NSApp.windows.first(where: { $0.isVisible })?
+                            .contentView?.superview
+                            .flatMap { Self.find(PromptTextView.self, in: $0) }?
+                            .string.count ?? -1
+                        let hint = m.prompt.isEmpty && m.promptAttachments.isEmpty
+                        FileHandle.standardError.write(Data(
+                            "snapshot: agent-box box=\(box) prompt=\(m.prompt.count) hint=\(hint) immersive=\(m.promptImmersive)\n".utf8))
                         FileHandle.standardError.write(Data(
                             "snapshot: agent \(step.replacingOccurrences(of: " ", with: "_").prefix(40)) state=\(a?.state ?? "-") steps=\(a?.steps.count ?? 0) proposed=\(a?.proposed?.tool ?? "-") last=\(a?.steps.last.map { "\($0.tool):\($0.state)" } ?? "-") review=\(a?.review ?? false) backend=\(a?.backend?.kind ?? "-") composition=\(m.activeComposition?.name.replacingOccurrences(of: " ", with: "_") ?? "-") pages=\(m.activeComposition?.pages ?? 0) writing=\(m.agentWriting.count) error=\(a?.errorText?.replacingOccurrences(of: " ", with: "_").prefix(60) ?? "-") speed=\(a?.stats.flatMap { $0.isEmpty ? nil : $0.line.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
                     }
@@ -3422,8 +3716,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     + "mentions=\(m.promptMentions.count) focus=\(m.promptAttachments.firstIndex { $0.id == m.focusedReference }.map(String.init) ?? "-") "
                     + "stack=\(m.stackPlayback.map { "\($0.width)x\($0.height)/\($0.frames)f/\($0.clips.count)clips" } ?? "-") "
                     + "look=\(m.stageStack?.layerStack.map { l in let k = m.layerLook(l.id); return "\(l.id.isEmpty ? "0" : l.id):\(k.adjust ? "a" : "")\(k.place ? "p" : "")\(k.turn ? "t" : "")\(k.keyed ? "k" : "")" }.joined(separator: ",") ?? "-") "
-                    + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(m.inspectorStacked ? "stacked" : "one"):\(InspectorTab.allCases.filter { !m.inspectorFolded.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
+                    + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(m.inspectorStacked ? "stacked" : "one"):\(InspectorTab.allCases.filter { !m.inspectorFolded.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) pictureRoom=\(Int(m.pictureRoom))/\(Int(m.editorRoom)) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
                     + "markup=\(m.markupOpen ? m.markup.tool.rawValue : "off"):sel[\(m.markup.selection.map(\.kind.rawValue).joined(separator: ","))\(m.markup.drawing ? "+drawing" : "")]@\(m.markup.selectionLayer ?? "-") "
+                    // The first selected object's style: a text's
+                    // alignment and spacing, its effects.
+                    + "markupStyle=\(m.markup.selection.first.map { o in [o.kind == .text ? (o.align ?? "left") : nil, o.lineSpacing.map { String(format: "x%.1f", $0) }, o.effects.isEmpty ? nil : o.effects.map(\.kind.rawValue).joined(separator: "+"), o.gradient.map { "\($0.kind.rawValue)\($0.stops.count)" }, o.kind == .polygon ? "corners\(o.points.count)" : nil].compactMap { $0 }.joined(separator: ":") } ?? "-") "
                     + "favor=\(m.preference.rawValue) tuning=\(m.preference == .custom ? m.customSummary : "-") tunePanel=\(m.showsTuning) "
                     + "upscale=\(m.upscaleJob != nil ? "running" : m.canUpscaleLayer ? "offered" : m.upscaleNeedsFlatten ? "flatten-first" : "-") "
                     + "capture=\(m.capture.recording ? "recording" : m.showsCapture ? "offered" : "-") captureSources=\(m.captureSources.map(\.kind).joined(separator: ",")) "
@@ -3546,8 +3843,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let rows = t.rows.map { r -> String in
             let id = r.id.isEmpty ? "0" : r.id
             let end = r.end.map(String.init) ?? "on"
+            // Between two keys how the values go on: ">" moving, "|"
+            // held to the next, "/" nothing changing.
             let keys = r.keys.isEmpty ? ""
-                : ":k" + r.keys.map(String.init).joined(separator: "/")
+                : ":k" + r.keys.enumerated().map { i, k in
+                    let way = i + 1 == r.keys.count ? ""
+                        : r.ways[k] == .moves ? ">"
+                        : r.ways[k] == .jumps ? "|" : "/"
+                    return "\(k)\(way)"
+                }.joined()
             let wave = r.wave != nil ? ":wave" : ""
             let shown = r.visible ? "" : ":hidden"
             // A folder's header: its id and its layers' spans together;
@@ -3571,7 +3875,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let c = "frame=\(t.playhead)/\(t.frames) cutting=\(t.cutting)"
         let d = "selected=\(sel) layers=\(layers) events=\(events)"
         let e = "panel=\(panel) assets=\(m.assets.count)"
-        return [a, b, c, d, e].joined(separator: " ")
+        // The playhead off the selected layer: before or after it.
+        let f = "off=\(m.layerOffStage?.rawValue ?? "-")"
+        return [a, b, c, d, e, f].joined(separator: " ")
     }
 
     /// The downloads: "z-image-turbo:running:0.42" -- each one's model,

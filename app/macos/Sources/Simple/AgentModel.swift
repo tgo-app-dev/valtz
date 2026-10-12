@@ -44,9 +44,13 @@ extension AppModel {
     }
 
     /// The box emptied of the words just sent (its media stay: the row is
-    /// the agent's to use).
+    /// the agent's to use) -- the text view too, by the revision: the
+    /// model's words alone emptied left them in the view, under the empty
+    /// box's grey hint.
     private func clearAgentPrompt() {
-        prompt = ""
+        promptMarked = ""
+        promptMentions = []
+        setPrompt("")
     }
 
     /// The session as the core says it is now.
@@ -234,6 +238,8 @@ extension AppModel {
         case "add_shape": String(localized: "Add Shape")
         case "update_object": String(localized: "Change Text or Shape")
         case "remove_object": String(localized: "Remove Text or Shape")
+        case "flow_text": String(localized: "Lay Out Text")
+        case "add_page_progress": String(localized: "Add Page Progress")
         case "place_asset": String(localized: "Place Asset")
         case "set_layer_box": String(localized: "Move Layer")
         case "set_layer_pages": String(localized: "Layer Pages")
@@ -257,6 +263,7 @@ extension AppModel {
         case "set_timeline_length": String(localized: "Timeline Length")
         case "generate_music": String(localized: "Generate Music")
         case "generate_voiceover": String(localized: "Generate Voice-Over")
+        case "generate_video": String(localized: "Generate a Shot")
         default: tool
         }
     }

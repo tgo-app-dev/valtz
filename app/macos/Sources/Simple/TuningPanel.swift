@@ -8,7 +8,7 @@ import SwiftUI
 /// branch replaces Sol-Attn. An option this Mac or install cannot have is
 /// shown, off, with why. Weights dropped on it -- .safetensors files or
 /// folders -- join one list: the LoRAs (the preset's Turbo LoRA among
-/// them; two run at a time), then the DiT and VAE checkpoints (one of
+/// them; eight run at a time), then the DiT and VAE checkpoints (one of
 /// each in place of the model's own).
 struct TuningPanel: View {
     @Bindable var model: AppModel
@@ -133,6 +133,9 @@ struct TuningPanel: View {
     private func weightRows(_ info: TuningInfo) -> some View {
         let loras = info.tuning.loras
         let parts = checkpointEntries(info.tuning)
+        if let fast = info.loraOption?.fast, !fast.isEmpty {
+            fastRow(fast, info)
+        }
         ForEach(Array(loras.enumerated()), id: \.element.id) { n, l in
             loraRow(n + 1, l, info)
         }
@@ -147,6 +150,43 @@ struct TuningPanel: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .gridCellColumns(2)
         }
+    }
+
+    /// The quick pick of the model's ACCELERATION LoRAs -- its few-step
+    /// adapters as Capabilities lists them, not HyperFlow's or TaoMate's
+    /// (their own switches) -- or none: the one picked goes into the list
+    /// on, with its own steps and shifts. One not downloaded is listed,
+    /// not offered.
+    private func fastRow(_ fast: [FastLoRA], _ info: TuningInfo) -> some View {
+        let on = Set(info.tuning.loras.filter(\.on).map(\.path))
+        let current = fast.first { $0.installed && on.contains($0.path) }
+        return GridRow {
+            Text("Acceleration")
+                .gridColumnAlignment(.trailing)
+            Picker("Acceleration", selection: Binding(
+                get: { current?.id ?? "" },
+                set: { model.setFastLoRA($0.isEmpty ? nil : $0) })) {
+                Text("None").tag("")
+                Divider()
+                ForEach(fast) { f in
+                    Text(f.installed
+                         ? f.name
+                         : String(localized: "\(f.name) — not downloaded"))
+                        .tag(f.id)
+                        .selectionDisabled(!f.installed)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .gridColumnAlignment(.leading)
+            Text(current.map { f in
+                String(localized: "\(String(f.steps)) steps, its own shifts")
+            } ?? String(localized: "The model's own steps"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 340, alignment: .leading)
+        }
+        .help("A few-step LoRA distilled from the model: picked, it runs at the steps and shifts it was made for. HyperFlow and TaoMate have switches of their own.")
     }
 
     /// A DiT or VAE checkpoint, as its part's list holds it.
@@ -177,7 +217,7 @@ struct TuningPanel: View {
             onHelp: blocked ? (info.tuning.flags["taomate"] == true
                                    ? String(localized: "TaoMate runs in its place")
                                    : String(localized: "HyperFlow runs in its place"))
-                            : String(localized: "Two LoRAs run at a time"),
+                            : String(localized: "Eight LoRAs run at a time"),
             fast: turbo,
             remove: { model.removeLoRA(l.path) }) {
             TuningNumberField(value: l.scale, option: Self.strength) {
@@ -401,7 +441,7 @@ private enum TuningGroup: CaseIterable, Identifiable {
 
 /// A number option: typed (taken on Return or when left, held to its
 /// range by the core) or stepped.
-private struct TuningNumberField: View {
+struct TuningNumberField: View {
     let value: Double
     let option: TuningOption
     let commit: (Double) -> Void

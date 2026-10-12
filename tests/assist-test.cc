@@ -822,3 +822,41 @@ TEST(assist, a_video_summary_is_written)
   CHECK(assist::language_name("") == "English");
   CHECK(assist::language_name("tlh") == "English");
 }
+
+// A SHOT's prompt (the agent's generate_video): the description's shots
+// are its own clip's -- a model writing a scene numbers them through it --
+// and a continuation given no subjects names what its clip shows.
+TEST(assist, a_shot_counts_its_own_shots)
+{
+  ShotText t;
+  t.description = "[Shot 2] At 00:04.000, he looks up. [Shot 3] At "
+                  "00:06.500, the beam sweeps over him.";
+  t.continued = "<Video 1>";
+  t.continued_sound = "<Audio 1>";
+  const std::string p = shot_prompt(t);
+  CHECK(p.find("[Shot 1] The shot continues seamlessly from the final "
+               "moment of <Video 1>. he looks up. [Shot 2] At 00:02.500, "
+               "the beam sweeps over him.") != std::string::npos);
+  CHECK(p.find("[Shot 3]") == std::string::npos);
+  CHECK(p.find("<Subject 1> is everyone and everything seen in <Video 1>") !=
+        std::string::npos);
+  CHECK(p.find("<Subject 1> (appears in [Shot 1]): fully_preserved") !=
+        std::string::npos);
+  // No summary given: what the description says happens, its markers
+  // and times left out.
+  CHECK(p.find("[video continuation + audio reference] The target video "
+               "continues directly from the end of <Video 1>. he looks up. "
+               "the beam sweeps over him.\n") != std::string::npos);
+  // Already its own: as written.
+  ShotText w;
+  w.description = "[Shot 1] A pier at dusk. [Shot 2] At 00:02.000, closer.";
+  const std::string q = shot_prompt(w);
+  CHECK(q.find("integrated_multimodal_description: [Shot 1] A pier at "
+               "dusk. [Shot 2] At 00:02.000, closer.") != std::string::npos);
+  // A picture referred to, no subjects: who or what it shows.
+  ShotText r;
+  r.description = "[Shot 1] He waves.";
+  r.pictures = {"<Picture 1>"};
+  CHECK(shot_prompt(r).find("<Subject 1> is who or what <Picture 1> "
+                            "shows.") != std::string::npos);
+}

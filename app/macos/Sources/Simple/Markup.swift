@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The markup toolbar's tools.
 enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
-    case select, brush, eraser, line, rect, ellipse, text
+    case select, brush, eraser, line, rect, ellipse, polygon, text
     var id: String { rawValue }
 
     var symbol: String {
@@ -14,6 +14,7 @@ enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
         case .line: "line.diagonal"
         case .rect: "rectangle"
         case .ellipse: "circle"
+        case .polygon: "pentagon"
         case .text: "textformat"
         }
     }
@@ -26,7 +27,36 @@ enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
         case .line: String(localized: "Line")
         case .rect: String(localized: "Rectangle")
         case .ellipse: String(localized: "Ellipse")
+        case .polygon: String(localized: "Polygon")
         case .text: String(localized: "Text")
+        }
+    }
+
+    /// Its key, as a painting app's: V select, B brush, E eraser, L line,
+    /// R rectangle, C circle (the ellipse).
+    var key: Character? {
+        switch self {
+        case .select: "v"
+        case .brush: "b"
+        case .eraser: "e"
+        case .line: "l"
+        case .rect: "r"
+        case .ellipse: "c"
+        default: nil
+        }
+    }
+
+    /// Its key's code on a US keyboard: the tool by its place there when
+    /// the layout types no Latin letter (Cyrillic, Greek).
+    var keyCode: UInt16? {
+        switch self {
+        case .select: 9
+        case .brush: 11
+        case .eraser: 14
+        case .line: 37
+        case .rect: 15
+        case .ellipse: 8
+        default: nil
         }
     }
 
@@ -50,6 +80,79 @@ enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// What the toolbar's ARRANGE does with the selected objects (the core's
+/// media::arrange_objects): their place in their layer's order, their
+/// edges or middles lined up, three or more spaced evenly.
+enum MarkupArrange: String, CaseIterable, Identifiable, Sendable {
+    case toTop = "to-top", up, down, toBottom = "to-bottom"
+    case left, center, right, top, middle, bottom
+    case distributeH = "distribute-h", distributeV = "distribute-v"
+    var id: String { rawValue }
+
+    static let order: [MarkupArrange] = [.toTop, .up, .down, .toBottom]
+    static let align: [MarkupArrange] = [.left, .center, .right,
+                                         .top, .middle, .bottom]
+
+    var symbol: String {
+        switch self {
+        case .toTop: "square.3.layers.3d.top.filled"
+        case .up: "square.2.layers.3d.top.filled"
+        case .down: "square.2.layers.3d.bottom.filled"
+        case .toBottom: "square.3.layers.3d.bottom.filled"
+        case .left: "align.horizontal.left"
+        case .center: "align.horizontal.center"
+        case .right: "align.horizontal.right"
+        case .top: "align.vertical.top"
+        case .middle: "align.vertical.center"
+        case .bottom: "align.vertical.bottom"
+        case .distributeH: "distribute.horizontal"
+        case .distributeV: "distribute.vertical"
+        }
+    }
+
+    /// The order's keys, as Photoshop's: ⌘] up, ⌘[ down, ⇧⌘] to the
+    /// top, ⇧⌘[ to the bottom (the Arrange menu's). The shifted ones as
+    /// the characters they type, "}" and "{": a "]" with ⇧ is never
+    /// matched by a keyboard's ⇧⌘].
+    var shortcut: KeyboardShortcut? {
+        switch self {
+        case .toTop: KeyboardShortcut("}", modifiers: .command)
+        case .up: KeyboardShortcut("]", modifiers: .command)
+        case .down: KeyboardShortcut("[", modifiers: .command)
+        case .toBottom: KeyboardShortcut("{", modifiers: .command)
+        default: nil
+        }
+    }
+
+    /// The same, as a menu shows it.
+    var shortcutText: String? {
+        switch self {
+        case .toTop: "⇧⌘]"
+        case .up: "⌘]"
+        case .down: "⌘["
+        case .toBottom: "⇧⌘["
+        default: nil
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .toTop: String(localized: "Move to Top")
+        case .up: String(localized: "Move Up")
+        case .down: String(localized: "Move Down")
+        case .toBottom: String(localized: "Move to Bottom")
+        case .left: String(localized: "Align Left Edges")
+        case .center: String(localized: "Align Horizontal Centers")
+        case .right: String(localized: "Align Right Edges")
+        case .top: String(localized: "Align Top Edges")
+        case .middle: String(localized: "Align Vertical Centers")
+        case .bottom: String(localized: "Align Bottom Edges")
+        case .distributeH: String(localized: "Distribute Horizontally")
+        case .distributeV: String(localized: "Distribute Vertically")
+        }
+    }
+}
+
 /// The markup toolbar's state: its tool and settings, and the work in
 /// hand -- the stroke being drawn, the shape being dragged out, the
 /// objects selected (on one layer) and their current values, which the
@@ -68,6 +171,25 @@ final class MarkupState {
     var edge = RGBA.red
     var fill = RGBA.clear
     var font = MarkupFont()
+    /// A text box's alignment ("left", "center", "right", "justified")
+    /// and its lines' spacing, a multiple of the font's line.
+    var align = "left"
+    var lineSpacing = 1.0
+    /// The effects new objects are drawn with (a shadow, a glow), and
+    /// whether their panel is open.
+    var effects: [MarkupEffect] = []
+    var effectsOpen = false
+    /// The gradient new shapes are filled with (none: their fill), and
+    /// whether its editor is open.
+    var gradient: MarkupGradient?
+    var gradientOpen = false
+    /// The Arrange panel (the selection's order, alignment, spacing).
+    var arrangeOpen = false
+    /// A POLYGON being drawn: its corners so far (canvas pixels), a click
+    /// a corner, and where the pointer is -- the next corner's edge shown
+    /// to it. Closed on its first corner, a double-click or Return.
+    var polygon: [CGPoint] = []
+    var polygonHover: CGPoint?
 
     /// The brush stroke being drawn.
     var stroke: [CGPoint] = []
@@ -96,7 +218,11 @@ final class MarkupState {
     @ObservationIgnored var pastes = 0
     @ObservationIgnored var pasteboardChange = -1
 
-    enum Drag { case none, stroke, shape, move, handle(String, Int) }
+    enum Drag {
+        case none, stroke, shape, move, handle(String, Int), polygon
+        /// A selected object's gradient's end (0 from, 1 to).
+        case gradient(String, Int)
+    }
     @ObservationIgnored var drag = Drag.none
     @ObservationIgnored var last = CGPoint.zero
     @ObservationIgnored var moved = false
@@ -185,6 +311,8 @@ extension AppModel {
                 color: m.edge, erase: m.strokeErase))
         }
         o.objects = m.selection + (m.draft.map { [$0] } ?? [])
+        if let d = polygonDraft { o.objects.append(d) }
+        o.path = m.polygon + (m.polygonHover.map { [$0] } ?? [])
         o.selected = m.selectedIds
         // Drawn by the core, in its layer's place, but while it changes.
         o.drawsSelection = m.live || m.settling
@@ -295,6 +423,16 @@ extension AppModel {
                 ? hypot(d.x1 - d.x0, d.y1 - d.y0) >= 2
                 : abs(d.x1 - d.x0) >= 2 && abs(d.y1 - d.y0) >= 2
             if big { addObject(d) }
+        case (.down, .polygon):
+            polygonDown(e)
+        case (.drag, .polygon):
+            // The corner pressed follows the pointer until let go.
+            guard case .polygon = m.drag, !m.polygon.isEmpty else { return }
+            m.polygon[m.polygon.count - 1] = p
+        case (.up, .polygon):
+            m.drag = .none
+        case (.hover, .polygon):
+            if !m.polygon.isEmpty { m.polygonHover = p }
         case (.down, .select):
             selectDown(e)
         case (.drag, .select):
@@ -317,7 +455,15 @@ extension AppModel {
     func markupKey(_ k: MarkupKey) {
         switch k {
         case .delete: deleteSelectedObjects()
-        case .escape: commitSelection()
+        case .escape:
+            // A polygon being drawn goes; else the selection is let go.
+            if !markup.polygon.isEmpty {
+                markup.polygon = []
+                markup.polygonHover = nil
+            } else {
+                commitSelection()
+            }
+        case .enter: finishPolygon()
         case .cut: copySelectedObjects(cut: true)
         case .copy: copySelectedObjects(cut: false)
         case .paste: pasteObjects()
@@ -331,6 +477,36 @@ extension AppModel {
             let s = m.softness + (k == .softer ? 0.25 : -0.25)
             m.softness = min(1, max(0, (s * 4).rounded() / 4))
         }
+    }
+
+    /// A tool's KEY (MarkupTool.key) -- V, B, E, L, R, C -- while the
+    /// markup toolbar can be used, wherever the keyboard is in the window
+    /// but text (a prompt, a field: a letter typed there is a letter) or a
+    /// list (its letters find a row); no modifier held, held down once.
+    /// Handled -- true -- or left to go on.
+    func markupToolKey(_ e: NSEvent) -> Bool {
+        guard markupOpen, markupReady, !e.isARepeat,
+              let w = e.window, !(w is NSPanel),
+              editorWindow == nil || w === editorWindow else { return false }
+        let fr = w.firstResponder
+        if fr is NSText || fr is NSTableView || fr is NSOutlineView
+            || fr is NSCollectionView { return false }
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .numericPad, .function])
+        guard mods.isEmpty else { return false }
+        // By the letter, else -- a layout of other letters -- by the key.
+        let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
+        let latin = ch.count == 1 && ch.first.map {
+            $0.isASCII && $0.isLetter } == true
+        guard let tool = MarkupTool.allCases.first(where: { t in
+            latin ? t.key.map { String($0) } == ch
+                  : t.keyCode == e.keyCode
+        }) else { return false }
+        if markup.tool != tool {
+            markup.tool = tool
+            markupToolChanged()
+        }
+        return true
     }
 
     /// [ ] and ⇧[ ⇧] on the brush or the eraser, wherever the keyboard is
@@ -374,7 +550,114 @@ extension AppModel {
             return NSPasteboard.general.availableType(
                 from: [Self.markupPasteboardType]) != nil
         case .escape, .smaller, .larger, .softer, .harder: return true
+        case .enter: return !markup.polygon.isEmpty
         }
+    }
+
+    // MARK: Gradients
+
+    /// The gradient the toolbar shows: the selected shape's or text's,
+    /// else the one new shapes get.
+    var markupGradient: MarkupGradient? {
+        let m = markup
+        if let o = m.selection.first(where: {
+            $0.fillable || $0.kind == .text }) {
+            return o.gradient
+        }
+        return m.gradient
+    }
+
+    /// The colour a gradient starts from: the selection's fill (or its
+    /// colour), else the toolbar's.
+    var markupGradientBase: RGBA {
+        let m = markup
+        if let o = m.selection.first(where: {
+            $0.fillable || $0.kind == .text }) {
+            return o.fillable && o.fill.a > 0 ? o.fill : o.stroke
+        }
+        return m.fill.a > 0 ? m.fill : m.edge
+    }
+
+    /// A new gradient of `kind` (none: nil) from `base`: it to a lighter
+    /// one -- a darker one from a light colour.
+    static func newGradient(_ kind: MarkupGradient.Kind,
+                            from base: RGBA) -> MarkupGradient {
+        let light = 0.299 * base.r + 0.587 * base.g + 0.114 * base.b > 0.6
+        let t = light ? 0.0 : 1.0
+        let other = RGBA(r: base.r + (t - base.r) * 0.7,
+                         g: base.g + (t - base.g) * 0.7,
+                         b: base.b + (t - base.b) * 0.7, a: base.a)
+        return MarkupGradient(kind: kind, stops: [
+            .init(at: 0, color: base), .init(at: 1, color: other)])
+    }
+
+    /// The gradient `g` (nil: none) on the selected shapes and texts, and
+    /// the one new shapes get; kept at once, or -- a stop dragged -- when
+    /// let go (`commit` false meanwhile).
+    func setMarkupGradient(_ g: MarkupGradient?, commit: Bool = true) {
+        markup.gradient = g
+        editSelection(commit: commit) {
+            if $0.fillable || $0.kind == .text { $0.gradient = g }
+        }
+    }
+
+    /// The polygon being drawn, as an object with the toolbar's settings
+    /// -- to the pointer too -- for the overlay; nil while there is none.
+    private var polygonDraft: MarkupObject? {
+        let m = markup
+        let pts = m.polygon + (m.polygonHover.map { [$0] } ?? [])
+        guard pts.count >= 2 else { return nil }
+        var o = newObject(.polygon, at: pts[0])
+        o.id = "polygon-draft"
+        MarkupRender.setPolygon(&o, pts)
+        return o
+    }
+
+    /// A click with the polygon tool: its first corner, the next one --
+    /// or, on its first corner (three or more) or a double-click, the
+    /// polygon made.
+    private func polygonDown(_ e: MarkupPointer) {
+        let m = markup
+        let p = e.point
+        if m.polygon.isEmpty {
+            commitSelection()
+            m.polygon = [p]
+            m.polygonHover = nil
+            m.drag = .polygon
+            return
+        }
+        let first = m.polygon[0]
+        let reach = 8 * e.pixelsPerPoint
+        if (m.polygon.count >= 3
+            && hypot(p.x - first.x, p.y - first.y) <= reach)
+            || e.clickCount >= 2 {
+            finishPolygon()
+            return
+        }
+        m.polygon.append(p)
+        m.drag = .polygon
+    }
+
+    /// The polygon drawn made an object -- three corners or more, the
+    /// same corner twice running taken once -- and selected.
+    func finishPolygon() {
+        let m = markup
+        var pts: [CGPoint] = []
+        for p in m.polygon {
+            if let q = pts.last, hypot(p.x - q.x, p.y - q.y) < 1 { continue }
+            pts.append(p)
+        }
+        if let a = pts.first, let z = pts.last, pts.count > 1,
+           hypot(a.x - z.x, a.y - z.y) < 1 {
+            pts.removeLast()
+        }
+        m.polygon = []
+        m.polygonHover = nil
+        m.drag = .none
+        guard pts.count >= 3 else { return }
+        var o = newObject(.polygon, at: pts[0])
+        MarkupRender.setPolygon(&o, pts)
+        addObject(o)
     }
 
     /// The selected objects on the pasteboard -- the texts' words as
@@ -649,9 +932,16 @@ extension AppModel {
             id: "m" + UUID().uuidString.prefix(8).lowercased(),
             kind: kind, x0: p.x, y0: p.y, x1: p.x, y1: p.y)
         o.stroke = m.edge
-        o.fill = kind == .rect || kind == .ellipse ? m.fill : .clear
+        o.fill = kind == .rect || kind == .ellipse || kind == .polygon
+            ? m.fill : .clear
+        o.gradient = o.fillable ? m.gradient : nil
         o.width = m.width
         o.font = m.font
+        if kind == .text {
+            o.align = m.align == "left" ? nil : m.align
+            o.lineSpacing = m.lineSpacing == 1 ? nil : m.lineSpacing
+        }
+        o.effects = m.effects
         return o
     }
 
@@ -808,6 +1098,53 @@ extension AppModel {
         }
     }
 
+    /// Something selected to let go: objects, or a layer's drawing.
+    var markupCanDeselect: Bool {
+        markupReady && (!markup.selection.isEmpty || markup.drawing)
+    }
+
+    /// The selection let go, its values kept -- ⌘D (Edit › Deselect), the
+    /// toolbar's button beside Select: Escape's, a polygon being drawn
+    /// left as it is.
+    func deselectMarkup() {
+        guard markupCanDeselect else { return }
+        commitSelection()
+    }
+
+    /// ⌘D in the editor's window while something is selected: here, in
+    /// the window's key monitor, as well as Edit › Deselect's -- a menu
+    /// item SwiftUI enables a beat late (in a window not in front,
+    /// never), and a disabled one swallows its key. By the letter, else
+    /// -- a layout of other letters -- by the key. Handled -- true -- or
+    /// left to go on.
+    func deselectKey(_ e: NSEvent) -> Bool {
+        guard markupCanDeselect, !e.isARepeat,
+              let w = e.window, !(w is NSPanel),
+              editorWindow == nil || w === editorWindow else { return false }
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .numericPad, .function])
+        guard mods == .command else { return false }
+        let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
+        let latin = ch.count == 1 && ch.first.map {
+            $0.isASCII && $0.isLetter } == true
+        guard latin ? ch == "d" : e.keyCode == 2 else { return false }
+        deselectMarkup()
+        return true
+    }
+
+    /// The selection's layer hidden -- its eye, its folder's, an undo, the
+    /// agent -- and the selection let go: what is not seen is not worked
+    /// on (its handles, Delete, the toolbar's settings would act on it
+    /// unseen).
+    func deselectHiddenLayer() {
+        let m = markup
+        guard let id = m.selectionLayer,
+              m.selectionAsset == markupAsset?.id,
+              let l = markupAsset?.layerStack.first(where: { $0.id == id }),
+              !l.visible else { return }
+        commitSelection()
+    }
+
     /// The selected objects changed (a toolbar setting, the text): drawn
     /// at once, and kept -- or, while a slider moves or a word is typed,
     /// kept when that ends.
@@ -884,6 +1221,45 @@ extension AppModel {
         markupChanged()
     }
 
+    /// Whether Arrange's `how` would change anything: up (down) the order
+    /// unless the selection is its layer's top (bottom) already; lined
+    /// up -- one object on the picture -- always; spaced, three or more.
+    func markupCanArrange(_ how: MarkupArrange) -> Bool {
+        let m = markup
+        guard markupReady, let layer = m.selectionLayer,
+              !m.selection.isEmpty else { return false }
+        let order = markupObjects(layer).map(\.id)
+        let sel = m.selectedIds
+        switch how {
+        case .toTop, .up: return Set(order.suffix(sel.count)) != sel
+        case .down, .toBottom: return Set(order.prefix(sel.count)) != sel
+        case .distributeH, .distributeV: return sel.count >= 3
+        default: return true
+        }
+    }
+
+    /// The selected objects ARRANGED by the core -- one command ("Undo
+    /// Arrange", "Align", "Distribute") -- and still selected where they
+    /// are now.
+    func arrangeSelection(_ how: MarkupArrange) {
+        let m = markup
+        guard let core, let projectId, let pic = markupAsset,
+              let layer = m.selectionLayer, !m.selection.isEmpty,
+              markupCanArrange(how) else { return }
+        commitSelection(keep: true)
+        let ids = m.selectedIds
+        let r = core.layerOp(project: projectId,
+                             asset: composedTarget(pic.id), "arrange",
+                             layer: layer,
+                             extra: ["objects": Array(ids),
+                                     "how": how.rawValue])
+        if !r.ok { note("error", r.message) }
+        reloadAssets()
+        // In the layer's order, as the stage draws them.
+        m.selection = markupObjects(layer).filter { ids.contains($0.id) }
+        markupChanged()
+    }
+
     /// The object under `p`: the selection's first (its current values),
     /// then the visible markup layers' from the top.
     private func markupHit(_ p: CGPoint, _ e: MarkupPointer)
@@ -914,14 +1290,27 @@ extension AppModel {
         let p = e.point
         m.last = p
         m.moved = false
-        // A handle of the selection: reshape it.
+        // A handle of the selection -- its shape's, or the one object's
+        // gradient's ends -- the nearest pressed: reshape it.
         let reach = 6 * e.pixelsPerPoint
-        for o in m.selection {
-            for (i, h) in MarkupRender.handles(o).enumerated()
-            where hypot(h.x - p.x, h.y - p.y) <= reach {
-                m.drag = .handle(o.id, i)
-                return
+        var best: (d: Double, drag: MarkupState.Drag)?
+        func consider(_ h: CGPoint, _ drag: MarkupState.Drag) {
+            let d = hypot(h.x - p.x, h.y - p.y)
+            if d <= reach && d < (best?.d ?? .infinity) { best = (d, drag) }
+        }
+        if m.selection.count == 1, let o = m.selection.first {
+            for (i, h) in MarkupRender.gradientHandles(o).enumerated() {
+                consider(h, .gradient(o.id, i))
             }
+        }
+        for o in m.selection {
+            for (i, h) in MarkupRender.handles(o).enumerated() {
+                consider(h, .handle(o.id, i))
+            }
+        }
+        if let best {
+            m.drag = best.drag
+            return
         }
         guard let hit = markupHit(p, e) else {
             // Painted pixels there: the layer's DRAWING selected (⇧: with
@@ -964,7 +1353,7 @@ extension AppModel {
         let p = e.point
         // Moved or reshaped: drawn live from its first step.
         switch m.drag {
-        case .move, .handle: liveSelection()
+        case .move, .handle, .gradient: liveSelection()
         default: break
         }
         switch m.drag {
@@ -981,6 +1370,12 @@ extension AppModel {
             if let k = m.selection.firstIndex(where: { $0.id == id }) {
                 m.selection[k] = MarkupRender.moving(m.selection[k],
                                                      handle: i, to: p)
+                m.moved = true
+            }
+        case .gradient(let id, let i):
+            if let k = m.selection.firstIndex(where: { $0.id == id }) {
+                m.selection[k] = MarkupRender.movingGradient(
+                    m.selection[k], handle: i, to: p)
                 m.moved = true
             }
         default:
@@ -1010,6 +1405,8 @@ extension AppModel {
     /// The toolbar closed, or its tool changed: the selection let go.
     func markupToolChanged() {
         let m = markup
+        // Another tool: a polygon being drawn is made (or let go).
+        if m.tool != .polygon && !m.polygon.isEmpty { finishPolygon() }
         if m.tool != .select && m.tool != .text { commitSelection() }
         // The brush or the eraser takes the keyboard from the prompt (as
         // a painting app's tools do): [ ] are its size then, not words.

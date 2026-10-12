@@ -187,6 +187,7 @@ final class ClipMarkupNSView: NSView {
     override func mouseMoved(with e: NSEvent) {
         pointerAt = convert(e.locationInWindow, from: nil)
         updateRing()
+        send(.hover, e)
     }
 
     override func mouseEntered(with e: NSEvent) {

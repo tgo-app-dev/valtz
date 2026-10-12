@@ -505,6 +505,17 @@ struct InspectorView: View {
                          ?? lora)
                 }
             }
+            // LoRAs of one's own, by their files' names, slot by slot.
+            if let files = r.params?.loraFiles, !files.isEmpty {
+                row("LoRAs") {
+                    Text(verbatim: files.map {
+                        URL(fileURLWithPath: $0).deletingPathExtension()
+                            .lastPathComponent
+                    }.joined(separator: ", "))
+                    .lineLimit(3)
+                    .truncationMode(.middle)
+                }
+            }
             if let frames = r.params?.frames {
                 row("Frames") { Text(verbatim: "\(frames)") }
             }

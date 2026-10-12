@@ -116,6 +116,32 @@ video_writer(Json write, const Json& params, std::string_view format,
   return write;
 }
 
+// The run-time LoRAs on the stage that takes them -- generate-image, an
+// H3 config beat: `lora` the first, `lora2` .. `lora8` the slots after it,
+// each at its strength ("lora_scale", "lora<k>_scale"). A slot is its
+// index in vpipe (a strength is addressed by it), so one left empty keeps
+// its place.
+void
+lay_loras(Json& cfg, const JobSpec& job)
+{
+  if (!job.model.lora.empty()) {
+    cfg["lora"] = job.model.lora.string();
+    cfg["lora_scale"] = jget(job.params, "lora_scale", 1.0);
+  }
+  const std::size_t more = std::min<std::size_t>(
+      job.model.more_loras.size(), kLoraSlots - 1);
+  for (std::size_t i = 0; i < more; ++i) {
+    const auto& f = job.model.more_loras[i];
+    if (f.empty()) {
+      continue;
+    }
+    const std::string key = std::format("lora{}", i + 2);
+    cfg[key] = f.string();
+    cfg[key + "_scale"] =
+        jget(job.params, (key + "_scale").c_str(), 1.0);
+  }
+}
+
 // Merge `over` into `base` (shallow).
 Json
 merged(Json base, const Json& over)
@@ -443,16 +469,9 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
   if (!job.model.dit.empty()) {
     gen_cfg["dit_dir"] = job.model.dit.string();
   }
-  // Run-time LoRAs (Favor's Custom): generate-image takes both slots for
+  // Run-time LoRAs (Favor's Custom): generate-image takes every slot for
   // every image family.
-  if (!job.model.lora.empty()) {
-    gen_cfg["lora"] = job.model.lora.string();
-    gen_cfg["lora_scale"] = jget(job.params, "lora_scale", 1.0);
-  }
-  if (!job.model.lora2.empty()) {
-    gen_cfg["lora2"] = job.model.lora2.string();
-    gen_cfg["lora2_scale"] = jget(job.params, "lora2_scale", 1.0);
-  }
+  lay_loras(gen_cfg, job);
   gen_cfg = merged(gen_cfg, declared_of(job, "generate"));
   gen_cfg = merged(gen_cfg, jget(job.params, "vpipe_generate",
                                  Json::object()));
@@ -686,14 +705,7 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   // The family's own knobs -- its sigma shifts, the run-time adapter, the
   // preview TAE -- ride one config beat into generate-video's port 9.
   Json cfg = jget(vp, "config", Json::object());
-  if (!job.model.lora.empty()) {
-    cfg["lora"] = job.model.lora.string();
-    cfg["lora_scale"] = jget(job.params, "lora_scale", 1.0);
-  }
-  if (!job.model.lora2.empty()) {
-    cfg["lora2"] = job.model.lora2.string();
-    cfg["lora2_scale"] = jget(job.params, "lora2_scale", 1.0);
-  }
+  lay_loras(cfg, job);
   // Favor's Custom: the two schedules' shifts (whole numbers, sent as the
   // reals the stage declares), and the VDN branch beside the DiT (its
   // folder).
@@ -1853,8 +1865,11 @@ build_upscale_image(const JobSpec& job)
                                       port("model-select"), unwired(),
                                       unwired(), port("encode"), unwired(),
                                       unwired()}),
-                         {{"seed", jget<std::int64_t>(job.params, "seed",
-                                                      0)}}));
+                         // Settings › Upscaling's arithmetic (the
+                         // recipe's tuning): int8 GEMMs, Sage, Sol.
+                         merged({{"seed", jget<std::int64_t>(job.params,
+                                                             "seed", 0)}},
+                                accel_of(job))));
   stages.push_back(stage("decode", "vae-decode",
                          Json::array({port("generate"),
                                       port("model-select")}),

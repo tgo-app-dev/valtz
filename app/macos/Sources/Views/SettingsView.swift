@@ -10,6 +10,8 @@ import AppKit
 ///                 where it already is (CapabilitiesView)
 ///   Agentic Helper  the model that writes prompts with the person: which
 ///                 one, and how it runs (HelperView)
+///   Upscaling     the upscalers' arithmetic -- int8 GEMMs, Sage, Sol --
+///                 which no generation card sets (UpscalingView)
 ///   Fleet         this Mac as a member of a fleet of Valtz Macs: joined,
 ///                 made, discoverable; the jobs it takes (FleetView)
 ///   Storage       what Valtz keeps on the internal SSD (StorageView)
@@ -70,6 +72,7 @@ struct SettingsView: View {
                 case .page(.general): GeneralSettings(model: model)
                 case .page(.capabilities): CapabilitiesView(model: model)
                 case .page(.helper): HelperView(model: model)
+                case .page(.upscaling): UpscalingView(model: model)
                 case .page(.fleet): FleetView(model: model) { go($0) }
                 case .page(.storage): StorageView(model: model)
                 case .page(.permissions): PermissionsView(model: model)
@@ -153,8 +156,8 @@ struct SettingsView: View {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
-    case general, capabilities, helper, fleet, storage, permissions,
-         experimental
+    case general, capabilities, helper, upscaling, fleet, storage,
+         permissions, experimental
     var id: String { rawValue }
 
     var title: String {
@@ -162,6 +165,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .general: String(localized: "General")
         case .capabilities: String(localized: "Capabilities")
         case .helper: String(localized: "Agentic Helper")
+        case .upscaling: String(localized: "Upscaling")
         case .fleet: String(localized: "Fleet")
         case .storage: String(localized: "Storage")
         case .permissions: String(localized: "Permissions")
@@ -174,6 +178,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .general: "gearshape.fill"
         case .capabilities: "sparkles"
         case .helper: "brain"
+        case .upscaling: "arrow.up.left.and.arrow.down.right"
         case .fleet: "point.3.connected.trianglepath.dotted"
         case .storage: "internaldrive.fill"
         case .permissions: "hand.raised.fill"
@@ -186,6 +191,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .general: .gray
         case .capabilities: .purple
         case .helper: .pink
+        case .upscaling: .green
         case .fleet: .teal
         case .storage: .blue
         case .permissions: .indigo
@@ -202,6 +208,8 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
             String(localized: "What each model family makes on this Mac, and every resource it runs with: download it, or use it from where it already is.")
         case .helper:
             String(localized: "The model that writes prompts with you, reads what you ask for and watches your clips: which one, and how it runs.")
+        case .upscaling:
+            String(localized: "How Render Upscaled restores a layer at the size it is shown — FlashVSR for clips, VOSR for pictures: the arithmetic each runs with.")
         case .fleet:
             String(localized: "The Valtz Macs of this network as one: a job this Mac cannot run, or not now, goes to a member that can, and this Mac takes theirs when it is free.")
         case .storage:

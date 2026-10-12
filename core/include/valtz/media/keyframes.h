@@ -3,14 +3,29 @@
 //
 // A clip's adjustments and crop (media/adjust.h, media/crop.h) are not
 // one value but a track: keyframes at frames of the clip, and between
-// two of them the values interpolated LINEARLY -- before the first key,
-// the first; after the last, the last. A track with one key is a value
-// for the whole clip, which is how a clip starts (a key at its first
-// frame). Frames count from 0 in the clip as made (a trim does not move
-// them).
+// two of them the values INTERPOLATED -- before the first key, the
+// first; after the last, the last. A track with one key is a value for
+// the whole clip, which is how a clip starts (a key at its first frame).
+// Frames count from 0 in the clip as made (a trim does not move them).
+//
+// HOW a value goes from a key to the next is that key's (2026-10-11):
+//   linear  in a straight line (as every key went before);
+//   hold    not at all: the key's value until the next key's frame, then
+//           the next's -- an abrupt change;
+//   spline  along a cubic Bezier (Hermite) curve through the keys, its
+//           handles set by the keys either side as Fritsch and Butland
+//           set a monotone spline's: smooth through a key the values run
+//           on past, level at one where they turn (no overshoot past
+//           either key -- a scale or a level never leaves the range its
+//           keys span), level at a track's ends and next to a held key.
+//           Two keys alone ease in and out.
+// Only the LOOK's tracks take it (adjustments, a crop's placement and
+// turn); a layer's speed and sound stay linear -- the source time is a
+// speed ramp's integral, and the player ramps a volume linearly.
 //
 // As modifiers (project::Modifier "adjust" / "crop") a track is
-//   {"keys": [{"frame": 0, <the value's own keys>}, ...],
+//   {"keys": [{"frame": 0, <the value's own keys>,
+//              "interp"?: "hold" | "spline"}, ...],
 //    "rate_num": 24, "rate_den": 1}
 // and a still's flat value reads as a track of one key at frame 0, so
 // one reader takes both. A clip's CROP is two tracks keyed apart -- where
@@ -29,6 +44,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace valtz::media {
@@ -73,10 +89,45 @@ Adjustments lerp(const Adjustments& a, const Adjustments& b, double t);
 Crop lerp(const Crop& a, const Crop& b, double t);
 Rotation lerp(const Rotation& a, const Rotation& b, double t);
 
+// How a key's value goes on to the next key's (above).
+enum class Interp { Hold, Linear, Spline };
+const char* to_str(Interp);
+Interp interp_from_str(const std::string&);  // unknown: Linear
+
+// A SPLINE's span: from key `a` to `b` (`h` frames apart, `t` of the way,
+// 0..1), and the keys either side when the curve runs on through them --
+// `before` `h_before` frames before `a`, `after` `h_after` after `b`.
+struct SplineSpan {
+  double t = 0;
+  double h = 1;
+  bool   before = false;
+  double h_before = 1;
+  bool   after = false;
+  double h_after = 1;
+};
+
+// One number on that span: `a` to `b` (`p` the key before, `n` the one
+// after, when there are).
+double spline(double p, double a, double b, double n, const SplineSpan&);
+
+// The same for each number of a value (`a`'s other parts kept, as lerp's).
+Speed spline(const Speed& p, const Speed& a, const Speed& b, const Speed& n,
+             const SplineSpan&);
+Sound spline(const Sound& p, const Sound& a, const Sound& b, const Sound& n,
+             const SplineSpan&);
+Adjustments spline(const Adjustments& p, const Adjustments& a,
+                   const Adjustments& b, const Adjustments& n,
+                   const SplineSpan&);
+Crop spline(const Crop& p, const Crop& a, const Crop& b, const Crop& n,
+            const SplineSpan&);
+Rotation spline(const Rotation& p, const Rotation& a, const Rotation& b,
+                const Rotation& n, const SplineSpan&);
+
 template <class T>
 struct Keyframe {
   std::int64_t frame = 0;
   T            value;
+  Interp       interp = Interp::Linear;  // on to the next key
 
   bool operator==(const Keyframe&) const = default;
 };
@@ -96,6 +147,22 @@ struct Keyed {
                        [](const Keyframe<T>& k) {
                          return k.value.identity();
                        });
+  }
+
+  // How the span `frame` is in goes on: its first key's (none before
+  // the first key: linear). A key made inside it takes this, so a held
+  // span stays held.
+  Interp
+  interp_at(double frame) const
+  {
+    Interp i = Interp::Linear;
+    for (const auto& k : keys) {
+      if (static_cast<double>(k.frame) > frame) {
+        break;
+      }
+      i = k.interp;
+    }
+    return i;
   }
 
   // The value at `frame` (fractions allowed).
@@ -118,8 +185,30 @@ struct Keyed {
         });
     auto a = b - 1;
     const double span = static_cast<double>(b->frame - a->frame);
-    return lerp(a->value, b->value,
-                (frame - static_cast<double>(a->frame)) / span);
+    const double t = (frame - static_cast<double>(a->frame)) / span;
+    switch (a->interp) {
+      case Interp::Hold:
+        return a->value;
+      case Interp::Linear:
+        return lerp(a->value, b->value, t);
+      case Interp::Spline:
+        break;
+    }
+    // On through a key either side unless that side is held.
+    SplineSpan s{.t = t, .h = span};
+    const T* p = &a->value;
+    const T* n = &b->value;
+    if (a != keys.begin() && (a - 1)->interp != Interp::Hold) {
+      s.before = true;
+      s.h_before = static_cast<double>(a->frame - (a - 1)->frame);
+      p = &(a - 1)->value;
+    }
+    if (b + 1 != keys.end() && b->interp != Interp::Hold) {
+      s.after = true;
+      s.h_after = static_cast<double>((b + 1)->frame - b->frame);
+      n = &(b + 1)->value;
+    }
+    return spline(*p, a->value, b->value, *n, s);
   }
 
   bool operator==(const Keyed&) const = default;
@@ -158,7 +247,8 @@ struct KeyedCrop {
 // {"keys": [...], "rate_num", "rate_den"} (a crop's also "rotate_keys"
 // and its background); {} when every key is the identity. Reading takes
 // a track or a still's flat value (one key at frame 0), sorts the keys
-// and drops repeated frames.
+// and drops repeated frames. A key's "interp" is written unless linear,
+// and read on the look's tracks only (a speed's and a sound's: linear).
 Json to_json(const KeyedAdjustments&);
 Json to_json(const KeyedCrop&);
 KeyedAdjustments keyed_adjustments_from_json(const Json&);

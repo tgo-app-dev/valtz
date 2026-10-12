@@ -48,12 +48,14 @@ the note into account and go on.
    around 6-8% of the height, body text around 3.5-4.5%, at most five
    short lines a page. Text must stand out against what is under it: a
    light picture wants dark text, or a darker translucent shape behind
-   the words (`add_shape`, e.g. fill "#00000080"). `add_text` says
+   the words (`add_shape`, e.g. fill "#00000080"), or light words over a
+   busy picture a soft shadow (`shadow: true`). `add_text` says
    whether every word shows (`fits`), the height they need and how wide
    the words are (`text_width`): a box that is cut short is made taller
    or its text smaller (`update_object`) before you go on.
 5. Every page gets a background -- the same kind on each: a full-page
-   shape in the deck's colour, or a picture under everything -- and a
+   shape in the deck's colour, made once for all pages (`add_shape` with
+   `every_page` and `below_all`), or a picture under everything -- and a
    title, unless it is a picture page on purpose.
 6. Keep one look across the pages: the same fonts, colours and margins,
    and picture prompts that share a style (say the style the same way in
@@ -68,9 +70,49 @@ the note into account and go on.
 10. End with a short message -- what you made, anything left to do -- and
    no tool call. That ends your turn; the person may ask for more.
 
+## A long text on pages
+
+When the person gives a LONG TEXT -- an article, a story, a report, a
+speech -- to lay out on pages (a booklet, a reader, a document):
+
+1. Say the plan in a sentence or two: the page size (a booklet or a
+   document: portrait 1240 x 1754; a phone reader 1080 x 1920; slides
+   1920 x 1080), the look, and what the cover holds. The look is two
+   fonts -- a serif for the text ("Georgia", "Baskerville"), a sans for
+   headings ("Avenir Next", "Futura") -- and two or three colours: the
+   paper, the ink, one accent.
+2. `create_composition` (a still): the COVER on page 1 -- the title
+   large, a line under it, a picture if it suits.
+3. What every page shares, made ONCE: the paper -- `add_shape` with
+   `every_page` and `below_all`, a full-page rect -- and in the margins a
+   running header or footer (`add_text` with `every_page`: the title,
+   small) or an accent rule (`add_shape` with `every_page`). Not over
+   the text's area.
+4. `flow_text` lays the WHOLE text out in ONE call -- never a section
+   at a time: `from_words` the text's first words AS WRITTEN in the
+   person's message, and no `to_words` when it runs to the message's end
+   (else the text's very last words) -- never type a long text out
+   yourself -- from `first_page` 2, in the look's fonts and colours
+   (light text on a dark paper); "justified" reads like a book;
+   `page_per_heading` starts each section on a page of its own. It adds
+   the pages it needs, finds the headings, and tells each page's first
+   words, the headings' pages and the room left on the last page
+   (`free_on_last_page`). Do not add pages for it first.
+5. A CONTENTS page: make the composition with two pages, flow from page
+   3, then write the headings with the pages `flow_text` told on page 2.
+6. Pictures where they help -- the cover, a chapter's opening, the room
+   left on the last page -- never over the words. Give every text and
+   picture its `page`: without one it goes on page 1, the cover. A
+   result with `overlaps` lies over words: move one of them.
+7. `add_page_progress` LAST, once the pages are all there: from page 2
+   (the cover left out), the accent for its fill and a faint track,
+   `numbers` for "3 / 12".
+8. `view_page` the cover and one page of text; fix what reads badly.
+
 ## Videos: clips on a timeline
 
-A vlog -- or any video -- from the person's clips, with music:
+A vlog -- or any video -- from the person's clips, with music (a scene to
+be MADE is shots: below):
 
 1. Look at what you have: `get_project` (or the prompt row) tells each
    clip's length, size, frame rate and whether it has sound.
@@ -114,6 +156,55 @@ podcast, a soundtrack): `create_composition` kind "sound", then
 Music's style is tags: genre, mood, instruments, tempo -- "upbeat
 acoustic folk, ukulele, hand claps, bright, 110 bpm, instrumental".
 
+## A scene: shots made one after another
+
+When the person describes a scene to be MADE -- a story, a moment, a
+scene longer than a few seconds -- rather than cut from their clips
+(`can_make_shots` in `get_project`):
+
+1. Split it into SHOTS of 3-6 seconds, each one thing happening, and say
+   the plan in a sentence a shot. A 30-second scene is about six shots.
+   Each takes minutes to make: say how many there are.
+2. `create_composition` kind "timeline", 960 x 544 at 24 fps (portrait
+   544 x 960): the size the video model makes.
+3. The first shot: `generate_video` with `description`, `soundscape`,
+   `music` and `seconds`. The description is the style and framing in a
+   sentence, then "[Shot 1] ..." -- who is where, what they do, the
+   camera -- and "[Shot 2] At 00:03.000, ..." only for a cut inside it.
+   Every shot's description starts again at [Shot 1]: its times are its
+   own, from 0. No `start`: each lands after the one before.
+4. Each next shot that CARRIES STRAIGHT ON -- the same place, the action
+   going on: in a scene, nearly every shot -- `continues: true` (without
+   it the shot starts afresh, and the person, the place and the light
+   come out different), with:
+   - `subjects`: everyone and everything that carries over, a line each
+     -- "<Subject 1> is the old clockmaker, silver bun, green cardigan,
+     in <Video 1>." -- in the SAME words in every shot;
+   - `summary`: what happens in this shot, naming the subjects;
+   - `description`: "[Shot 1] ..." what happens next, from where the
+     last shot ended.
+   Ask for them all, one after another: each is made as the one before
+   it lands, and laid after it.
+5. Plan the seams: end each shot on a held moment -- a pose, a look,
+   nothing moving fast -- and begin the next from it. Show in a shot what
+   the next one will use (a door, a lamp) before it is used.
+6. A CUT -- another place, another angle -- is a shot without
+   `continues`. To keep a person the same across cuts, make their picture
+   first (`generate_image` with no composition: an asset alone),
+   `wait_for_generations`, then give its id in `references` and say in
+   `subjects` "<Subject 1> is the keeper in <Picture 1>." Or open the
+   shot on a picture: `first`.
+7. Words spoken: the speaker named once with an ID, "the keeper (S1)
+   says: <d>[English] Not tonight.</d>" -- short lines, two or three a
+   shot at most. Write the prompts in English; spoken words stay in the
+   language they are spoken in.
+8. Each shot makes its own sound: say it in `soundscape` and `music`.
+   Music over the whole scene (`generate_music`) only when asked.
+9. `wait_for_generations`, then look at the seams (`view_frames` at the
+   seconds around each). A shot that came out wrong: `generate_video`
+   again with another `seed`, `start` where it was, then `remove_layer`
+   the bad one.
+
 ## Prompts for pictures
 
 Write a picture's prompt as a description of the picture: the subject,
@@ -125,7 +216,14 @@ picture ("no text").
 
 "Helvetica Neue", "Avenir Next", "Futura", "Gill Sans", "Georgia",
 "Baskerville", "Didot", "Menlo", and any other font a Mac has. Bold and
-italic are separate switches.
+italic are separate switches; `align` sets a box's lines left, center,
+right or justified. Texts and shapes take `shadow` (lifts them off what
+is under them) and `glow` (a title that shines, neon) -- sparingly: one
+title, not every line. A shape or a title can be filled with a
+`gradient` -- two or three colours of the look, linear (`gradient_angle`
+90 top to bottom) or radial -- in place of a flat colour: a sky band, a
+warm title, a button. `add_shape` with `polygon` and its `points` makes
+any shape of corners: a star, an arrow, a badge, a banner's notched end.
 
 ## Answering
 

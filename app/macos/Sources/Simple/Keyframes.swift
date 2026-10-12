@@ -3,23 +3,109 @@ import CoreImage
 import Foundation
 import SwiftUI
 
-/// A value a clip's keyframes can carry: interpolated linearly between two
-/// keys (core media/keyframes.h).
+/// A value a clip's keyframes can carry: interpolated between two keys
+/// (core media/keyframes.h).
 protocol Keyable: Equatable, Sendable {
     static func lerp(_ a: Self, _ b: Self, _ t: Double) -> Self
+    /// Each number of `a` made by `f` from it and the same number of `p`,
+    /// `b` and `n` -- `a`'s other parts kept, as `lerp` keeps them (the
+    /// core's zip): a spline taken number by number.
+    static func zip(_ p: Self, _ a: Self, _ b: Self, _ n: Self,
+                    _ f: (Double, Double, Double, Double) -> Double) -> Self
     var isIdentity: Bool { get }
 }
 
+/// How a key's value goes on to the next key's (core media::Interp): not
+/// at all until the next key -- held, an abrupt change there -- in a
+/// straight line, or along a smooth curve through the keys.
+enum KeyInterp: String, CaseIterable, Identifiable, Sendable {
+    case hold, linear, spline
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .hold: String(localized: "None")
+        case .linear: String(localized: "Linear")
+        case .spline: String(localized: "Spline")
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .hold: String(localized: "None: held until the next keyframe, then changed at once")
+        case .linear: String(localized: "Linear: changed at an even pace to the next keyframe")
+        case .spline: String(localized: "Spline: eased along a smooth curve through the keyframes")
+        }
+    }
+
+    /// Its picture: two keys (dots) and the way between them -- a step,
+    /// a straight line, an S-curve -- drawn as a template image.
+    var image: NSImage {
+        let size = NSSize(width: 18, height: 14)
+        let img = NSImage(size: size, flipped: false) { _ in
+            let a = NSPoint(x: 3, y: 3), b = NSPoint(x: 15, y: 11)
+            let path = NSBezierPath()
+            path.lineWidth = 1.5
+            path.lineCapStyle = .round
+            path.lineJoinStyle = .round
+            path.move(to: a)
+            switch self {
+            case .hold:
+                path.line(to: NSPoint(x: b.x, y: a.y))
+                path.line(to: b)
+            case .linear:
+                path.line(to: b)
+            case .spline:
+                path.curve(to: b, controlPoint1: NSPoint(x: 10, y: a.y),
+                           controlPoint2: NSPoint(x: 8, y: b.y))
+            }
+            NSColor.black.setStroke()
+            path.stroke()
+            for p in [a, b] {
+                NSBezierPath(ovalIn: NSRect(x: p.x - 2, y: p.y - 2,
+                                            width: 4, height: 4)).fill()
+            }
+            return true
+        }
+        img.isTemplate = true
+        return img
+    }
+}
+
+/// A SPLINE's number between two keys -- the core's media::spline, the
+/// same arithmetic: a cubic Hermite from `a` to `b` (`h` frames apart,
+/// `t` of the way), its slopes Fritsch and Butland's from the keys either
+/// side it runs on through (`p` `hp` frames before, `n` `hn` after; nil:
+/// level there).
+func keySpline(_ p: Double, _ a: Double, _ b: Double, _ n: Double,
+               t: Double, h: Double, hp: Double?, hn: Double?) -> Double {
+    let h = max(1e-9, h)
+    let d = (b - a) / h
+    func slope(_ d0: Double, _ d1: Double, _ h0: Double,
+               _ h1: Double) -> Double {
+        if d0 * d1 <= 0 { return 0 }
+        return 3 * (h0 + h1) / ((2 * h1 + h0) / d0 + (h1 + 2 * h0) / d1)
+    }
+    let m0 = hp.map { slope((a - p) / max(1e-9, $0), d, $0, h) } ?? 0
+    let m1 = hn.map { slope(d, (n - b) / max(1e-9, $0), h, $0) } ?? 0
+    let t = min(1, max(0, t)), t2 = t * t, t3 = t2 * t
+    return (2 * t3 - 3 * t2 + 1) * a + (t3 - 2 * t2 + t) * h * m0
+        + (-2 * t3 + 3 * t2) * b + (t3 - t2) * h * m1
+}
+
 /// A value that changes over a clip -- its adjustments, its crop: keys at
-/// frames, and between two of them the values interpolated linearly;
-/// before the first key, the first, after the last, the last. A track of
-/// one key is a value for the whole clip, which is how a clip starts (a
-/// key at its first frame). Recorded on the clip as its "adjust" / "crop"
-/// modifier ({"keys": [{"frame", ...}], "rate_num", "rate_den"}).
+/// frames, and between two of them the values interpolated as the first
+/// one says (held, linear, a spline); before the first key, the first,
+/// after the last, the last. A track of one key is a value for the whole
+/// clip, which is how a clip starts (a key at its first frame). Recorded
+/// on the clip as its "adjust" / "crop" modifier ({"keys": [{"frame",
+/// ..., "interp"?}], "rate_num", "rate_den"}).
 struct Keyframes<T: Keyable>: Equatable, Sendable {
     struct Key: Equatable, Sendable {
         var frame: Int
         var value: T
+        /// On to the next key.
+        var interp: KeyInterp = .linear
     }
 
     /// Ascending frames, no two alike.
@@ -32,10 +118,18 @@ struct Keyframes<T: Keyable>: Equatable, Sendable {
         keys = [Key(frame: 0, value: value)]
     }
 
-    /// From a modifier's keys, each with its "frame" (none: 0).
-    init(_ dicts: [[String: Double]], value: ([String: Double]) -> T) {
-        for d in dicts {
-            set(value(d), at: max(0, Int(d["frame"] ?? 0)))
+    /// From a modifier's keys, each with its "frame" (none: 0) -- and,
+    /// on the look's tracks, its "interp" (`interps`, in the same order).
+    init(_ dicts: [[String: Double]], interps: [String?]? = nil,
+         value: ([String: Double]) -> T) {
+        for (i, d) in dicts.enumerated() {
+            let f = max(0, Int(d["frame"] ?? 0))
+            set(value(d), at: f)
+            // Its own, not the span's it fell in as the keys were read.
+            let s = interps.flatMap { i < $0.count ? $0[i] : nil }
+            if let k = index(at: f) {
+                keys[k].interp = s.flatMap(KeyInterp.init) ?? .linear
+            }
         }
     }
 
@@ -44,9 +138,10 @@ struct Keyframes<T: Keyable>: Equatable, Sendable {
               value: (T) -> [String: Double]) -> [String: Any] {
         guard !isIdentity else { return [:] }
         return [
-            "keys": keys.map { k -> [String: Double] in
-                var d = value(k.value)
+            "keys": keys.map { k -> [String: Any] in
+                var d: [String: Any] = value(k.value)
                 d["frame"] = Double(k.frame)
+                if k.interp != .linear { d["interp"] = k.interp.rawValue }
                 return d
             },
             "rate_num": rate.num, "rate_den": rate.den,
@@ -65,9 +160,40 @@ struct Keyframes<T: Keyable>: Equatable, Sendable {
         if frame >= Double(last.frame) { return last.value }
         let b = keys.firstIndex { Double($0.frame) > frame }!
         let ka = keys[b - 1], kb = keys[b]
-        return T.lerp(ka.value, kb.value,
-                      (frame - Double(ka.frame))
-                          / Double(kb.frame - ka.frame))
+        let h = Double(kb.frame - ka.frame)
+        let t = (frame - Double(ka.frame)) / h
+        switch ka.interp {
+        case .hold: return ka.value
+        case .linear: return T.lerp(ka.value, kb.value, t)
+        case .spline: break
+        }
+        // On through a key either side unless that side is held.
+        let before = b >= 2 && keys[b - 2].interp != .hold
+            ? keys[b - 2] : nil
+        let after = b + 1 < keys.count && kb.interp != .hold
+            ? keys[b + 1] : nil
+        let hp = before.map { Double(ka.frame - $0.frame) }
+        let hn = after.map { Double($0.frame - kb.frame) }
+        return T.zip(before?.value ?? ka.value, ka.value, kb.value,
+                     after?.value ?? kb.value) {
+            keySpline($0, $1, $2, $3, t: t, h: h, hp: hp, hn: hn)
+        }
+    }
+
+    /// How the span `frame` is in goes on: its first key's (before the
+    /// first key: linear).
+    func interp(at frame: Int) -> KeyInterp {
+        keys.last { $0.frame <= frame }?.interp ?? .linear
+    }
+
+    /// The key a span starts at: the one at `frame`, else the one before.
+    func spanKey(at frame: Int) -> Int? {
+        keys.lastIndex { $0.frame <= frame }
+    }
+
+    /// How the key at (or before) `frame` goes on to the next.
+    mutating func setInterp(_ how: KeyInterp, at frame: Int) {
+        if let i = spanKey(at: frame) { keys[i].interp = how }
     }
 
     /// The key at `frame`, if there is one.
@@ -84,12 +210,14 @@ struct Keyframes<T: Keyable>: Equatable, Sendable {
         keys.first { $0.frame > frame }?.frame
     }
 
-    /// Put `value` at `frame`: that key's, or a new key there.
+    /// Put `value` at `frame`: that key's, or a new key there -- going on
+    /// as the span it is made in did (a held span stays held).
     mutating func set(_ value: T, at frame: Int) {
         if let i = index(at: frame) {
             keys[i].value = value
         } else {
-            keys.append(Key(frame: frame, value: value))
+            keys.append(Key(frame: frame, value: value,
+                            interp: interp(at: frame)))
             keys.sort { $0.frame < $1.frame }
         }
     }
@@ -118,18 +246,34 @@ extension ImageAdjustments: Keyable {
         for k in Key.allCases { o[k] = a[k] + (b[k] - a[k]) * t }
         return o
     }
+
+    static func zip(_ p: Self, _ a: Self, _ b: Self, _ n: Self,
+                    _ f: (Double, Double, Double, Double) -> Double) -> Self {
+        var o = a
+        for k in Key.allCases { o[k] = f(p[k], a[k], b[k], n[k]) }
+        return o
+    }
 }
 
 extension CropSpec: Keyable {
     static func lerp(_ a: Self, _ b: Self, _ t: Double) -> Self {
-        func mix(_ x: Double, _ y: Double) -> Double { x + (y - x) * t }
+        Self.zip(a, a, b, b) { _, x, y, _ in x + (y - x) * t }
+    }
+
+    static func zip(_ p: Self, _ a: Self, _ b: Self, _ n: Self,
+                    _ f: (Double, Double, Double, Double) -> Double) -> Self {
         var o = a.contentWidth > 0 ? a : b
-        o.scaleX = mix(a.scaleX, b.scaleX)
-        o.scaleY = mix(a.scaleY, b.scaleY)
-        o.offsetX = mix(a.offsetX, b.offsetX)
-        o.offsetY = mix(a.offsetY, b.offsetY)
-        o.rotate = mix(a.rotate, b.rotate)
-        o.pad = zip(a.pad, b.pad).map { mix($0, $1) }
+        o.scaleX = f(p.scaleX, a.scaleX, b.scaleX, n.scaleX)
+        o.scaleY = f(p.scaleY, a.scaleY, b.scaleY, n.scaleY)
+        o.offsetX = f(p.offsetX, a.offsetX, b.offsetX, n.offsetX)
+        o.offsetY = f(p.offsetY, a.offsetY, b.offsetY, n.offsetY)
+        o.rotate = f(p.rotate, a.rotate, b.rotate, n.rotate)
+        func at(_ c: [Double], _ i: Int) -> Double {
+            i < c.count ? c[i] : a.pad[i]
+        }
+        o.pad = a.pad.indices.map { i in
+            f(at(p.pad, i), a.pad[i], at(b.pad, i), at(n.pad, i))
+        }
         return o
     }
 }
@@ -142,6 +286,10 @@ struct LayerSpeed: Keyable {
     var isIdentity: Bool { rate == 1 }
     static func lerp(_ a: Self, _ b: Self, _ t: Double) -> Self {
         LayerSpeed(rate: a.rate + (b.rate - a.rate) * t)
+    }
+    static func zip(_ p: Self, _ a: Self, _ b: Self, _ n: Self,
+                    _ f: (Double, Double, Double, Double) -> Double) -> Self {
+        LayerSpeed(rate: f(p.rate, a.rate, b.rate, n.rate))
     }
 }
 
@@ -157,6 +305,11 @@ struct LayerSound: Keyable {
         LayerSound(volume: a.volume + (b.volume - a.volume) * t,
                    pitch: a.pitch + (b.pitch - a.pitch) * t)
     }
+    static func zip(_ p: Self, _ a: Self, _ b: Self, _ n: Self,
+                    _ f: (Double, Double, Double, Double) -> Double) -> Self {
+        LayerSound(volume: f(p.volume, a.volume, b.volume, n.volume),
+                   pitch: f(p.pitch, a.pitch, b.pitch, n.pitch))
+    }
 }
 
 /// A clip's turn, in degrees (+ clockwise): its crop's rotation, keyed on
@@ -166,6 +319,10 @@ struct Turn: Keyable {
     var isIdentity: Bool { degrees == 0 }
     static func lerp(_ a: Self, _ b: Self, _ t: Double) -> Self {
         Turn(degrees: a.degrees + (b.degrees - a.degrees) * t)
+    }
+    static func zip(_ p: Self, _ a: Self, _ b: Self, _ n: Self,
+                    _ f: (Double, Double, Double, Double) -> Double) -> Self {
+        Turn(degrees: f(p.degrees, a.degrees, b.degrees, n.degrees))
     }
 }
 
@@ -211,12 +368,15 @@ struct ClipCrop: Equatable, Sendable {
 
     init(_ m: ModifierDTO) {
         let keys = m.keys ?? [m.params]
-        place = Keyframes(keys) { d in
+        place = Keyframes(keys, interps: m.keyInterps) { d in
             var c = CropSpec(d)
             c.rotate = 0
             return c
         }
-        turn = Keyframes(m.rotateKeys ?? keys) {
+        // A crop keyed whole: the turn goes on as the placement does.
+        turn = Keyframes(m.rotateKeys ?? keys,
+                         interps: m.rotateKeys != nil ? m.rotateInterps
+                                                      : m.keyInterps) {
             Turn(degrees: $0["rotate"] ?? 0)
         }
         let first = keys.first ?? [:]
@@ -229,22 +389,27 @@ struct ClipCrop: Equatable, Sendable {
     func json(rate: FrameRate) -> [String: Any] {
         guard !isIdentity else { return [:] }
         var j: [String: Any] = [
-            "keys": place.keys.map { k -> [String: Double] in
+            "keys": place.keys.map { k -> [String: Any] in
                 let c = k.value
-                var d = ["frame": Double(k.frame),
-                         "content_w": Double(c.contentWidth),
-                         "content_h": Double(c.contentHeight),
-                         "scale_x": c.scaleX, "scale_y": c.scaleY,
-                         "offset_x": c.offsetX, "offset_y": c.offsetY]
+                var d: [String: Any] = [
+                    "frame": Double(k.frame),
+                    "content_w": Double(c.contentWidth),
+                    "content_h": Double(c.contentHeight),
+                    "scale_x": c.scaleX, "scale_y": c.scaleY,
+                    "offset_x": c.offsetX, "offset_y": c.offsetY]
                 // A still's crop may name its canvas (a page's look).
                 if c.canvasWidth > 0, c.canvasHeight > 0 {
                     d["canvas_w"] = Double(c.canvasWidth)
                     d["canvas_h"] = Double(c.canvasHeight)
                 }
+                if k.interp != .linear { d["interp"] = k.interp.rawValue }
                 return d
             },
-            "rotate_keys": turn.keys.map {
-                ["frame": Double($0.frame), "rotate": $0.value.degrees]
+            "rotate_keys": turn.keys.map { k -> [String: Any] in
+                var d: [String: Any] = ["frame": Double(k.frame),
+                                        "rotate": k.value.degrees]
+                if k.interp != .linear { d["interp"] = k.interp.rawValue }
+                return d
             },
             "rate_num": rate.num, "rate_den": rate.den,
         ]
@@ -321,6 +486,7 @@ struct KeyframeBar: View {
             }
             .disabled(!keys.contains { $0 > f })
             .help("Next keyframe")
+            interpMenu
             Image(systemName: here ? "diamond.fill" : "diamond")
                 .font(.caption)
                 .foregroundStyle(here ? Color.accentColor : .secondary)
@@ -338,6 +504,36 @@ struct KeyframeBar: View {
             }
         }
         .buttonStyle(.borderless)
+    }
+
+    /// How the keyframe here -- or the one before -- goes on to the next:
+    /// None (held), Linear, Spline; its picture the button.
+    private var interpMenu: some View {
+        let at = model.keyInterp(track)
+        let now = at?.interp ?? .linear
+        return Menu {
+            ForEach(KeyInterp.allCases) { how in
+                Toggle(isOn: Binding(
+                    get: { now == how },
+                    set: { if $0 { model.setKeyInterp(track, how) } })) {
+                    Label {
+                        Text(verbatim: how.label)
+                    } icon: {
+                        Image(nsImage: how.image)
+                    }
+                }
+            }
+        } label: {
+            Image(nsImage: now.image)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(at == nil)
+        .help(at == nil
+              ? String(localized: "How a keyframe goes on to the next: move the playhead to a keyframe")
+              : String(localized: "To the next keyframe -- \(now.help)"))
+        .accessibilityLabel(Text("Interpolation"))
     }
 
     /// Where the stage is against the layer, when it is not on it.

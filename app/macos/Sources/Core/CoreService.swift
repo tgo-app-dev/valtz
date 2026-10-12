@@ -607,9 +607,11 @@ final class CoreService: @unchecked Sendable {
     /// Favor's options for `model` at `preference` with Custom's values
     /// laid on, settled by the core (models/tuning.h).
     func tuning(model: String, preference: String, edit: Bool,
+                continues: Bool = false,
                 overrides: [String: Any]) -> TuningInfo? {
         let req: [String: Any] = ["model": model, "preference": preference,
-                                  "edit": edit, "tuning": overrides]
+                                  "edit": edit, "continues": continues,
+                                  "tuning": overrides]
         guard let d = try? JSONSerialization.data(withJSONObject: req),
               let s = String(data: d, encoding: .utf8) else { return nil }
         let r = reply(core.tuning(std.string(s)))
@@ -618,6 +620,20 @@ final class CoreService: @unchecked Sendable {
         let options = opts.map(TuningOption.init)
         return TuningInfo(family: r["family"] as? String ?? "",
                           tuning: Tuning(values, options), options: options)
+    }
+
+    /// Settings › Upscaling: each upscaler and its options.
+    func upscaleSettings() -> [UpscalerSettings] {
+        let r = reply(core.upscale_settings())
+        return (r["upscalers"] as? [[String: Any]] ?? [])
+            .compactMap(UpscalerSettings.init)
+    }
+
+    /// `values` laid on what an upscaler keeps ("reset": on its defaults).
+    func setUpscaleTuning(_ model: String, _ values: [String: Any],
+                          reset: Bool = false) -> CoreReply {
+        send(core.set_upscale_tuning,
+             ["model": model, "values": values, "reset": reset])
     }
 
     /// What a dropped weight file or folder is: "lora", "dit", "vae", or

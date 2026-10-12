@@ -316,6 +316,34 @@ Result<EnhanceResult> parse_enhance_reply(std::string_view reply);
 // dropped; missing ones are left out (a reply still being written).
 std::string clip_sections(const std::map<std::string, std::string>&);
 
+// A SHOT of a scene, its prompt put together in MiniMax H3's guide form
+// from its parts (the agent's generate_video, DESIGN §9b): the base
+// modes' three fields from the words alone (T2VA) or opening on a picture
+// (I2VA: the guide's instruction line first); the full-reference mode's
+// six when it draws on pictures or carries on from a clip (Ref2VA) -- the
+// subjects as given, then what the clip continued and its sound are to it
+// (vpipe's continuation prompts' words), the summary opened by its task
+// types, a retention line for each subject, the clip's last frame and its
+// sound, and a continuation's [Shot 1] saying where it picks up. No
+// subjects given: everyone and everything each reference shows. The
+// description's shots are its own clip's -- numbered from [Shot 1], times
+// from its start -- however a model writing the whole scene numbered them.
+struct ShotText {
+  std::string description;  // what is seen and heard, [Shot 1] ...
+  std::string soundscape;   // the ambience and the sounds
+  std::string music;        // the score; "": N/A
+  // Ref2VA: the subjects' definitions ("<Subject 1> is ..."), what
+  // happens, and the names the model reads its references by.
+  std::string subjects;
+  std::string summary;
+  std::vector<std::string> pictures;  // "<Picture 1>", ...
+  std::string continued;              // "<Video 1>"; "": none
+  std::string continued_sound;        // "<Audio 1>"; "": none
+  // I2VA: the picture it opens on, "<Picture 1>".
+  std::string first;
+};
+std::string shot_prompt(const ShotText&);
+
 // The suggestion so far, from a reply still being written (the chat's
 // streamed text): what parse_enhance_reply will make the prompt -- the
 // "prompt" (a rewriter's "rewritten_prompt") as far as it has come, or a

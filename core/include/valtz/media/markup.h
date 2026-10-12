@@ -8,9 +8,21 @@
 //
 // THE OBJECTS, as JSON (one definition; the app draws the ones it is
 // editing the same way, with the same Core Graphics / Core Text calls):
-//   {"id", "kind": "line" | "rect" | "ellipse" | "text",
+//   {"id", "kind": "line" | "rect" | "ellipse" | "polygon" | "text",
 //    "x0", "y0", "x1", "y1"   its two corners (a line: its two ends; a
 //                             text: (x0, y0) is its top-left),
+//    "points": [[u, v], ...]  a POLYGON's corners, closed, in its box's
+//                             units -- 0 at (x0, y0), 1 at (x1, y1) -- so
+//                             they move and scale with the box,
+//    "gradient": {"kind": "linear" | "radial", "stops": [{"at" 0..1,
+//                 "color"}, ...] (two or more), "from": [u, v], "to":
+//                 [u, v]}     a shape's inside -- or a text box's words --
+//                             in place of its flat colour: a linear one
+//                             from FROM to TO, a radial one round FROM
+//                             out to TO, both in the box's units (none:
+//                             across the middle, left to right; round the
+//                             middle out to the right side's), the end
+//                             colours carried on past them (2026-10-11),
 //    "stroke": [r, g, b, a]   sRGB, straight alpha, 0..1: a line's, an
 //                             outline's, a text's colour,
 //    "fill": [r, g, b, a]     a rectangle's or ellipse's inside,
@@ -18,13 +30,41 @@
 //    "text", "font": {"family", "size" (pixels), "bold", "italic",
 //                     "underline"},
 //    "box"                    a text's: true -- a TEXT BOX, (x0, y0) to
-//                             (x1, y1)}
+//                             (x1, y1),
+//    a text box's PARAGRAPH style (absent: as before 2026-10-11):
+//    "align"                  "left" | "center" | "right" | "justified",
+//    "line_spacing"           its lines this many of the font's line
+//                             apart (1 .. 3; 1 by default),
+//    "paragraph_spacing"      pixels after each paragraph ("\n"),
+//    "justify_last"           justified, its LAST line stretched too: a
+//                             paragraph running on in another box (a
+//                             page's), cut mid-way,
+//    "effects": [...]         what is drawn with it (2026-10-11), in
+//                             order: {"kind": "shadow", "color", "blur",
+//                             "dx", "dy"} -- a drop shadow blurred `blur`
+//                             pixels, `dx` right and `dy` down -- and
+//                             {"kind": "glow", "color", "radius"} -- a
+//                             halo `radius` pixels out; any kind
+//                             unknown kept, not drawn}
 // A text BOX wraps its words within its width -- a line per "\n" too --
 // and shows the lines that fit WHOLE in its height: the rest are cut at
 // a line, never through one (Core Text's framesetter, which sets only
 // whole lines in a frame). A text without one (from before) runs from
 // its top-left, a line per "\n", each the font's ascent + descent +
-// leading tall, unwrapped.
+// leading tall, unwrapped. The extra space of a line spacing lies
+// BETWEEN lines (Core Text's line-spacing adjustment), so a box's first
+// line is at its top whatever the spacing -- what a page laid out by
+// boxes needs.
+//
+// EFFECTS are Core Graphics shadows, each the shadow of a transparency
+// layer the object is drawn in -- the object drawn ONCE (a translucent
+// fill is not darkened), each effect around what the ones before it
+// made (the first innermost): a shadow one pass, a glow two at no
+// offset (one is faint). They are drawn in a BITMAP, whose shadows are
+// measured in its pixels, y up: the offset and blur, canvas pixels, are
+// turned into those by the context's own transform. A view's context
+// measures a shadow otherwise, so the app draws an object with effects
+// into a bitmap of its own and lays that in.
 //
 // A BRUSH STROKE is round dabs along its points, each solid out to
 // (1 - softness) of its radius and fading to nothing at the radius. The
@@ -82,13 +122,45 @@ Status paste_drawing(const std::filesystem::path& raster, PixelSize canvas,
 // How a TEXT BOX's words lie in it, as it is drawn: the lines set, whether
 // every word is, the height all of them need at its width, and its widest
 // line -- what the agent is told, so it can size a box to its words.
+// `shown`: the bytes of its text the box sets. With `all_lines`, each
+// line its words would take at the box's width, however tall the box:
+// where it ends in the text (bytes) and the height a box needs to show
+// the lines to it -- where a long text is CUT to flow on (text-flow.h).
 struct TextFit {
   bool   fits = true;
   int    lines = 0;
   double needed_height = 0;
   double widest = 0;
+  std::size_t shown = 0;
+  std::vector<std::size_t> line_ends;
+  std::vector<double>      line_heights;
 };
-TextFit text_fit(const Json& object);
+TextFit text_fit(const Json& object, bool all_lines = false);
+
+// What an object covers as the stage outlines it, canvas pixels {x, y,
+// width, height}: a line's or a shape's box with half its outline round
+// it, a text box's box, a text without one its lines as set.
+std::array<double, 4> object_bounds(const Json& object);
+
+// Objects ARRANGED (the markup toolbar's Arrange, 2026-10-11): `ids`
+// among `objects` -- a layer's, in drawing order, the last on top -- the
+// rest left as they are, by `how`:
+//   "to-top" / "to-bottom"  drawn last / first, in their order;
+//   "up" / "down"           a place up / down the order, past the next
+//                           object not among them (a run moves together);
+//   "left" | "center" | "right" | "top" | "middle" | "bottom"
+//                           their bounds' edges or middles lined up --
+//                           on the edge (or the middle) of their bounds
+//                           together; ONE object, on the canvas's;
+//   "distribute-h" / "distribute-v"
+//                           three or more spaced evenly across (down):
+//                           the first and last by their middles stay,
+//                           the gaps between the bounds made equal.
+// Moved objects move whole (x0, y0, x1, y1; points and a gradient are in
+// their box's units). An unknown `how` is refused; ids not found ignored.
+Result<Json> arrange_objects(const Json& objects,
+                             const std::vector<std::string>& ids,
+                             const std::string& how, PixelSize canvas);
 
 // A markup layer's picture: its raster (empty: none) with its objects
 // drawn over it, those in `hidden` left out (the app draws the ones it is

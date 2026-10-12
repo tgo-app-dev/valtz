@@ -60,7 +60,11 @@ struct SimpleView: View {
         .animation(AppModel.motion, value: model.timelineOpen)
         .onGeometryChange(for: CGRect.self) {
             $0.frame(in: .global)
-        } action: { area = $0 }
+        } action: {
+            area = $0
+            model.editorRoom = $0.height
+            model.roomMeasured()
+        }
         // The prompt row's first picture, in an image prompt: its pencil
         // suggested -- the picture to edit, if it is one. Watched here:
         // the row itself comes with its first item.
@@ -93,9 +97,23 @@ struct SimpleView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .anchorPreference(key: StageSlotKey.self,
                                           value: .bounds) { $0 }
+                        .onGeometryChange(for: CGFloat.self) {
+                            $0.size.height
+                        } action: {
+                            model.stageRoom = $0
+                            model.roomMeasured()
+                        }
                         .padding(.bottom, 22)
                 } else {
+                    // The mark and the room around it: what the composer
+                    // can grow into (AppModel.pictureRoom).
                     Spacer(minLength: 20)
+                        .onGeometryChange(for: CGFloat.self) {
+                            $0.size.height
+                        } action: {
+                            model.markRoom[0] = $0
+                            model.roomMeasured()
+                        }
                     // Ahead of the spacers for room, but it shrinks when a
                     // tall prompt (or open drawer) needs the height.
                     // The mark takes no drops: media go into the prompt,
@@ -104,6 +122,12 @@ struct SimpleView: View {
                         // A fleet job's overlay shows the mark, in blue.
                         .opacity(model.fleetServing == nil ? 1 : 0)
                         .layoutPriority(1)
+                        .onGeometryChange(for: CGFloat.self) {
+                            $0.size.height
+                        } action: {
+                            model.markRoom[1] = $0
+                            model.roomMeasured()
+                        }
                         .padding(24)
                         .transition(.scale(scale: 0.8)
                             .combined(with: .opacity))
@@ -135,8 +159,15 @@ struct SimpleView: View {
                     SuggestionCard(prompt: model.enhanced?.prompt
                                        ?? model.enhanceDraft,
                                    writing: model.suggestionWriting,
+                                   maxTextHeight: SuggestionCard.textCap(
+                                       window: size.height),
                                    accept: model.acceptEnhanced,
-                                   dismiss: model.dismissEnhanced)
+                                   dismiss: model.dismissEnhanced,
+                                   review: {
+                                       withAnimation(AppModel.motion) {
+                                           model.enterImmersivePrompt()
+                                       }
+                                   })
                         .frame(maxWidth: Self.columnWidth)
                         .padding(.bottom, 14)
                         .transition(.move(edge: .bottom)
@@ -165,6 +196,12 @@ struct SimpleView: View {
                 }
                 if !model.stageVisible {
                     Spacer(minLength: 20)
+                        .onGeometryChange(for: CGFloat.self) {
+                            $0.size.height
+                        } action: {
+                            model.markRoom[2] = $0
+                            model.roomMeasured()
+                        }
                 }
             }
         }
@@ -967,8 +1004,23 @@ struct SuggestionCard: View {
     let prompt: String
     /// Still being written: its words as far as they have come.
     var writing = false
+    /// How tall its words stand before they scroll (`textCap`).
+    var maxTextHeight: CGFloat = 160
     let accept: () -> Void
     let dismiss: () -> Void
+    /// The Prompt Editor, the suggestion beside the prompt: read whole,
+    /// edited, applied there.
+    var review: (() -> Void)?
+
+    /// The words' height in the box: whole lines, as many as a sixth of
+    /// the window's height holds, three to ten. A long suggestion -- a
+    /// clip's, in its model's sections -- scrolls rather than pushing the
+    /// stage and the prompt out of the window.
+    static func textCap(window: CGFloat) -> CGFloat {
+        let line = SuggestionText.lineHeight
+        let n = min(10, max(3, Int(window / 6 / line)))
+        return CGFloat(n) * line
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -982,12 +1034,18 @@ struct SuggestionCard: View {
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
             if !prompt.isEmpty {
-                Text(prompt)
-                    .font(.callout)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+                SuggestionText(text: prompt, writing: writing,
+                               maxHeight: maxTextHeight)
             }
             HStack {
+                if let review {
+                    Button(action: review) {
+                        Label("Prompt Editor",
+                              systemImage: "rectangle.expand.vertical")
+                    }
+                    .buttonStyle(.glass)
+                    .help("Read and edit the suggestion beside the prompt, in the Prompt Editor (⇧⌘E)")
+                }
                 Spacer()
                 Button(writing ? "Stop" : "Dismiss", action: dismiss)
                     .buttonStyle(.glass)
@@ -1002,5 +1060,142 @@ struct SuggestionCard: View {
         .padding(16)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18,
                                                     style: .continuous))
+    }
+}
+
+/// The suggestion's words in the box's card: read only, selectable, as
+/// tall as they wrap up to `maxHeight` -- past it they scroll, with the
+/// compact prompt's scroll bar, there while they do. The assistant's
+/// words are followed at the end as they come.
+struct SuggestionText: NSViewRepresentable {
+    let text: String
+    var writing = false
+    let maxHeight: CGFloat
+
+    static let font = NSFont.preferredFont(forTextStyle: .callout)
+    static let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
+    static var attributes: [NSAttributedString.Key: Any] {
+        [.font: font, .foregroundColor: NSColor.labelColor]
+    }
+
+    @MainActor
+    final class Coordinator {
+        weak var textView: NSTextView?
+        var shown = ""
+        /// The words laid out apart, at the width SwiftUI offers: their
+        /// height, as the text view will lay them.
+        let storage = NSTextStorage()
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(
+            size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+
+        init() {
+            container.lineFragmentPadding = 0
+            layout.addTextContainer(container)
+            storage.addLayoutManager(layout)
+        }
+
+        func height(of text: String, width: CGFloat) -> CGFloat {
+            if storage.string != text {
+                storage.setAttributedString(NSAttributedString(
+                    string: text, attributes: SuggestionText.attributes))
+            }
+            container.size = NSSize(width: width,
+                                    height: CGFloat.greatestFiniteMagnitude)
+            layout.ensureLayout(for: container)
+            return ceil(layout.usedRect(for: container).height)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> SuggestionScrollView {
+        // TextKit 1, as the measure's: the same lines.
+        let storage = NSTextStorage()
+        let layout = NSLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(
+            size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        let tv = NSTextView(frame: .zero, textContainer: container)
+        tv.isEditable = false
+        tv.isSelectable = true
+        tv.isRichText = false
+        tv.drawsBackground = false
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.minSize = .zero
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                            height: CGFloat.greatestFiniteMagnitude)
+        tv.autoresizingMask = [.width]
+        tv.textContainerInset = .zero
+        tv.font = Self.font
+        tv.textColor = .labelColor
+        context.coordinator.textView = tv
+
+        let scroll = SuggestionScrollView()
+        scroll.documentView = tv
+        scroll.drawsBackground = false
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.verticalScroller = KnobScroller()
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        return scroll
+    }
+
+    func updateNSView(_ scroll: SuggestionScrollView, context: Context) {
+        let c = context.coordinator
+        guard let tv = c.textView, text != c.shown else { return }
+        let was = c.shown
+        c.shown = text
+        if !was.isEmpty && text.hasPrefix(was) {
+            // Written on: what is new, at the end -- followed while the
+            // assistant writes.
+            tv.textStorage?.append(NSAttributedString(
+                string: String(text.dropFirst(was.count)),
+                attributes: Self.attributes))
+            if writing { tv.scrollToEndOfDocument(nil) }
+        } else {
+            tv.textStorage?.setAttributedString(NSAttributedString(
+                string: text, attributes: Self.attributes))
+            tv.scrollRangeToVisible(NSRange(location: 0, length: 0))
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize,
+                      nsView: SuggestionScrollView,
+                      context: Context) -> CGSize? {
+        guard let w = proposal.width, w > 0, w.isFinite else { return nil }
+        let h = context.coordinator.height(of: text, width: w)
+        return CGSize(width: w,
+                      height: min(maxHeight, max(Self.lineHeight, h)))
+    }
+}
+
+/// The suggestion's scroll view: cut short, a scroll bar that stays (the
+/// legacy style, as the compact prompt's); whole, none. The legacy bar
+/// narrows the text, which only makes it longer, so this settles.
+final class SuggestionScrollView: NSScrollView {
+    override func tile() {
+        super.tile()
+        fitScroller()
+    }
+
+    override func reflectScrolledClipView(_ clip: NSClipView) {
+        super.reflectScrolledClipView(clip)
+        fitScroller()
+    }
+
+    private func fitScroller() {
+        guard let doc = documentView else { return }
+        let cut = doc.frame.height > contentView.bounds.height + 0.5
+        let style: NSScroller.Style = cut ? .legacy : .overlay
+        if scrollerStyle != style {
+            scrollerStyle = style
+            autohidesScrollers = !cut
+        }
     }
 }

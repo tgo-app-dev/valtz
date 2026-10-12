@@ -27,6 +27,7 @@ set(VALTZ_CORE_SOURCES
   src/media/movie.mm
   src/media/probe.mm
   src/media/sound.mm
+  src/media/text-flow.cc
   src/media/thumbnail.mm
   src/media/timing.cc
   src/project/blob-store.cc

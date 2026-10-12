@@ -23,6 +23,12 @@ struct TimelineRow: Equatable, Identifiable {
     var end: Int?
     /// Its keys (look, speed, sound), on the timeline's frames.
     var keys: [Int]
+    /// How its values go on from a key to the next (by the first one's
+    /// frame): MOVING -- some track linear or a spline there, drawn
+    /// o>----->o -- or HELD, changing at once at the next, o     |o;
+    /// absent where nothing changes.
+    enum Way: Equatable { case moves, jumps }
+    var ways: [Int: Way] = [:]
     /// A sound alone: its waveform's file, and the source seconds its
     /// span shows.
     var wave: URL?
@@ -140,9 +146,13 @@ extension AppModel {
             }
             // A layer's first frame is a key of its own: where its
             // tracks start.
-            r.keys = Array(Set(timelineKeys(a, layer: l.id)
-                .map { r.start + $0 } + (l.isEmpty ? [] : [r.start])))
-                .sorted()
+            let tracks = timelineTracks(a, layer: l.id)
+            let dots = Array(Set(tracks.flatMap { $0.map(\.frame) }
+                + (l.isEmpty ? [] : [0]))).sorted()
+            r.keys = dots.map { r.start + $0 }
+            for (f, w) in Self.keyWays(tracks, dots: dots) {
+                r.ways[r.start + f] = w
+            }
             r.cuttable = !a.isPaged && Self.cuttable(src)
             r.stretchable = a.kind != "audio"
                 && [.picture, .markup, .still].contains(r.kind)
@@ -241,32 +251,60 @@ extension AppModel {
             && (src.modifiers ?? []).isEmpty
     }
 
-    /// A layer's keys -- its look, speed and sound -- from its own start:
-    /// the panels' tracks for the selected layer (what they hold now),
-    /// the record's for the others. A track that changes nothing has
-    /// none to show.
-    func timelineKeys(_ a: AssetDTO, layer: String) -> [Int] {
-        func frames<T>(_ k: Keyframes<T>) -> [Int] {
-            k.isIdentity ? [] : k.keys.map(\.frame)
+    /// A key as the timeline sees it: where it is, how it goes on.
+    typealias TrackKey = (frame: Int, interp: KeyInterp)
+
+    /// A layer's tracks -- its look, speed and sound -- each its keys
+    /// from its own start: the panels' tracks for the selected layer (what
+    /// they hold now), the record's for the others. A track that changes
+    /// nothing has none to show.
+    func timelineTracks(_ a: AssetDTO, layer: String) -> [[TrackKey]] {
+        func keys<T>(_ k: Keyframes<T>) -> [TrackKey]? {
+            k.isIdentity ? nil : k.keys.map { ($0.frame, $0.interp) }
         }
-        var out: Set<Int> = []
+        var t: [[TrackKey]?]
         if layer == activeLayer && keyedStage {
-            out.formUnion(frames(clipAdjustKeys))
-            out.formUnion(frames(clipCropKeys.place))
-            out.formUnion(frames(clipCropKeys.turn))
-            if clipOnStage {
-                out.formUnion(frames(layerSpeed))
-                out.formUnion(frames(layerSound))
-            }
+            t = [keys(clipAdjustKeys), keys(clipCropKeys.place),
+                 keys(clipCropKeys.turn)]
+            if clipOnStage { t += [keys(layerSpeed), keys(layerSound)] }
         } else {
             let crop = a.cropKeys(layer: layer)
-            out.formUnion(frames(a.adjustKeys(layer: layer)))
-            out.formUnion(frames(crop.place))
-            out.formUnion(frames(crop.turn))
-            out.formUnion(frames(a.speedKeys(layer: layer)))
-            out.formUnion(frames(a.soundKeys(layer: layer)))
+            t = [keys(a.adjustKeys(layer: layer)), keys(crop.place),
+                 keys(crop.turn), keys(a.speedKeys(layer: layer)),
+                 keys(a.soundKeys(layer: layer))]
         }
-        return out.sorted()
+        return t.compactMap { $0 }
+    }
+
+    /// How the values go on from each of `dots` (ascending) to the next:
+    /// MOVING where any track there runs on linear or along a spline; else
+    /// HELD where a held track has its next key at the next dot (its value
+    /// changes at once there); else nothing -- a held track passing
+    /// another's key changes nothing there, nor a track before its first
+    /// key or after its last.
+    static func keyWays(_ tracks: [[TrackKey]],
+                        dots: [Int]) -> [Int: TimelineRow.Way] {
+        var out: [Int: TimelineRow.Way] = [:]
+        for (from, to) in zip(dots, dots.dropFirst()) {
+            var moves = false, jumps = false
+            for keys in tracks {
+                guard let first = keys.first?.frame,
+                      let last = keys.last?.frame, first <= from, to <= last,
+                      let span = keys.last(where: { $0.frame <= from })
+                else { continue }
+                if span.interp == .hold {
+                    jumps = jumps || keys.contains { $0.frame == to }
+                } else {
+                    moves = true
+                }
+            }
+            if moves {
+                out[from] = .moves
+            } else if jumps {
+                out[from] = .jumps
+            }
+        }
+        return out
     }
 
     /// The player at frame `n` of the timeline -- a still's page.
@@ -889,6 +927,15 @@ final class TimelineNSView: NSView {
         Double((x - Self.nameWidth + scrollX) / scale)
     }
 
+    /// A frame is a CELL of the time, `scale` wide, from x(f) to x(f + 1):
+    /// a layer's block covers its frames' cells, a cut or a start is at a
+    /// cell's edge, and what is AT a frame -- the player's line, a key's
+    /// dot -- is drawn through its cell's middle, so the line runs through
+    /// the dot of the key it is on.
+    private func mid(_ frame: Int) -> CGFloat {
+        x(Double(frame) + 0.5)
+    }
+
     private var rowsHeight: CGFloat {
         CGFloat(model.rows.count) * Self.rowHeight
     }
@@ -949,10 +996,10 @@ final class TimelineNSView: NSView {
             if let z = zoomAnchor {
                 a = z
             } else {
-                let px = Self.nameWidth + CGFloat(old.playhead) * oldScale
-                    - scrollX
+                let head = Double(old.playhead) + 0.5
+                let px = Self.nameWidth + CGFloat(head) * oldScale - scrollX
                 a = px >= Self.nameWidth && px <= bounds.width
-                    ? (Double(old.playhead), px)
+                    ? (head, px)
                     : (Double(scrollX / oldScale), Self.nameWidth)
             }
             scrollX = CGFloat(a.frame) * scale - (a.x - Self.nameWidth)
@@ -968,7 +1015,7 @@ final class TimelineNSView: NSView {
         clampScroll()
         // The player's line kept in view as it moves.
         if model.playhead != old.playhead, drag == nil {
-            let px = x(Double(model.playhead))
+            let px = mid(model.playhead)
             if px < Self.nameWidth || px > bounds.width - 16 {
                 scrollX = CGFloat(model.playhead) * scale - trackWidth * 0.1
                 clampScroll()
@@ -1212,16 +1259,28 @@ final class TimelineNSView: NSView {
                    options: [.usesLineFragmentOrigin,
                              .truncatesLastVisibleLine])
         }
-        // Its keys: solid dots along its foot.
+        // Its keys: solid dots along its foot, the ways between them.
         let y = b.maxY - 4.5
+        func keyX(_ k: Int) -> CGFloat {
+            var kx = mid(k)
+            if case .slide(let row, _, let to)? = drag, row == i {
+                kx += CGFloat(to - r.start) * scale
+            }
+            // Inside the block, a key at its very start too.
+            return min(max(kx, b.minX + 4), b.maxX - 4)
+        }
+        for (k, next) in zip(r.keys, r.keys.dropFirst()) {
+            if let way = r.ways[k] {
+                drawWay(way, from: keyX(k), to: keyX(next), y: y)
+            }
+        }
         for k in r.keys {
-            var kx = x(Double(k))
+            var kx = mid(k)
             if case .slide(let row, _, let to)? = drag, row == i {
                 kx += CGFloat(to - r.start) * scale
             }
             guard kx >= b.minX - 1, kx <= b.maxX + 1 else { continue }
-            // Inside the block, a key at its very start too.
-            kx = min(max(kx, b.minX + 4), b.maxX - 4)
+            kx = keyX(k)
             // The accent's, ringed in the card's ground to show on any
             // block.
             let dot = NSBezierPath(ovalIn: CGRect(x: kx - 3, y: y - 3,
@@ -1232,6 +1291,39 @@ final class TimelineNSView: NSView {
             dot.lineWidth = 1.25
             dot.stroke()
         }
+    }
+
+    /// The way from a key (at `a`) to the next (at `b`): moving,
+    /// o>----->o -- a line, a chevron after the first and before the
+    /// next -- or held, o     |o -- a bar before the next, where the value
+    /// changes. In the dots' accent, haloed in the card's ground to show
+    /// on any block; left out where the keys are too close for it.
+    private func drawWay(_ way: TimelineRow.Way, from a: CGFloat,
+                         to b: CGFloat, y: CGFloat) {
+        let x0 = a + 5, x1 = b - 5
+        guard x1 - x0 >= (way == .moves ? 12 : 3) else { return }
+        let p = NSBezierPath()
+        switch way {
+        case .moves:
+            p.move(to: CGPoint(x: x0, y: y))
+            p.line(to: CGPoint(x: x1, y: y))
+            for tip in [x0 + 3, x1] {
+                p.move(to: CGPoint(x: tip - 3, y: y - 2.5))
+                p.line(to: CGPoint(x: tip, y: y))
+                p.line(to: CGPoint(x: tip - 3, y: y + 2.5))
+            }
+        case .jumps:
+            p.move(to: CGPoint(x: x1, y: y - 3.5))
+            p.line(to: CGPoint(x: x1, y: y + 3.5))
+        }
+        p.lineCapStyle = .round
+        p.lineJoinStyle = .round
+        p.lineWidth = 3
+        NSColor.textBackgroundColor.withAlphaComponent(0.6).setStroke()
+        p.stroke()
+        p.lineWidth = 1.25
+        NSColor.controlAccentColor.setStroke()
+        p.stroke()
     }
 
     /// The waveform of the source's span the block shows, its loudest
@@ -1326,8 +1418,8 @@ final class TimelineNSView: NSView {
                     .font: font,
                     .foregroundColor: NSColor.secondaryLabelColor,
                 ])
-                // After its tick: a time, a page's number (the player's
-                // head is in a page's middle).
+                // After its tick, over its frame's cell: a time, a page's
+                // number (the player's line is in the cell's middle).
                 s.draw(at: CGPoint(x: fx + 3, y: r.minY + 3))
             }
             f += minor
@@ -1360,12 +1452,13 @@ final class TimelineNSView: NSView {
         return (major, max(1, minor))
     }
 
+    /// The player's line through the middle of the frame it is at (the
+    /// page shown) -- a cell, tinted through every row once it is wide
+    /// enough to be seen.
     private func drawPlayhead(height h: CGFloat) {
-        let p = Double(model.playhead) + (model.paged ? 0.5 : 0)
-        let px = x(p).rounded() + 0.5
+        let px = mid(model.playhead).rounded() + 0.5
         guard px >= Self.nameWidth, px <= bounds.width else { return }
-        if model.paged {
-            // The page shown, tinted through every row.
+        if model.paged || scale >= 4 {
             NSColor.systemRed.withAlphaComponent(0.06).setFill()
             CGRect(x: x(Double(model.playhead)), y: Self.rulerHeight,
                    width: scale, height: h - Self.rulerHeight).fill()
@@ -1833,8 +1926,7 @@ final class TimelineNSView: NSView {
 
     private func scrub(_ px: CGFloat) {
         let last = max(0, model.frames - 1)
-        let f = model.paged ? Int(frame(at: px).rounded(.down))
-                            : Int(frame(at: px).rounded())
+        let f = Int(frame(at: px).rounded(.down))
         actions.seek(min(max(0, f), last))
     }
 
@@ -2050,7 +2142,7 @@ final class TimelineNSView: NSView {
     /// from its top left, at a row's middle.
     func windowPoint(frame f: Int, row i: Int) -> CGPoint? {
         guard let win = window else { return nil }
-        let local = CGPoint(x: x(Double(f)) + 1,
+        let local = CGPoint(x: x(Double(f)) + min(1, scale * 0.4),
                             y: rowTop(i) + Self.rowHeight / 2)
         let w = convert(local, to: nil)
         return CGPoint(x: w.x, y: win.frame.height - w.y)

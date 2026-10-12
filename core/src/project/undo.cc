@@ -305,9 +305,12 @@ UndoLog::end_(Scope& s)
     std::erase_if(_cmds, [](const UndoCommand& u) { return !u.done; });
     UndoCommand* last = last_done_();
     const std::int64_t now = now_ms();
+    // Never into the command a save was made at: its seq would stay the
+    // saved one, and the change after the save read as saved (lost).
     if (last && coalesces(c.kind) && last->kind == c.kind &&
         last->asset == c.asset && last->layer == c.layer &&
-        c.at_ms - last->last_ms < kCoalesceMs) {
+        c.at_ms - last->last_ms < kCoalesceMs &&
+        (_untracked || last->seq != _saved_seq)) {
       // A slider's next step: one command, the first before-values.
       for (auto& ch : c.changes) {
         auto same = std::ranges::find_if(last->changes,

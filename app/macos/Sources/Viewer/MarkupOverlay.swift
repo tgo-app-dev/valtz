@@ -23,9 +23,13 @@ struct MarkupOverlay: Equatable {
     var drawsSelection = true
     /// The selected DRAWING's pixels' bounds (canvas pixels), outlined.
     var drawingBounds: CGRect?
+    /// A polygon being drawn: its corners (canvas pixels), the last where
+    /// the pointer is -- drawn as a path, its first corner ringed.
+    var path: [CGPoint] = []
 
     var isEmpty: Bool {
         strokes.isEmpty && objects.isEmpty && drawingBounds == nil
+            && path.isEmpty
     }
 }
 
@@ -33,7 +37,8 @@ struct MarkupOverlay: Equatable {
 /// pixels, top-left origin), with which keys, and how many canvas pixels
 /// a view point is (a hit's reach is measured on screen).
 struct MarkupPointer {
-    enum Phase { case down, drag, up }
+    /// `hover`: the pointer moved with no button down.
+    enum Phase { case down, drag, up, hover }
     var phase: Phase
     var point: CGPoint
     var shift = false
@@ -45,6 +50,8 @@ struct MarkupPointer {
 /// Cut, Copy and Paste, sent to it while it has the focus.
 enum MarkupKey {
     case delete, escape, cut, copy, paste
+    /// Return: a polygon being drawn made.
+    case enter
     /// [ and ]: the brush smaller, larger; ⇧[ and ⇧]: softer, harder --
     /// Photoshop's keys.
     case smaller, larger, softer, harder
@@ -95,6 +102,56 @@ final class MarkupOverlayView: NSView {
             outline.setLineDash([4, 3], count: 2, phase: 0)
             NSColor.controlAccentColor.setStroke()
             outline.stroke()
+        }
+        // A polygon being drawn: its path, its corners, its first ringed
+        // (a click there closes it).
+        if !overlay.path.isEmpty {
+            let pts = overlay.path.map { $0.applying(toView) }
+            let line = NSBezierPath()
+            line.move(to: pts[0])
+            for p in pts.dropFirst() { line.line(to: p) }
+            line.lineWidth = 1
+            NSColor.controlAccentColor.setStroke()
+            line.stroke()
+            for (i, p) in pts.enumerated() {
+                let r = i == 0 ? 6.0 : 3.5
+                let dot = NSBezierPath(ovalIn: NSRect(x: p.x - r, y: p.y - r,
+                                                      width: 2 * r,
+                                                      height: 2 * r))
+                NSColor.white.setFill()
+                dot.fill()
+                NSColor.controlAccentColor.setStroke()
+                dot.stroke()
+            }
+        }
+        // A selected object's gradient: its two ends -- a radial one's
+        // centre and edge -- joined, each a round handle in its colour.
+        if overlay.selected.count == 1,
+           let o = overlay.objects.first(where: {
+               overlay.selected.contains($0.id) }),
+           let g = o.gradient {
+            let ends = MarkupRender.gradientHandles(o).map {
+                $0.applying(toView)
+            }
+            let join = NSBezierPath()
+            join.move(to: ends[0])
+            join.line(to: ends[1])
+            join.lineWidth = 3
+            NSColor.black.withAlphaComponent(0.5).setStroke()
+            join.stroke()
+            join.lineWidth = 1.5
+            NSColor.white.setStroke()
+            join.stroke()
+            let colors = [g.stops.first?.color, g.stops.last?.color]
+            for (i, p) in ends.enumerated() {
+                let dot = NSBezierPath(ovalIn: NSRect(x: p.x - 6, y: p.y - 6,
+                                                      width: 12, height: 12))
+                NSColor(cgColor: (colors[i] ?? .clear).cgColor)?.setFill()
+                dot.fill()
+                dot.lineWidth = 2
+                NSColor.white.setStroke()
+                dot.stroke()
+            }
         }
         // Outlines and handles at screen size.
         for o in overlay.objects where overlay.selected.contains(o.id) {

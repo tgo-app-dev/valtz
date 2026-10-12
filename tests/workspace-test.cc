@@ -210,6 +210,23 @@ TEST(workspace, undo_redo_coalesce_and_join)
   REQUIRE_OK(w.undo().undo());
   CHECK(p.asset(c)->name == "c, done");
   CHECK(p.asset(*b)->name == "b3");
+  // A slider's step after a save is a command of its own: coalesced into
+  // the one saved, it kept the saved seq and read as saved -- clean, and
+  // never written (valtzctl's second shape on a markup was lost so).
+  {
+    auto cmd = w.undo().command("adjust", {}, a->str(), "");
+    REQUIRE_OK(p.set_modifiers(*a, {{"adjust", "", {{"exposure", 4}}}}));
+  }
+  REQUIRE_OK(w.save());
+  CHECK(!w.dirty());
+  {
+    auto cmd = w.undo().command("adjust", {}, a->str(), "");
+    REQUIRE_OK(p.set_modifiers(*a, {{"adjust", "", {{"exposure", 5}}}}));
+  }
+  CHECK(w.dirty());
+  REQUIRE_OK(w.undo().undo());          // back to what was saved
+  CHECK(mods()[0].params["exposure"] == 4);
+  CHECK(!w.dirty());
   // Written in no command: not undoable, but dirty.
   REQUIRE_OK(w.save());
   REQUIRE_OK(p.rename_asset(*b, "quietly"));

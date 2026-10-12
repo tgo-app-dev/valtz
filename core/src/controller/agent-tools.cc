@@ -13,6 +13,7 @@
 #include "valtz/base/message.h"
 #include "valtz/base/text.h"
 #include "valtz/media/markup.h"
+#include "valtz/media/text-flow.h"
 #include "valtz/media/thumbnail.h"
 
 #include <algorithm>
@@ -72,7 +73,8 @@ one_of(std::vector<std::string> values, const char* doc)
 
 const char* kCompDoc =
     "the composition's id; omitted: the one the session works on";
-const char* kPageDoc = "the page, from 1; omitted: 1";
+const char* kPageDoc =
+    "the page, from 1 (needed on a still of more than one page)";
 const char* kLayerDoc = "the layer's id (\"0\" is the bottom one)";
 const char* kStartDoc =
     "on a timeline: when it shows, seconds; 0 by default";
@@ -138,7 +140,8 @@ colour(std::string s)
   static const std::pair<const char*, const char*> names[] = {
       {"white", "#ffffff"}, {"black", "#000000"}, {"red", "#ff0000"},
       {"green", "#00a000"}, {"blue", "#0040ff"},  {"yellow", "#ffd400"},
-      {"gray", "#808080"},  {"grey", "#808080"},  {"transparent", "#00000000"}};
+      {"gray", "#808080"},  {"grey", "#808080"},  {"transparent", "#00000000"},
+      {"none", "#00000000"}};
   for (const auto& [n, hex] : names) {
     if (s == n) {
       s = hex;
@@ -189,6 +192,99 @@ on_page(const project::LayerTime& t, std::int64_t page)
          (t.duration <= 0 || page < t.offset + t.duration);
 }
 
+// On that page and no other.
+bool
+alone_on(const project::LayerTime& t, std::int64_t page)
+{
+  return t.offset == page && t.duration == 1;
+}
+
+// Across every page: from the first to the last.
+bool
+runs_across(const project::LayerTime& t)
+{
+  return t.offset == 0 && t.duration <= 0;
+}
+
+// The markups across every page the agent writes on (front_markup_,
+// back_markup_), found again by their names.
+const char* kFrontName = "Every Page";
+const char* kBackName = "Every Page (Background)";
+const char* kPageBackName = "Page Background";
+// The folder of the page progress bar's layers (add_page_progress),
+// whose layers a new bar replaces.
+const char* kProgressName = "Page Progress";
+
+// Text made LOOSE to find a passage the model quotes from the person's
+// message: lower case, punctuation gone (typographic quotes and dashes
+// too), one space between words -- and where each byte came from.
+struct Loose {
+  std::string              text;
+  std::vector<std::size_t> at;
+};
+
+Loose
+loosen(std::string_view s)
+{
+  Loose l;
+  bool space = true;
+  for (std::size_t i = 0; i < s.size(); ++i) {
+    const auto c = static_cast<unsigned char>(s[i]);
+    if (c == 0xe2 && i + 2 < s.size() &&
+        static_cast<unsigned char>(s[i + 1]) == 0x80) {
+      i += 2;  // U+2000-U+203F: quotes, dashes, an ellipsis
+      continue;
+    }
+    if (c >= 0x80 || std::isalnum(c)) {
+      l.text += static_cast<char>(c >= 0x80 ? c : std::tolower(c));
+      l.at.push_back(i);
+      space = false;
+    } else if (std::isspace(c) && !space) {
+      l.text += ' ';
+      l.at.push_back(i);
+      space = true;
+    }
+  }
+  if (!l.text.empty() && l.text.back() == ' ') {
+    l.text.pop_back();
+    l.at.pop_back();
+  }
+  return l;
+}
+
+// Where `needle` is in `hay` from byte `from`, loosely: its first byte and
+// the byte after its last -- widened to the whole words around it (an
+// opening quote, a closing full stop).
+std::optional<std::pair<std::size_t, std::size_t>>
+find_loose(std::string_view hay, std::string_view needle, std::size_t from)
+{
+  const Loose h = loosen(hay);
+  const Loose n = loosen(needle);
+  if (n.text.empty()) {
+    return std::nullopt;
+  }
+  std::size_t start = 0;
+  while (start < h.at.size() && h.at[start] < from) {
+    ++start;
+  }
+  const auto at = h.text.find(n.text, start);
+  if (at == std::string::npos) {
+    return std::nullopt;
+  }
+  std::size_t a = h.at[at];
+  std::size_t b = h.at[at + n.text.size() - 1] + 1;
+  auto space = [&](std::size_t i) {
+    return std::isspace(static_cast<unsigned char>(hay[i])) != 0;
+  };
+  while (a > from && !space(a - 1)) {
+    --a;
+  }
+  while (b < hay.size() && !space(b)) {
+    ++b;
+  }
+  return std::pair{a, b};
+}
+
 std::string
 object_id()
 {
@@ -214,6 +310,27 @@ picture_size(double w, double h)
           static_cast<int>(std::clamp(ph, 256.0, 2048.0))};
 }
 
+// The size a SHOT for a frame is made at: the frame's own when it is no
+// bigger than the model's default size (H3's 960 x 544: what it makes
+// best, and what fits the memory), else the frame's shape at that area,
+// on the model's grid -- laid filling the frame.
+std::pair<int, int>
+shot_size(media::PixelSize frame, int w, int h, int grid)
+{
+  const double area = static_cast<double>(w) * h;
+  if (frame.width <= 0 || frame.height <= 0) {
+    return {w, h};
+  }
+  if (static_cast<double>(frame.width) * frame.height <= area * 1.05) {
+    return {frame.width, frame.height};
+  }
+  const double aspect = std::clamp(
+      static_cast<double>(frame.width) / frame.height, 0.25, 4.0);
+  const double sh = round_to(std::sqrt(area / aspect), grid);
+  const double sw = round_to(sh * aspect, grid);
+  return {static_cast<int>(sw), static_cast<int>(sh)};
+}
+
 // A text box's words as they lie in it: whether all show, the height
 // they need, the widest line (to centre a box on its words).
 void
@@ -228,6 +345,154 @@ tell_fit(Json& out, const Json& object)
     out["note"] = "Not every word shows: make the box taller (or wider), "
                   "or the text smaller.";
   }
+}
+
+// The EFFECTS a tool's arguments ask for (media/markup.h) laid on `fx`
+// (an object's own, or none): `shadow` / `glow` true adds or remakes it,
+// false takes it off; `shadow_color` / `glow_color` its colour. Sized
+// from `base` -- a text's font size, a shape's from its shorter side --
+// a glow in the object's own colour unless told. Kept in the core's
+// order: the glow inside, the shadow of it all outside.
+Result<Json>
+effects_arg(const Json& args, Json fx, double base,
+            const std::array<double, 4>& own)
+{
+  if (!fx.is_array()) {
+    fx = Json::array();
+  }
+  auto set = [&](const char* kind, std::optional<Json> made) {
+    Json out = Json::array();
+    for (const auto& e : fx) {
+      if (jget<std::string>(e, "kind", "") != kind) {
+        out.push_back(e);
+      }
+    }
+    if (made) {
+      out.push_back(*made);
+    }
+    fx = std::move(out);
+  };
+  auto rgba = [](const std::array<double, 4>& c) {
+    return Json::array({c[0], c[1], c[2], c[3]});
+  };
+  if (args.contains("shadow") || args.contains("shadow_color")) {
+    std::optional<Json> made;
+    if (flag(args, "shadow", true)) {
+      auto c = colour(text_arg(args, "shadow_color", "#00000080"));
+      if (!c) {
+        return make_error(Code::InvalidArgument,
+                          "a colour is \"#rrggbb\" or \"#rrggbbaa\"");
+      }
+      const double d = std::max(2.0, std::round(base * 0.07));
+      made = Json{{"kind", "shadow"}, {"color", rgba(*c)},
+                  {"blur", std::max(3.0, std::round(base * 0.2))},
+                  {"dx", d}, {"dy", d}};
+    }
+    set("shadow", made);
+  }
+  if (args.contains("glow") || args.contains("glow_color")) {
+    std::optional<Json> made;
+    if (flag(args, "glow", true)) {
+      std::array<double, 4> mine = own;
+      mine[3] = std::max(mine[3], 0.8);
+      auto c = args.contains("glow_color")
+                   ? colour(text_arg(args, "glow_color"))
+                   : std::optional(mine);
+      if (!c) {
+        return make_error(Code::InvalidArgument,
+                          "a colour is \"#rrggbb\" or \"#rrggbbaa\"");
+      }
+      made = Json{{"kind", "glow"}, {"color", rgba(*c)},
+                  {"radius", std::max(4.0, std::round(base * 0.35))}};
+    }
+    set("glow", made);
+  }
+  Json ordered = Json::array();
+  for (const auto& e : fx) {
+    if (jget<std::string>(e, "kind", "") == "glow") {
+      ordered.push_back(e);
+    }
+  }
+  for (const auto& e : fx) {
+    if (jget<std::string>(e, "kind", "") != "glow") {
+      ordered.push_back(e);
+    }
+  }
+  return ordered;
+}
+
+// A shape's size for its effects: a quarter of its shorter side, held to
+// what reads (a hairline rule, a full-page panel).
+double
+shape_base(double w, double h)
+{
+  return std::clamp(std::min(std::abs(w), std::abs(h)) * 0.25, 16.0, 120.0);
+}
+
+// The GRADIENT a tool's arguments ask for (media/markup.h): `gradient`
+// its colours, two or more, spread evenly ([] takes it off),
+// `gradient_type` linear (by default) or radial, `gradient_angle` a
+// linear one's direction in degrees -- 0 left to right, 90 top to bottom
+// (by default) -- across the object's box; a radial one round its middle
+// out to its side. Nothing asked: `keep`. Unchanged by an update giving
+// only a type or an angle: its colours kept.
+Result<Json>
+gradient_arg(const Json& args, const Json& keep)
+{
+  if (!args.contains("gradient") && !args.contains("gradient_type") &&
+      !args.contains("gradient_angle")) {
+    return keep;
+  }
+  Json colours = Json::array();
+  if (args.contains("gradient")) {
+    const Json& g = args["gradient"];
+    if (g.is_array()) {
+      for (const auto& c : g) {
+        if (!c.is_string()) {
+          continue;
+        }
+        auto v = colour(c.get<std::string>());
+        if (!v) {
+          return make_error(Code::InvalidArgument,
+                            "a colour is \"#rrggbb\" or \"#rrggbbaa\"");
+        }
+        colours.push_back({(*v)[0], (*v)[1], (*v)[2], (*v)[3]});
+      }
+      if (colours.empty()) {
+        return Json();  // [] -- none
+      }
+    }
+  } else if (keep.is_object()) {
+    for (const auto& st : jget(keep, "stops", Json::array())) {
+      colours.push_back(jget(st, "color", Json::array({0, 0, 0, 1})));
+    }
+  }
+  if (colours.size() < 2) {
+    return make_error(Code::InvalidArgument,
+                      "a gradient is two colours or more, e.g. "
+                      "[\"#ff8a00\", \"#e52e71\"]");
+  }
+  Json stops = Json::array();
+  for (std::size_t i = 0; i < colours.size(); ++i) {
+    stops.push_back({{"at", static_cast<double>(i) /
+                                (static_cast<double>(colours.size()) - 1)},
+                     {"color", colours[i]}});
+  }
+  const bool radial = text_arg(args, "gradient_type",
+                               jget<std::string>(keep, "kind", "linear")) ==
+                      "radial";
+  Json g = {{"kind", radial ? "radial" : "linear"},
+            {"stops", std::move(stops)}};
+  if (radial) {
+    g["from"] = {0.5, 0.5};
+    g["to"] = {1.0, 0.5};
+  } else {
+    const double a = number(args, "gradient_angle", 90) * M_PI / 180;
+    const double c = std::cos(a) / 2, sn = std::sin(a) / 2;
+    g["from"] = {0.5 - c, 0.5 - sn};
+    g["to"] = {0.5 + c, 0.5 + sn};
+  }
+  return g;
 }
 
 // ---- time ------------------------------------------------------------------
@@ -278,7 +543,8 @@ shape_of(const media::KeyedSound& k, double fps)
 }
 
 // A source's own length in seconds: a clip's or a sound's, a
-// composition's.
+// composition's. A clip's is its picture's frames, as a layer runs (its
+// soundtrack may run on past the last frame).
 double
 source_seconds(Controller& c, project::Project& p, const project::Asset& a)
 {
@@ -291,7 +557,14 @@ source_seconds(Controller& c, project::Project& p, const project::Asset& a)
     return 0;
   }
   auto v = p.version(a.id);
-  return v.ok() ? v->info.duration.seconds() : 0;
+  if (!v.ok()) {
+    return 0;
+  }
+  const double fps = v->info.frame_rate.to_double();
+  if (a.kind == AssetKind::Video && fps > 0 && v->info.frame_count > 0) {
+    return static_cast<double>(v->info.frame_count) / fps;
+  }
+  return v->info.duration.seconds();
 }
 
 }  // namespace
@@ -326,7 +599,9 @@ Controller::AgentHost::tools()
                  "layer's text boxes and shapes. On a timeline: its "
                  "length, each layer's time in seconds, its volume, the "
                  "transitions.",
-                 schema({{"composition", str(kCompDoc)}}),
+                 schema({{"composition", str(kCompDoc)},
+                         {"page", integer("a still's page: only the "
+                                          "layers on it")}}),
                  &H::t_get_composition});
     t.push_back({"view_page", "read", "Look at a page",
                  "A page drawn as it is now, shown to you as a picture "
@@ -381,26 +656,96 @@ Controller::AgentHost::tools()
                       {"bold", boolean("bold")},
                       {"italic", boolean("italic")},
                       {"color", str("the text's colour, \"#rrggbb[aa]\"; "
-                                    "white by default")}},
+                                    "white by default")},
+                      {"align", one_of({"left", "center", "right",
+                                        "justified"},
+                                       "its lines in the box; left by "
+                                       "default")},
+                      {"line_spacing", num("its lines this many lines "
+                                           "apart, 1-3; 1 by default")},
+                      {"every_page", boolean("on every page of a still "
+                                             "(a header, a footer), made "
+                                             "once")},
+                      {"gradient", {{"type", "array"},
+                                    {"items", {{"type", "string"}}},
+                                    {"description",
+                                     "a gradient in place of the fill (a "
+                                     "text's colour): its colours, two or "
+                                     "more, \"#rrggbb[aa]\"; [] takes it "
+                                     "off"}}},
+                      {"gradient_type", one_of({"linear", "radial"},
+                                               "linear by default")},
+                      {"gradient_angle", num("a linear one's direction, "
+                                             "degrees: 0 left to right, "
+                                             "90 top to bottom (by "
+                                             "default)")},
+                      {"shadow", boolean("a soft drop shadow, down and "
+                                         "right; false takes it off")},
+                      {"shadow_color", str("its colour; \"#00000080\" by "
+                                           "default")},
+                      {"glow", boolean("a glow around it; false takes it "
+                                       "off")},
+                      {"glow_color", str("its colour; the object's own by "
+                                         "default")}},
                      box_props),
                 {"text", "x", "y", "width", "height"}),
          &H::t_add_text});
     t.push_back(
         {"add_shape", "edit", "Add a shape",
-         "A rectangle, an ellipse or a line on a page's markup layer -- a "
-         "panel behind words, an accent, a divider. A line runs from "
-         "(x, y) to (x + width, y + height).",
+         "A rectangle, an ellipse, a POLYGON (its `points`) or a line on "
+         "a page's markup layer -- a panel behind words, an accent, a "
+         "badge, a divider; filled flat or with a `gradient`. A line runs "
+         "from "
+         "(x, y) to (x + width, y + height): a level rule has height 0, "
+         "its thickness `line_width`.",
          schema(with({{"composition", str(kCompDoc)},
                       {"page", integer(kPageDoc)},
                       {"start", num(kStartDoc)},
                       {"duration", num(kDurationDoc)},
-                      {"shape", one_of({"rect", "ellipse", "line"},
+                      {"shape", one_of({"rect", "ellipse", "polygon", "line"},
                                        "which shape")},
+                      {"points", {{"type", "array"},
+                                  {"items", {{"type", "array"},
+                                             {"items", {{"type",
+                                                         "number"}}}}},
+                                  {"description",
+                                   "a polygon's corners, [[x, y], ...] in "
+                                   "canvas pixels, three or more (a star, "
+                                   "a badge, an arrow); its box is made "
+                                   "from them"}}},
                       {"fill", str("its inside, \"#rrggbb[aa]\"; none by "
                                    "default")},
                       {"stroke", str("its outline or line colour")},
                       {"line_width", num("the outline's width, pixels; 0 "
-                                         "none")}},
+                                         "none")},
+                      {"every_page", boolean("on every page of a still (a "
+                                             "rule, a band, a frame), made "
+                                             "once")},
+                      {"below_all", boolean("under every layer: with "
+                                            "every_page the background of "
+                                            "every page, else of its "
+                                            "page")},
+                      {"gradient", {{"type", "array"},
+                                    {"items", {{"type", "string"}}},
+                                    {"description",
+                                     "a gradient in place of the fill (a "
+                                     "text's colour): its colours, two or "
+                                     "more, \"#rrggbb[aa]\"; [] takes it "
+                                     "off"}}},
+                      {"gradient_type", one_of({"linear", "radial"},
+                                               "linear by default")},
+                      {"gradient_angle", num("a linear one's direction, "
+                                             "degrees: 0 left to right, "
+                                             "90 top to bottom (by "
+                                             "default)")},
+                      {"shadow", boolean("a soft drop shadow, down and "
+                                         "right; false takes it off")},
+                      {"shadow_color", str("its colour; \"#00000080\" by "
+                                           "default")},
+                      {"glow", boolean("a glow around it; false takes it "
+                                       "off")},
+                      {"glow_color", str("its colour; the object's own by "
+                                         "default")}},
                      box_props),
                 {"shape", "x", "y", "width", "height"}),
          &H::t_add_shape});
@@ -416,12 +761,132 @@ Controller::AgentHost::tools()
                       {"bold", boolean("bold")},
                       {"italic", boolean("italic")},
                       {"color", str("text colour")},
+                      {"align", one_of({"left", "center", "right",
+                                        "justified"}, "its lines")},
+                      {"line_spacing", num("lines apart, 1-3")},
                       {"fill", str("a shape's inside")},
                       {"stroke", str("a shape's outline")},
-                      {"line_width", num("outline width")}},
+                      {"line_width", num("outline width")},
+                      {"gradient", {{"type", "array"},
+                                    {"items", {{"type", "string"}}},
+                                    {"description",
+                                     "a gradient in place of the fill (a "
+                                     "text's colour): its colours, two or "
+                                     "more, \"#rrggbb[aa]\"; [] takes it "
+                                     "off"}}},
+                      {"gradient_type", one_of({"linear", "radial"},
+                                               "linear by default")},
+                      {"gradient_angle", num("a linear one's direction, "
+                                             "degrees: 0 left to right, "
+                                             "90 top to bottom (by "
+                                             "default)")},
+                      {"shadow", boolean("a soft drop shadow, down and "
+                                         "right; false takes it off")},
+                      {"shadow_color", str("its colour; \"#00000080\" by "
+                                           "default")},
+                      {"glow", boolean("a glow around it; false takes it "
+                                       "off")},
+                      {"glow_color", str("its colour; the object's own by "
+                                         "default")}},
                      box_props),
                 {"layer", "object"}),
          &H::t_update_object});
+    t.push_back(
+        {"flow_text", "edit", "Lay out a long text",
+         "A LONG TEXT laid out on a still's pages -- the WHOLE text in ONE "
+         "call, never a section at a time -- page after page, in an "
+         "area of each (in columns): paragraphs set as text boxes, "
+         "headings (\"# \", \"## \" lines, or found), lists, "
+         "quotations -- each word placed once, a paragraph cut only at a "
+         "line, pages added as it needs them. The words come from "
+         "`from_words` and `to_words` -- the first and the last few words "
+         "of the passage in the person's message, which is copied as it "
+         "is (never retype a long text) -- or a text asset, or `text`. "
+         "Tells each page's first words, the headings' pages and the room "
+         "left on the last page.",
+         schema({{"composition", str(kCompDoc)},
+                 {"from_words", str("the passage's first words in the "
+                                    "person's message, as written (5-10 "
+                                    "words)")},
+                 {"to_words", str("the WHOLE text's last words, as "
+                                  "written -- not a section's; omitted "
+                                  "(best): to the message's end")},
+                 {"asset", str("else a text asset's id")},
+                 {"text", str("else the words themselves (short texts "
+                              "only)")},
+                 {"first_page", integer("the page it starts on, from 1 "
+                                        "(pages+1: a new one); 1 by "
+                                        "default -- below what is there. "
+                                        "It goes on onto the pages after "
+                                        "it that hold nothing of their "
+                                        "own, else onto new ones")},
+                 {"start_y", num("on its first page, the text starts this "
+                                 "far down (below a title); else at the "
+                                 "area's top")},
+                 {"x", num("the text area on each page: its left edge; "
+                           "by default the page less 8% margins")},
+                 {"y", num("its top edge")},
+                 {"width", num("its width")},
+                 {"height", num("its height (leave room for a footer)")},
+                 {"columns", integer("1-4; by default 2 on a landscape "
+                                     "page, else 1")},
+                 {"gutter", num("between columns, pixels")},
+                 {"font", str("the body's font; \"Georgia\" by default")},
+                 {"size", num("the body's size, pixels; by default about "
+                              "65 characters a line")},
+                 {"color", str("the body's colour; \"#222222\" by "
+                               "default -- light on a dark page")},
+                 {"line_spacing", num("lines apart, 1-3; 1.45 by "
+                                      "default")},
+                 {"align", one_of({"left", "justified", "center",
+                                   "right"}, "left by default")},
+                 {"heading_font", str("headings' font; \"Avenir Next\" "
+                                      "bold by default")},
+                 {"heading_size", num("a heading's size; a title (\"# "
+                                      "\") half again as big")},
+                 {"heading_color", str("headings' colour; the body's by "
+                                       "default")},
+                 {"accent", str("a quotation's bar; the headings' colour "
+                                "by default")},
+                 {"keep_line_breaks", boolean("each line kept as written "
+                                              "(a poem, lyrics)")},
+                 {"page_per_heading", boolean("each heading starts a new "
+                                              "page (a chapter a page)")},
+                 {"find_headings", boolean("true (by default): short "
+                                           "lines standing alone are "
+                                           "headings when no line is "
+                                           "marked \"# \"; false: only "
+                                           "\"# \" lines")}}),
+         &H::t_flow_text});
+    t.push_back(
+        {"add_page_progress", "edit", "Add page progress",
+         "A PAGE PROGRESS BAR on each page from `from_page` to `to_page`, "
+         "filled as far as the page is through them -- a bar, segments or "
+         "dots -- and, with `numbers`, \"3 / 12\" above its right end. "
+         "Its layers are in a folder; made again, it replaces the one "
+         "before: make it last, once the pages are all there.",
+         schema({{"composition", str(kCompDoc)},
+                 {"from_page", integer("the first page it counts (2 to "
+                                       "leave a cover out); 1 by "
+                                       "default")},
+                 {"to_page", integer("the last; the last page by "
+                                     "default")},
+                 {"style", one_of({"bar", "segments", "dots"},
+                                  "bar by default")},
+                 {"x", num("the bar's left edge; by default the 8% "
+                           "margin")},
+                 {"y", num("its top edge; by default near the page's "
+                           "foot")},
+                 {"width", num("its width")},
+                 {"height", num("its thickness, pixels (a dot's size)")},
+                 {"track", str("the part not reached, \"#rrggbb[aa]\"")},
+                 {"fill", str("the part reached")},
+                 {"numbers", boolean("\"3 / 12\" above its right end")},
+                 {"number_color", str("the numbers' colour; the fill's by "
+                                      "default")},
+                 {"font", str("the numbers' font")},
+                 {"size", num("the numbers' size, pixels")}}),
+         &H::t_add_page_progress});
     t.push_back({"remove_object", "edit", "Remove a text or shape",
                  "A text box or shape removed from its markup layer.",
                  schema({{"composition", str(kCompDoc)},
@@ -687,6 +1152,70 @@ Controller::AgentHost::tools()
                  {"name", str("the asset's name")}},
                 {"text"}),
          &H::t_generate_voiceover});
+    // ---- scenes: shots, each a clip with its sound
+    const Json picture_ids = {
+        {"type", "array"},
+        {"items", {{"type", "string"}}},
+        {"description", "pictures' ids it draws on -- a character, a "
+                        "place, kept the same across cuts -- named "
+                        "<Picture 1>, <Picture 2> in this order"}};
+    t.push_back(
+        {"generate_video", "generate", "Generate a shot",
+         "A SHOT of a scene: a clip WITH its own sound -- voices, sounds, "
+         "music -- made by the video model from its prompt's parts, in "
+         "the background (minutes). It LANDS on the timeline from `start` "
+         "(omitted: right after the shots and clips before it), filling "
+         "the frame. `continues: true` carries it on from the END of the "
+         "shot before it -- its last seconds, picture and sound -- so a "
+         "long scene is shot after shot without a jump; it may be asked "
+         "for while that one is still being made. Without it, a new shot "
+         "(a cut): from the words alone, opening on a picture (`first`), "
+         "or drawing on pictures (`references`) to keep a character or a "
+         "place the same.",
+         schema({{"description",
+                  str("what is seen and heard: the style and framing in a "
+                      "sentence, then \"[Shot 1] ...\" -- who is where, "
+                      "what they do, the camera; \"[Shot 2] At "
+                      "00:03.000, ...\" for a cut inside it. A speaker "
+                      "named once with an ID: \"the old woman (S1) says: "
+                      "<d>[English] the words</d>\". References by the "
+                      "model's names: <Picture 1>, the shot continued "
+                      "<Video 1>, a subject <Subject 1>")},
+                 {"soundscape", str("the ambience and the sounds of what "
+                                    "happens, 1-4 sentences; no dialogue, "
+                                    "no music")},
+                 {"music", str("the score, 1-3 sentences; \"N/A\" (by "
+                               "default) for none")},
+                 {"subjects", str("with `continues` or `references`: one "
+                                  "line per subject -- \"<Subject 1> is "
+                                  "the old clockmaker, silver bun, green "
+                                  "cardigan, in <Video 1>.\" -- in the "
+                                  "SAME words in every shot")},
+                 {"summary", str("with `continues` or `references`: what "
+                                 "happens in this shot, one or two "
+                                 "sentences naming the subjects")},
+                 {"seconds", num("its length, 2-10; 5 by default -- made "
+                                 "as the model makes lengths (5 is 5.17)")},
+                 {"continues", boolean("carry on from the end of the shot "
+                                       "before it on this timeline: the "
+                                       "next moment of the same scene. "
+                                       "Without it the people, place and "
+                                       "light come out different")},
+                 {"continue_from", str("a clip's id to carry on from "
+                                       "instead (its last 3.75 s)")},
+                 {"first", str("a picture's id the shot opens on, its "
+                               "first frame (not with continues or "
+                               "references)")},
+                 {"references", picture_ids},
+                 {"start", num("where it lands, timeline seconds; omitted "
+                               "(best): after the shots before it. A shot "
+                               "that continues lands after the one before")},
+                 {"seed", integer("another number: another take of the "
+                                  "same shot")},
+                 {"composition", str(kCompDoc)},
+                 {"name", str("the asset's name; omitted: \"Shot N\"")}},
+                {"description"}),
+         &H::t_generate_video});
     t.push_back({"ask_user", "read", "Ask the person",
                  "A question for the person, waiting for their answer. "
                  "Only when you cannot go on without it.",
@@ -765,13 +1294,21 @@ Controller::AgentHost::layer_(const Json& args)
 
 Result<std::int64_t>
 Controller::AgentHost::page_(ProjectId pid, AssetId comp, const Json& args,
-                             const char* key)
+                             const char* key, bool named)
 {
   auto* p = _c.project(pid);
   if (!p) {
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  // Something made on a still of pages says which: the 9B left `page`
+  // out and wrote a contents list on the cover.
+  if (named && a.cls == AssetClass::Still && a.pages > 1 &&
+      !(args.is_object() && args.contains(key))) {
+    return make_error(Code::InvalidArgument, std::format(
+        "which page? \"{}\" has {} pages: give `{}` (from 1)", a.name,
+        a.pages, key));
+  }
   const auto page = static_cast<std::int64_t>(number(args, key, 1));
   if (page < 1 || page > a.pages) {
     return make_error(Code::InvalidArgument, std::format(
@@ -799,12 +1336,17 @@ Controller::AgentHost::box_crop_(media::PixelSize content,
 }
 
 Result<std::array<double, 4>>
-Controller::AgentHost::box_(const Json& args, media::PixelSize frame)
+Controller::AgentHost::box_(const Json& args, media::PixelSize frame,
+                            bool line)
 {
   std::array<double, 4> b = {
       number(args, "x", 0), number(args, "y", 0),
       number(args, "width", frame.width),
       number(args, "height", frame.height)};
+  // A line's may be level (no height) or upright (no width).
+  if (line && b[2] >= 0 && b[3] >= 0 && b[2] + b[3] > 0) {
+    return b;
+  }
   if (b[2] <= 0 || b[3] <= 0) {
     return make_error(Code::InvalidArgument,
                       "a box needs a width and a height above 0");
@@ -843,22 +1385,189 @@ Controller::AgentHost::markup_on_(ProjectId pid, AssetId comp,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(comp));
-  // The page's topmost layer: drawn on when it is a markup; else a new
-  // markup layer above it, the page's alone.
-  std::vector<std::string> selected;
+  // The page's own topmost layer -- what runs across pages passed over:
+  // drawn on when it is a markup; else a new markup layer above it, the
+  // page's alone.
   for (auto it = a.layers.rbegin(); it != a.layers.rend(); ++it) {
-    if (a.pages > 1 && !on_page(it->time, page)) {
+    if (!on_page(it->time, page) || !alone_on(it->time, page)) {
       continue;
     }
     if (it->source) {
       auto src = p->asset(*it->source);
       if (src.ok() && src->cls == AssetClass::Markup) {
-        selected.push_back(it->id);
+        return it->id;
       }
     }
     break;
   }
-  return _c.markup_layer(pid, comp, selected, page);
+  const std::string top = a.layers.empty() ? "" : a.layers.back().id;
+  VALTZ_ASSIGN(std::string blank, _c.add_layer(pid, comp, top, page));
+  VALTZ_TRY(page_alone_(pid, comp, blank, page));
+  return _c.markup_layer(pid, comp, {blank}, page);
+}
+
+Status
+Controller::AgentHost::page_alone_(ProjectId pid, AssetId comp,
+                                   const std::string& layer,
+                                   std::int64_t page)
+{
+  auto* p = _c.project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  auto it = std::ranges::find(a.layers, layer, &project::Layer::id);
+  if (a.cls != AssetClass::Still || it == a.layers.end() ||
+      alone_on(it->time, page)) {
+    return ok_status();
+  }
+  return _c.set_layer_pages(pid, comp, layer, page, 1);
+}
+
+Result<std::string>
+Controller::AgentHost::front_markup_(ProjectId pid, AssetId comp)
+{
+  auto* p = _c.project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  if (a.cls != AssetClass::Still) {
+    return make_error(Code::InvalidArgument,
+                      "every_page is for a still's pages");
+  }
+  for (auto it = a.layers.rbegin(); it != a.layers.rend(); ++it) {
+    if (it->name == kFrontName && runs_across(it->time) && it->source) {
+      return it->id;
+    }
+  }
+  const std::string top = a.layers.empty() ? "" : a.layers.back().id;
+  VALTZ_ASSIGN(std::string blank, _c.add_layer(pid, comp, top));
+  VALTZ_TRY(_c.set_layer_pages(pid, comp, blank, 0, 0));
+  VALTZ_ASSIGN(std::string id, _c.markup_layer(pid, comp, {blank}, 0));
+  VALTZ_TRY(_c.rename_layer(pid, comp, id, kFrontName));
+  return id;
+}
+
+Result<std::string>
+Controller::AgentHost::back_markup_(ProjectId pid, AssetId comp,
+                                    std::optional<std::int64_t> page)
+{
+  auto* p = _c.project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  if (a.cls != AssetClass::Still) {
+    return make_error(Code::InvalidArgument,
+                      "below_all is for a still's pages");
+  }
+  // The back markup across every page: the bottom layer, so named.
+  std::optional<std::string> back;
+  if (!a.layers.empty() && a.layers.front().name == kBackName &&
+      runs_across(a.layers.front().time) && a.layers.front().source) {
+    back = a.layers.front().id;
+  }
+  if (!page) {
+    if (back) {
+      return *back;
+    }
+    const std::string top = a.layers.empty() ? "" : a.layers.back().id;
+    VALTZ_ASSIGN(std::string blank, _c.add_layer(pid, comp, top));
+    VALTZ_TRY(_c.set_layer_pages(pid, comp, blank, 0, 0));
+    VALTZ_ASSIGN(std::string id, _c.markup_layer(pid, comp, {blank}, 0));
+    VALTZ_TRY(_c.rename_layer(pid, comp, id, kBackName));
+    VALTZ_TRY(_c.place_layers(pid, comp, {id}, std::nullopt, ""));
+    return id;
+  }
+  // A page's own, so named, right above the back one: made when there
+  // is none (a page's words are on another markup, above its pictures).
+  for (const auto& l : a.layers) {
+    if (l.name == kPageBackName && alone_on(l.time, *page) && l.source) {
+      return l.id;
+    }
+  }
+  const std::string top = a.layers.empty() ? "" : a.layers.back().id;
+  VALTZ_ASSIGN(std::string blank, _c.add_layer(pid, comp, top, *page));
+  VALTZ_TRY(page_alone_(pid, comp, blank, *page));
+  VALTZ_ASSIGN(std::string id, _c.markup_layer(pid, comp, {blank}, *page));
+  VALTZ_TRY(_c.rename_layer(pid, comp, id, kPageBackName));
+  VALTZ_TRY(to_back_(pid, comp, id));
+  return id;
+}
+
+Json
+Controller::AgentHost::crowding_(ProjectId pid, AssetId comp,
+                                 std::int64_t page,
+                                 const std::array<double, 4>& box,
+                                 const std::string& skip)
+{
+  auto* p = _c.project(pid);
+  if (!p) {
+    return Json();
+  }
+  auto a = p->asset(comp);
+  if (!a.ok() || a->cls != AssetClass::Still) {
+    return Json();
+  }
+  Json over = Json::array();
+  for (const auto& l : a->layers) {
+    if (!alone_on(l.time, page) || !l.source || !l.visible) {
+      continue;
+    }
+    auto src = p->asset(*l.source);
+    if (!src.ok() || src->cls != AssetClass::Markup || !src->markup) {
+      continue;
+    }
+    for (const auto& o : src->markup->objects) {
+      if (jget<std::string>(o, "kind", "") != "text" ||
+          jget<std::string>(o, "id", "") == skip) {
+        continue;
+      }
+      // Its words' reach: the box's width, as far down as they go.
+      const double x0 = std::min(jget(o, "x0", 0.0), jget(o, "x1", 0.0));
+      const double y0 = std::min(jget(o, "y0", 0.0), jget(o, "y1", 0.0));
+      const double w = std::abs(jget(o, "x1", 0.0) - jget(o, "x0", 0.0));
+      const double h =
+          std::min(std::abs(jget(o, "y1", 0.0) - jget(o, "y0", 0.0)),
+                   media::text_fit(o).needed_height);
+      const double ix = std::min(x0 + w, box[0] + box[2]) -
+                        std::max(x0, box[0]);
+      const double iy = std::min(y0 + h, box[1] + box[3]) -
+                        std::max(y0, box[1]);
+      if (ix > 4 && iy > 4 && over.size() < 3) {
+        over.push_back(
+            {{"layer", model_layer(l.id)},
+             {"object", jget<std::string>(o, "id", "")},
+             {"text", std::string(utf8_prefix(
+                          jget<std::string>(o, "text", ""), 40))}});
+      }
+    }
+  }
+  if (over.empty()) {
+    return Json();
+  }
+  return {{"overlaps", std::move(over)},
+          {"overlap_note", "It lies over words already on this page: move "
+                           "one of them unless that is meant."}};
+}
+
+Status
+Controller::AgentHost::to_back_(ProjectId pid, AssetId comp,
+                                const std::string& layer)
+{
+  auto* p = _c.project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  std::optional<std::string> above;
+  if (!a.layers.empty() && a.layers.front().id != layer &&
+      a.layers.front().name == kBackName &&
+      runs_across(a.layers.front().time)) {
+    above = a.layers.front().id;
+  }
+  return _c.place_layers(pid, comp, {layer}, above, "");
 }
 
 Result<Json>
@@ -884,7 +1593,7 @@ Controller::AgentHost::markup_for_(ProjectId pid, AssetId comp,
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(comp));
   if (a.cls != AssetClass::Composition) {
-    VALTZ_ASSIGN(std::int64_t page, page_(pid, comp, args));
+    VALTZ_ASSIGN(std::int64_t page, page_(pid, comp, args, "page", true));
     VALTZ_ASSIGN(std::string layer, markup_on_(pid, comp, page));
     return std::pair{layer, Json{{"page", page + 1}}};
   }
@@ -1295,6 +2004,19 @@ Controller::AgentHost::t_get_project(Session& s, Step&, const Json&,
              _c._store->info(m).state == models::InstallState::Installed);
   }
   watch = watch && _c.engine_runs_(models::Capability::VideoSummary);
+  // Shots (generate_video): a clip from words or a picture, and one
+  // carried on from another.
+  bool video = false, carry = false;
+  for (const auto& pick : _c.auto_models()) {
+    if (pick.modality != "video" || pick.chosen.empty()) {
+      continue;
+    }
+    const auto* m = _c._catalog.find(pick.chosen);
+    video = video || (pick.op == "generate" && m &&
+                      _c.runs_soon(*m, "video", "generate"));
+    carry = carry || (pick.op == "edit" && m &&
+                      _c.runs_soon(*m, "video", "edit"));
+  }
   std::lock_guard lk(s.mu);
   return Json{{"name", p->name()},
               {"active", s.target ? s.target->str() : std::string()},
@@ -1304,7 +2026,9 @@ Controller::AgentHost::t_get_project(Session& s, Step&, const Json&,
               {"auto_picture_model", auto_pick},
               {"can_make_music", music},
               {"can_make_voiceover", speech},
-              {"can_describe_clips", watch}};
+              {"can_describe_clips", watch},
+              {"can_make_shots", video},
+              {"can_continue_shots", carry}};
 }
 
 Result<Json>
@@ -1322,10 +2046,31 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
     VALTZ_ASSIGN(times, timings_(s.project, comp));
   }
   const double fps = timeline ? rate_(s.project, comp).to_double() : 1;
+  // A still's page alone, when asked: a long text's pages are many.
+  std::optional<std::int64_t> only;
+  if (!timeline && args.contains("page")) {
+    VALTZ_ASSIGN(only, page_(s.project, comp, args));
+  }
+  std::string progress;
+  for (const auto& f : a.layer_folders) {
+    if (f.name == kProgressName) {
+      progress = f.id;
+    }
+  }
   Json layers = Json::array();
   for (const auto& l : a.layers) {
+    if (only && !on_page(l.time, *only)) {
+      continue;
+    }
     Json j = {{"id", model_layer(l.id)}, {"name", l.name},
               {"visible", l.visible}};
+    if (!progress.empty() && l.folder == progress) {
+      // The page progress bar's: one line each.
+      j["pages"] = Json{l.time.offset + 1, l.time.offset + 1};
+      j["shows"] = "page progress";
+      layers.push_back(std::move(j));
+      continue;
+    }
     const std::string kind = timeline ? layer_kind_(s.project, l) : "";
     if (timeline) {
       // Where it is in time: the timeline's seconds, its source's.
@@ -1377,7 +2122,17 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
           x["width"] = std::lround(std::abs(x1 - x0));
           x["height"] = std::lround(std::abs(y1 - y0));
           if (x["kind"] == "text") {
-            x["text"] = jget<std::string>(o, "text", "");
+            // A long text's head only: a flowed page would tell the whole
+            // text back.
+            const auto words = jget<std::string>(o, "text", "");
+            x["text"] = words.size() <= 160
+                            ? words
+                            : std::string(utf8_prefix(words, 120)) +
+                                  std::string(kEllipsis);
+            if (auto al = jget<std::string>(o, "align", "left");
+                al != "left") {
+              x["align"] = al;
+            }
             const Json f = jget(o, "font", Json::object());
             x["size"] = jget(f, "size", 0.0);
             x["font"] = jget<std::string>(f, "family", "");
@@ -1391,7 +2146,26 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
             if (!media::text_fit(o).fits) {
               x["fits"] = false;
             }
-          } else {
+          }
+          if (const Json g = jget(o, "gradient", Json()); g.is_object()) {
+            Json cs = Json::array();
+            for (const auto& st : jget(g, "stops", Json::array())) {
+              cs.push_back(hex(jget(st, "color", Json())));
+            }
+            x["gradient"] = {{"type", jget<std::string>(g, "kind", "linear")},
+                             {"colors", std::move(cs)}};
+          }
+          if (x["kind"] == "polygon") {
+            x["corners"] = jget(o, "points", Json::array()).size();
+          }
+          // Its effects: each kind, and its colour.
+          for (const auto& e : jget(o, "effects", Json::array())) {
+            const auto k = jget<std::string>(e, "kind", "");
+            if (k == "shadow" || k == "glow") {
+              x[k] = hex(jget(e, "color", Json()));
+            }
+          }
+          if (x["kind"] != "text") {
             if (auto f = hex(jget(o, "fill", Json())); !f.empty()) {
               x["fill"] = f;
             }
@@ -1613,15 +2387,35 @@ Controller::AgentHost::t_add_text(Session& s, Step& step, const Json& args,
     return make_error(Code::InvalidArgument,
                       "a colour is \"#rrggbb\" or \"#rrggbbaa\"");
   }
+  const std::string align = text_arg(args, "align", "left");
+  if (align != "left" && align != "center" && align != "right" &&
+      align != "justified") {
+    return make_error(Code::InvalidArgument,
+                      "align is left, center, right or justified");
+  }
   auto undo = _c.command_(s.project, "agent", comp, "",
                           {{"tool", step.tool}, {"title", step.title}});
-  VALTZ_ASSIGN(auto on, markup_for_(s.project, comp, args));
+  std::pair<std::string, Json> on;
+  if (flag(args, "every_page")) {
+    VALTZ_ASSIGN(on.first, front_markup_(s.project, comp));
+    on.second = {{"every_page", true}};
+  } else {
+    VALTZ_ASSIGN(on, markup_for_(s.project, comp, args));
+  }
   const std::string layer = on.first;
   VALTZ_ASSIGN(Json objs, objects_(s.project, comp, layer));
   const std::string id = object_id();
+  const double fsize = std::clamp(number(args, "size", 48), 4.0, 2000.0);
+  VALTZ_ASSIGN(Json fx, effects_arg(args, Json::array(), fsize, *c));
+  VALTZ_ASSIGN(Json grad, gradient_arg(args, Json()));
   objs.push_back(
       {{"id", id},
        {"kind", "text"},
+       {"gradient", std::move(grad)},
+       {"effects", std::move(fx)},
+       {"align", align},
+       {"line_spacing", std::clamp(number(args, "line_spacing", 1), 1.0,
+                                   3.0)},
        {"x0", box[0]},
        {"y0", box[1]},
        {"x1", box[0] + box[2]},
@@ -1640,6 +2434,12 @@ Controller::AgentHost::t_add_text(Session& s, Step& step, const Json& args,
   Json out = {{"layer", model_layer(layer)}, {"object", id}};
   out.update(on.second);
   tell_fit(out, objs.back());
+  if (on.second.contains("page")) {
+    const auto pg = jget<std::int64_t>(on.second, "page", 1) - 1;
+    if (Json c = crowding_(s.project, comp, pg, box, id); c.is_object()) {
+      out.update(c);
+    }
+  }
   return out;
 }
 
@@ -1649,11 +2449,45 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
 {
   VALTZ_ASSIGN(AssetId comp, composition_(s, args));
   VALTZ_ASSIGN(media::PixelSize frame, _c.own_frame(s.project, comp));
-  VALTZ_ASSIGN(auto box, box_(args, frame));
   const std::string shape = text_arg(args, "shape", "rect");
-  if (shape != "rect" && shape != "ellipse" && shape != "line") {
+  if (shape != "rect" && shape != "ellipse" && shape != "line" &&
+      shape != "polygon") {
     return make_error(Code::InvalidArgument,
-                      "a shape is rect, ellipse or line");
+                      "a shape is rect, ellipse, polygon or line");
+  }
+  // A POLYGON's corners (canvas pixels): its box their bounds, its points
+  // in the box's units (media/markup.h).
+  Json corners = Json::array();
+  std::array<double, 4> pbox{};
+  if (shape == "polygon") {
+    std::vector<std::array<double, 2>> pts;
+    for (const auto& p : jget(args, "points", Json::array())) {
+      if (p.is_array() && p.size() == 2 && p[0].is_number() &&
+          p[1].is_number()) {
+        pts.push_back({p[0].get<double>(), p[1].get<double>()});
+      }
+    }
+    if (pts.size() < 3) {
+      return make_error(Code::InvalidArgument,
+                        "a polygon is three corners or more: points "
+                        "[[x, y], ...] in canvas pixels");
+    }
+    double x0 = pts[0][0], y0 = pts[0][1], x1 = x0, y1 = y0;
+    for (const auto& p : pts) {
+      x0 = std::min(x0, p[0]);
+      x1 = std::max(x1, p[0]);
+      y0 = std::min(y0, p[1]);
+      y1 = std::max(y1, p[1]);
+    }
+    for (const auto& p : pts) {
+      corners.push_back({x1 > x0 ? (p[0] - x0) / (x1 - x0) : 0.5,
+                         y1 > y0 ? (p[1] - y0) / (y1 - y0) : 0.5});
+    }
+    pbox = {x0, y0, std::max(1.0, x1 - x0), std::max(1.0, y1 - y0)};
+  }
+  std::array<double, 4> box = pbox;
+  if (shape != "polygon") {
+    VALTZ_ASSIGN(box, box_(args, frame, shape == "line"));
   }
   auto fill = colour(text_arg(args, "fill", "#00000000"));
   auto stroke = colour(text_arg(args, "stroke", "#ffffffff"));
@@ -1663,16 +2497,63 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
   }
   double lw = std::clamp(number(args, "line_width",
                                 shape == "line" ? 4.0 : 0.0), 0.0, 500.0);
+  // A line far longer than it is "high" is a RULE given its thickness as
+  // its height (the 9B's "height": 4 -- or 54, a band at a page's foot):
+  // laid level through the box's middle, that thick. And so upright.
+  if (shape == "line") {
+    const double w = std::abs(box[2]), h = std::abs(box[3]);
+    const double thin = std::max(8.0, lw * 2);
+    if (h > 0 && ((h <= thin && w > h * 10) || w >= h * 20)) {
+      if (!args.contains("line_width")) {
+        lw = std::max(1.0, h);
+      }
+      box[1] += h / 2;
+      box[3] = 0;
+    } else if (w > 0 && ((w <= thin && h > w * 10) || h >= w * 20)) {
+      if (!args.contains("line_width")) {
+        lw = std::max(1.0, w);
+      }
+      box[0] += w / 2;
+      box[2] = 0;
+    }
+  }
   auto undo = _c.command_(s.project, "agent", comp, "",
                           {{"tool", step.tool}, {"title", step.title}});
-  VALTZ_ASSIGN(auto on, markup_for_(s.project, comp, args));
+  std::pair<std::string, Json> on;
+  const bool every = flag(args, "every_page");
+  // An OPAQUE shape covering a still's page is its BACKGROUND, asked so
+  // or not: on top it would hide the page's words (the 9B left below_all
+  // out of its every-page paper). A translucent one is a scrim, over.
+  auto* p = _c.project(s.project);
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  const bool covers = a.cls == AssetClass::Still && shape != "line" &&
+                      (*fill)[3] >= 0.95 &&
+                      box[2] * box[3] >= 0.9 * frame.width * frame.height;
+  const bool below = flag(args, "below_all") || covers;
+  if (every || below) {
+    // Across every page (on top, or under all: the background), or under
+    // a page's own layers.
+    std::optional<std::int64_t> page;
+    if (!every) {
+      VALTZ_ASSIGN(page, page_(s.project, comp, args, "page", true));
+    }
+    VALTZ_ASSIGN(on.first, every && !below
+                               ? front_markup_(s.project, comp)
+                               : back_markup_(s.project, comp, page));
+    on.second = every ? Json{{"every_page", true}}
+                      : Json{{"page", *page + 1}};
+    if (covers && !flag(args, "below_all")) {
+      on.second["note"] = "It covers the page: laid under everything, "
+                          "as its background.";
+    }
+  } else {
+    VALTZ_ASSIGN(on, markup_for_(s.project, comp, args));
+  }
   const std::string layer = on.first;
   VALTZ_ASSIGN(Json objs, objects_(s.project, comp, layer));
   const std::string id = object_id();
   Json made = {{"id", id},
-               {"kind", shape == "rect"      ? "rect"
-                        : shape == "ellipse" ? "ellipse"
-                                             : "line"},
+               {"kind", shape},
                {"x0", box[0]},
                {"y0", box[1]},
                {"x1", box[0] + box[2]},
@@ -1681,6 +2562,25 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
                            (*stroke)[3]}},
                {"fill", {(*fill)[0], (*fill)[1], (*fill)[2], (*fill)[3]}},
                {"width", lw}};
+  if (shape == "polygon") {
+    made["points"] = std::move(corners);
+  }
+  if (shape != "line") {
+    VALTZ_ASSIGN(Json g, gradient_arg(args, Json()));
+    if (g.is_object()) {
+      made["gradient"] = std::move(g);
+    }
+  }
+  {
+    // Its effects: a glow in its fill, or its line's colour.
+    const auto& own = shape != "line" && (*fill)[3] > 0 ? *fill : *stroke;
+    VALTZ_ASSIGN(Json fx, effects_arg(args, Json::array(),
+                                      shape == "line"
+                                          ? std::max(16.0, lw * 3)
+                                          : shape_base(box[2], box[3]),
+                                      own));
+    made["effects"] = std::move(fx);
+  }
   // Under the layer's words, whenever it is added: a panel is behind
   // the text it was made for (objects are drawn in order).
   const auto words = std::ranges::find_if(objs, [](const Json& o) {
@@ -1727,6 +2627,19 @@ Controller::AgentHost::t_update_object(Session& s, Step& step,
   if (args.contains("text")) {
     o["text"] = text_arg(args, "text");
   }
+  if (args.contains("align")) {
+    const std::string al = text_arg(args, "align");
+    if (al != "left" && al != "center" && al != "right" &&
+        al != "justified") {
+      return make_error(Code::InvalidArgument,
+                        "align is left, center, right or justified");
+    }
+    o["align"] = al;
+  }
+  if (args.contains("line_spacing")) {
+    o["line_spacing"] =
+        std::clamp(number(args, "line_spacing", 1), 1.0, 3.0);
+  }
   Json font = jget(o, "font", Json::object());
   if (args.contains("size")) {
     font["size"] = std::clamp(number(args, "size", 48), 4.0, 2000.0);
@@ -1757,6 +2670,36 @@ Controller::AgentHost::t_update_object(Session& s, Step& step,
   }
   if (args.contains("line_width")) {
     o["width"] = std::clamp(number(args, "line_width", 0), 0.0, 500.0);
+  }
+  {
+    const bool text = jget<std::string>(o, "kind", "") == "text";
+    const Json own = text || jget(o, "fill", Json::array()).size() != 4 ||
+                             jget(o, "fill", Json::array())[3] == 0
+                         ? jget(o, "stroke", Json())
+                         : jget(o, "fill", Json());
+    std::array<double, 4> mine{0, 0, 0, 1};
+    for (std::size_t i = 0; own.is_array() && i < 4 && i < own.size(); ++i) {
+      mine[i] = own[i].is_number() ? own[i].get<double>() : mine[i];
+    }
+    const double base =
+        text ? jget(jget(o, "font", Json::object()), "size", 48.0)
+             : shape_base(jget(o, "x1", 0.0) - jget(o, "x0", 0.0),
+                          jget(o, "y1", 0.0) - jget(o, "y0", 0.0));
+    VALTZ_ASSIGN(Json fx, effects_arg(args, jget(o, "effects", Json()),
+                                      base, mine));
+    if (fx.empty()) {
+      o.erase("effects");
+    } else {
+      o["effects"] = std::move(fx);
+    }
+    if (jget<std::string>(o, "kind", "") != "line") {
+      VALTZ_ASSIGN(Json g, gradient_arg(args, jget(o, "gradient", Json())));
+      if (g.is_object()) {
+        o["gradient"] = std::move(g);
+      } else {
+        o.erase("gradient");
+      }
+    }
   }
   const Json changed = o;
   auto undo = _c.command_(s.project, "agent", comp, layer,
@@ -1795,6 +2738,611 @@ Controller::AgentHost::t_remove_object(Session& s, Step& step,
   return Json{{"removed", id}};
 }
 
+// ---- a long text on pages ---------------------------------------------------
+
+Result<std::string>
+Controller::AgentHost::flow_source_(const Session& s, const Json& args,
+                                    std::string* after, std::string* before)
+{
+  constexpr std::size_t kMaxText = 256 * 1024;
+  // The person's messages, the latest first.
+  std::vector<std::string> said;
+  {
+    std::lock_guard lk(s.mu);
+    for (auto it = s.messages.rbegin(); it != s.messages.rend(); ++it) {
+      if (it->role == "user" && it->call_id.empty()) {
+        said.push_back(it->content);
+      }
+    }
+  }
+  // Where the passage lies in message `m`, `a` to `b`: what the message
+  // has past it, and before it but its first paragraph (the request
+  // itself), when more than a few words.
+  auto around = [&](const std::string& m, std::size_t a, std::size_t b) {
+    auto trim = [](std::string_view v) {
+      while (!v.empty() && std::isspace(static_cast<unsigned char>(
+                               v.front()))) {
+        v.remove_prefix(1);
+      }
+      while (!v.empty() && std::isspace(static_cast<unsigned char>(
+                               v.back()))) {
+        v.remove_suffix(1);
+      }
+      return v;
+    };
+    if (after) {
+      if (auto more = trim(std::string_view(m).substr(b));
+          more.size() > 200) {
+        *after = std::string(more);
+      }
+    }
+    if (before) {
+      std::string_view head = std::string_view(m).substr(0, a);
+      const auto para = head.find("\n\n");
+      head = para == std::string_view::npos ? std::string_view()
+                                            : head.substr(para + 2);
+      if (head = trim(head); head.size() > 200) {
+        *before = std::string(head);
+      }
+    }
+  };
+  // The 9B fills every field it is given, "" for those it means not to:
+  // an empty one is not given. The person's words by their first words
+  // first -- exact, and nothing copied through the model's output.
+  const std::string from = text_arg(args, "from_words");
+  const std::string to = text_arg(args, "to_words");
+  if (!from.empty()) {
+    for (const auto& m : said) {
+      auto a = find_loose(m, from, 0);
+      if (!a) {
+        continue;
+      }
+      std::size_t end = m.size();
+      if (!to.empty()) {
+        auto b = find_loose(m, to, a->first);
+        if (!b) {
+          return make_error(Code::NotFound, std::format(
+              "\"{}\" is not after \"{}\" in the person's message: give "
+              "to_words as written there, or none (to its end)", to, from));
+        }
+        end = b->second;
+      }
+      around(m, a->first, end);
+      return std::string(utf8_prefix(
+          std::string_view(m).substr(a->first, end - a->first), kMaxText));
+    }
+    return make_error(Code::NotFound, std::format(
+        "\"{}\" is not in the person's messages: give from_words as "
+        "written there (its first words)", from));
+  }
+  if (const std::string id = text_arg(args, "asset"); !id.empty()) {
+    auto* p = _c.project(s.project);
+    const auto aid = AssetId::parse(id);
+    if (!p || !aid) {
+      return make_error(Code::InvalidArgument, "which text asset?");
+    }
+    VALTZ_ASSIGN(project::Asset a, p->asset(*aid));
+    if (a.kind != AssetKind::Text) {
+      return make_error(Code::InvalidArgument,
+                        std::format("\"{}\" is not a text", a.name));
+    }
+    VALTZ_ASSIGN(std::string t, p->read_text(*aid));
+    return std::string(utf8_prefix(t, kMaxText));
+  }
+  std::string t = text_arg(args, "text");
+  if (t.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "give the words: from_words (and to_words) from the "
+                      "person's message, an asset, or text");
+  }
+  if (t.size() > kMaxText) {
+    return make_error(Code::InvalidArgument, "the text is too long");
+  }
+  // The person's words RETYPED (the 9B copied a whole article through
+  // its output, a section a call): the passage as they wrote it, from
+  // its first words to its last -- the same words, exactly.
+  if (t.size() > 300) {
+    std::vector<std::string> ws;
+    std::string w;
+    for (char ch : t + " ") {
+      if (std::isspace(static_cast<unsigned char>(ch))) {
+        if (!w.empty()) {
+          ws.push_back(std::move(w));
+          w.clear();
+        }
+      } else {
+        w += ch;
+      }
+    }
+    const std::size_t n = std::min<std::size_t>(8, ws.size());
+    std::string head, tail;
+    for (std::size_t i = 0; i < n; ++i) {
+      head += (i ? " " : "") + ws[i];
+      tail += (i ? " " : "") + ws[ws.size() - n + i];
+    }
+    for (const auto& m : said) {
+      auto a = find_loose(m, head, 0);
+      auto b = a ? find_loose(m, tail, a->first) : std::nullopt;
+      if (a && b) {
+        around(m, a->first, b->second);
+        return std::string(utf8_prefix(
+            std::string_view(m).substr(a->first, b->second - a->first),
+            kMaxText));
+      }
+    }
+  }
+  return t;
+}
+
+Result<Json>
+Controller::AgentHost::t_flow_text(Session& s, Step& step, const Json& args,
+                                   std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, composition_(s, args));
+  auto* p = _c.project(s.project);
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  if (a.cls != AssetClass::Still) {
+    return make_error(Code::InvalidArgument,
+                      "a text is laid out on a still's pages: make one "
+                      "with create_composition");
+  }
+  VALTZ_ASSIGN(media::PixelSize frame, _c.own_frame(s.project, comp));
+  std::string after, before;
+  VALTZ_ASSIGN(std::string text, flow_source_(s, args, &after, &before));
+  const auto first = static_cast<std::int64_t>(number(args, "first_page", 1));
+  if (first < 1 || first > a.pages + 1) {
+    return make_error(Code::InvalidArgument, std::format(
+        "first_page is one of its {} pages, or {} (a new one at the end)",
+        a.pages, a.pages + 1));
+  }
+  const double W = frame.width, H = frame.height;
+  // The area: the page within its margins, room for a footer.
+  const double mx = std::round(W * 0.08);
+  const double top = std::round(H * 0.09);
+  std::array<double, 4> area = {
+      number(args, "x", mx), number(args, "y", top),
+      number(args, "width", W - 2 * mx),
+      number(args, "height", H - top - std::round(H * 0.11))};
+  // What every page shows on top -- a header, a rule, a band -- kept
+  // clear of: the area's top moved below what lies in its upper half,
+  // its bottom above what lies in its lower half (the 9B drew a band
+  // through the text's first line on every page).
+  for (const auto& l : a.layers) {
+    if (l.name != kFrontName || !runs_across(l.time) || !l.source) {
+      continue;
+    }
+    VALTZ_ASSIGN(Json objs, objects_(s.project, comp, l.id));
+    for (const auto& o : objs) {
+      const double x0 = std::min(jget(o, "x0", 0.0), jget(o, "x1", 0.0));
+      const double x1 = std::max(jget(o, "x0", 0.0), jget(o, "x1", 0.0));
+      const double half = jget(o, "width", 0.0) / 2;
+      const double y0 =
+          std::min(jget(o, "y0", 0.0), jget(o, "y1", 0.0)) - half;
+      const double y1 =
+          std::max(jget(o, "y0", 0.0), jget(o, "y1", 0.0)) + half;
+      const double top = area[1], bottom = area[1] + area[3];
+      if (x1 <= area[0] || x0 >= area[0] + area[2] || y1 <= top ||
+          y0 >= bottom) {
+        continue;
+      }
+      const double gap = std::round(H * 0.015);
+      if ((y0 + y1) / 2 < (top + bottom) / 2) {
+        area[1] = y1 + gap;
+        area[3] = bottom - area[1];
+      } else {
+        area[3] = y0 - gap - top;
+      }
+    }
+  }
+  if (area[2] < 40 || area[3] < 40) {
+    return make_error(Code::InvalidArgument, "the area is too small");
+  }
+  media::FlowSpec spec;
+  spec.area = area;
+  spec.columns = std::clamp(
+      static_cast<int>(number(args, "columns", W > H * 1.15 ? 2 : 1)), 1,
+      4);
+  spec.gutter = std::max(0.0, number(args, "gutter", std::round(W * 0.04)));
+  spec.first_top = number(args, "start_y", 0);
+  spec.page_per_heading = flag(args, "page_per_heading");
+  const double colw =
+      (area[2] - spec.gutter * (spec.columns - 1)) / spec.columns;
+  // The body: about 65 characters a line, held to what reads on the page.
+  const double size = std::clamp(
+      number(args, "size",
+             std::round(std::clamp(colw / 32, H * 0.016, H * 0.042))),
+      6.0, 400.0);
+  auto c = [&](const char* key, const char* fallback)
+      -> Result<std::array<double, 4>> {
+    auto v = colour(text_arg(args, key, fallback));
+    if (!v) {
+      return make_error(Code::InvalidArgument,
+                        "a colour is \"#rrggbb\" or \"#rrggbbaa\"");
+    }
+    return *v;
+  };
+  const std::string align = text_arg(args, "align", "left");
+  if (align != "left" && align != "center" && align != "right" &&
+      align != "justified") {
+    return make_error(Code::InvalidArgument,
+                      "align is left, center, right or justified");
+  }
+  spec.body.font = text_arg(args, "font", "Georgia");
+  spec.body.size = size;
+  VALTZ_ASSIGN(spec.body.color, c("color", "#222222"));
+  spec.body.line_spacing =
+      std::clamp(number(args, "line_spacing", 1.45), 1.0, 3.0);
+  spec.body.align = align;
+  const double hsize = std::clamp(
+      number(args, "heading_size", std::round(size * 1.45)), 6.0, 600.0);
+  spec.heading.font = text_arg(args, "heading_font", "Avenir Next");
+  spec.heading.size = hsize;
+  spec.heading.bold = true;
+  VALTZ_ASSIGN(spec.heading.color,
+               c("heading_color", text_arg(args, "color", "#222222")
+                                      .c_str()));
+  spec.heading.line_spacing = 1.1;
+  spec.title = spec.heading;
+  spec.title.size = std::round(hsize * 1.45);
+  VALTZ_ASSIGN(spec.accent, c("accent", text_arg(args, "heading_color",
+                                                 text_arg(args, "color",
+                                                          "#222222"))
+                                            .c_str()));
+  bool found = false;
+  spec.blocks = media::read_flow_blocks(
+      text, flag(args, "keep_line_breaks"),
+      flag(args, "find_headings", true), &found);
+  if (spec.blocks.empty()) {
+    return make_error(Code::InvalidArgument, "no words to lay out");
+  }
+  spec.max_pages = static_cast<int>(
+      std::min<std::int64_t>(200, Controller::kMaxPages - a.pages));
+  // The first page's own words, shapes and pictures in the area: the
+  // text starts below them (a text flowed there before, a title) -- or,
+  // no room left there, on the page after.
+  bool skip_first = false;
+  if (first - 1 < a.pages) {
+    const std::int64_t pg = first - 1;
+    double low = 0;
+    auto take = [&](double x0, double y0, double x1, double y1) {
+      if (std::max(x0, x1) > area[0] && std::min(x0, x1) < area[0] + area[2] &&
+          std::max(y0, y1) > area[1] && std::min(y0, y1) < area[1] + area[3]) {
+        low = std::max(low, std::max(y0, y1));
+      }
+    };
+    for (const auto& l : a.layers) {
+      if (!alone_on(l.time, pg) || l.name == kPageBackName || !l.source ||
+          !l.visible) {
+        continue;
+      }
+      auto src = p->asset(*l.source);
+      if (src.ok() && src->cls == AssetClass::Markup) {
+        VALTZ_ASSIGN(Json objs, objects_(s.project, comp, l.id));
+        for (const auto& o : objs) {
+          take(jget(o, "x0", 0.0), jget(o, "y0", 0.0), jget(o, "x1", 0.0),
+               jget(o, "y1", 0.0));
+        }
+      } else if (Json b = layer_box_(s.project, a, l); b.is_object()) {
+        const double x = jget(b, "x", 0.0), y = jget(b, "y", 0.0);
+        take(x, y, x + jget(b, "width", 0.0), y + jget(b, "height", 0.0));
+      }
+    }
+    if (low > 0) {
+      spec.first_top = std::max(spec.first_top, low + size * 1.2);
+    }
+    skip_first = spec.first_top > area[1] + area[3] - size * 4;
+    if (skip_first) {
+      spec.first_top = 0;
+    }
+  }
+  const media::FlowResult r = media::flow_text(spec);
+  if (r.pages.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "the words do not fit the area");
+  }
+
+  auto undo = _c.command_(s.project, "agent", comp, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  // The text's pages: from first_page, then each next page while it
+  // holds nothing of its own (only what runs on to the last page), else
+  // a new page right after -- so a closing page made before stays last.
+  auto free_page = [&](std::int64_t page) -> Result<bool> {
+    VALTZ_ASSIGN(project::Asset now, p->asset(comp));
+    if (page >= now.pages) {
+      return false;
+    }
+    return std::ranges::none_of(now.layers, [&](const project::Layer& l) {
+      return on_page(l.time, page) && l.time.duration > 0;
+    });
+  };
+  std::int64_t at = first - 1;
+  int added = 0;
+  if (at == a.pages) {
+    VALTZ_ASSIGN(at, _c.add_page(s.project, comp));
+    ++added;
+  }
+  std::vector<std::int64_t> used;
+  Json pages = Json::array();
+  for (std::size_t i = 0; i < r.pages.size(); ++i) {
+    if (i > 0 || skip_first) {
+      VALTZ_ASSIGN(bool free, free_page(at + 1));
+      if (free) {
+        ++at;
+      } else {
+        VALTZ_ASSIGN(at, _c.add_page(s.project, comp, at));
+        ++added;
+      }
+    }
+    used.push_back(at);
+    VALTZ_ASSIGN(std::string layer, markup_on_(s.project, comp, at));
+    VALTZ_ASSIGN(Json objs, objects_(s.project, comp, layer));
+    for (Json o : r.pages[i].objects) {
+      o["id"] = object_id();
+      objs.push_back(std::move(o));
+    }
+    VALTZ_TRY(_c.set_markup_objects(s.project, comp, layer, objs));
+    pages.push_back({{"page", at + 1},
+                     {"layer", model_layer(layer)},
+                     {"starts", r.pages[i].starts}});
+  }
+  Json heads = Json::array();
+  for (const auto& h : r.headings) {
+    heads.push_back({{"text", std::string(utf8_prefix(h.text, 120))},
+                     {"page", used[static_cast<std::size_t>(h.page)] + 1}});
+  }
+  VALTZ_ASSIGN(project::Asset now, p->asset(comp));
+  const auto& last = r.pages.back();
+  const double colx = area[0] + last.last_column * (colw + spec.gutter);
+  Json out = {
+      {"pages", std::move(pages)},
+      {"first_page", used.front() + 1},
+      {"last_page", used.back() + 1},
+      {"pages_added", added},
+      {"composition_pages", now.pages},
+      {"headings", std::move(heads)},
+      // Room left on the last page, under the text in its last column.
+      {"free_on_last_page",
+       {{"x", std::lround(colx)},
+        {"y", std::lround(last.ends_at)},
+        {"width", std::lround(area[2] - (colx - area[0]))},
+        {"height", std::lround(area[1] + area[3] - last.ends_at)}}},
+      {"area", {{"x", std::lround(area[0])}, {"y", std::lround(area[1])},
+                {"width", std::lround(area[2])},
+                {"height", std::lround(area[3])}}},
+      {"columns", spec.columns},
+      {"style",
+       {{"font", spec.body.font},
+        {"size", spec.body.size},
+        {"color", text_arg(args, "color", "#222222")},
+        {"heading_font", spec.heading.font},
+        {"heading_size", spec.heading.size},
+        {"title_size", spec.title.size}}}};
+  if (found) {
+    out["note"] = "Headings were found in the text (short lines standing "
+                  "alone); find_headings false takes only # lines.";
+  }
+  // Pages after the text holding nothing of their own (made ahead of
+  // it): the model's to fill or remove.
+  Json empty = Json::array();
+  for (std::int64_t pg = used.back() + 1; pg < now.pages; ++pg) {
+    VALTZ_ASSIGN(bool free, free_page(pg));
+    if (free) {
+      empty.push_back(pg + 1);
+    }
+  }
+  if (!empty.empty()) {
+    out["empty_pages"] = std::move(empty);
+    out["empty_note"] = "These pages after the text hold nothing of their "
+                        "own: use them or remove_page them (the last "
+                        "first).";
+  }
+  // The passage stopped short of the person's text (the 9B laid an
+  // article out a few paragraphs a call): what is left, and how to go
+  // on in one call.
+  if (!after.empty()) {
+    std::string next;
+    int words = 0, in = 0;
+    for (char ch : after) {
+      const bool sp = std::isspace(static_cast<unsigned char>(ch)) != 0;
+      if (!sp && !in) {
+        ++words;
+      }
+      in = !sp;
+      if (words <= 8 && !(sp && words == 8)) {
+        next += sp ? ' ' : ch;
+      }
+    }
+    out["more_in_message"] = {
+        {"words", words},
+        {"next_words", one_line(next)},
+        {"note", std::format(
+             "The person's message goes on for {} more words after "
+             "to_words. Lay out ALL the rest in ONE call: flow_text with "
+             "from_words \"{}\", no to_words, first_page {} (it goes on "
+             "below the text there).",
+             words, one_line(next), used.back() + 1)}};
+  }
+  // And words before it (past the request's first paragraph): perhaps
+  // the text's own start -- the 9B began at the first heading and left
+  // the article's title and opening paragraph out.
+  if (!before.empty()) {
+    int words = 0, in = 0;
+    for (char ch : before) {
+      const bool sp = std::isspace(static_cast<unsigned char>(ch)) != 0;
+      words += !sp && !in;
+      in = !sp;
+    }
+    std::string first(utf8_prefix(before, 60));
+    out["before_in_message"] = {
+        {"words", words},
+        {"starts", one_line(first)},
+        {"note", std::format(
+             "The person's message has {} words before from_words, from "
+             "\"{}\". If they are the text's start (a title, an opening "
+             "paragraph), lay them out too.",
+             words, one_line(first))}};
+  }
+  if (r.left > 0) {
+    out["left_out_bytes"] = r.left;
+    out["error"] = "the pages ran out: the rest of the text is not laid";
+  }
+  return out;
+}
+
+Result<Json>
+Controller::AgentHost::t_add_page_progress(Session& s, Step& step,
+                                           const Json& args,
+                                           std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, composition_(s, args));
+  auto* p = _c.project(s.project);
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  if (a.cls != AssetClass::Still) {
+    return make_error(Code::InvalidArgument,
+                      "a page progress bar is for a still's pages");
+  }
+  VALTZ_ASSIGN(media::PixelSize frame, _c.own_frame(s.project, comp));
+  const auto from = static_cast<std::int64_t>(number(args, "from_page", 1));
+  const auto to =
+      static_cast<std::int64_t>(number(args, "to_page", a.pages));
+  if (from < 1 || to > a.pages || from > to) {
+    return make_error(Code::InvalidArgument, std::format(
+        "from_page and to_page are pages 1 to {}, the first not after "
+        "the last", a.pages));
+  }
+  const std::string style = text_arg(args, "style", "bar");
+  if (style != "bar" && style != "segments" && style != "dots") {
+    return make_error(Code::InvalidArgument,
+                      "style is bar, segments or dots");
+  }
+  const double W = frame.width, H = frame.height;
+  const double bh = std::max(2.0, number(args, "height",
+                                         std::max(4.0, std::round(H * 0.006))));
+  const double bx = number(args, "x", std::round(W * 0.08));
+  const double bw = std::max(8.0, number(args, "width", W - 2 * bx));
+  const double by =
+      number(args, "y", H - std::round(H * 0.045) - bh);
+  auto track = colour(text_arg(args, "track", "#8080804d"));
+  auto fill = colour(text_arg(args, "fill", "#808080"));
+  auto ncol = colour(text_arg(args, "number_color",
+                              text_arg(args, "fill", "#808080")));
+  if (!track || !fill || !ncol) {
+    return make_error(Code::InvalidArgument,
+                      "a colour is \"#rrggbb\" or \"#rrggbbaa\"");
+  }
+  const bool numbers = flag(args, "numbers");
+  const double nsize =
+      std::clamp(number(args, "size", std::round(H * 0.02)), 6.0, 200.0);
+  const std::string font = text_arg(args, "font", "Avenir Next");
+  auto rgba = [](const std::array<double, 4>& v) {
+    return Json::array({v[0], v[1], v[2], v[3]});
+  };
+  auto shape = [&](const char* kind, double x0, double y0, double x1,
+                   double y1, const std::array<double, 4>& in) {
+    return Json{{"id", object_id()}, {"kind", kind},
+                {"x0", x0}, {"y0", y0}, {"x1", x1}, {"y1", y1},
+                {"stroke", rgba(in)}, {"fill", rgba(in)}, {"width", 0}};
+  };
+  // A bar's round ends: a line as thick as the bar, round-capped.
+  auto bar = [&](double x0, double x1, const std::array<double, 4>& in) {
+    const double r = bh / 2;
+    Json o = shape("line", x0 + r, by + r, std::max(x0 + r, x1 - r),
+                   by + r, in);
+    o["width"] = bh;
+    return o;
+  };
+  const std::int64_t n = to - from + 1;
+  // Too many for segments or dots to read: a bar.
+  const std::string drawn = (style == "segments" && n > 60) ||
+                                    (style == "dots" && n > 40)
+                                ? "bar"
+                                : style;
+
+  auto undo = _c.command_(s.project, "agent", comp, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  // A bar made before goes: its folder's layers.
+  for (const auto& f : a.layer_folders) {
+    if (f.name != kProgressName) {
+      continue;
+    }
+    std::vector<std::string> old;
+    for (const auto& l : a.layers) {
+      if (l.folder == f.id) {
+        old.push_back(l.id);
+      }
+    }
+    VALTZ_TRY(_c.ungroup_layers(s.project, comp, f.id));
+    for (const auto& l : old) {
+      VALTZ_TRY(_c.remove_layer(s.project, comp, l));
+    }
+  }
+  std::vector<std::string> made;
+  for (std::int64_t k = from - 1; k < to; ++k) {
+    const std::int64_t i = k - from + 2;  // 1 .. n
+    Json objs = Json::array();
+    if (drawn == "bar") {
+      objs.push_back(bar(bx, bx + bw, *track));
+      objs.push_back(bar(bx, bx + bh + (bw - bh) * i / n, *fill));
+    } else if (drawn == "segments") {
+      const double gap = std::max(2.0, std::round(bw * 0.006));
+      const double sw = (bw - gap * (n - 1)) / n;
+      for (std::int64_t j = 0; j < n; ++j) {
+        const double x0 = bx + j * (sw + gap);
+        objs.push_back(shape("rect", x0, by, x0 + sw, by + bh,
+                             j < i ? *fill : *track));
+      }
+    } else {
+      // A dot big enough to see, whatever thickness a bar would have.
+      const double d = std::max({bh, 6.0, std::round(H * 0.007)});
+      const double stepx = std::min(d * 2.4, bw / n);
+      const double x0 = bx + (bw - stepx * (n - 1) - d) / 2;
+      for (std::int64_t j = 0; j < n; ++j) {
+        const double x = x0 + j * stepx;
+        objs.push_back(shape("ellipse", x, by, x + d, by + d,
+                             j == i - 1 ? *fill : *track));
+      }
+    }
+    if (numbers) {
+      objs.push_back(
+          {{"id", object_id()},
+           {"kind", "text"},
+           {"box", true},
+           {"x0", bx},
+           {"y0", by - nsize * 1.6},
+           {"x1", bx + bw},
+           {"y1", by - nsize * 0.2},
+           {"text", std::format("{} / {}", i, n)},
+           {"align", "right"},
+           {"stroke", rgba(*ncol)},
+           {"fill", Json::array({0, 0, 0, 0})},
+           {"width", 0},
+           {"font", {{"family", font}, {"size", nsize}, {"bold", false},
+                     {"italic", false}, {"underline", false}}}});
+    }
+    VALTZ_ASSIGN(project::Asset now, p->asset(comp));
+    const std::string top = now.layers.empty() ? "" : now.layers.back().id;
+    VALTZ_ASSIGN(std::string blank, _c.add_layer(s.project, comp, top, k));
+    VALTZ_TRY(page_alone_(s.project, comp, blank, k));
+    VALTZ_ASSIGN(std::string layer,
+                 _c.markup_layer(s.project, comp, {blank}, k));
+    VALTZ_TRY(_c.set_markup_objects(s.project, comp, layer, objs));
+    VALTZ_TRY(_c.rename_layer(s.project, comp, layer,
+                              std::format("Progress {}", k + 1)));
+    made.push_back(layer);
+  }
+  VALTZ_ASSIGN(std::string folder,
+               _c.group_layers(s.project, comp, made, kProgressName));
+  (void)folder;
+  return Json{{"pages", Json::array({from, to})},
+              {"style", drawn},
+              {"layers", made.size()},
+              {"box", {{"x", std::lround(bx)}, {"y", std::lround(by)},
+                       {"width", std::lround(bw)},
+                       {"height", std::lround(bh)}}},
+              {"note", "Made again (it replaces this one) after pages are "
+                       "added or removed."}};
+}
+
 // ---- layers -----------------------------------------------------------------
 
 Result<Json>
@@ -1803,7 +3351,8 @@ Controller::AgentHost::t_place_asset(Session& s, Step& step,
                                      std::vector<fs::path>&)
 {
   VALTZ_ASSIGN(AssetId comp, composition_(s, args));
-  VALTZ_ASSIGN(std::int64_t page, page_(s.project, comp, args));
+  VALTZ_ASSIGN(std::int64_t page,
+               page_(s.project, comp, args, "page", true));
   const auto asset = AssetId::parse(text_arg(args, "asset"));
   if (!asset) {
     return make_error(Code::InvalidArgument, "which asset?");
@@ -1814,6 +3363,7 @@ Controller::AgentHost::t_place_asset(Session& s, Step& step,
   VALTZ_ASSIGN(auto placed, _c.instantiate(s.project, *asset, comp,
                                            std::nullopt, page));
   const std::string layer = placed.second;
+  VALTZ_TRY(page_alone_(s.project, comp, layer, page));
   if (args.contains("width") || args.contains("height") ||
       args.contains("x") || args.contains("y")) {
     VALTZ_ASSIGN(auto box, box_(args, frame));
@@ -1824,9 +3374,25 @@ Controller::AgentHost::t_place_asset(Session& s, Step& step,
                           layer));
   }
   if (flag(args, "below_all")) {
-    VALTZ_TRY(_c.place_layers(s.project, comp, {layer}, std::nullopt, ""));
+    VALTZ_TRY(to_back_(s.project, comp, layer));
   }
-  return Json{{"layer", model_layer(layer)}, {"page", page + 1}};
+  Json out = {{"layer", model_layer(layer)}, {"page", page + 1}};
+  if (!flag(args, "below_all")) {
+    if (auto a = _c.project(s.project)->asset(comp); a.ok()) {
+      auto it = std::ranges::find(a->layers, layer, &project::Layer::id);
+      Json b = it != a->layers.end() ? layer_box_(s.project, *a, *it)
+                                     : Json();
+      if (b.is_object()) {
+        const std::array<double, 4> bx = {
+            jget(b, "x", 0.0), jget(b, "y", 0.0), jget(b, "width", 0.0),
+            jget(b, "height", 0.0)};
+        if (Json c = crowding_(s.project, comp, page, bx); c.is_object()) {
+          out.update(c);
+        }
+      }
+    }
+  }
+  return out;
 }
 
 Result<Json>
@@ -1996,20 +3562,17 @@ Controller::AgentHost::t_generate_image(Session& s, Step& step,
   l.session = s.id;
   l.step = step.n;
   l.project = s.project;
-  // Where it lands: a box on a page of a composition -- unless none is
-  // named and none is open, when it is an asset alone.
+  // Where it lands: a box on a page of a composition -- none named (no
+  // composition, page or box), an asset alone, as its description says
+  // (it landed on the open composition's first page: a scene's
+  // character picture on the timeline).
   const bool placed = args.contains("composition") ||
                       args.contains("page") || args.contains("x") ||
-                      args.contains("width");
-  bool has_target = false;
-  {
-    std::lock_guard lk(s.mu);
-    has_target = s.target.has_value();
-  }
+                      args.contains("width") || flag(args, "below_all");
   std::pair<int, int> size{1024, 1024};
-  if (placed || has_target) {
+  if (placed) {
     VALTZ_ASSIGN(AssetId comp, composition_(s, args));
-    VALTZ_ASSIGN(l.page, page_(s.project, comp, args));
+    VALTZ_ASSIGN(l.page, page_(s.project, comp, args, "page", true));
     VALTZ_ASSIGN(media::PixelSize frame, _c.own_frame(s.project, comp));
     VALTZ_ASSIGN(auto box, box_(args, frame));
     l.composition = comp;
@@ -2052,6 +3615,7 @@ Controller::AgentHost::t_generate_image(Session& s, Step& step,
   {
     std::lock_guard lk(s.mu);
     s.pending.insert(job);
+    s.idle_waits = 0;
   }
   step.job = job;
   Json r = {{"job", job.str()},
@@ -2065,6 +3629,12 @@ Controller::AgentHost::t_generate_image(Session& s, Step& step,
                      {"page", l.page + 1},
                      {"box", {(*l.box)[0], (*l.box)[1], (*l.box)[2],
                               (*l.box)[3]}}};
+    if (!l.bottom) {
+      if (Json c = crowding_(s.project, *l.composition, l.page, *l.box);
+          c.is_object()) {
+        r.update(c);
+      }
+    }
   }
   return r;
 }
@@ -2083,6 +3653,23 @@ Controller::AgentHost::t_wait_for_generations(Session& s, Step&,
     landed.push_back(std::move(x));
   }
   s.landed.clear();
+  // Nothing being made, nothing new: said plainly -- and a second such
+  // wait refused. A picture that landed within its own step is told in
+  // that step's result; the 9B, told only "landed": [], waited 164
+  // times in a row.
+  if (landed.empty() && s.pending.empty() && s.held.empty()) {
+    if (++s.idle_waits > 1) {
+      return make_error(Code::InvalidArgument,
+                        "nothing is being made and nothing will land: do "
+                        "not wait again -- go on with the next step, or "
+                        "end with a short message");
+    }
+    return Json{{"landed", std::move(landed)},
+                {"note", "Nothing is being made: everything asked for has "
+                         "landed (each told in its own step's result). Go "
+                         "on."}};
+  }
+  s.idle_waits = 0;
   return Json{{"landed", std::move(landed)}};
 }
 
@@ -2795,6 +4382,7 @@ Controller::AgentHost::t_generate_music(Session& s, Step& step,
   {
     std::lock_guard lk(s.mu);
     s.pending.insert(job);
+    s.idle_waits = 0;
   }
   step.job = job;
   Json r = {{"job", job.str()}, {"queued", true}};
@@ -2872,6 +4460,7 @@ Controller::AgentHost::t_generate_voiceover(Session& s, Step& step,
   {
     std::lock_guard lk(s.mu);
     s.pending.insert(job);
+    s.idle_waits = 0;
   }
   step.job = job;
   Json r = {{"job", job.str()}, {"queued", true}, {"model", m->name}};
@@ -2883,6 +4472,471 @@ Controller::AgentHost::t_generate_voiceover(Session& s, Step& step,
                      {"start", secs(number(args, "start", 0))}};
   }
   return r;
+}
+
+// ---- scenes: shots ----------------------------------------------------------
+
+Result<Json>
+Controller::AgentHost::t_generate_video(Session& s, Step& step,
+                                        const Json& args,
+                                        std::vector<fs::path>&)
+{
+  assist::ShotText text;
+  text.description = text_arg(args, "description");
+  if (one_line(text.description).empty()) {
+    return make_error(Code::InvalidArgument,
+                      "the shot's description is empty");
+  }
+  text.soundscape = text_arg(args, "soundscape");
+  text.music = text_arg(args, "music");
+  text.subjects = text_arg(args, "subjects");
+  text.summary = text_arg(args, "summary");
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  // What it is made from: a picture to open on, pictures to draw on, a
+  // clip to carry on from.
+  auto asset_arg = [&](const std::string& t,
+                       AssetKind kind) -> Result<AssetId> {
+    const auto id = AssetId::parse(t);
+    if (!id) {
+      return make_error(Code::InvalidArgument,
+                        std::format("'{}' is not an asset id", t));
+    }
+    VALTZ_ASSIGN(project::Asset a, p->asset(*id));
+    if (a.kind != kind) {
+      return make_error(Code::InvalidArgument, std::format(
+          "\"{}\" is not a {}", a.name,
+          kind == AssetKind::Image ? "picture" : "clip"));
+    }
+    return *id;
+  };
+  std::optional<AssetId> first;
+  if (const auto f = text_arg(args, "first"); !f.empty()) {
+    VALTZ_ASSIGN(first, asset_arg(f, AssetKind::Image));
+  }
+  std::vector<AssetId> pictures;
+  {
+    Json refs = args.is_object() && args.contains("references")
+                    ? args["references"]
+                    : Json::array();
+    if (refs.is_string()) {
+      refs = Json::array({refs});
+    }
+    for (const auto& r : refs.is_array() ? refs : Json::array()) {
+      if (r.is_string()) {
+        VALTZ_ASSIGN(AssetId id, asset_arg(r.get<std::string>(),
+                                           AssetKind::Image));
+        pictures.push_back(id);
+      }
+    }
+  }
+  const bool continues = flag(args, "continues");
+  const std::string from_text = text_arg(args, "continue_from");
+  if (first && (continues || !from_text.empty() || !pictures.empty())) {
+    return make_error(Code::InvalidArgument,
+                      "a shot opens on a picture (first), or draws on "
+                      "references and carries on from a clip -- not both");
+  }
+  const bool refs = continues || !from_text.empty() || !pictures.empty();
+  // The model Auto runs it on: FL2VA from words or a picture, Ref2VA
+  // carrying on or drawing on references.
+  const models::ModelEntry* m = nullptr;
+  if (refs) {
+    m = _c.reference_model_("");
+  } else {
+    for (const auto& a : _c.auto_models()) {
+      if (a.modality == "video" && a.op == "generate" && !a.chosen.empty()) {
+        m = _c._catalog.find(a.chosen);
+      }
+    }
+  }
+  if (!m || !_c.runs_soon(*m, "video", refs ? "edit" : "generate")) {
+    return make_error(Code::Unsupported,
+                      refs ? "no video model that carries a clip on or "
+                             "draws on references runs here"
+                           : "no video model runs here");
+  }
+  // Where it lands: the timeline named, or the one open; else an asset
+  // alone.
+  std::optional<AssetId> comp;
+  if (args.contains("composition")) {
+    VALTZ_ASSIGN(AssetId c, timeline_(s, args));
+    comp = c;
+  } else if (auto c = timeline_(s, args); c.ok()) {
+    comp = *c;
+  }
+  if (comp) {
+    VALTZ_ASSIGN(project::Asset tl, p->asset(*comp));
+    if (tl.kind == AssetKind::Audio) {
+      return make_error(Code::InvalidArgument,
+                        "a composition of sound shows no shots");
+    }
+  }
+  // Its length, as the model makes lengths (17n + 5 frames for H3: 5 s
+  // is 124 frames, 5.17 s).
+  const Json vp = jget(m->engine, "vpipe", Json::object());
+  const Json defaults = jget(vp, "defaults", Json::object());
+  const double fps = jget(defaults, "fps", 24.0);
+  const Json grid = jget(vp, "frame_grid", Json::object());
+  const int gstep = std::max(1, jget(grid, "step", 1));
+  const int goff = std::max(1, jget(grid, "offset", 1));
+  int frames = static_cast<int>(std::lround(
+      std::clamp(number(args, "seconds", 5), 1.0, 10.0) * fps));
+  frames = std::min(frames, jget(vp, "max_frames", 241));
+  frames = frames <= goff
+               ? goff
+               : goff + (frames - goff + gstep - 1) / gstep * gstep;
+  const double length = frames / fps;
+  // Its size: the frame's, at the model's default area at most.
+  const int align = std::max(16, jget(vp, "align", 16));
+  std::pair<int, int> size{jget(defaults, "width", 960),
+                           jget(defaults, "height", 544)};
+  if (comp) {
+    VALTZ_ASSIGN(media::PixelSize frame, _c.own_frame(s.project, *comp));
+    size = shot_size(frame, size.first, size.second, align);
+  }
+  Landing l;
+  l.session = s.id;
+  l.step = step.n;
+  l.project = s.project;
+  l.clip = true;
+  l.seconds = length;
+  GenerateVideoRequest req;
+  req.project = s.project;
+  req.model = m->id;
+  req.name = one_line(text_arg(args, "name"));
+  req.width = size.first;
+  req.height = size.second;
+  req.frames = frames;
+  req.fps = fps;
+  if (args.contains("seed") && args["seed"].is_number_integer()) {
+    req.seed = std::max<std::int64_t>(0, args["seed"].get<std::int64_t>());
+  }
+  req.first = first;
+  req.references = pictures;
+  Json r = {{"queued", true},
+            {"seconds", secs(length)},
+            {"size", {size.first, size.second}},
+            {"model", m->name}};
+  double start = 0;
+  std::optional<AssetId> from;
+  // Where it goes and what it carries on from are decided, and a shot
+  // held behind one still being made is booked, in one hold of the
+  // session: a shot that lands meanwhile is marked done in it before its
+  // held ones are looked for (land_), so none is missed.
+  {
+    std::unique_lock lk(s.mu);
+    const Session::Shots shots = comp && s.shots.contains(*comp)
+                                     ? s.shots.at(*comp)
+                                     : Session::Shots{};
+    if (req.name.empty()) {
+      req.name = std::format("Shot {}", shots.count + 1);
+    }
+    if (comp) {
+      // A shot that carries on goes right after the one it carries on
+      // from, whatever start is given: a model counts a scene's seconds,
+      // not the lengths the model makes.
+      const bool placed = args.contains("start") && !continues;
+      start = placed ? std::max(0.0, number(args, "start", 0))
+                     : std::max(shown_end_(s.project, *comp), shots.end);
+      if (args.contains("start") && continues) {
+        r["note"] = std::format("A shot that continues lands where the "
+                                "one before it ends: {} s.",
+                                secs(start));
+      }
+      l.composition = comp;
+      l.start = frames_of(start, rate_(s.project, *comp).to_double());
+      r["lands_on"] = {{"composition", comp->str()},
+                       {"start", secs(start)},
+                       {"end", secs(start + length)}};
+    }
+    // What it carries on from: the shot before it on this timeline --
+    // made, or still being made (it is then held behind it) -- else the
+    // clip that ends the timeline; or the clip named, or a shot of its
+    // own still being made.
+    int after = 0;
+    auto of_step = [&](int n) -> Status {
+      const Step& prev = s.steps[static_cast<std::size_t>(n - 1)];
+      if (prev.state == "failed" || prev.state == "skipped") {
+        return make_error(Code::InvalidArgument, std::format(
+            "the shot it would carry on from (step {}) was not made: make "
+            "that one again first",
+            n));
+      }
+      if (prev.state != "done") {
+        after = n;
+        return ok_status();
+      }
+      const auto made =
+          AssetId::parse(jget<std::string>(prev.result, "asset", ""));
+      auto a = made ? p->asset(*made) : Result<project::Asset>(make_error(
+                                            Code::NotFound, "none"));
+      if (!a.ok() || a->head == 0) {
+        return make_error(Code::InvalidArgument, std::format(
+            "step {} made no clip to carry on from", n));
+      }
+      from = *made;
+      return ok_status();
+    };
+    if (continues) {
+      if (!comp) {
+        return make_error(Code::InvalidArgument,
+                          "`continues` carries on along a timeline: make "
+                          "one, or name the clip (continue_from)");
+      }
+      // Its subjects in the same words as the shot before's.
+      if (one_line(text.subjects).empty()) {
+        text.subjects = shots.subjects;
+      }
+      if (shots.last > 0) {
+        VALTZ_TRY(of_step(shots.last));
+      } else {
+        // No shot of its own before it: the clip that ends the timeline.
+        VALTZ_ASSIGN(project::Asset tl, p->asset(*comp));
+        VALTZ_ASSIGN(auto times, timings_(s.project, *comp));
+        double end = -1;
+        for (const auto& x : tl.layers) {
+          const auto it = times.find(x.id);
+          if (layer_kind_(s.project, x) == "clip" && it != times.end() &&
+              std::isfinite(it->second.length) && it->second.end() > end) {
+            end = it->second.end();
+            from = x.source;
+          }
+        }
+        if (!from) {
+          return make_error(Code::InvalidArgument,
+                            "nothing on the timeline to carry on from: the "
+                            "first shot is made without `continues`");
+        }
+      }
+    } else if (!from_text.empty()) {
+      const auto id = AssetId::parse(from_text);
+      if (!id) {
+        return make_error(Code::InvalidArgument,
+                          std::format("'{}' is not an asset id", from_text));
+      }
+      for (const auto& st : s.steps) {
+        if (st.n != step.n && st.tool == "generate_video" &&
+            jget<std::string>(st.result, "asset", "") == id->str() &&
+            st.state != "done") {
+          VALTZ_TRY(of_step(st.n));
+        }
+      }
+      if (!after && !from) {
+        VALTZ_ASSIGN(from, asset_arg(from_text, AssetKind::Video));
+      }
+    }
+    if (after > 0) {
+      // Held until the shot before it lands.
+      const std::string subjects = text.subjects;
+      {
+        std::lock_guard hk(_mu);
+        _held.push_back({s.id, step.n, after, step.title, std::move(req),
+                         std::move(text), l});
+      }
+      s.held.insert(step.n);
+      if (comp) {
+        auto& sh = s.shots[*comp];
+        sh.last = step.n;
+        sh.end = std::max(sh.end, start + length);
+        ++sh.count;
+        if (!one_line(subjects).empty()) {
+          sh.subjects = subjects;
+        }
+      }
+      r["after_step"] = after;
+      r["note"] = std::format("It is asked for once step {}'s shot lands, "
+                              "carrying on from its end.",
+                              after);
+      return r;
+    }
+  }
+  req.continue_from = from;
+  const std::string subjects = text.subjects;
+  VALTZ_ASSIGN(JobId job, submit_shot_(s, step.title, std::move(req),
+                                       std::move(text), l));
+  step.job = job;
+  {
+    std::lock_guard lk(s.mu);
+    if (comp) {
+      auto& sh = s.shots[*comp];
+      sh.last = step.n;
+      sh.end = std::max(sh.end, start + length);
+      ++sh.count;
+      if (!one_line(subjects).empty()) {
+        sh.subjects = subjects;
+      }
+    }
+  }
+  r["job"] = job.str();
+  if (auto rec = _c._jobs.get(job); rec && !rec->asset.is_nil()) {
+    r["asset"] = rec->asset.str();
+  }
+  if (from) {
+    r["continues_from"] = from->str();
+  }
+  return r;
+}
+
+Result<JobId>
+Controller::AgentHost::submit_shot_(Session& s, const std::string& title,
+                                    GenerateVideoRequest req,
+                                    assist::ShotText text, const Landing& l)
+{
+  auto* p = _c.project(s.project);
+  const auto* m = _c._catalog.find(req.model);
+  if (!p || !m) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  // Its references by the names the model reads them by: the pictures,
+  // the clip continued and its sound -- or the picture it opens on.
+  const Json fmt = jget(m->prompting, "reference_tags", Json::object());
+  auto tag = [&](const char* kind, int n) {
+    std::string t = jget<std::string>(fmt, kind, "");
+    if (const auto at = t.find("{n}"); at != std::string::npos) {
+      t.replace(at, 3, std::to_string(n));
+    }
+    return t;
+  };
+  if (req.continue_from || !req.references.empty()) {
+    VALTZ_ASSIGN(Json tags,
+                 _c.video_reference_tags(s.project, req.model,
+                                         req.references, req.continue_from));
+    text.pictures.clear();
+    for (const auto& id : req.references) {
+      text.pictures.push_back(jget<std::string>(tags, id.str().c_str(), ""));
+    }
+    if (req.continue_from) {
+      text.continued =
+          jget<std::string>(tags, req.continue_from->str().c_str(), "");
+      VALTZ_ASSIGN(project::Asset c, p->asset(*req.continue_from));
+      if (_c.sounds_(*p, c, 0)) {
+        text.continued_sound = tag("audio", 1);
+      }
+    }
+  } else if (req.first) {
+    text.first = tag("image", 1);
+  }
+  req.prompt = assist::shot_prompt(text);
+  auto undo = _c.command_(s.project, "agent",
+                          l.composition.value_or(AssetId{}), "",
+                          {{"tool", "generate_video"}, {"title", title}});
+  VALTZ_ASSIGN(JobId job, _c.generate_video(std::move(req)));
+  {
+    std::lock_guard lk(_mu);
+    _landings[job] = l;
+  }
+  {
+    std::lock_guard lk(s.mu);
+    s.pending.insert(job);
+    s.idle_waits = 0;
+  }
+  return job;
+}
+
+Json
+Controller::AgentHost::lay_shot_(const Landing& l, AssetId comp,
+                                 const std::string& layer, AssetId asset,
+                                 bool first_clip)
+{
+  Json out = Json::object();
+  auto* p = _c.project(l.project);
+  if (!p) {
+    return out;
+  }
+  // The first clip goes under what is there (titles, sounds).
+  if (first_clip) {
+    if (auto tl = p->asset(comp); tl.ok() && tl->layers.size() > 1) {
+      (void)_c.place_layers(l.project, comp, {layer}, std::nullopt, "");
+    }
+  }
+  // Filling the frame: made at its shape, any rounding cut at the edges.
+  auto frame = _c.own_frame(l.project, comp);
+  auto content = _c.shown_size_(*p, asset, 0, 0);
+  if (frame.ok() && content.ok() && content->width > 0 &&
+      content->height > 0 &&
+      (content->width != frame->width ||
+       content->height != frame->height)) {
+    media::Crop c = box_crop_(
+        *content, *frame,
+        {0, 0, static_cast<double>(frame->width),
+         static_cast<double>(frame->height)});
+    c.scale_x = c.scale_y = std::max(
+        static_cast<double>(frame->width) / content->width,
+        static_cast<double>(frame->height) / content->height);
+    (void)_c.set_crop(l.project, comp, c, layer);
+  }
+  if (auto times = timings_(l.project, comp); times.ok()) {
+    if (const auto it = times->find(layer); it != times->end()) {
+      out["start"] = secs(it->second.start);
+      out["end"] = secs(it->second.end());
+    }
+  }
+  return out;
+}
+
+void
+Controller::AgentHost::release_held_(Session& s, int after,
+                                     std::optional<AssetId> landed,
+                                     const std::string& why)
+{
+  std::vector<Held> go;
+  {
+    std::lock_guard lk(_mu);
+    for (auto it = _held.begin(); it != _held.end();) {
+      if (it->session == s.id && it->after == after) {
+        go.push_back(std::move(*it));
+        it = _held.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (auto& h : go) {
+    bool stopped = false;
+    {
+      std::lock_guard lk(s.mu);
+      stopped = s.stop_asked;
+    }
+    Result<JobId> job = make_error(Code::Cancelled, "stopped");
+    if (!stopped && !landed) {
+      job = make_error(Code::InvalidArgument, std::format(
+          "the shot it carries on from (step {}) was not made{}", after,
+          why.empty() ? "" : ": " + why));
+    } else if (!stopped) {
+      h.req.continue_from = *landed;
+      job = submit_shot_(s, h.title, std::move(h.req), std::move(h.text),
+                         h.landing);
+    }
+    {
+      std::lock_guard lk(s.mu);
+      s.held.erase(h.step);
+      if (h.step >= 1 && h.step <= static_cast<int>(s.steps.size())) {
+        Step& st = s.steps[static_cast<std::size_t>(h.step - 1)];
+        if (job.ok()) {
+          st.job = *job;
+          st.state = "waiting";
+          st.result["job"] = job->str();
+          st.result["continues_from"] = landed->str();
+          if (auto rec = _c._jobs.get(*job); rec && !rec->asset.is_nil()) {
+            st.result["asset"] = rec->asset.str();
+          }
+        } else {
+          st.state = "failed";
+          st.error = job.error().message;
+          s.landed.push_back({{"step", h.step}, {"error", st.error}});
+        }
+      }
+    }
+    s.cv.notify_all();
+    post_(s, h.step);
+    if (!job.ok()) {
+      // What carries on from it is not made either.
+      release_held_(s, h.step, std::nullopt, "");
+    }
+  }
 }
 
 }  // namespace valtz

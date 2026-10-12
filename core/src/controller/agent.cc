@@ -691,7 +691,7 @@ bool
 Controller::AgentHost::wait_pending_(Session& s)
 {
   std::unique_lock lk(s.mu);
-  if (s.pending.empty()) {
+  if (s.pending.empty() && s.held.empty()) {
     return true;
   }
   const std::string was = s.state;
@@ -699,7 +699,11 @@ Controller::AgentHost::wait_pending_(Session& s)
   lk.unlock();
   post_(s);
   lk.lock();
-  s.cv.wait(lk, [&] { return s.pending.empty() || s.stop_asked; });
+  // Shots held behind one being made count: each is asked for as the one
+  // before it lands.
+  s.cv.wait(lk, [&] {
+    return (s.pending.empty() && s.held.empty()) || s.stop_asked;
+  });
   s.state = was;
   return !s.stop_asked;
 }
@@ -932,9 +936,13 @@ Controller::AgentHost::run_(Session& s)
                   x.result[k] = v;
                 }
               }
-              x.job = step.job;
+              // (A held shot asked for meanwhile has its job already.)
+              if (step.job) {
+                x.job = step.job;
+              }
               if (x.state == "running") {
-                x.state = step.job && s.pending.contains(*step.job)
+                x.state = (step.job && s.pending.contains(*step.job)) ||
+                                  s.held.contains(x.n)
                               ? "waiting"
                               : "done";
               }
@@ -1215,11 +1223,32 @@ Controller::AgentHost::land_(JobId job, const std::string& kind,
       if (l.composition) {
         // Into the generation's own command: undone with it.
         auto scope = _c.join_(l.project, job);
+        // A shot goes over the topmost clip or picture -- the titles stay
+        // over it -- at its start.
+        std::optional<std::string> over;
+        if (l.clip) {
+          if (auto* p = _c.project(l.project)) {
+            if (auto tl = p->asset(*l.composition); tl.ok()) {
+              for (const auto& x : tl->layers) {
+                const std::string k = layer_kind_(l.project, x);
+                if (k == "clip" || k == "picture") {
+                  over = x.id;
+                }
+              }
+            }
+          }
+        }
         auto placed = _c.place_result(l.project, *asset, l.composition,
-                                      std::nullopt,
-                                      l.sound ? l.start : l.page, job);
+                                      over,
+                                      l.sound || l.clip ? l.start : l.page,
+                                      job);
         if (!placed.ok()) {
           result["error"] = placed.error().message;
+        } else if (l.clip) {
+          const auto& [comp, layer] = *placed;
+          result["composition"] = comp.str();
+          result["layer"] = layer.empty() ? "0" : layer;
+          result.update(lay_shot_(l, comp, layer, *asset, !over));
         } else if (l.sound) {
           // A song, a voice-over: on the timeline from its start, cut,
           // at its volume.
@@ -1232,6 +1261,9 @@ Controller::AgentHost::land_(JobId job, const std::string& kind,
           result["composition"] = comp.str();
           result["layer"] = layer.empty() ? "0" : layer;
           result["page"] = l.page + 1;
+          if (l.composition) {
+            (void)page_alone_(l.project, comp, layer, l.page);
+          }
           if (l.box) {
             auto* p = _c.project(l.project);
             auto v = p ? p->version(*asset) : Result<project::AssetVersion>(
@@ -1247,8 +1279,7 @@ Controller::AgentHost::land_(JobId job, const std::string& kind,
             }
           }
           if (l.bottom) {
-            (void)_c.place_layers(l.project, comp, {layer}, std::nullopt,
-                                  "");
+            (void)to_back_(l.project, comp, layer);
           }
         }
       }
@@ -1263,6 +1294,7 @@ Controller::AgentHost::land_(JobId job, const std::string& kind,
   if (!s) {
     return;
   }
+  const bool landed_ok = ok && !result.contains("error");
   {
     std::lock_guard lk(s->mu);
     s->pending.erase(job);
@@ -1282,6 +1314,16 @@ Controller::AgentHost::land_(JobId job, const std::string& kind,
   }
   s->cv.notify_all();
   post_(*s, l.step);
+  // Shots held behind it: asked for now, carrying on from it -- or failed
+  // with it.
+  if (l.clip) {
+    std::optional<AssetId> made;
+    if (landed_ok) {
+      made = AssetId::parse(jget<std::string>(result, "asset", ""));
+    }
+    release_held_(*s, l.step, made,
+                  jget<std::string>(result, "error", ""));
+  }
 }
 
 void

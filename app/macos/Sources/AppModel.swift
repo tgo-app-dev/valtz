@@ -959,6 +959,8 @@ final class AppModel {
     /// Settings › Agentic Helper: the helpers, the chosen one, the one in
     /// use.
     var helpers: HelperList?
+    /// Settings › Upscaling: each upscaler's arithmetic.
+    var upscalers: [UpscalerSettings] = []
     /// Settings › Agentic Helper › Agent: where its model thinks, whether
     /// each step is asked for, the cloud's provider and model.
     var agentSettings: AgentSettings?
@@ -1194,9 +1196,27 @@ final class AppModel {
     /// A long prompt stays three rows tall and scrolls, instead of the
     /// box growing with it (to half the window).
     var promptCompact = false
-    /// The box was made compact by an Adjust, Crop or Trim tray opening
-    /// (not by its own toggle): it grows back when that tray goes.
+    /// The box was made compact by a tray opening -- Adjust, Crop, Trim,
+    /// or the generation card short of room -- not by its own toggle: it
+    /// grows back when that tray goes.
     @ObservationIgnored private var compactForPanel = false
+    /// The editor's height and, of it, the picture's above the cards --
+    /// the stage's slot, or the mark and the room around it -- as last
+    /// laid out (SimpleView): what a tray opening would leave it.
+    @ObservationIgnored var editorRoom: CGFloat = 0
+    @ObservationIgnored var stageRoom: CGFloat = 0
+    @ObservationIgnored var markRoom: [Int: CGFloat] = [:]
+    var pictureRoom: CGFloat {
+        stageVisible ? stageRoom : markRoom.values.reduce(0, +)
+    }
+    /// The share of the editor's height the picture keeps while the
+    /// generation card is open; short of it, the box goes to its three
+    /// rows.
+    static let pictureShare: CGFloat = 0.3
+    /// The person sized the box (its own button) with the generation card
+    /// open: the card's room leaves it so until a tray opens or closes.
+    @ObservationIgnored private var promptSizeChosen = false
+    @ObservationIgnored private var roomCheckQueued = false
     /// IMMERSIVE prompt editing (View › Edit Prompt in Full; PromptStudio):
     /// the prompt the window's height under a toolbar of its own, the
     /// stage a small preview at the top left, the cards put away -- and
@@ -1731,6 +1751,7 @@ final class AppModel {
         capabilityTree = DTO.decode(CapabilityTree.self,
                                     core.capabilityTreeJSON())
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+        upscalers = core.upscaleSettings()
         agentSettings = DTO.decode(AgentSettings.self,
                                    core.agentSettingsJSON())
         reloadFleet()
@@ -2120,9 +2141,12 @@ final class AppModel {
         continueWith(clip.id)
     }
 
-    /// `asset` into the row as the clip to continue -- the only one.
+    /// `asset` into the row as the clip to continue -- the only one. The
+    /// prompt comes back where the timeline was: what is left to do is
+    /// in its box.
     private func continueWith(_ asset: String) {
         guard let id = addAssetReferences([asset]).first else { return }
+        if timelineOpen { showTimeline(false) }
         var list = promptAttachments
         for j in list.indices { list[j].continues = list[j].id == id }
         withAnimation(Self.motion) { promptAttachments = list }
@@ -2651,6 +2675,7 @@ final class AppModel {
 
     func layersChanged() {
         reloadAssets()
+        deselectHiddenLayer()
         if clipOnStage { refreshStackPlan() } else { recomposite() }
     }
 
@@ -3161,6 +3186,11 @@ final class AppModel {
 
     /// The edit is a picture's (the options of an edit, for its model).
     private var tuningIsEdit: Bool { activeModality == .image && willEdit }
+    /// A clip is continued: a model's presets are its continuation ones
+    /// (core TuningContext::continuation).
+    private var tuningContinues: Bool {
+        usesReferences && referenceRequest.cont != nil
+    }
 
     /// The options for the model Start runs, settled with the family's
     /// Custom values (its first time: the preset's, kept as its own; an
@@ -3174,6 +3204,7 @@ final class AppModel {
         let info = core.tuning(model: runningModel,
                                preference: customBase.rawValue,
                                edit: tuningIsEdit,
+                               continues: tuningContinues,
                                overrides: customTunings[family]?.json ?? [:])
         tuningInfo = info
         if let info, customTunings[family] == nil
@@ -3206,6 +3237,7 @@ final class AppModel {
         guard let next = core.tuning(model: runningModel,
                                      preference: customBase.rawValue,
                                      edit: tuningIsEdit,
+                                     continues: tuningContinues,
                                      overrides: json) else { return }
         tuningInfo = next
         customTunings[next.family] = next.tuning
@@ -3294,10 +3326,10 @@ final class AppModel {
         return added
     }
 
-    /// How many LoRAs run at once: vpipe's two slots, less HyperFlow's or
-    /// TaoMate's adapter.
+    /// How many LoRAs run at once: vpipe's slots (eight), less HyperFlow's
+    /// or TaoMate's adapter.
     private func loraSlots(_ t: Tuning, _ info: TuningInfo) -> Int {
-        (info.loraOption?.slots ?? 2)
+        (info.loraOption?.slots ?? 8)
             - (t.flags["hyperflow"] == true || t.flags["taomate"] == true
                 ? 1 : 0)
     }
@@ -3323,6 +3355,46 @@ final class AppModel {
         settleTuning(t, stepsFollow: on != nil && path == info.turboLoRA)
     }
 
+    /// The ACCELERATION LoRA Custom runs (the panel's quick pick: the
+    /// model's few-step adapters, as Capabilities lists them), or none:
+    /// the others listed are turned off, the one picked goes first, on,
+    /// with the steps and shifts it was distilled for -- HyperFlow's and
+    /// TaoMate's adapters, which would take its slot, off. None: the
+    /// model's own steps and shifts.
+    func setFastLoRA(_ id: String?) {
+        guard let info = tuningInfo, let opt = info.loraOption else { return }
+        var t = info.tuning
+        let fast = Set(opt.fast.map(\.path).filter { !$0.isEmpty }
+                       + [info.turboLoRA].filter { !$0.isEmpty })
+        for i in t.loras.indices where fast.contains(t.loras[i].path) {
+            t.loras[i].on = false
+        }
+        let chosen = opt.fast.first { $0.id == id && $0.installed }
+        if let f = chosen {
+            var l = TuningLoRA(path: f.path, on: true)
+            if let i = t.loras.firstIndex(where: { $0.path == f.path }) {
+                l = t.loras.remove(at: i)
+                l.on = true
+            }
+            t.loras.insert(l, at: 0)
+            for k in ["hyperflow", "taomate", "taomate_lora"]
+                where t.flags[k] == true {
+                t.flags[k] = false
+            }
+            t.numbers["steps"] = Double(f.steps)
+        } else if let off = opt.stepsOff {
+            t.numbers["steps"] = Double(off)
+        }
+        // Its shifts, or the model's own.
+        for key in ["video_shift", "audio_shift"]
+            where t.numbers[key] != nil {
+            if let v = chosen?.config[key] ?? opt.shiftOff[key] {
+                t.numbers[key] = v
+            }
+        }
+        settleTuning(t)
+    }
+
     func removeLoRA(_ path: String) {
         guard let info = tuningInfo else { return }
         var t = info.tuning
@@ -3340,6 +3412,7 @@ final class AppModel {
         guard let preset = core.tuning(model: runningModel,
                                        preference: p.rawValue,
                                        edit: tuningIsEdit,
+                                       continues: tuningContinues,
                                        overrides: [:]) else { return }
         var t = preset.tuning
         for var l in before?.loras ?? []
@@ -3351,7 +3424,8 @@ final class AppModel {
             t.checkpoints[key] = cs.map { var c = $0; c.on = false; return c }
         }
         let info = core.tuning(model: runningModel, preference: p.rawValue,
-                               edit: tuningIsEdit, overrides: t.json)
+                               edit: tuningIsEdit,
+                               continues: tuningContinues, overrides: t.json)
             ?? preset
         tuningInfo = info
         customTunings[family] = info.tuning
@@ -3431,15 +3505,25 @@ final class AppModel {
     /// A composer tray opened (or none): Adjust, Crop and Trim work on the
     /// stage, not the words -- the prompt box shrinks to its three rows,
     /// and grows back as it was when the tray goes, unless its own toggle
-    /// was used meanwhile. Run from the view (onChange), not a didSet.
-    func panelChanged(to p: ComposerPanel?) {
+    /// was used meanwhile. The generation card does so too where the
+    /// window is short: when the composer, `grows` taller by it (and by
+    /// the box grown back, `regrows`, if a tray had shrunk it), would
+    /// leave the picture above less than `pictureShare` of the height.
+    /// Run from the view (onChange), not a didSet.
+    func panelChanged(to p: ComposerPanel?, grows: CGFloat = 0,
+                      regrows: CGFloat = 0) {
+        promptSizeChosen = false
         let stageWork = p == .adjust || p == .crop || p == .trim
+        let needs = grows + (compactForPanel && promptCompact ? regrows : 0)
+        let shortOfRoom = p == .generate && !promptImmersive
+            && editorRoom > 0
+            && pictureRoom - needs < editorRoom * Self.pictureShare
         // Trim's ← and → step the clip: the prompt gives up the keyboard
         // (its caret took them; a click in it gets them back).
         if p == .trim, let w = editorWindow, w.firstResponder is NSText {
             w.makeFirstResponder(nil)
         }
-        if stageWork {
+        if stageWork || shortOfRoom {
             if !promptCompact {
                 compactForPanel = true
                 withAnimation(Self.motion) { promptCompact = true }
@@ -3456,7 +3540,30 @@ final class AppModel {
     /// choice, which a tray closing leaves as it is.
     func togglePromptCompact() {
         compactForPanel = false
+        if openPanel == .generate { promptSizeChosen = true }
         withAnimation(Self.motion) { promptCompact.toggle() }
+    }
+
+    /// Laid out again (SimpleView's measures) with the generation card
+    /// open: the picture left less than its share -- the prompt grown by
+    /// typing, a paste, a long suggestion used, the window made shorter --
+    /// and the box goes to its three rows, as the card opening short of
+    /// room makes it; it grows back when the card goes. Once the layout's
+    /// measures are all in.
+    func roomMeasured() {
+        guard openPanel == .generate, !roomCheckQueued else { return }
+        roomCheckQueued = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.roomCheckQueued = false
+            guard self.openPanel == .generate, !self.promptCompact,
+                  !self.promptSizeChosen, !self.promptImmersive,
+                  self.editorRoom > 0,
+                  self.pictureRoom < self.editorRoom * Self.pictureShare
+            else { return }
+            self.compactForPanel = true
+            withAnimation(Self.motion) { self.promptCompact = true }
+        }
     }
 
     /// What the empty prompt box says: how the model Start runs reads a
@@ -3618,6 +3725,23 @@ final class AppModel {
         let r = core.setAssistantKeepLoaded(seconds)
         if !r.ok { flash(r.message) }
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+    }
+
+    /// An upscaler's option set (Settings › Upscaling), kept by the core
+    /// for every later upscale -- valtzctl's too.
+    func setUpscaleOption(_ model: String, _ key: String, _ value: Any) {
+        guard let core else { return }
+        let r = core.setUpscaleTuning(model, [key: value])
+        if !r.ok { flash(r.message) }
+        upscalers = core.upscaleSettings()
+    }
+
+    /// An upscaler back at its defaults.
+    func resetUpscaler(_ model: String) {
+        guard let core else { return }
+        let r = core.setUpscaleTuning(model, [:], reset: true)
+        if !r.ok { flash(r.message) }
+        upscalers = core.upscaleSettings()
     }
 
     /// A video summary's seconds a frame (DESIGN §4i); 0: Auto.
@@ -5780,6 +5904,35 @@ final class AppModel {
         clipTracksChanged()
     }
 
+    /// The key the interpolation pop-up is about -- the one here, else the
+    /// one before (the span the player is in) -- and how it goes on to
+    /// the next; nil before the first key or off the layer.
+    func keyInterp(_ track: KeyTrack) -> (frame: Int, interp: KeyInterp)? {
+        guard layerOffStage == nil else { return nil }
+        func of<T>(_ k: Keyframes<T>) -> (Int, KeyInterp)? {
+            k.spanKey(at: keyFrame).map { (k.keys[$0].frame, k.keys[$0].interp) }
+        }
+        switch track {
+        case .adjust: return of(clipAdjustKeys)
+        case .place: return of(clipCropKeys.place)
+        case .turn: return of(clipCropKeys.turn)
+        }
+    }
+
+    /// How that key goes on to the next: held, linear, a spline (`frame`:
+    /// another key's, from the layer's start).
+    func setKeyInterp(_ track: KeyTrack, _ how: KeyInterp,
+                      at frame: Int? = nil) {
+        guard frame != nil || layerOffStage == nil else { return }
+        let f = frame ?? keyFrame
+        switch track {
+        case .adjust: clipAdjustKeys.setInterp(how, at: f)
+        case .place: clipCropKeys.place.setInterp(how, at: f)
+        case .turn: clipCropKeys.turn.setInterp(how, at: f)
+        }
+        clipTracksChanged()
+    }
+
     /// The player shows another frame: the panels show its values.
     func videoFrameChanged(_ f: Int) {
         videoFrame = f
@@ -6389,7 +6542,9 @@ final class AppModel {
               let src = c.layers?.first(where: { $0.id == activeLayer })
                   .flatMap({ source(of: $0) }) else { return stageClipLength }
         if let n = src.length, src.isComposition { return n }
-        return src.info?.seconds.map { Int(($0 * trimRate.fps).rounded()) }
+        // A clip's, counted over its picture.
+        return runSeconds(of: src, asSound: stageIsAudio)
+            .map { Int(($0 * trimRate.fps).rounded()) }
     }
 
     /// The Trim panel's transport: play at 1× forward or backward, pause,
@@ -6820,6 +6975,7 @@ final class AppModel {
         }
         reloadAssets()
         refreshDocument()
+        deselectHiddenLayer()
         guard let id = stageAssetId,
               let a = assets.first(where: { $0.id == id }) else {
             // What was on the stage is gone: the project's work, or
@@ -7189,14 +7345,16 @@ final class AppModel {
             }) {
             textWatch.append(m)
         }
-        // The brush's [ ] and ⇧[ ⇧], wherever the keyboard is in the
-        // window but text; the Trim panel's ← →; Space, play / pause.
+        // The brush's [ ] and ⇧[ ⇧] and the markup tools' keys, wherever
+        // the keyboard is in the window but text; ⌘D, the markup's
+        // selection let go; the Trim panel's ← →; Space, play / pause.
         if let m = NSEvent.addLocalMonitorForEvents(
             matching: .keyDown, handler: { [weak self] event in
                 let handled = MainActor.assumeIsolated {
                     guard let self else { return false }
-                    return self.brushKey(event) || self.trimKey(event)
-                        || self.playerKey(event)
+                    return self.deselectKey(event) || self.brushKey(event)
+                        || self.markupToolKey(event)
+                        || self.trimKey(event) || self.playerKey(event)
                 }
                 return handled ? nil : event
             }) {
@@ -7608,6 +7766,9 @@ final class AppModel {
         case "markup.layer": String(localized: "Markup Layer")
         case "markup.paint": String(localized: "Paint")
         case "markup.objects": String(localized: "Markup")
+        case "markup.arrange": String(localized: "Arrange")
+        case "markup.align": String(localized: "Align")
+        case "markup.distribute": String(localized: "Distribute")
         case "markup.pixels": String(localized: "Make Pixels")
         case "markup.paste": String(localized: "Paste Drawing")
         case "markup.clear": String(localized: "Delete Drawing")

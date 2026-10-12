@@ -80,9 +80,10 @@ extension AppModel {
     /// it starts, or after it ends.
     enum ClipEdge: String { case before, after }
 
-    /// How long `a` runs, in seconds: a clip's, a sound's, a timeline's
-    /// own length; nil for a picture.
-    func runSeconds(of a: AssetDTO) -> Double? {
+    /// How long `a` runs, in seconds: a clip's (its picture's frames, as
+    /// the core times its layer; its whole sound `asSound`), a sound's, a
+    /// timeline's own length; nil for a picture.
+    func runSeconds(of a: AssetDTO, asSound: Bool = false) -> Double? {
         if a.isComposition {
             guard a.isTimeline, let n = a.timeline ?? a.length, n > 0 else {
                 return nil
@@ -90,7 +91,8 @@ extension AppModel {
             return Double(n) / (a.compositionRate ?? .fallback).fps
         }
         guard a.kind == "video" || a.kind == "audio" else { return nil }
-        return a.info?.seconds
+        return a.kind == "video" && !asSound ? a.info?.pictureSeconds
+            : a.info?.seconds
     }
 
     /// What the selected layer shows (a flat clip on the stage: itself).
@@ -113,7 +115,9 @@ extension AppModel {
             k.length = secs
             return k
         }
-        let seconds = layerSource.flatMap { runSeconds(of: $0) } ?? 0
+        let seconds = layerSource.flatMap {
+            runSeconds(of: $0, asSound: stageIsAudio)
+        } ?? 0
         let markRate = trimRate.fps
         k.start = Double(max(0, trimOffset)) / k.fps
         k.speed = layerSpeed

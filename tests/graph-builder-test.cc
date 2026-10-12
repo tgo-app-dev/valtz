@@ -11,6 +11,8 @@
 #include <ImageIO/ImageIO.h>
 
 #include <cstring>
+#include <format>
+#include <fstream>
 
 using namespace valtz;
 using namespace valtz::engine;
@@ -356,6 +358,56 @@ TEST(graph_builder, an_upscale_streams_its_groups)
   REQUIRE_OK(big);
   CHECK(jget(config_of(find_stage(big->spec, "generate")), "frames", 0) ==
         48);
+  // Nothing asked, nothing laid on: vpipe's own defaults.
+  CHECK(!config_of(gen).contains("i8_gemm"));
+  // Settings › Upscaling's arithmetic (the recipe's tuning) on the
+  // denoiser, where FlashVSR's load reads it.
+  job.params["tuning"] = {{"i8_gemm", true}, {"sage_attn", true},
+                          {"sol_attn", false}};
+  auto fast = vp::build_upscale_video(job);
+  REQUIRE_OK(fast);
+  const Json fg = config_of(find_stage(fast->spec, "generate"));
+  CHECK(jget(fg, "i8_gemm", false) && jget(fg, "sage_attn", false));
+  CHECK(!jget(fg, "sol_attn", true));
+}
+
+// VOSR's restorer takes the same arithmetic, Sol among it, on its
+// generate stage -- the one step it was distilled for left to vpipe.
+TEST(graph_builder, a_picture_upscale_runs_as_tuned)
+{
+  JobSpec job = job_for("vosr", kOpUpscaleImage);
+  job.params = {{"width", 1280}, {"height", 704}, {"seed", 3},
+                {"tuning", {{"i8_gemm", true}, {"sage_attn", false},
+                            {"sol_attn", true}, {"sol_tau", 1.5}}}};
+  // It reads the picture's own size from its file: a 1 x 1 PNG.
+  const fs::path png = test::temp_dir("gb-upscale") / "small.png";
+  {
+    static const unsigned char k1x1[] = {
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00,
+        0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+        0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63,
+        0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4,
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60,
+        0x82};
+    std::ofstream(png, std::ios::binary)
+        .write(reinterpret_cast<const char*>(k1x1), sizeof(k1x1));
+  }
+  JobInput in;
+  in.role = "source";
+  in.path = png;
+  in.info.type = media::MediaType::Image;
+  in.info.frame.width = 1;
+  in.info.frame.height = 1;
+  job.inputs.push_back(in);
+  auto g = vp::build_upscale_image(job);
+  REQUIRE_OK(g);
+  const Json gen = config_of(find_stage(g->spec, "generate"));
+  CHECK(jget(gen, "seed", 0) == 3);
+  CHECK(jget(gen, "i8_gemm", false) && jget(gen, "sol_attn", false));
+  CHECK(!jget(gen, "sage_attn", true));
+  CHECK(jget(gen, "sol_tau", 0.0) == 1.5);
+  CHECK(!gen.contains("steps"));
 }
 
 TEST(graph_builder, a_video_summary_reads_sparse)
@@ -1513,31 +1565,47 @@ TEST(graph_builder, z_image_turbo_from_words)
         16);
 }
 
-// The second LoRA slot -- a style or identity adapter -- reaches the
-// stage that takes it: H3's config stage, generate-image for pictures.
-TEST(graph_builder, second_lora_slot)
+// The LoRA slots after the first -- style or identity adapters, up to
+// vpipe's eight in all -- reach the stage that takes them, each at its
+// strength: H3's config stage, generate-image for pictures. A slot is its
+// index, so one left empty keeps its place.
+TEST(graph_builder, every_lora_slot)
 {
   JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
   j.params = {{"prompt", "a kite"}, {"width", 832}, {"height", 480},
               {"frames", 39}, {"steps", 6}, {"seed", 1},
-              {"lora_scale", 1.0}, {"lora2_scale", 0.6}};
+              {"lora_scale", 1.0}};
   j.model.lora = "/loras/turbo.safetensors";
-  j.model.lora2 = "/loras/style.safetensors";
+  for (int k = 2; k <= kLoraSlots; ++k) {
+    j.model.more_loras.push_back(std::format("/loras/s{}.safetensors", k));
+    j.params[std::format("lora{}_scale", k)] = k / 10.0;
+  }
   auto g = vp::build_video(j, std::nullopt);
   REQUIRE_OK(g);
   const Json c = config_of(find_stage(g->spec, "minimax-h3-model-config"));
-  CHECK(jget<std::string>(c, "lora2", "") == "/loras/style.safetensors");
-  CHECK(jget(c, "lora2_scale", 0.0) == 0.6);
+  CHECK(jget<std::string>(c, "lora", "") == "/loras/turbo.safetensors");
+  for (int k = 2; k <= kLoraSlots; ++k) {
+    const std::string key = std::format("lora{}", k);
+    CHECK(jget<std::string>(c, key.c_str(), "") ==
+          std::format("/loras/s{}.safetensors", k));
+    CHECK(jget(c, (key + "_scale").c_str(), 0.0) == k / 10.0);
+  }
+  CHECK(!c.contains("lora9"));
 
   JobSpec p = job_for("krea2-turbo", kOpGenerateImage);
   p.params = {{"prompt", "a kite"}, {"width", 512}, {"height", 512},
-              {"steps", 8}, {"seed", 1}, {"lora2_scale", 0.9}};
-  p.model.lora2 = "/loras/m87.safetensors";
+              {"steps", 8}, {"seed", 1}, {"lora2_scale", 0.9},
+              {"lora4_scale", 0.5}};
+  p.model.more_loras = {"/loras/m87.safetensors", "",
+                        "/loras/ink.safetensors"};
   auto pg = vp::build_text_to_image(p);
   REQUIRE_OK(pg);
   const Json ic = config_of(find_stage(pg->spec, "generate-image"));
   CHECK(jget<std::string>(ic, "lora2", "") == "/loras/m87.safetensors");
   CHECK(jget(ic, "lora2_scale", 0.0) == 0.9);
+  CHECK(!ic.contains("lora3"));
+  CHECK(jget<std::string>(ic, "lora4", "") == "/loras/ink.safetensors");
+  CHECK(jget(ic, "lora4_scale", 0.0) == 0.5);
   CHECK(!ic.contains("lora"));
 }
 

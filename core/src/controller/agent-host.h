@@ -9,6 +9,7 @@
 #define VALTZ_CONTROLLER_AGENT_HOST_H
 
 #include "valtz/agent/agent.h"
+#include "valtz/assist/assistant.h"
 #include "valtz/controller/controller.h"
 #include "valtz/fleet/fleet.h"
 
@@ -83,7 +84,8 @@ public:
   };
   // Where a picture it generates goes when it lands -- or a SOUND (a
   // song, a voice-over): onto a timeline from `start`, cut at `seconds`,
-  // at its volume, faded in and out.
+  // at its volume, faded in and out -- or a SHOT (generate_video): onto a
+  // timeline from `start`, over the clips before it, filling the frame.
   struct Landing {
     std::string                 session;
     int                         step = 0;
@@ -100,6 +102,7 @@ public:
     double                      fade_out = 0;
     // Music: ended with the clips, if they end before it would.
     bool                        fit = false;
+    bool                        clip = false;  // a shot
   };
   struct Decision {
     int         step = 0;
@@ -130,6 +133,22 @@ public:
     // last told.
     std::set<JobId>                     pending;
     std::vector<Json>                   landed;
+    // wait_for_generations calls that found nothing to wait for.
+    int                                 idle_waits = 0;
+    // Its SHOTS on each timeline (generate_video): the step of the last
+    // one asked for -- what the next `continues` from -- and where the
+    // shots asked for end, timeline seconds: where the next one starts.
+    struct Shots {
+      int         last = 0;
+      double      end = 0;
+      int         count = 0;
+      // The subjects last given on it: a continuation that gives none
+      // carries them on.
+      std::string subjects;
+    };
+    std::map<AssetId, Shots>            shots;
+    // Shots HELD until the one they carry on from lands (their steps).
+    std::set<int>                       held;
     // The person's question it asked (ask_user), and the answer.
     std::optional<std::string>          answer;
     std::string                         writing;
@@ -206,6 +225,11 @@ private:
                                std::vector<std::filesystem::path>&);
   Result<Json> t_remove_object(Session&, Step&, const Json&,
                                std::vector<std::filesystem::path>&);
+  // ---- a long text on pages (agent-tools.cc)
+  Result<Json> t_flow_text(Session&, Step&, const Json&,
+                           std::vector<std::filesystem::path>&);
+  Result<Json> t_add_page_progress(Session&, Step&, const Json&,
+                                   std::vector<std::filesystem::path>&);
   Result<Json> t_place_asset(Session&, Step&, const Json&,
                              std::vector<std::filesystem::path>&);
   Result<Json> t_set_layer_box(Session&, Step&, const Json&,
@@ -251,13 +275,17 @@ private:
                                 std::vector<std::filesystem::path>&);
   Result<Json> t_generate_voiceover(Session&, Step&, const Json&,
                                     std::vector<std::filesystem::path>&);
+  // ---- scenes: shots of a clip with its sound (agent-tools.cc)
+  Result<Json> t_generate_video(Session&, Step&, const Json&,
+                                std::vector<std::filesystem::path>&);
 
   // Tool helpers (agent-tools.cc)
   Result<AssetId> composition_(const Session& s, const Json& args);
   Result<std::string> layer_(const Json& args);
   // A page argument (from 1) as the composition's (from 0), checked.
+  // `named`: on a still of more than one page it must be given.
   Result<std::int64_t> page_(ProjectId, AssetId comp, const Json& args,
-                             const char* key = "page");
+                             const char* key = "page", bool named = false);
   // A layer's box on its composition's frame, from its placement.
   Json layer_box_(ProjectId, const project::Asset& comp,
                   const project::Layer&);
@@ -266,10 +294,42 @@ private:
                                media::PixelSize frame,
                                const std::array<double, 4>& box);
   Result<std::array<double, 4>> box_(const Json& args,
-                                     media::PixelSize frame);
-  // The markup layer a page's words and shapes go on, and its objects.
+                                     media::PixelSize frame,
+                                     bool line = false);
+  // The markup layer a page's words and shapes go on, and its objects:
+  // the page's OWN -- on that page alone; one running across pages is
+  // passed over, or words meant for one page would show on all.
   Result<std::string> markup_on_(ProjectId, AssetId comp,
                                  std::int64_t page);
+  // A layer made for one page of a still put on that page ALONE: on a
+  // still of one page a layer runs on to the last page, and pages added
+  // later (add_pages, flow_text) would repeat it.
+  Status page_alone_(ProjectId, AssetId comp, const std::string& layer,
+                     std::int64_t page);
+  // The markups across EVERY page of a still: the FRONT one on top (a
+  // header, a footer, a frame), the BACK one under every layer (a
+  // background) -- each made, and named, when there is none. With `page`,
+  // BACK is that page's own back markup, right above the one across
+  // every page.
+  Result<std::string> front_markup_(ProjectId, AssetId comp);
+  Result<std::string> back_markup_(ProjectId, AssetId comp,
+                                   std::optional<std::int64_t> page);
+  // A layer laid under a page's others: right above the back markup
+  // across every page, where there is one (else at the bottom).
+  Status to_back_(ProjectId, AssetId comp, const std::string& layer);
+  // The words already on a still's page that `box` would lie over --
+  // the page's own text boxes, as far as their words reach (`skip`: the
+  // object just made) -- told to the model with a note, or nothing.
+  Json crowding_(ProjectId, AssetId comp, std::int64_t page,
+                 const std::array<double, 4>& box,
+                 const std::string& skip = {});
+  // flow_text's words: the passage of the person's own messages from
+  // `from_words` to `to_words`, a text asset's, or `text`. `after` /
+  // `before`: what that message has past the passage, and before it but
+  // its first paragraph, when more than a few words.
+  Result<std::string> flow_source_(const Session&, const Json& args,
+                                   std::string* after = nullptr,
+                                   std::string* before = nullptr);
   Result<Json> objects_(ProjectId, AssetId comp, const std::string& layer);
   // The markup words and shapes go on: a still's page's (`page`), or on
   // a timeline one from `start` for `duration` seconds -- and where, as
@@ -313,11 +373,38 @@ private:
                   AssetId asset);
   // A job of its own waited for (a clip's summary): false when stopped.
   bool wait_job_(Session& s, JobId job);
+  // A SHOT asked for: its prompt put together (assist::shot_prompt) with
+  // the names the model reads its references by, the request sent, its
+  // landing booked -- one command, the step's.
+  Result<JobId> submit_shot_(Session& s, const std::string& title,
+                             GenerateVideoRequest req, assist::ShotText text,
+                             const Landing& l);
+  // A shot that LANDED, laid as its Landing says: from its start, filling
+  // the frame, over the clips and under the titles.
+  Json lay_shot_(const Landing& l, AssetId comp, const std::string& layer,
+                 AssetId asset, bool first_clip);
+  // The shots held until step `after` landed: asked for now, carrying on
+  // from `landed` -- or, it failed (`landed` none), failed with it, and
+  // what was held after them too.
+  void release_held_(Session& s, int after, std::optional<AssetId> landed,
+                     const std::string& why);
 
   Controller&                                      _c;
   mutable std::mutex                               _mu;
   std::map<std::string, std::shared_ptr<Session>>  _sessions;
   std::map<JobId, Landing>                         _landings;
+  // Shots HELD (generate_video `continues` a shot still being made): each
+  // asked for once the shot it carries on from lands.
+  struct Held {
+    std::string          session;
+    int                  step = 0;
+    int                  after = 0;
+    std::string          title;
+    GenerateVideoRequest req;
+    assist::ShotText     text;
+    Landing              landing;
+  };
+  std::vector<Held>                                _held;
   // Settings (<support>/agent.json).
   Json                                             _settings;
   // Events to handle on the housekeeping thread: picture landings.

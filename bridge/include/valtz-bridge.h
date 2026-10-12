@@ -300,12 +300,19 @@ public:
   // renders its preview from this, so the stage shows what the engine
   // will hand the model.
   std::string adjustment_chain(const std::string& adjustments_json) const;
-  // {"model", "preference", "edit"?, "tuning"?: {Custom's values}} ->
-  // {"ok", "family", "preference", "values", "options": [...]}: Favor's
-  // options for the model (models/tuning.h) -- what the preference
-  // settles, with Custom's laid on; each option's range and whether this
-  // Mac can have it. generate_image / generate_video take "tuning".
+  // {"model", "preference", "edit"?, "tuning"?: {Custom's values},
+  // "continues"?: a clip continued} -> {"ok", "family", "preference",
+  // "values", "options": [...]}: Favor's options for the model
+  // (models/tuning.h) -- what the preference settles, with Custom's laid
+  // on; each option's range and whether this Mac can have it.
+  // generate_image / generate_video take "tuning".
   std::string tuning(const std::string& request_json) const;
+  // Settings > Upscaling (Controller::upscale_settings): each upscaler's
+  // acceleration options, as tuning() gives a model's; {"model",
+  // "values": {key: value}, "reset"?} -> the same, with those laid on
+  // the ones kept ("reset": on its defaults). Event "upscale.changed".
+  std::string upscale_settings() const;
+  std::string set_upscale_tuning(const std::string& request_json);
   // {"path"} -> {"ok", "kind": "lora" | "dit" | "vae" | "", "family",
   // "origin"}: what a dropped weight file or folder is -- an extension's
   // recognition rules first (Controller::classify_weights) -- so the
@@ -330,7 +337,8 @@ public:
   // Markup (media/markup.h): "markup-target" ("selected": [layer ids])
   // -> {"layer"}: the layer to draw on, made when there is none;
   // "canvas" -> {"width", "height"}; "stroke" ("layer", "stroke");
-  // "objects" ("layer", "objects": the whole list); "materialize"
+  // "objects" ("layer", "objects": the whole list); "arrange" ("layer",
+  // "objects": ids, "how": media::arrange_objects's); "materialize"
   // ("layer", "objects": ids); "merge" ("layer", "with"); "mask" /
   // "unmask" ("layer").
   std::string layer_op(const std::string& request_json);

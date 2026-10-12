@@ -4,6 +4,7 @@
 #include "valtz/models/hardware.h"
 #include "valtz/models/tuning.h"
 
+#include <format>
 #include <fstream>
 #include <set>
 
@@ -322,6 +323,145 @@ TEST(models, tuning_for_speech)
   }
 }
 
+// An UPSCALER offers its arithmetic alone -- it restores in its own one
+// step: no steps, no LoRA list, no checkpoints, no shift. FlashVSR takes
+// no Sol (its attention is routed by its own weights); VOSR does. Med's
+// defaults: int8 GEMMs where the GPU has matrix cores.
+TEST(models, tuning_for_an_upscaler)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  TuningContext m5;
+  m5.matrix_cores = true;
+  for (const char* id : {"flashvsr", "vosr"}) {
+    const ModelEntry* m = c->find(id);
+    REQUIRE(m);
+    const Json opts = tuning_options(*m, m5, "balanced", false);
+    std::vector<std::string> keys;
+    for (const auto& o : opts["options"]) {
+      if (jget(o, "available", false)) {
+        keys.push_back(o["key"].get<std::string>());
+      }
+    }
+    const bool vosr = std::string_view(id) == "vosr";
+    CHECK((keys == (vosr ? std::vector<std::string>{"sol_attn", "sol_tau",
+                                                    "sage_attn", "i8_gemm"}
+                         : std::vector<std::string>{"sage_attn",
+                                                    "i8_gemm"})));
+    for (const char* none : {"steps", "loras", "dits", "vaes", "shift"}) {
+      CHECK(!opts["values"].contains(none));
+    }
+    CHECK(opts["values"]["i8_gemm"] == true);
+    CHECK(opts["values"]["sage_attn"] == false);
+    // Before M5: no int8 path, so neither int8 tier.
+    const Json m4 = resolve_tuning(*m, TuningContext{}, "balanced", false,
+                                   {{"i8_gemm", true}, {"sage_attn", true}});
+    CHECK(m4["i8_gemm"] == false && m4["sage_attn"] == false);
+  }
+}
+
+// Custom's quick pick of a model's ACCELERATION LoRAs: its few-step
+// adapters as its catalog names them -- the `turbo` block's and every
+// preset's candidates, each at its own steps and shifts, fewest steps
+// first -- not HyperFlow's or TaoMate's adapter (switches of their own),
+// and only the partition's own.
+TEST(models, a_models_acceleration_loras_are_listed)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  auto fast_of = [&](const char* id) {
+    TuningContext ctx;
+    ctx.matrix_cores = true;
+    ctx.loras["minimax-h3-turbo-8step"] = {"FL2VA 8", "/m/fl8.safetensors",
+                                           "8-step Turbo LoRA, FL2VA"};
+    Json f;
+    const Json t = tuning_options(*c->find(id), ctx, "balanced", false);
+    for (const auto& o : t["options"]) {
+      if (o["key"] == "loras") {
+        f = o["fast"];
+      }
+    }
+    return f;
+  };
+  const Json fl = fast_of("minimax-h3-fl2va");
+  REQUIRE(fl.is_array() && fl.size() == 3);
+  CHECK(fl[0]["id"] == "minimax-h3-turbo-4step" && fl[0]["steps"] == 4);
+  CHECK(fl[0]["config"]["video_shift"] == 6.0);
+  CHECK(fl[1]["id"] == "minimax-h3-turbo" && fl[1]["steps"] == 6);
+  CHECK(fl[2]["id"] == "minimax-h3-turbo-8step" && fl[2]["steps"] == 8);
+  // Capabilities' name and its file when installed; "" when not.
+  CHECK(fl[2]["name"] == "8-step Turbo LoRA, FL2VA");
+  CHECK(fl[2]["path"] == "/m/fl8.safetensors");
+  CHECK(fl[0]["path"] == "");
+  const Json ref = fast_of("minimax-h3-ref2va");
+  REQUIRE(ref.size() == 2);
+  CHECK(ref[0]["id"] == "minimax-h3-ref2va-turbo-4step");
+  CHECK(ref[1]["id"] == "minimax-h3-ref2va-turbo-8step");
+  for (const Json* f : {&fl, &ref}) {
+    for (const auto& x : *f) {
+      CHECK(x["id"] != "minimax-h3-hyperflow");
+      CHECK(x["id"] != "minimax-h3-turbo-3step");
+    }
+  }
+  CHECK(fast_of("qwen-image-2.1").size() == 1);
+  CHECK(fast_of("krea2-turbo").empty());
+}
+
+// A clip CONTINUED (TuningContext::continuation): Ref2VA's Fast and Med
+// run HyperFlow, not lightx2v's few-step LoRAs -- whose continuations
+// drift sideways -- at its own 8 steps and the model's shifts; HyperFlow
+// not here, the model alone at its own steps. Nothing is asked to be
+// downloaded. Not continued, the presets are as they were.
+TEST(models, a_continuation_has_presets_of_its_own)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const ModelEntry* m = c->find("minimax-h3-ref2va");
+  REQUIRE(m);
+  TuningContext ctx;
+  ctx.matrix_cores = true;
+  ctx.hyperflow_installed = true;
+  ctx.loras["minimax-h3-ref2va-turbo-8step"] = {"8-step", "/m/r8.safetensors",
+                                                ""};
+  ctx.loras["minimax-h3-ref2va-turbo-4step"] = {"4-step", "/m/r4.safetensors",
+                                                ""};
+  auto on = [](const Json& v) {
+    int n = 0;
+    for (const auto& l : v["loras"]) {
+      n += l["on"].get<bool>() ? 1 : 0;
+    }
+    return n;
+  };
+  Json v = resolve_tuning(*m, ctx, "balanced", false);
+  CHECK(v["hyperflow"] == false && on(v) == 1);
+  CHECK(v["video_shift"] == 6);
+  ctx.continuation = true;
+  for (const char* pref : {"speed", "balanced"}) {
+    v = resolve_tuning(*m, ctx, pref, false);
+    CHECK(v["hyperflow"] == true);
+    CHECK(on(v) == 0);
+    CHECK(v["steps"] == 8);
+    CHECK(v["video_shift"] == 12);
+    CHECK(missing_loras(*m, ctx, pref).empty());
+    // Fast keeps its Sol (measured: no drift), Med runs without.
+    CHECK(v["sol_attn"] == (std::string_view(pref) == "speed"));
+  }
+  // Fine as ever: the model alone.
+  v = resolve_tuning(*m, ctx, "quality", false);
+  CHECK(v["hyperflow"] == false && on(v) == 0 && v["steps"] == 16);
+  // HyperFlow not here: the model alone at its own steps.
+  ctx.hyperflow_installed = false;
+  v = resolve_tuning(*m, ctx, "balanced", false);
+  CHECK(v["hyperflow"] == false && on(v) == 0);
+  CHECK(v["steps"] == 12 && v["video_shift"] == 12);
+  // A picture model has no continuation of its own: its presets hold.
+  const ModelEntry* fl = c->find("minimax-h3-fl2va");
+  TuningContext plain;
+  plain.continuation = true;
+  CHECK(resolve_tuning(*fl, plain, "balanced", false) ==
+        resolve_tuning(*fl, TuningContext{}, "balanced", false));
+}
+
 TEST(models, tuning_for_a_song)
 {
   auto c = Catalog::builtin();
@@ -514,7 +654,7 @@ TEST(models, tuning_settles_presets_and_custom)
   CHECK(opt("sage_attn")["why"] == "needs-matrix-cores");
   CHECK(opt("hyperflow")["fixes"]["steps"] == 8);
   CHECK(opt("loras")["steps_on"] == 6 && opt("loras")["steps_off"] == 12);
-  CHECK(opt("loras")["slots"] == 2);
+  CHECK(opt("loras")["slots"] == kLoraSlots);
   CHECK(opt("sol_tau")["needs"] == "sol_attn");
   // The Neural Engine: offered to every family, off; its q|k|v projection
   // only with its feed-forward.
@@ -774,9 +914,10 @@ TEST(models, favor_presets_follow_the_catalog)
   CHECK(!offers_steps);
 }
 
-// The LoRA list: two on at most, the first in list order (vpipe's two
-// slots; one with HyperFlow); strengths held to 0..2; a file that is gone
-// kept, off. An older "turbo" file goes first, in the catalog's place.
+// The LoRA list: eight on at most, the first in list order (vpipe's
+// slots; seven with HyperFlow); strengths held to 0..2; a file that is
+// gone kept, off. An older "turbo" file goes first, in the catalog's
+// place.
 TEST(models, tuning_loras)
 {
   auto c = Catalog::builtin();
@@ -795,27 +936,40 @@ TEST(models, tuning_loras)
   ctx.turbo_path = touch("turbo.safetensors");
   const std::string a = touch("a.safetensors");
   const std::string b = touch("b.safetensors");
-  const std::string d = touch("d.safetensors");
-  Json over = {
-    {"loras", Json::array({
-       {{"path", a}, {"scale", 0.8}, {"on", true}},
-       {{"path", b}, {"on", true}, {"scale", 5.0}},
-       {{"path", d}, {"on", true}},
-       {{"path", (dir / "gone.safetensors").string()}, {"on", true}},
-     })},
-  };
+  Json list = Json::array({
+      {{"path", a}, {"scale", 0.8}, {"on", true}},
+      {{"path", b}, {"on", true}, {"scale", 5.0}},
+  });
+  // Seven more, all asked on: nine in all.
+  for (int i = 0; i < 7; ++i) {
+    list.push_back({{"path", touch(std::format("s{}.safetensors", i)
+                                       .c_str())},
+                    {"on", true}});
+  }
+  list.push_back({{"path", (dir / "gone.safetensors").string()},
+                  {"on", true}});
+  Json over = {{"loras", list}};
   Json v = resolve_tuning(*h3, ctx, "balanced", false, over);
   CHECK(v["steps"] == 12);                 // no Turbo LoRA in the list
   Json l = v["loras"];
-  REQUIRE(l.size() == 4);
+  REQUIRE(l.size() == 10);
   CHECK(l[0]["on"] == true && l[0]["scale"] == 0.8);
   CHECK(l[1]["on"] == true && l[1]["scale"] == 2.0);  // held to 0..2
-  CHECK(l[2]["on"] == false);              // two slots: the first two
-  CHECK(l[3]["missing"] == true && l[3]["on"] == false);
-  // HyperFlow takes one of the two.
+  auto on = [](const Json& x) {
+    int n = 0;
+    for (const auto& e : x) {
+      n += e["on"].get<bool>() ? 1 : 0;
+    }
+    return n;
+  };
+  CHECK(on(l) == kLoraSlots);              // eight slots: the first eight
+  CHECK(l[7]["on"] == true && l[8]["on"] == false);
+  CHECK(l[9]["missing"] == true && l[9]["on"] == false);
+  // HyperFlow takes one of the eight.
   over["hyperflow"] = true;
   l = resolve_tuning(*h3, ctx, "balanced", false, over)["loras"];
-  CHECK(l[0]["on"] == true && l[1]["on"] == false);
+  CHECK(on(l) == kLoraSlots - 1);
+  CHECK(l[6]["on"] == true && l[7]["on"] == false);
   // The Turbo LoRA is listed by its name.
   const Json opts = tuning_options(*h3, ctx, "balanced", false);
   for (const auto& o : opts["options"]) {
