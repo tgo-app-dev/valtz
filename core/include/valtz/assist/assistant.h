@@ -91,8 +91,9 @@ struct EnhanceRequest {
   // (`system`: MiniMax H3's skill; set, the reply comes a section per
   // key -- clip_sections). The guide names the modes; Valtz says which
   // this is -- "T2VA" (words alone), "I2VA"
-  // (opening on <Picture 1>, its first frame), "Ref2VA" (full
-  // reference) -- and lists the references one line each, named as the
+  // (opening on <Picture 1>, its first frame), "FL2VA" (opening on
+  // Picture 1, ending on Picture 2), "Ref2VA" (full reference) -- and
+  // lists the references one line each, named as the
   // model names them ("<Picture 1>: a picture, \"cat.jpg\" -- image 1
   // shown above"). A small assistant told only the guide guesses the
   // mode, the length and the labels.
@@ -206,12 +207,23 @@ std::string mention_form(std::string_view text,
 //     list the same media number them alike;
 //   * a line opening with {if image}, {if video} or {if audio} is kept,
 //     the marker dropped, only when the row holds that kind; {if none}
-//     only when it holds nothing.
+//     only when it holds nothing;
+//   * a clip's KEYFRAMES (`frames`): {first} and {last} name the
+//     pictures it opens and ends on, {seconds} is its length ("5.17");
+//     a line opening with {if first} / {if last} is kept only with that
+//     picture, {unless first} / {unless last} only without it. Markers
+//     at a line's head stack: all of them must hold.
 // The outline is a string, its lines as an array, or either by language
 // ({"en": ..., "zh-Hans": ...}, picked as text_in picks for `language`).
 // "" for a model without one.
+struct OutlineFrames {
+  int    first = -1;    // the picture it opens on: its place in the row
+  int    last = -1;     // ...and ends on; -1: none
+  double seconds = 0;   // the clip's length
+};
 std::string prompt_outline(const Json& outline, std::string_view language,
-                           const std::vector<RefKind>& row);
+                           const std::vector<RefKind>& row,
+                           const OutlineFrames& frames = {});
 
 // The words alone: mentions and tags dropped, spaces as tag_pictures
 // leaves them -- what names a result.
@@ -296,7 +308,9 @@ std::string_view rewrite_prompt(std::string_view name);
 // `text` with each name a model writes (first: "<Picture 1>") made what
 // the prompt box binds (second: "<valtz_ref_img_0>", the row's tag), in
 // one pass -- a suggestion written in the model's names, put back in the
-// row's. Names not listed stay as written ("<Subject 1>").
+// row's. Names not listed stay as written ("<Subject 1>"). A bare name
+// (FL2VA's "Picture 1") is taken only as a whole word: not inside
+// another, nor followed by a digit ("Picture 10").
 std::string retag(std::string_view text,
                   const std::vector<std::pair<std::string, std::string>>&
                       names);

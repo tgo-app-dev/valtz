@@ -603,6 +603,15 @@ struct ValtzApp: App {
                     }
                 }
             }
+            // Help: the buttons' keys, as holding ⌘? shows them -- from
+            // here until the next key or click. ⌘? itself is the window's
+            // key monitor's (ShortcutHints): held, never this item's.
+            CommandGroup(replacing: .help) {
+                Button("Keyboard Shortcuts") {
+                    ShortcutHints.shared.showLatched()
+                }
+                .keyboardShortcut("?", modifiers: .command)
+            }
             CommandGroup(before: .sidebar) {
                 Button(model.navOpen ? "Hide Navigation" : "Show Navigation") {
                     model.toggleNav()
@@ -758,7 +767,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     static func drawWindow(to path: String) {
         guard let win = NSApp.windows.first(where: {
-                  $0.isVisible && !$0.className.contains("Popover") }),
+                  $0.isVisible && !$0.className.contains("Popover")
+                      && !($0 is ShortcutHintWindow) }),
               let content = win.contentView else { return }
         let v = content.superview ?? content
         guard let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds)
@@ -2287,6 +2297,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // "eye=1" (a row's eye clicked), "fold=0" (a folder's
                 // fold), "hdrag=0>2" (a header dragged to the gap above
                 // row 2; "hdrag=3>1.5" onto row 1's middle),
+                // TRANSITIONS: "cmd=down|up" (⌘ through the app's event
+                // path: the selected layer's overlaps highlighted),
+                // "cmdclick=96@1" (a click with ⌘ held), "tmenu=0" (a
+                // transition's menu, its items printed; "tmenu=0:dip-black"
+                // one picked, "remove" its last), "thit=0" (what a click on
+                // its arrow's badge finds),
                 // "wait=2" -- each printing the timeline as it is.
                 if let spec = env["VALTZ_SNAPSHOT_TIMELINE_VIEW"] {
                     func layerArg(_ s: Substring) -> String {
@@ -2414,6 +2430,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                     to: (b.x, b.y))
                             }
                             wait = 1.5
+                        case "cmd":
+                            if let w = m.editorWindow,
+                               let ev = NSEvent.keyEvent(
+                                   with: .flagsChanged, location: .zero,
+                                   modifierFlags: arg == "up" ? []
+                                       : [.command],
+                                   timestamp: ProcessInfo.processInfo
+                                       .systemUptime,
+                                   windowNumber: w.windowNumber,
+                                   context: nil, characters: "",
+                                   charactersIgnoringModifiers: "",
+                                   isARepeat: false, keyCode: 55) {
+                                NSApp.postEvent(ev, atStart: false)
+                            }
+                        case "cmdclick":
+                            let p = arg.split(separator: "@")
+                            if p.count == 2, let f = Int(p[0]),
+                               let r = Int(p[1]),
+                               let pt = TimelineNSView.shown?.windowPoint(
+                                   frame: f, row: r) {
+                                await Self.postDrag(from: (pt.x, pt.y),
+                                                    to: (pt.x, pt.y),
+                                                    flags: [.command])
+                            }
+                            wait = 1.5
+                        case "tmenu":
+                            let p = arg.split(separator: ":")
+                            if let n = Int(p.first ?? ""),
+                               let menu = TimelineNSView.shown?
+                                   .transitionMenu(n) {
+                                let items = menu.items.filter {
+                                    !$0.isSeparatorItem
+                                }.map {
+                                    ($0.identifier?.rawValue ?? "?")
+                                        + ($0.state == .on ? "+" : "")
+                                }
+                                print("snapshot: timeline-tmenu \(n) items=\(items.joined(separator: ","))")
+                                if p.count == 2, let at = menu.items
+                                    .firstIndex(where: {
+                                        $0.identifier?.rawValue == String(p[1])
+                                    }) {
+                                    menu.performActionForItem(at: at)
+                                }
+                            }
+                            wait = 1.5
+                        case "thit":
+                            let n = Int(arg) ?? 0
+                            let v = TimelineNSView.shown
+                            let at = v?.windowPoint(transition: n)
+                            print("snapshot: timeline-thit \(n) at=\(at.map { "\(Int($0.x)),\(Int($0.y))" } ?? "-") found=\(v?.transitionHit(n).map(String.init) ?? "-")")
                         case "click", "drag":
                             // Through the view's own handling: points
                             // where it draws that frame on that row.
@@ -2462,6 +2528,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             wait = 1.5
                         case "undo": m.undoProject()
                         case "redo": m.redoProject()
+                        // File › Save, where the player is: "save", then
+                        // "seek=20" -- the project stays clean.
+                        case "save":
+                            m.saveDocument()
+                            print("snapshot: timeline-save dirty=\(m.document.dirty) frame=\(m.videoFrame)")
                         // Into the Prompt Editor, or back out of it.
                         case "editor":
                             withAnimation(AppModel.motion) {
@@ -2940,6 +3011,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "snapshot: tabs=\(order.joined(separator: " > "))\n"
                         .utf8))
             }
+            // ⌘? held ("hold:<s>": its key let go after s seconds;
+            // "holdcmd:<s>": ⌘ let go; "menu:<s>": Help › Keyboard
+            // Shortcuts, then a key) -- posted through the app's event
+            // path: "snapshot: shortcuts held shown= windows= hints=", then
+            // "released shown=". The labels are a window of their own:
+            // capture it by its number (`windows=` parent:labels) while
+            // held.
+            if let spec = env["VALTZ_SNAPSHOT_SHORTCUTS"],
+               let w = model?.editorWindow {
+                let p = spec.split(separator: ":").map(String.init)
+                let hold = p.count > 1 ? Double(p[1]) ?? 2 : 2
+                func post(_ type: NSEvent.EventType,
+                          _ flags: NSEvent.ModifierFlags,
+                          _ chars: String, _ code: UInt16) {
+                    if let e = NSEvent.keyEvent(
+                        with: type, location: .zero, modifierFlags: flags,
+                        timestamp: ProcessInfo.processInfo.systemUptime,
+                        windowNumber: w.windowNumber, context: nil,
+                        characters: chars,
+                        charactersIgnoringModifiers: type == .flagsChanged
+                            ? "" : "/",
+                        isARepeat: false, keyCode: code) {
+                        NSApp.postEvent(e, atStart: false)
+                    }
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+                if p[0] == "menu" {
+                    ShortcutHints.shared.showLatched()
+                } else {
+                    post(.keyDown, [.command, .shift], "?", 44)
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+                let overlays = NSApp.windows.filter {
+                    $0 is ShortcutHintWindow && $0.isVisible
+                }
+                FileHandle.standardError.write(Data(
+                    "snapshot: shortcuts held shown=\(ShortcutHints.shared.shown) windows=\(overlays.map { "\($0.parent?.windowNumber ?? 0):\($0.windowNumber)" }.joined(separator: ",")) hints=\(ShortcutHints.shared.summary.replacingOccurrences(of: " ", with: "|"))\n".utf8))
+                try? await Task.sleep(for: .seconds(hold))
+                switch p[0] {
+                case "holdcmd": post(.flagsChanged, [.shift], "", 55)
+                case "menu": post(.keyDown, [], "a", 0)
+                default:
+                    // As fingers let go: the key, then ⇧ and ⌘.
+                    post(.keyUp, [.command, .shift], "?", 44)
+                    post(.flagsChanged, [.command], "", 56)
+                }
+                try? await Task.sleep(for: .milliseconds(400))
+                FileHandle.standardError.write(Data(
+                    "snapshot: shortcuts released shown=\(ShortcutHints.shared.shown)\n".utf8))
+            }
             if let m = model, env["VALTZ_SNAPSHOT_START_OVER"] != nil {
                 let old = m.projectPath
                 m.startOver()
@@ -3396,6 +3517,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     case "back": m.settingsHistory.back()
                     case "forward": m.settingsHistory.forward()
+                    // The buttons' keys shown (⌘? held) over Settings too:
+                    // "snapshot: settings-hints windows= hints=".
+                    case "hints":
+                        ShortcutHints.shared.show()
+                        try? await Task.sleep(for: .milliseconds(300))
+                        FileHandle.standardError.write(Data(
+                            "snapshot: settings-hints settings=\(win?.windowNumber ?? 0) hints=\(ShortcutHints.shared.summary.replacingOccurrences(of: " ", with: "|"))\n".utf8))
+                        try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
+                        ShortcutHints.shared.hide()
                     case "key":
                         let fwd = arg == "forward"
                         if let w = win, let ev = NSEvent.keyEvent(
@@ -3578,7 +3708,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // performed -- printing what it said.
                 if let spec = env["VALTZ_SNAPSHOT_FAKE_DROP"] {
                     for one in spec.split(separator: ";").map(String.init) {
-                        let parts = one.split(separator: "@").map(String.init)
+                        // "hover:<file>@x,y": entered and moved, never
+                        // dropped -- the capture shows what a drag over
+                        // there shows.
+                        let hover = one.hasPrefix("hover:")
+                        let parts = (hover ? String(one.dropFirst(6)) : one)
+                            .split(separator: "@").map(String.init)
                         guard parts.count == 2 else { continue }
                         let xy = parts[1].split(separator: ",")
                             .compactMap { Double($0) }
@@ -3615,15 +3750,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             ($0 as NSDraggingDestination)
                                 .draggingUpdated?(info) ?? []
                         } ?? []
-                        let prepared = hit.map {
+                        let prepared = !hover && (hit.map {
                             ($0 as NSDraggingDestination)
                                 .prepareForDragOperation?(info) ?? true
-                        } ?? false
+                        } ?? false)
                         let performed = prepared && (hit.map {
                             ($0 as NSDraggingDestination)
                                 .performDragOperation?(info) ?? false
                         } ?? false)
-                        if let hit {
+                        if let hit, !hover {
                             (hit as NSDraggingDestination)
                                 .concludeDragOperation?(info)
                         }
@@ -3687,6 +3822,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     .filter { $0.availability == "ready" }
                     .map(\.capability)
                 let models = m.installedImageModels.map(\.model)
+                // The tray's words, a clip's keyframes, Favor's hint and
+                // Custom's values (the model's own).
+                let trayLead = ComposerStack.summaryLead(m)
+                    .replacingOccurrences(of: " ", with: "_")
+                var keyframes = "-"
+                if let k = m.keyframes {
+                    keyframes = k.first.url.lastPathComponent
+                    if let l = k.last {
+                        keyframes += ">" + l.url.lastPathComponent
+                    }
+                }
+                let preset = m.preferenceHint
+                    .replacingOccurrences(of: " ", with: "_")
+                var tuneValues = "-"
+                if let t = m.tuningInfo?.tuning {
+                    let nums: [String] = ["steps", "video_shift",
+                                          "audio_shift"].compactMap { k in
+                        t.numbers[k].map { "\(k):\(String(format: "%g", $0))" }
+                    }
+                    let loras: [String] = t.loras.filter(\.on).map {
+                        URL(fileURLWithPath: $0.path).lastPathComponent
+                    }
+                    tuneValues = nums.joined(separator: ",") + ";"
+                        + loras.joined(separator: "+")
+                }
                 let line = "snapshot: project=\(m.projectName) "
                     + "assets=\(m.assets.count) imageModel=\(m.imageModel) "
                     + "editModel=\(m.editModel) willEdit=\(m.willEdit) "
@@ -3722,6 +3882,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // alignment and spacing, its effects.
                     + "markupStyle=\(m.markup.selection.first.map { o in [o.kind == .text ? (o.align ?? "left") : nil, o.lineSpacing.map { String(format: "x%.1f", $0) }, o.effects.isEmpty ? nil : o.effects.map(\.kind.rawValue).joined(separator: "+"), o.gradient.map { "\($0.kind.rawValue)\($0.stops.count)" }, o.kind == .polygon ? "corners\(o.points.count)" : nil].compactMap { $0 }.joined(separator: ":") } ?? "-") "
                     + "favor=\(m.preference.rawValue) tuning=\(m.preference == .custom ? m.customSummary : "-") tunePanel=\(m.showsTuning) "
+                    + "tuneValues=\(tuneValues) "
                     + "upscale=\(m.upscaleJob != nil ? "running" : m.canUpscaleLayer ? "offered" : m.upscaleNeedsFlatten ? "flatten-first" : "-") "
                     + "capture=\(m.capture.recording ? "recording" : m.showsCapture ? "offered" : "-") captureSources=\(m.captureSources.map(\.kind).joined(separator: ",")) "
                     + "viewed=\(m.viewedAsset.flatMap { id in m.assets.first { $0.id == id }?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") stageLift=\(String(format: "%.2f", m.stageLift)) "
@@ -3765,6 +3926,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     + "immersive=\(m.promptImmersive) editorEdited=\(m.editorEdited) tabs=\(m.promptTabs.count) activeTab=\(m.activePromptTab) tabTitles=\(m.promptTabs.indices.map { m.promptTabTitle($0).replacingOccurrences(of: " ", with: "_") }.joined(separator: "|")) markdown=\(m.promptMarkdown) "
                     + "promptAsset=\(m.promptAssetId ?? "-") unbound=\(m.unboundRefTags.joined(separator: ",")) refTags=\(AppModel.refTags(in: m.prompt).count) prompts=\(m.assets.filter(\.isPrompt).count) "
                     + "references=\(m.usesReferences) badges=\(m.promptAttachments.map { (m.referenceBadge($0) ?? "-") + ($0.continues ? ">" : "") }.joined(separator: ",")) canContinue=\(m.canContinueClip) guides=\(m.guideLengths.map { "\($0.asked):\($0.frames)" }.joined(separator: ",")) running=\(m.runningModel) "
+                    + "trayLead=\(trayLead) keyframes=\(keyframes) preset=\(preset) "
                     + "songPlan=\(m.songPlan.rawValue) songLength=\(m.songSeconds.map(String.init) ?? "auto") "
                     + "lyrics=\(m.songWords.sections)s/\(m.songWords.lines)l style=\(m.songWords.style.replacingOccurrences(of: " ", with: "_")) "
                     + "audio=\(m.stageIsAudio) rate=\(m.stageFrameRate.num)/\(m.stageFrameRate.den) timecode=\(m.stageFrameRate.timecode(m.videoFrame)) "
@@ -3803,14 +3965,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// from its top left), in eight steps.
     @MainActor
     static func postDrag(from a: (Double, Double),
-                                 to b: (Double, Double)) async {
+                                 to b: (Double, Double),
+                                 flags: NSEvent.ModifierFlags = []) async {
         guard let win = NSApp.windows.first(where: { $0.isVisible }) else {
             return
         }
         func post(_ type: NSEvent.EventType, _ x: Double, _ y: Double) {
             if let ev = NSEvent.mouseEvent(
                 with: type, location: NSPoint(x: x, y: win.frame.height - y),
-                modifierFlags: [], timestamp: ProcessInfo.processInfo
+                modifierFlags: flags, timestamp: ProcessInfo.processInfo
                     .systemUptime,
                 windowNumber: win.windowNumber, context: nil,
                 eventNumber: 0, clickCount: 1, pressure: 1) {
@@ -3877,7 +4040,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let e = "panel=\(panel) assets=\(m.assets.count)"
         // The playhead off the selected layer: before or after it.
         let f = "off=\(m.layerOffStage?.rawValue ?? "-")"
-        return [a, b, c, d, e, f].joined(separator: " ")
+        // Its transitions, from>to:kind; what ⌘ highlights.
+        let tr = t.transitions.map {
+            "\($0.from.isEmpty ? "0" : $0.from)>\($0.to.isEmpty ? "0" : $0.to):\($0.kind)"
+        }.joined(separator: ",")
+        let g = "transitions=\(tr.isEmpty ? "-" : tr) highlights=\(TimelineNSView.shown?.overlapSummary ?? "-")"
+        return [a, b, c, d, e, f, g].joined(separator: " ")
     }
 
     /// The downloads: "z-image-turbo:running:0.42" -- each one's model,

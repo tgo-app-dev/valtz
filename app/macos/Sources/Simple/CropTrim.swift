@@ -825,6 +825,7 @@ struct TrimPanel: View {
                             on: false) {
                 model.stepVideo(-1)
             }
+            .shortcutHint("←")
             TransportButton(symbol: "pause.fill", help: "Pause",
                             on: r == 0) {
                 model.playVideo(rate: 0)
@@ -836,9 +837,11 @@ struct TrimPanel: View {
                             on: false) {
                 model.stepVideo(1)
             }
+            .shortcutHint("→")
             TransportButton(symbol: "play.fill", help: "Play", on: r == 1) {
                 model.playVideo(rate: 1)
             }
+            .shortcutHint(String(localized: "Space"))
             TransportButton(symbol: "forward.fill", help: "Fast forward",
                             on: r > 1, action: model.fastForward)
             TransportButton(symbol: "forward.end.fill",

@@ -196,13 +196,39 @@ overlap_of(const LayerTiming& x, const LayerTiming& y)
 
 }
 
+std::optional<TransitionSpec::Kind>
+transition_kind(std::string_view s)
+{
+  using K = TransitionSpec::Kind;
+  if (s == "cut") { return K::Cut; }
+  if (s == "dissolve") { return K::Dissolve; }
+  if (s == "dip-black") { return K::DipBlack; }
+  if (s == "dip-white") { return K::DipWhite; }
+  return std::nullopt;
+}
+
+std::string_view
+to_string(TransitionSpec::Kind k)
+{
+  switch (k) {
+  case TransitionSpec::Kind::Dissolve: return "dissolve";
+  case TransitionSpec::Kind::DipBlack: return "dip-black";
+  case TransitionSpec::Kind::DipWhite: return "dip-white";
+  case TransitionSpec::Kind::Cut: break;
+  }
+  return "cut";
+}
+
 LayerWeights
 layer_weights(const std::vector<LayerTiming>& layers,
               const std::vector<TransitionSpec>& transitions, double t)
 {
+  using K = TransitionSpec::Kind;
   LayerWeights w;
   w.opacity.resize(layers.size());
   w.gain.resize(layers.size());
+  w.dip.resize(layers.size());
+  w.dip_level.resize(layers.size());
   for (std::size_t i = 0; i < layers.size(); ++i) {
     const double on = layers[i].active(t) ? 1.0 : 0.0;
     w.opacity[i] = on;
@@ -217,7 +243,29 @@ layer_weights(const std::vector<LayerTiming>& layers,
     if (!o.any() || t < o.a || t >= o.b) {
       continue;
     }
-    if (!tr.dissolve) {
+    if (tr.kind == K::DipBlack || tr.kind == K::DipWhite) {
+      // Through the colour: `from` to it by the middle, `to` out of it
+      // after -- each alone, its sound with it.
+      const double level = tr.kind == K::DipWhite ? 1.0 : 0.0;
+      const double m = o.mid();
+      if (t < m) {
+        const double k = std::clamp((t - o.a) / (m - o.a), 0.0, 1.0);
+        w.dip[tr.from] = std::max(w.dip[tr.from], k);
+        w.dip_level[tr.from] = level;
+        w.gain[tr.from] *= 1.0 - k;
+        w.opacity[tr.to] = 0;
+        w.gain[tr.to] = 0;
+      } else {
+        const double k = std::clamp((t - m) / (o.b - m), 0.0, 1.0);
+        w.dip[tr.to] = std::max(w.dip[tr.to], 1.0 - k);
+        w.dip_level[tr.to] = level;
+        w.gain[tr.to] *= k;
+        w.opacity[tr.from] = 0;
+        w.gain[tr.from] = 0;
+      }
+      continue;
+    }
+    if (tr.kind == K::Cut) {
       // An abrupt change at the middle.
       if (t < o.mid()) {
         w.opacity[tr.to] = 0;

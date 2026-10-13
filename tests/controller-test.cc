@@ -3114,16 +3114,30 @@ TEST(composition, layer_time_speed_and_transitions)
   LayerTiming a = resolve_timing(0, 48, -1, -1, {}, {24, 1}, 0, {});
   LayerTiming bb = resolve_timing(24, 48, -1, -1, {}, {24, 1}, 0, {});
   const std::vector<LayerTiming> two = {a, bb};
-  auto w = layer_weights(two, {{0, 1, false}}, 1.4);   // cut: a still on
+  using TK = TransitionSpec::Kind;
+  auto w = layer_weights(two, {{0, 1, TK::Cut}}, 1.4);   // cut: a still on
   CHECK(w.opacity[0] == 1 && w.opacity[1] == 0);
-  w = layer_weights(two, {{0, 1, false}}, 1.6);        // after the middle
+  w = layer_weights(two, {{0, 1, TK::Cut}}, 1.6);        // after the middle
   CHECK(w.opacity[0] == 0 && w.opacity[1] == 1);
-  w = layer_weights(two, {{0, 1, true}}, 1.25);        // a dissolve
+  w = layer_weights(two, {{0, 1, TK::Dissolve}}, 1.25);  // a dissolve
   CHECK(w.opacity[0] == 1 && std::abs(w.opacity[1] - 0.25) < 1e-9);
   CHECK(std::abs(w.gain[0] - 0.75) < 1e-9 &&
         std::abs(w.gain[1] - 0.25) < 1e-9);
+  CHECK(w.dip[0] == 0 && w.dip[1] == 0);
   w = layer_weights(two, {}, 1.5);                     // none: they stack
   CHECK(w.opacity[0] == 1 && w.opacity[1] == 1);
+  // A dip: the first to black by the middle, alone, its sound going; the
+  // second out of white after it.
+  w = layer_weights(two, {{0, 1, TK::DipBlack}}, 1.25);
+  CHECK(w.opacity[0] == 1 && w.opacity[1] == 0);
+  CHECK(std::abs(w.dip[0] - 0.5) < 1e-9 && w.dip_level[0] == 0);
+  CHECK(std::abs(w.gain[0] - 0.5) < 1e-9 && w.gain[1] == 0);
+  w = layer_weights(two, {{0, 1, TK::DipWhite}}, 1.75);
+  CHECK(w.opacity[0] == 0 && w.opacity[1] == 1);
+  CHECK(std::abs(w.dip[1] - 0.5) < 1e-9 && w.dip_level[1] == 1);
+  CHECK(w.gain[0] == 0 && std::abs(w.gain[1] - 0.5) < 1e-9);
+  CHECK(transition_kind("dip-white") == TK::DipWhite);
+  CHECK(!transition_kind("wipe"));
 
   // The player's pieces: one at a constant rate; a ramp, a frame each.
   auto segs = time_segments(t, 10, 1.0 / 24);
@@ -3136,7 +3150,7 @@ TEST(composition, layer_time_speed_and_transitions)
   plan.seconds = 3;
   plan.layers = {{"a.wav", a, {}}, {"b.wav", bb, {}}};
   plan.layers[1].sound.keys = {{0, Sound{0.5, 0}}};
-  plan.transitions = {{0, 1, true}};
+  plan.transitions = {{0, 1, TK::Dissolve}};
   auto pts = volume_points(plan, 1);
   REQUIRE(pts.size() >= 3);
   CHECK(std::abs(pts.front().second) < 1e-9);         // faded in from 0
@@ -3235,6 +3249,91 @@ TEST(composition, a_timeline_draws_and_sounds_in_time)
   auto longer = ctl.composition_length(pid, *snd);
   REQUIRE_OK(longer);
   CHECK(*longer == 2000);
+}
+
+// A DIP (DESIGN §6a): where two layers overlap, the first goes to black
+// (or white) by the middle and the second comes out of it -- each alone,
+// mixed in linear light; a layer's transparent part stays so.
+TEST(composition, a_dip_goes_through_black_or_white)
+{
+  Bench b("comp-dip");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  auto blue = b.png("blue.png", 16, 16, {0, 0, 0xff, 0xff});
+  auto glass = b.png("glass.png", 16, 16, {0, 0xff, 0, 0x80});
+  REQUIRE(red && blue && glass);
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {16, 16}, {24, 1}, "timeline");
+  REQUIRE_OK(tl);
+  // Red 0-24, blue 12-36: the overlap 12-24, its middle 18.
+  auto lr = ctl.instantiate(pid, *red, *tl);
+  auto lb = ctl.instantiate(pid, *blue, *tl, std::nullopt, 12);
+  REQUIRE_OK(lr);
+  REQUIRE_OK(lb);
+  project::LayerTime tr;
+  tr.duration = 24;
+  REQUIRE_OK(ctl.set_layer_time(pid, *tl, lr->second, tr));
+  project::LayerTime tb;
+  tb.offset = 12;
+  tb.duration = 24;
+  REQUIRE_OK(ctl.set_layer_time(pid, *tl, lb->second, tb));
+  auto frame_at = [&](std::int64_t f) {
+    auto m = ctl.movie_stack(pid, *tl, true);
+    const auto out = b.root / std::format("f{}.png", f);
+    if (!m.ok() || !media::write_stack_frame(*m, {24, 1}, f, out).ok()) {
+      return std::array<int, 4>{-1, -1, -1, -1};
+    }
+    return pixel_at(out, 8, 8);
+  };
+  auto near = [](std::array<int, 4> p, int r, int g, int bl) {
+    return std::abs(p[0] - r) <= 6 && std::abs(p[1] - g) <= 6 &&
+           std::abs(p[2] - bl) <= 6;
+  };
+  REQUIRE_OK(ctl.set_transition(pid, *tl, lr->second, lb->second,
+                                "dip-black"));
+  CHECK(near(frame_at(6), 255, 0, 0));
+  CHECK(near(frame_at(15), 188, 0, 0));    // half way to black (linear)
+  CHECK(near(frame_at(18), 0, 0, 0));      // black: blue out of it
+  CHECK(near(frame_at(21), 0, 0, 188));
+  CHECK(near(frame_at(30), 0, 0, 255));
+  REQUIRE_OK(ctl.set_transition(pid, *tl, lr->second, lb->second,
+                                "dip-white"));
+  CHECK(near(frame_at(15), 255, 188, 188));
+  CHECK(near(frame_at(18), 255, 255, 255));
+  CHECK(near(frame_at(21), 188, 188, 255));
+  CHECK(b.p().asset(*tl)->transitions.front().kind == "dip-white");
+  CHECK(!ctl.set_transition(pid, *tl, lr->second, lb->second, "wipe")
+             .ok());
+  // Changed, a transition keeps its place among the others (the
+  // timeline's arrows); "" takes it away.
+  auto lg = ctl.instantiate(pid, *red, *tl, std::nullopt, 30);
+  REQUIRE_OK(lg);
+  REQUIRE_OK(ctl.set_transition(pid, *tl, lb->second, lg->second,
+                                "dissolve"));
+  REQUIRE_OK(ctl.set_transition(pid, *tl, lb->second, lr->second,
+                                "dip-black"));
+  {
+    const auto ts = b.p().asset(*tl)->transitions;
+    REQUIRE(ts.size() == 2);
+    CHECK(ts[0].kind == "dip-black" && ts[0].from == lb->second);
+    CHECK(ts[1].kind == "dissolve");
+  }
+  REQUIRE_OK(ctl.set_transition(pid, *tl, lb->second, lr->second,
+                                "dip-white"));
+  REQUIRE_OK(ctl.set_transition(pid, *tl, lb->second, lg->second, ""));
+  {
+    const auto ts = b.p().asset(*tl)->transitions;
+    REQUIRE(ts.size() == 1);
+    CHECK(ts[0].kind == "dip-white");
+  }
+  REQUIRE_OK(ctl.set_transition(pid, *tl, lr->second, lb->second,
+                                "dip-white"));
+  // Through white, a half-clear layer stays half clear: white at half,
+  // over the black a frame is drawn on.
+  REQUIRE_OK(ctl.set_layer_source(pid, *tl, lb->second, *glass));
+  CHECK(near(frame_at(18), 188, 188, 188));
 }
 
 // The timeline's SCISSORS (DESIGN §10a Timeline): a raw clip cut in two
@@ -3775,6 +3874,39 @@ TEST(composition, a_markup_timeline_moves_between_its_keys)
   CHECK(std::abs(red_x(23) - (7 + 32)) <= 1);
   // Half way: half way (linear between the keys).
   CHECK(std::abs(red_x(12) - (7 + 17)) <= 2);
+}
+
+// A timeline of markup alone, its frame drawn as it plays: on black
+// where nothing is drawn -- as its movie (a reference's) and the player
+// have it. The frame (a thumbnail's, a still's layer showing it, the
+// agent's look) was drawn clear, and the JPEG made of it -- the prompt
+// row's thumbnail of a captured timeline -- came out white.
+TEST(composition, a_timelines_frame_is_on_black_as_it_plays)
+{
+  Bench b("comp-frame-black");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {64, 36}, {24, 1}, "drawn");
+  REQUIRE_OK(tl);
+  auto m = ctl.markup_layer(pid, *tl, {}, 0);
+  REQUIRE_OK(m);
+  REQUIRE_OK(ctl.set_markup_objects(pid, *tl, *m, Json::array({
+      {{"kind", "rect"}, {"x0", 0}, {"y0", 12}, {"x1", 8}, {"y1", 24},
+       {"fill", {1, 0, 0, 1}}, {"width", 0}}})));
+  auto stack = ctl.movie_stack(pid, *tl, true);
+  REQUIRE_OK(stack);
+  const auto out = b.root / "f0.png";
+  REQUIRE_OK(media::write_stack_frame(*stack, {24, 1}, 0, out));
+  const auto bg = pixel_at(out, 40, 4);
+  CHECK(bg[0] < 4 && bg[1] < 4 && bg[2] < 4 && bg[3] == 255);
+  CHECK(pixel_at(out, 4, 18)[0] > 200);
+  // Its thumbnail, a JPEG: black there too.
+  auto thumb = ctl.thumbnail(pid, *tl, 64, false);
+  REQUIRE_OK(thumb);
+  const auto t = pixel_at(*thumb, 40, 4);
+  CHECK(t[0] < 24 && t[1] < 24 && t[2] < 24);
 }
 
 TEST(composition, a_still_on_a_timeline_runs_a_second)
@@ -4736,6 +4868,144 @@ TEST(controller, upscalers_run_as_settings_have_them)
   CHECK(find("vosr")["tuning"]["values"]["sol_attn"] == false);
 }
 
+// FL2VA's two keyframes: a clip that opens on one picture and ENDS on
+// another -- given to the job as inputs "first" and "last", in that
+// order whatever the row's, and named in the prompt as the guide's FL2VA
+// case names them ("Picture 1", "Picture 2": by asset, not by place),
+// on FL2VA's own Turbo LoRA, steps and shift. A last frame needs a
+// first, and never comes with references.
+TEST(controller, a_clip_opens_and_ends_on_pictures)
+{
+  auto root = test::temp_dir("first-last");
+  for (const char* f :
+       {"MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors",
+        "MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors"}) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  }
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "F.valtz", "first-last");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "closed.png", 32, 32, {0x20, 0x40, 0x80, 0xff}));
+  REQUIRE(write_png(root / "open.png", 32, 32, {0x80, 0x40, 0x20, 0xff}));
+  auto closed = import_and_wait(ctl, *pid, root / "closed.png");
+  auto open = import_and_wait(ctl, *pid, root / "open.png");
+  REQUIRE(closed && open && *closed != *open);
+
+  GenerateVideoRequest req;
+  req.project = *pid;
+  req.model = "minimax-h3-fl2va";
+  // The row holds the end first: the tags name by place, the model by
+  // what each picture is to the clip.
+  req.row = {*open, *closed};
+  req.prompt = "<valtz_ref_img_1> opens her umbrella and ends as in "
+               "<valtz_ref_img_0>.";
+  req.first = *closed;
+  req.last = *open;
+  req.width = 832;
+  req.height = 480;
+  req.frames = 124;
+  auto job = ctl.generate_video(req);
+  REQUIRE_OK(job);
+  REQUIRE(eventually([&] {
+    return engine->held_of(engine::kOpGenerateVideo).size() == 1;
+  }, 10));
+  const auto* spec =
+      engine->spec(engine->held_of(engine::kOpGenerateVideo).front());
+  REQUIRE(spec != nullptr);
+  std::vector<std::string> roles;
+  for (const auto& in : spec->inputs) {
+    roles.push_back(in.role);
+  }
+  CHECK((roles == std::vector<std::string>{"first", "last", "prompt"}) ||
+        (roles == std::vector<std::string>{"first", "last"}));
+  REQUIRE(spec->inputs.size() >= 2);
+  CHECK(spec->inputs[0].path != spec->inputs[1].path);
+  CHECK(jget<std::string>(spec->params, "prompt", "") ==
+        "Picture 1 opens her umbrella and ends as in Picture 2.");
+  // FL2VA's own Med: its 8-step Turbo LoRA at video shift 6.
+  CHECK(jget<std::string>(spec->params, "lora", "") ==
+        "minimax-h3-turbo-8step");
+  CHECK(jget(spec->params, "steps", 0) == 8);
+  CHECK(jget(jget(spec->params, "tuning", Json::object()), "video_shift",
+             0.0) == 6.0);
+
+  // One picture: <Picture 1>, as I2VA names it.
+  GenerateVideoRequest one = req;
+  one.last.reset();
+  one.row = {*closed};
+  one.prompt = "<valtz_ref_img_0> waves.";
+  REQUIRE_OK(ctl.generate_video(one));
+  REQUIRE(eventually([&] {
+    return engine->held_of(engine::kOpGenerateVideo).size() == 2;
+  }, 10));
+  const auto* i2va =
+      engine->spec(engine->held_of(engine::kOpGenerateVideo).back());
+  REQUIRE(i2va != nullptr);
+  CHECK(jget<std::string>(i2va->params, "prompt", "") ==
+        "<Picture 1> waves.");
+
+  // A last frame needs a first, and no references with it.
+  GenerateVideoRequest alone = req;
+  alone.first.reset();
+  auto r1 = ctl.generate_video(alone);
+  CHECK(!r1.ok() && r1.error().code == Code::InvalidArgument);
+  GenerateVideoRequest both = req;
+  both.references = {*closed};
+  CHECK(!ctl.generate_video(both).ok());
+
+  // A continuation as Continue writes it in the prompt box: the clip
+  // continued by its tag for its place in the row -- what the box draws
+  // as the clip -- told to the model as its <Video 1>.
+  auto shot = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                     {32, 32}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto layer = ctl.instantiate(*pid, *closed, *shot);
+  REQUIRE_OK(layer);
+  project::LayerTime held;
+  held.duration = 56;
+  REQUIRE_OK(ctl.set_layer_time(*pid, *shot, layer->second, held));
+  GenerateVideoRequest cont;
+  cont.project = *pid;
+  cont.model = "minimax-h3-ref2va";
+  cont.row = {*shot};
+  cont.continue_from = *shot;
+  cont.prompt = "[video continuation + audio reference] The video "
+                "continues from the end of <valtz_ref_vid_0>.";
+  cont.width = 832;
+  cont.height = 480;
+  cont.frames = 124;
+  REQUIRE_OK(ctl.generate_video(cont));
+  REQUIRE(eventually([&] {
+    return engine->held_of(engine::kOpGenerateVideo).size() == 3;
+  }, 20));
+  const auto* ref2va =
+      engine->spec(engine->held_of(engine::kOpGenerateVideo).back());
+  REQUIRE(ref2va != nullptr);
+  CHECK(jget<std::string>(ref2va->params, "prompt", "") ==
+        "[video continuation + audio reference] The video continues "
+        "from the end of <Video 1>.");
+}
+
 // A continuation's GUIDE (continuation_guide): the clip's last seconds,
 // rounded UP to the model's grid -- 17n + 5 frames for H3 at 24 fps, so
 // 2 s is 56 frames -- and down again to what the clip holds, on a
@@ -5490,10 +5760,11 @@ TEST(agent, a_generated_picture_lands_in_its_box)
 }
 
 // A TIMELINE cut from clips (DESIGN §9b): parts of two clips, the second
-// dissolving out of the first, a picture after them, a title over the
-// first second, a clip's own sound turned down -- and music that LANDS
-// from the start, cut at its length and faded out. Times are seconds, as
-// the model gives them; what each tool did is read back from the layers.
+// out of the first through black, a picture after them through white, a
+// title over the first second, a clip's own sound turned down -- and
+// music that LANDS from the start, cut at its length and faded out. Times
+// are seconds, as the model gives them; what each tool did is read back
+// from the layers.
 TEST(agent, the_tools_cut_a_timeline)
 {
   auto root = test::temp_dir("agent-timeline");
@@ -5563,10 +5834,10 @@ TEST(agent, the_tools_cut_a_timeline)
             {{"name", "Trip"}, {"kind", "timeline"}, {"width", 64},
              {"height", 36}, {"fps", 24}})},
       {call("add_clip", {{"asset", a->str()}, {"in", 0.5}, {"out", 1.5}}),
-       // At the beach's end, as a model puts it: the dissolve still
-       // overlaps the beach.
+       // At the beach's end, as a model puts it: the dip still
+       // overlaps the beach, as a dissolve does.
        call("add_clip", {{"asset", b->str()}, {"start", 1.0},
-                         {"transition", "dissolve"},
+                         {"transition", "dip-black"},
                          {"transition_seconds", 0.25}})},
       {call("add_text", {{"text", "Lisbon"}, {"start", 0}, {"duration", 1},
                          {"x", 4}, {"y", 4}, {"width", 56}, {"height", 12},
@@ -5580,11 +5851,11 @@ TEST(agent, the_tools_cut_a_timeline)
       {call("generate_music", {{"style", "lo-fi hip hop, mellow piano"},
                                {"seconds", 3}, {"fade_out", 1}}),
        call("set_layer_time", {{"layer", "1"}, {"out", 1.0}}),
-       // A dissolve between two that do not meet (the market now ends
-       // at 1.75, the picture starts at 2.75): the picture moves to
-       // overlap it by half a second.
+       // A dip between two that do not meet (the market now ends at
+       // 1.75, the picture starts at 2.75): the picture moves to overlap
+       // it by half a second, as for a dissolve.
        call("set_transition", {{"from", "1"}, {"to", "3"},
-                               {"kind", "dissolve"}}),
+                               {"kind", "dip-white"}}),
        call("get_composition", Json::object())}};
   AgentRequest req;
   req.project = *pid;
@@ -5632,14 +5903,16 @@ TEST(agent, the_tools_cut_a_timeline)
   // The beach's part: 0.5-1.5 s of it, from 0.
   CHECK(near(L[0].timing.start, 0) && near(L[0].timing.length, 1));
   CHECK(near(L[0].timing.in, 0.5) && near(L[0].timing.out, 1.5));
-  // The market from 0.75 (dissolving out of the beach), trimmed to 1 s.
+  // The market from 0.75 (out of the beach through black), trimmed to
+  // 1 s.
   CHECK(near(L[1].timing.start, 0.75) && near(L[1].timing.length, 1));
   REQUIRE(comp->transitions.size() == 2);
   CHECK(comp->transitions[0].from == "" && comp->transitions[0].to == "1");
-  CHECK(comp->transitions[0].kind == "dissolve");
+  CHECK(comp->transitions[0].kind == "dip-black");
   CHECK(comp->transitions[1].from == "1" && comp->transitions[1].to == "3");
+  CHECK(comp->transitions[1].kind == "dip-white");
   // The picture, added after the market as it was (2.75), a second --
-  // moved to 1.25 by the dissolve asked into it.
+  // moved to 1.25 by the dip asked into it.
   CHECK(near(L[2].timing.start, 1.25) && near(L[2].timing.length, 1));
   // The title over the first second, above the clips: its panel and its
   // words on one markup, the panel drawn first.
@@ -5669,7 +5942,7 @@ TEST(agent, the_tools_cut_a_timeline)
   const std::string told = to_text(jget(steps[10], "result", Json()));
   CHECK(told.find("\"kind\":\"title\"") != std::string::npos);
   CHECK(told.find("Lisbon") != std::string::npos);
-  CHECK(told.find("\"dissolve\"") != std::string::npos);
+  CHECK(told.find("\"dip-black\"") != std::string::npos);
   // Each edit one command -- and the music's landing one of its own,
   // of its kind: the trim came after its request.
   int edits = 0;

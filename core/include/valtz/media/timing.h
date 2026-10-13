@@ -24,6 +24,8 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 namespace valtz::media {
@@ -72,18 +74,31 @@ LayerTiming layer_timing_from_json(const Json&);
 // The latest end among timed layers (seconds); 0 when none is timed.
 double timeline_end(const std::vector<LayerTiming>& layers);
 
+// Where two layers' spans overlap, `from` ending first: an abrupt CUT at
+// the overlap's middle, a DISSOLVE across it (picture and sound), or a
+// DIP through black or white -- `from` going to the colour by the middle
+// (its sound fading out), `to` coming out of it after (its sound in).
 struct TransitionSpec {
+  enum class Kind { Cut, Dissolve, DipBlack, DipWhite };
   std::size_t from = 0;  // layer indices, bottom first
   std::size_t to = 0;
-  bool        dissolve = false;
+  Kind        kind = Kind::Cut;
 };
+
+// project::Transition's kinds: "cut", "dissolve", "dip-black",
+// "dip-white"; nullopt for another.
+std::optional<TransitionSpec::Kind> transition_kind(std::string_view);
+std::string_view to_string(TransitionSpec::Kind);
 
 // The weights of every layer at timeline second `t`: `opacity` (its
 // picture) and `gain` (its sound), each 0..1, after `transitions` -- 0
-// where a layer is not active.
+// where a layer is not active -- and a dip's: how far its picture has
+// gone to the dip's colour, 0..1, and that colour (0 black, 1 white).
 struct LayerWeights {
   std::vector<double> opacity;
   std::vector<double> gain;
+  std::vector<double> dip;
+  std::vector<double> dip_level;
 };
 LayerWeights layer_weights(const std::vector<LayerTiming>& layers,
                            const std::vector<TransitionSpec>& transitions,

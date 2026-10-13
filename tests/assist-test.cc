@@ -536,7 +536,7 @@ TEST(assist, built_in_outlines_follow_their_guides)
   const auto outline = [&](const char* id, const char* lang) {
     const auto* m = cat->find(id);
     return m ? prompt_outline(jget(m->prompting, "outline", Json()), lang,
-                              {RefKind::Image, RefKind::Audio})
+                              {RefKind::Image, RefKind::Audio}, {0})
              : std::string();
   };
   for (const char* lang : {"en", "zh-Hans"}) {
@@ -569,8 +569,54 @@ TEST(assist, built_in_outlines_follow_their_guides)
   // From words alone: no instruction line.
   const auto* fl2va = cat->find("minimax-h3-fl2va");
   REQUIRE(fl2va != nullptr);
-  CHECK(prompt_outline(jget(fl2va->prompting, "outline", Json()), "en", {})
+  const Json fl_outline = jget(fl2va->prompting, "outline", Json());
+  CHECK(prompt_outline(fl_outline, "en", {})
             .starts_with("integrated_multimodal_description: [Shot 1] ("));
+  // Opening on one picture and ending on another (FL2VA): the base
+  // guide's FL2VA line, its pictures bare as that case names them, at
+  // the clip's length; one shot, reaching the last frame.
+  for (const char* lang : {"en", "zh-Hans"}) {
+    const std::string fl =
+        prompt_outline(fl_outline, lang,
+                       {RefKind::Image, RefKind::Audio, RefKind::Image},
+                       {2, 0, 124.0 / 24.0});
+    CHECK(fl.starts_with(
+        "How the reference pictures align with the target video — "
+        "<valtz_ref_img_1> (from Shot 1) aligns with the 0.00-second mark "
+        "of the target video; <valtz_ref_img_0> (from Shot 1) aligns with "
+        "the 5.17-second mark of the target video.\n\n"
+        "integrated_multimodal_description: [Shot 1]"));
+    CHECK(fl.find("fully referenced") == std::string::npos);
+    CHECK(fl.find("[Shot 2]") == std::string::npos);
+    CHECK(fl.find("{") == std::string::npos);
+    const auto desc = fl.find("integrated_multimodal_description");
+    CHECK(fl.find("<valtz_ref_img_1>", desc) < fl.find("<valtz_ref_img_0>",
+                                                       desc));
+  }
+  // A last frame needs a first; a keyframe that is no picture is none.
+  CHECK(prompt_outline(fl_outline, "en", {RefKind::Image}, {-1, 0})
+            .starts_with("integrated_multimodal_description: [Shot 1] ("));
+  CHECK(prompt_outline(fl_outline, "en", {RefKind::Audio, RefKind::Image},
+                       {0, 1})
+            .starts_with("integrated_multimodal_description: [Shot 1] ("));
+}
+
+// Stacked markers at a line's head must all hold; {first} and {last}
+// name the keyframes wherever they are in the row.
+TEST(assist, an_outline_s_keyframe_markers)
+{
+  const Json outline = Json::array({
+      "{if first}{unless last}opens on {first}",
+      "{if first}{if last}{first} to {last} in {seconds} s",
+      "{unless first}from words",
+  });
+  using K = RefKind;
+  CHECK(prompt_outline(outline, "en", {K::Video, K::Image}, {1}) ==
+        "opens on <valtz_ref_img_0>");
+  CHECK(prompt_outline(outline, "en", {K::Image, K::Video, K::Image},
+                       {0, 2, 2.5}) ==
+        "<valtz_ref_img_0> to <valtz_ref_img_1> in 2.50 s");
+  CHECK(prompt_outline(outline, "en", {K::Image}) == "from words");
 }
 
 // MiniMax H3's own prompt-writing skill is built in, as an agent reads
@@ -648,6 +694,29 @@ TEST(assist, a_clip_is_asked_for_through_its_guide)
   CHECK(ref.find("There is no <Audio N> here.") == std::string::npos);
   CHECK(ref.find("{\"subject_definitions\": ") != std::string::npos);
   CHECK(ref.find("\"detailed_description\": ") != std::string::npos);
+
+  // Opening on one picture and ending on another: the FL2VA case, its
+  // pictures bare as the guide names them there -- none missing.
+  r.system = std::string(rewrite_prompt("minimax-h3-base"));
+  r.video_mode = "FL2VA";
+  r.video_tasks.clear();
+  r.references = {"Picture 1: the picture the video opens on (its first "
+                  "frame), \"a.png\" -- image 1 shown above",
+                  "Picture 2: the picture the video ends on (its last "
+                  "frame), \"b.png\" -- image 2 shown above"};
+  const std::string fl2va = build_enhance_prompt(r);
+  CHECK(fl2va.find("Mode: FL2VA -- the video opens on Picture 1") !=
+        std::string::npos);
+  CHECK(fl2va.find("ends on Picture 2, its last frame at 5.17 seconds") !=
+        std::string::npos);
+  CHECK(fl2va.find("Valtz writes the FL2VA instruction line itself") !=
+        std::string::npos);
+  CHECK(fl2va.find("- Picture 2: the picture the video ends on") !=
+        std::string::npos);
+  CHECK(fl2va.find("There is no <Picture N> here.") == std::string::npos);
+  CHECK(fl2va.find("There is no <Video N> here.") != std::string::npos);
+  CHECK(fl2va.find("{\"integrated_multimodal_description\": ") !=
+        std::string::npos);
 
   r.video_mode = "T2VA";
   r.references.clear();
@@ -728,6 +797,15 @@ TEST(assist, a_suggestion_s_names_become_the_row_s_tags)
         "<Subject 1> is in <valtz_ref_img_0>; <valtz_ref_img_9> and "
         "<valtz_ref_aud_0>, <Audio 2>.");
   CHECK(retag("<Picture 1>", {}) == "<Picture 1>");
+  // FL2VA's bare names: whole words only.
+  const std::vector<std::pair<std::string, std::string>> bare = {
+    {"Picture 1", "<valtz_ref_img_1>"},
+    {"Picture 2", "<valtz_ref_img_0>"},
+  };
+  CHECK(retag("Picture 1 (from Shot 1); Picture 2. Picture 10, "
+              "APicture 1, Picture 1x", bare) ==
+        "<valtz_ref_img_1> (from Shot 1); <valtz_ref_img_0>. Picture 10, "
+        "APicture 1, Picture 1x");
 }
 
 // A sound TRANSCRIBED (DESIGN §4h): Qwen3-ASR's lines, their language

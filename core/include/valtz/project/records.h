@@ -218,6 +218,8 @@ struct LayerFolder {
 // (DESIGN §6a): `from` ends first, `to` takes over.
 //   "cut"       an abrupt change at the middle of the overlap.
 //   "dissolve"  picture and sound cross-fade across the overlap.
+//   "dip-black" / "dip-white"  through a colour: `from` goes to it by the
+//               middle, `to` comes out of it after, each's sound with it.
 struct Transition {
   std::string from;
   std::string to;

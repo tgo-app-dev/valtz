@@ -658,6 +658,9 @@ to_json(Json& j, const ModelEntry& e)
     {"continuation", jget<std::string>(e.prompting, "continuation", "")},
     // It has a prompt outline: an empty box can start from it.
     {"has_outline", !jget(e.prompting, "outline", Json()).is_null()},
+    // A clip model that ends on a picture too (FL2VA's last keyframe).
+    {"last_frame",
+     jget(jget(e.engine, "vpipe", Json::object()), "last_frame", false)},
   };
   // A clip's lengths: frames = offset + n * step (17n + 5 for H3), at the
   // model's own rate -- the app offers what will be made.

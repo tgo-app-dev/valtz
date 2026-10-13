@@ -205,7 +205,8 @@ public:
   // {"project", "prompt", "model"?, "width"?, "height"?, "frames"?,
   //  "fps"?, "steps"?, "preference"?, "seed"?, "turbo"?: bool,
   //  "first"?: asset id (a picture the clip opens on), "first_adjust"?,
-  //  "first_crop"?, "references"?: [asset ids: pictures, clips, sounds,
+  //  "first_crop"?, "last"?: asset id (with "first", a picture it ends
+  //  on: FL2VA), "references"?: [asset ids: pictures, clips, sounds,
   //  in order], "continue"?: a clip to carry on from (its tail),
   //  "tail_seconds"?, "reference_sound"?: bool (the first sound's own as
   //  the soundtrack), "inline"?: [asset ids mentioned in the prompt]}:
@@ -239,9 +240,11 @@ public:
   //  "tags": {asset: "<Picture 1>"}}: what a clip's references are
   //  called (Controller::video_reference_tags).
   std::string video_reference_tags(const std::string& request_json) const;
-  // {"model", "row": ["image" | "video" | "audio", ...]} -> {"ok",
-  //  "text"}: the model's prompt outline for a row holding those kinds,
-  //  "" without one (Controller::prompt_outline).
+  // {"model", "row": ["image" | "video" | "audio", ...], "first"?,
+  //  "last"?: a clip's keyframes, by their places in the row (-1 or
+  //  absent: as the model takes them; -2: none), "seconds"?: its
+  //  length} -> {"ok", "text"}: the model's prompt outline for a row
+  //  holding those kinds, "" without one (Controller::prompt_outline).
   std::string prompt_outline(const std::string& request_json) const;
   // {"text"} -> {"style", "lyrics", "sections", "lines"}: a prompt as a
   // song's words, as generate_audio reads it (assist::split_song).
@@ -324,7 +327,8 @@ public:
   // "source": an asset), "remove" ("layer"), "decompose" ("layer": one
   // showing a composition), "speed" / "sound" ("layer", "keys": a track
   // of {"frame", "rate"} / {"frame", "volume", "pitch"}), "transition"
-  // ("layer": from, "to", "kind": "cut" | "dissolve" | "" none)} ->
+  // ("layer": from, "to", "kind": "cut" | "dissolve" | "dip-black" |
+  // "dip-white" | "" none)} ->
   // {"ok", "layer" (an added one's id)}. Assets list their "layers".
   // A still's PAGES (DESIGN §6a; from 0): "page-add" ("after"?: none,
   // after the last) -> {"page"}; "page-remove" ("page"); "pages"
@@ -377,7 +381,8 @@ public:
   // them, or that layer alone; without the markup objects the app is
   // drawing itself.
   std::string flatten(const std::string& request_json);
-  // {"prompt", "target"?: "image"|"video", "style"?}
+  // {"prompt", "target"?: "image"|"video", "style"?, "base"?, "last"?:
+  //  a picture a clip ends on, "base" the one it opens on (FL2VA), ...}
   std::string enhance_prompt(const std::string& request_json);
   // {"project", "asset", "format" (png16|tiff16|exr|png|tiff|jpeg|
   //  prores4444|prores422hq|hevc10|h264), "path", "quality"? (a JPEG's,

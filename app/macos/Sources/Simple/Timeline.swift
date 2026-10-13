@@ -58,10 +58,18 @@ struct TimelineRow: Equatable, Identifiable {
     static func folderID(_ f: String) -> String { "folder:" + f }
 }
 
+/// What happens where two layers overlap (core project::Transition):
+/// `from` ends first; "cut", "dissolve", "dip-black", "dip-white".
+struct TimelineTransition: Equatable {
+    var from: String
+    var to: String
+    var kind: String
+}
+
 /// What the timeline draws: its rows, its length and rate, where the
-/// player is, the selected layer, its tools and zoom -- and its EVENTS,
-/// where |< and >| go: a key, where a layer begins or ends, the timeline's
-/// start and end.
+/// player is, the selected layer, its tools and zoom, its transitions --
+/// and its EVENTS, where |< and >| go: a key, where a layer begins or
+/// ends, the timeline's start and end.
 struct TimelineModel: Equatable {
     var rows: [TimelineRow] = []
     var frames = 1
@@ -74,6 +82,7 @@ struct TimelineModel: Equatable {
     var cutting = false
     var zoom = 1.0
     var events: [Int] = []
+    var transitions: [TimelineTransition] = []
 }
 
 extension AppModel {
@@ -167,6 +176,12 @@ extension AppModel {
         }
         m.rows = timelineFolders(m.rows, frames: m.frames,
                                  folders: a.layerFolders ?? [])
+        // A timeline's only (a still's pages have none).
+        if !a.isPaged {
+            m.transitions = (a.transitions ?? []).map {
+                TimelineTransition(from: $0.from, to: $0.to, kind: $0.kind)
+            }
+        }
         // Where |< and >| stop.
         var ev: Set<Int> = [0, m.frames]
         for r in m.rows {
@@ -368,6 +383,21 @@ extension AppModel {
             return
         }
         timelineLayersChanged(select: id)
+    }
+
+    /// What happens where two layers overlap (DESIGN §6a): `kind`
+    /// "dissolve", "dip-black" or "dip-white" -- "" takes it away --
+    /// `from` the one that ends first. One command ("Undo Transition").
+    func setTimelineTransition(from: String, to: String, kind: String) {
+        guard let core, let projectId, let a = timelineAsset else { return }
+        flushPanels()
+        let r = core.layerOp(project: projectId, asset: a.id, "transition",
+                             layer: from, extra: ["to": to, "kind": kind])
+        guard r.ok else {
+            flash(r.message)
+            return
+        }
+        timelineLayersChanged(select: nil)
     }
 
     /// A clip dragged along the timeline: it starts at `offset` (a
@@ -573,6 +603,9 @@ struct TimelineCard: View {
             },
             ungroup: { model.ungroupLayers($0) },
             extendSelection: { model.toggleLayerSelection($0) },
+            setTransition: {
+                model.setTimelineTransition(from: $0, to: $1, kind: $2)
+            },
             renameLayer: { model.renameLayer($0, $1) },
             renameFolder: { model.renameLayerFolder($0, $1) },
             dropAsset: { model.dropOnTimeline(asset: $0, above: $1, at: $2) },
@@ -676,6 +709,7 @@ struct TimelineCard: View {
                                 on: false) {
                     model.timelineStep(-1)
                 }
+                .shortcutHint("←")
                 TransportButton(symbol: "pause.fill", help: "Pause",
                                 on: timed && r == 0) {
                     model.playVideo(rate: 0)
@@ -687,10 +721,12 @@ struct TimelineCard: View {
                                 on: false) {
                     model.timelineStep(1)
                 }
+                .shortcutHint("→")
                 TransportButton(symbol: "play.fill", help: "Play",
                                 on: r == 1) {
                     model.playVideo(rate: 1)
                 }
+                .shortcutHint(String(localized: "Space"))
                 .disabled(!timed)
                 TransportButton(symbol: "forward.fill", help: "Fast forward",
                                 on: r > 1, action: model.fastForward)
@@ -807,6 +843,8 @@ struct TimelineActions {
     var group: (String) -> Void = { _ in }
     var ungroup: (String) -> Void = { _ in }
     var extendSelection: (String) -> Void = { _ in }
+    /// A transition between two layers ({from, to, kind}; "" none).
+    var setTransition: (String, String, String) -> Void = { _, _, _ in }
     /// A header's name typed over: a layer's, a folder's.
     var renameLayer: (String, String) -> Void = { _, _ in }
     var renameFolder: (String, String) -> Void = { _, _ in }
@@ -842,6 +880,9 @@ final class TimelineNSView: NSView {
     static let nameWidth: CGFloat = 168
     static let rulerHeight: CGFloat = 26
     static let rowHeight: CGFloat = 22
+    /// A key's dot, across: where a frame's cell is narrower, the key is
+    /// drawn as its cell instead.
+    static let keyDot: CGFloat = 6
     /// How near, in points, an end comes before it snaps.
     private static let snap: CGFloat = 8
 
@@ -888,6 +929,15 @@ final class TimelineNSView: NSView {
     /// Where a drop would go: above which row (nil: on top), from which
     /// frame.
     private var dropAt: (row: Int?, frame: Int)?
+    /// ⌘ held: the selected layer's overlaps with the others highlighted,
+    /// to be clicked into a transition. Watched while in a window -- the
+    /// view need not have the keyboard -- and let go as the app goes to
+    /// the back (its key-up never comes).
+    fileprivate var commandHeld = false {
+        didSet { if commandHeld != oldValue { needsDisplay = true } }
+    }
+    private var commandMonitor: Any?
+    private var commandObserver: (any NSObjectProtocol)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -1138,6 +1188,8 @@ final class TimelineNSView: NSView {
                    width: area.width, height: 0.5).fill()
         }
         drawGrid(area)
+        drawOverlaps()
+        drawTransitions()
         drawCutLine()
         drawDropMark(area)
     }
@@ -1280,11 +1332,24 @@ final class TimelineNSView: NSView {
                 kx += CGFloat(to - r.start) * scale
             }
             guard kx >= b.minX - 1, kx <= b.maxX + 1 else { continue }
+            // Zoomed out, a frame narrower than the dot: the key is its
+            // frame's cell -- a dark bar down the block, a line at least
+            // -- so it says which frame; a seam between cells wide enough
+            // keeps keys a frame apart two.
+            if scale < Self.keyDot {
+                let w = scale >= 3 ? scale - 1 : max(scale, 1.5)
+                let bx = min(max(kx - w / 2, b.minX + 1), b.maxX - 1 - w)
+                NSColor.black.withAlphaComponent(0.75).setFill()
+                NSBezierPath(rect: CGRect(x: bx, y: b.minY + 1, width: w,
+                                          height: b.height - 2)).fill()
+                continue
+            }
             kx = keyX(k)
             // The accent's, ringed in the card's ground to show on any
             // block.
-            let dot = NSBezierPath(ovalIn: CGRect(x: kx - 3, y: y - 3,
-                                                  width: 6, height: 6))
+            let d = Self.keyDot
+            let dot = NSBezierPath(ovalIn: CGRect(x: kx - d / 2, y: y - d / 2,
+                                                  width: d, height: d))
             NSColor.controlAccentColor.setFill()
             dot.fill()
             NSColor.textBackgroundColor.setStroke()
@@ -1760,6 +1825,18 @@ final class TimelineNSView: NSView {
                             moving: false)
             return
         }
+        // A transition's arrow: its ways, in a menu.
+        if let n = transition(at: p), let m = transitionMenu(n) {
+            m.popUp(positioning: nil, at: p, in: self)
+            return
+        }
+        // ⌘ held over an overlap the selected layer has with another: a
+        // transition between them -- a cross dissolve to start.
+        if !model.cutting,
+           let o = overlap(at: p, held: e.modifierFlags.contains(.command)) {
+            actions.setTransition(o.from, o.to, "dissolve")
+            return
+        }
         guard let i else {
             drag = .scrub
             scrub(p.x)
@@ -1860,6 +1937,10 @@ final class TimelineNSView: NSView {
     /// shown or hidden, removed.
     override func menu(for event: NSEvent) -> NSMenu? {
         let p = convert(event.locationInWindow, from: nil)
+        if p.x >= Self.nameWidth, p.y >= Self.rulerHeight,
+           let n = transition(at: p) {
+            return transitionMenu(n)
+        }
         guard let i = row(at: p.y) else { return nil }
         let r = model.rows[i]
         let m = NSMenu()
@@ -2180,6 +2261,314 @@ final class TimelineNSView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { Self.shown = self }
+        if let m = commandMonitor { NSEvent.removeMonitor(m) }
+        if let o = commandObserver {
+            NotificationCenter.default.removeObserver(o)
+        }
+        commandMonitor = nil
+        commandObserver = nil
+        commandHeld = false
+        guard window != nil else { return }
+        commandMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: .flagsChanged, handler: { [weak self] e in
+                MainActor.assumeIsolated {
+                    self?.commandHeld = e.modifierFlags.contains(.command)
+                }
+                return e
+            })
+        commandObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.commandHeld = false }
+        }
+    }
+}
+
+// MARK: - Transitions
+
+/// Where two layers overlap, a TRANSITION hands one over to the other
+/// (DESIGN §6a, §10a Timeline): ⌘ held with a layer selected highlights
+/// its overlaps with the other layers that show a picture; a click on one
+/// makes a cross dissolve there. Each is drawn as an ARROW across the
+/// rows -- from the layer that ends first, where the two begin to meet,
+/// to the other where they stop -- with a badge of the way it goes:
+/// the two layers' colours mixed, or through black or white. A click on
+/// the arrow (or its menu) chooses: Cross Dissolve, Dip to Black, Dip to
+/// White; or takes it away.
+extension TimelineNSView {
+    /// An overlap a transition could take: the other layer's row, which
+    /// of the two ends first (`from`), the frames they share.
+    struct Overlap: Equatable {
+        var row: Int
+        var from: String
+        var to: String
+        var frames: Range<Int>
+    }
+
+    /// The layers a transition joins: those that show a picture.
+    private static func joins(_ k: TimelineRow.Kind) -> Bool {
+        [.clip, .picture, .markup, .composition, .still].contains(k)
+    }
+
+    /// Where row `i` plays, in frames: to the timeline's end for one that
+    /// runs on.
+    private func frames(of i: Int) -> Range<Int> {
+        let r = model.rows[i]
+        return r.start..<max(r.start + 1, r.end ?? model.frames)
+    }
+
+    private var selectedRow: Int? {
+        model.rows.firstIndex { $0.id == model.selected && !$0.isFolder }
+    }
+
+    /// With ⌘ held and a layer selected: its overlaps with the others
+    /// that show a picture and have none with it yet. The one that starts
+    /// first is the one that ends first, as the core takes it.
+    fileprivate func overlaps(held: Bool) -> [Overlap] {
+        guard held, !model.paged, drag == nil, let s = selectedRow,
+              Self.joins(model.rows[s].kind) else { return [] }
+        let a = frames(of: s), me = model.rows[s].id
+        var out: [Overlap] = []
+        for (j, r) in model.rows.enumerated()
+            where j != s && !r.isFolder && Self.joins(r.kind) {
+            let b = frames(of: j)
+            let lo = max(a.lowerBound, b.lowerBound)
+            let hi = min(a.upperBound, b.upperBound)
+            guard hi > lo, !model.transitions.contains(where: {
+                Set([$0.from, $0.to]) == Set([me, r.id])
+            }) else { continue }
+            let first = (a.lowerBound, a.upperBound)
+                <= (b.lowerBound, b.upperBound)
+            out.append(Overlap(row: j, from: first ? me : r.id,
+                               to: first ? r.id : me, frames: lo..<hi))
+        }
+        return out
+    }
+
+    private func rect(_ o: Overlap, row i: Int) -> CGRect {
+        let x0 = x(Double(o.frames.lowerBound))
+        let x1 = x(Double(o.frames.upperBound))
+        return CGRect(x: x0, y: rowTop(i) + 2, width: max(4, x1 - x0),
+                      height: Self.rowHeight - 4)
+    }
+
+    /// The highlight under the pointer: the OTHER layer's share.
+    fileprivate func overlap(at p: CGPoint, held: Bool) -> Overlap? {
+        overlaps(held: held).first {
+            rect($0, row: $0.row).insetBy(dx: -2, dy: -2).contains(p)
+        }
+    }
+
+    /// The overlaps highlighted: the selected layer's share faint, the
+    /// other's -- the one to click -- dashed, with a + where it has room.
+    fileprivate func drawOverlaps() {
+        let os = overlaps(held: commandHeld)
+        guard !os.isEmpty, let s = selectedRow else { return }
+        let accent = NSColor.controlAccentColor
+        for o in os {
+            accent.withAlphaComponent(0.2).setFill()
+            NSBezierPath(rect: rect(o, row: s)).fill()
+            let r = rect(o, row: o.row)
+            let box = NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3)
+            accent.withAlphaComponent(0.45).setFill()
+            box.fill()
+            box.lineWidth = 1.5
+            box.setLineDash([4, 2], count: 2, phase: 0)
+            accent.setStroke()
+            box.stroke()
+            guard r.width >= 14 else { continue }
+            let plus = NSBezierPath()
+            plus.move(to: CGPoint(x: r.midX - 4, y: r.midY))
+            plus.line(to: CGPoint(x: r.midX + 4, y: r.midY))
+            plus.move(to: CGPoint(x: r.midX, y: r.midY - 4))
+            plus.line(to: CGPoint(x: r.midX, y: r.midY + 4))
+            plus.lineWidth = 1.75
+            plus.lineCapStyle = .round
+            NSColor.white.setStroke()
+            plus.stroke()
+        }
+    }
+
+    /// A transition's arrow: from the `from` row where the two begin to
+    /// overlap to the `to` row where they stop -- following a block being
+    /// dragged -- nil where either is out of sight (a folded folder) or
+    /// they no longer meet.
+    private func arrow(_ t: TimelineTransition)
+        -> (a: CGPoint, b: CGPoint, i: Int, j: Int)? {
+        guard let i = model.rows.firstIndex(where: {
+                  $0.id == t.from && !$0.isFolder }),
+              let j = model.rows.firstIndex(where: {
+                  $0.id == t.to && !$0.isFolder }),
+              let bi = block(i), let bj = block(j) else { return nil }
+        let x0 = max(bi.minX, bj.minX), x1 = min(bi.maxX, bj.maxX)
+        guard x1 > x0 else { return nil }
+        return (CGPoint(x: x0, y: bi.midY), CGPoint(x: x1, y: bj.midY), i, j)
+    }
+
+    /// A badge's place: a small capsule at the arrow's middle.
+    private static func badge(at c: CGPoint) -> CGRect {
+        CGRect(x: c.x - 11, y: c.y - 6, width: 22, height: 12)
+    }
+
+    private static func middle(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+        CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+    }
+
+    fileprivate func drawTransitions() {
+        for t in model.transitions {
+            guard let (a, b, i, j) = arrow(t) else { continue }
+            let p = NSBezierPath()
+            p.move(to: a)
+            p.line(to: b)
+            // Its head, along it.
+            let ang = atan2(b.y - a.y, b.x - a.x)
+            let len: CGFloat = 7, wide: CGFloat = .pi / 7
+            p.move(to: CGPoint(x: b.x - len * cos(ang - wide),
+                               y: b.y - len * sin(ang - wide)))
+            p.line(to: b)
+            p.line(to: CGPoint(x: b.x - len * cos(ang + wide),
+                               y: b.y - len * sin(ang + wide)))
+            p.lineCapStyle = .round
+            p.lineJoinStyle = .round
+            p.lineWidth = 4.5
+            NSColor.textBackgroundColor.withAlphaComponent(0.75).setStroke()
+            p.stroke()
+            p.lineWidth = 1.75
+            NSColor.labelColor.setStroke()
+            p.stroke()
+            drawBadge(t.kind, at: Self.middle(a, b),
+                      from: Self.color(model.rows[i].kind),
+                      to: Self.color(model.rows[j].kind))
+        }
+    }
+
+    /// The way it goes, left to right: the two layers' colours mixed (a
+    /// dissolve), through black or white (a dip), or split (a cut).
+    private func drawBadge(_ kind: String, at c: CGPoint, from: NSColor,
+                           to: NSColor) {
+        let r = Self.badge(at: c)
+        let cap = NSBezierPath(roundedRect: r, xRadius: r.height / 2,
+                               yRadius: r.height / 2)
+        switch kind {
+        case "dip-black":
+            NSGradient(colors: [from, .black, to])?.draw(in: cap, angle: 0)
+        case "dip-white":
+            NSGradient(colors: [from, .white, to])?.draw(in: cap, angle: 0)
+        case "dissolve":
+            NSGradient(starting: from, ending: to)?.draw(in: cap, angle: 0)
+        default:
+            NSGraphicsContext.saveGraphicsState()
+            cap.addClip()
+            from.setFill()
+            CGRect(x: r.minX, y: r.minY, width: r.width / 2,
+                   height: r.height).fill()
+            to.setFill()
+            CGRect(x: r.midX, y: r.minY, width: r.width / 2,
+                   height: r.height).fill()
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        // A dissolve's two crossing (the two pictures through each other),
+        // a cut's bar -- seen even where the two layers' colours are one.
+        let mark = NSBezierPath()
+        if kind == "dissolve" {
+            mark.move(to: CGPoint(x: r.midX - 5, y: r.minY + 3))
+            mark.line(to: CGPoint(x: r.midX + 5, y: r.maxY - 3))
+            mark.move(to: CGPoint(x: r.midX - 5, y: r.maxY - 3))
+            mark.line(to: CGPoint(x: r.midX + 5, y: r.minY + 3))
+        } else if !kind.hasPrefix("dip-") {
+            mark.move(to: CGPoint(x: r.midX, y: r.minY + 2))
+            mark.line(to: CGPoint(x: r.midX, y: r.maxY - 2))
+        }
+        mark.lineWidth = 1.25
+        mark.lineCapStyle = .round
+        NSColor.white.withAlphaComponent(0.9).setStroke()
+        mark.stroke()
+        cap.lineWidth = 1.5
+        NSColor.labelColor.setStroke()
+        cap.stroke()
+    }
+
+    /// The transition whose arrow (or badge) is under the pointer -- not
+    /// its last points at either end, where a block's end is stretched.
+    fileprivate func transition(at p: CGPoint) -> Int? {
+        for (n, t) in model.transitions.enumerated().reversed() {
+            guard let (a, b, _, _) = arrow(t) else { continue }
+            if Self.badge(at: Self.middle(a, b)).insetBy(dx: -3, dy: -3)
+                .contains(p) || Self.onLine(p, a, b) {
+                return n
+            }
+        }
+        return nil
+    }
+
+    /// Within 5 points of the line from `a` to `b`, 8 or more from its
+    /// ends.
+    private static func onLine(_ p: CGPoint, _ a: CGPoint,
+                               _ b: CGPoint) -> Bool {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len = hypot(dx, dy)
+        guard len > 16 else { return false }
+        let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (len * len)
+        guard t * len >= 8, (1 - t) * len >= 8 else { return false }
+        return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)) <= 5
+    }
+
+    /// A transition's menu: its ways, the one it goes checked; taken
+    /// away. Each item's identifier its kind ("remove").
+    func transitionMenu(_ n: Int) -> NSMenu? {
+        guard model.transitions.indices.contains(n) else { return nil }
+        let t = model.transitions[n]
+        let m = NSMenu()
+        let kinds = [("dissolve", String(localized: "Cross Dissolve")),
+                     ("dip-black", String(localized: "Dip to Black")),
+                     ("dip-white", String(localized: "Dip to White"))]
+        for (kind, title) in kinds {
+            let it = Self.item(title) { [weak self] in
+                self?.actions.setTransition(t.from, t.to, kind)
+            }
+            it.state = t.kind == kind ? .on : .off
+            it.identifier = NSUserInterfaceItemIdentifier(kind)
+            m.addItem(it)
+        }
+        m.addItem(.separator())
+        let gone = Self.item(String(localized: "Remove Transition")) {
+            [weak self] in self?.actions.setTransition(t.from, t.to, "")
+        }
+        gone.identifier = NSUserInterfaceItemIdentifier("remove")
+        m.addItem(gone)
+        return m
+    }
+
+    // For the snapshot hooks.
+
+    /// A transition's badge, in the window's points from its top left.
+    func windowPoint(transition n: Int) -> CGPoint? {
+        guard let win = window, model.transitions.indices.contains(n),
+              let (a, b, _, _) = arrow(model.transitions[n]) else {
+            return nil
+        }
+        let w = convert(Self.middle(a, b), to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// Which transition a click on transition `n`'s badge finds.
+    func transitionHit(_ n: Int) -> Int? {
+        guard model.transitions.indices.contains(n),
+              let (a, b, _, _) = arrow(model.transitions[n]) else {
+            return nil
+        }
+        return transition(at: Self.middle(a, b))
+    }
+
+    /// What ⌘ shows: "2:90-124" (the other's row, the frames) each;
+    /// "held" first while it is.
+    var overlapSummary: String {
+        let os = overlaps(held: commandHeld).map {
+            "\($0.row):\($0.frames.lowerBound)-\($0.frames.upperBound)"
+        }
+        return (commandHeld ? "held" : "-")
+            + (os.isEmpty ? "" : ":" + os.joined(separator: ","))
     }
 }
 

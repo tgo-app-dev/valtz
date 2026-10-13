@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The window: the current mode full-bleed under a Preview-style title
 /// bar (TitleBarContent), the inspector column on the right when asked
@@ -6,6 +7,9 @@ import SwiftUI
 struct RootView: View {
     @Bindable var model: AppModel
     @Environment(\.colorScheme) private var scheme
+    /// A drag over the window, and whether it holds a Valtz project
+    /// (ProjectDropDelegate).
+    @State private var projectDrag = ProjectDrag()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,6 +28,20 @@ struct RootView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        // A project dropped anywhere no panel takes a drop of its own:
+        // opened, the one open asked about first.
+        .onDrop(of: [.fileURL],
+                delegate: ProjectDropDelegate(model: model,
+                                              drag: $projectDrag))
+        .overlay {
+            if projectDrag.showsProject {
+                ProjectDropMark()
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15),
+                   value: projectDrag.showsProject)
         // A fleet job running here (DESIGN §11): the window given over to
         // it -- its controls out of reach, the mark in blue, the job's
         // progress.
@@ -170,6 +188,7 @@ struct NavPanel: View {
                 model.toggleNav()
                 openSettings()
             }
+            .shortcutHint("⌘,")
         }
         .padding(6)
         .frame(width: 52)
@@ -263,6 +282,96 @@ private struct WindowReader: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             if let window { found?(window) }
+        }
+    }
+}
+
+/// A Valtz PROJECT dragged over the window -- anywhere no panel takes the
+/// drop for itself (the prompt, Assets, Layers, the timeline, the compare
+/// bar keep theirs; the stage opens a project too) -- OPENS, the project
+/// open asked about first, as the Finder's double-click opens one. Only a
+/// project is taken: what the drag holds is read as it comes in.
+struct ProjectDropDelegate: DropDelegate {
+    let model: AppModel
+    @Binding var drag: ProjectDrag
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.fileURL])
+    }
+
+    func dropEntered(info: DropInfo) {
+        drag.number += 1
+        drag.inside = true
+        drag.project = nil
+        let n = drag.number
+        let providers = info.itemProviders(for: [.fileURL])
+        Task { @MainActor in
+            let found = await Self.project(providers) != nil
+            // Read after the drag left or dropped: nothing to show.
+            if drag.number == n && drag.inside { drag.project = found }
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: drag.project == false ? .forbidden : .copy)
+    }
+
+    func dropExited(info: DropInfo) {
+        drag.inside = false
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let providers = info.itemProviders(for: [.fileURL])
+        drag.inside = false
+        Task { @MainActor in
+            if let url = await Self.project(providers) {
+                model.openDropped(url)
+            }
+        }
+        return true
+    }
+
+    /// The first Valtz project among the drag's files.
+    @MainActor
+    private static func project(_ providers: [NSItemProvider]) async
+        -> URL? {
+        for p in providers where p.canLoadObject(ofClass: NSURL.self) {
+            let u: URL? = await withCheckedContinuation { c in
+                _ = p.loadObject(ofClass: NSURL.self) { u, _ in
+                    c.resume(returning: (u as? NSURL) as URL?)
+                }
+            }
+            if let u, AppModel.isProjectFile(u) { return u }
+        }
+        return nil
+    }
+}
+
+/// A drag over the window: its number (a read's answer for an earlier
+/// one is dropped), whether it is still over it, and whether its files
+/// hold a project -- nil while they are read: refused only once known to
+/// hold none.
+struct ProjectDrag: Equatable {
+    var number = 0
+    var inside = false
+    var project: Bool?
+    var showsProject: Bool { inside && project == true }
+}
+
+/// The window ringed in the accent while a project is over it, and what
+/// letting go does.
+private struct ProjectDropMark: View {
+    var body: some View {
+        ZStack {
+            Color.accentColor.opacity(0.08)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.accentColor, lineWidth: 3)
+                .padding(4)
+            Label("Open Project", systemImage: "folder")
+                .font(.title3.weight(.semibold))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.regularMaterial, in: Capsule())
         }
     }
 }

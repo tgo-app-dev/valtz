@@ -105,6 +105,9 @@ struct SettingsView: View {
                         .help("Forward")
                     }
                     .controlGroupStyle(.navigation)
+                    // On the pair: the toolbar draws them itself, and a
+                    // button's own modifiers are not kept.
+                    .shortcutHint("⌘[  ⌘]")
                 }
             }
         }

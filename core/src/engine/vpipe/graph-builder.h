@@ -50,6 +50,9 @@ struct RefMedia {
   std::string           kind;          // "image" | "video" | "audio"
   bool                  list = true;   // else a span on a port
   bool                  audio = false; // a clip's own sound, attached
+  // The clip continued (input role "continue"): what the new clip's
+  // seam is matched to.
+  bool                  continues = false;
   int                   width = 0;     // a clip's frame
   int                   height = 0;
   double                fps = 24;
@@ -233,7 +236,9 @@ Result<BuiltGraph> build_image_edit(const JobSpec&,
                                     const std::vector<RefImage>&);
 // generate-video (DESIGN §4c): a prompt -- and, when the family takes
 // one (`vpipe.first_frame`), a picture to open on, cropped to fill the
-// frame -- into a clip and its soundtrack. The family's config stage
+// frame; one that takes a second (`vpipe.last_frame`: H3's FL2VA
+// partition), a picture to END on as well, fitted the same -- into a
+// clip and its soundtrack. The family's config stage
 // carries its shifts, the Turbo LoRA (job.model.lora) and the preview
 // TAE; the clip is decoded in F16 and written as HEVC Main10, the sound
 // as a WAV, joined afterwards. Width and height go up to `vpipe.align`,
@@ -248,7 +253,8 @@ Result<BuiltGraph> build_image_edit(const JobSpec&,
 // reference's own (joined over the clip's length), not a generated one.
 Result<BuiltGraph> build_video(const JobSpec&,
                                const std::optional<RefImage>& first,
-                               const std::vector<RefMedia>& refs = {});
+                               const std::vector<RefMedia>& refs = {},
+                               const std::optional<RefImage>& last = {});
 // generate-audio (DESIGN §4d): a song from words, in the shapes of
 // vpipe's YuE2 graphs (docs/pipelines/yue2-text-to-music,
 // yue2-songs-from-lyrics). The style, the score's plan, the seed and the

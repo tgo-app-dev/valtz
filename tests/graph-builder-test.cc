@@ -1330,6 +1330,52 @@ TEST(graph_builder, minimax_h3_ref2va_references)
   CHECK(!vp::build_video(f, std::nullopt, refs).ok());
 }
 
+// A continuation's seam: its decoded frames matched to the tail it was
+// given -- content-aware-continuation between the decode and the writer,
+// reading the same stacked tail the encoder does, its config the
+// catalog's. A clip only referred to (not continued) is left alone.
+TEST(graph_builder, a_continuation_is_matched_at_its_seam)
+{
+  JobSpec j = job_for("minimax-h3-ref2va", kOpGenerateVideo);
+  j.params = {{"prompt", "[video continuation + audio reference] ..."},
+              {"width", 832}, {"height", 480}, {"frames", 124},
+              {"fps", 24.0}, {"steps", 8}, {"seed", 7}};
+  std::vector<vp::RefMedia> refs(1);
+  refs[0].path = "/p/guide.mov";
+  refs[0].kind = "video";
+  refs[0].list = false;
+  refs[0].audio = true;
+  refs[0].continues = true;
+  refs[0].width = 832;
+  refs[0].height = 480;
+  refs[0].count = 56;
+  auto g = vp::build_video(j, std::nullopt, refs);
+  REQUIRE_OK(g);
+  const Json* seam = find_stage(g->spec, "seam");
+  REQUIRE(seam);
+  CHECK(jget<std::string>(*seam, "type", "") ==
+        "content-aware-continuation");
+  CHECK(src_of(seam, 0) == "vae-decode" && src_of(seam, 1) == "ref1");
+  CHECK(jget(config_of(seam), "window", 0) == 4);
+  // Its tone only: across a moving shot's seam the shift it measures is
+  // the camera's.
+  CHECK(jget(config_of(seam), "apply_geometry", true) == false);
+  CHECK(src_of(find_stage(g->spec, "video-ref-encoder"), 2) == "ref1");
+  CHECK(src_of(find_stage(g->spec, "save-video"), 0) == "seam");
+
+  refs[0].continues = false;
+  auto ref = vp::build_video(j, std::nullopt, refs);
+  REQUIRE_OK(ref);
+  CHECK(!find_stage(ref->spec, "seam"));
+  CHECK(src_of(find_stage(ref->spec, "save-video"), 0) == "vae-decode");
+  JobSpec f = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  f.params = {{"prompt", "a fox"}, {"width", 832}, {"height", 480},
+              {"frames", 39}};
+  auto words = vp::build_video(f, std::nullopt);
+  REQUIRE_OK(words);
+  CHECK(!find_stage(words->spec, "seam"));
+}
+
 // FL2VA from a picture: the picture is fed at its own size, cropped with
 // Lanczos to EXACTLY the clip's frame (vpipe drops an anchor of another
 // size and the clip quietly becomes text-to-video), VAE-encoded and
@@ -1363,6 +1409,50 @@ TEST(graph_builder, minimax_h3_clip_opens_on_a_picture)
   k.params = j.params;
   k.model.engine["vpipe"]["first_frame"] = false;
   CHECK(!vp::build_video(k, first).ok());
+}
+
+// FL2VA's two keyframes: the picture it ends on fitted as the first is
+// -- at its own size, cropped to the frame -- but as it looks (the
+// request's look is the first's), VAE-encoded into generate-video's
+// LAST-keyframe port, 6. Never without a first, nor on a family that
+// ends on none.
+TEST(graph_builder, minimax_h3_clip_ends_on_a_picture)
+{
+  JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  j.params = {{"prompt", "she opens the umbrella"}, {"width", 832},
+              {"height", 480}, {"frames", 124}, {"steps", 8},
+              {"base_adjust", {{"exposure", 0.5}}}};
+  vp::RefImage first{"/tmp/closed.png", {1536, 1024}, false, true};
+  vp::RefImage last{"/tmp/open.png", {1024, 1536}, false, true};
+  auto g = vp::build_video(j, first, {}, last);
+  REQUIRE_OK(g);
+  REQUIRE(g->references.size() == 2);
+  CHECK(g->references[1].stage == "last");
+  CHECK(g->references[1].size.width == 1024 &&
+        g->references[1].size.height == 1536);
+  CHECK(g->references[1].fitted.width == 832 &&
+        g->references[1].fitted.height == 480);
+  CHECK(g->references[0].adjust.exposure == 0.5);
+  CHECK(g->references[1].adjust.exposure == 0.0);
+  const Json* fit = find_stage(g->spec, "last-fit");
+  REQUIRE(fit);
+  CHECK(src_of(fit, 0) == "last");
+  CHECK(jget<std::string>(config_of(fit), "fit", "") == "crop");
+  const Json* enc = find_stage(g->spec, "last-latent");
+  REQUIRE(enc);
+  CHECK(src_of(enc, 0) == "last-fit" && src_of(enc, 1) == "model-select");
+  const Json* gen = find_stage(g->spec, "generate-video");
+  CHECK(src_of(gen, 5) == "first-latent");
+  CHECK(src_of(gen, 6) == "last-latent");
+
+  CHECK(!vp::build_video(j, std::nullopt, {}, last).ok());
+  JobSpec k = j;
+  k.model.engine["vpipe"]["last_frame"] = false;
+  CHECK(!vp::build_video(k, first, {}, last).ok());
+  // One picture: nothing on port 6.
+  auto one = vp::build_video(j, first);
+  REQUIRE_OK(one);
+  CHECK(src_of(find_stage(one->spec, "generate-video"), 6).empty());
 }
 
 // A crop rides on the picture it belongs to, made real only as it is

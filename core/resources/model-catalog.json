@@ -33,7 +33,18 @@
     "engine.vpipe.steps_fixed: a distilled checkpoint whose schedule is",
     "its own (Qwen-Image 2.1 Turbo's sample_sigmas): no scheduler is wired,",
     "the step count is defaults.steps whatever is asked, and Favor's Custom",
-    "offers no steps."
+    "offers no steps.",
+    "engine.vpipe.first_frame / last_frame: a clip model that opens on a",
+    "picture (I2VA), and one that also ends on a second (FL2VA: generate-",
+    "video's last-keyframe port). prompting.first_last_tag: what its guide",
+    "calls the two pictures of such a clip (MiniMax H3's FL2VA: bare",
+    "\"Picture 1\", \"Picture 2\", unlike I2VA's <Picture 1>).",
+    "engine.vpipe.references.seam: a continuation's frames are matched to",
+    "the clip they continue at the seam -- vpipe's content-aware-",
+    "continuation between the decode and the writer, its config this",
+    "object -- against the tail the model was given. Its tone only: the",
+    "geometry it measures pairs the pixels, but across a moving shot's",
+    "seam it is the camera's motion (apply_geometry false)."
   ],
   "auto": {
     "image": {
@@ -466,30 +477,36 @@
           "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
           "first_frame": true,
+          "last_frame": true,
           "quality": 0.8
         }
       },
       "prompting": {
         "reference_tags": {"image": "<Picture {n}>"},
+        "first_last_tag": "Picture {n}",
         "enhance": {"generate": "minimax-h3-base"},
         "outline": {
           "en": [
-            "{if image}For the target video, at 0.00 seconds into the target video, {image} (from [Shot 1]) is fully referenced.",
-            "{if image}",
-            "{if image}integrated_multimodal_description: [Shot 1] (Begin from {image} -- its style, its subjects and where they are -- then what happens next. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
-            "{if none}integrated_multimodal_description: [Shot 1] (The style, the framing, who is where and what happens. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
-            "[Shot 2] At 00:04.000, (the camera cuts to what comes next.)",
+            "{if first}{unless last}For the target video, at 0.00 seconds into the target video, {first} (from [Shot 1]) is fully referenced.",
+            "{if last}How the reference pictures align with the target video — {first} (from Shot 1) aligns with the 0.00-second mark of the target video; {last} (from Shot 1) aligns with the {seconds}-second mark of the target video.",
+            "{if first}",
+            "{if first}{unless last}integrated_multimodal_description: [Shot 1] (Begin from {first} -- its style, its subjects and where they are -- then what happens next. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
+            "{if last}integrated_multimodal_description: [Shot 1] (Begin in the position and framing established by {first}, then the continuous path -- how the subjects move, how poses and the camera change, how the light turns -- that settles into the pose and composition established by {last} at the end. One shot. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
+            "{unless first}integrated_multimodal_description: [Shot 1] (The style, the framing, who is where and what happens. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
+            "{unless last}[Shot 2] At 00:04.000, (the camera cuts to what comes next.)",
             "",
             "overall_soundscape: (The ambience and the sounds of what happens -- steps, breathing, objects -- in one to four sentences; no dialogue, no music.)",
             "",
             "non_diegetic_music: (The score: instruments, tempo, rhythm, dynamics, in one to three sentences; N/A for none.)"
           ],
           "zh-Hans": [
-            "{if image}For the target video, at 0.00 seconds into the target video, {image} (from [Shot 1]) is fully referenced.",
-            "{if image}",
-            "{if image}integrated_multimodal_description: [Shot 1]（从 {image} 开始——它的风格、主体和它们的位置——再写接下来发生了什么。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
-            "{if none}integrated_multimodal_description: [Shot 1]（风格、构图、谁在哪里、发生了什么。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
-            "[Shot 2] At 00:04.000,（镜头切到接下来的画面。）",
+            "{if first}{unless last}For the target video, at 0.00 seconds into the target video, {first} (from [Shot 1]) is fully referenced.",
+            "{if last}How the reference pictures align with the target video — {first} (from Shot 1) aligns with the 0.00-second mark of the target video; {last} (from Shot 1) aligns with the {seconds}-second mark of the target video.",
+            "{if first}",
+            "{if first}{unless last}integrated_multimodal_description: [Shot 1]（从 {first} 开始——它的风格、主体和它们的位置——再写接下来发生了什么。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
+            "{if last}integrated_multimodal_description: [Shot 1]（从 {first} 的位置和构图开始，写出一条连续的路径——主体怎样移动、姿态和镜头怎样变化、光线怎样转变——最后落定在 {last} 的姿态和构图上。一个镜头。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
+            "{unless first}integrated_multimodal_description: [Shot 1]（风格、构图、谁在哪里、发生了什么。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
+            "{unless last}[Shot 2] At 00:04.000,（镜头切到接下来的画面。）",
             "",
             "overall_soundscape:（环境声和动作的声音——脚步、呼吸、物件——一到四句；不写对白，不写音乐。）",
             "",
@@ -565,7 +582,8 @@
               "reference_image_short_edge": 1024,
               "max_prompt_tokens": 32768,
               "unload_when_idle": "auto"
-            }
+            },
+            "seam": {"window": 4, "apply_geometry": false}
           },
           "quality": 0.8
         }

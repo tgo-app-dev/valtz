@@ -127,8 +127,10 @@ be MADE is shots: below):
 4. `add_clip` each part in story order (the order they were shot,
    unless asked otherwise), its `in` and `out`. Without `start` it goes
    right after the last clip. `transition: "dissolve"` (0.5 s) joins
-   two shots softly -- or `set_transition` afterwards, which overlaps
-   them itself; a plain cut is livelier. A clip's part cannot run past
+   two shots softly; `"dip-black"` -- the picture to black and back,
+   the sound out and in -- marks a jump in time or place (another day,
+   the end); `"dip-white"` a flash, a memory. Or `set_transition`
+   afterwards, which overlaps them itself; a plain cut is livelier. A clip's part cannot run past
    its own end. The video is as long as
    its clips: add up the parts to reach the length asked -- about a
    minute when none is -- taking longer parts or more of them, and never

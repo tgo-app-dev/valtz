@@ -89,6 +89,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/TitleBar.swift
   Sources/Views/VideoEncodingRows.swift
   Sources/Views/AppKitPopover.swift
+  Sources/Views/ShortcutHints.swift
   Sources/Views/FleetView.swift
   Sources/Views/FleetPolicyViews.swift
   Sources/Views/FleetServing.swift

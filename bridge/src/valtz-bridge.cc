@@ -1334,6 +1334,9 @@ Core::generate_video(const std::string& request_json)
     if (auto f = AssetId::parse(jget<std::string>(*j, "first", ""))) {
       req.first = *f;
     }
+    if (auto l = AssetId::parse(jget<std::string>(*j, "last", ""))) {
+      req.last = *l;
+    }
     req.first_adjust = media::adjustments_from_json(
         jget(*j, "first_adjust", Json::object()));
     req.first_crop = media::crop_from_json(
@@ -1510,8 +1513,12 @@ Core::prompt_outline(const std::string& request_json) const
                     : k == "audio" ? assist::RefKind::Audio
                                    : assist::RefKind::Other);
     }
+    assist::OutlineFrames frames;
+    frames.first = jget(*j, "first", -1);
+    frames.last = jget(*j, "last", -1);
+    frames.seconds = jget(*j, "seconds", 0.0);
     auto t = _impl->ctl->prompt_outline(jget<std::string>(*j, "model", ""),
-                                        row);
+                                        row, {}, frames);
     return t.ok() ? ok({{"text", *t}}) : err(t.error());
   });
 }
@@ -2294,6 +2301,9 @@ Core::enhance_prompt(const std::string& request_json)
     }
     if (auto b = AssetId::parse(jget<std::string>(*j, "base", ""))) {
       req.base = *b;
+    }
+    if (auto l = AssetId::parse(jget<std::string>(*j, "last", ""))) {
+      req.last = *l;
     }
     for (const auto& s : jget(*j, "references",
                               std::vector<std::string>{})) {

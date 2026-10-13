@@ -417,8 +417,14 @@ final class CoreService: @unchecked Sendable {
 
     /// `model`'s prompt outline written for a row holding `row` ("image",
     /// "video", "audio", in order); "" without one.
-    func promptOutline(model: String, row: [String]) -> String {
-        let r = send(core.prompt_outline, ["model": model, "row": row])
+    /// `first` / `last`: a clip's keyframes by their places in `row`
+    /// (-1: as the model takes them, -2: none); `seconds` its length.
+    func promptOutline(model: String, row: [String], first: Int = -1,
+                       last: Int = -1, seconds: Double = 0) -> String {
+        let r = send(core.prompt_outline, [
+            "model": model, "row": row, "first": first, "last": last,
+            "seconds": seconds,
+        ])
         return r["text"] as? String ?? ""
     }
 

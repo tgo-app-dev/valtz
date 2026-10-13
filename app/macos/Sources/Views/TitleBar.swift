@@ -27,6 +27,7 @@ struct TitleBarContent: ToolbarContent {
                 Label("Navigation", systemImage: "line.3.horizontal")
             }
             .help(model.navOpen ? "Hide navigation" : "Show navigation")
+            .shortcutHint("⌃⌘N")
             .disabled(model.fleetServing != nil)
         }
 
@@ -268,6 +269,7 @@ struct TitleBarControls: View {
                     on: model.markupOpen) {
                     withAnimation(AppModel.motion) { model.markupOpen.toggle() }
                 }
+                .shortcutHint("⇧⌘A")
                 .titleBarCapsule()
 
                 HStack(spacing: 2) {
@@ -280,11 +282,15 @@ struct TitleBarControls: View {
                             model.inspectorOpen.toggle()
                         }
                     }
+                    .shortcutHint("⌥⌘I")
+                    // Its Save… (Export…): ⌘E.
                     ShareButton(model: model)
+                        .shortcutHint("⌘E")
                 }
                 .titleBarCapsule()
 
                 TitleBarSearchField(model: model)
+                    .shortcutHint("⌘F")
     }
 }
 
@@ -353,12 +359,14 @@ struct ZoomGroup: View {
                         title: "Zoom Out", help: "Zoom out (⌘−)") {
                 model.zoom(.zoomOut)
             }
+            .shortcutHint("⌘−")
             divider
             TitleBarButton(symbol: "1.magnifyingglass", title: "Actual Size",
                         help: "Actual pixels (⌘0)",
                         on: shown && v.isActualSize) {
                 model.zoom(.actualSize)
             }
+            .shortcutHint("⌘0")
             if shown && !v.isActualSize {
                 divider
                 Text(verbatim: v.zoomText)
@@ -379,11 +387,13 @@ struct ZoomGroup: View {
                         on: shown && v.fitting) {
                 model.toggleFit()
             }
+            .shortcutHint("⌘9")
             divider
             TitleBarButton(symbol: "plus.magnifyingglass",
                         title: "Zoom In", help: "Zoom in (⌘+)") {
                 model.zoom(.zoomIn)
             }
+            .shortcutHint("⌘+")
         }
         .titleBarCapsule()
         .disabled(!model.canZoom)

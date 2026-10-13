@@ -1037,7 +1037,31 @@ struct ComposeLayer {
   bool        mask = false;
   // How much of it shows (a dissolve's ramp): its alpha, times this.
   double      opacity = 1;
+  // A dip's: how far it has gone to a flat colour (0 black, 1 white).
+  double      dip = 0;
+  double      dip_level = 0;
 };
+
+// `img` gone `amount` of the way to a flat colour -- `level` 0 black, 1
+// white, in the working space -- where it shows: a dip's. The matrix
+// works on the colour as is (unpremultiplied), so its alpha stays and a
+// transparent part stays transparent.
+CIImage*
+dipped(CIImage* img, double amount, double level)
+{
+  if (!img || amount <= 0) {
+    return img;
+  }
+  const double k = std::min(1.0, amount);
+  const double bias = level * k;
+  return [img imageByApplyingFilter:@"CIColorMatrix"
+                withInputParameters:@{
+    @"inputRVector" : [CIVector vectorWithX:1 - k Y:0 Z:0 W:0],
+    @"inputGVector" : [CIVector vectorWithX:0 Y:1 - k Z:0 W:0],
+    @"inputBVector" : [CIVector vectorWithX:0 Y:0 Z:1 - k W:0],
+    @"inputBiasVector" : [CIVector vectorWithX:bias Y:bias Z:bias W:0],
+  }];
+}
 
 // `img` faded to `opacity` of itself.
 CIImage*
@@ -1105,7 +1129,8 @@ compose_images(const std::vector<ComposeLayer>& layers,
       imageByCroppingToRect:seen];
   CIImage* base = clear;
   if (!framed && layers.front().visible) {
-    base = [faded(bottom, layers.front().opacity)
+    const ComposeLayer& b = layers.front();
+    base = [faded(dipped(bottom, b.dip, b.dip_level), b.opacity)
         imageByCompositingOverImage:clear];
   }
   // A layer on the frame: through its crop, or centred at its own size;
@@ -1176,7 +1201,8 @@ compose_images(const std::vector<ComposeLayer>& layers,
     if (masks_it(i)) {
       img = masked(img, i + 1);
     }
-    base = [faded(img, l.opacity) imageByCompositingOverImage:base];
+    base = [faded(dipped(img, l.dip, l.dip_level), l.opacity)
+        imageByCompositingOverImage:base];
   }
   // On the canvas, from (0, 0).
   base = [base imageByCroppingToRect:seen];
@@ -1327,7 +1353,7 @@ to_json(const MovieStack& m)
   Json ts = Json::array();
   for (const auto& t : m.transitions) {
     ts.push_back({{"from", t.from}, {"to", t.to},
-                  {"dissolve", t.dissolve}});
+                  {"kind", std::string(to_string(t.kind))}});
   }
   return {{"layers", ls}, {"canvas", to_json(m.canvas)},
           {"frames", m.frames}, {"rate_num", m.rate.num},
@@ -1357,9 +1383,12 @@ movie_stack_from_json(const Json& j)
   const auto den = jget<std::int64_t>(j, "rate_den", 1);
   m.rate = num > 0 && den > 0 ? Rational(num, den) : Rational(0, 1);
   for (const auto& t : jget(j, "transitions", Json::array())) {
-    m.transitions.push_back(
-        {jget<std::size_t>(t, "from", 0), jget<std::size_t>(t, "to", 0),
-         jget(t, "dissolve", false)});
+    // Its kind; written before kinds, a dissolve or a cut.
+    const auto kind = transition_kind(jget<std::string>(
+        t, "kind", jget(t, "dissolve", false) ? "dissolve" : "cut"));
+    m.transitions.push_back({jget<std::size_t>(t, "from", 0),
+                              jget<std::size_t>(t, "to", 0),
+                              kind.value_or(TransitionSpec::Kind::Cut)});
   }
   return m;
 }
@@ -1651,7 +1680,8 @@ public:
       // A mask not on masks nothing.
       in.push_back({img, l.adjust.at(lf), l.crop.at(lf),
                     l.visible && (!l.mask || on), l.mask,
-                    _legacy && i == 0 ? 1.0 : w.opacity[i]});
+                    _legacy && i == 0 ? 1.0 : w.opacity[i], w.dip[i],
+                    w.dip_level[i]});
     }
     return compose_images(in, stack.canvas);
   }
@@ -1859,7 +1889,12 @@ encode_movie_stack(const MovieStack& stack, Rational rate_in, PixelSize size,
           w.error ? w.error.localizedDescription.UTF8String : "?"));
     }
     [w startSessionAtSourceTime:kCMTimeZero];
-    CGColorSpaceRef cs709 = CGColorSpaceCreateWithName(kCGColorSpaceITUR_709);
+    // Drawn into the 709 Core Video reads the file back in (its tags,
+    // above), not the named one: that lifted every 709 clip drawn through
+    // it -- a mid-grey by a tenth, the shadows most -- and a timeline in a
+    // timeline twice. A continuation's guide is such a movie, and the
+    // model picked up from a washed-out picture.
+    CGColorSpaceRef cs709 = create_video_output_space(ColorInfo{});
     CIContext* ctx = decode_context();
     Status st = ok_status();
     for (std::int64_t f = 0; f < reader->frames() && st.ok(); ++f) {
@@ -1933,7 +1968,13 @@ write_stack_frame(const MovieStack& stack, Rational rate,
     const std::int64_t f = std::clamp<std::int64_t>(
         frame, 0, std::max<std::int64_t>(0, reader->frames() - 1));
     VALTZ_ASSIGN(img, reader->frame(f));
-    return write_png16(img, out);
+    // On black, as it plays and as its movie is written: a video has no
+    // transparency. Drawn clear, a timeline of markup alone came out
+    // white in a JPEG made of it -- the thumbnail of it in the prompt's
+    // row, the agent's look at its frames.
+    CIImage* black = [[CIImage imageWithColor:[CIColor blackColor]]
+        imageByCroppingToRect:img.extent];
+    return write_png16([img imageByCompositingOverImage:black], out);
   }
 }
 
@@ -2002,7 +2043,8 @@ struct StackRenderer::Impl {
       const double lf = local_frame(timings[i], t, rate);
       in.push_back({img, l.adjust.at(lf), l.crop.at(lf),
                     l.visible && (!l.mask || on), l.mask,
-                    legacy && i == 0 ? 1.0 : w.opacity[i]});
+                    legacy && i == 0 ? 1.0 : w.opacity[i], w.dip[i],
+                    w.dip_level[i]});
     }
     return compose_images(in, stack.canvas);
   }

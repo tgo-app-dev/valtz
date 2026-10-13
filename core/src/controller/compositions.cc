@@ -525,15 +525,24 @@ Controller::set_transition(ProjectId pid, AssetId aid,
   if (from == to || !has(from) || !has(to)) {
     return make_error(Code::InvalidArgument, msg::kTransitionLayers);
   }
-  if (!kind.empty() && kind != "cut" && kind != "dissolve") {
+  if (!kind.empty() && !media::transition_kind(kind)) {
     return make_error(Code::InvalidArgument, msg::kTransitionLayers);
   }
   VALTZ_TRY(p->update_asset(aid, [&](project::Asset& x) -> Status {
-    std::erase_if(x.transitions, [&](const project::Transition& t) {
+    auto pair = [&](const project::Transition& t) {
       return (t.from == from && t.to == to) ||
              (t.from == to && t.to == from);
-    });
-    if (!kind.empty()) {
+    };
+    // The pair's changed where it is (the timeline's arrows keep their
+    // order); a new one last; "" takes it away.
+    auto it = std::ranges::find_if(x.transitions, pair);
+    if (kind.empty()) {
+      std::erase_if(x.transitions, pair);
+    } else if (it != x.transitions.end()) {
+      it->from = from;
+      it->to = to;
+      it->kind = kind;
+    } else {
       project::Transition t;
       t.from = from;
       t.to = to;
@@ -1933,7 +1942,9 @@ Controller::rendered_(ProjectId pid, AssetId id, std::uint32_t version,
     }
     return mix;
   }
-  return cached_(pid, cache::CacheStore::key_for(key, "movie.mov"),
+  // Named for its 709 (2026-10-12): one cached before, drawn into the
+  // named BT.709 space -- lighter, the shadows most -- is not found.
+  return cached_(pid, cache::CacheStore::key_for(key, "movie-709.mov"),
                  [&](const fs::path& out) -> Status {
     VALTZ_ASSIGN(media::MovieStack stack,
                  movie_stack_(pid, id, true, std::nullopt, depth + 1));
@@ -2023,7 +2034,12 @@ Controller::rendered_frame_(ProjectId pid, AssetId id, std::uint32_t version,
   VALTZ_ASSIGN(ContentHash key, render_key_(*p, id, version, depth));
   const std::string variant = std::format("frame-{}.png", frame);
   if (a.cls == AssetClass::Composition) {
-    return cached_(pid, cache::CacheStore::key_for(key, variant),
+    // Named for its black and its 709 (2026-10-12): a frame cached
+    // before -- drawn clear, a JPEG of it white; or from a composition's
+    // movie drawn lighter -- is not found.
+    return cached_(pid, cache::CacheStore::key_for(
+                            key, std::format("frame-{}-black-709.png",
+                                             frame)),
                    [&](const fs::path& out) -> Status {
       VALTZ_ASSIGN(media::MovieStack stack,
                    movie_stack_(pid, id, true, std::nullopt, depth + 1));
@@ -2367,7 +2383,10 @@ Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
     auto f = index.find(t.from);
     auto g = index.find(t.to);
     if (f != index.end() && g != index.end()) {
-      m.transitions.push_back({f->second, g->second, t.kind == "dissolve"});
+      m.transitions.push_back(
+          {f->second, g->second,
+           media::transition_kind(t.kind).value_or(
+               media::TransitionSpec::Kind::Cut)});
     }
   }
   return m;

@@ -140,6 +140,9 @@ struct CatalogModel: Decodable, Sendable, Identifiable {
     /// It has a prompt outline (catalog `prompting.outline`): an empty
     /// prompt box can start from it.
     var hasOutline: Bool?
+    /// A clip model that ends on a picture as well as opening on one
+    /// (catalog `last_frame`: MiniMax H3 FL2VA).
+    var lastFrame: Bool?
     /// A quantized variant of `quantizeFrom` (its bits): listed as that
     /// one -- Favor picks the file (core Controller::weights_variant_).
     var quantizeFrom: String?

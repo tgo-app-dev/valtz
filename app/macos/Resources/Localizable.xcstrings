@@ -153,6 +153,22 @@
         }
       }
     },
+    "%@ does not read %@: it is left out." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ does not read %2$@: it is left out."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ 不读取 %2$@：它不会被使用。"
+          }
+        }
+      }
+    },
     "%@ drafts ahead" : {
       "localizations" : {
         "zh-Hans" : {
@@ -388,6 +404,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 页"
+          }
+        }
+      }
+    },
+    "%@ reads its first and last pictures only: %@ items are left out." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ reads its first and last pictures only: %2$@ items are left out."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ 只读取首尾两张图片：其余 %2$@ 项不会被使用。"
           }
         }
       }
@@ -704,6 +736,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ — 要编辑的图片。点按可在舞台上查看；拖入文字可引用它。"
+          }
+        }
+      }
+    },
+    "%@ — “%@” to the model. Click to see it on the stage; drag it into the text to mention it, or along the row to change the order." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ — “%2$@” to the model. Click to see it on the stage; drag it into the text to mention it, or along the row to change the order."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ — 模型称它为“%2$@”。点按可在舞台上查看；拖入文字可引用它，沿这一行拖动可调整顺序。"
           }
         }
       }
@@ -3903,6 +3951,16 @@
         }
       }
     },
+    "Cross Dissolve" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "交叉溶解"
+          }
+        }
+      }
+    },
     "Current" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4322,6 +4380,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "尺寸"
+          }
+        }
+      }
+    },
+    "Dip to Black" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "黑场过渡"
+          }
+        }
+      }
+    },
+    "Dip to White" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "白场过渡"
           }
         }
       }
@@ -5432,6 +5510,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "防火墙已关闭：无需允许"
+          }
+        }
+      }
+    },
+    "First and last frames · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "首尾帧 · %@"
           }
         }
       }
@@ -7185,6 +7273,16 @@
         }
       }
     },
+    "Keyboard Shortcuts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "键盘快捷键"
+          }
+        }
+      }
+    },
     "Keyed: changes over the clip" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7294,6 +7392,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放大文字"
+          }
+        }
+      }
+    },
+    "Last frame" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "最后一帧"
           }
         }
       }
@@ -9543,6 +9651,16 @@
         }
       }
     },
+    "Open Project" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "打开项目"
+          }
+        }
+      }
+    },
     "Open Project…" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10921,6 +11039,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "移除文字或形状"
+          }
+        }
+      }
+    },
+    "Remove Transition" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除转场"
           }
         }
       }
@@ -12628,6 +12756,16 @@
         }
       }
     },
+    "Space" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "空格"
+          }
+        }
+      }
+    },
     "Speaking" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14268,6 +14406,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "要让它放得下"
+          }
+        }
+      }
+    },
+    "To open a project, drop it outside the prompt." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "要打开项目，请将它拖放到提示框以外的位置。"
           }
         }
       }
@@ -18041,6 +18189,23 @@
         }
       }
     },
+    "core.video_ends_on_picture" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A clip can end only on a picture, and only with a model that ends on one, such as MiniMax H3 FL2VA."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "视频只能以图片结尾，而且只有能以图片结尾的模型（如 MiniMax H3 FL2VA）才可以。"
+          }
+        }
+      }
+    },
     "core.video_first_or_references" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18054,6 +18219,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "片段要么从一张图片开始，要么读取参考素材，不能两者兼有。"
+          }
+        }
+      }
+    },
+    "core.video_last_needs_first" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A clip ends on a picture only when it opens on one too."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "视频只有在以一张图片开头时，才能以另一张图片结尾。"
           }
         }
       }

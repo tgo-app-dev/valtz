@@ -41,8 +41,9 @@ struct ComposerStack: View {
     /// given, its top square against the prompt toolbar and its tabs
     /// down its left side; no modality tab, no tray.
     var immersive = false
-    /// The card's width in the editor (SimpleView sets it: wider while a
-    /// suggestion is beside the prompt and the inspector is shut).
+    /// The card's width in the editor (SimpleView sets it: wider while it
+    /// is split -- a suggestion beside the prompt, the agent's session --
+    /// to the window's or the inspector's edge).
     var cardWidth: CGFloat = 680
     @State private var promptHeight: CGFloat = 60
     /// Its height not compact: what a tray closing grows it back to.
@@ -500,6 +501,7 @@ struct ComposerStack: View {
         .help(immersive ? "Back to the stage, this prompt in the box (⇧⌘E)"
                         : "Edit the prompt the window's height, several at once (⇧⌘E)")
         .accessibilityLabel(Text("Prompt Editor"))
+        .shortcutHint("⇧⌘E")
     }
 
     private var scrollFade: some View {
@@ -633,6 +635,8 @@ struct ComposerStack: View {
             .clipped()
             .allowsHitTesting(open)
             .accessibilityHidden(!open)
+            // Shut, its buttons' keys are not shown (⌘? held).
+            .environment(\.shortcutHintsHidden, !open)
             // Out of the Tab order too: a shut drawer's fields are still
             // laid out (at no height), and Tab would visit them unseen.
             .disabled(!open)
@@ -782,7 +786,7 @@ struct ComposerStack: View {
                     // Short of room, the model's name gives way; the size
                     // and the preference stay whole.
                     HStack(spacing: 0) {
-                        Text(summaryLead)
+                        Text(Self.summaryLead(model))
                             .lineLimit(1)
                             .truncationMode(.tail)
                         Text(verbatim: summaryTail)
@@ -830,8 +834,8 @@ struct ComposerStack: View {
     static let trayFill = Color.valtzPanel
 
     /// What runs: "Edit · Qwen-Image 2.1", "Compose · …", "From picture ·
-    /// MiniMax H3 FL2VA" or the model.
-    private var summaryLead: String {
+    /// MiniMax H3 FL2VA", "First and last frames · …" or the model.
+    static func summaryLead(_ model: AppModel) -> String {
         if model.activeModality == .agent {
             return String(localized: "Agent · \(model.agentBackendLabel)")
         }
@@ -854,8 +858,11 @@ struct ComposerStack: View {
             return model.speaks && model.speechVoice != nil
                 ? String(localized: "Voice · \(name)") : name
         }
-        if model.opensOnPicture, model.baseAttachment?.kind == "image" {
-            return String(localized: "From picture · \(model.imageModelName)")
+        // A clip opening on a picture -- and ending on another (FL2VA).
+        if let k = model.keyframes {
+            return k.last != nil
+                ? String(localized: "First and last frames · \(model.imageModelName)")
+                : String(localized: "From picture · \(model.imageModelName)")
         }
         guard model.willEdit else { return model.imageModelName }
         // The base fills the size set here (its own, unless changed);
@@ -957,6 +964,8 @@ struct AttachMenu: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        // File › Attach Media…: its Browse….
+        .shortcutHint("⇧⌘I")
         .disabled(model.attachCapture != nil)
         .help("Attach: a file, a sound recorded, a photo or a video from the camera")
     }
@@ -1362,6 +1371,7 @@ private struct StartButton: View {
                 .buttonBorderShape(.circle)
                 .keyboardShortcut(".", modifiers: .command)
                 .help("Stop the task on the stage (⌘.)")
+                .shortcutHint("⌘.")
                 .transition(Self.stopTransition)
             }
             Button(action: model.start) {
@@ -1370,6 +1380,7 @@ private struct StartButton: View {
             }
             .buttonStyle(.glassProminent)
             .keyboardShortcut(.return, modifiers: .command)
+            .shortcutHint("⌘↩")
             .disabled(!model.canStart)
             // A capsule: the rounder shape sits better inside the tab's
             // own rounded corner.

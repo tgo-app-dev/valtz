@@ -222,7 +222,7 @@ Status write_movie_frame(const std::filesystem::path& src, double seconds,
                          const std::filesystem::path& out);
 
 // One frame of the stack (timeline frame `frame`), written as a 16-bit
-// PNG at the stack's own size.
+// PNG at the stack's own size, on black as it plays.
 Status write_stack_frame(const MovieStack& stack, Rational rate,
                          std::int64_t frame,
                          const std::filesystem::path& out);

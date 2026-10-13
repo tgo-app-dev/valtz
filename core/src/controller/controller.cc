@@ -242,6 +242,32 @@ templated(const models::ModelEntry& m, std::string words)
   return t.substr(0, at) + words + t.substr(at + 8);
 }
 
+// A tag's form with its number in ("<Picture {n}>", 2: "<Picture 2>").
+std::string
+numbered(std::string form, int n)
+{
+  if (const auto at = form.find("{n}"); at != std::string::npos) {
+    form.replace(at, 3, std::to_string(n));
+  }
+  return form;
+}
+
+// What a clip model's prompts call the pictures it opens and ends on:
+// FL2VA's own form when both are given (catalog `first_last_tag`), else
+// its picture tag ("<Picture {n}>").
+std::string
+keyframe_tag(const models::ModelEntry& m, bool both)
+{
+  const std::string own =
+      both ? jget<std::string>(m.prompting, "first_last_tag", "")
+           : std::string();
+  return !own.empty()
+             ? own
+             : jget<std::string>(jget(m.prompting, "reference_tags",
+                                      Json::object()),
+                                 "image", "");
+}
+
 // A model from an extension is recorded with its package and version: a
 // project opened without it can say what made it, and what to install.
 void
@@ -2823,8 +2849,14 @@ Controller::thumbnail(ProjectId pid, AssetId aid, int max_px, bool plain)
     VALTZ_ASSIGN(src, p->media_path(aid));
     drawn_file = [&]() -> Result<fs::path> { return src; };
   }
+  // A timeline's, of its frame on black and its compositions' movies in
+  // Core Video's 709 (2026-10-12): one cached of its frame drawn clear --
+  // white -- or lighter is not found.
+  const bool timeline = a.cls == project::AssetClass::Composition &&
+                        a.kind == project::AssetKind::Video;
   const std::string key = cache::CacheStore::key_for(
-      content, std::format("thumb-{}.jpg", max_px));
+      content, std::format("thumb-{}{}.jpg", max_px,
+                           timeline ? "-black-709" : ""));
   if (is_ephemeral_(pid)) {
     // Kept in the package: nothing of the session in the shared cache.
     const fs::path dir = p->blobs().tmp_dir() / "thumbs";
@@ -3126,7 +3158,17 @@ std::string
 Controller::ReplyForm::apply(std::string prompt) const
 {
   if (!lead.empty() && !prompt.empty()) {
-    prompt = lead + "\n\n" + prompt;
+    // "{last_shot}": the number of the reply's final [Shot N].
+    std::string l = lead;
+    if (const auto at = l.find("{last_shot}"); at != std::string::npos) {
+      int last = 1;
+      for (auto s = prompt.find("[Shot "); s != std::string::npos;
+           s = prompt.find("[Shot ", s + 1)) {
+        last = std::max(last, std::atoi(prompt.c_str() + s + 6));
+      }
+      l.replace(at, 11, std::to_string(last));
+    }
+    prompt = l + "\n\n" + prompt;
   }
   return assist::retag(prompt, names);
 }
@@ -3362,6 +3404,9 @@ Controller::enhance_prompt(EnhancePromptRequest req)
     if (req.base) {
       row.push_back(*req.base);
     }
+    if (req.last) {
+      row.push_back(*req.last);
+    }
     row.insert(row.end(), req.references.begin(), req.references.end());
   }
   // Its tags as mentions of what they name (none: dropped).
@@ -3504,6 +3549,10 @@ Controller::clip_request_(
     images.push_back({"image", *path, {}, {}});
     return true;
   };
+  auto is_picture = [&](AssetId id) {
+    auto a = p->asset(id);
+    return a.ok() && a->kind == project::AssetKind::Image;
+  };
   // Each mention as the model names its medium; the rest dropped, as
   // generate_video drops them.
   std::map<std::string, std::string> tag_of;
@@ -3600,6 +3649,39 @@ Controller::clip_request_(
     task(reused, "audio reuse");
     task(heard, "audio reference");
     er.video_tasks = tasks;
+  } else if (p && req.base && req.last &&
+             m.has(models::Capability::ImageToVideo) &&
+             jget(vp, "first_frame", false) &&
+             jget(vp, "last_frame", false) && is_picture(*req.base) &&
+             is_picture(*req.last)) {
+    er.video_mode = "FL2VA";
+    // The guide's FL2VA instruction, word for word -- its pictures bare,
+    // as that case names them; the last shot's number is the reply's
+    // (ReplyForm::apply).
+    const std::string named = keyframe_tag(m, true);
+    const std::string tags[] = {numbered(named, 1), numbered(named, 2)};
+    form.lead = std::format(
+        "How the reference pictures align with the target video — {} "
+        "(from Shot 1) aligns with the 0.00-second mark of the target "
+        "video; {} (from Shot {{last_shot}}) aligns with the {:.2f}-second "
+        "mark of the target video.",
+        tags[0], tags[1], er.seconds);
+    const AssetId ends[] = {*req.base, *req.last};
+    for (int i = 0; i < 2; ++i) {
+      tag_of[ends[i].str()] = tags[i];
+      if (const auto t = row_tag(ends[i].str()); !t.empty()) {
+        names.emplace_back(tags[i], t);
+      }
+      std::string line = std::format(
+          "{}: the picture the video {}, \"{}\"", tags[i],
+          i == 0 ? "opens on (its first frame)"
+                 : "ends on (its last frame)",
+          p->asset(ends[i])->name);
+      if (show(ends[i])) {
+        line += std::format(" -- image {} shown above", images.size());
+      }
+      er.references.push_back(std::move(line));
+    }
   } else if (p && req.base && m.has(models::Capability::ImageToVideo) &&
              jget(vp, "first_frame", false)) {
     auto a = p->asset(*req.base);
@@ -4035,6 +4117,9 @@ Controller::generate_video(GenerateVideoRequest req)
     if (req.first) {
       row.push_back(*req.first);
     }
+    if (req.last) {
+      row.push_back(*req.last);
+    }
   }
   VALTZ_ASSIGN(PromptForm pf, prompt_form_(*p, req.prompt, req.inline_media,
                                            row, true));
@@ -4043,8 +4128,11 @@ Controller::generate_video(GenerateVideoRequest req)
     return make_error(Code::InvalidArgument, msg::kPromptEmpty);
   }
   const bool refs = !req.references.empty() || req.continue_from;
-  if (refs && req.first) {
+  if (refs && (req.first || req.last)) {
     return make_error(Code::InvalidArgument, msg::kVideoFirstOrReferences);
+  }
+  if (req.last && !req.first) {
+    return make_error(Code::InvalidArgument, msg::kVideoLastNeedsFirst);
   }
   // With references, Auto's video `edit` pick (Ref2VA); else its generate.
   const char* op = refs ? "edit" : "generate";
@@ -4076,6 +4164,13 @@ Controller::generate_video(GenerateVideoRequest req)
         !m->has(models::Capability::ImageToVideo) ||
         !jget(vp, "first_frame", false)) {
       return make_error(Code::Unsupported, msg::kVideoStartsFromPicture);
+    }
+  }
+  if (req.last) {
+    VALTZ_ASSIGN(project::Asset la, p->asset(*req.last));
+    if (la.kind != project::AssetKind::Image ||
+        !jget(vp, "last_frame", false)) {
+      return make_error(Code::Unsupported, msg::kVideoEndsOnPicture);
     }
   }
 
@@ -4138,18 +4233,24 @@ Controller::generate_video(GenerateVideoRequest req)
   if (req.first) {
     // The picture it opens on is <Picture 1> to the model (H3's I2VA:
     // "<Picture 1> (from [Shot 1]) is fully referenced"): its mentions
-    // and tags so named, any other dropped.
-    std::string first = jget<std::string>(
-        jget(m->prompting, "reference_tags", Json::object()), "image", "");
-    if (const auto at = first.find("{n}"); at != std::string::npos) {
-      first.replace(at, 3, "1");
+    // and tags so named, any other dropped. Opening on one and ending on
+    // another (FL2VA), the two are named as that case of the guide names
+    // them: "Picture 1", "Picture 2".
+    const std::string form = keyframe_tag(*m, req.last.has_value());
+    if (form.find("{n}") != std::string::npos) {
       std::vector<std::string> tags;
       for (const auto& id : pf.inline_media) {
-        tags.push_back(id && *id == *req.first ? first : std::string());
+        const bool last = id && req.last && *id == *req.last;
+        tags.push_back(id && *id == *req.first ? numbered(form, 1)
+                       : last                  ? numbered(form, 2)
+                                               : std::string());
       }
       r.params["prompt"] = templated(*m, assist::tag_inline(pf.text, tags));
     }
     r.inputs.push_back({"first", *req.first, 0});
+    if (req.last) {
+      r.inputs.push_back({"last", *req.last, 0});
+    }
     // As for an edit's base: what the request says, over the picture as
     // it looks (rendered for the job, submit_build_).
     if (!req.first_adjust.identity()) {
@@ -4199,16 +4300,43 @@ Controller::generate_video(GenerateVideoRequest req)
 Result<std::string>
 Controller::prompt_outline(const std::string& model,
                            const std::vector<assist::RefKind>& row,
-                           std::string_view language) const
+                           std::string_view language,
+                           assist::OutlineFrames frames) const
 {
   const models::ModelEntry* m = _catalog.find(model);
   if (!m) {
     return make_error(Code::NotFound, msg::kUnknownModel,
                       {{"model", model}});
   }
+  // A clip model opens on a picture, and ends on the next, as it can.
+  const Json vp = jget(m->engine, "vpipe", Json::object());
+  const auto picture = [&](int from, int skip) {
+    for (int i = std::max(0, from); i < static_cast<int>(row.size()); ++i) {
+      if (row[i] == assist::RefKind::Image && i != skip) {
+        return i;
+      }
+    }
+    return -1;
+  };
+  if (!jget(vp, "first_frame", false) || frames.first < -1) {
+    frames.first = -1;
+  } else if (frames.first == -1) {
+    frames.first = picture(0, -1);
+  }
+  if (frames.first < 0 || !jget(vp, "last_frame", false) ||
+      frames.last < -1) {
+    frames.last = -1;
+  } else if (frames.last == -1) {
+    frames.last = picture(0, frames.first);
+  }
+  if (frames.seconds <= 0) {
+    const Json d = jget(vp, "defaults", Json::object());
+    const double fps = jget(d, "fps", 24.0);
+    frames.seconds = fps > 0 ? jget(d, "frames", 0) / fps : 0;
+  }
   return assist::prompt_outline(jget(m->prompting, "outline", Json()),
                                 language.empty() ? _cfg.language : language,
-                                row);
+                                row, frames);
 }
 
 Result<Json>
@@ -5190,7 +5318,9 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
   for (const auto& in : inputs) {
     VALTZ_ASSIGN(project::Asset ia, p->asset(in.asset));
     const bool picture_in = in.role == "base" || in.role == "reference" ||
-                            in.role == "first";
+                            in.role == "first" || in.role == "last";
+    // The history's "base as sent": an edit's base, a clip's opening.
+    const bool opening = in.role == "base" || in.role == "first";
     const bool drawn = ia.cls == project::AssetClass::Still ||
                        ia.cls == project::AssetClass::Composition ||
                        ia.cls == project::AssetClass::Markup;
@@ -5206,8 +5336,8 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
       VALTZ_ASSIGN(ji.hash, hash_file(ji.path));
       VALTZ_LOG_INFO("build", "{} ({}) drawn for the model", ia.name,
                      in.role);
-      if (picture_in && in.role != "reference" &&
-          ia.kind == project::AssetKind::Image && rendered_base.empty()) {
+      if (opening && ia.kind == project::AssetKind::Image &&
+          rendered_base.empty()) {
         if (auto b = p->blobs().ingest_file(ji.path); b.ok()) {
           rendered_base = *b;
         }
@@ -5238,7 +5368,7 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
         VALTZ_ASSIGN(ji.info, media::probe_file(flat));
         VALTZ_ASSIGN(ji.hash, hash_file(flat));
         ji.path = flat;
-        if (in.role != "reference" && rendered_base.empty()) {
+        if (opening && rendered_base.empty()) {
           if (auto b = p->blobs().ingest_file(flat); b.ok()) {
             rendered_base = *b;
           }

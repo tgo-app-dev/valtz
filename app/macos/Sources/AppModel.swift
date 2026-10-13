@@ -1061,8 +1061,9 @@ final class AppModel {
     /// base anyway).
     private var sizeIsBase = false
     var preference: Preference = .balanced
-    /// Favor's Custom: each model family's option values, kept between
-    /// launches, and the preset Custom starts from (and sends with them).
+    /// Favor's Custom: each model's option values (`tuningKey`), kept
+    /// between launches, and the preset Custom starts from (and sends
+    /// with them).
     var customTunings: [String: Tuning] = AppModel.loadCustomTunings()
     var customBase: Preference = .balanced
     /// The options the Custom panel draws, for the model Start runs.
@@ -1428,6 +1429,13 @@ final class AppModel {
     private var baseAdjustments: [String: ImageAdjustments] = [:]
     /// Its asset: what share and the inspector act on in simple mode.
     private(set) var stageAssetId: String?
+    /// The composition a project OPENED on: not played as it lands -- an
+    /// open shows the work still, where its playhead was saved. What is
+    /// put on the stage after plays as before.
+    var stillOnOpen: String?
+    var stageAutoplay: Bool {
+        stillOnOpen == nil || stillOnOpen != stageAssetId
+    }
     /// Where the CURRENT STATE shows -- the result as it is now (adjusted,
     /// its stack composed), or the picture to edit: A, B after a swap,
     /// nil while history states hold both sides (it is then kept aside,
@@ -1911,11 +1919,50 @@ final class AppModel {
         return autoPick("edit", .video)
     }
 
+    /// A model CHOSEN for a clip that reads no references (MiniMax H3
+    /// FL2VA): it runs whatever the row holds -- never Auto's Ref2VA in
+    /// its place. Its pictures are the clip's keyframes (`keyframes`);
+    /// the rest of the row it does not read.
+    var videoChoicePinned: Bool {
+        activeModality == .video && !modelChoice.isEmpty
+            && catalog.first(where: { $0.id == modelChoice })?.capabilities
+                .contains("reference-to-video") == false
+    }
+
+    /// The pictures a clip opens and ends on (FL2VA's keyframes): the
+    /// one marked to edit -- or, with such a model chosen, the row's
+    /// first picture -- and, for a model that ends on one, the next
+    /// picture in the row. Nil when the clip is made from words or from
+    /// references.
+    var keyframes: (first: PromptAttachment, last: PromptAttachment?)? {
+        guard activeModality == .video, !usesReferences, opensOnPicture
+        else { return nil }
+        let pics = promptAttachments.filter { $0.kind == "image" }
+        guard let first = pics.first(where: \.isBase)
+            ?? (videoChoicePinned ? pics.first : nil) else { return nil }
+        let last = runningModelInfo?.lastFrame == true
+            ? pics.first { $0.id != first.id } : nil
+        return (first, last)
+    }
+
+    /// Row items the clip Start makes does not read: beside a chosen
+    /// model's keyframes, the rest of its media.
+    var unreadVideoMedia: [PromptAttachment] {
+        guard videoChoicePinned else { return [] }
+        let k = keyframes
+        return promptAttachments.filter {
+            ["image", "video", "audio"].contains($0.kind)
+                && $0.id != k?.first.id && $0.id != k?.last?.id
+        }
+    }
+
     /// Start makes a clip FROM REFERENCES (Ref2VA): the row holds a clip,
     /// a sound, a clip to continue, or pictures -- all but one picture
-    /// marked as the one to open on, which stays FL2VA's first frame.
+    /// marked as the one to open on, which stays FL2VA's first frame. A
+    /// model chosen that reads none never does.
     var usesReferences: Bool {
-        guard activeModality == .video, !promptAttachments.isEmpty,
+        guard activeModality == .video, !videoChoicePinned,
+              !promptAttachments.isEmpty,
               !videoReferenceModel.isEmpty else { return false }
         let media = promptAttachments.filter {
             ["image", "video", "audio"].contains($0.kind)
@@ -2035,8 +2082,17 @@ final class AppModel {
     }
 
     /// The row's badge for a staged item: what the model calls it -- a
-    /// picture's number ("1", the base first) for an edit, a clip's
-    /// reference's kind and number ("P1", "V1", "A1").
+    /// picture's number ("1", the base first) for an edit or a clip's
+    /// keyframes (1 the first, 2 the last), a clip's reference's kind
+    /// and number ("P1", "V1", "A1").
+    /// What a reference model calls a row item ("Video 1"), while it
+    /// reads references: its badge, said out.
+    func referenceName(_ item: PromptAttachment) -> String? {
+        guard usesReferences, let id = assetId(of: item),
+              let tag = referenceTags[id] else { return nil }
+        return tag.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+    }
+
     func referenceBadge(_ item: PromptAttachment) -> String? {
         if usesReferences {
             guard let id = assetId(of: item),
@@ -2153,10 +2209,19 @@ final class AppModel {
         if modality != .video {
             withAnimation(Self.motion) { setModality(.video) }
         }
+        // A continuation is a reference model's: a model chosen that
+        // reads none gives way to Auto.
+        if videoChoicePinned { modelChoice = "" }
         if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let lead = catalog.first(where: { $0.id == videoReferenceModel })?
                .continuation, !lead.isEmpty {
-            setPrompt(lead + " The video continues from the end of <Video 1>. ")
+            // The clip continued as the box names the row -- its tag, drawn
+            // as the clip; the model is told its own name for it, <Video 1>.
+            // (Written as "<Video 1>", it stayed words: no clip shown.)
+            let place = promptAttachments.filter { $0.kind == "video" }
+                .firstIndex { $0.id == id } ?? 0
+            setPrompt(lead + " The video continues from the end of "
+                      + "<valtz_ref_vid_\(place)>. ")
         }
         promptChanged()
     }
@@ -3192,24 +3257,43 @@ final class AppModel {
         usesReferences && referenceRequest.cont != nil
     }
 
-    /// The options for the model Start runs, settled with the family's
-    /// Custom values (its first time: the preset's, kept as its own; an
-    /// older save's Turbo selector folded into the LoRA list).
+    /// Whose Custom values they are: the model Start runs (a quantized
+    /// variant its source's). Not its family's: MiniMax H3's FL2VA and
+    /// Ref2VA are one family with Turbo LoRAs, steps and shifts of their
+    /// own.
+    private var tuningKey: String { baseModel(runningModel) }
+
+    /// The Custom values of the model Start runs. A save from before
+    /// (by family) is taken for a model alone of its role in its family.
+    private var customTuning: Tuning? {
+        if let t = customTunings[tuningKey] { return t }
+        guard let m = runningModelInfo,
+              catalog.filter({
+                  $0.family == m.family && $0.role == m.role
+                      && $0.quantizeFrom == nil
+              }).count == 1 else { return nil }
+        return customTunings[m.family]
+    }
+
+    /// The options for the model Start runs, settled with its Custom
+    /// values (its first time: the preset's, kept as its own; an older
+    /// save's Turbo selector folded into the LoRA list).
     func refreshTuning() {
         guard preference == .custom, let core, !runningModel.isEmpty,
-              let family = runningModelInfo?.family else {
+              runningModelInfo != nil else {
             tuningInfo = nil
             return
         }
+        let kept = customTuning
         let info = core.tuning(model: runningModel,
                                preference: customBase.rawValue,
                                edit: tuningIsEdit,
                                continues: tuningContinues,
-                               overrides: customTunings[family]?.json ?? [:])
+                               overrides: kept?.json ?? [:])
         tuningInfo = info
-        if let info, customTunings[family] == nil
-            || customTunings[family]?.choices.isEmpty == false {
-            customTunings[family] = info.tuning
+        if let info, customTunings[tuningKey] == nil
+            || kept?.choices.isEmpty == false {
+            customTunings[tuningKey] = info.tuning
             saveCustomTunings()
         }
     }
@@ -3240,7 +3324,7 @@ final class AppModel {
                                      continues: tuningContinues,
                                      overrides: json) else { return }
         tuningInfo = next
-        customTunings[next.family] = next.tuning
+        customTunings[tuningKey] = next.tuning
         saveCustomTunings()
     }
 
@@ -3402,11 +3486,11 @@ final class AppModel {
         settleTuning(t, stepsFollow: path == info.turboLoRA)
     }
 
-    /// Custom back to a preset's values, for this family: its LoRA list
+    /// Custom back to a preset's values, for this model: its LoRA list
     /// is the preset's (the Turbo LoRA, on, when it runs one), and the
     /// weights dropped before stay listed, off.
     func resetTuning(to p: Preference) {
-        guard let core, let family = runningModelInfo?.family else { return }
+        guard let core, runningModelInfo != nil else { return }
         let before = tuningInfo?.tuning
         customBase = p
         guard let preset = core.tuning(model: runningModel,
@@ -3428,7 +3512,7 @@ final class AppModel {
                                continues: tuningContinues, overrides: t.json)
             ?? preset
         tuningInfo = info
-        customTunings[family] = info.tuning
+        customTunings[tuningKey] = info.tuning
         saveCustomTunings()
     }
 
@@ -3438,9 +3522,9 @@ final class AppModel {
         preference == .custom ? customBase : preference
     }
     private var sentTuning: [String: Any]? {
-        guard preference == .custom,
-              let family = runningModelInfo?.family,
-              let t = customTunings[family] else { return nil }
+        guard preference == .custom, let t = customTuning else {
+            return nil
+        }
         return t.json
     }
 
@@ -3807,8 +3891,39 @@ final class AppModel {
                 .lastPathComponent
         restoreWindowSize()
         reloadAssets()
-        // Its work, as it was left: the project's composition.
-        if let view = projectViews.first { putOnStage(view) }
+        // Its work, as it was left: the project's composition -- still,
+        // its player where the last Save left it, a timeline in the
+        // timeline (not the prompt).
+        if let view = projectViews.first {
+            putOnStage(view)
+            stillOnOpen = view.id
+            restorePlayhead(on: view)
+            showTimeline(view.isTimeline)
+        }
+    }
+
+    /// A Valtz project (its package), as a drop names it.
+    nonisolated static func isProjectFile(_ u: URL) -> Bool {
+        u.isFileURL && u.pathExtension.lowercased() == "valtz"
+    }
+
+    /// A project dropped on the window: opened once the drop is over (an
+    /// alert inside the drag would hold the Finder), the one open saved
+    /// or let go first -- as the Finder's double-click opens one. The
+    /// project already open stays as it is.
+    func openDropped(_ url: URL) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if !isAnonymous, projectId != nil,
+               url.standardizedFileURL.path
+                   == URL(fileURLWithPath: projectPath).standardizedFileURL
+                       .path {
+                return
+            }
+            guard confirmClose() else { return }
+            rememberPanel(.project, chose: url)
+            openProject(path: url.path)
+        }
     }
 
     /// The PROJECT's composition (DESIGN §6a; core project_composition) --
@@ -4328,16 +4443,25 @@ final class AppModel {
             if let c = r.cont { req["continue"] = c }
             req["reference_sound"] = hasSongReference && keepSongSound
             req["inline"] = inlineAssets
-        } else if opensOnPicture, let att = baseAttachment,
-                  att.kind == "image" {
-            guard let a = assetId(of: att) else {
+        } else if let k = keyframes {
+            // As each looks: its modified copy, rendered by the core. Its
+            // mentions are <Picture 1> to the model -- with a last frame,
+            // Picture 1 and Picture 2 (FL2VA).
+            for att in [k.first] + (k.last.map { [$0] } ?? [])
+            where assetId(of: att) == nil {
                 flash(String(localized: "Still importing \(att.url.lastPathComponent)…"))
                 return
             }
-            // As it looks: its modified copy, rendered by the core. Its
-            // mentions are <Picture 1> to the model.
-            req["first"] = a
+            req["first"] = assetId(of: k.first)
+            if let l = k.last { req["last"] = assetId(of: l) }
             req["inline"] = inlineAssets
+        }
+        // A chosen model reads its keyframes only: the rest is said.
+        if let skipped = unreadVideoMedia.first {
+            let name = modelName(imageModel)
+            flash(unreadVideoMedia.count == 1
+                ? String(localized: "\(name) does not read \(skipped.url.lastPathComponent): it is left out.")
+                : String(localized: "\(name) reads its first and last pictures only: \(String(unreadVideoMedia.count)) items are left out."))
         }
         generationBase = nil
         let r = core.generateVideo(req)
@@ -4703,11 +4827,17 @@ final class AppModel {
     /// as they come. Their ids, in order.
     @discardableResult
     func addReferences(_ urls: [URL], forceBase: Bool = false) -> [UUID] {
+        // A project is no reference: it opens, dropped outside the prompt.
+        let projects = urls.filter(Self.isProjectFile)
+        if !projects.isEmpty && projects.count == urls.count {
+            flash(String(localized: "To open a project, drop it outside the prompt."))
+            return []
+        }
         var list = promptAttachments
         var ids: [UUID] = []
         var baseTaken = false
         var fresh: [PromptAttachment] = []
-        for url in urls where url.isFileURL {
+        for url in urls where url.isFileURL && !Self.isProjectFile(url) {
             let kind = PromptTextView.kind(of: url)
             let base = kind == "image" && !baseTaken
                 && (forceBase || isStageResultFile(url))
@@ -4736,7 +4866,7 @@ final class AppModel {
         }
         withAnimation(Self.motion) { promptAttachments = list }
         for item in fresh { loadReferenceThumb(item) }
-        importFiles(urls)
+        importFiles(urls.filter { !Self.isProjectFile($0) })
         promptChanged()
         return ids
     }
@@ -4869,6 +4999,13 @@ final class AppModel {
     }
 
     private func activeLabel(_ item: PromptAttachment) -> String {
+        // A clip's keyframes: where it opens, where it ends.
+        if let k = keyframes {
+            if item.id == k.first.id {
+                return String(localized: "First frame")
+            }
+            if item.id == k.last?.id { return String(localized: "Last frame") }
+        }
         if item.isBase { return String(localized: "To edit") }
         if let n = referenceNumber(item) {
             return String(localized: "Picture \(String(n))")
@@ -4985,6 +5122,13 @@ final class AppModel {
                 Int($0.filter(\.isNumber))
             }
         }
+        // A clip's keyframes: Picture 1 it opens on, Picture 2 it ends
+        // on; a chosen model reads nothing else.
+        if let k = keyframes {
+            return item.id == k.first.id ? 1
+                : item.id == k.last?.id ? 2 : nil
+        }
+        if videoChoicePinned { return nil }
         return numberedPictures.firstIndex { $0.id == item.id }
             .map { $0 + 1 }
     }
@@ -5268,6 +5412,11 @@ final class AppModel {
         if let b = baseAttachment, let a = assetId(of: b) {
             req["base"] = a
         }
+        // A clip's keyframes: the picture it opens on, and ends on.
+        if let k = keyframes {
+            req["base"] = assetId(of: k.first)
+            if let l = k.last { req["last"] = assetId(of: l) }
+        }
         req["references"] = promptAttachments
             .filter { !$0.isBase && $0.kind == "image" }
             .compactMap { assetId(of: $0) }
@@ -5325,9 +5474,17 @@ final class AppModel {
     /// nothing to enhance yet.
     func insertOutline() {
         guard let core, prompt.isEmpty, let m = outlineModel else { return }
-        let row = promptAttachments.map(\.kind)
-            .filter { Self.refKind($0) != nil }
-        let text = core.promptOutline(model: m.id, row: row)
+        let items = promptAttachments.filter { Self.refKind($0.kind) != nil }
+        // A clip's keyframes by their places in the row; none, none.
+        let k = keyframes
+        let place = { (a: PromptAttachment?) -> Int in
+            a.flatMap { a in items.firstIndex { $0.id == a.id } } ?? -2
+        }
+        let text = core.promptOutline(
+            model: m.id, row: items.map(\.kind),
+            first: place(k?.first), last: place(k?.last),
+            seconds: activeModality == .video
+                ? Double(clipFrames) / clipFPS : 0)
         guard !text.isEmpty else { return }
         promptMentions = []
         promptMarked = text
@@ -7035,6 +7192,7 @@ final class AppModel {
         }
         flushPanels()
         noteWindowSize()
+        notePlayhead()
         let r = core.saveProject(projectId)
         if !r.ok { flash(r.message) }
         refreshDocument()
@@ -7059,6 +7217,7 @@ final class AppModel {
         guard let core, let projectId else { return false }
         flushPanels()
         noteWindowSize()
+        notePlayhead()
         let r = core.saveProjectAs(projectId, path: url.path)
         guard r.ok else {
             flash(r.message)
@@ -7243,14 +7402,56 @@ final class AppModel {
     }
     @ObservationIgnored private var pendingWindowSize: CGSize?
 
+    /// The project's view state with `changes` laid over it (nil takes a
+    /// key away): its other keys kept -- the window's size, the playhead
+    /// the last Save noted. A write that changes nothing is no change to
+    /// the project.
+    private func noteView(_ changes: [String: Any?]) {
+        guard let core, let projectId else { return }
+        var view = (core.viewState(projectId)["view"] as? [String: Any])
+            ?? [:]
+        for (k, v) in changes { view[k] = v }
+        _ = core.setViewState(projectId, view)
+    }
+
     /// The window's size into the project -- saved with it: Save, Save
     /// As, or alone when it goes clean (keepWindowSize).
     private func noteWindowSize() {
-        guard let core, let projectId, let w = editorWindow else { return }
-        _ = core.setViewState(projectId, ["window": [
+        guard let w = editorWindow else { return }
+        noteView(["window": [
             "width": Int(w.frame.width.rounded()),
             "height": Int(w.frame.height.rounded()),
         ]])
+    }
+
+    /// Where the player is -- the asset on the stage and its frame (a
+    /// still's page) -- into the project, at a SAVE only: moved after, it
+    /// is no change to the project, and a close keeps what the Save
+    /// noted. Nothing timed on the stage: none.
+    private func notePlayhead() {
+        var at: [String: Any]?
+        if let id = stageAssetId {
+            if clipOnStage {
+                at = ["asset": id, "frame": videoFrame]
+            } else if pagedOnStage {
+                at = ["asset": id, "page": stagePage]
+            }
+        }
+        noteView(["playhead": at])
+    }
+
+    /// The player where the last Save left it, on `view` when that is
+    /// what it was on.
+    private func restorePlayhead(on view: AssetDTO) {
+        guard let core, let projectId,
+              let at = (core.viewState(projectId)["view"]
+                  as? [String: Any])?["playhead"] as? [String: Any],
+              at["asset"] as? String == view.id else { return }
+        if let page = (at["page"] as? NSNumber)?.intValue {
+            goToPage(page)
+        } else if let frame = (at["frame"] as? NSNumber)?.intValue {
+            seekVideo(to: frame)
+        }
     }
 
     /// A named project going -- closed, the app quitting -- with nothing
@@ -7338,6 +7539,7 @@ final class AppModel {
         if let m = NSEvent.addLocalMonitorForEvents(
             matching: .leftMouseDown, handler: { [weak self] event in
                 MainActor.assumeIsolated {
+                    _ = ShortcutHints.shared.handle(event)
                     Self.endTextEditing(for: event)
                     self?.endViewingIfOutside(event)
                 }
@@ -7345,12 +7547,26 @@ final class AppModel {
             }) {
             textWatch.append(m)
         }
-        // The brush's [ ] and ⇧[ ⇧] and the markup tools' keys, wherever
-        // the keyboard is in the window but text; ⌘D, the markup's
-        // selection let go; the Trim panel's ← →; Space, play / pause.
+        // ⌘? held, the buttons' keys shown (ShortcutHints): its key or ⌘
+        // let go -- or, shown from the menu, a click -- and they go.
+        if let m = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyUp, .flagsChanged, .rightMouseDown,
+                       .otherMouseDown], handler: { event in
+                MainActor.assumeIsolated {
+                    _ = ShortcutHints.shared.handle(event)
+                }
+                return event
+            }) {
+            textWatch.append(m)
+        }
+        // ⌘? held: the buttons' keys shown. The brush's [ ] and ⇧[ ⇧] and
+        // the markup tools' keys, wherever the keyboard is in the window
+        // but text; ⌘D, the markup's selection let go; the Trim panel's
+        // ← →; Space, play / pause.
         if let m = NSEvent.addLocalMonitorForEvents(
             matching: .keyDown, handler: { [weak self] event in
                 let handled = MainActor.assumeIsolated {
+                    if ShortcutHints.shared.handle(event) { return true }
                     guard let self else { return false }
                     return self.deselectKey(event) || self.brushKey(event)
                         || self.markupToolKey(event)
@@ -7757,6 +7973,7 @@ final class AppModel {
         case "layer.split": String(localized: "Cut Clip")
         case "layer.slide": String(localized: "Move Clip")
         case "layer.stretch": String(localized: "Stretch")
+        case "transition": String(localized: "Transition")
         case "transcribe": String(localized: "Transcribe")
         case "summarize": String(localized: "Summarize Video")
         case "layer.group": String(localized: "Group Layers")
@@ -8696,6 +8913,7 @@ final class AppModel {
     }
 
     func putOnStage(_ asset: AssetDTO) {
+        stillOnOpen = nil
         // Picked: the stage leaves the task it watched, which runs on.
         unwatchTask()
         if asset.kind == "video" || asset.kind == "audio",

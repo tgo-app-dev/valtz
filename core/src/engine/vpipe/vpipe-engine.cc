@@ -688,11 +688,13 @@ private:
       built = refs.ok() ? vp::build_image_edit(spec, *refs)
                         : Result<vp::BuiltGraph>(refs.error());
     } else if (spec.op == kOpGenerateVideo) {
-      auto first = first_frame_(spec);
+      auto first = keyframe_(spec, "first");
+      auto last = keyframe_(spec, "last");
       auto refs = reference_media_(spec);
       built = !first.ok() ? Result<vp::BuiltGraph>(first.error())
+              : !last.ok() ? Result<vp::BuiltGraph>(last.error())
               : !refs.ok() ? Result<vp::BuiltGraph>(refs.error())
-                           : vp::build_video(spec, *first, *refs);
+                           : vp::build_video(spec, *first, *refs, *last);
     } else if (spec.op == kOpGenerateAudio) {
       built = vp::build_audio(spec);
     } else if (spec.op == kOpGenerateSpeech) {
@@ -1277,17 +1279,18 @@ private:
     return refs;
   }
 
-  // The picture a clip opens on (input role "first"), if it has one.
+  // The picture a clip opens on (input role "first") or ends on
+  // ("last"), if it has one.
   static Result<std::optional<vp::RefImage>>
-  first_frame_(const JobSpec& spec)
+  keyframe_(const JobSpec& spec, std::string_view role)
   {
     for (const auto& in : spec.inputs) {
-      if (in.role != "first") {
+      if (in.role != role) {
         continue;
       }
       if (in.info.type != media::MediaType::Image) {
         return make_error(Code::InvalidArgument,
-                          "a clip can start from a picture only");
+                          "a clip's keyframe can be a picture only");
       }
       VALTZ_ASSIGN(media::PixelSize sz, media::oriented_size(in.path));
       return std::optional<vp::RefImage>(vp::RefImage{
@@ -1318,6 +1321,7 @@ private:
       r.kind = jget<std::string>(e, "kind", "");
       r.list = jget<std::string>(e, "route", "list") == "list";
       r.audio = jget(e, "audio", false);
+      r.continues = in.role == "continue";
       const media::Trim t = media::trim_from_json(
           jget(e, "trim", Json::object()));
       if (r.kind == "video") {

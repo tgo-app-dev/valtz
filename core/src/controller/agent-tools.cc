@@ -15,6 +15,7 @@
 #include "valtz/media/markup.h"
 #include "valtz/media/text-flow.h"
 #include "valtz/media/thumbnail.h"
+#include "valtz/media/timing.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1028,7 +1029,8 @@ Controller::AgentHost::tools()
          "from `in` to `out` (the clip's own seconds) from `start` (the "
          "timeline's seconds; omitted: right after the last clip), "
          "fitted to the frame. A picture runs `duration` seconds. With "
-         "a dissolve it overlaps the clip before by `transition_seconds`.",
+         "a dissolve or a dip it overlaps the clip before by "
+         "`transition_seconds`.",
          schema({{"composition", str(kCompDoc)},
                  {"asset", str("the clip's or picture's id")},
                  {"in", num("its part's start, its own seconds; 0 by "
@@ -1046,10 +1048,11 @@ Controller::AgentHost::tools()
                                 "fit: whole, bars where shapes differ (by "
                                 "default); fill: the frame covered, its "
                                 "edges cut")},
-                 {"transition", one_of({"dissolve", "cut"},
+                 {"transition", one_of({"dissolve", "dip-black",
+                                        "dip-white", "cut"},
                                        "how it follows the clip before")},
-                 {"transition_seconds", num("a dissolve's length; 0.5 by "
-                                            "default")}},
+                 {"transition_seconds", num("a dissolve's or a dip's "
+                                            "length; 0.5 by default")}},
                 {"asset"}),
          &H::t_add_clip});
     t.push_back(
@@ -1096,13 +1099,18 @@ Controller::AgentHost::tools()
     t.push_back(
         {"set_transition", "edit", "Set a transition",
          "How one clip goes to the next: dissolve (picture and sound "
-         "cross-fade over `seconds`; where the two only meet, the later "
-         "one and all after it move earlier to overlap), cut, or none.",
+         "cross-fade over `seconds`), dip-black or dip-white (the first "
+         "fades to black -- or white -- and its sound out by the middle "
+         "of `seconds`, the next fades in from it), cut, or none. For a "
+         "dissolve or a dip where the two only meet, the later one and "
+         "all after it move earlier to overlap.",
          schema({{"composition", str(kCompDoc)},
                  {"from", str("the earlier layer's id")},
                  {"to", str("the later layer's id")},
-                 {"kind", one_of({"dissolve", "cut", "none"}, "which")},
-                 {"seconds", num("a dissolve's length; 0.5 by default")}},
+                 {"kind", one_of({"dissolve", "dip-black", "dip-white",
+                                  "cut", "none"}, "which")},
+                 {"seconds", num("a dissolve's or a dip's length; 0.5 by "
+                                 "default")}},
                 {"from", "to", "kind"}),
          &H::t_set_transition});
     t.push_back(
@@ -3874,11 +3882,14 @@ Controller::AgentHost::t_add_clip(Session& s, Step& step, const Json& args,
                       "a composition of sound shows no pictures");
   }
   const std::string transition = text_arg(args, "transition");
-  if (!transition.empty() && transition != "dissolve" &&
-      transition != "cut") {
+  if (!transition.empty() && !media::transition_kind(transition)) {
     return make_error(Code::InvalidArgument,
-                      "a transition is dissolve or cut");
+                      "a transition is dissolve, dip-black, dip-white or "
+                      "cut");
   }
+  // A dissolve or a dip takes an overlap with the clip before; a cut
+  // none.
+  const bool overlaps = !transition.empty() && transition != "cut";
   const Rational rate = rate_(s.project, comp);
   const double fps = rate.to_double();
   VALTZ_ASSIGN(auto times, timings_(s.project, comp));
@@ -3900,7 +3911,7 @@ Controller::AgentHost::t_add_clip(Session& s, Step& step, const Json& args,
     }
   }
   const double overlap =
-      transition == "dissolve"
+      overlaps
           ? std::clamp(number(args, "transition_seconds", 0.5), 0.0, 10.0)
           : 0.0;
   double start = args.contains("start")
@@ -3923,8 +3934,8 @@ Controller::AgentHost::t_add_clip(Session& s, Step& step, const Json& args,
       }
     }
   }
-  // A dissolve overlaps the clip before by its length, whatever start
-  // was given -- unless that start overlaps it already.
+  // A dissolve or a dip overlaps the clip before by its length,
+  // whatever start was given -- unless that start overlaps it already.
   if (before && overlap > 0 && start > before_end - overlap) {
     start = std::max(0.0, before_end - overlap);
   }
@@ -4003,13 +4014,13 @@ Controller::AgentHost::t_add_clip(Session& s, Step& step, const Json& args,
     out["in"] = secs(mine.in);
     out["out"] = secs(mine.out);
   }
-  if (transition == "dissolve") {
+  if (overlaps) {
     const auto b = before ? times.find(*before) : times.end();
     if (b != times.end() && mine.start < b->second.end() - 1e-3) {
       VALTZ_TRY(_c.set_transition(s.project, comp, *before, layer,
-                                  "dissolve"));
+                                  transition));
       out["transition"] = {{"from", model_layer(*before)},
-                           {"kind", "dissolve"},
+                           {"kind", transition},
                            {"seconds", secs(b->second.end() - mine.start)}};
     } else {
       out["note"] = "It does not overlap a clip before it: a plain cut.";
@@ -4221,9 +4232,10 @@ Controller::AgentHost::t_set_transition(Session& s, Step& step,
   from = from == "0" ? std::string() : from;
   to = to == "0" ? std::string() : to;
   std::string kind = text_arg(args, "kind", "dissolve");
-  if (kind != "dissolve" && kind != "cut" && kind != "none") {
+  if (kind != "none" && !media::transition_kind(kind)) {
     return make_error(Code::InvalidArgument,
-                      "a transition is dissolve, cut or none");
+                      "a transition is dissolve, dip-black, dip-white, cut "
+                      "or none");
   }
   auto* p = _c.project(s.project);
   VALTZ_ASSIGN(project::Asset a, p->asset(comp));
@@ -4244,10 +4256,10 @@ Controller::AgentHost::t_set_transition(Session& s, Step& step,
                           {{"tool", step.tool}, {"title", step.title}});
   Json out = {{"from", model_layer(from)}, {"to", model_layer(to)},
               {"kind", kind}};
-  if (kind == "dissolve") {
-    // Too short an overlap (none: they only meet): the later one -- and
-    // all that starts with or after it -- moves earlier, so the two
-    // overlap by the dissolve's length.
+  if (kind != "cut" && kind != "none") {
+    // A dissolve or a dip, too short an overlap (none: they only meet):
+    // the later one -- and all that starts with or after it -- moves
+    // earlier, so the two overlap by its length.
     const double want = std::clamp(number(args, "seconds", 0.5), 1 / fps,
                                    10.0);
     const double shift = want - overlap();
@@ -4267,7 +4279,7 @@ Controller::AgentHost::t_set_transition(Session& s, Step& step,
           "layer {} and all that starts after it {:.2f} s earlier",
           model_layer(to), shift);
     }
-    VALTZ_TRY(_c.set_transition(s.project, comp, from, to, "dissolve"));
+    VALTZ_TRY(_c.set_transition(s.project, comp, from, to, kind));
     out["seconds"] = secs(std::max(0.0, overlap()));
   } else if (kind == "cut" && overlap() > 0.5 / fps) {
     VALTZ_TRY(_c.set_transition(s.project, comp, from, to, "cut"));

@@ -534,13 +534,15 @@ build_image_edit(const JobSpec& job, const std::vector<RefImage>& refs)
 //
 //   text-prompt -> diffusion-conditioner -0-> generate-video
 //   [first -> first-fit -> vae-encode] -5-> generate-video
+//   [last -> last-fit -> vae-encode] -6-> generate-video
 //   <family>-model-config -9-> generate-video
 //   generate-video -0-> vae-decode (F16) -> avf-save-video (HEVC 10-bit)
 //                  -1-> audio-vae-decode -> save-audio (WAV)
 //                  -2-> preview-sink
 Result<BuiltGraph>
 build_video(const JobSpec& job, const std::optional<RefImage>& first,
-            const std::vector<RefMedia>& refs)
+            const std::vector<RefMedia>& refs,
+            const std::optional<RefImage>& last)
 {
   const Json vp = jget(job.model.engine, "vpipe", Json::object());
   std::string cfg_stage = jget<std::string>(vp, "config_stage", "");
@@ -551,6 +553,16 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   if (first && !jget(vp, "first_frame", false)) {
     return make_error(Code::Unsupported, std::format(
         "{} cannot start a clip from a picture", job.model.id));
+  }
+  // A last frame anchors the end of a clip that opens on a first (vpipe
+  // reads none alone).
+  if (last && !first) {
+    return make_error(Code::InvalidArgument,
+                      "a clip ends on a picture only if it opens on one");
+  }
+  if (last && !jget(vp, "last_frame", false)) {
+    return make_error(Code::Unsupported, std::format(
+        "{} cannot end a clip on a picture", job.model.id));
   }
   std::string prompt = jget<std::string>(job.params, "prompt", "");
   if (prompt.empty()) {
@@ -598,6 +610,8 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   Json ref_video = unwired(), ref_audio = unwired();
   // The first sound reference, when the clip keeps its sound.
   const RefMedia* song = nullptr;
+  // The clip continued, stacked: what the new clip's seam is matched to.
+  std::string seam_ref;
   if (refs.empty()) {
     // The prompt encoder (Qwen3-VL-32B for H3) streams, and is dropped
     // before the denoise: the two never share the machine.
@@ -651,6 +665,9 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                                 {"max_mb", std::max(256, static_cast<int>(
                                                              mb) + 64)}}));
         enc_in.push_back(port(id));
+        if (r.continues) {
+          seam_ref = id;
+        }
         if (!r.audio) {
           continue;
         }
@@ -738,44 +755,57 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   cfg = merged(cfg, declared_of(job, "config"));
   stages.push_back(stage(cfg_stage, cfg_stage, Json::array(), cfg));
 
-  // The picture the clip opens on: decoded into a lease at its own size
-  // (capped), cropped with Lanczos to fill the frame exactly -- vpipe
-  // drops an anchor of another size, and the clip silently becomes
-  // text-to-video -- and VAE-encoded as the first keyframe.
-  Json anchor = unwired();
-  if (first) {
+  // The pictures the clip opens and ends on: each decoded into a lease
+  // at its own size (capped), cropped with Lanczos to fill the frame
+  // exactly -- vpipe drops an anchor of another size, and the clip
+  // silently becomes text-to-video -- and VAE-encoded as a keyframe. The
+  // first takes the look the request lays on it (as an edit's base); the
+  // last comes as its asset looks.
+  auto keyframe = [&](const RefImage& pic, const std::string& id,
+                      bool opens) {
     RefFeed f;
-    f.stage = "first";
-    f.path = first->path;
+    f.stage = id;
+    f.path = pic.path;
     f.base = true;
     f.channels = 3;
-    f.adjust = media::adjustments_from_json(
-        jget(job.params, "base_adjust", Json::object()));
-    f.crop = media::crop_from_json(
-        jget(job.params, "base_crop", Json::object()));
-    const media::PixelSize pic = picture_size(first->size, f.crop);
-    const double own = static_cast<double>(pic.width) * pic.height;
-    f.size = own > kMaxFeedArea ? fit_area(pic, kMaxFeedArea, 1) : pic;
+    if (opens) {
+      f.adjust = media::adjustments_from_json(
+          jget(job.params, "base_adjust", Json::object()));
+      f.crop = media::crop_from_json(
+          jget(job.params, "base_crop", Json::object()));
+    }
+    const media::PixelSize own_size = picture_size(pic.size, f.crop);
+    const double own =
+        static_cast<double>(own_size.width) * own_size.height;
+    f.size = own > kMaxFeedArea ? fit_area(own_size, kMaxFeedArea, 1)
+                                : own_size;
     f.fitted = {width, height};
     stages.push_back(stage(f.stage, ex::kSourceType, Json::array(),
                            Json::object()));
-    stages.push_back(stage("first-fit", "image-resample",
+    stages.push_back(stage(id + "-fit", "image-resample",
                            Json::array({port(f.stage)}),
                            {{"width", width}, {"height", height},
                             {"fit", "crop"}, {"algorithm", "lanczos"}}));
-    stages.push_back(stage("first-latent", "vae-encode",
-                           Json::array({port("first-fit"),
+    stages.push_back(stage(id + "-latent", "vae-encode",
+                           Json::array({port(id + "-fit"),
                                         port("model-select")}),
                            {{"unload_when_idle", "always"}}));
-    anchor = port("first-latent");
     g.references.push_back(std::move(f));
+    return port(id + "-latent");
+  };
+  Json anchor = unwired(), anchor_last = unwired();
+  if (first) {
+    anchor = keyframe(*first, "first", true);
+  }
+  if (last) {
+    anchor_last = keyframe(*last, "last", false);
   }
 
   // generate-video: 0 cond, 1 neg (inert: H3 is guidance-distilled),
   // 2 model, 3 sampler, 4 scheduler (H3 brings its own), 5 / 6 first /
   // last keyframe, 7 / 8 Ref2VA rows, 9 model_config.
   Json gen_in = Json::array({cond, unwired(), port("model-select"),
-                             unwired(), unwired(), anchor, unwired(),
+                             unwired(), unwired(), anchor, anchor_last,
                              ref_video, ref_audio, port(cfg_stage)});
   Json gen_cfg = {{"width", width}, {"height", height}, {"frames", frames},
                   {"fps", fps}, {"steps", steps}, {"seed", seed}};
@@ -803,8 +833,23 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   stages.push_back(stage("vae-decode", "vae-decode",
                          Json::array({port("generate-video"), port(vae)}),
                          {{"dtype", "f16"}}));
+  // A continuation's SEAM: its frames matched to the tail the model was
+  // given -- the step in tone (the shadows most) and in framing it came
+  // back with, measured on the frames either side and taken out of every
+  // frame (vpipe's content-aware-continuation, catalog
+  // `references.seam`). What does not look like one shot it leaves as
+  // it is, and says so.
+  std::string picture = "vae-decode";
+  if (const Json seam = jget(rv, "seam", Json());
+      !seam_ref.empty() && seam.is_object()) {
+    stages.push_back(stage("seam", "content-aware-continuation",
+                           Json::array({port("vae-decode"),
+                                        port(seam_ref)}),
+                           seam));
+    picture = "seam";
+  }
   stages.push_back(stage("save-video", "avf-save-video",
-                         Json::array({port("vae-decode")}),
+                         Json::array({port(picture)}),
                          {{"path", g.video_part.string()},
                           {"codec", "hevc"},
                           {"fps", fps},

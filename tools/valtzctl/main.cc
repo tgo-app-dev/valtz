@@ -16,7 +16,7 @@
 //                     [--seed n] [--size WxH] [--no-preview]
 //   valtzctl video <project.valtz> <prompt> [--size WxH] [--frames n]
 //                  [--steps n] [--no-turbo] [--first <picture>]
-//                  [--tune k=v,...]
+//                  [--last <picture>] [--tune k=v,...]
 //   valtzctl tuning <model-id> [--speed|--quality] [--edit]
 //                   [--tune k=v,...]          Favor's options
 //   valtzctl enhance <prompt> [--video [--frames n] | --audio
@@ -140,7 +140,8 @@ usage()
       "  composition <project.valtz> [<comp-id>]  (the project's\n"
       "         composition, or that one made it)\n"
       "  transition <project.valtz> <comp-id> <from> <to>\n"
-      "         cut|dissolve|none  (where two layers overlap in time)\n"
+      "         cut|dissolve|dip-black|dip-white|none  (where two layers\n"
+      "         overlap in time; from ends first)\n"
       "  flatten <project.valtz> <asset-id> --asset [name]  (a flat asset\n"
       "         of it, as drawn: a picture, a movie, a sound)\n"
       "  history <project.valtz>  (the generation history: each edit's\n"
@@ -200,13 +201,15 @@ usage()
       "  video <project.valtz> <prompt> [--model id] [--size WxH]\n"
       "        [--frames n | --seconds s] [--fps n] [--steps n]\n"
       "        [--speed|--quality] [--seed n] [--no-turbo]\n"
-      "        [--first <file|asset-id>] [--tune k=v,...]\n"
+      "        [--first <file|asset-id> [--last <file|asset-id>]]\n"
+      "        [--tune k=v,...]\n"
       "        [--ref <file|asset-id>]... [--continue <clip>]\n"
       "        [--tail-seconds s] [--song-sound]\n"
       "        (a clip with its soundtrack, MiniMax H3; the length goes\n"
       "        up to one the model makes -- 17n+5 frames -- and the Turbo\n"
       "        LoRA, when installed, runs 4/6/8 steps; --first is a picture\n"
-      "        the clip opens on, cropped to fill the frame. --ref: a\n"
+      "        the clip opens on, cropped to fill the frame, --last one it\n"
+      "        ends on (FL2VA: Picture 1 and Picture 2). --ref: a\n"
       "        picture, clip or sound to draw on (Ref2VA: a subject, a\n"
       "        motion, a voice, a song; name them <Picture 1>, <Video 1>,\n"
       "        <Audio 1> in the prompt, numbered as the job lists them);\n"
@@ -252,9 +255,12 @@ usage()
       "  song <project.valtz> <text>  (the prompt as generate_audio reads\n"
       "        it: its style and lyrics)\n"
       "  outline <model> [--row image,video,audio] [--lang zh-Hans]\n"
+      "        [--first n|none] [--last n|none] [--seconds s]\n"
       "        (the model's prompt template -- what an empty prompt box\n"
       "        starts from -- written for a reference row holding those\n"
-      "        kinds, in order: each named by its tag where it belongs)\n"
+      "        kinds, in order: each named by its tag where it belongs;\n"
+      "        a clip's opening and closing pictures by their places in\n"
+      "        the row, as the model takes them unless given)\n"
       "  prompts <project.valtz>  (the prompts: each made from, how much)\n"
       "  prompt <project.valtz> add <text> [--name N] | show <id>\n"
       "         | set <id> <text>\n"
@@ -358,7 +364,8 @@ usage()
       "          [--no-mtp] [--assistant <id>] [--repeat <n>]\n"
       "          [--project <project.valtz> [--base <file|asset-id>]\n"
       "           [--ref <file|asset-id>]... [--first <file|asset-id>]\n"
-      "           [--continue <clip>] [--song-sound]]\n"
+      "           [--last <file|asset-id>] [--continue <clip>]\n"
+      "           [--song-sound]]\n"
       "          (--no-mtp: the assistant decodes without its MTP\n"
       "          head, to compare; the same reply, slower.\n"
       "          --assistant: that catalog assistant, not the one\n"
@@ -369,8 +376,9 @@ usage()
       "          prompt, the base first. --audio: a song, written by\n"
       "          YuE2's song writer (Auto's model) to --seconds.\n"
       "          --video: a clip written to MiniMax H3's own guide --\n"
-      "          from words, opening on --first, or from references\n"
-      "          (Auto's Ref2VA) -- --frames long)\n"
+      "          from words, opening on --first (ending on --last:\n"
+      "          FL2VA), or from references (Auto's Ref2VA) -- --frames\n"
+      "          long)\n"
       "  upscale <project> <composition> [--layer L] [--model id]\n"
       "          [--seed n]   the layer's clip rendered at its scale\n"
       "          (FlashVSR), the layer then showing it at scale 1\n"
@@ -3188,9 +3196,20 @@ main(int argc, char** argv)
     }
     std::vector<assist::RefKind> row;
     std::string lang;
+    assist::OutlineFrames frames;
+    // A keyframe's place in the row; "none": the clip has none.
+    const auto place = [](const std::string& v) {
+      return v == "none" ? -2 : std::atoi(v.c_str());
+    };
     for (std::size_t i = 1; i + 1 < args.size(); i += 2) {
       if (args[i] == "--lang") {
         lang = args[i + 1];
+      } else if (args[i] == "--first") {
+        frames.first = place(args[i + 1]);
+      } else if (args[i] == "--last") {
+        frames.last = place(args[i + 1]);
+      } else if (args[i] == "--seconds") {
+        frames.seconds = std::atof(args[i + 1].c_str());
       } else if (args[i] == "--row") {
         std::stringstream kinds(args[i + 1]);
         for (std::string k; std::getline(kinds, k, ',');) {
@@ -3201,7 +3220,7 @@ main(int argc, char** argv)
         }
       }
     }
-    auto t = c.prompt_outline(args[0], row, lang);
+    auto t = c.prompt_outline(args[0], row, lang, frames);
     if (!t.ok()) {
       return fail(t.error());
     }
@@ -3839,13 +3858,16 @@ main(int argc, char** argv)
       } else if (a == "--turbo" || a == "--lora" || a == "--dit" ||
                  a == "--vae") {
         lora_arg(req.tuning, a, next());
-      } else if (a == "--first" || a == "--ref" || a == "--continue") {
+      } else if (a == "--first" || a == "--last" || a == "--ref" ||
+                 a == "--continue") {
         auto r = reference_asset(c, *pid, next());
         if (!r.ok()) {
           return fail(r.error());
         }
         if (a == "--first") {
           req.first = *r;
+        } else if (a == "--last") {
+          req.last = *r;
         } else if (a == "--ref") {
           req.references.push_back(*r);
         } else {
@@ -4070,7 +4092,7 @@ main(int argc, char** argv)
       } else if (a == "--project") {
         next();
       } else if (a == "--ref" || a == "--base" || a == "--first" ||
-                 a == "--continue") {
+                 a == "--last" || a == "--continue") {
         if (!req.project) {
           return fail(make_error(Code::InvalidArgument,
                                  a + " needs --project <project.valtz>"));
@@ -4081,6 +4103,8 @@ main(int argc, char** argv)
         }
         if (a == "--base" || a == "--first") {
           req.base = *r;
+        } else if (a == "--last") {
+          req.last = *r;
         } else if (a == "--continue") {
           req.continue_from = *r;
           req.references.push_back(*r);

@@ -30,7 +30,7 @@ to_json(const SoundPlan& p)
   Json ts = Json::array();
   for (const auto& t : p.transitions) {
     ts.push_back({{"from", t.from}, {"to", t.to},
-                  {"dissolve", t.dissolve}});
+                  {"kind", std::string(to_string(t.kind))}});
   }
   return {{"layers", ls}, {"transitions", ts}, {"seconds", p.seconds}};
 }
@@ -48,9 +48,12 @@ sound_plan_from_json(const Json& j)
     p.layers.push_back(std::move(sl));
   }
   for (const auto& t : jget(j, "transitions", Json::array())) {
-    p.transitions.push_back(
-        {jget<std::size_t>(t, "from", 0), jget<std::size_t>(t, "to", 0),
-         jget(t, "dissolve", false)});
+    // Its kind; written before kinds, a dissolve or a cut.
+    const auto kind = transition_kind(jget<std::string>(
+        t, "kind", jget(t, "dissolve", false) ? "dissolve" : "cut"));
+    p.transitions.push_back({jget<std::size_t>(t, "from", 0),
+                              jget<std::size_t>(t, "to", 0),
+                              kind.value_or(TransitionSpec::Kind::Cut)});
   }
   p.seconds = std::max(0.0, jget(j, "seconds", 0.0));
   return p;

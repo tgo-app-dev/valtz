@@ -27,10 +27,12 @@ struct MarkupBar: View {
             effectsButton
             selectionActions
             Divider().frame(height: 18)
+            // Where the markup goes: the first to give way.
             Text(verbatim: target)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .layoutPriority(-1)
         }
         .disabled(!model.markupReady)
         .controlSize(.small)
@@ -71,6 +73,7 @@ struct MarkupBar: View {
                 .help(t.key.map { "\(t.label) (\(String($0).uppercased()))" }
                       ?? t.label)
                 .accessibilityLabel(Text(verbatim: t.label))
+                .shortcutHint(t.key.map { String($0).uppercased() } ?? "")
                 if t == .select { deselectButton }
             }
         }
@@ -87,6 +90,7 @@ struct MarkupBar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
+        .shortcutHint("⌘D")
         .disabled(!model.markupCanDeselect)
         .help("Deselect (⌘D)")
         .accessibilityLabel(Text("Deselect"))
@@ -104,12 +108,14 @@ struct MarkupBar: View {
                                           set: { m.radius = $0 }),
                    range: 1...200, text: String(Int(m.radius.rounded())),
                    width: 110)
+                .shortcutHint("[  ]")
             slider("Softness", value: Binding(get: { m.softness },
                                               set: { m.softness = $0 }),
                    range: 0...1,
                    text: m.softness.formatted(
                        .percent.precision(.fractionLength(0))),
                    width: 80)
+                .shortcutHint("⇧[  ⇧]")
         }
         if tool == .line || tool == .rect || tool == .ellipse
             || tool == .polygon
@@ -152,7 +158,9 @@ struct MarkupBar: View {
                         range: ClosedRange<Double>, text: String,
                         width: CGFloat) -> some View {
         HStack(spacing: 5) {
+            // Whole: a narrow bar wrapped it ("Siz / e").
             Text(name).foregroundStyle(.secondary)
+                .fixedSize()
             Slider(value: value, in: range) { editing in
                 if !editing { model.commitSelection(keep: true) }
             }
@@ -487,6 +495,7 @@ private struct ArrangePanel: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .shortcutHint(how.shortcutText ?? "")
         .disabled(!model.markupCanArrange(how))
         .help(how.shortcutText.map { "\(how.label) (\($0))" } ?? how.label)
     }

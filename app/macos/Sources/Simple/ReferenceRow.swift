@@ -279,6 +279,11 @@ private struct ReferenceThumb: View {
         if item.isBase {
             return String(localized: "\(name) — the picture to edit. Click to see it on the stage; drag it into the text to mention it.")
         }
+        // A reference by the model's own name ("Video 1": a clip is no
+        // picture); a picture of an edit by its number.
+        if let called = model.referenceName(item) {
+            return String(localized: "\(name) — “\(called)” to the model. Click to see it on the stage; drag it into the text to mention it, or along the row to change the order.")
+        }
         if let number {
             return String(localized: "\(name) — picture \(String(number)). Click to see it on the stage; drag it into the text to mention it, or along the row to change the order.")
         }

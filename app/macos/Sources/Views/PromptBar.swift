@@ -15,10 +15,13 @@ struct PromptBar: View {
             HStack(spacing: 2) {
                 format(.bold, symbol: "bold",
                        help: String(localized: "Bold (⌘B)"))
+                    .shortcutHint("⌘B")
                 format(.italic, symbol: "italic",
                        help: String(localized: "Italic (⌘I)"))
+                    .shortcutHint("⌘I")
                 format(.underline, symbol: "underline",
                        help: String(localized: "Underline (⌘U)"))
+                    .shortcutHint("⌘U")
             }
             markdownToggle
             Divider().frame(height: 18)
@@ -148,10 +151,12 @@ struct PromptBar: View {
             }
             .keyboardShortcut(".", modifiers: .command)
             .help("Stop the task on the stage (⌘.)")
+            .shortcutHint("⌘.")
         }
         Button("Start", action: model.start)
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: .command)
+            .shortcutHint("⌘↩")
             .disabled(!model.canStart)
             .help(model.tasks.isEmpty
                   ? "Start (⌘↩)"

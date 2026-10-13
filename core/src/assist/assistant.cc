@@ -433,7 +433,7 @@ replace_all(std::string& s, std::string_view from, std::string_view to)
 
 std::string
 prompt_outline(const Json& outline, std::string_view language,
-               const std::vector<RefKind>& row)
+               const std::vector<RefKind>& row, const OutlineFrames& frames)
 {
   const std::string text = outline_text(outline, language);
   if (text.empty()) {
@@ -447,15 +447,28 @@ prompt_outline(const Json& outline, std::string_view language,
   }
   struct Marker {
     std::string_view name;  // "{image}"
-    std::string_view cond;  // "{if image}"
     std::string_view each;  // "{each image}"
     RefKind          kind;
   };
   static constexpr Marker kMarkers[] = {
-    {"{image}", "{if image}", "{each image}", RefKind::Image},
-    {"{video}", "{if video}", "{each video}", RefKind::Video},
-    {"{audio}", "{if audio}", "{each audio}", RefKind::Audio},
+    {"{image}", "{each image}", RefKind::Image},
+    {"{video}", "{each video}", RefKind::Video},
+    {"{audio}", "{each audio}", RefKind::Audio},
   };
+  // A keyframe's tag: the picture at its place in the row, numbered
+  // within its kind as the box tags it ("" when it is not a picture).
+  const auto keyframe = [&](int at) -> std::string {
+    if (at < 0 || at >= static_cast<int>(row.size()) ||
+        row[at] != RefKind::Image) {
+      return {};
+    }
+    const auto n = std::count(row.begin(), row.begin() + at,
+                              RefKind::Image);
+    return ref_tag(RefKind::Image, static_cast<int>(n));
+  };
+  const std::string first = keyframe(frames.first);
+  const std::string last = first.empty() ? std::string()
+                                         : keyframe(frames.last);
   std::vector<std::string> out;
   int subject = 0;
   const auto emit = [&](std::string line) {
@@ -465,6 +478,10 @@ prompt_outline(const Json& outline, std::string_view language,
       line.replace(at, 9, n);
       at += n.size();
     }
+    replace_all(line, "{first}", first);
+    replace_all(line, "{last}", last);
+    replace_all(line, "{seconds}",
+                std::format("{:.2f}", std::max(0.0, frames.seconds)));
     out.push_back(std::move(line));
   };
   std::size_t from = 0;
@@ -480,18 +497,30 @@ prompt_outline(const Json& outline, std::string_view language,
       out.emplace_back();
       continue;
     }
-    // Kept only when the row holds that kind (none: nothing at all).
+    // Kept only when the row holds that kind (none: nothing at all), and
+    // as its keyframes say: every marker at its head holds.
+    const bool none =
+        std::all_of(row.begin(), row.end(),
+                    [](RefKind k) { return k == RefKind::Other; });
+    const std::pair<std::string_view, bool> conds[] = {
+        {"{if none}", none},
+        {"{if image}", count[0] > 0},
+        {"{if video}", count[1] > 0},
+        {"{if audio}", count[2] > 0},
+        {"{if first}", !first.empty()},
+        {"{if last}", !last.empty()},
+        {"{unless first}", first.empty()},
+        {"{unless last}", last.empty()},
+    };
     bool keep = true;
-    if (line.starts_with("{if none}")) {
-      keep = row.empty() ||
-             std::all_of(row.begin(), row.end(),
-                         [](RefKind k) { return k == RefKind::Other; });
-      line.erase(0, 9);
-    }
-    for (const Marker& m : kMarkers) {
-      if (line.starts_with(m.cond)) {
-        keep = count[static_cast<int>(m.kind)] > 0;
-        line.erase(0, m.cond.size());
+    for (bool more = true; more;) {
+      more = false;
+      for (const auto& [cond, holds] : conds) {
+        if (line.starts_with(cond)) {
+          keep = keep && holds;
+          line.erase(0, cond.size());
+          more = true;
+        }
       }
     }
     if (!keep) {
@@ -972,6 +1001,19 @@ clip_skill_prompt(const EnhanceRequest& r)
          "at 0.00 seconds: [Shot 1] starts from what it shows and "
          "develops forward. (Valtz writes the I2VA instruction line "
          "itself: do not write it.)\n";
+  } else if (r.video_mode == "FL2VA") {
+    s += std::format(
+        "Mode: FL2VA -- the video opens on Picture 1, its first frame at "
+        "0.00 seconds, and ends on Picture 2, its last frame at {:.2f} "
+        "seconds: describe the continuous path between them -- how the "
+        "subjects move, how poses change, how the composition, the scene "
+        "and the light turn into the last frame -- not the two pictures "
+        "again. One shot, unless the request asks for cuts; the last "
+        "frame is reached at the end of the final shot. Name the "
+        "pictures as the guide's FL2VA case does: Picture 1, Picture 2, "
+        "without angle brackets. (Valtz writes the FL2VA instruction "
+        "line itself: do not write it.)\n",
+        r.seconds);
   } else if (r.video_mode == "Ref2VA") {
     s += "Mode: full-reference (Ref2VA): the six sections.\n";
     if (!r.video_tasks.empty()) {
@@ -1011,9 +1053,12 @@ clip_skill_prompt(const EnhanceRequest& r)
       s += "- " + line + "\n";
     }
     // A small assistant invents the kinds it read about in the guide.
+    // (FL2VA's pictures go bare: "Picture 1".)
     for (const char* kind : {"<Picture", "<Video", "<Audio"}) {
+      const std::string_view bare = std::string_view(kind).substr(1);
       if (std::ranges::none_of(r.references, [&](const std::string& l) {
-            return l.find(kind) != std::string::npos;
+            return l.find(kind) != std::string::npos ||
+                   (r.video_mode == "FL2VA" && l.starts_with(bare));
           })) {
         s += std::format("There is no {} N> here.\n", kind);
       }
@@ -1068,17 +1113,26 @@ retag(std::string_view text,
   }
   std::string out;
   out.reserve(text.size());
+  const auto word = [](char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+  };
   for (std::size_t i = 0; i < text.size();) {
     bool hit = false;
-    if (text[i] == '<') {
-      for (const auto& [from, to] : names) {
-        if (!from.empty() && text.substr(i).starts_with(from)) {
-          out += to;
-          i += from.size();
-          hit = true;
-          break;
-        }
+    const bool starts = text[i] == '<' || i == 0 || !word(text[i - 1]);
+    for (const auto& [from, to] : names) {
+      if (!starts || from.empty() || !text.substr(i).starts_with(from)) {
+        continue;
       }
+      // A bare name, whole: "Picture 1", not "Picture 10".
+      const std::size_t end = i + from.size();
+      if (from.front() != '<' && end < text.size() && word(text[end]) &&
+          word(from.back())) {
+        continue;
+      }
+      out += to;
+      i = end;
+      hit = true;
+      break;
     }
     if (!hit) {
       out += text[i++];

@@ -225,6 +225,11 @@ struct GenerateVideoRequest {
   std::optional<AssetId> first;
   media::Adjustments   first_adjust;
   media::Crop          first_crop;    // "base_crop", as for an edit
+  // A picture it ENDS on (FL2VA's last keyframe; catalog `last_frame`),
+  // with a first: the two are Picture 1 and Picture 2 to the model, as
+  // its guide's FL2VA case names them. Recorded as the recipe's "last"
+  // input, as it looks.
+  std::optional<AssetId> last;
   // REFERENCES (MiniMax H3 Ref2VA; DESIGN §4e): pictures, clips and
   // sounds the clip draws on -- a subject, a motion, a voice, a song --
   // in the prompt row's order, each through its look (a picture) or its
@@ -371,6 +376,9 @@ struct EnhancePromptRequest {
   double                 fps = 0;
   std::optional<AssetId> continue_from;
   bool                   reference_sound = false;
+  // The picture it ENDS on, with `base` the one it opens on (FL2VA):
+  // the guide's FL2VA mode, its instruction line written by Valtz.
+  std::optional<AssetId> last;
 };
 
 // THE AGENT (agent/agent.h, DESIGN §9b): a request in words, worked on
@@ -544,8 +552,9 @@ public:
                                          const std::string& layer = "");
   static bool pitch_follows_speed(const project::Asset&,
                                   const std::string& layer = "");
-  // What happens where two layers overlap in time: "cut" (at the middle)
-  // or "dissolve"; "" removes it (project::Transition).
+  // What happens where two layers overlap in time: "cut" (at the middle),
+  // "dissolve", "dip-black" or "dip-white"; "" removes it
+  // (project::Transition). `from` is the one that ends first.
   Status set_transition(ProjectId, AssetId, const std::string& from,
                         const std::string& to, const std::string& kind);
   // A new, blank layer above `above` (a layer's id); its id is returned
@@ -1272,10 +1281,16 @@ public:
   // `model`'s prompt outline (assist::prompt_outline: its catalog
   // `prompting.outline`), written for a prompt row holding `row`, in
   // `language` ("": the UI's); "" when it has none. What an empty prompt
-  // box starts from.
+  // box starts from. A clip model that opens on a picture opens on
+  // `frames.first` -- the row's first picture when it is -1 -- and one
+  // that ends on one (`last_frame`) ends on `frames.last` -- -1: the
+  // next picture; -2 either: none -- its length `frames.seconds` (0: the
+  // model's default).
   Result<std::string> prompt_outline(const std::string& model,
                                      const std::vector<assist::RefKind>& row,
-                                     std::string_view language = {}) const;
+                                     std::string_view language = {},
+                                     assist::OutlineFrames frames = {})
+      const;
   // Define a derived audio asset -- a song, or speech when the model
   // speaks (MOSS-TTS) -- and build it.
   Result<JobId> generate_audio(GenerateAudioRequest);

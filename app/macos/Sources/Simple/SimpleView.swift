@@ -81,12 +81,16 @@ struct SimpleView: View {
     /// The prompt's column: the stage's slot (or the mark) above the
     /// composer -- or, in the editor, the composer alone, the window's
     /// height, a status bar's height short of its foot. There, while the
-    /// assistant's suggestion is beside the prompt and the inspector is
-    /// shut, the card reaches right to the window's edge, a status bar's
-    /// height from it, its left edge where it was.
+    /// card is split -- the assistant's suggestion beside the prompt, or
+    /// the agent's session -- it reaches right to the window's edge, or
+    /// the inspector's, a status bar's height from it as from the foot,
+    /// its left edge where it was. (It stayed its own width beside the
+    /// inspector, which left it a column of empty room.)
     private func column(_ immersive: Bool, size: CGSize) -> some View {
         let base = min(Self.columnWidth, size.width - 80)
-        let wide = immersive && model.suggesting && !model.inspectorOpen
+        let split = model.suggesting
+            || (model.activeModality == .agent && model.agent != nil)
+        let wide = immersive && split
         let card = wide ? max(base, size.width - StatusBar.height
                                     - (size.width - base) / 2)
                         : base
@@ -277,6 +281,7 @@ private struct SmallTransport: View {
                        playing ? "Pause (Space)" : "Play (Space)") {
                     model.playVideo(rate: playing ? 0 : 1)
                 }
+                .shortcutHint(String(localized: "Space"))
                 button("forward.end.fill", "Go to the end") {
                     model.seekStage(end: true)
                 }
@@ -403,6 +408,12 @@ private struct ResultStage: View {
                         if let id = AppModel.draggedAssets(urls).first {
                             return model.dropAssetOnStage(id)
                         }
+                        // A project opens, as anywhere in the window.
+                        if let project = urls.first(where:
+                            AppModel.isProjectFile) {
+                            model.openDropped(project)
+                            return true
+                        }
                         return model.dropFilesOnStage(
                             urls.filter(\.isFileURL))
                     } isTargeted: { dropTargeted = $0 }
@@ -469,6 +480,8 @@ private struct ResultStage: View {
                 }
         } else if let url = model.stage.video {
             VideoPlayerView(url: url, loops: model.loopClips,
+                            // Not as a project opens: still, where saved.
+                            autoplay: model.stageAutoplay,
                             rate: model.stageFrameRate,
                             command: model.videoCommand,
                             look: model.stackPlayback == nil

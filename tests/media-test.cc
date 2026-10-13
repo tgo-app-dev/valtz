@@ -803,6 +803,76 @@ TEST(media, a_709_export_keeps_a_709_clips_colour)
   CHECK(std::abs(out - own) < 0.004);
 }
 
+// A 709 clip drawn into a movie again -- a timeline showing it, a
+// continuation's guide, a timeline in a timeline -- keeps its colour.
+// Drawn into the named BT.709 space, each pass lifted it, the shadows
+// most: a guide two passes deep reached the model about 30 codes in 255
+// lighter, and the clip continued from it opened washed out.
+TEST(media, a_709_clip_drawn_again_keeps_its_colour)
+{
+  auto dir = test::temp_dir("media-709-again");
+  const auto rec709 = media::output_color("rec709");
+  REQUIRE(rec709.has_value());
+  std::vector<_Float16> buf(3 * 64 * 36);
+  const auto target = [&](std::int64_t) -> Result<media::FrameBuffer> {
+    return media::FrameBuffer{buf.data(), buf.size() * 2, {}};
+  };
+  // A clip's first frame as a model reads it: its codes, in 0..1.
+  auto mean_of = [&](const std::filesystem::path& mov) -> double {
+    media::MovieStack stack;
+    media::MovieLayer clip;
+    clip.file = mov;
+    clip.video = true;
+    stack.layers.push_back(clip);
+    double m = -1;
+    auto st = media::decode_movie_stack(
+        stack, {24, 1}, 0, 1, {64, 36}, target,
+        [&](std::int64_t) -> Status {
+          double sum = 0;
+          for (auto v : buf) { sum += static_cast<double>(v); }
+          m = sum / static_cast<double>(buf.size());
+          return ok_status();
+        },
+        nullptr, &*rec709);
+    CHECK(st.ok());
+    return m;
+  };
+  // The clip as a layer of a timeline, written out.
+  auto again = [&](const std::filesystem::path& src,
+                   const std::filesystem::path& out) {
+    media::MovieStack stack;
+    media::MovieLayer clip;
+    clip.file = src;
+    clip.video = true;
+    stack.layers.push_back(clip);
+    return media::encode_movie_stack(stack, {24, 1}, {64, 36}, {}, out);
+  };
+  for (const int grey : {40, 128}) {
+    const std::string g = std::to_string(grey);
+    const auto png = dir / ("grey-" + g + ".png");
+    REQUIRE(write_png_grey(png, static_cast<std::uint8_t>(grey)));
+    media::MovieStack still;
+    still.canvas.frame_w = 64;
+    still.canvas.frame_h = 36;
+    still.frames = 4;
+    media::MovieLayer pic;
+    pic.file = png;
+    still.layers.push_back(pic);
+    const auto once = dir / ("once-" + g + ".mov");
+    const auto twice = dir / ("twice-" + g + ".mov");
+    const auto thrice = dir / ("thrice-" + g + ".mov");
+    REQUIRE_OK(media::encode_movie_stack(still, {24, 1}, {64, 36}, {},
+                                         once));
+    REQUIRE_OK(again(once, twice));
+    REQUIRE_OK(again(twice, thrice));
+    const double a = mean_of(once), b = mean_of(twice),
+                 c = mean_of(thrice);
+    REQUIRE(a > 0.05 && a < 0.8);
+    CHECK(std::abs(b - a) < 0.004);
+    CHECK(std::abs(c - a) < 0.004);
+  }
+}
+
 // A clip's late frames are read from where they are -- not decoded from
 // the clip's start (an hour's last minute decodes a minute) -- and drawn
 // the same; a writer's preview comes small, twice as often as asked.

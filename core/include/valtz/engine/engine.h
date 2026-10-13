@@ -48,7 +48,8 @@ inline constexpr std::string_view kOpGenerateImage = "generate-image";
 // how its graph takes them.
 inline constexpr std::string_view kOpEditImage = "edit-image";
 // A clip and its soundtrack from a prompt (MiniMax H3 FL2VA), optionally
-// opening on a picture (input role "first"). Params: prompt, width,
+// opening on a picture (input role "first") -- and ending on another
+// ("last", with a first: FL2VA's two keyframes). Params: prompt, width,
 // height, frames (already what the model makes: 17n + 5 for H3), fps,
 // steps, seed, and "lora" (the catalog id of the run-time adapter in
 // ModelRef::lora) with "lora_scale". The output is one .mp4: HEVC
