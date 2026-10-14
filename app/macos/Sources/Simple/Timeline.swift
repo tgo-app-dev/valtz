@@ -17,6 +17,9 @@ struct TimelineRow: Equatable, Identifiable {
     var title: String
     var kind: Kind
     var visible: Bool
+    /// LOCKED (core set_layer_locked): pressed, it is selected and the
+    /// player goes there -- nothing of it is dragged, stretched or cut.
+    var locked = false
     /// Its first frame, and the frame after its last -- nil while it runs
     /// on to the end, as a picture does.
     var start: Int
@@ -29,6 +32,9 @@ struct TimelineRow: Equatable, Identifiable {
     /// absent where nothing changes.
     enum Way: Equatable { case moves, jumps }
     var ways: [Int: Way] = [:]
+    /// The keys a drag moves: its tracks' (the first frame's dot may be
+    /// where the layer starts alone).
+    var movable: Set<Int> = []
     /// A sound alone: its waveform's file, and the source seconds its
     /// span shows.
     var wave: URL?
@@ -135,6 +141,7 @@ extension AppModel {
                                     ? .sound : kind,
                                 visible: l.visible, start: 0, end: nil,
                                 keys: [], cuttable: false)
+            r.locked = l.locked
             if a.isPaged {
                 let span = a.pageSpan(of: l)
                 r.start = span?.lowerBound ?? 0
@@ -159,6 +166,7 @@ extension AppModel {
             let dots = Array(Set(tracks.flatMap { $0.map(\.frame) }
                 + (l.isEmpty ? [] : [0]))).sorted()
             r.keys = dots.map { r.start + $0 }
+            r.movable = Set(tracks.flatMap { $0.map { r.start + $0.frame } })
             for (f, w) in Self.keyWays(tracks, dots: dots) {
                 r.ways[r.start + f] = w
             }
@@ -385,6 +393,21 @@ extension AppModel {
         timelineLayersChanged(select: id)
     }
 
+    /// A layer's key dragged along its block: every track keyed at `from`
+    /// keyed at `to` instead -- frames from the layer's start (a still's
+    /// pages). One command ("Undo Move Key").
+    func moveTimelineKey(_ id: String, from: Int, to: Int) {
+        guard let core, let projectId, let a = timelineAsset else { return }
+        flushPanels()
+        let r = core.layerOp(project: projectId, asset: a.id, "move-key",
+                             layer: id, extra: ["from": from, "to": to])
+        guard r.ok else {
+            flash(r.message)
+            return
+        }
+        timelineLayersChanged(select: id)
+    }
+
     /// What happens where two layers overlap (DESIGN §6a): `kind`
     /// "dissolve", "dip-black" or "dip-white" -- "" takes it away --
     /// `from` the one that ends first. One command ("Undo Transition").
@@ -571,12 +594,18 @@ struct TimelineCard: View {
             },
             slide: { model.slideTimelineLayer($0, to: $1) },
             stretch: { model.stretchTimelineLayer($0, length: $1) },
+            moveKey: { model.moveTimelineKey($0, from: $1, to: $2) },
             cut: { model.cutTimelineLayer($0, at: $1) },
             zoom: { model.zoomTimeline(to: $0) },
             stopCutting: { model.timelineCutting = false },
             toggleVisible: { id in
                 if let r = m.rows.first(where: { $0.id == id }) {
                     model.setLayerVisible(id, !r.visible)
+                }
+            },
+            toggleLocked: { id in
+                if let r = m.rows.first(where: { $0.id == id }) {
+                    model.setLayerLocked(id, !r.locked)
                 }
             },
             moveLayer: { model.moveLayer($0, by: $1) },
@@ -818,6 +847,19 @@ private struct TimelineTool: View {
 
 // MARK: - The view
 
+extension TimelineNSView: NSViewToolTipOwner {
+    static var keyTipText: String {
+        String(localized: "Zoom in until this key shows as a dot, then drag it to move it.")
+    }
+
+    /// A key's bar, zoomed out: how to move it.
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
+              point: NSPoint, userData data: UnsafeMutableRawPointer?)
+        -> String {
+        Self.keyTipText
+    }
+}
+
 /// What the timeline asks of the model.
 struct TimelineActions {
     var seek: (Int) -> Void = { _ in }
@@ -825,10 +867,13 @@ struct TimelineActions {
     var slide: (String, Int) -> Void = { _, _ in }
     /// A still's block stretched: its length, in frames (pages).
     var stretch: (String, Int) -> Void = { _, _ in }
+    /// A key dragged: {layer, from, to}, frames from the layer's start.
+    var moveKey: (String, Int, Int) -> Void = { _, _, _ in }
     var cut: (String, Int) -> Void = { _, _ in }
     var zoom: (Double) -> Void = { _ in }
     var stopCutting: () -> Void = {}
     var toggleVisible: (String) -> Void = { _ in }
+    var toggleLocked: (String) -> Void = { _ in }
     var moveLayer: (String, Int) -> Void = { _, _ in }
     var addLayer: (String) -> Void = { _ in }
     var duplicateLayer: (String) -> Void = { _ in }
@@ -910,6 +955,10 @@ final class TimelineNSView: NSView {
         case slide(row: Int, downX: CGFloat, to: Int)
         /// A still's block's end dragged: it ends at `end`.
         case stretch(row: Int, end: Int)
+        /// A key's dot dragged: the key at `from` going to `to`, within
+        /// `range` -- between the keys either side, on its block.
+        case key(row: Int, from: Int, to: Int, downX: CGFloat,
+                 range: ClosedRange<Int>)
         /// A header pressed -- a layer's, or a folder's with its layers
         /// -- `moving` once it has gone 3 points, to `spot`.
         case reorder(row: Int, downY: CGFloat, spot: Spot, moving: Bool)
@@ -922,6 +971,10 @@ final class TimelineNSView: NSView {
     }
     private var drag: Drag?
     private var hover: CGPoint?
+    /// Zoomed out, the keys' bars, where a tooltip says to zoom in to move
+    /// one: as last set, and their tags.
+    private var keyTips: [CGRect] = []
+    private var keyTipTags: [NSView.ToolTipTag] = []
     /// A header's name being typed over (a double-click): its field, and
     /// the row's id.
     private var nameField: NSTextField?
@@ -1091,6 +1144,7 @@ final class TimelineNSView: NSView {
         NSGraphicsContext.restoreGraphicsState()
         drawRuler(CGRect(x: nameW, y: 0, width: w - nameW, height: rulerH))
         drawPlayhead(height: h)
+        drawKeyDragMark()
         drawNames(CGRect(x: 0, y: rulerH, width: nameW,
                          height: max(0, h - rulerH)))
         // The corner (the tools sit on it), the ruler's hairline, and the
@@ -1103,6 +1157,33 @@ final class TimelineNSView: NSView {
         CGRect(x: nameW - Self.divider, y: 0, width: Self.divider,
                height: h).fill()
         drawReorderMark()
+        updateKeyTips()
+    }
+
+    /// The keys' bars, zoomed out, each with its tooltip -- set again only
+    /// when they have moved (a scroll, a zoom, a change), not as the
+    /// player's line does.
+    private func updateKeyTips() {
+        var rects: [CGRect] = []
+        if scale < Self.keyDot {
+            let area = CGRect(x: Self.nameWidth, y: Self.rulerHeight,
+                              width: max(0, bounds.width - Self.nameWidth),
+                              height: max(0, bounds.height - Self.rulerHeight))
+            for (i, r) in model.rows.enumerated() {
+                guard let b = block(i) else { continue }
+                for k in r.movable.sorted() where k >= r.start
+                    && k < end(of: r) {
+                    // A line's few points widened to find with the pointer.
+                    let bar = keyBar(mid(k), in: b).insetBy(dx: -2, dy: 0)
+                        .intersection(area)
+                    if !bar.isNull, bar.width > 0 { rects.append(bar) }
+                }
+            }
+        }
+        guard rects != keyTips else { return }
+        keyTips = rects
+        keyTipTags.forEach(removeToolTip)
+        keyTipTags = rects.map { addToolTip($0, owner: self, userData: nil) }
     }
 
     /// The divider's width.
@@ -1312,7 +1393,7 @@ final class TimelineNSView: NSView {
                              .truncatesLastVisibleLine])
         }
         // Its keys: solid dots along its foot, the ways between them.
-        let y = b.maxY - 4.5
+        let y = keyY(b)
         func keyX(_ k: Int) -> CGFloat {
             var kx = mid(k)
             if case .slide(let row, _, let to)? = drag, row == i {
@@ -1321,33 +1402,39 @@ final class TimelineNSView: NSView {
             // Inside the block, a key at its very start too.
             return min(max(kx, b.minX + 4), b.maxX - 4)
         }
-        for (k, next) in zip(r.keys, r.keys.dropFirst()) {
-            if let way = r.ways[k] {
+        // A key being dragged: where it goes, its way on with it (the
+        // layer's start keeps its dot).
+        var keys = r.keys, ways = r.ways
+        if case .key(let row, let from, let to, _, _)? = drag, row == i,
+           from != to {
+            keys = Set(keys.filter { $0 != from || $0 == r.start } + [to])
+                .sorted()
+            ways[to] = ways.removeValue(forKey: from)
+        }
+        for (k, next) in zip(keys, keys.dropFirst()) {
+            if let way = ways[k] {
                 drawWay(way, from: keyX(k), to: keyX(next), y: y)
             }
         }
-        for k in r.keys {
+        for k in keys {
             var kx = mid(k)
             if case .slide(let row, _, let to)? = drag, row == i {
                 kx += CGFloat(to - r.start) * scale
             }
             guard kx >= b.minX - 1, kx <= b.maxX + 1 else { continue }
-            // Zoomed out, a frame narrower than the dot: the key is its
-            // frame's cell -- a dark bar down the block, a line at least
-            // -- so it says which frame; a seam between cells wide enough
-            // keeps keys a frame apart two.
             if scale < Self.keyDot {
-                let w = scale >= 3 ? scale - 1 : max(scale, 1.5)
-                let bx = min(max(kx - w / 2, b.minX + 1), b.maxX - 1 - w)
                 NSColor.black.withAlphaComponent(0.75).setFill()
-                NSBezierPath(rect: CGRect(x: bx, y: b.minY + 1, width: w,
-                                          height: b.height - 2)).fill()
+                NSBezierPath(rect: keyBar(kx, in: b)).fill()
                 continue
             }
             kx = keyX(k)
             // The accent's, ringed in the card's ground to show on any
-            // block.
-            let d = Self.keyDot
+            // block; the one being dragged a size up.
+            var d = Self.keyDot
+            if case .key(let row, _, let to, _, _)? = drag, row == i,
+               to == k {
+                d += 2
+            }
             let dot = NSBezierPath(ovalIn: CGRect(x: kx - d / 2, y: y - d / 2,
                                                   width: d, height: d))
             NSColor.controlAccentColor.setFill()
@@ -1356,6 +1443,45 @@ final class TimelineNSView: NSView {
             dot.lineWidth = 1.25
             dot.stroke()
         }
+    }
+
+    /// Where a block's keys lie across: along its foot.
+    private func keyY(_ b: CGRect) -> CGFloat { b.maxY - 4.5 }
+
+    /// Zoomed out, a frame narrower than the dot: the key is its frame's
+    /// cell -- a dark bar down the block, a line at least -- so it says
+    /// which frame; a seam between cells wide enough keeps keys a frame
+    /// apart two.
+    private func keyBar(_ kx: CGFloat, in b: CGRect) -> CGRect {
+        let w = scale >= 3 ? scale - 1 : max(scale, 1.5)
+        let bx = min(max(kx - w / 2, b.minX + 1), b.maxX - 1 - w)
+        return CGRect(x: bx, y: b.minY + 1, width: w, height: b.height - 2)
+    }
+
+    /// A key being dragged: where it goes, on the ruler -- its time (a
+    /// page) and how far it has gone.
+    private func drawKeyDragMark() {
+        guard case .key(_, let from, let to, _, _)? = drag else { return }
+        let kx = mid(to)
+        guard kx >= Self.nameWidth, kx <= bounds.width else { return }
+        let place = model.paged ? String(localized: "Page \(String(to + 1))")
+                                : model.rate.timecode(to)
+        let by = to == from ? "" : to > from ? "  +\(to - from)"
+                                             : "  \(to - from)"
+        let s = NSAttributedString(string: place + by, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 9.5,
+                                                    weight: .medium),
+            .foregroundColor: NSColor.white,
+        ])
+        let size = s.size()
+        let w = size.width + 10, h = Self.rulerHeight - 8
+        let lx = min(max(kx - w / 2, Self.nameWidth + 2), bounds.width - w - 2)
+        let tag = NSBezierPath(roundedRect: CGRect(x: lx, y: 4, width: w,
+                                                   height: h),
+                               xRadius: h / 2, yRadius: h / 2)
+        NSColor.controlAccentColor.setFill()
+        tag.fill()
+        s.draw(at: CGPoint(x: lx + 5, y: 4 + (h - size.height) / 2))
     }
 
     /// The way from a key (at `a`) to the next (at `b`): moving,
@@ -1583,6 +1709,14 @@ final class TimelineNSView: NSView {
                 Self.draw(img, centredIn: CGRect(x: x, y: top, width: 14,
                                                  height: Self.rowHeight))
             }
+            // A layer's lock, at the header's end: shut while it is
+            // locked, faintly open while it is not.
+            if !r.isFolder,
+               let lock = Self.image(r.locked ? "lock.fill" : "lock.open",
+                                     r.locked ? .labelColor
+                                              : .tertiaryLabelColor) {
+                Self.draw(lock, centredIn: Self.lockRect(top: top))
+            }
             let s = NSAttributedString(string: r.title, attributes: [
                 .font: NSFont.systemFont(ofSize: 10.5,
                                          weight: r.isFolder ? .semibold
@@ -1594,7 +1728,8 @@ final class TimelineNSView: NSView {
             if r.id != naming {
                 s.draw(with: CGRect(x: x + 17, y: top + 4.5,
                                     width: area.width - x - 17
-                                        - Self.divider - 4,
+                                        - Self.divider - 4
+                                        - (r.isFolder ? 0 : Self.lockWidth),
                                     height: 14),
                        options: [.usesLineFragmentOrigin,
                                  .truncatesLastVisibleLine])
@@ -1614,6 +1749,14 @@ final class TimelineNSView: NSView {
     /// A row's eye: where a click shows or hides its layer (a folder's).
     private static func eyeRect(top: CGFloat) -> CGRect {
         CGRect(x: 3, y: top, width: 16, height: rowHeight)
+    }
+
+    /// A layer's lock: where a click locks or unlocks it, at the end of
+    /// its header.
+    private static let lockWidth: CGFloat = 18
+    private static func lockRect(top: CGFloat) -> CGRect {
+        CGRect(x: nameWidth - divider - lockWidth - 1, y: top,
+               width: lockWidth, height: rowHeight)
     }
 
     /// A folder's fold: where a click folds it shut or opens it.
@@ -1750,6 +1893,32 @@ final class TimelineNSView: NSView {
         return p.x >= b.maxX - min(5, b.width / 3) && p.x <= b.maxX + 4
     }
 
+    /// The key whose dot is under `p` -- shown as a dot, it is dragged
+    /// along its block -- the nearest: its row and frame.
+    private func keyHit(_ p: CGPoint) -> (row: Int, frame: Int)? {
+        guard scale >= Self.keyDot, p.x >= Self.nameWidth,
+              let i = row(at: p.y), let b = block(i),
+              abs(p.y - keyY(b)) <= 6 else { return nil }
+        let r = model.rows[i]
+        var best: (d: CGFloat, k: Int)?
+        for k in r.movable where k >= r.start && k < end(of: r) {
+            let kx = min(max(mid(k), b.minX + 4), b.maxX - 4)
+            let d = abs(kx - p.x)
+            if d <= 5, d < (best?.d ?? .infinity) { best = (d, k) }
+        }
+        return best.map { (i, $0.k) }
+    }
+
+    /// Where a key may go: between the keys either side of it, on its
+    /// layer's frames (a still's pages).
+    private func keyRange(_ i: Int, _ k: Int) -> ClosedRange<Int> {
+        let r = model.rows[i]
+        let lo = max(r.start, (r.movable.filter { $0 < k }.max() ?? -1) + 1)
+        let hi = min(end(of: r) - 1,
+                     (r.movable.filter { $0 > k }.min() ?? .max) - 1)
+        return lo...max(lo, hi)
+    }
+
     /// A row dragged by `dx` points: its start, its start or end snapped
     /// to an event within reach -- never before the timeline's start.
     private func slideStart(_ i: Int, dx: CGFloat) -> Int {
@@ -1806,6 +1975,10 @@ final class TimelineNSView: NSView {
                 actions.toggleFolded(f)
                 return
             }
+            if !r.isFolder, Self.lockRect(top: rowTop(i)).contains(p) {
+                actions.toggleLocked(r.id)
+                return
+            }
             let mods = e.modifierFlags
             // A double-click on its name names it, as in the Layers
             // section (AppKit's click count: the second click of two).
@@ -1846,6 +2019,23 @@ final class TimelineNSView: NSView {
         if r.isFolder {
             drag = .scrub
             scrub(p.x)
+            return
+        }
+        // A locked layer: selected, the player where it was pressed --
+        // nothing of it moves.
+        if r.locked {
+            actions.select(r.id)
+            drag = .scrub
+            scrub(p.x)
+            return
+        }
+        // A key's dot: dragged, the key moves along its block.
+        if !model.cutting, let k = keyHit(p) {
+            actions.select(r.id)
+            drag = .key(row: k.row, from: k.frame, to: k.frame, downX: p.x,
+                        range: keyRange(k.row, k.frame))
+            NSCursor.resizeLeftRight.set()
+            needsDisplay = true
             return
         }
         // A still's block's end: dragged, it stretches the still.
@@ -1890,6 +2080,21 @@ final class TimelineNSView: NSView {
             if model.paged { to = min(to, model.frames) }
             drag = .stretch(row: i, end: to)
             needsDisplay = true
+        case .key(let i, let from, _, let downX, let range)?:
+            // As far as the pointer has gone, snapped to an event within
+            // reach -- the player's line, another layer's key -- between
+            // its neighbours.
+            let want = Double(from) + Double((p.x - downX) / scale)
+            var to = Int(want.rounded())
+            if let t = snapTargets(excluding: i).filter(range.contains)
+                .min(by: { abs(Double($0) - want) < abs(Double($1) - want) }),
+               abs(Double(t) - want) <= Double(Self.snap / scale) {
+                to = t
+            }
+            to = min(max(to, range.lowerBound), range.upperBound)
+            drag = .key(row: i, from: from, to: to, downX: downX,
+                        range: range)
+            needsDisplay = true
         case .reorder(let i, let downY, _, let moving)?:
             guard moving || abs(p.y - downY) > 3 else { return }
             // Over a folder's header's middle, a layer goes into it; else
@@ -1925,6 +2130,11 @@ final class TimelineNSView: NSView {
         if case .stretch(let i, let to)? = drag, i < model.rows.count,
            to != end(of: model.rows[i]) {
             actions.stretch(model.rows[i].id, to - model.rows[i].start)
+        }
+        if case .key(let i, let from, let to, _, _)? = drag,
+           i < model.rows.count, to != from {
+            let r = model.rows[i]
+            actions.moveKey(r.id, from - r.start, to - r.start)
         }
         // A header dropped: its layers where it went, in a folder or out.
         if case .reorder(let i, _, let spot, true)? = drag,
@@ -1983,6 +2193,10 @@ final class TimelineNSView: NSView {
         m.addItem(Self.item(r.visible ? String(localized: "Hide Layer")
                                       : String(localized: "Show Layer")) {
             [weak self] in self?.actions.toggleVisible(r.id)
+        })
+        m.addItem(Self.item(r.locked ? String(localized: "Unlock Layer")
+                                     : String(localized: "Lock Layer")) {
+            [weak self] in self?.actions.toggleLocked(r.id)
         })
         m.addItem(.separator())
         let remove = Self.item(String(localized: "Remove Layer")) {
@@ -2145,6 +2359,16 @@ final class TimelineNSView: NSView {
     }
 
     private func updateCursor() {
+        // Over a locked layer's row: nothing to drag there.
+        if drag == nil, let h = hover, h.x >= Self.nameWidth,
+           let i = row(at: h.y), model.rows[i].locked {
+            NSCursor.arrow.set()
+            return
+        }
+        if drag == nil, !model.cutting, let h = hover, keyHit(h) != nil {
+            NSCursor.resizeLeftRight.set()
+            return
+        }
         if drag == nil, !model.cutting, let h = hover, let i = row(at: h.y),
            h.x >= Self.nameWidth, atStretchEnd(i, h) {
             NSCursor.resizeLeftRight.set()
@@ -2229,6 +2453,31 @@ final class TimelineNSView: NSView {
         return CGPoint(x: w.x, y: win.frame.height - w.y)
     }
 
+    /// For the snapshot hooks: where a key's dot is (or would be: frame
+    /// `f` on row `i`), in the window's points from its top left.
+    func windowPoint(key f: Int, row i: Int) -> CGPoint? {
+        guard let win = window, model.rows.indices.contains(i),
+              let b = block(i) else { return nil }
+        let local = CGPoint(x: min(max(mid(f), b.minX + 4), b.maxX - 4),
+                            y: keyY(b))
+        let w = convert(local, to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// For the snapshot hooks: the tooltip a key's bar has on row `i`
+    /// ("-" none: shown as a dot, or no key there), and how many bars
+    /// have one.
+    func keyTip(frame f: Int, row i: Int) -> (tip: String, bars: Int) {
+        guard model.rows.indices.contains(i), let b = block(i) else {
+            return ("-", keyTips.count)
+        }
+        let c = CGPoint(x: keyBar(mid(f), in: b).midX, y: b.midY)
+        guard keyTips.contains(where: { $0.contains(c) }) else {
+            return ("-", keyTips.count)
+        }
+        return (Self.keyTipText, keyTips.count)
+    }
+
     /// For the snapshot hooks: a row's block's right end, in the window's
     /// points from its top left.
     func windowPoint(endOf i: Int) -> CGPoint? {
@@ -2241,13 +2490,14 @@ final class TimelineNSView: NSView {
     /// or its name -- or the gap above row `gap`, in points from the
     /// window's top left.
     func windowPoint(header i: Int, eye: Bool = false, fold: Bool = false,
-                     gap: Double? = nil) -> CGPoint? {
+                     lock: Bool = false, gap: Double? = nil) -> CGPoint? {
         guard let win = window else { return nil }
         // A gap's line, or (a fraction) that far into a row.
         let y = gap.map {
             Self.rulerHeight + CGFloat($0) * Self.rowHeight - scrollY
         } ?? rowTop(i) + Self.rowHeight / 2
-        let x: CGFloat = eye ? 11 : fold ? Self.iconX + 6 : 100
+        let x: CGFloat = eye ? 11 : fold ? Self.iconX + 6
+            : lock ? Self.lockRect(top: 0).midX : 100
         let w = convert(CGPoint(x: x, y: y), to: nil)
         return CGPoint(x: w.x, y: win.frame.height - w.y)
     }

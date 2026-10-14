@@ -60,6 +60,7 @@
 #include "valtz/project/project.h"
 #include "valtz/project/workspace.h"
 
+#include <array>
 #include <atomic>
 #include <filesystem>
 #include <functional>
@@ -552,6 +553,14 @@ public:
                                          const std::string& layer = "");
   static bool pitch_follows_speed(const project::Asset&,
                                   const std::string& layer = "");
+  // A layer's KEY moved -- the timeline's dot dragged: every one of its
+  // tracks that changes something (a track at its default draws no dot)
+  // has its key at `from` moved to `to`, frames from the layer's start,
+  // one command ("keys.move"). Refused where no such track has a key at
+  // `from` (kNoKeyToMove), or one with it has another at `to`
+  // (kKeyInTheWay).
+  Status move_layer_key(ProjectId, AssetId, const std::string& layer,
+                        std::int64_t from, std::int64_t to);
   // What happens where two layers overlap in time: "cut" (at the middle),
   // "dissolve", "dip-black" or "dip-white"; "" removes it
   // (project::Transition). `from` is the one that ends first.
@@ -568,6 +577,15 @@ public:
   Status move_layer(ProjectId, AssetId, const std::string& layer, int by);
   Status set_layer_visible(ProjectId, AssetId, const std::string& layer,
                            bool visible);
+  // A layer LOCKED (DESIGN §6a), or unlocked. Locked, what it shows, its
+  // look and keys, its time, its mask and its markup are not changed --
+  // nor is it removed, merged, cut or filled -- until it is unlocked:
+  // each is refused (kLayerLocked). A drawing floating on it is laid
+  // down first. It is shown or hidden, renamed, moved in the stack and
+  // duplicated all the same (the copy unlocked: one to change). One
+  // command, "layer.lock" / "layer.unlock".
+  Status set_layer_locked(ProjectId, AssetId, const std::string& layer,
+                          bool locked);
   Status rename_layer(ProjectId, AssetId, const std::string& layer,
                       std::string name);
   // What a layer shows -- the content made on it, an asset dropped on its
@@ -614,22 +632,56 @@ public:
   Status materialize_markup(ProjectId, AssetId, const std::string& layer,
                             const std::vector<std::string>& objects);
   // Its DRAWING -- the pixels painted on it, its raster -- as a file (""
-  // with nothing painted): what is copied of it.
+  // with nothing painted).
   Result<std::filesystem::path> markup_drawing(ProjectId, AssetId,
                                                const std::string& layer);
-  // A drawing pasted onto the markup a layer shows: `png` (a drawing as
-  // markup_drawing gave it) laid over its raster `dx`, `dy` pixels off.
-  Status paste_drawing(ProjectId, AssetId, const std::string& layer,
-                       const std::filesystem::path& png, double dx,
-                       double dy);
+  // A drawing PASTED onto the markup a layer shows: `png` (as copy_drawings
+  // or markup_drawing gave it) cut to its painted pixels and FLOATING, a
+  // lifted drawing `dx`, `dy` pixels off where it lay (an object of kind
+  // "drawing", laid into the raster when the selection lets it go:
+  // place_drawings). Its object's id.
+  Result<std::string> paste_drawing(ProjectId, AssetId,
+                                    const std::string& layer,
+                                    const std::filesystem::path& png,
+                                    double dx, double dy);
   // The same, the drawing given as its PNG's bytes (the app's pasteboard):
   // written inside the project's own working copy first -- an anonymous
   // session's never reaches another place on disk.
-  Status paste_drawing_data(ProjectId, AssetId, const std::string& layer,
-                            std::span<const std::uint8_t> png, double dx,
-                            double dy);
-  // Its drawing cleared (cut, deleted): its objects stay.
-  Status clear_drawing(ProjectId, AssetId, const std::string& layer);
+  Result<std::string> paste_drawing_data(ProjectId, AssetId,
+                                         const std::string& layer,
+                                         std::span<const std::uint8_t> png,
+                                         double dx, double dy);
+  // Its drawing cleared (cut, deleted) -- the drawing painted within
+  // `reach` of `at` alone, given one: its objects stay.
+  Status clear_drawing(ProjectId, AssetId, const std::string& layer,
+                       std::optional<std::array<double, 2>> at = {},
+                       int reach = 4);
+  // DRAWINGS (media/markup.h, 2026-10-13): the drawing painted within
+  // `reach` pixels of (x, y) on the markup a layer shows -- where it lies;
+  // empty with none there.
+  Result<media::DrawingBox> drawing_at(ProjectId, AssetId,
+                                       const std::string& layer, double x,
+                                       double y, int reach);
+  // That drawing LIFTED off the raster into an object of kind "drawing"
+  // where it lay, moved then as objects are -- its id. A command of the
+  // objects' kind ("markup.objects"), so the move made at once after it
+  // is one with it.
+  Result<std::string> lift_drawing(ProjectId, AssetId,
+                                   const std::string& layer, double x,
+                                   double y, int reach);
+  // Every drawing lifted on the layer made pixels again, laid over its
+  // raster where it now lies -- one touching another, the two are one
+  // drawing: the selection let go. One command ("markup.place"); none
+  // lifted, no change.
+  Status place_drawings(ProjectId, AssetId, const std::string& layer);
+  // What is COPIED of a selection's drawings: the one painted within
+  // `reach` of `at` (given one) and the lifted ones named, as a PNG the
+  // canvas's size where they lie -- a file in the project's own working
+  // copy, the caller's to read and remove ("" with nothing).
+  Result<std::filesystem::path> copy_drawings(
+      ProjectId, AssetId, const std::string& layer,
+      std::optional<std::array<double, 2>> at, int reach,
+      const std::vector<std::string>& lifted);
   // A layer DUPLICATED right above it, named `name` ("": its own name):
   // its looks and tracks, its time, its folder -- not a mask; a markup's
   // copy of its own (drawing and objects), so the two are drawn on
@@ -1248,6 +1300,33 @@ public:
   // something has been made from it: it stays as it was, and a copy is
   // what changes. A named prompt keeps its name.
   Status set_prompt_text(ProjectId, AssetId, const std::string& text);
+  // The assistant's SUGGESTION APPLIED: the words it replaces are KEPT,
+  // so they can be changed and enhanced again. `before` is captured as
+  // capture_prompt captures the box (`from`: the prompt the box came
+  // from), and the suggestion becomes a prompt MADE FROM it -- derived,
+  // op "enhance-prompt", its input "prompt" pinned to that one's version:
+  // its UPSTREAM, which nothing changes in place now. The same
+  // suggestion applied to the same prompt again is the prompt it made.
+  // Both `before` and `enhanced` are in the mention form a request's
+  // prompt is (`*_inline` their media), against `row`. `name`: the
+  // person's for the box's prompt -- the enhanced one, now. `written_for`:
+  // the model it was written for. One command.
+  struct SuggestionApplied {
+    ProjectId                           project;
+    std::string                         before;
+    std::vector<std::optional<AssetId>> before_inline;
+    std::optional<AssetId>              from;
+    std::string                         enhanced;
+    std::vector<std::optional<AssetId>> enhanced_inline;
+    std::vector<AssetId>                row;
+    std::string                         name;
+    std::string                         written_for;
+  };
+  struct AppliedPrompts {
+    AssetId before;
+    AssetId enhanced;
+  };
+  Result<AppliedPrompts> apply_suggestion(const SuggestionApplied&);
   // Is it a prompt (a text asset captured as one)?
   static bool is_prompt(const project::Asset&);
 
@@ -1389,6 +1468,10 @@ private:
 
   void post_(std::string kind, JobId job, Json data = Json::object(),
              engine::TensorPtr tensor = nullptr);
+  // A change to a composition's layer refused while it is locked
+  // (kLayerLocked); a layer not there passes.
+  static Status unlocked_(const project::Asset& comp,
+                          const std::string& layer);
   // Record (or, with empty `params`, remove) one modifier of an asset.
   Status set_modifier_(ProjectId, AssetId, const std::string& kind,
                        const std::string& layer, Json params);
@@ -1508,6 +1591,10 @@ private:
   Result<project::RecipeInput> capture_prompt_(
       project::Project&, ProjectId, const std::string& positional,
       std::optional<AssetId> from, const std::string& name);
+  // A draft prompt's words changed in place: a new version -- an
+  // enhanced one's built by its recipe as it is, its upstream kept.
+  static Status retext_prompt_(project::Project&, AssetId,
+                               const std::string& text);
   // A clip's REFERENCES (generate_video), in the order the model reads
   // them -- those read whole by their files first (pictures, untrimmed
   // sounds), then the spans (the clip continued, clips, trimmed sounds)
@@ -1655,6 +1742,9 @@ private:
       const std::string& layer);
   Status put_markup_(ProjectId, project::Project&, AssetId comp,
                      AssetId markup, project::Markup);
+  // A markup's objects as drawn: each lifted drawing told where its
+  // picture is ("file": its blob's path).
+  static Json drawn_objects_(project::Project&, const Json& objects);
   // The RENDER KEY of an asset (a version of it): its content, or a
   // composition's structure with what it shows, recursively.
   Result<ContentHash> render_key_(project::Project&, AssetId,

@@ -184,7 +184,8 @@ struct AgentSpeedText: View {
     }
 }
 
-/// The Prompt Editor's right half while the agent works (DESIGN §10c):
+/// The Prompt Editor's card while the agent works (DESIGN §10c), its
+/// whole width, the box a few lines under it:
 /// the request, then each turn -- its words, its steps, its speed while
 /// that is shown -- as they came, the step waiting with its buttons, the
 /// words being written last.

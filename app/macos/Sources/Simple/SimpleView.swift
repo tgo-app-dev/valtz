@@ -81,16 +81,15 @@ struct SimpleView: View {
     /// The prompt's column: the stage's slot (or the mark) above the
     /// composer -- or, in the editor, the composer alone, the window's
     /// height, a status bar's height short of its foot. There, while the
-    /// card is split -- the assistant's suggestion beside the prompt, or
-    /// the agent's session -- it reaches right to the window's edge, or
-    /// the inspector's, a status bar's height from it as from the foot,
-    /// its left edge where it was. (It stayed its own width beside the
-    /// inspector, which left it a column of empty room.)
+    /// card is split -- the assistant's suggestion beside the prompt -- it
+    /// reaches right to the window's edge, or the inspector's, a status
+    /// bar's height from it as from the foot, its left edge where it was.
+    /// (It stayed its own width beside the inspector, which left it a
+    /// column of empty room.) The agent's session splits nothing: it
+    /// takes the card at its own width.
     private func column(_ immersive: Bool, size: CGSize) -> some View {
         let base = min(Self.columnWidth, size.width - 80)
-        let split = model.suggesting
-            || (model.activeModality == .agent && model.agent != nil)
-        let wide = immersive && split
+        let wide = immersive && model.suggesting
         let card = wide ? max(base, size.width - StatusBar.height
                                     - (size.width - base) / 2)
                         : base
@@ -368,6 +367,12 @@ private struct ResultStage: View {
 
     /// How far outside the image the drag ring reaches.
     private let ringWidth: CGFloat = 28
+
+    /// The guides' marks beside the card: guides shown over something of
+    /// the project's they measure.
+    private var marksShown: Bool {
+        model.showsGuides && !small && model.guideCanvas != nil
+    }
     private static let showsBand =
         ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT_RING"] != nil
 
@@ -375,8 +380,13 @@ private struct ResultStage: View {
         let ready = model.stageDragReady && model.canDragStage
         VStack(spacing: small ? 0 : 16) {
             GeometryReader { geo in
+                // The guides' marks beside the card: room for them.
+                let gutter = marksShown ? GuideMarks.gutter : .zero
                 let size = fitted(aspect: model.stage.layoutAspect,
-                                  in: geo.size)
+                                  in: CGSize(
+                                      width: geo.size.width - 2 * gutter.width,
+                                      height: geo.size.height
+                                          - 2 * gutter.height))
                 let lift = model.stageLift
                 card
                     // Ready to drag: lifted -- a deeper, wider shadow --
@@ -422,6 +432,17 @@ private struct ResultStage: View {
                             .first.map { model.dropAssetOnStage($0) } ?? false
                     } isTargeted: { dropTargeted = $0 }
                     .overlay { dragRing }
+                    // Over the ring: a click on a mark is the mark's.
+                    .overlay(alignment: .topLeading) {
+                        if marksShown, let c = model.guideCanvas,
+                           let g = model.stageGuides,
+                           let r = model.stage.video != nil
+                               ? CGRect(origin: .zero, size: size)
+                               : model.stageCanvasRect {
+                            GuideMarks(model: model, size: size, rect: r,
+                                       canvas: c, guides: g)
+                        }
+                    }
                     .animation(.smooth(duration: 0.2), value: ready)
                     .frame(width: size.width, height: size.height)
                     .position(x: geo.size.width / 2, y: geo.size.height / 2)
@@ -473,7 +494,9 @@ private struct ResultStage: View {
         if let clip = model.stage.clip {
             ClipView(clip: clip)
                 .overlay {
-                    if model.showsGuides && !small { GuidesGrid() }
+                    if model.showsGuides && !small {
+                        GuidesGrid(at: model.stageGuideFractions)
+                    }
                 }
                 .overlay(alignment: .top) {
                     StageLabel(text: model.stage.aLabel)
@@ -499,7 +522,7 @@ private struct ResultStage: View {
                 // fills the card. Not over a sound's waveform.
                 .overlay {
                     if model.showsGuides && !small && !model.stageIsAudio {
-                        GuidesGrid()
+                        GuidesGrid(at: model.stageGuideFractions)
                     }
                 }
                 // Markup on the clip (DESIGN §10a Markup): drawn at the
@@ -545,6 +568,8 @@ private struct ResultStage: View {
                 fitMargin: 1, background: nil,
                 crop: model.stageCropPlacement,
                 guides: model.showsGuides && !small,
+                guidesAt: model.stageGuideFractions,
+                onCanvasRect: { model.stageCanvasRect = $0 },
                 markupActive: !small && model.markupReady,
                 brushRadius: model.markup.tool == .brush
                     || model.markup.tool == .eraser ? model.markup.radius : 0,
@@ -632,10 +657,17 @@ private struct ResultStage: View {
             let local = { (r: CGRect) -> CGRect in
                 r.isNull ? r : r.offsetBy(dx: -o.x, dy: -o.y)
             }
+            // The guides' marks to the right and below: theirs.
+            let marks = marksShown ? [
+                CGRect(x: g.size.width - ringWidth, y: 0,
+                       width: ringWidth, height: g.size.height),
+                CGRect(x: 0, y: g.size.height - ringWidth,
+                       width: g.size.width, height: ringWidth),
+            ] : []
             let ring = RingShape(inset: ringWidth,
                                  radius: model.stageCornerRadius,
                                  open: local(area),
-                                 cutouts: [local(barFrame)])
+                                 cutouts: [local(barFrame)] + marks)
             let band = ring.path(in: CGRect(origin: .zero, size: g.size))
             Color.clear
                 .contentShape(ring)

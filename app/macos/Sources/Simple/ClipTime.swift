@@ -174,8 +174,17 @@ extension AppModel {
         return nil
     }
 
-    /// The panels change the selected layer here: it shows on the stage.
-    var canEditLayerHere: Bool { canAdjust && layerOffStage == nil }
+    /// The selected layer is LOCKED (DESIGN §6a): the panels that change
+    /// it wait, greyed, as they do off it.
+    var selectedLayerLocked: Bool { isLayerLocked(activeLayer) }
+
+    /// What changes the selected layer waits: the playhead is off it, or
+    /// it is locked.
+    var layerFrozen: Bool { layerOffStage != nil || selectedLayerLocked }
+
+    /// The panels change the selected layer here: it shows on the stage,
+    /// unlocked.
+    var canEditLayerHere: Bool { canAdjust && !layerFrozen }
 
     /// The frame of the selected layer's source showing at the playhead,
     /// at its speed: the CLIP's own time, which the panel shows around

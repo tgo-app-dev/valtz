@@ -462,6 +462,8 @@ struct KeyframeBar: View {
         // The playhead off the layer: no key there -- the way back is a
         // key's arrow, the transport or the timeline.
         let off = model.layerOffStage
+        // Locked: its keys are not changed either.
+        let locked = model.selectedLayerLocked
         let here = off == nil && keys.contains(f)
         HStack(spacing: 4) {
             Button {
@@ -477,7 +479,7 @@ struct KeyframeBar: View {
                 Image(systemName: here ? "minus.diamond" : "plus.diamond")
                     .frame(width: 22)
             }
-            .disabled(off != nil || (here && keys.count == 1))
+            .disabled(off != nil || locked || (here && keys.count == 1))
             .help(here ? "Remove the keyframe here" : "Add a keyframe here")
             Button {
                 model.goToKey(track, forward: true)
@@ -497,6 +499,11 @@ struct KeyframeBar: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .help("Move the playhead onto the layer to change it")
+            } else if locked {
+                Label("Layer locked", systemImage: "lock.fill")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .help("Unlock the layer to change it")
             } else {
                 Text(keyText(keys, here: here, frame: f))
                     .font(.callout.monospacedDigit())
@@ -529,7 +536,7 @@ struct KeyframeBar: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(at == nil)
+        .disabled(at == nil || model.selectedLayerLocked)
         .help(at == nil
               ? String(localized: "How a keyframe goes on to the next: move the playhead to a keyframe")
               : String(localized: "To the next keyframe -- \(now.help)"))

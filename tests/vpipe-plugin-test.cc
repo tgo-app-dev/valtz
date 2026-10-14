@@ -492,14 +492,15 @@ TEST(engine_progress, a_download_beside_a_graph)
         kPhaseDownload);
 }
 
-// A clip's writer ("save video") counts its frames: an export's phase,
-// counted; in a generation, the frames written after the decode --
-// finishing.
+// A clip's writer counts its frames: an export's (its report named
+// kExportReport) its phase, counted; in a generation ("save video"), the
+// frames written after the decode -- finishing.
 TEST(engine_progress, a_clip_s_writer)
 {
   vp::JobProgress e(/*after=*/0, /*download=*/false, /*exporting=*/true);
   CHECK(e.read(reports(Json::array()), 0).phase == kPhasePrepare);
-  vp::JobPhase x = e.read(reports({report(1, "save video", 900, 3600)}), 0);
+  vp::JobPhase x =
+      e.read(reports({report(1, vp::kExportReport, 900, 3600)}), 0);
   CHECK(x.phase == kPhaseExport);
   CHECK(x.done == 900 && x.total == 3600);
   CHECK(x.fraction() == 0.25f);
@@ -509,6 +510,41 @@ TEST(engine_progress, a_clip_s_writer)
   CHECK(g.read(reports({report(1, "vae decode", 9, 9),
                         report(2, "save video", 5, 9)}), 0)
             .phase == kPhaseFinish);
+  // An older vpipe names an export's writer "save video": the export's
+  // while no other graph runs.
+  vp::JobProgress old(/*after=*/0, /*download=*/false, /*exporting=*/true);
+  old.set_alone(true);
+  vp::JobPhase o = old.read(reports({report(1, "save video", 9, 36)}), 0);
+  CHECK(o.phase == kPhaseExport && o.done == 9);
+}
+
+// An export runs beside a generation (the engine's export lane), the two
+// writers' reports in one list: each job follows its own -- the export
+// its named writer, the generation its stages and its "save video".
+TEST(engine_progress, an_export_beside_a_generation)
+{
+  const Json both = reports({report(5, "denoise", 2, 8, 49),
+                             report(6, vp::kExportReport, 30, 120, 50)});
+  vp::JobProgress gen(/*after=*/4, /*download=*/false);
+  vp::JobPhase g = gen.read(both, 0);
+  CHECK(g.phase == kPhaseDenoise && g.done == 2);
+  vp::JobProgress exp(/*after=*/4, /*download=*/false, /*exporting=*/true);
+  vp::JobPhase x = exp.read(both, 0);
+  CHECK(x.phase == kPhaseExport && x.done == 30 && x.total == 120);
+  // The generation's writer is not the export's, alone or not; the
+  // export's alone live is not the generation's.
+  const Json writers = reports({report(6, vp::kExportReport, 40, 120, 52),
+                                report(7, "save video", 3, 39, 51)});
+  CHECK(exp.read(writers, 0).done == 40);
+  vp::JobProgress gen2(/*after=*/4, /*download=*/false);
+  CHECK(gen2.read(reports({report(6, vp::kExportReport, 40, 120)}), 0)
+            .phase == kPhasePrepare);
+  vp::JobPhase w = gen2.read(writers, 0);
+  CHECK(w.phase == kPhaseFinish && w.done == 3);
+  // Not alone, an export takes no "save video".
+  vp::JobProgress busy(/*after=*/4, /*download=*/false, /*exporting=*/true);
+  CHECK(busy.read(reports({report(7, "save video", 3, 39)}), 0).phase ==
+        kPhasePrepare);
 }
 
 // A song (generate-audio) reports its three passes under one name:

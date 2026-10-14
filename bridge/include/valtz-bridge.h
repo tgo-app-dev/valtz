@@ -336,8 +336,10 @@ public:
   // "markup-target" take the "page" shown (a new layer on it alone).
   // Assets list a still's "pages" (absent: one). On a timeline
   // "markup-target" takes the player's "frame" (a new layer from it, a
-  // second long); "slide" ("layer", "offset") and "stretch" ("layer",
-  // "length": a still's, in frames -- or pages) are the timeline's drags.
+  // second long); "slide" ("layer", "offset"), "stretch" ("layer",
+  // "length": a still's, in frames -- or pages) and "move-key" ("layer",
+  // "from", "to": frames -- pages -- from the layer's start, every track
+  // keyed there) are the timeline's drags.
   // Markup (media/markup.h): "markup-target" ("selected": [layer ids])
   // -> {"layer"}: the layer to draw on, made when there is none;
   // "canvas" -> {"width", "height"}; "stroke" ("layer", "stroke");

@@ -393,6 +393,8 @@ struct RecipeParamsDTO: Decodable, Sendable, Hashable {
     /// catalog id).
     var frames: Int?
     var lora: String?
+    /// An enhanced prompt's: the model its suggestion was written for.
+    var writtenFor: String?
     /// The LoRAs of one's own it ran with, by their files, in their slots'
     /// order ("lora_file", "lora2_file" .. "lora8_file": vpipe's eight).
     var loraFiles: [String] = []
@@ -403,7 +405,7 @@ struct RecipeParamsDTO: Decodable, Sendable, Hashable {
 
     private enum K: String, CodingKey {
         case prompt, negative, seed, steps, width, height, frames, lora
-        case cot, maxSeconds
+        case cot, maxSeconds, writtenFor
     }
 
     /// Any key: the slots' files, read by name.
@@ -425,6 +427,7 @@ struct RecipeParamsDTO: Decodable, Sendable, Hashable {
         height = try? c.decode(Int.self, forKey: .height)
         frames = try? c.decode(Int.self, forKey: .frames)
         lora = try? c.decode(String.self, forKey: .lora)
+        writtenFor = try? c.decode(String.self, forKey: .writtenFor)
         // (Keys arrive camel-cased: "lora2_file" is "lora2File".)
         if let all = try? decoder.container(keyedBy: AnyKey.self) {
             loraFiles = (1...8).compactMap { k in
@@ -611,6 +614,9 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
     /// anything, it is kept as it is.
     var text: String?
     var uses: Int?
+    /// A prompt's: the prompts made from it by the assistant's
+    /// suggestions applied (not counted in `uses`).
+    var enhanced: Int?
     /// What it IS (core project::AssetClass, DESIGN §6a): "flat",
     /// "markup", "generated", "still", "composition".
     var assetClass: String?
@@ -680,6 +686,10 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
     var promptInput: String? {
         recipe?.inputs?.first { $0.role == "prompt" }?.asset
     }
+
+    /// An ENHANCED prompt (core apply_suggestion): the assistant's
+    /// suggestion applied -- made from the words before it, its upstream.
+    var isEnhancedPrompt: Bool { isPrompt && op == "enhance-prompt" }
 
     /// What made it: "generate-image", "edit-image", "generate-video" (a
     /// GENERATION), "modify" (a modified copy), "capture", "unfreeze";
@@ -1235,6 +1245,9 @@ struct LayerDTO: Decodable, Sendable, Hashable, Identifiable {
     /// in as the assets load -- AppModel.reloadAssets).
     var markup: MarkupDTO? = nil
     var mask = false
+    /// LOCKED (core Controller::set_layer_locked): what it shows, its
+    /// look, its time are not changed until it is unlocked.
+    var locked = false
     var time: LayerTimeDTO? = nil
     /// The folder it is in (AssetDTO.layerFolders); nil: none.
     var folder: String? = nil
@@ -1254,7 +1267,8 @@ struct LayerDTO: Decodable, Sendable, Hashable, Identifiable {
     }
 
     private enum K: String, CodingKey {
-        case id, name, visible, own, source, markup, mask, time, folder
+        case id, name, visible, own, source, markup, mask, locked, time
+        case folder
     }
 
     init(from d: Decoder) throws {
@@ -1271,6 +1285,8 @@ struct LayerDTO: Decodable, Sendable, Hashable, Identifiable {
         markup = (try? c.decodeIfPresent(MarkupDTO.self, forKey: .markup))
             .flatMap { $0 }
         mask = (try? c.decodeIfPresent(Bool.self, forKey: .mask))
+            .flatMap { $0 } ?? false
+        locked = (try? c.decodeIfPresent(Bool.self, forKey: .locked))
             .flatMap { $0 } ?? false
         time = (try? c.decodeIfPresent(LayerTimeDTO.self, forKey: .time))
             .flatMap { $0 }

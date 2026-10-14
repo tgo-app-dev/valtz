@@ -575,6 +575,8 @@ struct EnhancedPrompt: Sendable {
     var title: String
     var aspect: String
     var follow: String
+    /// The model it was written for (the one Start would run then).
+    var model = ""
 }
 
 /// B set aside while the compare is off (AppModel.toggleCompare).
@@ -1374,11 +1376,28 @@ final class AppModel {
     @ObservationIgnored private var compositing = false
     @ObservationIgnored private var compositeAgain = false
     private var clipKeysPersistTask: Task<Void, Never>?
-    /// A 3 × 3 grid over what the stage shows -- a picture, a clip, a
+    /// The GUIDES over what the stage shows -- a picture, a clip, a
     /// preview (View › Show Guides). Kept between launches.
     var showsGuides = UserDefaults.standard
         .object(forKey: "showsGuides") as? Bool ?? false {
         didSet { Self.keep(showsGuides, as: "showsGuides") }
+    }
+    /// Guides set by hand, by the asset they were set on (in its pixels);
+    /// any other's are the thirds. The project's view state keeps them
+    /// ("guides"): saved with it.
+    var guideSets: [String: GuideSet] = [:]
+    /// Where what the guides measure lies on the stage's card (points
+    /// from its top left): the picture's canvas, as zoomed and panned.
+    var stageCanvasRect: CGRect?
+    /// A guide whose number is being typed over (GuideMarks) -- its
+    /// triangle then dragged, `guideDragging`, meanwhile.
+    var guideEditing: GuideRef?
+    var guideDragging: GuideRef?
+    /// Markup moved snaps to the guides (the markup toolbar's magnet).
+    /// Kept between launches.
+    var snapsToGuides = UserDefaults.standard
+        .object(forKey: "snapsToGuides") as? Bool ?? false {
+        didSet { Self.keep(snapsToGuides, as: "snapsToGuides") }
     }
     /// Each picture to edit's crop, by file, as `baseAdjustments`.
     @ObservationIgnored
@@ -1471,6 +1490,8 @@ final class AppModel {
     var enhanceDraft = ""
     /// The tab the running suggestion is for (nil: the box, no tabs).
     var enhanceTab: UUID?
+    /// The model the running suggestion is written for.
+    var enhanceFor = ""
     var enhanced: EnhancedPrompt?
 
     // Jobs
@@ -2683,6 +2704,19 @@ final class AppModel {
         layerOp(visible ? "show" : "hide", id)
     }
 
+    /// A layer LOCKED, or unlocked (DESIGN §6a): locked, nothing changes
+    /// it -- its content, look, time, mask; nor is it removed -- until it
+    /// is unlocked. A selection of its markup is let go.
+    func setLayerLocked(_ id: String, _ locked: Bool) {
+        if locked, markup.selectionLayer == id { deselectMarkup() }
+        layerOp(locked ? "lock" : "unlock", id)
+    }
+
+    /// A layer of the stack on the stage, locked.
+    func isLayerLocked(_ id: String) -> Bool {
+        stageStack?.layerStack.first { $0.id == id }?.locked ?? false
+    }
+
     func renameLayer(_ id: String, _ name: String) {
         layerOp("rename", id, ["name": name])
     }
@@ -2692,7 +2726,8 @@ final class AppModel {
     /// own.
     func canRemoveLayer(_ id: String) -> Bool {
         guard let stack = stageStack,
-              stack.layerStack.contains(where: { $0.id == id }) else {
+              let layer = stack.layerStack.first(where: { $0.id == id }),
+              !layer.locked else {
             return false
         }
         if stack.isComposition && (stageFramed || stack.kind == "audio") {
@@ -3678,6 +3713,10 @@ final class AppModel {
             if agent?.listening == true {
                 return String(localized: "Tell the agent what to do next")
             }
+            // At work: what is said now is told at its next turn.
+            if let a = agent, !a.ended {
+                return String(localized: "Tell the agent more — it reads it at its next turn")
+            }
             return String(localized: "Ask for something to make — “a five-slide deck on the water cycle, a picture on each”")
         }
     }
@@ -3875,6 +3914,7 @@ final class AppModel {
         projectPath = path
         isAnonymous = false
         refreshDocument()
+        loadGuides()
         // What the open found.
         if r["recovered"] as? Bool == true {
             flash(String(localized: "Your unsaved changes were restored. Revert to Saved goes back to the saved version."))
@@ -4574,6 +4614,22 @@ final class AppModel {
             .filter { $0.project == projectId }
         if list != tasks {
             withAnimation(Self.motion) { tasks = list }
+        }
+    }
+
+    /// SEVERAL TASKS under way -- generations, upscales, exports, running
+    /// side by side or waiting (DESIGN §3a): the inspector opens on
+    /// Assets, where each is a row -- its badge, what it is doing, what it
+    /// waits for -- so what runs and what waits is in sight. Once, as
+    /// their number reaches two; shut again by hand, it stays shut.
+    func revealTasks() {
+        withAnimation(Self.motion) {
+            inspectorOpen = true
+            if inspectorStacked {
+                inspectorFolded.remove(.assets)
+            } else {
+                inspectorTab = .assets
+            }
         }
     }
 
@@ -5457,6 +5513,7 @@ final class AppModel {
             enhanceJob = job
             enhanceDraft = ""
             enhanceTab = currentTabId
+            enhanceFor = runningModel
             enhanced = nil
         }
     }
@@ -5547,12 +5604,102 @@ final class AppModel {
     /// was written for becomes the output's.
     func acceptEnhanced() {
         guard let e = enhanced else { return }
+        keepWordsBefore(e)
         negative = e.negative
         withAnimation(Self.motion) {
             enhanced = nil
             applySuggestedShape(aspect: e.aspect, follow: e.follow)
         }
         setPrompt(e.prompt)
+    }
+
+    /// The suggestion applied keeps the words it replaces (DESIGN §10c):
+    /// the core captures them as a prompt, as Start would, and the
+    /// suggestion as a prompt MADE FROM them -- its upstream, kept as it
+    /// is, to be put back in the box (Assets' Use Original in Prompt, a
+    /// result's Information), changed and enhanced again. The box's
+    /// prompt is the enhanced one from now on, named as the box was.
+    private func keepWordsBefore(_ e: EnhancedPrompt) {
+        let inline = inlineAssets
+        let before = (inline.isEmpty ? prompt : promptMarked)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let core, let projectId, !before.isEmpty else { return }
+        let after = suggestionMentions(e.prompt)
+        var req: [String: Any] = [
+            "prompt": before,
+            "inline": inline,
+            "enhanced": after.marked
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            "enhanced_inline": after.inline,
+            "row": rowAssetIds,
+            "for": e.model,
+        ]
+        if let pa = promptAssetId { req["prompt_asset"] = pa }
+        if let n = promptGivenName { req["prompt_name"] = n }
+        let r = core.assetOp(project: projectId, "apply-suggestion", req)
+        guard r.ok, let id = r["asset"] as? String else {
+            flash(r.message)
+            return
+        }
+        promptAssetId = id
+        reloadAssets()
+    }
+
+    /// A suggestion as the box will hold it: the edit model's own picture
+    /// tags ("<image2>") as mentions of those pictures (U+FFFC, each
+    /// picture's asset; "" one not imported yet), positional tags as
+    /// they are.
+    func suggestionMentions(_ text: String)
+        -> (marked: String, inline: [String]) {
+        let words = text as NSString
+        let found = pictureTags(in: words)
+        guard !found.isEmpty else { return (text, []) }
+        var marked = ""
+        var inline: [String] = []
+        var at = 0
+        for (r, pic) in found {
+            marked += words.substring(
+                with: NSRange(location: at, length: r.location - at))
+            marked += "\u{FFFC}"
+            inline.append(assetId(of: pic) ?? "")
+            at = r.location + r.length
+        }
+        marked += words.substring(from: at)
+        return (marked, inline)
+    }
+
+    /// Where the edit model's own picture tags ("<image2>", its
+    /// `referenceTag`) stand in `words`, each with the picture it names:
+    /// in order, none overlapping. A suggestion names the pictures so.
+    func pictureTags(in words: NSString)
+        -> [(range: NSRange, picture: PromptAttachment)] {
+        let format = referenceTag
+        guard !format.isEmpty else { return [] }
+        var found: [(range: NSRange, picture: PromptAttachment)] = []
+        for n in 1...max(1, promptAttachments.count) {
+            guard let pic = picture(numbered: n) else { continue }
+            let tag = format.replacingOccurrences(of: "{n}", with: "\(n)")
+            var from = 0
+            while from < words.length {
+                let r = words.range(
+                    of: tag, range: NSRange(location: from,
+                                            length: words.length - from))
+                guard r.location != NSNotFound else { break }
+                if !found.contains(where: {
+                    NSIntersectionRange($0.range, r).length > 0 }) {
+                    found.append((r, pic))
+                }
+                from = r.location + r.length
+            }
+        }
+        return found.sorted { $0.range.location < $1.range.location }
+    }
+
+    /// The prompt an ENHANCED one was made from: the words before the
+    /// suggestion was applied (its upstream).
+    func promptUpstream(of a: AssetDTO) -> AssetDTO? {
+        guard a.isEnhancedPrompt, let id = a.promptInput else { return nil }
+        return assets.first { $0.id == id }
     }
 
     /// `follow` ("<image1>"): the size of that picture; else `aspect`
@@ -7133,6 +7280,11 @@ final class AppModel {
         reloadAssets()
         refreshDocument()
         deselectHiddenLayer()
+        // The markup selection as the project now has it (a drawing's
+        // move or placing undone).
+        syncMarkupSelection()
+        // Reverted: the guides as saved.
+        loadGuides()
         guard let id = stageAssetId,
               let a = assets.first(where: { $0.id == id }) else {
             // What was on the stage is gone: the project's work, or
@@ -7406,7 +7558,7 @@ final class AppModel {
     /// key away): its other keys kept -- the window's size, the playhead
     /// the last Save noted. A write that changes nothing is no change to
     /// the project.
-    private func noteView(_ changes: [String: Any?]) {
+    func noteView(_ changes: [String: Any?]) {
         guard let core, let projectId else { return }
         var view = (core.viewState(projectId)["view"] as? [String: Any])
             ?? [:]
@@ -7724,6 +7876,7 @@ final class AppModel {
         projectPath = dir.path
         projectName = anonymousName
         isAnonymous = true
+        loadGuides()
         reloadAssets()
         refreshDocument()
     }
@@ -7955,6 +8108,7 @@ final class AppModel {
         case "crop": String(localized: "Crop")
         case "trim": String(localized: "Trim")
         case "keys": String(localized: "Keyframes")
+        case "keys.move": String(localized: "Move Key")
         case "canvas": String(localized: "Canvas Size")
         case "timeline": String(localized: "Length")
         case "page.add": String(localized: "Add Page")
@@ -7965,6 +8119,8 @@ final class AppModel {
         case "layer.move": String(localized: "Move Layer")
         case "layer.show": String(localized: "Show Layer")
         case "layer.hide": String(localized: "Hide Layer")
+        case "layer.lock": String(localized: "Lock Layer")
+        case "layer.unlock": String(localized: "Unlock Layer")
         case "layer.rename": String(localized: "Rename Layer")
         case "layer.source": String(localized: "Layer Content")
         case "layer.merge": String(localized: "Merge Layers")
@@ -7988,6 +8144,7 @@ final class AppModel {
         case "markup.distribute": String(localized: "Distribute")
         case "markup.pixels": String(localized: "Make Pixels")
         case "markup.paste": String(localized: "Paste Drawing")
+        case "markup.place": String(localized: "Place Drawing")
         case "markup.clear": String(localized: "Delete Drawing")
         case "folder.add": String(localized: "New Folder")
         case "folder.rename": String(localized: "Rename Folder")
@@ -8001,6 +8158,7 @@ final class AppModel {
         case "asset.place": String(localized: "Place")
         case "asset.instantiate": String(localized: "Place on Stage")
         case "prompt.text", "prompt.capture": String(localized: "Prompt")
+        case "prompt.enhance": String(localized: "Apply Suggestion")
         case "composition.new": String(localized: "New Composition")
         case "capture.record": String(localized: "Recording")
         case "generate.speech": String(localized: "Make Speech")
@@ -8238,10 +8396,12 @@ final class AppModel {
         exportJobs[job] = dest
         reloadTasks()
         // A clip's export is long: it shows on the stage as it goes --
-        // when it runs now; queued behind another task, it waits in
-        // Assets (a click there shows it).
-        if asset.kind == "video",
-           tasks.first?.job == job || tasks.isEmpty {
+        // when it runs now (first among the exports: they run beside the
+        // generations) and the stage watches no generation; else its row
+        // in Assets shows it (a click there puts it on the stage).
+        let first = tasks.first { $0.job == job }.map { $0.position == 0 }
+            ?? tasks.isEmpty
+        if asset.kind == "video", first, generationJob == nil {
             withAnimation(Self.motion) {
                 exportShow = ExportShow(job: job,
                                         file: dest.lastPathComponent)
@@ -8488,7 +8648,8 @@ final class AppModel {
                     negative: p["negative"] as? String ?? "",
                     title: p["title"] as? String ?? "",
                     aspect: p["aspect"] as? String ?? "",
-                    follow: p["follow"] as? String ?? "")
+                    follow: p["follow"] as? String ?? "",
+                    model: enhanceFor)
                 if enhanceHere {
                     withAnimation(Self.motion) { enhanced = e }
                 } else if let i = promptTabs.firstIndex(where: {

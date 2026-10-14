@@ -1,4 +1,5 @@
 #include "engine/vpipe/graph-builder.h"
+#include "engine/vpipe/job-progress.h"
 
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
@@ -1327,7 +1328,7 @@ picture_stages(const JobSpec& job, const JobInput& in, const fs::path& out,
 {
   const std::string name = jget<std::string>(job.params, "format", "");
   const bool alpha = in.info.frame.alpha != media::AlphaMode::None;
-  const std::string read = "read" + suffix;
+  const std::string read = kExportRead + suffix;
   // F16 whatever the source: 8 bits lose nothing in it, and 16-bit or
   // float sources keep what they have. ImageIO, so the file's colour
   // space is read as declared and written into the copy. A camera RAW
@@ -1357,8 +1358,8 @@ picture_stages(const JobSpec& job, const JobInput& in, const fs::path& out,
   if (name != "exr") {
     save_in.push_back(port(read, 1));
   }
-  stages.push_back(stage("write" + suffix, "save-image", std::move(save_in),
-                         std::move(cfg)));
+  stages.push_back(stage(kExportWrite + suffix, "save-image",
+                         std::move(save_in), std::move(cfg)));
 }
 
 }
@@ -1402,7 +1403,7 @@ build_export(const JobSpec& job)
       }
     }
     MovieFeed m;
-    m.stage = "read";
+    m.stage = kExportRead;
     m.stack = media::movie_stack_from_json(sj);
     const Rational rate = m.stack->rate.num > 0 ? m.stack->rate
                                                 : Rational{24, 1};
@@ -1434,13 +1435,14 @@ build_export(const JobSpec& job)
     g.frames = m.count;
     g.movie = std::move(m);
     Json stages = Json::array();
-    stages.push_back(stage("read", ex::kSourceType, Json::array(),
+    stages.push_back(stage(kExportRead, ex::kSourceType, Json::array(),
                            Json::object()));
-    stages.push_back(stage("write", "avf-save-video",
-                           Json::array({port("read")}),
+    stages.push_back(stage(kExportWrite, "avf-save-video",
+                           Json::array({port(kExportRead)}),
                            video_writer({{"path", written.string()},
                                          {"fps", rate.to_double()},
-                                         {"frames", g.frames}},
+                                         {"frames", g.frames},
+                                         {"progress", kExportReport}},
                                         job.params, name,
                                         rate.to_double())));
     g.spec = {{"id", "valtz-" + jid},
@@ -1544,7 +1546,7 @@ build_export(const JobSpec& job)
     const Json sj = jget(job.params, "stack", Json());
     if (sj.is_object() && !jget(sj, "layers", Json::array()).empty()) {
       MovieFeed m;
-      m.stage = "read";
+      m.stage = kExportRead;
       m.path = in.path;
       m.stack = media::movie_stack_from_json(sj);
       m.rate = rate;
@@ -1571,11 +1573,11 @@ build_export(const JobSpec& job)
       g.height = m.size.height;
       g.frames = m.count > 0 ? m.count : in.info.frame_count;
       g.movie = std::move(m);
-      stages.push_back(stage("read", ex::kSourceType, Json::array(),
+      stages.push_back(stage(kExportRead, ex::kSourceType, Json::array(),
                              Json::object()));
     } else if (!adj.identity() || !crop.identity()) {
       MovieFeed m;
-      m.stage = "read";
+      m.stage = kExportRead;
       m.path = in.path;
       m.adjust = adj;
       m.crop = crop;
@@ -1597,10 +1599,10 @@ build_export(const JobSpec& job)
           ? m.count
           : std::max<std::int64_t>(0, in.info.frame_count - m.first);
       g.movie = std::move(m);
-      stages.push_back(stage("read", ex::kSourceType, Json::array(),
+      stages.push_back(stage(kExportRead, ex::kSourceType, Json::array(),
                              Json::object()));
     } else {
-      stages.push_back(stage("read", "avf-load-video", Json::array(),
+      stages.push_back(stage(kExportRead, "avf-load-video", Json::array(),
                              read));
       g.frames = count > 0
           ? count
@@ -1611,12 +1613,13 @@ build_export(const JobSpec& job)
     }
     // The writer counts the frames against what it is told to expect:
     // the export's progress.
-    Json write = {{"path", written.string()}, {"fps", fps}};
+    Json write = {{"path", written.string()}, {"fps", fps},
+                  {"progress", kExportReport}};
     if (g.frames > 0) {
       write["frames"] = g.frames;
     }
-    stages.push_back(stage("write", "avf-save-video",
-                           Json::array({port("read")}),
+    stages.push_back(stage(kExportWrite, "avf-save-video",
+                           Json::array({port(kExportRead)}),
                            video_writer(std::move(write), job.params, name,
                                         fps)));
   } else if (const Json aj = jget(job.params, "adjust", Json::object()),
@@ -1632,7 +1635,7 @@ build_export(const JobSpec& job)
     // (media::exif_block_for); OpenEXR gets it linear and unclamped.
     VALTZ_ASSIGN(media::PixelSize own, media::oriented_size(in.path));
     RefFeed f;
-    f.stage = "read";
+    f.stage = kExportRead;
     f.path = in.path;
     f.crop = media::crop_from_json(cj);
     // A crop's padding may be transparent: the file keeps alpha then.
@@ -1646,7 +1649,7 @@ build_export(const JobSpec& job)
     g.references.push_back(f);
     g.width = sz.width;
     g.height = sz.height;
-    stages.push_back(stage("read", ex::kSourceType, Json::array(),
+    stages.push_back(stage(kExportRead, ex::kSourceType, Json::array(),
                            Json::object()));
     const bool deep = name == "png16" || name == "tiff16";
     Json cfg = {{"path", g.output.string()},
@@ -1659,14 +1662,14 @@ build_export(const JobSpec& job)
     if (const int q = jget(job.params, "quality", 0); q > 0) {
       cfg["quality"] = q;
     }
-    Json save_in = Json::array({port("read")});
+    Json save_in = Json::array({port(kExportRead)});
     if (name != "exr") {
       g.exif_from = in.path;
       stages.push_back(stage(kExifSource, ex::kSourceType, Json::array(),
                              Json::object()));
       save_in.push_back(port(kExifSource));
     }
-    stages.push_back(stage("write", "save-image", std::move(save_in),
+    stages.push_back(stage(kExportWrite, "save-image", std::move(save_in),
                            std::move(cfg)));
   } else {
     picture_stages(job, in, g.output, "", stages);

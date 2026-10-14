@@ -268,6 +268,12 @@ JobProgress::read(const Json& doc, double now)
       if (names_a_file(desc) != _download) {
         continue;
       }
+      // An export's writer: the export's alone, never a generation's.
+      const bool exporting =
+          desc == kExportReport || (_export && _alone && desc == "save video");
+      if (!_download && exporting != _export) {
+        continue;
+      }
       JobPhase& p = i.phase;
       p.done = jget<std::uint64_t>(it, "done", 0);
       p.total = jget<std::uint64_t>(it, "total", 0);
@@ -275,10 +281,10 @@ JobProgress::read(const Json& doc, double now)
       if (_download) {
         p.phase = kPhaseDownload;
         p.label = desc;
+      } else if (exporting) {
+        p.phase = kPhaseExport;
       } else if (desc == "save video") {
-        p.phase = _export    ? kPhaseExport
-                  : _restore ? kPhaseRestore
-                             : kPhaseFinish;
+        p.phase = _restore ? kPhaseRestore : kPhaseFinish;
       } else if (desc == "song") {
         p.phase = song_phase(p.total, p.detail);
         if (p.total == 0) {

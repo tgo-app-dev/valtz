@@ -108,6 +108,14 @@ inline constexpr char kRefLatents[] = "refs-latents";
 inline constexpr char kExifSource[] = "base-exif";
 inline constexpr char kExifKey[] = "exif_tiff_b64";
 
+// An EXPORT's stages (a still's pages "export-read-2", ...): an export
+// runs in a lane of its own, beside a generation, and vpipe's log names a
+// stage by its id -- whose an error is (VpipeEngine::error_lane_). Its
+// writer's report is named kExportReport (job-progress.h).
+inline constexpr char kExportRead[] = "export-read";
+inline constexpr char kExportWrite[] = "export-write";
+inline constexpr char kExportStage[] = "'export-";
+
 // A clip the engine must feed frame by frame -- an export of a clip with
 // a look: its frames [first, first + count) decoded by Valtz, each with
 // its adjustments and crop at its frame (media::decode_movie), into

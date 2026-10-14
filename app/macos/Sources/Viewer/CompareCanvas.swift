@@ -38,8 +38,9 @@ import QuartzCore
 /// the picture lies on it where the core's placement puts it -- scaled,
 /// turned, offset -- over the padding colour, cut to the canvas. While
 /// it is being EDITED a drag moves the picture instead of the view, and
-/// what lies outside the canvas shows faintly. GUIDES lay a 3 × 3 grid
-/// over the canvas.
+/// what lies outside the canvas shows faintly. GUIDES lay their lines
+/// over the canvas (the thirds until set by hand), and where the canvas
+/// lies is reported, for their marks beside the stage.
 ///
 /// MARKUP (the markup toolbar): while it is active a drag on the picture
 /// is the tool's -- reported in canvas pixels, top-left origin, with no
@@ -118,11 +119,18 @@ final class CompareCanvas: NSView {
             if resized && fitting { fitNow() } else { relayout() }
         }
     }
-    /// A 3 × 3 grid over what each side shows (View › Show Guides):
-    /// A's canvas, B's picture.
+    /// The guides over what each side shows (View › Show Guides): A's
+    /// canvas, B's picture -- where they are, the thirds unless set.
     var showsGuides = false {
         didSet { if showsGuides != oldValue { relayout() } }
     }
+    var guideFractions = GuideFractions.thirds {
+        didSet { if guideFractions != oldValue { relayout() } }
+    }
+    /// Where A's canvas lies in the view (points from its top left), each
+    /// time it moves -- the guides' marks beside the stage follow it.
+    var onCanvasRect: ((CGRect?) -> Void)?
+    private var lastCanvasRect: CGRect??
 
     /// The markup toolbar has the pointer: drags are its tool's, not a
     /// pan (scrolling and pinching still move the view).
@@ -527,11 +535,24 @@ final class CompareCanvas: NSView {
         let scale = window?.backingScaleFactor ?? 2
         guidesA.show(over: showsGuides && imageA != nil
                          ? canvas ?? layerA.frame : nil,
+                     at: guideFractions,
                      in: clipA.bounds, scale: scale,
                      border: false)
         guidesB.show(over: showsGuides && hasB && !clipB.isHidden
                          ? layerB.frame : nil,
+                     at: guideFractions,
                      in: clipB.bounds, scale: scale, border: false)
+        let shown = imageA == nil ? nil
+            : (canvas ?? layerA.frame).offsetBy(dx: clipA.frame.minX,
+                                                dy: clipA.frame.minY)
+        let topLeft = shown.map {
+            CGRect(x: $0.minX, y: bounds.height - $0.maxY,
+                   width: $0.width, height: $0.height)
+        }
+        if lastCanvasRect != .some(topLeft) {
+            lastCanvasRect = .some(topLeft)
+            onCanvasRect?(topLeft)
+        }
         overlayView.toView = CGAffineTransform(
             translationX: markupOrigin.x, y: markupOrigin.y)
             .concatenating(canvasToView)

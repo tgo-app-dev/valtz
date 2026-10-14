@@ -1207,29 +1207,11 @@ struct PromptEditor: NSViewRepresentable {
                                  in tv: PromptTextView)
         -> NSMutableAttributedString {
         let words = text as NSString
-        var inline: [(NSRange, UUID)] = []
-        let format = model.referenceTag
-        if !format.isEmpty {
-            for n in 1...max(1, model.promptAttachments.count) {
-                guard let pic = model.picture(numbered: n) else { continue }
-                let tag = format.replacingOccurrences(of: "{n}", with: "\(n)")
-                var from = 0
-                while from < words.length {
-                    let r = words.range(
-                        of: tag, range: NSRange(location: from,
-                                                length: words.length - from))
-                    guard r.location != NSNotFound else { break }
-                    if !inline.contains(where: {
-                        NSIntersectionRange($0.0, r).length > 0 }) {
-                        inline.append((r, pic.id))
-                    }
-                    from = r.location + r.length
-                }
-            }
-        }
+        let inline = model.pictureTags(in: words).map { ($0.range,
+                                                         $0.picture.id) }
         let out = NSMutableAttributedString()
         var at = 0
-        for (r, id) in inline.sorted(by: { $0.0.location < $1.0.location }) {
+        for (r, id) in inline {
             out.append(NSAttributedString(
                 string: words.substring(with: NSRange(location: at,
                                                       length: r.location - at)),

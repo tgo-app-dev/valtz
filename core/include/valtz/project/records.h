@@ -192,6 +192,10 @@ struct Layer {
   // it, so what it froze stays as it was.
   std::uint32_t          source_version = 0;
   bool                   mask = false;
+  // LOCKED (DESIGN §6a): what it shows, its look, its time, its mask are
+  // not changed -- nor is it removed -- until it is unlocked. Shown or
+  // hidden, renamed, moved in the stack all the same.
+  bool                   locked = false;
   LayerTime              time;
   // The FOLDER it is in (Asset::layer_folders); "" none.
   std::string            folder;

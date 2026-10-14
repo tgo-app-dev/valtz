@@ -68,10 +68,10 @@ parse_id(const std::string& s)
 // `inline`: the asset at each inline picture of the prompt, in order;
 // "" (or anything else unreadable) for one that is not an asset.
 std::vector<std::optional<AssetId>>
-inline_pictures(const Json& j)
+inline_pictures(const Json& j, const char* key = "inline")
 {
   std::vector<std::optional<AssetId>> out;
-  for (const auto& v : jget(j, "inline", Json::array())) {
+  for (const auto& v : jget(j, key, Json::array())) {
     out.push_back(v.is_string() ? AssetId::parse(v.get<std::string>())
                                 : std::nullopt);
   }
@@ -969,9 +969,19 @@ Core::assets_json(const std::string& project_id) const
           j["text"] = std::string(utf8_prefix(*t, 65536));
         }
       }
+      // Of what came from it, the prompts the assistant's suggestions
+      // made from it (Controller::apply_suggestion) apart.
       if (Controller::is_prompt(a)) {
-        auto deps = p->dependents(a.id, false);
-        j["uses"] = deps.ok() ? deps->size() : 0;
+        int uses = 0;
+        int enhanced = 0;
+        if (auto deps = p->dependents(a.id, false); deps.ok()) {
+          for (const auto& d : *deps) {
+            auto da = p->asset(d);
+            ++(da.ok() && Controller::is_prompt(*da) ? enhanced : uses);
+          }
+        }
+        j["uses"] = uses;
+        j["enhanced"] = enhanced;
       }
       if (a.origin == project::Origin::Derived) {
         auto st = p->staleness(a.id);
@@ -1061,6 +1071,27 @@ Core::asset_op(const std::string& request_json)
           jget(*j, "output", Json::object())
               .get<project::OutputSettings>());
       return made.ok() ? ok({{"asset", made->str()}}) : err(made.error());
+    }
+    // The assistant's suggestion applied (Controller::apply_suggestion):
+    // {"prompt", "inline", "prompt_asset", "prompt_name" -- the box's
+    // words before it, as Start sends them -- "enhanced",
+    // "enhanced_inline", "row", "for"} -> {"before", "asset"}: the words
+    // before it kept, the suggestion a prompt made from them.
+    if (op == "apply-suggestion") {
+      Controller::SuggestionApplied req;
+      req.project = *pid;
+      req.before = jget<std::string>(*j, "prompt", "");
+      req.before_inline = inline_pictures(*j);
+      req.from = prompt_asset_of(*j);
+      req.enhanced = jget<std::string>(*j, "enhanced", "");
+      req.enhanced_inline = inline_pictures(*j, "enhanced_inline");
+      req.row = row_of(*j);
+      req.name = jget<std::string>(*j, "prompt_name", "");
+      req.written_for = jget<std::string>(*j, "for", "");
+      auto r = c.apply_suggestion(req);
+      return r.ok() ? ok({{"before", r->before.str()},
+                          {"asset", r->enhanced.str()}})
+                    : err(r.error());
     }
     auto aid = asset("asset");
     if (!aid.ok()) {
@@ -2017,6 +2048,66 @@ Core::layer_op(const std::string& request_json)
       auto r = c.markup_drawing(*pid, *aid, layer);
       return r.ok() ? ok({{"path", r->string()}}) : err(r.error());
     }
+    // DRAWINGS (media/markup.h): the point "x", "y" (markup pixels) and
+    // "reach" (pixels) name one. "drawing-at" -> {"x", "y", "w", "h"}
+    // (w 0: none there); "lift-drawing" -> {"object"}: lifted, an object
+    // of kind "drawing"; "place-drawings": the lifted ones laid back
+    // (fused); "copy-drawings" {"at"?: bool, "objects": the lifted ones}
+    // -> {"path"} (a PNG in the working copy, the caller's to remove);
+    // "drawing-file" {"hash"} -> {"path"}: a lifted drawing's picture.
+    const auto point = [&]() -> std::optional<std::array<double, 2>> {
+      if (!j->contains("x") || !j->contains("y")) {
+        return std::nullopt;
+      }
+      return std::array<double, 2>{jget(*j, "x", 0.0), jget(*j, "y", 0.0)};
+    };
+    const int reach = std::clamp(jget(*j, "reach", 4), 0, 64);
+    if (op == "drawing-at") {
+      auto r = c.drawing_at(*pid, *aid, layer, jget(*j, "x", 0.0),
+                            jget(*j, "y", 0.0), reach);
+      return r.ok() ? ok({{"x", r->x}, {"y", r->y}, {"w", r->w},
+                          {"h", r->h}})
+                    : err(r.error());
+    }
+    if (op == "lift-drawing") {
+      auto r = c.lift_drawing(*pid, *aid, layer, jget(*j, "x", 0.0),
+                              jget(*j, "y", 0.0), reach);
+      return r.ok() ? ok({{"object", *r}}) : err(r.error());
+    }
+    if (op == "copy-drawings") {
+      auto r = c.copy_drawings(*pid, *aid, layer, point(), reach,
+                               strings(jget(*j, "objects", Json())));
+      return r.ok() ? ok({{"path", r->string()}}) : err(r.error());
+    }
+    if (op == "drawing-file") {
+      project::BlobRef b;
+      b.hash = jget(*j, "hash", ContentHash{});
+      b.ext = "png";
+      auto* p = c.project(*pid);
+      if (!p || b.empty()) {
+        return err(Code::InvalidArgument, "no such drawing");
+      }
+      return ok({{"path", p->blobs().path_of(b).string()}});
+    }
+    if (op == "paste-drawing") {
+      // {"png" (a file) | "png_base64" (its bytes), "dx", "dy"}: a
+      // drawing floating on the markup -> {"object"}.
+      const auto b64 = jget<std::string>(*j, "png_base64", "");
+      Result<std::string> made = make_error(Code::InvalidArgument,
+                                            "not base64");
+      if (!b64.empty()) {
+        if (auto bytes = unbase64(b64)) {
+          made = c.paste_drawing_data(*pid, *aid, layer, *bytes,
+                                      jget(*j, "dx", 0.0),
+                                      jget(*j, "dy", 0.0));
+        }
+      } else {
+        made = c.paste_drawing(*pid, *aid, layer,
+                               jget<std::string>(*j, "png", ""),
+                               jget(*j, "dx", 0.0), jget(*j, "dy", 0.0));
+      }
+      return made.ok() ? ok({{"object", *made}}) : err(made.error());
+    }
     if (op == "duplicate") {
       auto r = c.duplicate_layer(*pid, *aid, layer,
                                  jget<std::string>(*j, "name", ""));
@@ -2032,6 +2123,8 @@ Core::layer_op(const std::string& request_json)
       st = c.move_layer(*pid, *aid, layer, jget(*j, "by", 0));
     } else if (op == "show" || op == "hide") {
       st = c.set_layer_visible(*pid, *aid, layer, op == "show");
+    } else if (op == "lock" || op == "unlock") {
+      st = c.set_layer_locked(*pid, *aid, layer, op == "lock");
     } else if (op == "rename") {
       st = c.rename_layer(*pid, *aid, layer,
                           jget<std::string>(*j, "name", ""));
@@ -2068,23 +2161,11 @@ Core::layer_op(const std::string& request_json)
     } else if (op == "materialize") {
       st = c.materialize_markup(*pid, *aid, layer,
                                 strings(jget(*j, "objects", Json())));
-    } else if (op == "paste-drawing") {
-      // {"png" (a file) | "png_base64" (its bytes), "dx", "dy"}: a
-      // drawing laid over the markup's.
-      const auto b64 = jget<std::string>(*j, "png_base64", "");
-      if (!b64.empty()) {
-        auto bytes = unbase64(b64);
-        st = bytes ? c.paste_drawing_data(*pid, *aid, layer, *bytes,
-                                          jget(*j, "dx", 0.0),
-                                          jget(*j, "dy", 0.0))
-                   : make_error(Code::InvalidArgument, "not base64");
-      } else {
-        st = c.paste_drawing(*pid, *aid, layer,
-                             jget<std::string>(*j, "png", ""),
-                             jget(*j, "dx", 0.0), jget(*j, "dy", 0.0));
-      }
     } else if (op == "clear-drawing") {
-      st = c.clear_drawing(*pid, *aid, layer);
+      // {"x", "y"}?: that drawing alone.
+      st = c.clear_drawing(*pid, *aid, layer, point(), reach);
+    } else if (op == "place-drawings") {
+      st = c.place_drawings(*pid, *aid, layer);
     } else if (op == "merge") {
       st = c.merge_layers(*pid, *aid, layer,
                           jget<std::string>(*j, "with", ""));
@@ -2098,6 +2179,10 @@ Core::layer_op(const std::string& request_json)
     } else if (op == "stretch") {
       st = c.stretch_layer(*pid, *aid, layer,
                            jget<std::int64_t>(*j, "length", 1));
+    } else if (op == "move-key") {
+      st = c.move_layer_key(*pid, *aid, layer,
+                            jget<std::int64_t>(*j, "from", 0),
+                            jget<std::int64_t>(*j, "to", 0));
     } else if (op == "flatten") {
       // The layer's composition made flat, in its place (Flatten First).
       auto made = c.flatten_layer(*pid, *aid, layer);

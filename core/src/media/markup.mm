@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <limits>
 #include <optional>
@@ -59,6 +60,24 @@ rgba_context(PixelSize size)
     CGContextClearRect(ctx, CGRectMake(0, 0, size.width, size.height));
   }
   return ctx;
+}
+
+// A picture file read; null when it cannot be (or there is none).
+CGImageRef
+read_image(const fs::path& file)
+{
+  if (file.empty()) {
+    return nullptr;
+  }
+  NSURL* url = [NSURL fileURLWithPath:@(file.c_str())];
+  CGImageSourceRef src =
+      CGImageSourceCreateWithURL((__bridge CFURLRef)url, nullptr);
+  CGImageRef img =
+      src ? CGImageSourceCreateImageAtIndex(src, 0, nullptr) : nullptr;
+  if (src) {
+    CFRelease(src);
+  }
+  return img;
 }
 
 // `raster` drawn on `ctx` (`canvas` big), centred at its own size.
@@ -349,7 +368,18 @@ draw_body(CGContextRef ctx, const Json& o)
   const auto fill = rgba_of(jget(o, "fill", Json()), {0, 0, 0, 0});
   const double width = std::max(0.0, finite_or(o, "width", 0));
   CGContextSaveGState(ctx);
-  if (kind == "line") {
+  if (kind == "drawing") {
+    // Its pixels in its box, upright on a y-down canvas.
+    if (CGImageRef img = read_image(jget<std::string>(o, "file", ""))) {
+      const CGRect r = CGRectStandardize(
+          CGRectMake(x0, y0, x1 - x0, y1 - y0));
+      CGContextTranslateCTM(ctx, r.origin.x, r.origin.y + r.size.height);
+      CGContextScaleCTM(ctx, 1, -1);
+      CGContextDrawImage(ctx, CGRectMake(0, 0, r.size.width,
+                                         r.size.height), img);
+      CGImageRelease(img);
+    }
+  } else if (kind == "line") {
     if (width > 0) {
       CGContextSetLineCap(ctx, kCGLineCapRound);
       CGContextSetLineWidth(ctx, width);
@@ -896,7 +926,15 @@ normalize_objects(const Json& in)
   for (const auto& o : in) {
     const auto kind = jget<std::string>(o, "kind", "");
     if (kind != "line" && kind != "rect" && kind != "ellipse" &&
-        kind != "polygon" && kind != "text") {
+        kind != "polygon" && kind != "text" && kind != "drawing") {
+      continue;
+    }
+    // A drawing lifted: its box and its picture's blob -- no file (whoever
+    // draws it says where its blob is), nothing else.
+    const Json image = jget(o, "image", Json());
+    if (kind == "drawing" &&
+        (!image.is_object() || jget<std::string>(image, "hash", "").size() !=
+                                   64)) {
       continue;
     }
     auto id = jget<std::string>(o, "id", "");
@@ -904,6 +942,19 @@ normalize_objects(const Json& in)
       id = std::format("o{}", next++);
     }
     ids.insert(id);
+    if (kind == "drawing") {
+      out.push_back({{"id", id},
+                     {"kind", kind},
+                     {"x0", finite_or(o, "x0", 0)},
+                     {"y0", finite_or(o, "y0", 0)},
+                     {"x1", finite_or(o, "x1", 0)},
+                     {"y1", finite_or(o, "y1", 0)},
+                     {"image", {{"hash", jget<std::string>(image, "hash", "")},
+                                {"size", jget<std::uint64_t>(image, "size", 0)},
+                                {"ext", jget<std::string>(image, "ext",
+                                                          "png")}}}});
+      continue;
+    }
     auto rgba = [](const std::array<double, 4>& c) {
       return Json::array({c[0], c[1], c[2], c[3]});
     };
@@ -1145,6 +1196,236 @@ paste_drawing(const fs::path& raster, PixelSize canvas,
     }
     CGContextRelease(ctx);
     return st;
+  }
+}
+
+namespace {
+
+// A raster on its canvas, as draw_raster places it, in memory: 8-bit
+// premultiplied RGBA, its first row the canvas's top.
+struct CanvasPixels {
+  CGContextRef   ctx = nullptr;
+  std::uint8_t*  data = nullptr;
+  std::size_t    row = 0;
+  int            w = 0;
+  int            h = 0;
+
+  CanvasPixels() = default;
+  CanvasPixels(const CanvasPixels&) = delete;
+  CanvasPixels& operator=(const CanvasPixels&) = delete;
+  ~CanvasPixels()
+  {
+    if (ctx) {
+      CGContextRelease(ctx);
+    }
+  }
+
+  std::uint8_t alpha(int x, int y) const
+  {
+    return data[static_cast<std::size_t>(y) * row +
+                static_cast<std::size_t>(x) * 4 + 3];
+  }
+};
+
+Status
+canvas_pixels(const fs::path& raster, PixelSize canvas, CanvasPixels& c)
+{
+  if (canvas.width <= 0 || canvas.height <= 0) {
+    return make_error(Code::InvalidArgument, "the canvas has no size");
+  }
+  c.ctx = rgba_context(canvas);
+  if (!c.ctx) {
+    return make_error(Code::Internal, "cannot make the markup canvas");
+  }
+  VALTZ_TRY(draw_raster(c.ctx, canvas, raster));
+  c.data = static_cast<std::uint8_t*>(CGBitmapContextGetData(c.ctx));
+  c.row = CGBitmapContextGetBytesPerRow(c.ctx);
+  c.w = canvas.width;
+  c.h = canvas.height;
+  return ok_status();
+}
+
+// The drawing painted within `reach` of (x, y): its pixels marked in
+// `mask` (the canvas's size; 1 its body, 2 its faint edge), its box.
+DrawingBox
+find_drawing(const CanvasPixels& c, double x, double y, int reach,
+             std::vector<std::uint8_t>& mask)
+{
+  const int cx = static_cast<int>(std::floor(x));
+  const int cy = static_cast<int>(std::floor(y));
+  // The nearest pixel of a body.
+  int seed = -1;
+  int best = std::numeric_limits<int>::max();
+  for (int dy = -reach; dy <= reach; ++dy) {
+    for (int dx = -reach; dx <= reach; ++dx) {
+      const int px = cx + dx, py = cy + dy;
+      if (px < 0 || py < 0 || px >= c.w || py >= c.h ||
+          c.alpha(px, py) <= kDrawingAlpha) {
+        continue;
+      }
+      if (dx * dx + dy * dy < best) {
+        best = dx * dx + dy * dy;
+        seed = py * c.w + px;
+      }
+    }
+  }
+  if (seed < 0) {
+    return {};
+  }
+  mask.assign(static_cast<std::size_t>(c.w) * c.h, 0);
+  // Its body: the pixels that touch, 8-connected.
+  std::vector<int> body{seed};
+  mask[seed] = 1;
+  for (std::size_t i = 0; i < body.size(); ++i) {
+    const int px = body[i] % c.w, py = body[i] / c.w;
+    for (int dy = -1; dy <= 1; ++dy) {
+      for (int dx = -1; dx <= 1; ++dx) {
+        const int nx = px + dx, ny = py + dy;
+        if (nx < 0 || ny < 0 || nx >= c.w || ny >= c.h) {
+          continue;
+        }
+        const int n = ny * c.w + nx;
+        if (mask[n] == 0 && c.alpha(nx, ny) > kDrawingAlpha) {
+          mask[n] = 1;
+          body.push_back(n);
+        }
+      }
+    }
+  }
+  // Its faint edge: fainter pixels reached from it, kDrawingFringe at
+  // most.
+  std::vector<int> front = body, next;
+  for (int step = 0; step < kDrawingFringe && !front.empty(); ++step) {
+    next.clear();
+    for (const int i : front) {
+      const int px = i % c.w, py = i / c.w;
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+          const int nx = px + dx, ny = py + dy;
+          if (nx < 0 || ny < 0 || nx >= c.w || ny >= c.h) {
+            continue;
+          }
+          const int n = ny * c.w + nx;
+          if (mask[n] == 0 && c.alpha(nx, ny) > 0) {
+            mask[n] = 2;
+            next.push_back(n);
+          }
+        }
+      }
+    }
+    front.swap(next);
+  }
+  int x0 = c.w, y0 = c.h, x1 = -1, y1 = -1;
+  for (int py = 0; py < c.h; ++py) {
+    const std::uint8_t* m = &mask[static_cast<std::size_t>(py) * c.w];
+    for (int px = 0; px < c.w; ++px) {
+      if (m[px]) {
+        x0 = std::min(x0, px);
+        x1 = std::max(x1, px);
+        y0 = std::min(y0, py);
+        y1 = std::max(y1, py);
+      }
+    }
+  }
+  return {x0, y0, x1 - x0 + 1, y1 - y0 + 1};
+}
+
+// The pixels of `c` in `box` -- those `mask` marks, without one all --
+// into a PNG the box's size.
+Status
+write_piece(const CanvasPixels& c, const DrawingBox& box,
+            const std::vector<std::uint8_t>* mask, const fs::path& out)
+{
+  CGContextRef p = rgba_context({box.w, box.h});
+  if (!p) {
+    return make_error(Code::Internal, "cannot make the drawing's picture");
+  }
+  auto* dst = static_cast<std::uint8_t*>(CGBitmapContextGetData(p));
+  const std::size_t drow = CGBitmapContextGetBytesPerRow(p);
+  for (int r = 0; r < box.h; ++r) {
+    const int py = box.y + r;
+    for (int col = 0; col < box.w; ++col) {
+      const int px = box.x + col;
+      if (mask && !(*mask)[static_cast<std::size_t>(py) * c.w + px]) {
+        continue;
+      }
+      std::memcpy(dst + static_cast<std::size_t>(r) * drow +
+                      static_cast<std::size_t>(col) * 4,
+                  c.data + static_cast<std::size_t>(py) * c.row +
+                      static_cast<std::size_t>(px) * 4,
+                  4);
+    }
+  }
+  Status st = write_png(p, out);
+  CGContextRelease(p);
+  return st;
+}
+
+}
+
+Result<DrawingBox>
+drawing_at(const fs::path& raster, PixelSize canvas, double x, double y,
+           int reach)
+{
+  @autoreleasepool {
+    CanvasPixels c;
+    VALTZ_TRY(canvas_pixels(raster, canvas, c));
+    std::vector<std::uint8_t> mask;
+    return find_drawing(c, x, y, reach, mask);
+  }
+}
+
+Result<DrawingBox>
+lift_drawing(const fs::path& raster, PixelSize canvas, double x, double y,
+             int reach, const fs::path& rest, const fs::path& piece)
+{
+  @autoreleasepool {
+    CanvasPixels c;
+    VALTZ_TRY(canvas_pixels(raster, canvas, c));
+    std::vector<std::uint8_t> mask;
+    const DrawingBox box = find_drawing(c, x, y, reach, mask);
+    if (box.empty()) {
+      return box;
+    }
+    if (!piece.empty()) {
+      VALTZ_TRY(write_piece(c, box, &mask, piece));
+    }
+    if (!rest.empty()) {
+      for (std::size_t i = 0; i < mask.size(); ++i) {
+        if (mask[i]) {
+          const std::size_t px = i % c.w, py = i / c.w;
+          std::memset(c.data + py * c.row + px * 4, 0, 4);
+        }
+      }
+      VALTZ_TRY(write_png(c.ctx, rest));
+    }
+    return box;
+  }
+}
+
+Result<DrawingBox>
+crop_drawing(const fs::path& png, PixelSize canvas, const fs::path& piece)
+{
+  @autoreleasepool {
+    CanvasPixels c;
+    VALTZ_TRY(canvas_pixels(png, canvas, c));
+    int x0 = c.w, y0 = c.h, x1 = -1, y1 = -1;
+    for (int py = 0; py < c.h; ++py) {
+      for (int px = 0; px < c.w; ++px) {
+        if (c.alpha(px, py) > 0) {
+          x0 = std::min(x0, px);
+          x1 = std::max(x1, px);
+          y0 = std::min(y0, py);
+          y1 = std::max(y1, py);
+        }
+      }
+    }
+    if (x1 < 0) {
+      return DrawingBox{};
+    }
+    const DrawingBox box{x0, y0, x1 - x0 + 1, y1 - y0 + 1};
+    VALTZ_TRY(write_piece(c, box, nullptr, piece));
+    return box;
   }
 }
 

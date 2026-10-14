@@ -207,6 +207,10 @@ struct MarkupGradient: Codable, Equatable, Hashable, Sendable {
 struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
     enum Kind: String, Codable, Sendable {
         case line, rect, ellipse, polygon, text
+        /// A DRAWING lifted off the raster (core media/markup.h): its
+        /// pixels a picture in its box, moved as objects are, laid back
+        /// into the raster when the selection lets it go.
+        case drawing
     }
     var id: String
     var kind: Kind
@@ -240,6 +244,8 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
     var points: [CGPoint] = []
     /// A gradient in place of a shape's fill or a text's colour.
     var gradient: MarkupGradient?
+    /// A lifted drawing's picture: its blob, as the core keeps it.
+    var image: DrawingImage?
 
     /// Shapes with an inside: a fill or a gradient goes there.
     var fillable: Bool {
@@ -253,7 +259,7 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, kind, x0, y0, x1, y1, stroke, fill, width, text, font, box
         case align, effects, lineSpacing, paragraphSpacing, justifyLast
-        case points, gradient
+        case points, gradient, image
     }
 
     init(id: String, kind: Kind, x0: Double, y0: Double, x1: Double,
@@ -298,6 +304,8 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
             ?? []
         gradient = (try? c.decodeIfPresent(MarkupGradient.self,
                                            forKey: .gradient)) ?? nil
+        image = (try? c.decodeIfPresent(DrawingImage.self, forKey: .image))
+            ?? nil
         if gradient.map({ $0.stops.count < 2 }) ?? false { gradient = nil }
         if var arr = try? c.nestedUnkeyedContainer(forKey: .effects) {
             while !arr.isAtEnd {
@@ -332,9 +340,23 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
         }
         if !effects.isEmpty { j["effects"] = effects.map(\.json) }
         if kind == .polygon { j["points"] = points.map { [$0.x, $0.y] } }
-        if let gradient, kind != .line { j["gradient"] = gradient.json }
+        if let gradient, kind != .line && kind != .drawing {
+            j["gradient"] = gradient.json
+        }
+        if kind == .drawing, let image { j["image"] = image.json }
         return j
     }
+}
+
+/// A lifted drawing's picture, as the core names its blob (project::
+/// BlobRef): kept as it came, sent back whole -- an object without it is
+/// dropped by the core.
+struct DrawingImage: Codable, Hashable, Sendable {
+    var hash: String
+    var size: Int
+    var ext: String
+
+    var json: [String: Any] { ["hash": hash, "size": size, "ext": ext] }
 }
 
 /// A markup layer's content (core project::Markup): whether anything is

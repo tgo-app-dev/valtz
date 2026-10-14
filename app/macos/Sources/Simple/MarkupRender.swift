@@ -184,10 +184,22 @@ enum MarkupRender {
     }
 
     /// `o` itself, without its effects.
+    /// Lifted drawings' pictures, by their blob's hash: read by the model
+    /// as one is selected (AppModel.loadDrawingImages), drawn from here.
+    static let drawingImages = DrawingImageCache()
+
     private static func drawBody(_ o: MarkupObject, in ctx: CGContext) {
         ctx.saveGState()
         defer { ctx.restoreGState() }
         switch o.kind {
+        case .drawing:
+            // Its pixels in its box, upright on the y-down canvas.
+            guard let hash = o.image?.hash,
+                  let img = drawingImages[hash] else { return }
+            let b = box(o)
+            ctx.translateBy(x: b.minX, y: b.maxY)
+            ctx.scaleBy(x: 1, y: -1)
+            ctx.draw(img, in: CGRect(origin: .zero, size: b.size))
         case .line:
             guard o.width > 0 else { return }
             ctx.setLineCap(.round)
@@ -403,9 +415,60 @@ enum MarkupRender {
             + CTFontGetLeading(ft)
     }
 
+    /// Where `o` lies, as Information gives it and the guides take it:
+    /// its box -- a line's ends', a text's lines' -- its stroke left out.
+    static func frame(_ o: MarkupObject) -> CGRect {
+        o.kind == .text && !o.box ? bounds(o) : box(o)
+    }
+
+    /// The frame round all of `objects`; nil for none.
+    static func frame(_ objects: [MarkupObject]) -> CGRect? {
+        objects.map(frame).reduce(nil) { $0?.union($1) ?? $1 }
+    }
+
+    /// `o` moved by (dx, dy).
+    static func offset(_ o: MarkupObject, dx: Double,
+                       dy: Double) -> MarkupObject {
+        var o = o
+        o.x0 += dx
+        o.x1 += dx
+        o.y0 += dy
+        o.y1 += dy
+        return o
+    }
+
+    /// `o` laid from frame `from` onto `to` -- moved and scaled, each axis
+    /// on its own, its corners, ends, polygon and gradient with it. A text
+    /// becomes a box (one from before: round what it showed); an axis a
+    /// frame has none of (a level line's height) only moves.
+    static func reframed(_ o: MarkupObject, from: CGRect,
+                         to: CGRect) -> MarkupObject {
+        var o = o
+        if o.kind == .text && !o.box {
+            let b = bounds(o)
+            (o.x0, o.y0, o.x1, o.y1) = (b.minX, b.minY, b.maxX, b.maxY)
+            o.box = true
+        }
+        func mapX(_ x: Double) -> Double {
+            from.width > 1e-6
+                ? to.minX + (x - from.minX) * to.width / from.width
+                : x + to.minX - from.minX
+        }
+        func mapY(_ y: Double) -> Double {
+            from.height > 1e-6
+                ? to.minY + (y - from.minY) * to.height / from.height
+                : y + to.minY - from.minY
+        }
+        (o.x0, o.x1) = (mapX(o.x0), mapX(o.x1))
+        (o.y0, o.y1) = (mapY(o.y0), mapY(o.y1))
+        return o
+    }
+
     /// What `o` covers, its stroke included.
     static func bounds(_ o: MarkupObject) -> CGRect {
         switch o.kind {
+        case .drawing:
+            return box(o)
         case .text where o.box:
             return box(o)
         case .text:
@@ -429,6 +492,8 @@ enum MarkupRender {
                      tolerance: Double) -> Bool {
         let reach = o.width / 2 + tolerance
         switch o.kind {
+        case .drawing:
+            return box(o).insetBy(dx: -tolerance, dy: -tolerance).contains(p)
         case .line:
             return distance(p, CGPoint(x: o.x0, y: o.y0),
                             CGPoint(x: o.x1, y: o.y1)) <= reach
@@ -470,6 +535,8 @@ enum MarkupRender {
     /// on its box's corner is the polygon's), then its box's.
     static func handles(_ o: MarkupObject) -> [CGPoint] {
         switch o.kind {
+        case .drawing:
+            return []  // moved whole, not reshaped
         case .line:
             return [CGPoint(x: o.x0, y: o.y0), CGPoint(x: o.x1, y: o.y1)]
         case .polygon:
@@ -557,5 +624,17 @@ enum MarkupRender {
         let q = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
         return ((p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y))
             .squareRoot()
+    }
+}
+
+/// Lifted drawings' pictures by their blob's hash -- read on the main
+/// thread, drawn wherever an overlay draws.
+final class DrawingImageCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var images: [String: CGImage] = [:]
+
+    subscript(hash: String) -> CGImage? {
+        get { lock.withLock { images[hash] } }
+        set { lock.withLock { images[hash] = newValue } }
     }
 }

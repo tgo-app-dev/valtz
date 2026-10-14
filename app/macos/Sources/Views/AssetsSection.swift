@@ -1021,6 +1021,11 @@ private struct AssetRow: View {
                 Button("Rename") { model.renamingAsset = a.id }
             } else if a.isPrompt {
                 Button("Use in Prompt") { model.usePrompt(a) }
+                // An enhanced prompt: the words before it, to change and
+                // enhance again.
+                if let up = model.promptUpstream(of: a) {
+                    Button("Use Original in Prompt") { model.usePrompt(up) }
+                }
             } else {
                 if a.isComposition {
                     Button("Set Active") { model.setActive(a) }
@@ -1179,10 +1184,20 @@ private struct AssetRow: View {
     /// anything, it is not changed in place.
     private var promptSubtitle: String {
         let n = asset.uses ?? 0
-        guard n > 0 else {
-            return String(localized: "Prompt · nothing made from it yet")
-        }
         let made = String(n)
+        // An enhanced prompt: the words it was made from, by name.
+        if let up = model.promptUpstream(of: asset) {
+            let name = up.name
+            return n > 0
+                ? String(localized: "Enhanced from “\(name)” · made \(made)")
+                : String(localized: "Enhanced from “\(name)”")
+        }
+        guard n > 0 else {
+            // Enhanced, nothing else made from it: kept all the same.
+            return (asset.enhanced ?? 0) > 0
+                ? String(localized: "Prompt · enhanced · kept as it is")
+                : String(localized: "Prompt · nothing made from it yet")
+        }
         return String(localized: "Prompt · made \(made) · kept as it is")
     }
 

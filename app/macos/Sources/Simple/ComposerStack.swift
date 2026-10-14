@@ -42,8 +42,8 @@ struct ComposerStack: View {
     /// down its left side; no modality tab, no tray.
     var immersive = false
     /// The card's width in the editor (SimpleView sets it: wider while it
-    /// is split -- a suggestion beside the prompt, the agent's session --
-    /// to the window's or the inspector's edge).
+    /// is split -- a suggestion beside the prompt -- to the window's or
+    /// the inspector's edge).
     var cardWidth: CGFloat = 680
     @State private var promptHeight: CGFloat = 60
     /// Its height not compact: what a tray closing grows it back to.
@@ -312,52 +312,69 @@ struct ComposerStack: View {
         .animation(.smooth(duration: 0.2), value: dropTargeted)
     }
 
-    /// In the editor with the assistant's suggestion -- or the agent's
-    /// session in the Agent tab -- the card split in two halves (DESIGN
-    /// §10c).
-    private var splitting: Bool {
-        immersive && (model.suggesting || agentSession != nil)
-    }
+    /// In the editor with the assistant's suggestion, the card split in
+    /// two halves (DESIGN §10c).
+    private var splitting: Bool { immersive && model.suggesting }
 
     /// The agent's session, in the Agent tab.
     private var agentSession: AgentSession? {
         model.activeModality == .agent ? model.agent : nil
     }
 
+    /// In the editor, the agent's session takes the card -- its whole
+    /// width, the card its own: the request it began from is in it, the
+    /// box emptied by Start. The box stays at its foot, a few lines, for
+    /// what is said to it next (an answer, more to do).
+    private var agentFills: Bool {
+        immersive && agentSession != nil && !model.suggesting
+    }
+
+    /// The box's height under the agent's session: three lines.
+    static let replyHeight: CGFloat = 96
+
     /// The text -- and, in the editor while there is a suggestion, beside
     /// it the suggestion's half, each with its header. The half opens
     /// and closes by its width, its own laid out whole and cut, so it
-    /// slides away rather than squeezes.
+    /// slides away rather than squeezes. The agent's session goes over
+    /// the text, which keeps its place (the same view: the caret, its
+    /// words carry on).
     private var textArea: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                if immersive {
-                    PaneHeader(title: "Prompt")
-                        .frame(height: splitting ? PaneHeader.height : 0)
-                        .opacity(splitting ? 1 : 0)
-                        .clipped()
-                }
-                promptText
-            }
-            if immersive {
-                let half = max(0, cardWidth / 2)
+        VStack(spacing: 0) {
+            if agentFills, let a = agentSession {
+                AgentPane(model: model, session: a)
+                    .frame(maxHeight: .infinity)
+                    .transition(.opacity)
                 Rectangle()
                     .fill(Color(nsColor: .separatorColor))
-                    .frame(width: splitting ? 0.5 : 0)
-                    .padding(.vertical, 14)
-                Group {
-                    if let a = agentSession, !model.suggesting {
-                        AgentPane(model: model, session: a)
-                    } else {
-                        SuggestionPane(model: model)
-                    }
-                }
-                    .frame(width: half)
-                    .frame(width: splitting ? half : 0, alignment: .leading)
-                    .clipped()
-                    .allowsHitTesting(splitting)
-                    .accessibilityHidden(!splitting)
+                    .frame(height: 0.5)
+                    .padding(.horizontal, 14)
             }
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    if immersive {
+                        PaneHeader(title: "Prompt")
+                            .frame(height: splitting ? PaneHeader.height : 0)
+                            .opacity(splitting ? 1 : 0)
+                            .clipped()
+                    }
+                    promptText
+                }
+                if immersive {
+                    let half = max(0, cardWidth / 2)
+                    Rectangle()
+                        .fill(Color(nsColor: .separatorColor))
+                        .frame(width: splitting ? 0.5 : 0)
+                        .padding(.vertical, 14)
+                    SuggestionPane(model: model)
+                        .frame(width: half)
+                        .frame(width: splitting ? half : 0,
+                               alignment: .leading)
+                        .clipped()
+                        .allowsHitTesting(splitting)
+                        .accessibilityHidden(!splitting)
+                }
+            }
+            .frame(height: agentFills ? Self.replyHeight : nil)
         }
     }
 
@@ -1235,11 +1252,12 @@ private struct AdjustPanel: View {
                 BypassButton(model: model, part: .adjust,
                              help: "Hold to see the picture without its adjustments")
                 Button("Reset", action: model.resetAdjustments)
-                    .disabled(model.keyedStage
+                    .disabled((model.keyedStage
                               ? model.clipAdjustKeys
                                   == Keyframes(start: ImageAdjustments())
                                   || model.layerOffStage != nil
                               : model.adjustments.isIdentity)
+                              || model.selectedLayerLocked)
             }
             HStack(alignment: .top, spacing: 28) {
                 ForEach(columns.indices, id: \.self) { c in
@@ -1251,8 +1269,8 @@ private struct AdjustPanel: View {
                     .focusSection()
                 }
             }
-            // Greyed while the playhead is off the selected layer: its
-            // values would change unseen.
+            // Greyed while the playhead is off the selected layer -- its
+            // values would change unseen -- or it is locked.
             .disabled(!model.canEditLayerHere)
         }
         .controlSize(.small)

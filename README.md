@@ -1,6 +1,7 @@
 # Valtz
 
-A native macOS app for generative creation and composition.
+A native macOS app for generative creation and composition, powered by
+[Vpipe](https://github.com/tgo-app-dev/vpipe).
 
 
 Let the pictures tell the story.

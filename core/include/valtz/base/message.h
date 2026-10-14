@@ -218,6 +218,16 @@ inline constexpr Message kStretchNeedsStill{
     "core.stretch_needs_still",
     "Only a picture, a markup or a still composition is stretched: a "
     "clip's or a sound's length is its marks'."};
+inline constexpr Message kNoDrawingThere{
+    "core.no_drawing_there", "Nothing is painted there to lift."};
+inline constexpr Message kLayerLocked{
+    "core.layer_locked", "{name} is locked: unlock it to change it."};
+inline constexpr Message kNoKeyToMove{
+    "core.no_key_to_move", "There is no key at that frame to move."};
+inline constexpr Message kKeyInTheWay{
+    "core.key_in_the_way",
+    "Another key is at that frame already: a key moves between its "
+    "neighbours."};
 inline constexpr Message kTranscribeNeedsSound{
     "core.transcribe_needs_sound",
     "{name} has no sound to transcribe."};

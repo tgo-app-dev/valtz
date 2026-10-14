@@ -269,6 +269,109 @@ TEST(controller, a_prompt_keeps_the_name_it_is_given)
   CHECK(!(*c)->rename_asset(*pid, t->id, "").ok());
 }
 
+// The assistant's suggestion APPLIED (DESIGN §10c): the words before it
+// are kept as a prompt, and the suggestion is a prompt made from them --
+// its upstream, which stays as it was. Applied again, the same prompts;
+// the enhanced one edited before Start changes in place, its upstream
+// kept; enhanced again, a chain; undone whole.
+TEST(controller, an_applied_suggestion_keeps_the_words_before_it)
+{
+  auto root = test::temp_dir("ctl-prompt-enhanced");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  auto c = Controller::create(cfg);
+  REQUIRE_OK(c);
+  auto pid = (*c)->create_project(root / "P.valtz", "P");
+  REQUIRE_OK(pid);
+  project::Project* p = (*c)->project(*pid);
+  auto text = [&](AssetId id) { return *p->read_text(id); };
+  auto upstream = [&](AssetId id) -> std::optional<AssetId> {
+    auto r = p->recipe(p->asset(id)->recipe);
+    if (!r.ok() || r->op != "enhance-prompt" || r->inputs.size() != 1 ||
+        r->inputs[0].role != "prompt") {
+      return std::nullopt;
+    }
+    return r->inputs[0].asset;
+  };
+
+  Controller::SuggestionApplied req;
+  req.project = *pid;
+  req.before = "a fox";
+  req.enhanced = "A red fox trotting through fresh snow at dawn, "
+                 "<valtz_ref_img_0> behind it";
+  req.written_for = "krea2-turbo";
+  auto r = (*c)->apply_suggestion(req);
+  REQUIRE_OK(r);
+  auto before = p->asset(r->before);
+  auto after = p->asset(r->enhanced);
+  REQUIRE_OK(before);
+  REQUIRE_OK(after);
+  CHECK(Controller::is_prompt(*before) && Controller::is_prompt(*after));
+  CHECK(text(r->before) == "a fox");
+  CHECK(text(r->enhanced) == req.enhanced);  // a tag kept, a form
+  CHECK(upstream(r->enhanced) == r->before);
+  CHECK(after->name.starts_with("A red fox trotting through fresh snow"));
+  CHECK(p->recipe(after->recipe)->params.value("written_for", "") ==
+        "krea2-turbo");
+  CHECK(p->staleness(r->enhanced)->fresh());
+  // The words before it stay as they were: a change is a new prompt.
+  auto refused = (*c)->set_prompt_text(*pid, r->before, "a grey fox");
+  REQUIRE(!refused.ok());
+  CHECK(refused.error().key == msg::kPromptInUse.key);
+  auto tweak = (*c)->capture_prompt(*pid, "a grey fox", {}, {}, r->before);
+  REQUIRE_OK(tweak);
+  CHECK(*tweak != r->before);
+  CHECK(text(r->before) == "a fox");
+
+  // The same suggestion applied to the same words: the same prompts.
+  req.from = r->before;
+  auto again = (*c)->apply_suggestion(req);
+  REQUIRE_OK(again);
+  CHECK(again->before == r->before);
+  CHECK(again->enhanced == r->enhanced);
+  // Start on it: kept. Edited first: changed in place -- a draft --
+  // still made from the words before it, fresh.
+  auto start = (*c)->capture_prompt(*pid, req.enhanced, {}, {},
+                                    r->enhanced);
+  REQUIRE_OK(start);
+  CHECK(*start == r->enhanced);
+  auto edited = (*c)->capture_prompt(*pid, "A red fox at dusk", {}, {},
+                                     r->enhanced);
+  REQUIRE_OK(edited);
+  CHECK(*edited == r->enhanced);
+  CHECK(text(r->enhanced) == "A red fox at dusk");
+  CHECK(upstream(r->enhanced) == r->before);
+  CHECK(p->staleness(r->enhanced)->fresh());
+  CHECK(p->asset(r->enhanced)->name == "A red fox at dusk");
+
+  // Enhanced again from it, named by the person: a chain, the name the
+  // new one's.
+  Controller::SuggestionApplied more;
+  more.project = *pid;
+  more.before = "A red fox at dusk";
+  more.from = r->enhanced;
+  more.enhanced = "A red fox at dusk, low sun, long shadows";
+  more.name = "Hero";
+  auto chain = (*c)->apply_suggestion(more);
+  REQUIRE_OK(chain);
+  CHECK(chain->before == r->enhanced);
+  CHECK(upstream(chain->enhanced) == r->enhanced);
+  CHECK(p->asset(chain->enhanced)->name == "Hero");
+  CHECK(p->asset(r->enhanced)->name == "A red fox at dusk");
+  // Undone: the new one gone, the one before it a draft again.
+  REQUIRE_OK((*c)->undo(*pid));
+  CHECK(!p->asset(chain->enhanced).ok());
+  REQUIRE_OK((*c)->set_prompt_text(*pid, r->enhanced, "A red fox"));
+  CHECK(upstream(r->enhanced) == r->before);
+  // Nothing before it: nothing to keep.
+  more.before = "  ";
+  auto empty = (*c)->apply_suggestion(more);
+  REQUIRE(!empty.ok());
+  CHECK(empty.error().key == msg::kPromptEmpty.key);
+}
+
 namespace {
 
 // A small 8-bit sRGB PNG: `w` x `h` of one colour (grey by default).
@@ -1376,6 +1479,34 @@ TEST(controller, tasks_queue_and_are_withdrawn_by_undo)
   auto back = ctl.project(*pid)->asset(*a3);
   REQUIRE_OK(back);
   CHECK(back->head == 0);
+
+  // An EXPORT asked for while generations run and wait is in a line of
+  // its own (the engine's export lane): first in it, the generations'
+  // places as they were.
+  auto j4 = ask("a yellow tram");
+  REQUIRE_OK(j4);
+  engine->start(*j4);
+  auto j5 = ask("a grey owl");
+  REQUIRE_OK(j5);
+  ExportRequest ex;
+  ex.project = *pid;
+  ex.asset = *a1;
+  ex.format = "png";
+  ex.destination = root / "fox.png";
+  auto xj = ctl.export_asset(ex);
+  REQUIRE_OK(xj);
+  ts = ctl.tasks();
+  REQUIRE(ts.size() == 3);
+  for (const auto& t : ts) {
+    const auto job = jget<std::string>(t, "job", "");
+    const int at = jget<int>(t, "position", -1);
+    if (job == xj->str()) {
+      CHECK(jget<std::string>(t, "kind", "") == "export");
+      CHECK(at == 0);
+    } else {
+      CHECK(at == (job == j4->str() ? 0 : 1));
+    }
+  }
 }
 
 // Downloads run BESIDE the work (DESIGN §3a): while one downloads, a
@@ -3751,8 +3882,9 @@ TEST(composition, a_clip_runs_its_frames_not_its_sound)
 // drawn at the player's frame -- on a markup showing there, else on a new
 // one from there, a second long (DESIGN §6a).
 // A markup's DRAWING -- its painted pixels -- copied onto another
-// layer (pasted where asked, cleared), and a layer DUPLICATED: a
-// markup's copy its own (drawn on apart), its looks with it.
+// layer (pasted where asked -- floating until placed -- cleared), and a
+// layer DUPLICATED: a markup's copy its own (drawn on apart), its looks
+// with it.
 TEST(composition, a_drawing_is_copied_and_a_layer_duplicated)
 {
   Bench b("comp-drawing");
@@ -3789,6 +3921,12 @@ TEST(composition, a_drawing_is_copied_and_a_layer_duplicated)
   std::ifstream f(held, std::ios::binary);
   std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)), {});
   REQUIRE_OK(ctl.paste_drawing_data(pid, *comp, *blank, bytes, 0, 0));
+  REQUIRE_OK(ctl.flatten(pid, *comp, flat));
+  CHECK(pixel_at(flat, 12, 10)[0] > 200 && pixel_at(flat, 12, 40)[0] > 200);
+  // Floating, both: laid into its raster when placed.
+  CHECK(ctl.markup_drawing(pid, *comp, *blank)->empty());
+  REQUIRE_OK(ctl.place_drawings(pid, *comp, *blank));
+  REQUIRE(!ctl.markup_drawing(pid, *comp, *blank)->empty());
   REQUIRE_OK(ctl.flatten(pid, *comp, flat));
   CHECK(pixel_at(flat, 12, 10)[0] > 200 && pixel_at(flat, 12, 40)[0] > 200);
   // Cleared; undone.
@@ -3830,6 +3968,206 @@ TEST(composition, a_drawing_is_copied_and_a_layer_duplicated)
   REQUIRE_OK(ctl.undo(pid));
   REQUIRE_OK(ctl.undo(pid));
   CHECK(b.layers(*comp).size() == ls.size() - 1);
+}
+
+// DRAWINGS (media/markup.h): strokes apart are two, each selected alone;
+// one LIFTED floats as an object -- drawn where it is moved, the raster
+// without it -- and PLACED is pixels again: over another, the two are
+// one. Lifted and moved at once is one command, placed another; a
+// drawing alone is cleared or copied alone.
+TEST(composition, a_drawing_lifts_moves_and_fuses)
+{
+  Bench b("comp-drawing-lift");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto comp = ctl.create_composition(pid, project::AssetClass::Still,
+                                     {64, 64}, {0, 1}, "sheet");
+  REQUIRE_OK(comp);
+  auto m0 = ctl.markup_layer(pid, *comp, {});
+  REQUIRE_OK(m0);
+  media::Stroke red;
+  red.points = {{4, 10}, {20, 10}};
+  red.radius = 3;
+  red.color = {1, 0, 0, 1};
+  REQUIRE_OK(ctl.paint_stroke(pid, *comp, *m0, red));
+  media::Stroke blue = red;
+  blue.points = {{40, 40}, {56, 40}};
+  blue.color = {0, 0, 1, 1};
+  REQUIRE_OK(ctl.paint_stroke(pid, *comp, *m0, blue));
+  const auto markup = [&] {
+    for (const auto& l : b.layers(*comp)) {
+      if (l.id == *m0 && l.source) {
+        return b.p().asset(*l.source)->markup.value_or(project::Markup{});
+      }
+    }
+    return project::Markup{};
+  };
+  // Two drawings: each its own box.
+  auto ra = ctl.drawing_at(pid, *comp, *m0, 12, 10, 4);
+  REQUIRE_OK(ra);
+  CHECK(ra->x <= 2 && ra->x + ra->w >= 22 && ra->y + ra->h <= 16);
+  auto rb = ctl.drawing_at(pid, *comp, *m0, 48, 40, 4);
+  REQUIRE_OK(rb);
+  CHECK(rb->x >= 34 && rb->y >= 34);
+  CHECK(ctl.drawing_at(pid, *comp, *m0, 30, 30, 2)->empty());
+  // Lifted: an object; the raster without it, the picture as it was.
+  auto id = ctl.lift_drawing(pid, *comp, *m0, 12, 10, 4);
+  REQUIRE_OK(id);
+  REQUIRE(markup().objects.size() == 1);
+  CHECK(jget<std::string>(markup().objects[0], "kind", "") == "drawing");
+  CHECK(ctl.drawing_at(pid, *comp, *m0, 12, 10, 2)->empty());
+  const auto flat = b.root / "flat.png";
+  REQUIRE_OK(ctl.flatten(pid, *comp, flat));
+  CHECK(pixel_at(flat, 12, 10)[0] > 200);
+  // Its picture is the project's to keep while it floats.
+  const auto image = jget(markup().objects[0], "image", project::BlobRef{});
+  REQUIRE(!image.empty());
+  CHECK(b.p().held_blobs()->contains(image.hash.hex()));
+  // Moved onto the blue one, overlapping it: drawn there, the two still
+  // apart.
+  Json moved = markup().objects;
+  for (const char* k : {"x0", "x1"}) {
+    moved[0][k] = moved[0][k].get<double>() + 30;
+  }
+  for (const char* k : {"y0", "y1"}) {
+    moved[0][k] = moved[0][k].get<double>() + 30;
+  }
+  REQUIRE_OK(ctl.set_markup_objects(pid, *comp, *m0, moved));
+  REQUIRE_OK(ctl.flatten(pid, *comp, flat));
+  CHECK(pixel_at(flat, 12, 10)[3] < 40);
+  CHECK(pixel_at(flat, 46, 40)[0] > 200);
+  const auto apart = ctl.drawing_at(pid, *comp, *m0, 48, 40, 4);
+  CHECK(apart->w == rb->w && apart->h == rb->h);
+  // Placed: one drawing, wider than either; no object left.
+  REQUIRE_OK(ctl.place_drawings(pid, *comp, *m0));
+  CHECK(markup().objects.empty());
+  const auto one = ctl.drawing_at(pid, *comp, *m0, 48, 40, 4);
+  REQUIRE_OK(one);
+  CHECK(one->x < rb->x && one->w > rb->w);
+  REQUIRE_OK(ctl.flatten(pid, *comp, flat));
+  CHECK(pixel_at(flat, 46, 40)[0] > 200);
+  // Undone: floating again where it was moved; then the lift and the
+  // move together -- back in the raster where it was painted.
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(markup().objects.size() == 1);
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(markup().objects.empty());
+  CHECK(!ctl.drawing_at(pid, *comp, *m0, 12, 10, 2)->empty());
+  // Moved apart and placed: still two.
+  REQUIRE_OK(ctl.lift_drawing(pid, *comp, *m0, 12, 10, 4));
+  moved = markup().objects;
+  for (const char* k : {"y0", "y1"}) {
+    moved[0][k] = moved[0][k].get<double>() + 10;
+  }
+  REQUIRE_OK(ctl.set_markup_objects(pid, *comp, *m0, moved));
+  REQUIRE_OK(ctl.place_drawings(pid, *comp, *m0));
+  CHECK(ctl.drawing_at(pid, *comp, *m0, 12, 20, 2)->w == ra->w);
+  CHECK(ctl.drawing_at(pid, *comp, *m0, 48, 40, 4)->w == rb->w);
+  // Copied alone: the blue one's picture, nothing of the red.
+  auto copied = ctl.copy_drawings(pid, *comp, *m0,
+                                  std::array<double, 2>{48, 40}, 4, {});
+  REQUIRE_OK(copied);
+  CHECK(pixel_at(*copied, 48, 40)[2] > 200);
+  CHECK(pixel_at(*copied, 12, 20)[3] == 0);
+  // Cleared alone: the red one stays.
+  REQUIRE_OK(ctl.clear_drawing(pid, *comp, *m0,
+                               std::array<double, 2>{48, 40}, 4));
+  CHECK(ctl.drawing_at(pid, *comp, *m0, 48, 40, 4)->empty());
+  CHECK(!ctl.drawing_at(pid, *comp, *m0, 12, 20, 2)->empty());
+}
+
+// A LOCKED layer (DESIGN §6a): what it shows, its look, time, mask and
+// markup refused, and its removal -- each kLayerLocked; shown, hidden,
+// renamed, moved and duplicated all the same, the copy unlocked. A
+// drawing floating on it is laid down as it is locked; the markup
+// toolbar passes a locked top markup over. Lock and unlock are undone.
+TEST(composition, a_locked_layer_refuses_changes)
+{
+  Bench b("comp-lock");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto comp = ctl.create_composition(pid, project::AssetClass::Still,
+                                     {64, 64}, {0, 1}, "sheet");
+  REQUIRE_OK(comp);
+  auto m0 = ctl.markup_layer(pid, *comp, {});
+  REQUIRE_OK(m0);
+  media::Stroke red;
+  red.points = {{4, 10}, {20, 10}};
+  red.radius = 3;
+  red.color = {1, 0, 0, 1};
+  REQUIRE_OK(ctl.paint_stroke(pid, *comp, *m0, red));
+  const auto layer = [&](const std::string& id) {
+    for (const auto& l : b.layers(*comp)) {
+      if (l.id == id) {
+        return l;
+      }
+    }
+    return project::Layer{};
+  };
+  const auto objects = [&] {
+    auto l = layer(*m0);
+    return l.source ? b.p().asset(*l.source)->markup->objects
+                    : Json::array();
+  };
+  const auto locked = [&](const auto& st) {
+    return !st.ok() && st.error().key == msg::kLayerLocked.key;
+  };
+  // Floating when it is locked: laid down first.
+  REQUIRE_OK(ctl.lift_drawing(pid, *comp, *m0, 12, 10, 4));
+  REQUIRE(objects().size() == 1);
+  REQUIRE_OK(ctl.set_layer_locked(pid, *comp, *m0, true));
+  CHECK(layer(*m0).locked);
+  CHECK(objects().empty());
+  CHECK(!ctl.drawing_at(pid, *comp, *m0, 12, 10, 2)->empty());
+
+  // Refused, each.
+  CHECK(locked(ctl.paint_stroke(pid, *comp, *m0, red)));
+  CHECK(locked(ctl.set_markup_objects(pid, *comp, *m0, Json::array())));
+  CHECK(locked(ctl.clear_drawing(pid, *comp, *m0)));
+  CHECK(locked(ctl.lift_drawing(pid, *comp, *m0, 12, 10, 4)));
+  media::Adjustments adj;
+  adj.exposure = 0.5;
+  CHECK(locked(ctl.set_adjustments(pid, *comp, adj, *m0)));
+  media::Crop crop;
+  crop.rotate = 10;
+  CHECK(locked(ctl.set_crop(pid, *comp, crop, *m0)));
+  project::LayerTime t;
+  t.in = 0;
+  CHECK(locked(ctl.set_layer_time(pid, *comp, *m0, t)));
+  CHECK(locked(ctl.set_layer_mask(pid, *comp, *m0, true)));
+  auto above = ctl.add_layer(pid, *comp, *m0);
+  REQUIRE_OK(above);
+  CHECK(locked(ctl.merge_layers(pid, *comp, *m0, *above)));
+  CHECK(locked(ctl.remove_layer(pid, *comp, *m0)));
+  CHECK(locked(ctl.markup_layer(pid, *comp, {*m0})));
+  // Unselected, the toolbar draws on a new markup, not the locked one.
+  REQUIRE_OK(ctl.remove_layer(pid, *comp, *above));
+  auto fresh = ctl.markup_layer(pid, *comp, {});
+  REQUIRE_OK(fresh);
+  CHECK(*fresh != *m0);
+  REQUIRE_OK(ctl.remove_layer(pid, *comp, *fresh));
+
+  // Allowed all the same.
+  REQUIRE_OK(ctl.set_layer_visible(pid, *comp, *m0, false));
+  REQUIRE_OK(ctl.set_layer_visible(pid, *comp, *m0, true));
+  REQUIRE_OK(ctl.rename_layer(pid, *comp, *m0, "Sketch"));
+  auto copy = ctl.duplicate_layer(pid, *comp, *m0);
+  REQUIRE_OK(copy);
+  CHECK(!layer(*copy).locked);
+  REQUIRE_OK(ctl.paint_stroke(pid, *comp, *copy, red));
+  REQUIRE_OK(ctl.remove_layer(pid, *comp, *copy));
+
+  // Unlocked: changed again. The unlock undone: locked again.
+  REQUIRE_OK(ctl.set_layer_locked(pid, *comp, *m0, false));
+  CHECK(!layer(*m0).locked);
+  REQUIRE_OK(ctl.set_adjustments(pid, *comp, adj, *m0));
+  REQUIRE_OK(ctl.undo(pid));
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(layer(*m0).locked);
+  REQUIRE_OK(ctl.redo(pid));
+  CHECK(!layer(*m0).locked);
 }
 
 // A timeline of markup drawn for a model (rendered_, a reference's
@@ -3974,6 +4312,74 @@ TEST(composition, a_still_on_a_timeline_runs_a_second)
   REQUIRE_OK(m3);
   CHECK(*m3 != *m1);
   CHECK(time_of(*m3).offset == 90);
+}
+
+TEST(composition, a_layers_key_moves_on_every_track)
+{
+  Bench b("comp-key-move");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {16, 16}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  auto in = ctl.instantiate(pid, *red, *tl, std::nullopt, 12);
+  REQUIRE_OK(in);
+  const std::string l = in->second;
+  // Its look from 0 to 10, eased; its placement too; its turn at its
+  // default, one key at the start (as the panels keep it).
+  media::KeyedAdjustments look;
+  look.keys = {{0, media::Adjustments{}}, {10, media::Adjustments{}}};
+  look.keys[0].interp = media::Interp::Spline;
+  look.keys[1].value.exposure = 1;
+  REQUIRE_OK(ctl.set_adjustment_keys(pid, *tl, look, l));
+  media::KeyedCrop crop;
+  crop.place.keys = {{0, media::Crop{}}, {10, media::Crop{}}};
+  crop.place.keys[1].value.scale_x = 0.5;
+  crop.turn.keys = {{0, media::Rotation{}}};
+  REQUIRE_OK(ctl.set_crop_keys(pid, *tl, crop, l));
+  const auto frames = [](const auto& k) {
+    std::vector<std::int64_t> f;
+    for (const auto& key : k.keys) {
+      f.push_back(key.frame);
+    }
+    return f;
+  };
+  const auto now = [&] { return *b.p().asset(*tl); };
+  using F = std::vector<std::int64_t>;
+  // The key at 10 to 16: both tracks, its value and its way kept.
+  REQUIRE_OK(ctl.move_layer_key(pid, *tl, l, 10, 16));
+  CHECK(frames(Controller::adjustment_keys_of(now(), l)) == F({0, 16}));
+  CHECK(frames(Controller::crop_keys_of(now(), l).place) == F({0, 16}));
+  CHECK(Controller::adjustment_keys_of(now(), l).at(16).exposure == 1);
+  CHECK(Controller::adjustment_keys_of(now(), l).keys[0].interp ==
+        media::Interp::Spline);
+  // The first to 4: the turn at its default stays where it was.
+  REQUIRE_OK(ctl.move_layer_key(pid, *tl, l, 0, 4));
+  CHECK(frames(Controller::adjustment_keys_of(now(), l)) == F({4, 16}));
+  CHECK(frames(Controller::crop_keys_of(now(), l).place) == F({4, 16}));
+  CHECK(frames(Controller::crop_keys_of(now(), l).turn) == F({0}));
+  // None there; another in the way on a track it is on: refused.
+  auto none = ctl.move_layer_key(pid, *tl, l, 7, 9);
+  CHECK(!none.ok() && none.error().key == msg::kNoKeyToMove.key);
+  look = Controller::adjustment_keys_of(now(), l);
+  look.keys.push_back({20, look.keys.back().value});
+  REQUIRE_OK(ctl.set_adjustment_keys(pid, *tl, look, l));
+  auto way = ctl.move_layer_key(pid, *tl, l, 16, 20);
+  CHECK(!way.ok() && way.error().key == msg::kKeyInTheWay.key);
+  // A key on one track alone moves alone.
+  REQUIRE_OK(ctl.move_layer_key(pid, *tl, l, 20, 18));
+  CHECK(frames(Controller::adjustment_keys_of(now(), l)) ==
+        F({4, 16, 18}));
+  CHECK(frames(Controller::crop_keys_of(now(), l).place) == F({4, 16}));
+  // Each move one command, its tracks undone together.
+  REQUIRE_OK(ctl.undo(pid));
+  REQUIRE_OK(ctl.undo(pid));
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(frames(Controller::adjustment_keys_of(now(), l)) == F({0, 16}));
+  CHECK(frames(Controller::crop_keys_of(now(), l).place) == F({0, 16}));
 }
 
 TEST(composition, layers_go_in_folders)

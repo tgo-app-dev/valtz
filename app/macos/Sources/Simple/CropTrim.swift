@@ -420,9 +420,9 @@ struct CropPanel: View {
         .disabled(!model.canAdjust)
     }
 
-    /// The playhead is off the selected layer: what changes it waits,
-    /// greyed (a running upscale's Stop does not).
-    private var off: Bool { model.layerOffStage != nil }
+    /// The playhead is off the selected layer, or it is locked: what
+    /// changes it waits, greyed (a running upscale's Stop does not).
+    private var off: Bool { model.layerFrozen }
 
     /// "Offset  X [ ] ◉  Y [ ] ◉": where the picture's centre is, in frame
     /// widths and heights.
@@ -741,9 +741,10 @@ struct TrimPanel: View {
     }
 
     /// The playhead is off the selected layer: its fields wait, greyed --
-    /// keyed values would be keyed where it does not show. The transport
-    /// and the buttons that go to it, or bring it to the playhead, stay.
-    private var off: Bool { model.layerOffStage != nil }
+    /// keyed values would be keyed where it does not show -- as they do
+    /// while it is locked. The transport and the buttons that go to it,
+    /// or bring it to the playhead, stay.
+    private var off: Bool { model.layerFrozen }
 
     /// Where the player is in the clip itself -- or that it is not in it.
     @ViewBuilder

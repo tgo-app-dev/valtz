@@ -756,7 +756,9 @@ Project::unique_name_(const db::Txn& txn, std::string_view name,
         return true;
       }));
   VALTZ_TRY(st);
-  if (std::string whole = utf8_truncate(name, max_bytes);
+  // No budget (0): the name whole.
+  if (std::string whole = max_bytes ? utf8_truncate(name, max_bytes)
+                                    : std::string(name);
       !taken.contains(whole)) {
     return whole;
   }
@@ -1172,13 +1174,28 @@ Project::held_blobs() const
           if (auto j = from_cbor(e.value); j.ok()) {
             const Asset a = j->get<Asset>();
             // A markup ASSET's painting (since 2026-10-04), and a layer's
-            // from before: Save and the working copy's sweep keep them.
-            if (a.markup && !a.markup->raster.empty()) {
-              held.insert(a.markup->raster.hash.hex());
+            // from before -- and its LIFTED drawings' pictures (objects of
+            // kind "drawing", 2026-10-13): Save and the working copy's
+            // sweep keep them.
+            auto keep = [&](const Markup& mk) {
+              if (!mk.raster.empty()) {
+                held.insert(mk.raster.hash.hex());
+              }
+              for (const auto& o : mk.objects) {
+                if (jget<std::string>(o, "kind", "") == "drawing") {
+                  if (const auto b = jget(o, "image", BlobRef{});
+                      !b.empty()) {
+                    held.insert(b.hash.hex());
+                  }
+                }
+              }
+            };
+            if (a.markup) {
+              keep(*a.markup);
             }
             for (const auto& l : a.layers) {
-              if (l.markup && !l.markup->raster.empty()) {
-                held.insert(l.markup->raster.hash.hex());
+              if (l.markup) {
+                keep(*l.markup);
               }
             }
           }

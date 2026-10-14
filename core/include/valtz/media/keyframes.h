@@ -211,6 +211,34 @@ struct Keyed {
     return spline(*p, a->value, b->value, *n, s);
   }
 
+  bool
+  has_key(std::int64_t frame) const
+  {
+    return std::any_of(keys.begin(), keys.end(),
+                       [&](const Keyframe<T>& k) { return k.frame == frame; });
+  }
+
+  // The key at `from` moved to `to` -- a timeline's key dragged -- its
+  // value and its way on kept, the keys in order again. False, nothing
+  // changed, where none is at `from` or another is at `to`.
+  bool
+  move_key(std::int64_t from, std::int64_t to)
+  {
+    auto it = std::find_if(keys.begin(), keys.end(),
+                           [&](const Keyframe<T>& k) {
+                             return k.frame == from;
+                           });
+    if (it == keys.end() || (to != from && has_key(to))) {
+      return false;
+    }
+    it->frame = to;
+    std::stable_sort(keys.begin(), keys.end(),
+                     [](const Keyframe<T>& a, const Keyframe<T>& b) {
+                       return a.frame < b.frame;
+                     });
+    return true;
+  }
+
   bool operator==(const Keyed&) const = default;
 };
 

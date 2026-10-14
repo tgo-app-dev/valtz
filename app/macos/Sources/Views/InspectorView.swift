@@ -254,6 +254,12 @@ struct InspectorView: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // Markup objects selected on it: where they lie, typed.
+            if model.markupAsset?.id == a.id,
+               let f = model.selectionFrame {
+                SelectionFrameSection(model: model, frame: f)
+            }
+
             if a.isComposition {
                 composition(a)
                 if a.kind != "audio" {
@@ -588,6 +594,22 @@ struct InspectorView: View {
                 Text(verbatim: text)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            // An enhanced prompt: the words before the suggestion was
+            // applied (its upstream), to change and enhance again.
+            if let up = model.promptUpstream(of: pa), let words = up.text {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Before Enhancing").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Use in Prompt") { model.usePrompt(up) }
+                            .buttonStyle(.link)
+                            .help("Put the words the assistant enhanced in the box, to change them and enhance again")
+                    }
+                    Text(verbatim: words)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         } else if let prompt = r.params?.prompt, !prompt.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
@@ -1438,6 +1460,20 @@ private struct LayerRow: View {
             }
             .buttonStyle(.borderless)
             .help(layer.visible ? "Hide this layer" : "Show this layer")
+            // Locked, nothing changes it until it is unlocked; faintly
+            // open while it is not.
+            Button {
+                model.setLayerLocked(layer.id, !layer.locked)
+            } label: {
+                Image(systemName: layer.locked ? "lock.fill" : "lock.open")
+                    .foregroundStyle(layer.locked ? .primary : .tertiary)
+                    .frame(width: 14)
+            }
+            .buttonStyle(.borderless)
+            .help(layer.locked ? "Unlock this layer, to change it"
+                               : "Lock this layer: nothing changes it until it is unlocked")
+            .accessibilityLabel(layer.locked ? Text("Unlock Layer")
+                                             : Text("Lock Layer"))
             ZStack {
                 RoundedRectangle(cornerRadius: 3)
                     .fill(Color.primary.opacity(0.06))
@@ -1525,8 +1561,11 @@ private struct LayerRow: View {
             nameFocused = true
         }
         .contextMenu {
+            Button(layer.locked ? "Unlock Layer" : "Lock Layer") {
+                model.setLayerLocked(layer.id, !layer.locked)
+            }
             // A copy right above it: a markup's drawing and objects its
-            // own, anything else shown by both.
+            // own, anything else shown by both (unlocked: one to change).
             Button("Duplicate Layer") { model.duplicateLayer(layer.id) }
                 .disabled(layer.isEmpty)
             Divider()
@@ -1552,11 +1591,13 @@ private struct LayerRow: View {
                                   : "Use as Mask of Layer Below") {
                     model.setLayerMask(layer.id, !layer.mask)
                 }
+                .disabled(layer.locked)
             }
             // A layer showing a composition: its layers in its place.
             if model.showsComposition(layer) {
                 Button("Decompose") { model.decomposeLayer(layer.id) }
                     .help("Replace this layer by the composition's own layers, placed where it shows them")
+                    .disabled(layer.locked)
             }
             if model.selectedLayers.count == 2,
                model.selectedLayers.contains(layer.id) {
@@ -1569,15 +1610,18 @@ private struct LayerRow: View {
             if model.pagedOnStage {
                 Divider()
                 let page = String(model.stagePage + 1)
-                Button("Only on Page \(page)") {
-                    model.setLayerPages(layer.id, .thisPage)
+                Group {
+                    Button("Only on Page \(page)") {
+                        model.setLayerPages(layer.id, .thisPage)
+                    }
+                    Button("From Page \(page) On") {
+                        model.setLayerPages(layer.id, .fromHere)
+                    }
+                    Button("On Every Page") {
+                        model.setLayerPages(layer.id, .every)
+                    }
                 }
-                Button("From Page \(page) On") {
-                    model.setLayerPages(layer.id, .fromHere)
-                }
-                Button("On Every Page") {
-                    model.setLayerPages(layer.id, .every)
-                }
+                .disabled(layer.locked)
             }
         }
         // A picture or a clip dropped on it -- a file, or an asset of the
@@ -1797,5 +1841,114 @@ private struct ClickOrDouble: ViewModifier {
         guard now - doubled > NSEvent.doubleClickInterval else { return }
         doubled = now
         double()
+    }
+}
+
+/// The SELECTED markup objects (Information): where they lie and how
+/// large, in the canvas's pixels -- typed, they move or are scaled, from
+/// their frame's top left. The Crop panel places the whole layer; these
+/// change the objects selected on it.
+private struct SelectionFrameSection: View {
+    @Bindable var model: AppModel
+    let frame: CGRect
+
+    var body: some View {
+        let n = model.markup.selection.count
+        VStack(alignment: .leading, spacing: 6) {
+            Text(n == 1 ? "Selected Object" : "Selected Objects")
+                .font(.system(size: 11, weight: .semibold))
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8,
+                 verticalSpacing: 6) {
+                GridRow {
+                    Text("Position")
+                        .foregroundStyle(.secondary)
+                        .gridColumnAlignment(.trailing)
+                        .frame(minWidth: 72, alignment: .trailing)
+                    HStack(spacing: 8) {
+                        PixelField(axis: "X", value: frame.minX) { v in
+                            set(frame.offsetBy(dx: v - frame.minX, dy: 0))
+                        }
+                        PixelField(axis: "Y", value: frame.minY) { v in
+                            set(frame.offsetBy(dx: 0, dy: v - frame.minY))
+                        }
+                    }
+                }
+                GridRow {
+                    Text("Size")
+                        .foregroundStyle(.secondary)
+                        .gridColumnAlignment(.trailing)
+                        .frame(minWidth: 72, alignment: .trailing)
+                    HStack(spacing: 8) {
+                        PixelField(axis: "W", value: frame.width,
+                                   least: 1) { v in
+                            var f = frame
+                            f.size.width = v
+                            set(f)
+                        }
+                        PixelField(axis: "H", value: frame.height,
+                                   least: 1) { v in
+                            var f = frame
+                            f.size.height = v
+                            set(f)
+                        }
+                    }
+                }
+            }
+            Text("In pixels. The Crop panel places the whole layer; these change the selected objects.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func set(_ f: CGRect) {
+        model.setSelectionFrame(f)
+    }
+}
+
+/// A number of pixels typed: taken at Return or as the field is left;
+/// the value as it is otherwise ("213", "213.5").
+private struct PixelField: View {
+    let axis: String
+    let value: Double
+    var least: Double = -.infinity
+    let set: (Double) -> Void
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(verbatim: axis)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            TextField("", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                .frame(width: 60)
+                .focused($focused)
+                .onSubmit(take)
+                .onChange(of: focused) { _, now in if !now { take() } }
+                .accessibilityLabel(Text(verbatim: axis))
+        }
+        .onAppear { text = Self.label(value) }
+        .onChange(of: value) { _, v in
+            if !focused { text = Self.label(v) }
+        }
+    }
+
+    private func take() {
+        let typed = text.trimmingCharacters(in: .whitespaces)
+            .replacingOccurrences(of: ",", with: ".")
+        if let v = Double(typed), abs(v - value) > 1e-3 {
+            set(max(least, v))
+        }
+        text = Self.label(value)
+    }
+
+    static func label(_ v: Double) -> String {
+        let t = (v * 10).rounded() / 10
+        return t == t.rounded() ? String(Int(t)) : String(format: "%.1f", t)
     }
 }

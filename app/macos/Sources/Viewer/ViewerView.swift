@@ -24,6 +24,8 @@ struct CompareCanvasView: NSViewRepresentable {
     /// A's crop (CompareCanvas.cropA), and the guides.
     var crop: CropPlacement? = nil
     var guides = false
+    var guidesAt = GuideFractions.thirds
+    var onCanvasRect: (CGRect?) -> Void = { _ in }
     /// The markup toolbar's: active, its cursor, what it shows over the
     /// picture, and where its pointer and keys go.
     var markupActive = false
@@ -55,6 +57,9 @@ struct CompareCanvasView: NSViewRepresentable {
         v.onViewportChange = { vp in
             DispatchQueue.main.async { onViewport(vp) }
         }
+        v.onCanvasRect = { r in
+            DispatchQueue.main.async { onCanvasRect(r) }
+        }
         return v
     }
 
@@ -71,6 +76,7 @@ struct CompareCanvasView: NSViewRepresentable {
         v.markupOrigin = markupOrigin
         v.fitMargin = fitMargin
         v.showsGuides = guides
+        v.guideFractions = guidesAt
         v.canvasBackground = background
         v.labelTextA = labelA
         v.labelTextB = labelB

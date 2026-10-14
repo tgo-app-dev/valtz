@@ -148,6 +148,9 @@ namespace {
 // DESIGN §10c): its name is kept as its words change, where one named by
 // its words follows them.
 constexpr const char* kNamedTag = "named";
+// A prompt MADE FROM another by the assistant (apply_suggestion): its
+// recipe's op; its input "prompt" the words before it.
+constexpr const char* kEnhanceOp = "enhance-prompt";
 
 bool
 is_named(const project::Asset& a)
@@ -2696,7 +2699,7 @@ Controller::tasks() const
       waits[id] = std::move(names);
     }
   }
-  // The order the engine takes them: the running one, then as asked
+  // The order the engine takes them: the running ones, then as asked
   // (an id is made in time order) -- and last those waiting for a
   // download, which the engine has not been given.
   std::ranges::sort(live, [&](const JobRecord& a, const JobRecord& b) {
@@ -2716,8 +2719,9 @@ Controller::tasks() const
     return a.id.str() < b.id.str();
   });
   Json out = Json::array();
-  // Positions count per runner: each Mac runs one at a time. One waiting
-  // for a download is in no line yet.
+  // Positions count per LINE: each Mac runs one task at a time, and its
+  // exports one at a time beside it (the engine's export lane). One
+  // waiting for a download is in no line yet.
   std::map<std::string, int> positions;
   for (const auto& j : live) {
     const std::string runner = j.runner.empty() ? "local" : j.runner_name;
@@ -2725,6 +2729,8 @@ Controller::tasks() const
     const bool upscale = j.op == engine::kOpUpscaleVideo ||
                          j.op == engine::kOpUpscaleImage;
     const bool exp = j.purpose == "export";
+    const std::string line = exp && j.runner.empty() ? runner + " exports"
+                                                      : runner;
     Json t = {{"job", j.id.str()},
               {"project", j.project.str()},
               {"asset", exp ? std::string() : j.asset.str()},
@@ -2732,8 +2738,8 @@ Controller::tasks() const
               {"op", j.op},
               {"title", j.title},
               {"state", to_str(j.state)},
-              {"position", wait != waits.end() ? positions[runner]
-                                               : positions[runner]++},
+              {"position", wait != waits.end() ? positions[line]
+                                               : positions[line]++},
               {"runner", runner},
               {"progress", j.progress}};
     if (wait != waits.end()) {
@@ -3864,7 +3870,7 @@ Controller::capture_prompt_(project::Project& p, ProjectId pid,
       // -- named by its words, unless the person named it.
       if (auto deps = p.dependents(*from, false); deps.ok() &&
                                                   deps->empty()) {
-        VALTZ_TRY(p.update_text(*from, text));
+        VALTZ_TRY(retext_prompt_(p, *from, text));
         if (given.empty() && !is_named(*a)) {
           (void)p.rename_asset(*from, name);
         }
@@ -3939,7 +3945,7 @@ Controller::set_prompt_text(ProjectId pid, AssetId id,
     return make_error(Code::InvalidArgument, msg::kPromptInUse,
                       {{"name", a.name}});
   }
-  VALTZ_TRY(p->update_text(id, text));
+  VALTZ_TRY(retext_prompt_(*p, id, text));
   // Named by its words -- unless the person named it.
   if (!is_named(a)) {
     (void)p->rename_asset(id, words_name(text));
@@ -3948,6 +3954,116 @@ Controller::set_prompt_text(ProjectId pid, AssetId id,
                                     {"asset", id},
                                     {"reason", "edited"}});
   return ok_status();
+}
+
+Status
+Controller::retext_prompt_(project::Project& p, AssetId id,
+                           const std::string& text)
+{
+  VALTZ_ASSIGN(project::Asset a, p.asset(id));
+  if (a.origin != project::Origin::Derived) {
+    VALTZ_TRY(p.update_text(id, text));
+    return ok_status();
+  }
+  // A derived prompt's words are a build of its recipe as it is: its
+  // inputs as they resolve now, so it stays fresh, its upstream kept.
+  VALTZ_ASSIGN(project::Recipe r, p.recipe(a.recipe));
+  VALTZ_ASSIGN(auto inputs, p.resolve_inputs(r));
+  const fs::path out =
+      p.blobs().tmp_dir() / (AssetId::make().str() + ".txt");
+  {
+    std::ofstream f(out, std::ios::binary);
+    f.write(text.data(), static_cast<std::streamsize>(text.size()));
+    if (!f) {
+      return make_error(Code::Io,
+                        std::format("cannot write {}", out.string()));
+    }
+  }
+  project::Project::BuildRecord b;
+  b.recipe = std::move(r);
+  b.inputs = std::move(inputs);
+  b.output = out;
+  b.info.type = media::MediaType::Text;
+  b.info.uti = "public.utf8-plain-text";
+  VALTZ_TRY(p.commit_build(id, std::move(b)));
+  return ok_status();
+}
+
+Result<Controller::AppliedPrompts>
+Controller::apply_suggestion(const SuggestionApplied& req)
+{
+  auto undo = command_(req.project, "prompt.enhance");
+  project::Project* p = project(req.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(PromptForm before,
+               prompt_form_(*p, req.before, req.before_inline, req.row,
+                            /*bound=*/false));
+  VALTZ_ASSIGN(PromptForm after,
+               prompt_form_(*p, req.enhanced, req.enhanced_inline, req.row,
+                            /*bound=*/false));
+  for (const PromptForm* f : {&before, &after}) {
+    if (assist::prompt_words(f->positional).empty() &&
+        assist::find_ref_tags(f->positional).empty()) {
+      return make_error(Code::InvalidArgument, msg::kPromptEmpty);
+    }
+  }
+  // The words before it, kept as the box's would be at Start -- named as
+  // they were: the person's name for the box goes with the box's words,
+  // the suggestion's now.
+  VALTZ_ASSIGN(project::RecipeInput up,
+               capture_prompt_(*p, req.project, before.positional,
+                               req.from, {}));
+  const std::string given(utf8_prefix(one_line(req.name), 200));
+  auto name_it = [&](AssetId id) -> Status {
+    return p->update_asset(id, [&](project::Asset& a) {
+      if (std::ranges::find(a.tags, std::string("prompt")) ==
+          a.tags.end()) {
+        a.tags.push_back("prompt");
+      }
+      if (!given.empty()) {
+        a.name = given;
+        set_named(a, true);
+      }
+      return ok_status();
+    });
+  };
+  auto told = [&](AssetId id, const char* reason) {
+    post_("assets.changed", JobId{}, {{"project", req.project},
+                                      {"asset", id},
+                                      {"reason", reason}});
+  };
+  // The same suggestion applied to it before: that prompt.
+  VALTZ_ASSIGN(auto made, p->dependents(up.asset, false));
+  for (const AssetId& d : made) {
+    auto a = p->asset(d);
+    if (!a.ok() || !is_prompt(*a) ||
+        a->origin != project::Origin::Derived) {
+      continue;
+    }
+    auto r = p->recipe(a->recipe);
+    auto t = p->read_text(d);
+    if (r.ok() && r->op == kEnhanceOp && t.ok() && *t == after.positional) {
+      VALTZ_TRY(name_it(d));
+      told(d, "renamed");
+      return AppliedPrompts{up.asset, d};
+    }
+  }
+  project::Recipe r;
+  r.op = kEnhanceOp;
+  r.inputs = {up};
+  if (!req.written_for.empty()) {
+    r.params["written_for"] = req.written_for;
+  }
+  VALTZ_ASSIGN(project::Asset e,
+               p->define_derived(words_name(after.positional),
+                                 project::AssetKind::Text, std::move(r),
+                                 64));
+  VALTZ_TRY(name_it(e.id));
+  VALTZ_TRY(retext_prompt_(*p, e.id, after.positional));
+  told(e.id, "defined");
+  return AppliedPrompts{up.asset, e.id};
 }
 
 Result<JobId>
@@ -4527,6 +4643,7 @@ Controller::upscale_layer(UpscaleRequest req)
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset comp, p->asset(req.composition));
+  VALTZ_TRY(unlocked_(comp, req.layer));
   if (comp.layers.empty()) {
     return make_error(Code::InvalidArgument, msg::kNotComposition,
                       {{"name", comp.name}});
@@ -4843,6 +4960,7 @@ Controller::flatten_layer(ProjectId pid, AssetId comp_id,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset comp, p->asset(comp_id));
+  VALTZ_TRY(unlocked_(comp, layer_id));
   const auto it = std::ranges::find(comp.layers, layer_id,
                                     &project::Layer::id);
   if (it == comp.layers.end() || !it->source) {

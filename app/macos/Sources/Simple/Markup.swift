@@ -222,10 +222,20 @@ final class MarkupState {
         case none, stroke, shape, move, handle(String, Int), polygon
         /// A selected object's gradient's end (0 from, 1 to).
         case gradient(String, Int)
+        /// A drawing pressed (where): dragged, it is lifted and moved.
+        case lift(CGPoint)
     }
+    /// The DRAWING selected on the raster (core media/markup.h: strokes
+    /// that touch): a point of it, and its box -- canvas pixels.
+    @ObservationIgnored var drawingAt: CGPoint?
+    var drawingBox: CGRect?
     @ObservationIgnored var drag = Drag.none
     @ObservationIgnored var last = CGPoint.zero
     @ObservationIgnored var moved = false
+    /// A move: where it was pressed, the selection as it was then -- a
+    /// move is from there, so a snap to a guide holds no error.
+    @ObservationIgnored var moveFrom = CGPoint.zero
+    @ObservationIgnored var moveStart: [MarkupObject] = []
 
     var selectedIds: Set<String> { Set(selection.map(\.id)) }
 
@@ -317,7 +327,7 @@ extension AppModel {
         // Drawn by the core, in its layer's place, but while it changes.
         o.drawsSelection = m.live || m.settling
         if m.drawing, let layer = m.selectionLayer {
-            o.drawingBounds = drawingBounds(layer)
+            o.drawingBounds = m.drawingBox ?? drawingBounds(layer)
         }
         // On a clip, the selection's layer away from the player's frame:
         // nothing of it shows there.
@@ -372,6 +382,13 @@ extension AppModel {
     /// A pointer on the picture, as the tool takes it.
     func markupPointer(_ e: MarkupPointer) {
         guard markupReady else { return }
+        // A mark that would go on a LOCKED layer (the selected one): said
+        // at the press, nothing begun.
+        if e.phase == .down, markup.tool != .select,
+           let t = markupTargetPreview, t.locked {
+            flash(String(localized: "\(t.title) is locked: unlock it to change it."))
+            return
+        }
         // On a clip: drawn on the frame pressed on, the player held there.
         if e.phase == .down && markupOnClip { pauseForMarkup() }
         let m = markup
@@ -665,16 +682,31 @@ extension AppModel {
     func copySelectedObjects(cut: Bool) {
         let m = markup
         guard markupReady, !m.selection.isEmpty || m.drawing else { return }
-        // The drawing as its PNG -- the whole canvas, where it lies --
-        // held by the pasteboard alone (never a file elsewhere: an
-        // anonymous session's stays in its working copy).
+        // The drawings -- the one selected on the raster, the lifted ones
+        // -- as one PNG, the whole canvas, where they lie: held by the
+        // pasteboard alone (the core's file, in the working copy, read and
+        // removed -- never a file elsewhere).
         var png: Data?
-        if m.drawing, let layer = m.selectionLayer,
-           let path = drawingPath(layer) {
-            png = try? Data(contentsOf: path)
+        let lifted = m.selection.filter { $0.kind == .drawing }
+        if m.drawing || !lifted.isEmpty, let layer = m.selectionLayer,
+           let core, let projectId, let pic = markupAsset {
+            var extra: [String: Any] = ["objects": lifted.map(\.id)]
+            if m.drawing, let at = m.drawingAt {
+                extra["x"] = at.x
+                extra["y"] = at.y
+            }
+            let r = core.layerOp(project: projectId,
+                                 asset: composedTarget(pic.id),
+                                 "copy-drawings", layer: layer, extra: extra)
+            if r.ok, let p = r["path"] as? String, !p.isEmpty {
+                let url = URL(fileURLWithPath: p)
+                png = try? Data(contentsOf: url)
+                try? FileManager.default.removeItem(at: url)
+            }
         }
         let doc: [String: Any] = [
-            "objects": m.selection.map(\.json),
+            "objects": m.selection.filter { $0.kind != .drawing }
+                .map(\.json),
             "asset": markupAsset?.id ?? "",
             "layer": m.selectionLayer ?? "",
             "drawing": png != nil,
@@ -742,6 +774,9 @@ extension AppModel {
             objects[i].y0 += dy
             objects[i].y1 += dy
         }
+        // A drawing FLOATS where it lands: a lifted one, selected with
+        // the objects -- laid into the raster when they are let go.
+        var floating: [MarkupObject] = []
         if let drawing, let core, let projectId, let pic = markupAsset {
             let r = core.layerOp(
                 project: projectId, asset: composedTarget(pic.id),
@@ -753,6 +788,8 @@ extension AppModel {
                 return
             }
             reloadAssets()
+            let id = r["object"] as? String
+            floating = markupObjects(layer).filter { $0.id == id }
             markupChanged()
         }
         if !objects.isEmpty,
@@ -760,8 +797,8 @@ extension AppModel {
             return
         }
         if m.tool != .select && m.tool != .text { m.tool = .select }
-        select(objects, on: layer)
-        m.drawing = drawing != nil
+        select(objects + floating, on: layer)
+        m.drawing = false
     }
 
     // MARK: Drawings (a markup's painted pixels)
@@ -822,8 +859,9 @@ extension AppModel {
     private func drawingHit(_ p: CGPoint, _ e: MarkupPointer) -> String? {
         guard let a = markupAsset else { return nil }
         let reach = min(12, max(1, Int((4 * e.pixelsPerPoint).rounded())))
+        // A locked layer's drawings are not picked up.
         for l in a.layerStack.reversed()
-        where l.visible && markupShows(l, in: a)
+        where l.visible && !l.locked && markupShows(l, in: a)
             && !(l.markup?.raster.isEmpty ?? true) {
             guard let r = drawingRaster(l.id) else { continue }
             let o = rasterOffset(r.image)
@@ -1036,6 +1074,7 @@ extension AppModel {
     private func select(_ objects: [MarkupObject], on layer: String) {
         let m = markup
         if m.selectionLayer != layer { m.drawing = false }
+        loadDrawingImages(objects)
         if m.selectionLayer != layer || m.selectedIds != Set(objects.map(\.id)) {
             m.selection = objects
             m.selectionLayer = layer
@@ -1091,11 +1130,75 @@ extension AppModel {
         let now = markupObjects(layer).map { byId[$0.id] ?? $0 }
         if now != markupObjects(layer) { saveObjects(now, on: layer) }
         if !keep {
+            // A drawing lifted, let go: laid back into the raster where
+            // it now lies -- over another, the two are one (a command of
+            // its own, "Place Drawing").
+            let lifted = m.selection.contains { $0.kind == .drawing }
             m.selection = []
             m.selectionLayer = nil
             m.drawing = false
+            if lifted { placeDrawings(on: layer) }
             markupChanged()
         }
+    }
+
+    /// The lifted drawings on `layer` laid back into its raster.
+    private func placeDrawings(on layer: String) {
+        guard let core, let projectId, let pic = markupAsset else { return }
+        let r = core.layerOp(project: projectId,
+                             asset: composedTarget(pic.id),
+                             "place-drawings", layer: layer)
+        if !r.ok { note("error", r.message) }
+        reloadAssets()
+    }
+
+    /// The pictures of lifted drawings among `objects`, read once each
+    /// (by their blob): what the overlay draws them from while they are
+    /// selected.
+    func loadDrawingImages(_ objects: [MarkupObject]) {
+        guard let core, let projectId, let pic = markupAsset else { return }
+        for o in objects where o.kind == .drawing {
+            guard let hash = o.image?.hash,
+                  MarkupRender.drawingImages[hash] == nil else { continue }
+            let r = core.layerOp(project: projectId,
+                                 asset: composedTarget(pic.id),
+                                 "drawing-file", layer: "",
+                                 extra: ["hash": hash])
+            guard r.ok, let p = r["path"] as? String,
+                  let src = CGImageSourceCreateWithURL(
+                      URL(fileURLWithPath: p) as CFURL, nil),
+                  let img = CGImageSourceCreateImageAtIndex(src, 0, nil)
+            else { continue }
+            MarkupRender.drawingImages[hash] = img
+        }
+    }
+
+    /// The selection as the project now has it -- after an undo, a redo, a
+    /// revert: its objects' values read again, those gone let go; and a
+    /// lifted drawing back again (its placing undone) selected, so that
+    /// letting it go places it again.
+    func syncMarkupSelection() {
+        let m = markup
+        guard m.selectionAsset == nil || m.selectionAsset == markupAsset?.id
+        else { return }
+        m.live = false
+        if let layer = m.selectionLayer {
+            let now = markupObjects(layer)
+            let ids = m.selectedIds
+            m.selection = now.filter { ids.contains($0.id) }
+            if m.selection.isEmpty && !m.drawing { m.selectionLayer = nil }
+        }
+        if m.selection.isEmpty, !m.drawing, let a = markupAsset,
+           let l = a.layerStack.first(where: { l in
+               l.visible && (l.markup?.objects ?? []).contains {
+                   $0.kind == .drawing
+               }
+           }) {
+            m.selection = markupObjects(l.id).filter { $0.kind == .drawing }
+            m.selectionLayer = l.id
+            m.selectionAsset = a.id
+        }
+        loadDrawingImages(m.selection)
     }
 
     /// Something selected to let go: objects, or a layer's drawing.
@@ -1135,13 +1238,13 @@ extension AppModel {
     /// The selection's layer hidden -- its eye, its folder's, an undo, the
     /// agent -- and the selection let go: what is not seen is not worked
     /// on (its handles, Delete, the toolbar's settings would act on it
-    /// unseen).
+    /// unseen). Locked, likewise: nothing of it is changed.
     func deselectHiddenLayer() {
         let m = markup
         guard let id = m.selectionLayer,
               m.selectionAsset == markupAsset?.id,
               let l = markupAsset?.layerStack.first(where: { $0.id == id }),
-              !l.visible else { return }
+              !l.visible || l.locked else { return }
         commitSelection()
     }
 
@@ -1155,6 +1258,36 @@ extension AppModel {
         if !commit { liveSelection() }
         for i in m.selection.indices { change(&m.selection[i]) }
         if commit { commitSelection(keep: true) }
+    }
+
+    /// Where markup's pixels start on the stage's (its canvas's origin):
+    /// Information's and the guides' places are the stage's.
+    var markupStageOrigin: CGPoint {
+        markupOnClip ? clipMarkupOrigin
+            : stagePicture?.canvas.map { CGPoint(x: $0.x, y: $0.y) } ?? .zero
+    }
+
+    /// The selected objects' frame on the stage (its pixels), as
+    /// Information shows it; nil with none selected.
+    var selectionFrame: CGRect? {
+        MarkupRender.frame(markup.selection).map {
+            $0.offsetBy(dx: markupStageOrigin.x, dy: markupStageOrigin.y)
+        }
+    }
+
+    /// The selected objects laid in `frame` (the stage's pixels) --
+    /// Information's position and size typed: moved, or scaled from their
+    /// frame's top left, together. The Crop panel places the whole
+    /// layer; this its objects alone. One command.
+    func setSelectionFrame(_ frame: CGRect) {
+        guard let f = MarkupRender.frame(markup.selection) else { return }
+        let o = markupStageOrigin
+        let to = frame.standardized.offsetBy(dx: -o.x, dy: -o.y)
+        guard to != f else { return }
+        // As a drag changes it: drawn live, then kept -- the core draws
+        // it again where it now is.
+        liveSelection()
+        editSelection { $0 = MarkupRender.reframed($0, from: f, to: to) }
     }
 
     /// The layer the next mark goes on, as the core will choose it (an
@@ -1172,20 +1305,29 @@ extension AppModel {
            top.isEmpty || top.isMarkup {
             return top
         }
-        if let last = stack.last, last.isMarkup { return last }
+        // A locked one is passed over for a new markup (the core's
+        // choice too).
+        if let last = stack.last, last.isMarkup, !last.locked { return last }
         return nil
     }
 
     func deleteSelectedObjects() {
         let m = markup
-        // The drawing selected: its pixels cleared (its objects stay but
-        // those selected).
+        // The drawing selected: its pixels cleared -- that drawing alone
+        // (its objects stay but those selected).
         if m.drawing, let layer = m.selectionLayer, let core, let projectId,
            let pic = markupAsset {
             m.drawing = false
+            var extra: [String: Any] = [:]
+            if let at = m.drawingAt {
+                extra = ["x": at.x, "y": at.y]
+            }
+            m.drawingAt = nil
+            m.drawingBox = nil
             let r = core.layerOp(project: projectId,
                                  asset: composedTarget(pic.id),
-                                 "clear-drawing", layer: layer)
+                                 "clear-drawing", layer: layer,
+                                 extra: extra)
             if !r.ok { note("error", r.message) }
             reloadAssets()
             markupChanged()
@@ -1274,8 +1416,9 @@ extension AppModel {
             return (o, layer)
         }
         guard let a = markupAsset else { return nil }
+        // A locked layer's objects are not picked up.
         for l in a.layerStack.reversed()
-        where l.visible && markupShows(l, in: a) {
+        where l.visible && !l.locked && markupShows(l, in: a) {
             for o in (l.markup?.objects ?? []).reversed()
             where MarkupRender.hits(o, p, tolerance: tol) {
                 let live = m.selection.first { $0.id == o.id } ?? o
@@ -1316,6 +1459,8 @@ extension AppModel {
             // Painted pixels there: the layer's DRAWING selected (⇧: with
             // the objects selected on it).
             if let layer = drawingHit(p, e) {
+                // The DRAWING there -- the strokes that touch -- selected,
+                // outlined by its box; dragged, it is lifted and moved.
                 if !(e.shift && m.selectionLayer == layer) {
                     commitSelection()
                     m.selection = []
@@ -1323,8 +1468,12 @@ extension AppModel {
                     m.selectionAsset = markupAsset?.id
                     if activeLayer != layer { selectLayer(layer) }
                 }
+                let reach = min(12, max(1, Int((4 * e.pixelsPerPoint)
+                    .rounded())))
+                m.drawingAt = p
+                m.drawingBox = drawingBox(at: p, on: layer, reach: reach)
                 m.drawing = true
-                m.drag = .none
+                m.drag = .lift(p)
                 return
             }
             commitSelection()
@@ -1346,6 +1495,8 @@ extension AppModel {
             }
         }
         m.drag = .move
+        m.moveFrom = p
+        m.moveStart = m.selection
     }
 
     private func selectDrag(_ e: MarkupPointer) {
@@ -1356,14 +1507,40 @@ extension AppModel {
         case .move, .handle, .gradient: liveSelection()
         default: break
         }
+        // A drawing pressed, dragged: lifted -- an object where it lay,
+        // selected with what was -- then moved as objects are.
+        if case .lift(let from) = m.drag {
+            guard hypot(p.x - from.x, p.y - from.y) >= 1,
+                  let layer = m.selectionLayer,
+                  let lifted = liftDrawing(at: from, on: layer, e) else {
+                return
+            }
+            m.drawing = false
+            m.drawingAt = nil
+            m.drawingBox = nil
+            select(m.selection + [lifted], on: layer)
+            m.drag = .move
+            m.moveFrom = from
+            m.moveStart = m.selection
+            liveSelection()
+        }
         switch m.drag {
         case .move:
-            let (dx, dy) = (p.x - m.last.x, p.y - m.last.y)
-            for i in m.selection.indices {
-                m.selection[i].x0 += dx
-                m.selection[i].x1 += dx
-                m.selection[i].y0 += dy
-                m.selection[i].y1 += dy
+            var dx = p.x - m.moveFrom.x, dy = p.y - m.moveFrom.y
+            // The magnet: the selection's left, middle or right -- top,
+            // middle, bottom -- onto the nearest guide within 6 points.
+            if let lines = markupSnapLines,
+               let b = MarkupRender.frame(m.moveStart) {
+                let reach = 6 * e.pixelsPerPoint
+                dx += Self.snap([b.minX, b.midX, b.maxX].map { $0 + dx },
+                                to: lines.xs, within: reach)
+                dy += Self.snap([b.minY, b.midY, b.maxY].map { $0 + dy },
+                                to: lines.ys, within: reach)
+            }
+            if m.selection.count == m.moveStart.count {
+                m.selection = m.moveStart.map {
+                    MarkupRender.offset($0, dx: dx, dy: dy)
+                }
             }
             m.moved = true
         case .handle(let id, let i):
@@ -1382,6 +1559,57 @@ extension AppModel {
             break
         }
         m.last = p
+    }
+
+    /// How far `edges` go to put the nearest of them on one of `lines`
+    /// within `reach` -- 0 with none there.
+    static func snap(_ edges: [Double], to lines: [Double],
+                     within reach: Double) -> Double {
+        var best: Double?
+        for e in edges {
+            for l in lines where abs(l - e) <= reach {
+                if abs(l - e) < abs(best ?? .infinity) { best = l - e }
+            }
+        }
+        return best ?? 0
+    }
+
+    /// The drawing painted near `p` on `layer`: its box (the core's
+    /// media::drawing_at).
+    private func drawingBox(at p: CGPoint, on layer: String,
+                            reach: Int) -> CGRect? {
+        guard let core, let projectId, let pic = markupAsset else {
+            return nil
+        }
+        let r = core.layerOp(project: projectId,
+                             asset: composedTarget(pic.id), "drawing-at",
+                             layer: layer,
+                             extra: ["x": p.x, "y": p.y, "reach": reach])
+        guard r.ok, let w = (r["w"] as? NSNumber)?.doubleValue, w > 0,
+              let h = (r["h"] as? NSNumber)?.doubleValue,
+              let x = (r["x"] as? NSNumber)?.doubleValue,
+              let y = (r["y"] as? NSNumber)?.doubleValue else { return nil }
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    /// The drawing at `p` LIFTED off `layer`'s raster: the object it now
+    /// is (one command with the move that follows at once).
+    private func liftDrawing(at p: CGPoint, on layer: String,
+                             _ e: MarkupPointer) -> MarkupObject? {
+        guard let core, let projectId, let pic = markupAsset else {
+            return nil
+        }
+        let reach = min(12, max(1, Int((4 * e.pixelsPerPoint).rounded())))
+        let r = core.layerOp(project: projectId,
+                             asset: composedTarget(pic.id), "lift-drawing",
+                             layer: layer,
+                             extra: ["x": p.x, "y": p.y, "reach": reach])
+        guard r.ok, let id = r["object"] as? String else {
+            if !r.ok { note("error", r.message) }
+            return nil
+        }
+        reloadAssets()
+        return markupObjects(layer).first { $0.id == id }
     }
 
     /// The picture made again: the markup's layers changed, or which

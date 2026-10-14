@@ -241,6 +241,26 @@
         }
       }
     },
+    "%@ is locked" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 已锁定"
+          }
+        }
+      }
+    },
+    "%@ is locked: unlock it to change it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 已锁定：解锁后才能更改。"
+          }
+        }
+      }
+    },
     "%@ is not downloaded yet: these apply once it is." : {
       "localizations" : {
         "zh-Hans" : {
@@ -1576,6 +1596,26 @@
         }
       }
     },
+    "Add Guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加参考线"
+          }
+        }
+      }
+    },
+    "Add Horizontal Guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加水平参考线"
+          }
+        }
+      }
+    },
     "Add Layer" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1666,12 +1706,32 @@
         }
       }
     },
+    "Add Vertical Guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加垂直参考线"
+          }
+        }
+      }
+    },
     "Add a blank layer above the selected one" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在所选图层上方添加一个空白图层"
+          }
+        }
+      }
+    },
+    "Add a guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加一条参考线"
           }
         }
       }
@@ -2196,6 +2256,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "应用"
+          }
+        }
+      }
+    },
+    "Apply Suggestion" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "应用建议"
           }
         }
       }
@@ -2808,6 +2878,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Baseline"
+          }
+        }
+      }
+    },
+    "Before Enhancing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "优化前"
           }
         }
       }
@@ -5121,6 +5201,32 @@
         }
       }
     },
+    "Enhanced from “%@”" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "优化自“%@”"
+          }
+        }
+      }
+    },
+    "Enhanced from “%@” · made %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Enhanced from “%1$@” · made %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "优化自“%@” · 已生成 %@ 项"
+          }
+        }
+      }
+    },
     "Entropy:" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6623,6 +6729,26 @@
         }
       }
     },
+    "Horizontal guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "水平参考线"
+          }
+        }
+      }
+    },
+    "Horizontal guide: click to type where it goes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "水平参考线：点按以输入它的位置"
+          }
+        }
+      }
+    },
     "Horizontal wipe" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6869,6 +6995,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "文字"
+          }
+        }
+      }
+    },
+    "In pixels. The Crop panel places the whole layer; these change the selected objects." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "单位为像素。裁剪面板放置整个图层；这里只改动所选对象。"
           }
         }
       }
@@ -7477,6 +7613,16 @@
         }
       }
     },
+    "Layer locked" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图层已锁定"
+          }
+        }
+      }
+    },
     "Layer name" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7795,6 +7941,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "位置"
+          }
+        }
+      }
+    },
+    "Lock Layer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "锁定图层"
+          }
+        }
+      }
+    },
+    "Lock this layer: nothing changes it until it is unlocked" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "锁定此图层：解锁前不能更改它"
           }
         }
       }
@@ -8459,6 +8625,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "下移一层"
+          }
+        }
+      }
+    },
+    "Move Key" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移动关键帧"
           }
         }
       }
@@ -10123,6 +10299,16 @@
         }
       }
     },
+    "Place Drawing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放置绘画"
+          }
+        }
+      }
+    },
     "Place on Stage" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10289,6 +10475,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "纵向"
+          }
+        }
+      }
+    },
+    "Position" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "位置"
           }
         }
       }
@@ -10504,6 +10700,16 @@
         }
       }
     },
+    "Prompt · enhanced · kept as it is" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "提示词 · 已优化 · 保持不变"
+          }
+        }
+      }
+    },
     "Prompt · made %@ · kept as it is" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10590,6 +10796,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "将所选图层放入文件夹（⌘-点按可选择多个）"
+          }
+        }
+      }
+    },
+    "Put the words the assistant enhanced in the box, to change them and enhance again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "把助手优化前的文字放回输入框，修改后再次优化"
           }
         }
       }
@@ -11002,6 +11218,16 @@
         }
       }
     },
+    "Remove Guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除参考线"
+          }
+        }
+      }
+    },
     "Remove Layer" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11149,6 +11375,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "移除此颜色"
+          }
+        }
+      }
+    },
+    "Remove this guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除这条参考线"
           }
         }
       }
@@ -11309,6 +11545,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "重置%@"
+          }
+        }
+      }
+    },
+    "Reset Guides" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "重置参考线"
           }
         }
       }
@@ -11982,6 +12228,26 @@
         }
       }
     },
+    "Selected Object" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "所选对象"
+          }
+        }
+      }
+    },
+    "Selected Objects" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "所选对象"
+          }
+        }
+      }
+    },
     "Semitones up (+) or down (−)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12601,6 +12867,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "缩小文字"
+          }
+        }
+      }
+    },
+    "Snap to Guides" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "对齐参考线"
+          }
+        }
+      }
+    },
+    "Snap to Guides: moved objects stop on the guides (View › Show Guides)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "对齐参考线：移动的对象会停在参考线上（显示 › 显示参考线）"
+          }
+        }
+      }
+    },
+    "Snap to Guides: on — moved objects stop on the guides" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "对齐参考线：已开启——移动的对象会停在参考线上"
           }
         }
       }
@@ -13494,6 +13790,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "任务"
+          }
+        }
+      }
+    },
+    "Tell the agent more — it reads it at its next turn" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "再告诉智能体些什么——它会在下一轮读到"
           }
         }
       }
@@ -14852,6 +15158,36 @@
         }
       }
     },
+    "Unlock Layer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "解锁图层"
+          }
+        }
+      }
+    },
+    "Unlock the layer to change it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "解锁图层后才能更改"
+          }
+        }
+      }
+    },
+    "Unlock this layer, to change it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "解锁此图层，以便更改"
+          }
+        }
+      }
+    },
     "Unmute" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14938,6 +15274,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放大"
+          }
+        }
+      }
+    },
+    "Use Original in Prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将原文用作提示词"
           }
         }
       }
@@ -15132,6 +15478,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "版本"
+          }
+        }
+      }
+    },
+    "Vertical guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "垂直参考线"
+          }
+        }
+      }
+    },
+    "Vertical guide: click to type where it goes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "垂直参考线：点按以输入它的位置"
           }
         }
       }
@@ -16010,6 +16376,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放大 (⌘+)"
+          }
+        }
+      }
+    },
+    "Zoom in until this key shows as a dot, then drag it to move it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放大到关键帧显示为圆点后，拖移它即可移动。"
           }
         }
       }
@@ -17067,6 +17443,40 @@
         }
       }
     },
+    "core.key_in_the_way" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Another key is at that frame already: a key moves between its neighbours."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "那一帧已有另一个关键帧：关键帧只能在相邻的两个关键帧之间移动。"
+          }
+        }
+      }
+    },
+    "core.layer_locked" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{name} is locked: unlock it to change it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{name} 已锁定：解锁后才能更改。"
+          }
+        }
+      }
+    },
     "core.layer_source_kind" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -17322,6 +17732,23 @@
         }
       }
     },
+    "core.no_drawing_there" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nothing is painted there to lift."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "那里没有可提起的绘画。"
+          }
+        }
+      }
+    },
     "core.no_edit_model" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -17369,6 +17796,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "未选择图像模型。"
+          }
+        }
+      }
+    },
+    "core.no_key_to_move" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "There is no key at that frame to move."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "那一帧没有可移动的关键帧。"
           }
         }
       }

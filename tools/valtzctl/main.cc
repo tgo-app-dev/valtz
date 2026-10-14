@@ -264,6 +264,11 @@ usage()
       "  prompts <project.valtz>  (the prompts: each made from, how much)\n"
       "  prompt <project.valtz> add <text> [--name N] | show <id>\n"
       "         | set <id> <text>\n"
+      "         | apply <before> <enhanced> [--from <id>] [--for MODEL]\n"
+      "           [--name N]  (a suggestion applied, as the app's Apply:\n"
+      "           the words before it kept -- the box's prompt --from --\n"
+      "           and the suggestion a prompt made from them, its\n"
+      "           upstream; prints both)\n"
       "         (a prompt as an asset: its media named by POSITION in\n"
       "         the reference row -- <valtz_ref_img_0> the first picture,\n"
       "         _vid_ a clip, _aud_ a sound -- and each model told its\n"
@@ -281,7 +286,8 @@ usage()
       "         setting's by default -- scene by scene, then whole: a\n"
       "         text asset made from it, printed)\n"
       "  layers <project.valtz> <picture-id> [add [above] | move <layer> <by>\n"
-      "         | show|hide <layer> | source <layer> <picture-id>\n"
+      "         | show|hide <layer> | lock|unlock <layer>\n"
+      "         | source <layer> <picture-id>\n"
       "         | rename <layer> <name> | remove <layer>\n"
       "         | markup [selected...] | merge <layer> <layer>\n"
       "         | mask <layer> on|off\n"
@@ -310,9 +316,13 @@ usage()
       "         | duplicate <layer> [name]  (a copy right above it: a\n"
       "                 markup's drawing and objects its own)\n"
       "         | drawing <layer>  (the file its painted pixels are in)\n"
-      "         | paste-drawing <layer> <png> [dx dy] | clear-drawing <layer>\n"
+      "         | paste-drawing <layer> <png> [dx dy]  (floating, lifted)\n"
+      "         | clear-drawing <layer> [x,y] | drawing-at <layer> <x,y>\n"
+      "         | lift-drawing <layer> <x,y>  (an object, moved as one)\n"
+      "         | place-drawings <layer>  (the lifted ones laid back: one\n"
+      "                 touching another, the two are one drawing)\n"
       "         | split <layer> <frame> | slide <layer> <frame>\n"
-      "         | stretch <layer> <frames>\n"
+      "         | stretch <layer> <frames> | move-key <layer> <from> <to>\n"
       "         | group <layer>... [--name N] | ungroup <folder>\n"
       "         | place <layer> <above-layer|bottom> [folder]\n"
       "         | pages <layer> <first> [count]] [--page P]\n"
@@ -326,7 +336,10 @@ usage()
       "         split: a raw clip or sound cut at a timeline frame in two\n"
       "         parts, each a composition, on the layer and one above it;\n"
       "         slide: where the layer starts, a timeline's length grown;\n"
-      "         stretch: a still's -- picture, markup -- length, frames)\n"
+      "         stretch: a still's -- picture, markup -- length, frames;\n"
+      "         move-key: the layer's key at <from> -- frames from its\n"
+      "         start, every track keyed there -- moved to <to>, as the\n"
+      "         timeline's key is dragged)\n"
       "  pages <project.valtz> <still-id> [add [--after P] [--count N]\n"
       "         | remove <P>]  (a still's pages, from 1: drawn a page at a\n"
       "         time; a new page continues what runs across it, its keys\n"
@@ -2661,6 +2674,8 @@ main(int argc, char** argv)
       st = c.move_layer(*pid, *aid, layer, std::atoi(arg.c_str()));
     } else if (op == "show" || op == "hide") {
       st = c.set_layer_visible(*pid, *aid, layer, op == "show");
+    } else if (op == "lock" || op == "unlock") {
+      st = c.set_layer_locked(*pid, *aid, layer, op == "lock");
     } else if (op == "rename") {
       st = c.rename_layer(*pid, *aid, layer, arg);
     } else if (op == "source") {
@@ -2700,12 +2715,45 @@ main(int argc, char** argv)
       std::printf("%s\n", r->empty() ? "(nothing painted)"
                                       : r->string().c_str());
     } else if (op == "paste-drawing") {
-      // <layer> <png> [dx dy]: a drawing laid over the markup's.
+      // <layer> <png> [dx dy]: a drawing floating on the markup, lifted.
       const double dx = plain.size() > 5 ? std::atof(plain[5].c_str()) : 0;
       const double dy = plain.size() > 6 ? std::atof(plain[6].c_str()) : 0;
-      st = c.paste_drawing(*pid, *aid, layer, arg, dx, dy);
-    } else if (op == "clear-drawing") {
-      st = c.clear_drawing(*pid, *aid, layer);
+      auto r = c.paste_drawing(*pid, *aid, layer, arg, dx, dy);
+      if (!r.ok()) {
+        return fail(r.error());
+      }
+      std::printf("floating as object %s\n", r->c_str());
+    } else if (op == "clear-drawing" || op == "drawing-at" ||
+               op == "lift-drawing") {
+      // <layer> [x,y]: the drawing painted there (4 pixels' reach).
+      std::optional<std::array<double, 2>> at;
+      double x = 0, y = 0;
+      if (std::sscanf(arg.c_str(), "%lf,%lf", &x, &y) == 2) {
+        at = std::array<double, 2>{x, y};
+      }
+      if (op == "clear-drawing") {
+        st = c.clear_drawing(*pid, *aid, layer, at, 4);
+      } else if (!at) {
+        return usage();
+      } else if (op == "drawing-at") {
+        auto r = c.drawing_at(*pid, *aid, layer, x, y, 4);
+        if (!r.ok()) {
+          return fail(r.error());
+        }
+        if (r->empty()) {
+          std::printf("(no drawing there)\n");
+        } else {
+          std::printf("drawing at %d,%d %dx%d\n", r->x, r->y, r->w, r->h);
+        }
+      } else {
+        auto r = c.lift_drawing(*pid, *aid, layer, x, y, 4);
+        if (!r.ok()) {
+          return fail(r.error());
+        }
+        std::printf("lifted as object %s\n", r->c_str());
+      }
+    } else if (op == "place-drawings") {
+      st = c.place_drawings(*pid, *aid, layer);
     } else if (op == "merge") {
       st = c.merge_layers(*pid, *aid, layer, arg);
     } else if (op == "mask") {
@@ -2726,6 +2774,13 @@ main(int argc, char** argv)
     } else if (op == "stretch") {
       // <layer> <frames>: a still's length on the timeline (its pages).
       st = c.stretch_layer(*pid, *aid, layer, std::atoll(arg.c_str()));
+    } else if (op == "move-key") {
+      // <layer> <from> <to>: its key, every track's, at another frame.
+      if (plain.size() < 6) {
+        return usage();
+      }
+      st = c.move_layer_key(*pid, *aid, layer, std::atoll(arg.c_str()),
+                            std::atoll(plain[5].c_str()));
     } else if (op == "group") {
       // group <layer>... [--name N]: a folder of them.
       std::vector<std::string> ids;
@@ -2987,9 +3042,10 @@ main(int argc, char** argv)
           in = std::format("  {{{} {}}}", f.id, f.name);
         }
       }
-      std::printf("  %-3s %s %-12s %s%s%s%s\n",
+      std::printf("  %-3s %s%s %-12s %s%s%s%s\n",
                   it->id.empty() ? "0" : it->id.c_str(),
                   it->visible ? "shown " : "hidden",
+                  it->locked ? " locked" : "",
                   it->name.empty() ? "-" : it->name.c_str(),
                   what.c_str(), when.c_str(),
                   it->mask ? "  -- masks the layer below" : "", in.c_str());
@@ -3635,8 +3691,13 @@ main(int argc, char** argv)
       }
       auto deps = p->dependents(a.id, false);
       auto t = p->read_text(a.id);
-      std::printf("%s  v%u  %zu made  %s\n", a.id.str().c_str(), a.head,
-                  deps.ok() ? deps->size() : 0,
+      // An enhanced one: the prompt it was made from (its upstream).
+      std::string from;
+      if (auto r = p->recipe(a.recipe); r.ok() && !r->inputs.empty()) {
+        from = "  <- " + r->inputs.front().asset.str();
+      }
+      std::printf("%s  v%u  %zu made%s  %s\n", a.id.str().c_str(), a.head,
+                  deps.ok() ? deps->size() : 0, from.c_str(),
                   t.ok() ? one_line(*t).c_str() : "?");
     }
     return 0;
@@ -3659,6 +3720,33 @@ main(int argc, char** argv)
         return fail(a.error());
       }
       std::cout << a->str() << "\n";
+      return 0;
+    }
+    if (args[1] == "apply") {
+      if (args.size() < 4) {
+        return usage();
+      }
+      Controller::SuggestionApplied req;
+      req.project = *pid;
+      req.before = args[2];
+      req.enhanced = args[3];
+      for (std::size_t i = 4; i + 1 < args.size(); i += 2) {
+        if (args[i] == "--from") {
+          req.from = AssetId::parse(args[i + 1]);
+        } else if (args[i] == "--for") {
+          req.written_for = args[i + 1];
+        } else if (args[i] == "--name") {
+          req.name = args[i + 1];
+        } else {
+          return usage();
+        }
+      }
+      auto r = c.apply_suggestion(req);
+      if (!r.ok()) {
+        return fail(r.error());
+      }
+      std::cout << "before " << r->before.str() << "\n"
+                << "enhanced " << r->enhanced.str() << "\n";
       return 0;
     }
     auto id = AssetId::parse(args[2]);

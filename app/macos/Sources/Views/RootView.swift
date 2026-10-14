@@ -88,6 +88,11 @@ struct RootView: View {
         .onChange(of: model.stagePicture?.id) { _, id in
             if model.markup.selectionAsset != id { model.commitSelection() }
         }
+        // Several tasks under way: Assets shows them (AppModel.revealTasks)
+        // -- as their number reaches two, not again while it stays there.
+        .onChange(of: model.tasks.count) { was, now in
+            if was < 2 && now >= 2 { model.revealTasks() }
+        }
         // The window, for a project's size (AppModel.editorWindow).
         .background(WindowReader { model.editorWindow = $0 })
         .navigationTitle(model.windowTitle)

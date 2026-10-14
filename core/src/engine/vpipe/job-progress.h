@@ -21,8 +21,12 @@
 // download's is DOWNLOAD, uncounted (vpipe counts only its big files).
 //
 // A clip's WRITER (avf-save-video's "save video") counts its frames:
-// an export's phase is that (EXPORT); in a generation the frames are
-// written as they are decoded, and after the decode it is FINISH.
+// in a generation the frames are written as they are decoded, and after
+// the decode it is FINISH. An EXPORT runs beside a generation (the
+// engine's export lane), so its writer's report is named apart --
+// kExportReport, its EXPORT phase -- the one report an export reads and
+// one a generation leaves alone. An older vpipe names it "save video"
+// still: an export takes that only while no other graph runs (`alone`).
 //
 // A SONG (generate-audio) reports its three passes under one name,
 // "song": planning the score and writing the song, uncounted -- the
@@ -68,6 +72,9 @@
 #include <utility>
 
 namespace valtz::engine::vp {
+
+// An export's writer's report (avf-save-video's `progress`).
+inline constexpr char kExportReport[] = "export";
 
 struct JobPhase {
   std::string   phase;   // kPhase*
@@ -122,6 +129,10 @@ public:
   // (seconds, on a steady clock).
   JobPhase read(const Json& doc, double now);
 
+  // An export's: no other graph runs now (a writer's "save video" is its
+  // own then -- an older vpipe's name for it).
+  void set_alone(bool alone) { _alone = alone; }
+
   // The newest report's id in a document; 0 for none. Ids only grow, so
   // every report opened later has a larger one.
   static std::uint64_t last_id(const Json& doc);
@@ -138,6 +149,7 @@ private:
   bool          _export;
   bool          _restore;
   std::uint64_t _group;
+  bool          _alone = false;
   bool          _past = false;  // denoised
   std::uint64_t _followed = 0;  // its id
   std::uint64_t _total = 0;

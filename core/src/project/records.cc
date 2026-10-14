@@ -277,6 +277,9 @@ to_json(Json& j, const Asset& a)
       if (l.mask) {
         lj["mask"] = true;
       }
+      if (l.locked) {
+        lj["locked"] = true;
+      }
       if (!l.folder.empty()) {
         lj["folder"] = l.folder;
       }
@@ -413,11 +416,12 @@ from_json(const Json& j, Asset& a)
       layer.markup = markup_from_json(m);
     }
     layer.mask = jget(l, "mask", false);
+    layer.locked = jget(l, "locked", false);
     layer.time = time_from_json(jget(l, "time", Json::object()));
     layer.folder = jget<std::string>(l, "folder", "");
     layer.rest = rest_of(l, {"id", "name", "visible", "own", "source",
-                             "source_version", "markup", "mask", "time",
-                             "folder"});
+                             "source_version", "markup", "mask", "locked",
+                             "time", "folder"});
     a.layers.push_back(std::move(layer));
   }
   a.layer_folders.clear();

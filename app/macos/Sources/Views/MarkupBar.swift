@@ -74,7 +74,10 @@ struct MarkupBar: View {
                       ?? t.label)
                 .accessibilityLabel(Text(verbatim: t.label))
                 .shortcutHint(t.key.map { String($0).uppercased() } ?? "")
-                if t == .select { deselectButton }
+                if t == .select {
+                    deselectButton
+                    magnetButton
+                }
             }
         }
     }
@@ -94,6 +97,35 @@ struct MarkupBar: View {
         .disabled(!model.markupCanDeselect)
         .help("Deselect (⌘D)")
         .accessibilityLabel(Text("Deselect"))
+    }
+
+    /// Beside them: moves snap to the guides while it is on (and they
+    /// show) -- an object's edges or middle onto a line within reach.
+    private var magnetButton: some View {
+        let on = model.snapsToGuides
+        return Button {
+            model.snapsToGuides.toggle()
+        } label: {
+            ZStack {
+                MagnetShape()
+                    .fill(on ? Color.accentColor : Color.primary)
+                MagnetPoles()
+                    .fill(Color(nsColor: .controlBackgroundColor)
+                        .opacity(0.85))
+            }
+            .frame(width: 10, height: 13)
+            // Its poles up to the right, as a magnet is drawn.
+            .rotationEffect(.degrees(-135))
+            .frame(width: 26, height: 22)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .background(RoundedRectangle(cornerRadius: 5)
+            .fill(on ? Color.accentColor.opacity(0.22) : .clear))
+        .help(on ? "Snap to Guides: on — moved objects stop on the guides"
+                 : "Snap to Guides: moved objects stop on the guides (View › Show Guides)")
+        .accessibilityLabel(Text("Snap to Guides"))
+        .accessibilityAddTraits(on ? .isSelected : [])
     }
 
     // MARK: Settings
@@ -408,7 +440,10 @@ struct MarkupBar: View {
             return String(localized: "On \(layer.title)")
         }
         if let layer = model.markupTargetPreview {
-            return String(localized: "On \(layer.title)")
+            // Locked: nothing goes on it -- said before the press is.
+            return layer.locked
+                ? String(localized: "\(layer.title) is locked")
+                : String(localized: "On \(layer.title)")
         }
         return String(localized: "On a new layer")
     }

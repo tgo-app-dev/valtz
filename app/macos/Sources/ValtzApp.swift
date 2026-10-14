@@ -11,6 +11,57 @@ struct ValtzApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model = AppModel()
 
+    /// The selection's drawings, for the hook's "dsel": the one selected
+    /// on the raster (its box), the lifted ones (theirs), the core's
+    /// drawing at a point ("x,y").
+    @MainActor
+    static func drawingSummary(_ m: AppModel, _ arg: String) -> String {
+        let mk = m.markup
+        func box(_ r: CGRect?) -> String {
+            guard let r else { return "-" }
+            let x = Int(r.minX), y = Int(r.minY)
+            let w = Int(r.width), h = Int(r.height)
+            return "\(x),\(y),\(w)x\(h)"
+        }
+        let lifted: [String] = mk.selection.filter { $0.kind == .drawing }
+            .map { box(MarkupRender.box($0)) }
+        var at = "-"
+        let n: [Double] = arg.split(separator: ",").compactMap { Double($0) }
+        let layer: String? = mk.selectionLayer ?? m.markupTargetPreview?.id
+        if n.count == 2, let layer, let core = m.core,
+           let pid = m.projectId, let pic = m.markupAsset {
+            let r = core.layerOp(project: pid,
+                                 asset: m.composedTarget(pic.id),
+                                 "drawing-at", layer: layer,
+                                 extra: ["x": n[0], "y": n[1], "reach": 4])
+            let v: [Int] = ["x", "y", "w", "h"].map {
+                (r[$0] as? NSNumber)?.intValue ?? -1
+            }
+            at = "\(v[0]),\(v[1]),\(v[2])x\(v[3])"
+        }
+        let drawing: String = mk.drawing ? box(mk.drawingBox) : "-"
+        let liftedText: String = lifted.isEmpty ? "-"
+            : lifted.joined(separator: "+")
+        let undo: String = m.document.undo ?? "-"
+        let redo: String = m.document.redo ?? "-"
+        return "drawing=\(drawing) lifted=\(liftedText) objects=\(mk.selection.count) at=\(at) undo=\(undo) redo=\(redo)"
+    }
+
+    /// A suggestion applied, for the hooks: the box's prompt -- enhanced
+    /// or not -- the words before it kept (its upstream), the prompts in
+    /// Assets, the project's undo.
+    @MainActor
+    static func appliedSummary(_ m: AppModel) -> String {
+        let id: String = m.promptAssetId ?? "-"
+        let a: AssetDTO? = m.assets.first { $0.id == id }
+        let up: AssetDTO? = a.flatMap { m.promptUpstream(of: $0) }
+        let enhanced: Bool = a?.isEnhancedPrompt ?? false
+        let before: String = String((up?.text ?? "-").prefix(60))
+        let prompts: Int = m.assets.filter(\.isPrompt).count
+        let undo: String = m.document.undo ?? "-"
+        return "prompt=\(id) enhanced=\(enhanced) upstream=\(up?.id ?? "-") before=\(before) prompts=\(prompts) undo=\(undo)"
+    }
+
     /// One VALTZ_SNAPSHOT_MARKUP_OPS step, as the toolbar and the
     /// stage's pointer would do it.
     @MainActor
@@ -41,6 +92,28 @@ struct ValtzApp: App {
                                           pixelsPerPoint: 1))
         }
         switch kv[0] {
+        // The magnet (Snap to Guides): "magnet=on|off".
+        case "magnet":
+            m.snapsToGuides = arg != "off"
+            print("snapshot: magnet on=\(m.snapsToGuides)")
+        // The selection's DRAWINGS: "dsel" prints the drawing selected on
+        // the raster (its box), the lifted ones among the objects (their
+        // boxes), and the core's drawing at a point ("dsel=200,400").
+        case "dsel":
+            print("snapshot: dsel \(arg) " + drawingSummary(m, arg))
+        // Information's position and size typed: "frame=x,y,w,h" (the
+        // stage's pixels); "where" prints the selection's frame.
+        case "frame", "where":
+            let n = arg.split(separator: ",").compactMap { Double($0) }
+            if kv[0] == "frame", n.count == 4 {
+                m.setSelectionFrame(CGRect(x: n[0], y: n[1], width: n[2],
+                                           height: n[3]))
+            }
+            let f = m.selectionFrame.map {
+                String(format: "%.1f,%.1f,%.1fx%.1f", $0.minX, $0.minY,
+                       $0.width, $0.height)
+            } ?? "-"
+            print("snapshot: \(kv[0]) \(arg) selection=\(f) objects=\(mk.selection.count) undo=\(m.document.undo ?? "-")")
         case "tool":
             if let t = MarkupTool(rawValue: arg) {
                 mk.tool = t
@@ -237,6 +310,8 @@ struct ValtzApp: App {
                 pointer(.drag, p, shift: kv[0] == "sdrag")
             }
             pointer(.up, ps.last!)
+            // Refused (a locked layer): the banner says why.
+            if let b = m.banner { print("snapshot: drag banner=\(b)") }
         case "click", "dclick", "sclick":
             if let p = points(arg).first {
                 let n = kv[0] == "dclick" ? 2 : 1
@@ -310,6 +385,18 @@ struct ValtzApp: App {
             let can = m.markupCanDeselect
             m.deselectMarkup()
             print("snapshot: deselect can=\(can) selected=\(mk.selection.count)\(mk.drawing ? "+drawing" : "") canNow=\(m.markupCanDeselect)")
+        // A layer LOCKED ("lock=1"; "0", "sel" as hide's), as its lock
+        // does -- "unlock=1" unlocked: its state, the selection, and what
+        // the banner says.
+        case "lock", "unlock":
+            let id = arg == "sel" ? mk.selectionLayer ?? ""
+                : arg == "0" ? "" : arg
+            let before: Int = mk.selection.count
+            m.setLayerLocked(id, kv[0] == "lock")
+            try? await Task.sleep(for: .milliseconds(300))
+            let locked: Bool = m.isLayerLocked(id)
+            let banner: String = m.banner ?? "-"
+            print("snapshot: \(kv[0]) layer=\(arg) locked=\(locked) selected=\(before)>\(mk.selection.count) undo=\(m.document.undo ?? "-") banner=\(banner)")
         // A layer hidden ("hide=1"; layer 0 "0"; "sel" the selection's),
         // as its eye does -- "show=1" shown again.
         case "hide", "show":
@@ -545,12 +632,14 @@ struct ValtzApp: App {
                             model.roundStageCorners = on
                         }
                     }))
-                // A 3 × 3 grid over what the stage shows, ⌘' as the grid
-                // is in Photoshop.
+                // The guides over what the stage shows -- the thirds
+                // until set by hand -- ⌘' as the grid is in Photoshop.
                 Toggle("Show Guides", isOn: Binding(
                     get: { model.showsGuides },
                     set: { model.showsGuides = $0 }))
                     .keyboardShortcut("'")
+                Button("Reset Guides") { model.resetGuides() }
+                    .disabled(!model.guidesSetByHand)
                 Divider()
                 Button(model.inspectorOpen ? "Hide Inspector" : "Show Inspector") {
                     withAnimation(AppModel.motion) { model.inspectorOpen.toggle() }
@@ -1584,6 +1673,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if e == "accept" {
                         m.acceptEnhanced()
                         try? await Task.sleep(for: .milliseconds(600))
+                        print("snapshot: applied " + ValtzApp.appliedSummary(m))
                     }
                     // "review": the card's Prompt Editor button.
                     if e == "review" {
@@ -1617,7 +1707,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                               replacementRange:
                                                   tv.selectedRange())
                             }
-                        case "apply": m.acceptEnhanced()
+                        case "apply":
+                            m.acceptEnhanced()
+                            print("snapshot: applied "
+                                  + ValtzApp.appliedSummary(m))
                         case "reject": m.dismissEnhanced()
                         default: break
                         }
@@ -1749,6 +1842,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                         switch p[0] {
                         case "prompt": m.addAssetReferences([arg])
+                        // An enhanced prompt's (the newest's) words before
+                        // it, put back in the box: Use Original in Prompt.
+                        case "original":
+                            let e: AssetDTO? = arg == "newest"
+                                ? m.assets.last(where: \.isEnhancedPrompt)
+                                : m.assets.first { $0.id == arg }
+                            if let e, let up = m.promptUpstream(of: e) {
+                                m.usePrompt(up)
+                            }
+                            print("snapshot: original box=\(m.prompt.prefix(60)) "
+                                  + ValtzApp.appliedSummary(m))
                         case "active":
                             if let a = m.assets.first(where: { $0.id == arg }) {
                                 m.setActive(a)
@@ -2087,6 +2191,103 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     _ = m.dropFilesOnStage([URL(fileURLWithPath: f)])
                     try? await Task.sleep(for: .seconds(2))
                 }
+                // The GUIDES (their marks beside the stage): "show" (View
+                // › Show Guides), "add:h@120" / "add:v@300" (the "+"'s,
+                // at a pixel), "move:h1@200", "remove:v0", "reset" (View ›
+                // Reset Guides), "edit:h0" (its number typed over),
+                // "click:h0" (its number clicked through the window),
+                // "type:150" / "enter" / "esc" (keys to what has the
+                // keyboard), "key:up|down|sup|sdown" (an arrow, ⇧),
+                // "minus:h0" (its "−" clicked), "tdrag:h0:40" (its
+                // triangle dragged 40 points down -- right for a
+                // vertical one's), "zoom:in|out|fit", "wait:1" --
+                // each printing `snapshot: guides <step> set= byHand=
+                // canvas= rect= marks= editing= dirty=`.
+                if let m = model, let spec = env["VALTZ_SNAPSHOT_GUIDE_OPS"] {
+                    for step in spec.split(separator: ";").map(String.init) {
+                        let kv = step.split(separator: ":", maxSplits: 1)
+                            .map(String.init)
+                        let arg = kv.count > 1 ? kv[1] : ""
+                        func ref(_ s: String) -> GuideRef? {
+                            guard let k = s.first, k == "h" || k == "v",
+                                  let i = Int(s.dropFirst()) else {
+                                return nil
+                            }
+                            return GuideRef(horizontal: k == "h", index: i)
+                        }
+                        let at = arg.split(separator: "@").map(String.init)
+                        var wait = 0.6
+                        switch kv[0] {
+                        case "show": m.showsGuides = arg != "off"
+                        case "add":
+                            if at.count == 2, let px = Double(at[1]) {
+                                m.addGuide(horizontal: at[0] == "h", at: px)
+                            }
+                        case "move":
+                            if at.count == 2, let r = ref(at[0]),
+                               let px = Double(at[1]) {
+                                m.moveGuide(r, to: px)
+                            }
+                        case "remove":
+                            if let r = ref(arg) { m.removeGuide(r) }
+                        case "reset": m.resetGuides()
+                        case "edit": m.guideEditing = ref(arg)
+                        // The stage zoomed as the title bar's buttons
+                        // zoom it: "zoom:in", "zoom:out", "zoom:fit".
+                        case "zoom":
+                            m.zoom(arg == "in" ? .zoomIn
+                                   : arg == "out" ? .zoomOut : .fit)
+                        case "click", "minus":
+                            if let r = ref(arg),
+                               let p = Self.guideMarkPoint(m, r,
+                                                           part: kv[0]) {
+                                await Self.postDrag(from: (p.x, p.y),
+                                                    to: (p.x, p.y))
+                            }
+                        // Its triangle dragged so many points along its
+                        // edge ("tdrag:h0:40", down or right), through
+                        // the window.
+                        case "tdrag":
+                            let p = arg.split(separator: ":")
+                            if p.count == 2, let r = ref(String(p[0])),
+                               let d = Double(p[1]),
+                               let a = Self.guideMarkPoint(m, r,
+                                                           part: "triangle") {
+                                let (x, y) = (Double(a.x), Double(a.y))
+                                let b: (Double, Double) = r.horizontal
+                                    ? (x, y + d) : (x + d, y)
+                                await Self.postDrag(from: (x, y), to: b)
+                            }
+                        // An arrow to what has the keyboard: "key:up",
+                        // "down", "sup" / "sdown" with ⇧.
+                        case "key":
+                            let up = arg.hasSuffix("up")
+                            if let w = m.editorWindow,
+                               let ev = NSEvent.keyEvent(
+                                   with: .keyDown, location: .zero,
+                                   modifierFlags: arg.hasPrefix("s")
+                                       ? [.numericPad, .function, .shift]
+                                       : [.numericPad, .function],
+                                   timestamp: 0,
+                                   windowNumber: w.windowNumber,
+                                   context: nil,
+                                   characters: up ? "\u{F700}" : "\u{F701}",
+                                   charactersIgnoringModifiers:
+                                       up ? "\u{F700}" : "\u{F701}",
+                                   isARepeat: false,
+                                   keyCode: up ? 126 : 125) {
+                                NSApp.postEvent(ev, atStart: false)
+                            }
+                        case "type": Self.sendKeys(m, arg)
+                        case "enter": Self.sendKeys(m, "\r")
+                        case "esc": Self.sendKeys(m, "\u{1b}")
+                        case "wait": wait = Double(arg) ?? 1
+                        default: break
+                        }
+                        try? await Task.sleep(for: .seconds(wait))
+                        print("snapshot: guides \(step) \(Self.guideSummary(m))")
+                    }
+                }
                 // Markup, through the pointer as the stage sends it
                 // (canvas pixels): "tool=rect|color=#ff0000ff|drag=10,10;
                 // 200,120|click=50,50|key=delete|text=Hi|pixels|..."
@@ -2303,6 +2504,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // transition's menu, its items printed; "tmenu=0:dip-black"
                 // one picked, "remove" its last), "thit=0" (what a click on
                 // its arrow's badge finds),
+                // KEYS: "kdrag=0:30>40" (a key's dot dragged from its frame
+                // to another, through the view; "khold=" the same left
+                // held, for the capture), "ktip=0:30" (its bar's tooltip,
+                // zoomed out),
                 // "wait=2" -- each printing the timeline as it is.
                 if let spec = env["VALTZ_SNAPSHOT_TIMELINE_VIEW"] {
                     func layerArg(_ s: Substring) -> String {
@@ -2408,11 +2613,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         case "type", "enter", "esc":
                             Self.sendKeys(m, key == "enter" ? "\r"
                                           : key == "esc" ? "\u{1b}" : arg)
-                        case "eye", "hdrag", "fold":
+                        case "eye", "hdrag", "fold", "lock":
                             let v = TimelineNSView.shown
                             let p = arg.split(separator: ">")
                                 .compactMap { Int($0) }
-                            if key == "fold", let r = p.first,
+                            if key == "lock", let r = p.first,
+                               let pt = v?.windowPoint(header: r, lock: true) {
+                                await Self.postDrag(from: (pt.x, pt.y),
+                                                    to: (pt.x, pt.y))
+                            } else if key == "fold", let r = p.first,
                                let pt = v?.windowPoint(header: r, fold: true) {
                                 await Self.postDrag(from: (pt.x, pt.y),
                                                     to: (pt.x, pt.y))
@@ -2519,6 +2728,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                     to: (b.x, b.y))
                             }
                             wait = 1.5
+                        // A key's dot dragged through the view from its
+                        // frame to another ("kdrag=1:30>36", rows from the
+                        // top, timeline frames); "ktip=1:30" the tooltip
+                        // its bar has, zoomed out ("-" none).
+                        case "kdrag", "khold":
+                            let v = TimelineNSView.shown
+                            let p = arg.split(separator: ":")
+                            let fs = p.count == 2
+                                ? p[1].split(separator: ">")
+                                    .compactMap { Int($0) } : []
+                            if let r = Int(p.first ?? ""), fs.count == 2,
+                               let a = v?.windowPoint(key: fs[0], row: r),
+                               let b = v?.windowPoint(key: fs[1], row: r) {
+                                await Self.postDrag(from: (a.x, a.y),
+                                                    to: (b.x, b.y),
+                                                    release: key == "kdrag")
+                            }
+                            wait = 1.5
+                        case "ktip":
+                            let p = arg.split(separator: ":")
+                                .compactMap { Int($0) }
+                            if p.count == 2,
+                               let t = TimelineNSView.shown?
+                                   .keyTip(frame: p[1], row: p[0]) {
+                                print("snapshot: timeline-ktip \(arg) bars=\(t.bars) tip=\(t.tip)")
+                            }
                         case "length":
                             let p = arg.split(separator: ":")
                             if p.count == 2, let n = Int(p[1]) {
@@ -2914,7 +3149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             .string.count ?? -1
                         let hint = m.prompt.isEmpty && m.promptAttachments.isEmpty
                         FileHandle.standardError.write(Data(
-                            "snapshot: agent-box box=\(box) prompt=\(m.prompt.count) hint=\(hint) immersive=\(m.promptImmersive)\n".utf8))
+                            "snapshot: agent-box box=\(box) prompt=\(m.prompt.count) hint=\(hint) immersive=\(m.promptImmersive) boxRect=\(Self.promptBoxRect())\n".utf8))
                         FileHandle.standardError.write(Data(
                             "snapshot: agent \(step.replacingOccurrences(of: " ", with: "_").prefix(40)) state=\(a?.state ?? "-") steps=\(a?.steps.count ?? 0) proposed=\(a?.proposed?.tool ?? "-") last=\(a?.steps.last.map { "\($0.tool):\($0.state)" } ?? "-") review=\(a?.review ?? false) backend=\(a?.backend?.kind ?? "-") composition=\(m.activeComposition?.name.replacingOccurrences(of: " ", with: "_") ?? "-") pages=\(m.activeComposition?.pages ?? 0) writing=\(m.agentWriting.count) error=\(a?.errorText?.replacingOccurrences(of: " ", with: "_").prefix(60) ?? "-") speed=\(a?.stats.flatMap { $0.isEmpty ? nil : $0.line.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
                     }
@@ -3966,7 +4201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     static func postDrag(from a: (Double, Double),
                                  to b: (Double, Double),
-                                 flags: NSEvent.ModifierFlags = []) async {
+                                 flags: NSEvent.ModifierFlags = [],
+                                 release: Bool = true) async {
         guard let win = NSApp.windows.first(where: { $0.isVisible }) else {
             return
         }
@@ -3993,7 +4229,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? await Task.sleep(for: .milliseconds(30))
         }
         postedClickAt = CACurrentMediaTime()
-        post(.leftMouseUp, b.0, b.1)
+        // Held: the drag as it is for the capture.
+        if release { post(.leftMouseUp, b.0, b.1) }
+    }
+
+    /// The guides as they are: "set=h:120,240|v:213.3 byHand=true
+    /// canvas=640x360 rect=0,0,800x450 marks=h0@150,v0@266 editing=h0
+    /// dirty=true" -- their pixels, the stage's, where what they measure
+    /// lies on the card, the marks shown (each at its point on the card's
+    /// edge) and the number typed over.
+    @MainActor
+    static func guideSummary(_ m: AppModel) -> String {
+        let g = m.stageGuides
+        let set = g.map {
+            "h:" + $0.h.map(GuideMarks.label).joined(separator: ",")
+                + "|v:" + $0.v.map(GuideMarks.label).joined(separator: ",")
+        } ?? "-"
+        let card = m.stageCardFrame.size
+        let rect = m.stage.video != nil ? CGRect(origin: .zero, size: card)
+                                        : m.stageCanvasRect
+        var marks: [String] = []
+        if let g, let c = m.guideCanvas, let r = rect, m.showsGuides {
+            for (i, px) in g.h.enumerated() {
+                let y = r.minY + px / c.height * r.height
+                if y >= -0.5, y <= card.height + 0.5 {
+                    marks.append("h\(i)@\(Int(y.rounded()))")
+                }
+            }
+            for (i, px) in g.v.enumerated() {
+                let x = r.minX + px / c.width * r.width
+                if x >= -0.5, x <= card.width + 0.5 {
+                    marks.append("v\(i)@\(Int(x.rounded()))")
+                }
+            }
+        }
+        let c = m.guideCanvas.map { "\(Int($0.width))x\(Int($0.height))" }
+            ?? "-"
+        let r = rect.map {
+            "\(Int($0.minX)),\(Int($0.minY)),\(Int($0.width))x\(Int($0.height))"
+        } ?? "-"
+        let ed = m.guideEditing.map {
+            "\($0.horizontal ? "h" : "v")\($0.index)"
+        } ?? "-"
+        return "set=\(set) byHand=\(m.guidesSetByHand) canvas=\(c) rect=\(r) "
+            + "marks=\(marks.isEmpty ? "-" : marks.joined(separator: ",")) "
+            + "editing=\(ed) dirty=\(m.document.dirty)"
+    }
+
+    /// Where a guide's number is in the window (points from its top
+    /// left) -- or its "−", or its triangle -- as GuideMarks lays them
+    /// out.
+    @MainActor
+    static func guideMarkPoint(_ m: AppModel, _ ref: GuideRef,
+                               part: String) -> CGPoint? {
+        let minus = part == "minus"
+        let f = m.stageCardFrame
+        guard let g = m.stageGuides, let c = m.guideCanvas,
+              let r = m.stage.video != nil
+                  ? CGRect(origin: .zero, size: f.size)
+                  : m.stageCanvasRect else { return nil }
+        if ref.horizontal, g.h.indices.contains(ref.index) {
+            let y = f.minY + r.minY + g.h[ref.index] / c.height * r.height
+            if part == "triangle" { return CGPoint(x: f.maxX + 5.5, y: y) }
+            return minus ? CGPoint(x: f.maxX + 5.5, y: y + 13)
+                         : CGPoint(x: f.maxX + 16, y: y)
+        }
+        if !ref.horizontal, g.v.indices.contains(ref.index) {
+            let x = f.minX + r.minX + g.v[ref.index] / c.width * r.width
+            if part == "triangle" { return CGPoint(x: x, y: f.maxY + 5.5) }
+            return minus ? CGPoint(x: x + 13, y: f.maxY + 5.5)
+                         : CGPoint(x: x, y: f.maxY + 17)
+        }
+        return nil
     }
 
     /// The timeline as it is: "open=true rows=3 zoom=1.00 frame=48/120
@@ -4016,7 +4323,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return "\(k)\(way)"
                 }.joined()
             let wave = r.wave != nil ? ":wave" : ""
-            let shown = r.visible ? "" : ":hidden"
+            let shown = (r.visible ? "" : ":hidden")
+                + (r.locked ? ":locked" : "")
             // A folder's header: its id and its layers' spans together;
             // a layer in one set in by ">".
             if r.isFolder {
@@ -4347,6 +4655,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return f.placeholderString ?? f.stringValue
         }
         return r.map { String(describing: type(of: $0)) } ?? "-"
+    }
+
+    /// The prompt's text view -- its scroll view -- in the window, for the
+    /// hooks: "x,y,wxh" in points from the window's top left; "-" when
+    /// none shows.
+    @MainActor
+    static func promptBoxRect() -> String {
+        guard let win = NSApp.windows.first(where: { $0.isVisible }),
+              let root = win.contentView?.superview,
+              let tv = find(PromptTextView.self, in: root) else { return "-" }
+        let v: NSView = tv.enclosingScrollView ?? tv
+        let r: NSRect = v.convert(v.bounds, to: nil)
+        let h: CGFloat = win.contentView?.frame.height ?? 0
+        return "\(Int(r.minX)),\(Int(h - r.maxY)),\(Int(r.width))x\(Int(r.height))"
     }
 
     @MainActor

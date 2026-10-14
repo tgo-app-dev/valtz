@@ -4,6 +4,7 @@
 #include "testing.h"
 
 #include "engine/vpipe/graph-builder.h"
+#include "engine/vpipe/job-progress.h"
 #include "valtz/models/catalog.h"
 #include "valtz-vpipe/exchange.h"
 
@@ -499,22 +500,22 @@ TEST(graph_builder, export_graphs)
   auto g = vp::build_export(job);
   REQUIRE_OK(g);
   CHECK(g->output.extension() == ".png");
-  const Json* read = find_stage(g->spec, "read");
-  const Json* write = find_stage(g->spec, "write");
+  const Json* read = find_stage(g->spec, vp::kExportRead);
+  const Json* write = find_stage(g->spec, vp::kExportWrite);
   REQUIRE(read && write);
   CHECK(jget<std::string>(*read, "type", "") == "load-image");
   CHECK(jget<std::string>(config_of(read), "dtype", "") == "f16");
   CHECK(jget<std::string>(config_of(read), "alpha", "") == "drop");
   CHECK(jget<std::string>(config_of(read), "raw", "") == "rendered");
   CHECK(jget(config_of(write), "bit_depth", 0) == 16);
-  CHECK(src_of(write, 1) == "read");   // the EXIF
+  CHECK(src_of(write, 1) == vp::kExportRead);   // the EXIF
   CHECK(!config_of(write).contains("quality"));
 
   job.params = {{"format", "jpeg"}, {"quality", 60}};
   auto j = vp::build_export(job);
   REQUIRE_OK(j);
   CHECK(j->output.extension() == ".jpg");
-  const Json& jw = config_of(find_stage(j->spec, "write"));
+  const Json& jw = config_of(find_stage(j->spec, vp::kExportWrite));
   CHECK(jget<std::string>(jw, "format", "") == "jpeg");
   CHECK(jget(jw, "quality", 0) == 60);
 
@@ -522,9 +523,9 @@ TEST(graph_builder, export_graphs)
   auto e = vp::build_export(job);
   REQUIRE_OK(e);
   CHECK(e->output.extension() == ".exr");
-  CHECK(jget<std::string>(config_of(find_stage(e->spec, "read")), "raw",
-                          "") == "linear");
-  CHECK(jget(*find_stage(e->spec, "write"), "iports",
+  CHECK(jget<std::string>(config_of(find_stage(e->spec, vp::kExportRead)),
+                          "raw", "") == "linear");
+  CHECK(jget(*find_stage(e->spec, vp::kExportWrite), "iports",
              Json::array()).size() == 1);
 
   job.params = {{"format", "hevc10"}};
@@ -538,13 +539,17 @@ TEST(graph_builder, export_graphs)
   auto v = vp::build_export(job);
   REQUIRE_OK(v);
   CHECK(v->output.extension() == ".mov");
-  const Json* vr = find_stage(v->spec, "read");
-  const Json* vw = find_stage(v->spec, "write");
+  const Json* vr = find_stage(v->spec, vp::kExportRead);
+  const Json* vw = find_stage(v->spec, vp::kExportWrite);
   REQUIRE(vr && vw);
   CHECK(jget<std::string>(*vr, "type", "") == "avf-load-video");
   CHECK(jget<std::string>(config_of(vr), "alpha", "") == "keep");
   CHECK(jget<std::string>(config_of(vw), "codec", "") == "hevc");
   CHECK(!config_of(vw).contains("bitrate"));
+  // Its writer's report named apart: an export runs beside a generation
+  // and follows only its own (job-progress.h).
+  CHECK(jget<std::string>(config_of(vw), "progress", "") ==
+        vp::kExportReport);
 
   // Encoded as asked (engine::VideoEncoding): H.264's rate, keyframes in
   // frames at the clip's rate, no B-frames, profile, level, entropy.
@@ -562,7 +567,7 @@ TEST(graph_builder, export_graphs)
   job.params = {{"format", "h264"}, {"video", to_json(enc)}};
   auto h = vp::build_export(job);
   REQUIRE_OK(h);
-  const Json& hw = config_of(find_stage(h->spec, "write"));
+  const Json& hw = config_of(find_stage(h->spec, vp::kExportWrite));
   CHECK(jget<std::string>(hw, "codec", "") == "h264");
   CHECK(jget<std::int64_t>(hw, "bitrate", 0) == 8'000'000);
   CHECK(jget<std::int64_t>(hw, "max_bitrate", 0) == 12'000'000);
@@ -835,7 +840,7 @@ TEST(graph_builder, an_adjusted_still_exports_through_a_source)
   REQUIRE_OK(g);
   REQUIRE(g->references.size() == 1);
   const auto& f = g->references[0];
-  CHECK(f.stage == "read");
+  CHECK(f.stage == vp::kExportRead);
   CHECK(f.size.width == 3 && f.size.height == 2);
   CHECK(f.adjust.exposure == 0.5);
 
@@ -850,8 +855,8 @@ TEST(graph_builder, an_adjusted_still_exports_through_a_source)
   CHECK(c->references[0].crop.scale_y == 0.5);
   CHECK(c->references[0].channels == 4);
   CHECK(!f.linear);
-  const Json* read = find_stage(g->spec, "read");
-  const Json* write = find_stage(g->spec, "write");
+  const Json* read = find_stage(g->spec, vp::kExportRead);
+  const Json* write = find_stage(g->spec, vp::kExportWrite);
   REQUIRE(read && write);
   CHECK(jget<std::string>(*read, "type", "") ==
         std::string(valtz::exchange::kSourceType));
@@ -865,7 +870,7 @@ TEST(graph_builder, an_adjusted_still_exports_through_a_source)
   REQUIRE(e->references.size() == 1);
   CHECK(e->references[0].linear);
   CHECK(e->exif_from.empty());
-  CHECK(jget(*find_stage(e->spec, "write"), "iports",
+  CHECK(jget(*find_stage(e->spec, vp::kExportWrite), "iports",
              Json::array()).size() == 1);
 }
 
@@ -1507,7 +1512,7 @@ TEST(graph_builder, a_trimmed_clip_exports_its_span)
   job.inputs = {clip};
   auto g = vp::build_export(job);
   REQUIRE_OK(g);
-  const Json r = config_of(find_stage(g->spec, "read"));
+  const Json r = config_of(find_stage(g->spec, vp::kExportRead));
   CHECK(std::abs(jget(r, "start_s", 0.0) - 0.5) < 1e-9);
   CHECK(jget(r, "max_frames", 0) == 24);
   CHECK(std::abs(g->audio_start - 0.5) < 1e-9);
@@ -1518,7 +1523,8 @@ TEST(graph_builder, a_trimmed_clip_exports_its_span)
   job.params["trim"] = {{"out", 500}, {"rate_num", 24}, {"rate_den", 1}};
   auto all = vp::build_export(job);
   REQUIRE_OK(all);
-  CHECK(jget(config_of(find_stage(all->spec, "read")), "max_frames", 0) ==
+  CHECK(jget(config_of(find_stage(all->spec, vp::kExportRead)),
+             "max_frames", 0) ==
         56);
 }
 
@@ -1557,10 +1563,11 @@ TEST(graph_builder, a_clip_with_a_look_is_fed_frame_by_frame)
   CHECK(m.adjust.keys.size() == 2);
   CHECK(jget(m.tags, "color_transfer", 0) == 1);
   CHECK(jget<std::int64_t>(m.tags, "fps_num", 0) == 24);
-  const Json* read = find_stage(g->spec, "read");
+  const Json* read = find_stage(g->spec, vp::kExportRead);
   REQUIRE(read);
   CHECK(jget<std::string>(*read, "type", "") == valtz::exchange::kSourceType);
-  CHECK(src_of(find_stage(g->spec, "write"), 0) == "read");
+  CHECK(src_of(find_stage(g->spec, vp::kExportWrite), 0) ==
+        vp::kExportRead);
 }
 
 // Favor's Custom, as a recipe records it ("tuning", and the branch the

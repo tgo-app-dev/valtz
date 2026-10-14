@@ -6,24 +6,28 @@
 // and a DiT in two sessions would each size the machine as if the other
 // did not exist.
 //
-// Jobs run in two LANES, each a queue and a control thread taking its
-// jobs one at a time. The WORK lane runs every graph that loads a model,
-// an export, a quantize: one at a time, as vpipe's own worker pool does
-// the parallel work inside a graph -- serializing those graphs is the
-// memory policy for now (on a 16 GB Mac a DiT and a 9B LLM do not both
-// fit). Its queue is the app's TASK QUEUE (DESIGN §3a): in the order
-// asked, but a chat -- someone waiting at the prompt -- goes before the
-// work still queued. The DOWNLOAD lane runs model fetches: the network
-// and the disk, no model loaded, so a download no longer holds up a
-// generation (nor one a download). Each lane waits for its own graph
+// Jobs run in three LANES, each a queue and a control thread taking its
+// jobs one at a time. The WORK lane runs every graph that loads a model
+// and a quantize: one at a time, as vpipe's own worker pool does the
+// parallel work inside a graph -- serializing those graphs is the memory
+// policy for now (on a 16 GB Mac a DiT and a 9B LLM do not both fit).
+// Its queue is the app's TASK QUEUE (DESIGN §3a): in the order asked,
+// but a chat -- someone waiting at the prompt -- goes before the work
+// still queued. The EXPORT lane runs exports (2026-10-13): a decoder and
+// an encoder, no model, so an export no longer waits for a generation
+// queued before it -- it runs beside it, exports in their own order. The
+// DOWNLOAD lane runs model fetches: the network and the disk, no model
+// loaded, so a download no longer holds up a generation (nor one a
+// download). Each lane waits for its own graph
 // (SessionIntf::wait_pipeline): waiting for every pipeline, a lane never
-// saw its own end while the other ran, and could find the other's
-// unloaded under it.
+// saw its own end while another ran, and could find another's unloaded
+// under it.
 //
-// The two share the session's progress list and log. A download's
-// reports are named by its files, a stage's by what it does
-// (job-progress.h); a fetch's errors name ModelFetchStage, and an error
-// while one lane alone runs is that lane's.
+// They share the session's progress list and log. A download's reports
+// are named by its files, an export writer's kExportReport, a stage's by
+// what it does (job-progress.h); a fetch's errors name ModelFetchStage,
+// an export's stages its ids (kExportStage), and an error while one lane
+// alone runs is that lane's.
 //
 // Data crosses through the valtz-vpipe PLUGIN (vpipe-plugin/), which
 // vpipe loads into this process from the session config: its
@@ -56,6 +60,7 @@
 #include "vpipe/vpipe.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -225,7 +230,7 @@ public:
     _desc = std::format("vpipe {} ({})", vpipe::vpipe_version_number(),
                         vpipe::vpipe_build_hash());
     VALTZ_LOG_INFO("engine", "{} ready, plugin {}", _desc, plugin.string());
-    for (Lane* l : {&_work, &_downloads}) {
+    for (Lane* l : lanes_()) {
       l->worker = std::thread([this, l] { run_loop_(*l); });
     }
   }
@@ -361,7 +366,7 @@ public:
     bool found = false;
     {
       std::lock_guard lk(_mu);
-      for (Lane* l : {&_work, &_downloads}) {
+      for (Lane* l : lanes_()) {
         if (l->running == id) {
           l->cancel.store(true);
           return ok_status();
@@ -398,11 +403,12 @@ public:
         return;
       }
       _stop = true;
-      _work.cancel.store(true);
-      _downloads.cancel.store(true);
+      for (Lane* l : lanes_()) {
+        l->cancel.store(true);
+      }
     }
     _cv.notify_all();
-    for (Lane* l : {&_work, &_downloads}) {
+    for (Lane* l : lanes_()) {
       if (l->worker.joinable()) {
         l->worker.join();
       }
@@ -438,24 +444,37 @@ private:
     return ok;
   }
 
-  // The lane a job runs in: a download in its own, all else in the work.
+  std::array<Lane*, 3> lanes_() { return {&_work, &_exports, &_downloads}; }
+
+  // The lane a job runs in: a download in its own, an export in its own,
+  // all else in the work.
   Lane&
   lane_for_(std::string_view op)
   {
-    return op == kOpFetchModel ? _downloads : _work;
+    return op == kOpFetchModel   ? _downloads
+           : op == kOpExportMedia ? _exports
+                                  : _work;
   }
 
-  // Whose an error in vpipe's log is: a fetch's names its stage; any
-  // other is the work lane's -- or, while only a download runs, the
-  // download's (whatever a fetch graph logs beside its stage).
+  // Whose an error in vpipe's log is: a fetch's names its stage, an
+  // export's its stage's id; any other is the work lane's -- or, while
+  // the work lane is idle, the one other lane running's (whatever its
+  // graph logs beside its stages).
   Lane&
   error_lane_(std::string_view text)
   {
     if (text.find("ModelFetch") != std::string_view::npos) {
       return _downloads;
     }
-    return _downloads.busy.load() && !_work.busy.load() ? _downloads
-                                                        : _work;
+    if (text.find(vp::kExportStage) != std::string_view::npos) {
+      return _exports;
+    }
+    if (_work.busy.load()) {
+      return _work;
+    }
+    return _exports.busy.load()     ? _exports
+           : _downloads.busy.load() ? _downloads
+                                    : _work;
   }
 
   void
@@ -525,11 +544,16 @@ private:
     }
   }
 
+  // A graph let go -- and, unless an export's (no model of its own,
+  // beside a generation whose models are not its to give back), the
+  // models nothing uses.
   void
-  unload_(vpipe::PipelineHandle& h)
+  unload_(vpipe::PipelineHandle& h, const Lane& lane)
   {
     _session->unload_pipeline(h);
-    release_idle_models_();
+    if (&lane != &_exports) {
+      release_idle_models_();
+    }
   }
 
   // What vpipe reported about memory since `from` (SessionIntf::reports,
@@ -890,6 +914,11 @@ private:
         return;
       }
       progress_seen = v;
+      // An export's writer an older vpipe calls "save video": its own
+      // while no graph runs in the work lane.
+      if (&lane == &_exports) {
+        progress.set_alone(!_work.busy.load());
+      }
       vp::JobPhase now =
           progress.read(vp::from_flex(_session->progress()), t);
       if (!beat && phase && phase->same(now)) {
@@ -958,7 +987,8 @@ private:
     }
 
     // Reports from here on are this job's: the work lane runs one graph
-    // at a time, and a download reports none (its refusals are words).
+    // at a time, a download reports none (its refusals are words), nor
+    // does an export (it plans no memory).
     const std::uint64_t reports_from = _session->reports_version();
     {
       std::lock_guard lk(_err_mu);
@@ -974,7 +1004,7 @@ private:
       return;
     }
     if (auto st = _session->launch_pipeline(h); st.code != 0) {
-      unload_(h);
+      unload_(h, lane);
       // vpipe::to_str(Status) is declared in vpipe/status.h but not
       // defined in libvpipe; report the numeric code.
       fail_(q, Code::Engine, std::format("vpipe launch failed (status {})",
@@ -1015,7 +1045,7 @@ private:
         !st.ok()) {
       _session->stop_pipeline(h);  // ends the readers' waits
       readers.clear();
-      unload_(h);
+      unload_(h, lane);
       fail_(q, st.code(), st.error().message);
       return;
     }
@@ -1077,7 +1107,7 @@ private:
     // Every sink has answered end of stream, or the stop cancelled its
     // reader's command: the joins are prompt.
     readers.clear();
-    unload_(h);
+    unload_(h, lane);
 
     if (cancelled) {
       JobEvent ev;
@@ -1089,9 +1119,11 @@ private:
 
     // A stage that refused for memory: that is the failure, with what
     // was asked for and what the machine had, not a missing file. (A
-    // download asks for none: a refusal then is a graph's beside it.)
-    if (Json m = spec.op == kOpFetchModel ? Json()
-                                          : memory_refusal_(reports_from);
+    // download or an export asks for none: a refusal then is a graph's
+    // beside it.)
+    if (Json m = spec.op == kOpFetchModel || spec.op == kOpExportMedia
+                     ? Json()
+                     : memory_refusal_(reports_from);
         !m.is_null()) {
       std::string why = memory_sentence_(m);
       fail_(q, Code::OutOfMemory, std::move(why), {{"memory", std::move(m)}});
@@ -1626,6 +1658,7 @@ private:
   std::condition_variable _cv;
   bool                    _stop = false;
   Lane                    _work{"work"};
+  Lane                    _exports{"exports"};
   Lane                    _downloads{"downloads"};
   std::mutex              _err_mu;  // the lanes' run_error
   std::once_flag                        _monitor_once;

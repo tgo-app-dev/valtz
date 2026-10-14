@@ -46,6 +46,13 @@
 //                             {"kind": "glow", "color", "radius"} -- a
 //                             halo `radius` pixels out; any kind
 //                             unknown kept, not drawn}
+//   {"id", "kind": "drawing", "x0", "y0", "x1", "y1", "image"}
+//                             a DRAWING lifted off the raster (below): its
+//                             pixels a PNG blob (`image`, a
+//                             project::BlobRef), lying in its box; drawn
+//                             from "file", the blob's path, which whoever
+//                             holds the project sets to draw it (never
+//                             kept)
 // A text BOX wraps its words within its width -- a line per "\n" too --
 // and shows the lines that fit WHOLE in its height: the rest are cut at
 // a line, never through one (Core Text's framesetter, which sets only
@@ -118,6 +125,50 @@ Status paint_stroke(const std::filesystem::path& raster, PixelSize canvas,
 Status paste_drawing(const std::filesystem::path& raster, PixelSize canvas,
                      const std::filesystem::path& drawing, double dx,
                      double dy, const std::filesystem::path& out);
+
+// DRAWINGS (2026-10-13). A raster's painted pixels fall into DRAWINGS:
+// each the pixels that touch -- 8-connected, alpha above kDrawingAlpha of
+// 255 -- with the faint edge round them (anti-aliasing, a soft brush's
+// falloff: fainter pixels up to kDrawingFringe away, reached from it).
+// Strokes laid over one another are one drawing; strokes apart, two. A
+// drawing LIFTED off its raster is an object of kind "drawing" (above),
+// moved as objects are, until it is made pixels again -- laid over the
+// raster, where, touching another drawing, the two are one.
+inline constexpr int kDrawingAlpha = 8;
+inline constexpr int kDrawingFringe = 16;
+
+// Where a drawing lies, canvas pixels; empty: none.
+struct DrawingBox {
+  int x = 0;
+  int y = 0;
+  int w = 0;
+  int h = 0;
+
+  bool empty() const { return w <= 0 || h <= 0; }
+};
+
+// The drawing of `raster` (placed as draw_raster places one) painted
+// within `reach` pixels of (x, y) on `canvas`: where it lies -- empty with
+// none there.
+Result<DrawingBox> drawing_at(const std::filesystem::path& raster,
+                              PixelSize canvas, double x, double y,
+                              int reach);
+
+// That drawing LIFTED: its pixels, as they are, into `piece` (a PNG its
+// box's size; an empty path writes none) and the raster without them
+// into `rest` (the canvas's size; none, none). Its box; empty -- nothing
+// written -- with no drawing there.
+Result<DrawingBox> lift_drawing(const std::filesystem::path& raster,
+                                PixelSize canvas, double x, double y,
+                                int reach, const std::filesystem::path& rest,
+                                const std::filesystem::path& piece);
+
+// A drawing as copied (a PNG placed as draw_raster places one) cut to its
+// painted pixels: `piece` written, and where it lies on `canvas` --
+// empty, nothing written, with nothing painted.
+Result<DrawingBox> crop_drawing(const std::filesystem::path& png,
+                                PixelSize canvas,
+                                const std::filesystem::path& piece);
 
 // How a TEXT BOX's words lie in it, as it is drawn: the lines set, whether
 // every word is, the height all of them need at its width, and its widest

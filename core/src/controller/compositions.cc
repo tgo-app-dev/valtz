@@ -307,6 +307,23 @@ crop_for(const media::Affine& m, media::PixelSize content,
 
 // ---- modifiers -----------------------------------------------------------
 
+// A LOCKED layer refuses a change (DESIGN §6a): kLayerLocked, the layer
+// named as the app names it. One not there is not this check's to refuse.
+Status
+Controller::unlocked_(const project::Asset& comp, const std::string& id)
+{
+  for (const auto& l : comp.layers) {
+    if (l.id == id && l.locked) {
+      const std::string name = !l.name.empty() ? l.name
+                               : id.empty()    ? std::string("Layer 0")
+                                               : "Layer " + id;
+      return make_error(Code::InvalidArgument, msg::kLayerLocked,
+                        {{"name", name}});
+    }
+  }
+  return ok_status();
+}
+
 Status
 Controller::set_modifier_(ProjectId pid, AssetId aid, const std::string& kind,
                           const std::string& layer, Json params)
@@ -325,6 +342,7 @@ Controller::set_modifier_(ProjectId pid, AssetId aid, const std::string& kind,
       })) {
     return make_error(Code::InvalidArgument, "no such layer");
   }
+  VALTZ_TRY(unlocked_(a, layer));
   std::vector<project::Modifier> mods;
   for (auto& m : a.modifiers) {
     if (!(m.kind == kind && m.layer == layer)) {
@@ -471,6 +489,71 @@ Controller::pitch_follows_speed(const project::Asset& a,
 }
 
 Status
+Controller::move_layer_key(ProjectId pid, AssetId aid,
+                           const std::string& layer, std::int64_t from,
+                           std::int64_t to)
+{
+  auto undo = command_(pid, "keys.move", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
+  if (find_layer(a.layers, layer) == a.layers.end()) {
+    return make_error(Code::InvalidArgument, "no such layer");
+  }
+  to = std::max<std::int64_t>(0, to);
+  auto adjust = adjustment_keys_of(a, layer);
+  auto crop = crop_keys_of(a, layer);
+  auto speed = speed_keys_of(a, layer);
+  auto sound = sound_keys_of(a, layer);
+  // The tracks the timeline draws keys of: those changing something (the
+  // panels keep a track at its default as one key at the start, which
+  // stays there).
+  bool any = false;
+  bool blocked = false;
+  auto check = [&](const auto& k) {
+    if (!k.identity() && k.has_key(from)) {
+      any = true;
+      blocked = blocked || (to != from && k.has_key(to));
+    }
+  };
+  check(adjust);
+  check(crop.place);
+  check(crop.turn);
+  check(speed);
+  check(sound);
+  if (!any) {
+    return make_error(Code::InvalidArgument, msg::kNoKeyToMove);
+  }
+  if (blocked) {
+    return make_error(Code::InvalidArgument, msg::kKeyInTheWay);
+  }
+  if (to == from) {
+    return ok_status();
+  }
+  auto move = [&](auto& k) {
+    return !k.identity() && k.move_key(from, to);
+  };
+  // Each track written joins this command.
+  if (move(adjust)) {
+    VALTZ_TRY(set_adjustment_keys(pid, aid, adjust, layer));
+  }
+  const bool place = move(crop.place);
+  if (move(crop.turn) || place) {
+    VALTZ_TRY(set_crop_keys(pid, aid, crop, layer));
+  }
+  if (move(speed)) {
+    VALTZ_TRY(set_speed_keys(pid, aid, speed, layer));
+  }
+  if (move(sound)) {
+    VALTZ_TRY(set_sound_keys(pid, aid, sound, layer));
+  }
+  return ok_status();
+}
+
+Status
 Controller::set_layer_time(ProjectId pid, AssetId aid,
                            const std::string& layer,
                            const project::LayerTime& t)
@@ -481,6 +564,7 @@ Controller::set_layer_time(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   if (!is_comp(a)) {
     return make_error(Code::InvalidArgument, msg::kNotComposition,
                       {{"name", a.name}});
@@ -514,6 +598,8 @@ Controller::set_transition(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, from));
+  VALTZ_TRY(unlocked_(a, to));
   if (!is_timeline(a)) {
     return make_error(Code::InvalidArgument, msg::kTimelineNeedsClip);
   }
@@ -705,6 +791,38 @@ Controller::set_layer_visible(ProjectId pid, AssetId aid,
 }
 
 Status
+Controller::set_layer_locked(ProjectId pid, AssetId aid,
+                             const std::string& layer, bool locked)
+{
+  auto undo = command_(pid, locked ? "layer.lock" : "layer.unlock", aid,
+                       layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  auto it = find_layer(a.layers, layer);
+  if (it == a.layers.end()) {
+    return make_error(Code::InvalidArgument, "no such layer");
+  }
+  if (it->locked == locked) {
+    return ok_status();
+  }
+  // A drawing floating on it, laid down: nothing is left to place once
+  // it is locked.
+  if (locked && markup_at_(*p, a, layer).ok()) {
+    VALTZ_TRY(place_drawings(pid, aid, layer));
+    VALTZ_ASSIGN(a, p->asset(aid));
+  }
+  auto ls = a.layers;
+  find_layer(ls, layer)->locked = locked;
+  VALTZ_TRY(p->set_layers(aid, std::move(ls)));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return ok_status();
+}
+
+Status
 Controller::rename_layer(ProjectId pid, AssetId aid,
                          const std::string& layer, std::string name)
 {
@@ -738,6 +856,7 @@ Controller::set_layer_source(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   if (!is_comp(a)) {
     return make_error(Code::InvalidArgument, msg::kNotComposition,
                       {{"name", a.name}});
@@ -792,6 +911,7 @@ Controller::remove_layer(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   auto ls = a.layers;
   auto it = find_layer(ls, layer);
   if (it == ls.end()) {
@@ -893,6 +1013,7 @@ Controller::set_layer_mask(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   auto ls = a.layers;
   auto it = find_layer(ls, layer);
   if (it == ls.end()) {
@@ -918,6 +1039,8 @@ Controller::merge_layers(ProjectId pid, AssetId aid, const std::string& a_id,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, a_id));
+  VALTZ_TRY(unlocked_(a, b_id));
   // A timeline's layers change over time: two are not one picture.
   if (is_timeline(a)) {
     return make_error(Code::InvalidArgument, msg::kMergeOnClip);
@@ -1397,6 +1520,10 @@ Controller::remove_page(ProjectId pid, AssetId aid, std::int64_t page)
     }
     ls.push_back(std::move(l));
   }
+  // A locked layer is not removed with its page.
+  for (const auto& id : gone) {
+    VALTZ_TRY(unlocked_(a, id));
+  }
   for (const auto& id : gone) {
     drop_layer_mods(mods, id);
   }
@@ -1511,6 +1638,12 @@ Controller::markup_layer(ProjectId pid, AssetId aid,
       top = static_cast<std::ptrdiff_t>(i);
     }
   }
+  // The selected one LOCKED is not drawn on, nor given a markup: said
+  // so. Unselected, a locked top markup is passed over for a new one.
+  if (top >= 0 &&
+      ((ls[top].empty() && here(ls[top])) || shows_markup(ls[top]))) {
+    VALTZ_TRY(unlocked_(a, ls[top].id));
+  }
   std::string id;
   bool changed = false;
   if (top >= 0 && ls[top].empty() && here(ls[top])) {
@@ -1525,7 +1658,7 @@ Controller::markup_layer(ProjectId pid, AssetId aid,
     changed = true;
   } else if (top >= 0 && shows_markup(ls[top])) {
     id = ls[top].id;
-  } else if (!ls.empty() && shows_markup(ls.back())) {
+  } else if (!ls.empty() && shows_markup(ls.back()) && !ls.back().locked) {
     id = ls.back().id;
   } else {
     VALTZ_ASSIGN(AssetId m, new_markup());
@@ -1603,6 +1736,7 @@ Controller::paint_stroke(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
   auto& [mid, mk] = at;
   const fs::path raster = mk.raster.empty()
@@ -1623,6 +1757,7 @@ Controller::set_markup_objects(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
   auto& [mid, mk] = at;
   mk.objects = media::normalize_objects(objects);
@@ -1646,6 +1781,7 @@ Controller::arrange_markup(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
   auto& [mid, mk] = at;
   VALTZ_ASSIGN(Json arranged,
@@ -1669,6 +1805,7 @@ Controller::materialize_markup(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
   auto& [mid, mk] = at;
   // Drawn: the ones named; kept: the rest.
@@ -1688,8 +1825,8 @@ Controller::materialize_markup(ProjectId pid, AssetId aid,
   const fs::path raster = mk.raster.empty()
                               ? fs::path() : p->blobs().path_of(mk.raster);
   const fs::path out = p->blobs().make_tmp_path("png");
-  VALTZ_TRY(media::render_markup(raster, {mk.width, mk.height}, mk.objects,
-                                 kept, out));
+  VALTZ_TRY(media::render_markup(raster, {mk.width, mk.height},
+                                 drawn_objects_(*p, mk.objects), kept, out));
   VALTZ_ASSIGN(mk.raster, p->blobs().adopt_file(out, "png"));
   mk.objects = std::move(rest);
   return put_markup_(pid, *p, aid, mid, std::move(mk));
@@ -1709,7 +1846,63 @@ Controller::markup_drawing(ProjectId pid, AssetId aid,
   return mk.raster.empty() ? fs::path() : p->blobs().path_of(mk.raster);
 }
 
-Status
+namespace {
+
+// An object id the markup does not have yet ("d1", "d2", ...).
+std::string
+new_drawing_id(const Json& objects)
+{
+  std::set<std::string> ids;
+  for (const auto& o : objects) {
+    ids.insert(jget<std::string>(o, "id", ""));
+  }
+  for (int n = 1;; ++n) {
+    if (auto id = std::format("d{}", n); !ids.count(id)) {
+      return id;
+    }
+  }
+}
+
+// A lifted drawing: its picture's blob, in `box` moved `dx`, `dy`.
+Json
+drawing_object(const std::string& id, const project::BlobRef& image,
+               const media::DrawingBox& box, double dx, double dy)
+{
+  return {{"id", id},
+          {"kind", "drawing"},
+          {"x0", box.x + dx},
+          {"y0", box.y + dy},
+          {"x1", box.x + box.w + dx},
+          {"y1", box.y + box.h + dy},
+          {"image", image}};
+}
+
+bool
+is_drawing(const Json& o)
+{
+  return jget<std::string>(o, "kind", "") == "drawing";
+}
+
+}
+
+Json
+Controller::drawn_objects_(project::Project& p, const Json& objects)
+{
+  Json out = objects;
+  if (!out.is_array()) {
+    return out;
+  }
+  for (auto& o : out) {
+    if (is_drawing(o)) {
+      if (const auto b = jget(o, "image", project::BlobRef{}); !b.empty()) {
+        o["file"] = p.blobs().path_of(b).string();
+      }
+    }
+  }
+  return out;
+}
+
+Result<std::string>
 Controller::paste_drawing(ProjectId pid, AssetId aid,
                           const std::string& layer, const fs::path& png,
                           double dx, double dy)
@@ -1724,18 +1917,24 @@ Controller::paste_drawing(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, "no drawing to paste");
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
   auto& [mid, mk] = at;
-  const fs::path raster = mk.raster.empty()
-                              ? fs::path() : p->blobs().path_of(mk.raster);
-  const fs::path out = p->blobs().make_tmp_path("png");
-  VALTZ_TRY(media::paste_drawing(raster, {mk.width, mk.height}, png, dx, dy,
-                                 out));
-  VALTZ_ASSIGN(mk.raster, p->blobs().adopt_file(out, "png"));
-  return put_markup_(pid, *p, aid, mid, std::move(mk));
+  // Cut to what is painted, and floating: lifted where it lands.
+  const fs::path piece = p->blobs().make_tmp_path("png");
+  VALTZ_ASSIGN(media::DrawingBox box,
+               media::crop_drawing(png, {mk.width, mk.height}, piece));
+  if (box.empty()) {
+    return make_error(Code::NotFound, "no drawing to paste");
+  }
+  VALTZ_ASSIGN(project::BlobRef image, p->blobs().adopt_file(piece, "png"));
+  const std::string id = new_drawing_id(mk.objects);
+  mk.objects.push_back(drawing_object(id, image, box, dx, dy));
+  VALTZ_TRY(put_markup_(pid, *p, aid, mid, std::move(mk)));
+  return id;
 }
 
-Status
+Result<std::string>
 Controller::paste_drawing_data(ProjectId pid, AssetId aid,
                                const std::string& layer,
                                std::span<const std::uint8_t> png, double dx,
@@ -1754,15 +1953,17 @@ Controller::paste_drawing_data(ProjectId pid, AssetId aid,
       return make_error(Code::Io, "cannot write the drawing");
     }
   }
-  Status st = paste_drawing(pid, aid, layer, tmp, dx, dy);
+  auto made = paste_drawing(pid, aid, layer, tmp, dx, dy);
   std::error_code ec;
   fs::remove(tmp, ec);
-  return st;
+  return made;
 }
 
 Status
 Controller::clear_drawing(ProjectId pid, AssetId aid,
-                          const std::string& layer)
+                          const std::string& layer,
+                          std::optional<std::array<double, 2>> point,
+                          int reach)
 {
   auto undo = command_(pid, "markup.clear", aid, layer);
   project::Project* p = project(pid);
@@ -1770,13 +1971,160 @@ Controller::clear_drawing(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
   auto& [mid, mk] = at;
   if (mk.raster.empty()) {
     return ok_status();
   }
-  mk.raster = {};
+  if (!point) {
+    mk.raster = {};
+    return put_markup_(pid, *p, aid, mid, std::move(mk));
+  }
+  // The one drawing there, the others kept.
+  const fs::path rest = p->blobs().make_tmp_path("png");
+  VALTZ_ASSIGN(media::DrawingBox box,
+               media::lift_drawing(p->blobs().path_of(mk.raster),
+                                   {mk.width, mk.height}, (*point)[0],
+                                   (*point)[1], reach, rest, {}));
+  if (box.empty()) {
+    return ok_status();
+  }
+  VALTZ_ASSIGN(mk.raster, p->blobs().adopt_file(rest, "png"));
   return put_markup_(pid, *p, aid, mid, std::move(mk));
+}
+
+Result<media::DrawingBox>
+Controller::drawing_at(ProjectId pid, AssetId aid, const std::string& layer,
+                       double x, double y, int reach)
+{
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
+  const auto& mk = at.second;
+  if (mk.raster.empty()) {
+    return media::DrawingBox{};
+  }
+  return media::drawing_at(p->blobs().path_of(mk.raster),
+                           {mk.width, mk.height}, x, y, reach);
+}
+
+Result<std::string>
+Controller::lift_drawing(ProjectId pid, AssetId aid, const std::string& layer,
+                         double x, double y, int reach)
+{
+  // The objects' kind: the move that follows at once joins it.
+  auto undo = command_(pid, "markup.objects", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
+  VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
+  auto& [mid, mk] = at;
+  if (mk.raster.empty()) {
+    return make_error(Code::NotFound, msg::kNoDrawingThere);
+  }
+  const fs::path rest = p->blobs().make_tmp_path("png");
+  const fs::path piece = p->blobs().make_tmp_path("png");
+  VALTZ_ASSIGN(media::DrawingBox box,
+               media::lift_drawing(p->blobs().path_of(mk.raster),
+                                   {mk.width, mk.height}, x, y, reach, rest,
+                                   piece));
+  if (box.empty()) {
+    return make_error(Code::NotFound, msg::kNoDrawingThere);
+  }
+  VALTZ_ASSIGN(project::BlobRef image, p->blobs().adopt_file(piece, "png"));
+  VALTZ_ASSIGN(mk.raster, p->blobs().adopt_file(rest, "png"));
+  const std::string id = new_drawing_id(mk.objects);
+  mk.objects.push_back(drawing_object(id, image, box, 0, 0));
+  VALTZ_TRY(put_markup_(pid, *p, aid, mid, std::move(mk)));
+  return id;
+}
+
+Status
+Controller::place_drawings(ProjectId pid, AssetId aid,
+                           const std::string& layer)
+{
+  auto undo = command_(pid, "markup.place", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
+  auto& [mid, mk] = at;
+  // Drawn into the raster: the lifted drawings alone, in their order.
+  std::set<std::string> kept;
+  Json rest = Json::array();
+  for (const auto& o : mk.objects) {
+    if (!is_drawing(o)) {
+      kept.insert(jget<std::string>(o, "id", ""));
+      rest.push_back(o);
+    }
+  }
+  if (rest.size() == mk.objects.size()) {
+    return ok_status();
+  }
+  VALTZ_TRY(unlocked_(a, layer));
+  const fs::path raster = mk.raster.empty()
+                              ? fs::path() : p->blobs().path_of(mk.raster);
+  const fs::path out = p->blobs().make_tmp_path("png");
+  VALTZ_TRY(media::render_markup(raster, {mk.width, mk.height},
+                                 drawn_objects_(*p, mk.objects), kept, out));
+  VALTZ_ASSIGN(mk.raster, p->blobs().adopt_file(out, "png"));
+  mk.objects = std::move(rest);
+  return put_markup_(pid, *p, aid, mid, std::move(mk));
+}
+
+Result<fs::path>
+Controller::copy_drawings(ProjectId pid, AssetId aid,
+                          const std::string& layer,
+                          std::optional<std::array<double, 2>> point,
+                          int reach, const std::vector<std::string>& lifted)
+{
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
+  const auto& mk = at.second;
+  // The named lifted ones, and the one there as a lifted one would be.
+  const std::set<std::string> named(lifted.begin(), lifted.end());
+  Json drawn = Json::array();
+  for (const auto& o : drawn_objects_(*p, mk.objects)) {
+    if (is_drawing(o) && named.count(jget<std::string>(o, "id", ""))) {
+      drawn.push_back(o);
+    }
+  }
+  const fs::path piece = p->blobs().make_tmp_path("png");
+  if (point && !mk.raster.empty()) {
+    VALTZ_ASSIGN(media::DrawingBox box,
+                 media::lift_drawing(p->blobs().path_of(mk.raster),
+                                     {mk.width, mk.height}, (*point)[0],
+                                     (*point)[1], reach, {}, piece));
+    if (!box.empty()) {
+      Json o = drawing_object("there", project::BlobRef{}, box, 0, 0);
+      o["file"] = piece.string();
+      drawn.insert(drawn.begin(), std::move(o));
+    }
+  }
+  std::error_code ec;
+  if (drawn.empty()) {
+    fs::remove(piece, ec);
+    return fs::path();
+  }
+  const fs::path out = p->blobs().make_tmp_path("png");
+  Status st = media::render_markup({}, {mk.width, mk.height}, drawn, {},
+                                   out);
+  fs::remove(piece, ec);
+  VALTZ_TRY(st);
+  return out;
 }
 
 Result<std::string>
@@ -1802,6 +2150,7 @@ Controller::duplicate_layer(ProjectId pid, AssetId aid,
   project::Layer copy = *it;
   copy.id = next_layer_id(ls);
   copy.mask = false;
+  copy.locked = false;  // a copy to change
   if (!name.empty()) {
     copy.name = one_line(name);
   }
@@ -1927,8 +2276,8 @@ Controller::rendered_(ProjectId pid, AssetId id, std::uint32_t version,
                    [&](const fs::path& out) -> Status {
       const fs::path raster = mk.raster.empty()
                                   ? fs::path() : p->blobs().path_of(mk.raster);
-      return media::render_markup(raster, {mk.width, mk.height}, mk.objects,
-                                  {}, out);
+      return media::render_markup(raster, {mk.width, mk.height},
+                                  drawn_objects_(*p, mk.objects), {}, out);
     });
   }
   if (a.cls == AssetClass::Still) {
@@ -2090,7 +2439,8 @@ Controller::layer_picture_(ProjectId pid, project::Project& p,
       return ok_status();
     }
     VALTZ_ASSIGN(pic.drawn, media::render_markup_picture(
-                                raster, size, mk.objects, hidden));
+                                raster, size, drawn_objects_(p, mk.objects),
+                                hidden));
     return ok_status();
   }
   if (sound_like(s)) {
@@ -2247,7 +2597,8 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
       VALTZ_ASSIGN(t.file, rendered_(pid, s.id, 0, depth + 1));
     } else {
       VALTZ_ASSIGN(t.drawn, media::render_markup_picture(
-                                raster, size, mk.objects, hidden));
+                                raster, size, drawn_objects_(p, mk.objects),
+                                hidden));
     }
     return t;
   }
@@ -2847,6 +3198,7 @@ Controller::instantiate(ProjectId pid, AssetId asset,
       return make_error(Code::InvalidArgument, "no such layer");
     }
     if (it->empty() && fill_blank) {
+      VALTZ_TRY(unlocked_(t, it->id));
       fill = true;
       id = it->id;
       pos = static_cast<std::size_t>(it - ls.begin());
@@ -2966,6 +3318,7 @@ Controller::split_layer(ProjectId pid, AssetId aid, const std::string& layer,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset c, p->asset(aid));
+  VALTZ_TRY(unlocked_(c, layer));
   if (!is_timeline(c)) {
     return make_error(Code::InvalidArgument, msg::kTimelineNeedsClip);
   }
@@ -3331,6 +3684,7 @@ Controller::slide_layer(ProjectId pid, AssetId aid, const std::string& layer,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   if (!is_timeline(a) && !paged(a)) {
     return make_error(Code::InvalidArgument, msg::kTimelineNeedsClip);
   }
@@ -3362,6 +3716,7 @@ Controller::stretch_layer(ProjectId pid, AssetId aid, const std::string& layer,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
   if (!is_timeline(a) && !paged(a)) {
     return make_error(Code::InvalidArgument, msg::kTimelineNeedsClip);
   }
@@ -3557,6 +3912,7 @@ Controller::decompose(ProjectId pid, AssetId aid, const std::string& layer)
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset c, p->asset(aid));
+  VALTZ_TRY(unlocked_(c, layer));
   if (!is_comp(c)) {
     return make_error(Code::InvalidArgument, msg::kNotComposition,
                       {{"name", c.name}});
