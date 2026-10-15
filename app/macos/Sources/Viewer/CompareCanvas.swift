@@ -137,6 +137,8 @@ final class CompareCanvas: NSView {
     var markupActive = false {
         didSet {
             if markupActive != oldValue {
+                // The stage markup works on (the eyedropper samples it).
+                if markupActive { Self.shown = self }
                 window?.invalidateCursorRects(for: self)
                 updateBrushRing()
             }
@@ -622,12 +624,68 @@ final class CompareCanvas: NSView {
 
     private func markupPointer(_ phase: MarkupPointer.Phase,
                                _ event: NSEvent) {
+        // The stage markup works on (the eyedropper samples it).
+        Self.shown = self
         let p = convert(event.locationInWindow, from: nil)
         onMarkupPointer?(MarkupPointer(
             phase: phase, point: canvasPoint(p),
             shift: event.modifierFlags.contains(.shift),
-            clickCount: event.clickCount,
+            option: event.modifierFlags.contains(.option),
+            clickCount: MarkupPointer.clicks(event),
             pixelsPerPoint: Double(1 / max(0.0001, pointsPerPixel))))
+    }
+
+    /// The colour A shows at markup's canvas pixel `c` -- its picture as
+    /// laid here: placed on its crop's canvas over the pad, or at its fit
+    /// -- sRGB, straight alpha; nil off it. What the eyedropper takes.
+    func sampleColor(atCanvas c: CGPoint) -> RGBA? {
+        guard let img = imageA else { return nil }
+        let p = CGPoint(x: c.x + markupOrigin.x, y: c.y + markupOrigin.y)
+        if let crop = cropA {
+            guard CGRect(origin: .zero, size: crop.canvas).contains(p) else {
+                return nil
+            }
+            // Its content pixels from canvas pixels, both y up.
+            let q = CGPoint(x: p.x, y: crop.canvas.height - p.y)
+                .applying(crop.transform.inverted())
+            guard q.x >= 0, q.y >= 0, q.x < CGFloat(img.width),
+                  q.y < CGFloat(img.height) else {
+                return RGBA(cgColor: crop.pad)
+            }
+            return Self.pixel(img, at: CGPoint(
+                x: q.x, y: CGFloat(img.height) - q.y))
+        }
+        let e = extent(img, fitA)
+        guard e.contains(p), fitA.scale > 0 else { return nil }
+        return Self.pixel(img, at: CGPoint(x: (p.x - e.minX) / fitA.scale,
+                                           y: (p.y - e.minY) / fitA.scale))
+    }
+
+    /// `img`'s pixel at `q` (its pixels, from the top left) in sRGB,
+    /// straight alpha; nil off it.
+    static func pixel(_ img: CGImage, at q: CGPoint) -> RGBA? {
+        let x = Int(q.x.rounded(.down)), y = Int(q.y.rounded(.down))
+        guard x >= 0, y >= 0, x < img.width, y < img.height,
+              let one = img.cropping(to: CGRect(x: x, y: y, width: 1,
+                                                height: 1)) else {
+            return nil
+        }
+        var px = [UInt8](repeating: 0, count: 4)
+        let drawn = px.withUnsafeMutableBytes { buf -> Bool in
+            guard let ctx = CGContext(
+                data: buf.baseAddress, width: 1, height: 1,
+                bitsPerComponent: 8, bytesPerRow: 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            ctx.draw(one, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            return true
+        }
+        guard drawn else { return nil }
+        let a = Double(px[3]) / 255
+        guard a > 0 else { return .clear }
+        func c(_ v: UInt8) -> Double { min(1, Double(v) / 255 / a) }
+        return RGBA(r: c(px[0]), g: c(px[1]), b: c(px[2]), a: a)
     }
 
     private let labelHeight: CGFloat = 18
@@ -812,6 +870,7 @@ final class CompareCanvas: NSView {
         super.mouseExited(with: event)
         pointerAt = nil
         updateBrushRing()
+        if markupHere { markupPointer(.exit, event) }
     }
 
     /// The outline where the pointer is, its radius the brush's canvas

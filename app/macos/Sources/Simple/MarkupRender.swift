@@ -210,21 +210,24 @@ enum MarkupRender {
             ctx.strokePath()
         case .rect, .ellipse, .polygon:
             // Its inside -- a gradient through its outline as a clip, else
-            // its flat fill -- then its outline (the core's draw_body).
+            // its flat fill -- then its outline (the core's draw_body). An
+            // OPEN path has no inside: a line, its ends and turns round.
             let path = shapePath(o)
-            if let g = o.gradient, g.stops.count >= 2 {
+            let open = o.kind == .polygon && o.open
+            if !open, let g = o.gradient, g.stops.count >= 2 {
                 ctx.saveGState()
                 ctx.addPath(path)
                 ctx.clip()
                 drawGradient(g, of: o, in: ctx)
                 ctx.restoreGState()
-            } else if o.fill.a > 0 {
+            } else if !open && o.fill.a > 0 {
                 ctx.setFillColor(o.fill.cgColor)
                 ctx.addPath(path)
                 ctx.fillPath()
             }
             if o.width > 0 {
-                ctx.setLineJoin(.miter)
+                ctx.setLineJoin(open ? .round : .miter)
+                if open { ctx.setLineCap(.round) }
                 ctx.setLineWidth(o.width)
                 ctx.setStrokeColor(o.stroke.cgColor)
                 ctx.addPath(path)
@@ -343,18 +346,92 @@ enum MarkupRender {
         o.points = pts.map { inBox($0, of: o) }
     }
 
+    /// A cubic Bezier piece of a path: from `a` to `b` by `c1`, `c2`.
+    struct Piece {
+        var a, c1, c2, b: CGPoint
+        var straight: Bool { c1 == a && c2 == b }
+
+        func at(_ t: CGFloat) -> CGPoint {
+            let u = 1 - t
+            let (k0, k1, k2, k3) = (u * u * u, 3 * u * u * t, 3 * u * t * t,
+                                    t * t * t)
+            return CGPoint(x: k0 * a.x + k1 * c1.x + k2 * c2.x + k3 * b.x,
+                           y: k0 * a.y + k1 * c1.y + k2 * c2.y + k3 * b.y)
+        }
+    }
+
+    /// The share of a segment a smooth point's handle reaches along it,
+    /// for a turn of `theta` there (the core's handle_share): a circle's
+    /// arc through points evenly round it, the turn held to 120°.
+    static func handleShare(_ theta: CGFloat) -> CGFloat {
+        let t = min(theta, 2 * .pi / 3)
+        if t < 1e-4 { return 1.0 / 3 }
+        return 2.0 / 3 * tan(t / 4) / sin(t / 2)
+    }
+
+    /// A PATH's pieces through `p` (canvas pixels), as the core works them
+    /// out (path_pieces): a smooth point's tangent along the line from
+    /// the point before it to the one after, its handles each a share of
+    /// the segment it reaches into; a corner -- an open path's ends --
+    /// none.
+    static func pieces(_ p: [CGPoint], smooth: [Bool],
+                       closed: Bool) -> [Piece] {
+        let n = p.count
+        var inH = p, outH = p
+        for i in 0..<n {
+            guard i < smooth.count, smooth[i], n >= 3,
+                  closed || (i > 0 && i + 1 < n) else { continue }
+            let a = p[(i + n - 1) % n], b = p[(i + 1) % n]
+            let dx = b.x - a.x, dy = b.y - a.y
+            let len = hypot(dx, dy)
+            guard len >= 1e-9 else { continue }
+            let vx = p[i].x - a.x, vy = p[i].y - a.y
+            let wx = b.x - p[i].x, wy = b.y - p[i].y
+            let turn = atan2(abs(vx * wy - vy * wx), vx * wx + vy * wy)
+            let f = handleShare(turn)
+            let back = hypot(vx, vy) * f / len
+            let on = hypot(wx, wy) * f / len
+            inH[i] = CGPoint(x: p[i].x - dx * back, y: p[i].y - dy * back)
+            outH[i] = CGPoint(x: p[i].x + dx * on, y: p[i].y + dy * on)
+        }
+        var out: [Piece] = []
+        var i = 0
+        while i + 1 < n || (closed && i < n && n > 1) {
+            let j = (i + 1) % n
+            out.append(Piece(a: p[i], c1: outH[i], c2: inH[j], b: p[j]))
+            i += 1
+        }
+        return out
+    }
+
+    /// The path through `p` -- closed, or open -- as a CGPath.
+    static func path(_ p: [CGPoint], smooth: [Bool],
+                     closed: Bool) -> CGMutablePath {
+        let path = CGMutablePath()
+        guard let first = p.first else { return path }
+        path.move(to: first)
+        let ps = pieces(p, smooth: smooth, closed: closed)
+        for (i, c) in ps.enumerated() {
+            if c.straight {
+                // The closing edge: the subpath's close draws it.
+                if closed && i == ps.count - 1 { break }
+                path.addLine(to: c.b)
+            } else {
+                path.addCurve(to: c.b, control1: c.c1, control2: c.c2)
+            }
+        }
+        if closed { path.closeSubpath() }
+        return path
+    }
+
     /// A rectangle's, an ellipse's or a polygon's outline (the core's
-    /// shape_path).
+    /// shape_path) -- a path through its smooth points, open or closed.
     static func shapePath(_ o: MarkupObject) -> CGPath {
         let path = CGMutablePath()
         switch o.kind {
         case .polygon:
-            let pts = polygonPoints(o)
-            if let first = pts.first {
-                path.move(to: first)
-                for p in pts.dropFirst() { path.addLine(to: p) }
-                path.closeSubpath()
-            }
+            return Self.path(polygonPoints(o), smooth: o.smooth,
+                             closed: !o.open)
         case .ellipse:
             path.addEllipse(in: box(o))
         default:
@@ -480,6 +557,10 @@ enum MarkupRender {
             return CGRect(x: o.x0, y: o.y0,
                           width: max(w, CGFloat(o.font.size) * 0.3),
                           height: t.lineH * CGFloat(max(1, t.lines.count)))
+        case .polygon:
+            // A curve bulges past its points' box.
+            return box(o).union(shapePath(o).boundingBoxOfPath)
+                .insetBy(dx: -o.width / 2, dy: -o.width / 2)
         default:
             return box(o).insetBy(dx: -o.width / 2, dy: -o.width / 2)
         }
@@ -513,16 +594,12 @@ enum MarkupRender {
             if (o.fill.a > 0 || o.gradient != nil) && d <= 1 { return true }
             return abs(d - 1) * min(rx, ry) <= reach
         case .polygon:
-            // Inside (filled), or near an edge.
-            let pts = polygonPoints(o)
-            if (o.fill.a > 0 || o.gradient != nil),
+            // Inside (filled, closed), or near its outline.
+            if o.fillable, o.fill.a > 0 || o.gradient != nil,
                shapePath(o).contains(p) {
                 return true
             }
-            guard pts.count > 1 else { return false }
-            return zip(pts, pts.dropFirst() + [pts[0]]).contains {
-                distance(p, $0.0, $0.1) <= reach
-            }
+            return (nearest(o, to: p)?.distance ?? .infinity) <= reach
         case .text:
             return bounds(o).insetBy(dx: -tolerance, dy: -tolerance)
                 .contains(p)
@@ -588,11 +665,7 @@ enum MarkupRender {
                 pts[i] = p
                 let ends = gradientHandles(o)
                 setPolygon(&o, pts)
-                if ends.count == 2, var g = o.gradient {
-                    g.from = inBox(ends[0], of: o)
-                    g.to = inBox(ends[1], of: o)
-                    o.gradient = g
-                }
+                keepGradient(&o, ends)
                 return o
             }
             switch i - n {
@@ -616,14 +689,83 @@ enum MarkupRender {
 
     private static func distance(_ p: CGPoint, _ a: CGPoint,
                                  _ b: CGPoint) -> Double {
+        let q = closest(p, a, b)
+        return hypot(p.x - q.x, p.y - q.y)
+    }
+
+    /// The point of segment `a`-`b` nearest `p`.
+    private static func closest(_ p: CGPoint, _ a: CGPoint,
+                                _ b: CGPoint) -> CGPoint {
         let (dx, dy) = (b.x - a.x, b.y - a.y)
         let len2 = dx * dx + dy * dy
         let t = len2 > 0
             ? max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
             : 0
-        let q = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
-        return ((p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y))
-            .squareRoot()
+        return CGPoint(x: a.x + t * dx, y: a.y + t * dy)
+    }
+
+    // MARK: Paths, as the curvature pen edits them
+
+    /// Where a path's outline comes nearest `p`: the piece (from its point
+    /// `piece` to the next), the point on it, how far -- its curves
+    /// followed in short straight steps.
+    static func nearest(_ o: MarkupObject, to p: CGPoint)
+        -> (piece: Int, at: CGPoint, distance: Double)?
+    {
+        let ps = pieces(polygonPoints(o), smooth: o.smooth, closed: !o.open)
+        var best: (piece: Int, at: CGPoint, distance: Double)?
+        for (k, c) in ps.enumerated() {
+            let steps = c.straight ? 1 : 48
+            var from = c.a
+            for s in 1...steps {
+                let to = s == steps ? c.b
+                    : c.at(CGFloat(s) / CGFloat(steps))
+                let q = closest(p, from, to)
+                let d = Double(hypot(p.x - q.x, p.y - q.y))
+                if d < (best?.distance ?? .infinity) { best = (k, q, d) }
+                from = to
+            }
+        }
+        return best
+    }
+
+    /// The path `o` with a SMOOTH point at `p` (canvas pixels) after its
+    /// point `k` -- on the piece from it to the next -- the curve made
+    /// through it; its gradient's ends kept where they were.
+    static func addingPoint(_ o: MarkupObject, after k: Int,
+                            at p: CGPoint) -> MarkupObject {
+        var o = o
+        var pts = polygonPoints(o)
+        var flags = pts.indices.map { o.isSmooth($0) }
+        let at = min(k + 1, pts.count)
+        pts.insert(p, at: at)
+        flags.insert(true, at: at)
+        let ends = gradientHandles(o)
+        setPolygon(&o, pts)
+        o.smooth = flags
+        keepGradient(&o, ends)
+        return o
+    }
+
+    /// The path `o` with its point `i` a corner if it was smooth, smooth
+    /// if a corner.
+    static func togglingPoint(_ o: MarkupObject, _ i: Int) -> MarkupObject {
+        var o = o
+        guard o.points.indices.contains(i) else { return o }
+        var flags = o.points.indices.map { o.isSmooth($0) }
+        flags[i].toggle()
+        o.smooth = flags.contains(true) ? flags : []
+        return o
+    }
+
+    /// A gradient's ends put back where they were on the canvas, its box
+    /// made again.
+    private static func keepGradient(_ o: inout MarkupObject,
+                                     _ ends: [CGPoint]) {
+        guard ends.count == 2, var g = o.gradient else { return }
+        g.from = inBox(ends[0], of: o)
+        g.to = inBox(ends[1], of: o)
+        o.gradient = g
     }
 }
 

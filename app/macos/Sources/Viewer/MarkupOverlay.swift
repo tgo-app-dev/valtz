@@ -24,12 +24,25 @@ struct MarkupOverlay: Equatable {
     /// The selected DRAWING's pixels' bounds (canvas pixels), outlined.
     var drawingBounds: CGRect?
     /// A polygon being drawn: its corners (canvas pixels), the last where
-    /// the pointer is -- drawn as a path, its first corner ringed.
+    /// the pointer is -- drawn as a path, its first corner ringed. A
+    /// curvature pen's (`pathCurved`): the curve through them, each point
+    /// smooth or a corner (`pathSmooth`).
     var path: [CGPoint] = []
+    var pathSmooth: [Bool] = []
+    var pathCurved = false
+    /// The pen is the tool: a selected path shows its points -- smooth
+    /// round, corners square -- to drag and switch, not its box's handles.
+    var editsPath = false
+    /// The eyedropper: where it is (canvas pixels), the colour there and
+    /// the one it would replace -- a ring round the pointer, the new
+    /// above, the current below.
+    var sampleAt: CGPoint?
+    var sampleColor: RGBA?
+    var sampleNow: RGBA?
 
     var isEmpty: Bool {
         strokes.isEmpty && objects.isEmpty && drawingBounds == nil
-            && path.isEmpty
+            && path.isEmpty && sampleAt == nil
     }
 }
 
@@ -37,13 +50,23 @@ struct MarkupOverlay: Equatable {
 /// pixels, top-left origin), with which keys, and how many canvas pixels
 /// a view point is (a hit's reach is measured on screen).
 struct MarkupPointer {
-    /// `hover`: the pointer moved with no button down.
-    enum Phase { case down, drag, up, hover }
+    /// `hover`: the pointer moved with no button down; `exit`: it left
+    /// the picture.
+    enum Phase { case down, drag, up, hover, exit }
     var phase: Phase
     var point: CGPoint
     var shift = false
+    /// ⌥ held: the pen's corner, the eyedropper's Fill.
+    var option = false
     var clickCount = 1
     var pixelsPerPoint: Double = 1
+
+    /// An event's click count -- 1 for one that has none: AppKit asserts
+    /// (and Valtz aborted) reading it off an entered or exited event, the
+    /// `exit` the eyedropper's ring is let go by.
+    static func clicks(_ e: NSEvent) -> Int {
+        e.type == .mouseEntered || e.type == .mouseExited ? 1 : e.clickCount
+    }
 }
 
 /// What the stage hands markup from the keyboard -- and the Edit menu's
@@ -104,24 +127,26 @@ final class MarkupOverlayView: NSView {
             outline.stroke()
         }
         // A polygon being drawn: its path, its corners, its first ringed
-        // (a click there closes it).
+        // (a click there closes it). A pen's: its curve, its points by
+        // their kind.
         if !overlay.path.isEmpty {
             let pts = overlay.path.map { $0.applying(toView) }
-            let line = NSBezierPath()
-            line.move(to: pts[0])
-            for p in pts.dropFirst() { line.line(to: p) }
-            line.lineWidth = 1
-            NSColor.controlAccentColor.setStroke()
-            line.stroke()
+            ctx.saveGState()
+            if overlay.pathCurved {
+                ctx.addPath(MarkupRender.path(pts, smooth: overlay.pathSmooth,
+                                              closed: false))
+            } else {
+                ctx.addLines(between: pts)
+            }
+            ctx.setLineWidth(1)
+            ctx.setStrokeColor(NSColor.controlAccentColor.cgColor)
+            ctx.strokePath()
+            ctx.restoreGState()
             for (i, p) in pts.enumerated() {
                 let r = i == 0 ? 6.0 : 3.5
-                let dot = NSBezierPath(ovalIn: NSRect(x: p.x - r, y: p.y - r,
-                                                      width: 2 * r,
-                                                      height: 2 * r))
-                NSColor.white.setFill()
-                dot.fill()
-                NSColor.controlAccentColor.setStroke()
-                dot.stroke()
+                let smooth = !overlay.pathCurved
+                    || (i < overlay.pathSmooth.count && overlay.pathSmooth[i])
+                drawPoint(p, radius: r, smooth: smooth)
             }
         }
         // A selected object's gradient: its two ends -- a radial one's
@@ -161,6 +186,14 @@ final class MarkupOverlayView: NSView {
             outline.setLineDash([4, 3], count: 2, phase: 0)
             NSColor.controlAccentColor.setStroke()
             outline.stroke()
+            // A path the pen edits: its points by their kind.
+            if overlay.editsPath && o.kind == .polygon {
+                for (i, h) in MarkupRender.polygonPoints(o).enumerated() {
+                    drawPoint(h.applying(toView), radius: 4,
+                              smooth: o.isSmooth(i))
+                }
+                continue
+            }
             for h in MarkupRender.handles(o) {
                 let p = h.applying(toView)
                 let r = NSRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)
@@ -170,6 +203,60 @@ final class MarkupOverlayView: NSView {
                 NSBezierPath(rect: r).stroke()
             }
         }
+        drawSampleRing()
+    }
+
+    /// A path's point at `p` (view points): a smooth one round, a corner
+    /// square -- white, edged in the accent.
+    private func drawPoint(_ p: CGPoint, radius r: CGFloat, smooth: Bool) {
+        let rect = NSRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)
+        let mark = smooth ? NSBezierPath(ovalIn: rect) : NSBezierPath(rect: rect)
+        NSColor.white.setFill()
+        mark.fill()
+        NSColor.controlAccentColor.setStroke()
+        mark.lineWidth = 1
+        mark.stroke()
+    }
+
+    /// The eyedropper's ring round the pointer: the colour under it in the
+    /// upper half, the one it would replace in the lower, edged grey to
+    /// show on any picture; a colour with no alpha over a checkerboard.
+    private func drawSampleRing() {
+        guard let at = overlay.sampleAt, let c = overlay.sampleColor else {
+            return
+        }
+        let p = at.applying(toView)
+        let (outer, inner): (CGFloat, CGFloat) = (34, 22)
+        func half(_ top: Bool) -> NSBezierPath {
+            // y down here: the upper half runs from 180° to 360°.
+            let path = NSBezierPath()
+            let (a0, a1): (CGFloat, CGFloat) = top ? (180, 360) : (0, 180)
+            path.appendArc(withCenter: p, radius: outer, startAngle: a0,
+                           endAngle: a1)
+            path.appendArc(withCenter: p, radius: inner, startAngle: a1,
+                           endAngle: a0, clockwise: true)
+            path.close()
+            return path
+        }
+        for (top, color) in [(true, c), (false, overlay.sampleNow ?? c)] {
+            let h = half(top)
+            if color.a < 1 {
+                NSColor(white: 0.85, alpha: 1).setFill()
+                h.fill()
+            }
+            NSColor(cgColor: color.cgColor)?.setFill()
+            h.fill()
+        }
+        let edge = NSBezierPath(ovalIn: NSRect(x: p.x - outer, y: p.y - outer,
+                                               width: 2 * outer,
+                                               height: 2 * outer))
+        edge.append(NSBezierPath(ovalIn: NSRect(x: p.x - inner,
+                                                y: p.y - inner,
+                                                width: 2 * inner,
+                                                height: 2 * inner)))
+        edge.lineWidth = 1.5
+        NSColor(white: 0.45, alpha: 0.9).setStroke()
+        edge.stroke()
     }
 
     /// The stroke as the core will paint it, near enough to draw by: a

@@ -1283,6 +1283,58 @@ flatten_layers(const std::vector<LayerPicture>& layers,
   }
 }
 
+Result<PixelSize>
+look_size(const fs::path& file, const DrawnPicture& drawn)
+{
+  @autoreleasepool {
+    VALTZ_ASSIGN(CIImage* img, layer_image(file, drawn));
+    if (!img) {
+      return PixelSize{};
+    }
+    return PixelSize{
+        static_cast<std::int32_t>(std::lround(img.extent.size.width)),
+        static_cast<std::int32_t>(std::lround(img.extent.size.height))};
+  }
+}
+
+Result<DrawnPicture>
+look_picture(const fs::path& file, const DrawnPicture& drawn,
+             const Adjustments& adjust, double scale)
+{
+  @autoreleasepool {
+    VALTZ_ASSIGN(CIImage* img, layer_image(file, drawn));
+    if (!img) {
+      return DrawnPicture();
+    }
+    const CGRect e = img.extent;
+    img = [img imageByApplyingTransform:CGAffineTransformMakeTranslation(
+                                            -e.origin.x, -e.origin.y)];
+    img = apply_chain(img, filter_chain(adjust));
+    CGRect out = CGRectMake(0, 0, e.size.width, e.size.height);
+    if (scale > 0 && scale < 1) {
+      // Its edges carried on, so the filter does not fade them to clear.
+      img = [[[img imageByCroppingToRect:out] imageByClampingToExtent]
+          imageByApplyingFilter:@"CILanczosScaleTransform"
+            withInputParameters:@{
+              kCIInputScaleKey : @(scale),
+              kCIInputAspectRatioKey : @1.0,
+            }];
+      out = CGRectMake(0, 0, std::max(1.0, std::round(e.size.width * scale)),
+                       std::max(1.0, std::round(e.size.height * scale)));
+    }
+    CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGImageRef cg = [decode_context() createCGImage:img
+                                           fromRect:out
+                                             format:kCIFormatRGBA8
+                                         colorSpace:srgb];
+    CGColorSpaceRelease(srgb);
+    if (!cg) {
+      return make_error(Code::Internal, "cannot draw the layer's picture");
+    }
+    return DrawnPicture(cg, CGImageRelease);
+  }
+}
+
 Result<IOSurfaceRef>
 flatten_layers_surface(const std::vector<LayerPicture>& layers,
                        const StackCanvas& canvas)

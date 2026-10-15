@@ -45,10 +45,18 @@ struct RootView: View {
         // A fleet job running here (DESIGN §11): the window given over to
         // it -- its controls out of reach, the mark in blue, the job's
         // progress.
-        .disabled(model.fleetServing != nil)
+        .disabled(model.windowGivenOver)
         .overlay {
             if let s = model.fleetServing {
                 FleetServingOverlay(serving: s)
+                    .transition(.opacity)
+            }
+        }
+        // A closed project's tasks being stopped -- a quit, another project
+        // -- the window given over to the wait, saying what it waits for.
+        .overlay {
+            if let c = model.closingTasks {
+                ClosingTasksOverlay(closing: c)
                     .transition(.opacity)
             }
         }
@@ -238,6 +246,70 @@ private struct NavRow: View {
 /// asks; everything else goes on to the delegate SwiftUI gave the window,
 /// as it was. SwiftUI has no way to refuse a window's close.
 @MainActor
+/// A closed project's TASKS being stopped (AppModel.closingTasks): the
+/// window veiled and out of reach, saying what it waits for -- the work
+/// still stopping -- and what comes once it has.
+struct ClosingTasksOverlay: View {
+    let closing: AppModel.ClosingTasks
+
+    var body: some View {
+        ZStack {
+            // A veil: the window still seen, out of reach.
+            Rectangle()
+                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.85))
+                .ignoresSafeArea()
+            VStack(spacing: 14) {
+                ProgressView()
+                    .controlSize(.large)
+                Text("Stopping the work of “\(closing.project)”")
+                    .font(.title3.weight(.semibold))
+                    .multilineTextAlignment(.center)
+                Text(next)
+                    .foregroundStyle(.secondary)
+                if closing.total > 0 {
+                    ProgressView(value: Double(closing.total
+                                               - closing.left.count),
+                                 total: Double(closing.total))
+                        .frame(width: 280)
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(closing.left.prefix(5).enumerated()),
+                                id: \.offset) { _, title in
+                            Label {
+                                Text(verbatim: title)
+                            } icon: {
+                                Image(systemName: "stop.circle")
+                            }
+                            .lineLimit(1)
+                        }
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 380, alignment: .leading)
+                }
+            }
+            .padding(40)
+        }
+        // Every click is the veil's.
+        .contentShape(Rectangle())
+        .onTapGesture {}
+        .accessibilityElement(children: .combine)
+    }
+
+    /// What comes once it has stopped.
+    private var next: String {
+        switch closing.reason {
+        case .quit:
+            String(localized: "Valtz quits once it has stopped.")
+        case .open, .newProject:
+            String(localized: "The next project opens once it has stopped.")
+        case .newAnonymous:
+            String(localized: "A new anonymous project starts once it has stopped.")
+        case .window:
+            String(localized: "The window closes once it has stopped.")
+        }
+    }
+}
+
 final class WindowCloseGuard: NSObject, NSWindowDelegate {
     weak var window: NSWindow?
     nonisolated(unsafe) private weak var inner: NSWindowDelegate?

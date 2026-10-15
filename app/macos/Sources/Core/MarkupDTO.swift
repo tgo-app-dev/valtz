@@ -242,15 +242,25 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
     /// A POLYGON's corners, closed, in its box's units (0 at (x0, y0), 1
     /// at (x1, y1)): they move and scale with the box.
     var points: [CGPoint] = []
+    /// A PATH (core media/markup.h): a polygon whose points marked here
+    /// are SMOOTH -- the curve passes through them without a turn, the
+    /// curvature pen's -- the rest corners (empty: all); and whether it
+    /// is OPEN, a curve with no inside.
+    var smooth: [Bool] = []
+    var open = false
     /// A gradient in place of a shape's fill or a text's colour.
     var gradient: MarkupGradient?
     /// A lifted drawing's picture: its blob, as the core keeps it.
     var image: DrawingImage?
 
-    /// Shapes with an inside: a fill or a gradient goes there.
+    /// Shapes with an inside: a fill or a gradient goes there (an open
+    /// path has none).
     var fillable: Bool {
-        kind == .rect || kind == .ellipse || kind == .polygon
+        kind == .rect || kind == .ellipse || (kind == .polygon && !open)
     }
+
+    /// Point `i` of a path is smooth.
+    func isSmooth(_ i: Int) -> Bool { i < smooth.count && smooth[i] }
 
     // Plain names: the core's snake_case keys ("line_spacing") reach them
     // through the decoder's convertFromSnakeCase (Core/DTO.swift) -- a
@@ -259,7 +269,7 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, kind, x0, y0, x1, y1, stroke, fill, width, text, font, box
         case align, effects, lineSpacing, paragraphSpacing, justifyLast
-        case points, gradient, image
+        case points, smooth, open, gradient, image
     }
 
     init(id: String, kind: Kind, x0: Double, y0: Double, x1: Double,
@@ -302,6 +312,10 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
                                           forKey: .points)) ?? nil)?
             .compactMap { $0.count == 2 ? CGPoint(x: $0[0], y: $0[1]) : nil }
             ?? []
+        smooth = ((try? c.decodeIfPresent([Bool].self, forKey: .smooth))
+            ?? nil) ?? []
+        open = ((try? c.decodeIfPresent(Bool.self, forKey: .open)) ?? nil)
+            ?? false
         gradient = (try? c.decodeIfPresent(MarkupGradient.self,
                                            forKey: .gradient)) ?? nil
         image = (try? c.decodeIfPresent(DrawingImage.self, forKey: .image))
@@ -339,7 +353,13 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
             if justifyLast { j["justify_last"] = true }
         }
         if !effects.isEmpty { j["effects"] = effects.map(\.json) }
-        if kind == .polygon { j["points"] = points.map { [$0.x, $0.y] } }
+        if kind == .polygon {
+            j["points"] = points.map { [$0.x, $0.y] }
+            if smooth.contains(true) {
+                j["smooth"] = points.indices.map { isSmooth($0) }
+            }
+            if open { j["open"] = true }
+        }
         if let gradient, kind != .line && kind != .drawing {
             j["gradient"] = gradient.json
         }

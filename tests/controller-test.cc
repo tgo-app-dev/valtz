@@ -8,6 +8,7 @@
 #include "valtz/media/markup.h"
 #include "valtz/media/model-input.h"
 #include "valtz/media/movie.h"
+#include "valtz/media/pdf.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/sound.h"
 #include "valtz/media/text-flow.h"
@@ -1113,6 +1114,27 @@ public:
 
   std::size_t held() const { return _jobs.size(); }
 
+  // A running job asked to stop (cancel), and its graph stopped: ended
+  // cancelled.
+  bool
+  stopping(JobId id)
+  {
+    auto it = find(id);
+    return it != _jobs.end() && it->stop;
+  }
+
+  void
+  stopped(JobId id)
+  {
+    auto it = find(id);
+    auto sink = it->sink;
+    _jobs.erase(it);
+    engine::JobEvent ev;
+    ev.job = id;
+    ev.kind = engine::JobEventKind::Cancelled;
+    sink(ev);
+  }
+
   // The spec a job was submitted with.
   const engine::JobSpec*
   spec(JobId id)
@@ -1379,6 +1401,72 @@ TEST(controller, offload_policies_send_jobs_and_sharing_withholds)
   }, 15));
   ctl.shutdown();
   member->stop();
+  fs::remove_all(root);
+}
+
+// A project CLOSED with tasks under way (2026-10-15): its queued ones
+// dropped, its running one asked to stop -- nothing works on a project
+// that is gone (they ran on, holding the machine, their results
+// dropped); another project's task goes on.
+TEST(controller, closing_a_project_stops_its_tasks)
+{
+  auto root = test::temp_dir("ctl-close-tasks");
+  const fs::path krea = root / "models" / "krea" / "Krea-2-Turbo";
+  fs::create_directories(krea);
+  std::ofstream(krea / "model.safetensors") << "w";
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto a = ctl.create_project(root / "A.valtz", "a");
+  REQUIRE_OK(a);
+  auto b = ctl.create_project(root / "B.valtz", "b");
+  REQUIRE_OK(b);
+  auto ask = [&](ProjectId pid, const char* words) {
+    GenerateImageRequest req;
+    req.project = pid;
+    req.prompt = words;
+    req.model = "krea2-turbo";
+    req.width = 64;
+    req.height = 64;
+    return ctl.generate_image(req);
+  };
+  auto j1 = ask(*a, "a red fox");
+  REQUIRE_OK(j1);
+  auto j2 = ask(*a, "a blue boat");
+  REQUIRE_OK(j2);
+  auto k1 = ask(*b, "a green kite");
+  REQUIRE_OK(k1);
+  engine->start(*j1);
+  REQUIRE(ctl.tasks().size() == 3);
+  REQUIRE_OK(ctl.close_project(*a));
+  // The queued one dropped; the running one asked to stop; B's waits on.
+  auto r2 = ctl.jobs().get(*j2);
+  REQUIRE(r2);
+  CHECK(r2->state == JobState::Cancelled);
+  CHECK(engine->stopping(*j1));
+  CHECK(!engine->stopping(*k1));
+  CHECK(engine->held() == 2);
+  // Stopped: it ends cancelled, and only B's task is left.
+  engine->stopped(*j1);
+  auto r1 = ctl.jobs().get(*j1);
+  REQUIRE(r1);
+  CHECK(r1->state == JobState::Cancelled);
+  const Json ts = ctl.tasks();
+  REQUIRE(ts.size() == 1);
+  CHECK(jget<std::string>(ts[0], "job", "") == k1->str());
+  ctl.shutdown();
   fs::remove_all(root);
 }
 
@@ -2445,6 +2533,662 @@ TEST(media, a_polygon_and_gradients_are_drawn)
   CHECK(jget(n[1]["gradient"]["stops"][0], "at", -1.0) == 0);
   CHECK(jget<std::string>(n[1]["gradient"], "kind", "") == "linear");
   CHECK(!n[2].contains("gradient"));
+}
+
+// A PATH (media/markup.h, 2026-10-15): four smooth points round a square
+// are a circle -- filled where the diamond of their corners is not, clear
+// past the circle; three round a circle bulge past their own box, which
+// what it covers says; an OPEN one is a line -- its stroke drawn, no fill
+// whatever it has. Kept by normalizing: the smooth points by their place,
+// a path's openness; a polygon of corners says neither.
+TEST(media, a_path_curves_through_its_points)
+{
+  const auto root = test::temp_dir("markup-path");
+  const Json circle = {
+    {"id", "c"}, {"kind", "polygon"},
+    {"x0", 100}, {"y0", 100}, {"x1", 300}, {"y1", 300},
+    {"points", {{0.5, 0}, {1, 0.5}, {0.5, 1}, {0, 0.5}}},
+    {"smooth", {true, true, true, true}},
+    {"fill", {0, 1, 0, 1}}, {"width", 0}};
+  const Json open = {
+    {"id", "o"}, {"kind", "polygon"},
+    {"x0", 20}, {"y0", 330}, {"x1", 220}, {"y1", 380},
+    {"points", {{0, 1}, {0.5, 0}, {1, 1}}},
+    {"smooth", {false, true, false}}, {"open", true},
+    {"fill", {1, 0, 0, 1}}, {"stroke", {0, 0, 1, 1}}, {"width", 6}};
+  const auto out = root / "path.png";
+  REQUIRE_OK(media::render_markup({}, {400, 400},
+                                  Json::array({circle, open}), {}, out));
+  // Inside the circle, outside the diamond (265 - 135 > 100); past the
+  // circle (106 from its centre), clear.
+  CHECK(pixel_at(out, 265, 135)[1] > 240);
+  CHECK(pixel_at(out, 135, 265)[1] > 240);
+  CHECK(pixel_at(out, 277, 123)[3] == 0);
+  CHECK(pixel_at(out, 200, 200)[1] > 240);
+  // The open curve: its stroke through its middle point, nothing filled
+  // under it.
+  const auto top = pixel_at(out, 120, 330);
+  CHECK(top[2] > 200 && top[3] > 200);
+  CHECK(pixel_at(out, 120, 370)[3] == 0);
+  // Three smooth points evenly round a circle: their box ends at the
+  // lower two (y 250), the curve at the circle's foot (300).
+  const Json three = {
+    {"id", "t"}, {"kind", "polygon"},
+    {"x0", 113.4}, {"y0", 100}, {"x1", 286.6}, {"y1", 250},
+    {"points", {{0.5, 0}, {1, 1}, {0, 1}}},
+    {"smooth", {true, true, true}}, {"width", 0}};
+  const auto b = media::object_bounds(three);
+  CHECK(b[1] <= 100.5);
+  CHECK(b[1] + b[3] > 295 && b[1] + b[3] < 305);
+  Json corners = three;
+  corners.erase("smooth");
+  CHECK(std::abs(media::object_bounds(corners)[3] - 150) < 0.5);
+  // Kept: the flags by their point (a bad point dropped with its own),
+  // the openness; corners alone say neither.
+  Json odd = open;
+  odd["points"] = Json::array({{0, 1}, "x", {0.5, 0}, {1, 1}});
+  odd["smooth"] = Json::array({false, true, true});
+  const Json n = media::normalize_objects(Json::array({odd, corners}));
+  REQUIRE(n[0]["smooth"].size() == 3);
+  CHECK(n[0]["smooth"][0] == false && n[0]["smooth"][1] == true &&
+        n[0]["smooth"][2] == false);
+  CHECK(jget(n[0], "open", false));
+  CHECK(!n[1].contains("smooth") && !n[1].contains("open"));
+}
+
+namespace {
+
+// A picture drawn over white into an 8-bit sRGB bitmap `w` x `h`: a
+// PDF's page (from 1) at its own size, or a picture file -- what a viewer
+// shows of each.
+std::vector<std::uint8_t>
+drawn_on_white(const fs::path& file, int page, int w, int h)
+{
+  std::vector<std::uint8_t> px(static_cast<std::size_t>(w) * h * 4);
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(
+      px.data(), w, h, 8, static_cast<std::size_t>(w) * 4, cs,
+      static_cast<std::uint32_t>(kCGImageAlphaPremultipliedLast));
+  CGColorSpaceRelease(cs);
+  CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
+  CGContextFillRect(ctx, CGRectMake(0, 0, w, h));
+  CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+      nullptr, reinterpret_cast<const UInt8*>(file.c_str()),
+      static_cast<CFIndex>(std::strlen(file.c_str())), false);
+  if (page > 0) {
+    if (CGPDFDocumentRef doc = CGPDFDocumentCreateWithURL(url)) {
+      if (CGPDFPageRef pg = CGPDFDocumentGetPage(doc, page)) {
+        CGContextDrawPDFPage(ctx, pg);
+      }
+      CGPDFDocumentRelease(doc);
+    }
+  } else if (CGImageSourceRef src = CGImageSourceCreateWithURL(url,
+                                                               nullptr)) {
+    if (CGImageRef img = CGImageSourceCreateImageAtIndex(src, 0, nullptr)) {
+      CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), img);
+      CGImageRelease(img);
+    }
+    CFRelease(src);
+  }
+  CFRelease(url);
+  CGContextRelease(ctx);
+  return px;
+}
+
+// Two drawings' mean difference, a channel's, of 255 -- and the share of
+// their pixels some channel of which is more than `far` apart.
+std::pair<double, double>
+difference(const std::vector<std::uint8_t>& a,
+           const std::vector<std::uint8_t>& b, int far = 48)
+{
+  if (a.size() != b.size() || a.empty()) {
+    return {255, 1};
+  }
+  double sum = 0;
+  std::size_t apart = 0;
+  for (std::size_t i = 0; i < a.size(); i += 4) {
+    int most = 0;
+    for (int c = 0; c < 3; ++c) {
+      const int d = std::abs(int(a[i + c]) - int(b[i + c]));
+      sum += d;
+      most = std::max(most, d);
+    }
+    apart += most > far;
+  }
+  const double n = static_cast<double>(a.size() / 4);
+  return {sum / (n * 3), static_cast<double>(apart) / n};
+}
+
+// What a PDF page is made of: its images (its forms' too), fonts and
+// shadings, and whether its content shows text (Tj / TJ).
+struct PdfInk {
+  int  images = 0;
+  int  fonts = 0;
+  int  shadings = 0;
+  bool text = false;
+};
+
+void
+ink_of_resources(CGPDFDictionaryRef res, PdfInk& ink);
+
+void
+ink_of_content(CGPDFStreamRef s, PdfInk& ink)
+{
+  CGPDFDataFormat format;
+  if (CFDataRef d = CGPDFStreamCopyData(s, &format)) {
+    const std::string body(
+        reinterpret_cast<const char*>(CFDataGetBytePtr(d)),
+        static_cast<std::size_t>(CFDataGetLength(d)));
+    ink.text = ink.text || body.find("Tj") != std::string::npos ||
+               body.find("TJ") != std::string::npos;
+    CFRelease(d);
+  }
+}
+
+void
+ink_of_resources(CGPDFDictionaryRef res, PdfInk& ink)
+{
+  if (!res) {
+    return;
+  }
+  CGPDFDictionaryRef d = nullptr;
+  if (CGPDFDictionaryGetDictionary(res, "Font", &d)) {
+    ink.fonts += static_cast<int>(CGPDFDictionaryGetCount(d));
+  }
+  if (CGPDFDictionaryGetDictionary(res, "Shading", &d)) {
+    ink.shadings += static_cast<int>(CGPDFDictionaryGetCount(d));
+  }
+  if (CGPDFDictionaryGetDictionary(res, "XObject", &d)) {
+    CGPDFDictionaryApplyFunction(
+        d,
+        [](const char*, CGPDFObjectRef o, void* info) {
+          auto& ink = *static_cast<PdfInk*>(info);
+          CGPDFStreamRef s = nullptr;
+          if (!CGPDFObjectGetValue(o, kCGPDFObjectTypeStream, &s)) {
+            return;
+          }
+          CGPDFDictionaryRef sd = CGPDFStreamGetDictionary(s);
+          const char* sub = nullptr;
+          if (CGPDFDictionaryGetName(sd, "Subtype", &sub) &&
+              std::strcmp(sub, "Image") == 0) {
+            ++ink.images;
+          } else if (sub && std::strcmp(sub, "Form") == 0) {
+            CGPDFDictionaryRef r = nullptr;
+            if (CGPDFDictionaryGetDictionary(sd, "Resources", &r)) {
+              ink_of_resources(r, ink);
+            }
+            ink_of_content(s, ink);
+          }
+        },
+        &ink);
+  }
+}
+
+PdfInk
+pdf_ink(const fs::path& file, int page)
+{
+  PdfInk ink;
+  CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+      nullptr, reinterpret_cast<const UInt8*>(file.c_str()),
+      static_cast<CFIndex>(std::strlen(file.c_str())), false);
+  CGPDFDocumentRef doc = CGPDFDocumentCreateWithURL(url);
+  CFRelease(url);
+  if (!doc) {
+    return ink;
+  }
+  if (CGPDFPageRef pg = CGPDFDocumentGetPage(doc, page)) {
+    CGPDFDictionaryRef pd = CGPDFPageGetDictionary(pg);
+    CGPDFDictionaryRef res = nullptr;
+    if (CGPDFDictionaryGetDictionary(pd, "Resources", &res)) {
+      ink_of_resources(res, ink);
+    }
+    CGPDFStreamRef content = nullptr;
+    CGPDFArrayRef parts = nullptr;
+    if (CGPDFDictionaryGetStream(pd, "Contents", &content)) {
+      ink_of_content(content, ink);
+    } else if (CGPDFDictionaryGetArray(pd, "Contents", &parts)) {
+      for (std::size_t i = 0; i < CGPDFArrayGetCount(parts); ++i) {
+        if (CGPDFArrayGetStream(parts, i, &content)) {
+          ink_of_content(content, ink);
+        }
+      }
+    }
+  }
+  CGPDFDocumentRelease(doc);
+  return ink;
+}
+
+// A PDF's pages and the size of each, in points.
+std::vector<std::pair<int, int>>
+pdf_pages(const fs::path& file)
+{
+  std::vector<std::pair<int, int>> out;
+  CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+      nullptr, reinterpret_cast<const UInt8*>(file.c_str()),
+      static_cast<CFIndex>(std::strlen(file.c_str())), false);
+  CGPDFDocumentRef doc = CGPDFDocumentCreateWithURL(url);
+  CFRelease(url);
+  if (!doc) {
+    return out;
+  }
+  for (std::size_t i = 1; i <= CGPDFDocumentGetNumberOfPages(doc); ++i) {
+    const CGRect r = CGPDFPageGetBoxRect(CGPDFDocumentGetPage(doc, i),
+                                         kCGPDFMediaBox);
+    out.push_back({static_cast<int>(std::lround(r.size.width)),
+                   static_cast<int>(std::lround(r.size.height))});
+  }
+  CGPDFDocumentRelease(doc);
+  return out;
+}
+
+}
+
+// A STILL WRITTEN AS A PDF (media/pdf.h): a page a stack, as
+// flatten_layers draws it -- its canvas, a layer placed by its crop
+// (scaled, turned, moved), a composition a layer shows drawn in its
+// place, a mask, effects -- but its words TEXT in a font, its shapes and
+// gradients paths and shadings: a page of markup alone holds no image
+// but its shadow's. Drawn back, each page is the flattened picture to
+// within its edges (anti-aliasing, the blend of a translucent edge).
+TEST(media, a_still_is_written_as_a_pdf_its_vectors_kept)
+{
+  using Kind = media::PdfLayer::Kind;
+  const auto root = test::temp_dir("pdf-still");
+  const Json words = {
+    {"id", "w"}, {"kind", "text"}, {"box", true},
+    {"x0", 20}, {"y0", 16}, {"x1", 380}, {"y1", 70},
+    {"text", "Vectors stay sharp"}, {"stroke", {0.1, 0.1, 0.1, 1}},
+    {"font", {{"family", "Helvetica"}, {"size", 40}, {"bold", true}}}};
+  const Json painted = {
+    {"id", "g"}, {"kind", "text"}, {"box", true},
+    {"x0", 20}, {"y0", 80}, {"x1", 380}, {"y1", 150},
+    {"text", "MMMM"}, {"stroke", {0, 0, 0, 1}},
+    {"font", {{"family", "Helvetica"}, {"size", 56}, {"bold", true},
+              {"underline", true}}},
+    {"gradient", {{"kind", "linear"},
+                  {"stops", {{{"at", 0}, {"color", {1, 0, 0, 1}}},
+                             {{"at", 1}, {"color", {0, 0, 1, 1}}}}}}}};
+  const Json band = {
+    {"id", "b"}, {"kind", "rect"},
+    {"x0", 20}, {"y0", 170}, {"x1", 200}, {"y1", 220}, {"width", 0},
+    {"gradient", {{"kind", "linear"},
+                  {"stops", {{{"at", 0}, {"color", {1, 0.8, 0, 1}}},
+                             {{"at", 1}, {"color", {0, 0.6, 0.2, 1}}}}}}}};
+  const Json star = {
+    {"id", "p"}, {"kind", "polygon"},
+    {"x0", 220}, {"y0", 160}, {"x1", 300}, {"y1", 240},
+    {"points", {{0.5, 0}, {0.62, 0.38}, {1, 0.38}, {0.69, 0.62},
+                {0.81, 1}, {0.5, 0.76}, {0.19, 1}, {0.31, 0.62},
+                {0, 0.38}, {0.38, 0.38}}},
+    {"fill", {1, 0.85, 0.1, 1}}, {"stroke", {0.4, 0.2, 0, 1}},
+    {"width", 3}};
+  const Json shadowed = {
+    {"id", "s"}, {"kind", "ellipse"},
+    {"x0", 320}, {"y0", 170}, {"x1", 380}, {"y1", 230},
+    {"fill", {1, 0, 0, 1}}, {"width", 0},
+    {"effects", Json::array({{{"kind", "shadow"},
+                              {"color", {0, 0, 0, 0.7}}, {"blur", 6},
+                              {"dx", 8}, {"dy", 10}}})}};
+  const Json objects = Json::array({words, painted, band, star, shadowed});
+  // Page 1: a markup alone.
+  media::PdfLayer mk;
+  mk.kind = Kind::Markup;
+  mk.size = {400, 260};
+  mk.objects = objects;
+  media::PdfLayer page1;
+  page1.kind = Kind::Stack;
+  page1.layers = {mk};
+
+  // Page 2: a picture at the bottom; the markup over it placed by a crop;
+  // a composition of its own -- a framed canvas, a disc over a picture --
+  // shown through a soft MASK above it; the canvas made larger, clear
+  // round the frame.
+  const auto photo = root / "photo.png";
+  REQUIRE_OK(media::render_markup(
+      {}, {300, 200},
+      Json::array({{{"id", "a"}, {"kind", "rect"}, {"x0", 0}, {"y0", 0},
+                    {"x1", 150}, {"y1", 100}, {"width", 0},
+                    {"fill", {0.2, 0.4, 0.8, 1}}},
+                   {{"id", "b"}, {"kind", "rect"}, {"x0", 150}, {"y0", 0},
+                    {"x1", 300}, {"y1", 100}, {"width", 0},
+                    {"fill", {0.9, 0.7, 0.2, 1}}},
+                   {{"id", "c"}, {"kind", "rect"}, {"x0", 0}, {"y0", 100},
+                    {"x1", 300}, {"y1", 200}, {"width", 0},
+                    {"fill", {0.3, 0.6, 0.3, 1}}}}),
+      {}, photo));
+  media::PdfLayer pic;
+  pic.kind = Kind::Picture;
+  pic.file = photo;
+  media::PdfLayer placed = mk;
+  placed.crop.scale_x = placed.crop.scale_y = 0.5;
+  placed.crop.rotate = 12;
+  placed.crop.offset_x = 0.12;
+  placed.crop.offset_y = -0.1;
+  media::PdfLayer disc;
+  disc.kind = Kind::Markup;
+  disc.size = {120, 80};
+  disc.objects = Json::array({{{"id", "d"}, {"kind", "ellipse"},
+                               {"x0", 10}, {"y0", 5}, {"x1", 110},
+                               {"y1", 75}, {"width", 4},
+                               {"fill", {0.9, 0.1, 0.5, 1}},
+                               {"stroke", {1, 1, 1, 1}}}});
+  media::PdfLayer inner_pic = pic;
+  inner_pic.crop.scale_x = inner_pic.crop.scale_y = 0.3;
+  media::PdfLayer inner;
+  inner.kind = Kind::Stack;
+  inner.canvas.frame_w = 120;
+  inner.canvas.frame_h = 80;
+  inner.layers = {inner_pic, disc};
+  inner.crop.scale_x = inner.crop.scale_y = 0.9;
+  inner.crop.offset_x = -0.25;
+  inner.crop.offset_y = 0.2;
+  media::PdfLayer veil;
+  veil.kind = Kind::Markup;
+  veil.size = {300, 200};
+  veil.mask = true;
+  veil.objects = Json::array({{{"id", "v"}, {"kind", "rect"}, {"x0", 0},
+                               {"y0", 0}, {"x1", 300}, {"y1", 200},
+                               {"width", 0},
+                               {"gradient",
+                                {{"kind", "linear"},
+                                 {"stops", {{{"at", 0},
+                                             {"color", {1, 1, 1, 1}}},
+                                            {{"at", 1},
+                                             {"color", {0, 0, 0, 1}}}}},
+                                 {"from", {0, 0.5}},
+                                 {"to", {0.6, 0.5}}}}}});
+  media::PdfLayer page2;
+  page2.kind = Kind::Stack;
+  page2.layers = {pic, placed, inner, veil};
+  page2.canvas.width = 360;
+  page2.canvas.height = 240;
+  page2.canvas.x = 30;
+  page2.canvas.y = 20;
+
+  // Page 3: the words under a HARD mask -- a shape, all on or off --
+  // which a PDF masks mark by mark as a group would be: still text.
+  media::PdfLayer cut;
+  cut.kind = Kind::Markup;
+  cut.size = {300, 200};
+  cut.mask = true;
+  cut.objects = Json::array({{{"id", "c"}, {"kind", "rect"}, {"x0", 0},
+                              {"y0", 0}, {"x1", 300}, {"y1", 110},
+                              {"width", 0}, {"fill", {1, 1, 1, 1}}}});
+  media::PdfLayer page3;
+  page3.kind = Kind::Stack;
+  page3.layers = {pic, placed, cut};
+
+  media::PdfDocument doc;
+  doc.title = "Poster";
+  doc.pages = {page1, page2, page3};
+  // As a job carries it: the same again.
+  const media::PdfDocument back =
+      media::pdf_document_from_json(media::to_json(doc));
+  CHECK(media::to_json(back) == media::to_json(doc));
+  const auto files = media::files_of(doc);
+  CHECK(files.size() == 1 && files[0] == photo);
+
+  const auto out = root / "Poster.pdf";
+  int counted = 0;
+  REQUIRE_OK(media::write_pdf(back, out, [&](int done, int pages) {
+    CHECK(pages == 3);
+    counted = done;
+    return true;
+  }));
+  CHECK(counted == 3);
+  const auto pages = pdf_pages(out);
+  REQUIRE(pages.size() == 3);
+  CHECK(pages[0] == std::pair(400, 260));
+  CHECK(pages[1] == std::pair(360, 240));
+  CHECK(pages[2] == std::pair(300, 200));
+
+  // Page 1: its words text, in a font; its gradients shadings; its one
+  // image the shadow beneath the disc.
+  const PdfInk ink = pdf_ink(out, 1);
+  CHECK(ink.text);
+  CHECK(ink.fonts >= 1);
+  CHECK(ink.shadings >= 2);
+  CHECK(ink.images == 1);
+
+  // Each page drawn back is the picture flattened, near enough.
+  auto as_picture = [&](const media::PdfLayer& l)
+      -> Result<media::LayerPicture> {
+    media::LayerPicture lp;
+    lp.adjust = l.adjust;
+    lp.crop = l.crop;
+    lp.visible = l.visible;
+    lp.mask = l.mask;
+    if (l.kind == Kind::Picture) {
+      lp.file = l.file;
+    } else if (l.kind == Kind::Markup) {
+      VALTZ_ASSIGN(lp.drawn, media::render_markup_picture(
+                                 l.file, l.size, l.objects, {}));
+    }
+    return lp;
+  };
+  std::vector<media::LayerPicture> flat1;
+  auto m1 = as_picture(mk);
+  REQUIRE_OK(m1);
+  flat1.push_back(*m1);
+  const auto png1 = root / "page-1.png";
+  REQUIRE_OK(media::flatten_layers(flat1, png1));
+  // The composition within, flattened first, as a stack shows it.
+  std::vector<media::LayerPicture> within;
+  for (const auto& l : inner.layers) {
+    auto lp = as_picture(l);
+    REQUIRE_OK(lp);
+    within.push_back(*lp);
+  }
+  const auto inner_png = root / "inner.png";
+  REQUIRE_OK(media::flatten_layers(within, inner_png, inner.canvas));
+  std::vector<media::LayerPicture> flat2;
+  for (const auto& l : page2.layers) {
+    auto lp = as_picture(l);
+    REQUIRE_OK(lp);
+    if (l.kind == Kind::Stack) {
+      lp->file = inner_png;
+    }
+    flat2.push_back(*lp);
+  }
+  const auto png2 = root / "page-2.png";
+  REQUIRE_OK(media::flatten_layers(flat2, png2, page2.canvas));
+  std::vector<media::LayerPicture> flat3;
+  for (const auto& l : page3.layers) {
+    auto lp = as_picture(l);
+    REQUIRE_OK(lp);
+    flat3.push_back(*lp);
+  }
+  const auto png3 = root / "page-3.png";
+  REQUIRE_OK(media::flatten_layers(flat3, png3));
+  // Apart only at edges: the PDF's words set as glyphs (the flattened
+  // ones are a picture of them, turned and resampled), a gradient's
+  // through their outlines.
+  const auto pdf1 = drawn_on_white(out, 1, 400, 260);
+  const auto [mean1, apart1] =
+      difference(pdf1, drawn_on_white(png1, 0, 400, 260));
+  const auto [mean2, apart2] =
+      difference(drawn_on_white(out, 2, 360, 240),
+                 drawn_on_white(png2, 0, 360, 240));
+  const auto [mean3, apart3] =
+      difference(drawn_on_white(out, 3, 300, 200),
+                 drawn_on_white(png3, 0, 300, 200));
+  CHECK(mean1 < 2.0);
+  CHECK(apart1 < 0.025);
+  CHECK(mean2 < 2.5);
+  CHECK(apart2 < 0.025);
+  CHECK(mean3 < 2.0);
+  CHECK(apart3 < 0.025);
+  // Its shadow below and right of the disc, none above it; the painted
+  // words red at their left, half way to blue at their right (the box's
+  // middle).
+  auto at = [&](int x, int y) {
+    const std::size_t i = (static_cast<std::size_t>(y) * 400 +
+                           static_cast<std::size_t>(x)) * 4;
+    return std::array<int, 3>{pdf1[i], pdf1[i + 1], pdf1[i + 2]};
+  };
+  CHECK(at(360, 236)[0] < 200);
+  CHECK(at(326, 172)[0] > 245 && at(326, 172)[2] > 245);
+  CHECK(at(350, 200)[0] > 240 && at(350, 200)[1] < 15);
+  // Red less blue, on average, over the words' ink in a band.
+  auto redder = [&](int x0, int x1) {
+    double sum = 0;
+    int n = 0;
+    for (int y = 90; y < 145; ++y) {
+      for (int x = x0; x < x1; ++x) {
+        const auto px = at(x, y);
+        if (std::min({px[0], px[1], px[2]}) < 120) {
+          sum += px[0] - px[2];
+          ++n;
+        }
+      }
+    }
+    return n > 20 ? sum / n : -999.0;
+  };
+  CHECK(redder(20, 60) > 150);
+  const double right = redder(170, 220);
+  CHECK(right > -999 && right < 60);
+  // Page 2: under its soft mask the composition is pixels; the words
+  // over the picture still text. Page 3: the words under a hard mask
+  // still text.
+  const PdfInk ink2 = pdf_ink(out, 2);
+  CHECK(ink2.images >= 2);
+  CHECK(ink2.text);
+  CHECK(pdf_ink(out, 3).text);
+
+  // Stopped after its first page: nothing left.
+  const auto stopped = root / "Stopped.pdf";
+  auto st = media::write_pdf(doc, stopped, [](int, int) { return false; });
+  CHECK(st.code() == Code::Cancelled);
+  CHECK(!fs::exists(stopped));
+  // A page with nothing at its bottom and no frame: refused.
+  media::PdfDocument bare;
+  bare.pages.push_back(media::PdfLayer{.kind = Kind::Stack});
+  CHECK(!media::write_pdf(bare, root / "bare.pdf").ok());
+}
+
+// A STILL COMPOSITION EXPORTED AS A PDF (Controller::pdf_document): its
+// pages one file; each page's layers -- a picture, a markup's objects as
+// vectors, a still composition a layer shows as its own layers -- drawn
+// as the page flattens; the export lane's job carrying the document and
+// every file it reads. A timeline is not a picture: refused.
+TEST(controller, a_still_exports_as_a_pdf)
+{
+  using Kind = media::PdfLayer::Kind;
+  auto root = test::temp_dir("ctl-pdf");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "P.valtz", "pdf");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "grey.png", 200, 120, {0x90, 0x90, 0x90, 0xff}));
+  REQUIRE(write_png(root / "red.png", 40, 40, {0xff, 0, 0, 0xff}));
+  auto grey = import_and_wait(ctl, *pid, root / "grey.png");
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  REQUIRE(grey && red);
+  auto still = ctl.create_composition(*pid, project::AssetClass::Still,
+                                      {200, 120});
+  REQUIRE_OK(still);
+  const AssetId c = *still;
+  auto l0 = ctl.add_layer(*pid, c);
+  REQUIRE_OK(l0);
+  REQUIRE_OK(ctl.set_layer_source(*pid, c, *l0, *grey));
+  auto ml = ctl.markup_layer(*pid, c, {});
+  REQUIRE_OK(ml);
+  REQUIRE_OK(ctl.set_markup_objects(
+      *pid, c, *ml,
+      Json::array({{{"id", "t"}, {"kind", "text"}, {"box", true},
+                    {"x0", 10}, {"y0", 10}, {"x1", 190}, {"y1", 50},
+                    {"text", "Hello"}, {"stroke", {0, 0, 0, 1}},
+                    {"font", {{"family", "Helvetica"}, {"size", 28}}}},
+                   {{"id", "r"}, {"kind", "rect"}, {"x0", 120},
+                    {"y0", 60}, {"x1", 190}, {"y1", 110}, {"width", 4},
+                    {"stroke", {0, 0, 1, 1}}, {"fill", {0, 0, 0, 0}}}})));
+  auto inner = ctl.create_composition(*pid, project::AssetClass::Still,
+                                      {60, 40});
+  REQUIRE_OK(inner);
+  auto il = ctl.add_layer(*pid, *inner);
+  REQUIRE_OK(il);
+  REQUIRE_OK(ctl.set_layer_source(*pid, *inner, *il, *red));
+  auto l2 = ctl.add_layer(*pid, c, *ml);
+  REQUIRE_OK(l2);
+  REQUIRE_OK(ctl.set_layer_source(*pid, c, *l2, *inner));
+  REQUIRE_OK(ctl.add_page(*pid, c));
+
+  auto doc = ctl.pdf_document(*pid, c);
+  REQUIRE_OK(doc);
+  REQUIRE(doc->pages.size() == 2);
+  const auto& ls = doc->pages[0].layers;
+  REQUIRE(ls.size() == 3);
+  CHECK(ls[0].kind == Kind::Picture);
+  CHECK(ls[1].kind == Kind::Markup);
+  CHECK(ls[1].objects.size() == 2);
+  CHECK(ls[2].kind == Kind::Stack);
+  REQUIRE(ls[2].layers.size() == 1);
+  CHECK(ls[2].layers[0].kind == Kind::Picture);
+  const auto drawn = root / "doc.pdf";
+  REQUIRE_OK(media::write_pdf(*doc, drawn));
+  REQUIRE(pdf_pages(drawn).size() == 2);
+  for (int page = 0; page < 2; ++page) {
+    const auto flat = root / std::format("page-{}.png", page);
+    REQUIRE_OK(ctl.flatten(*pid, c, flat, std::nullopt, std::nullopt, {},
+                           page));
+    const auto [mean, apart] =
+        difference(drawn_on_white(drawn, page + 1, 200, 120),
+                   drawn_on_white(flat, 0, 200, 120));
+    CHECK(mean < 2.0);
+    CHECK(apart < 0.01);
+  }
+  CHECK(pdf_ink(drawn, 1).text);
+
+  // Exported: the export lane's job, the document and its files in it;
+  // written as the lane writes it, saved where asked.
+  ExportRequest ex;
+  ex.project = *pid;
+  ex.asset = c;
+  ex.format = "pdf";
+  ex.destination = root / "out" / "Booklet.pdf";
+  auto xj = ctl.export_asset(ex);
+  REQUIRE_OK(xj);
+  const engine::JobSpec* spec = engine->spec(*xj);
+  REQUIRE(spec != nullptr);
+  CHECK(spec->op == engine::kOpExportMedia);
+  const auto sent = media::pdf_document_from_json(
+      jget(spec->params, "pdf", Json()));
+  CHECK(sent.pages.size() == 2);
+  CHECK(sent.title == doc->title);
+  CHECK(spec->inputs.size() == 2);  // the grey and the red pictures
+  for (const auto& in : spec->inputs) {
+    CHECK(in.role == "file");
+    CHECK(!in.hash.is_zero());
+  }
+  const auto lane = root / "lane.pdf";
+  REQUIRE_OK(media::write_pdf(sent, lane));
+  engine->finish(*xj, lane);
+  CHECK(pdf_pages(ex.destination).size() == 2);
+  auto rec = ctl.jobs().get(*xj);
+  REQUIRE(rec);
+  CHECK(rec->state == JobState::Finished);
+  CHECK(rec->message == ex.destination.string());
+
+  // A timeline is no picture.
+  auto clip = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                     {200, 120});
+  REQUIRE_OK(clip);
+  CHECK(!ctl.pdf_document(*pid, *clip).ok());
+  ex.asset = *clip;
+  CHECK(!ctl.export_asset(ex).ok());
 }
 
 // A LONG TEXT read as light Markdown and FLOWED onto pages

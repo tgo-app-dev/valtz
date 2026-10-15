@@ -28,14 +28,14 @@ struct TitleBarContent: ToolbarContent {
             }
             .help(model.navOpen ? "Hide navigation" : "Show navigation")
             .shortcutHint("⌃⌘N")
-            .disabled(model.fleetServing != nil)
+            .disabled(model.windowGivenOver)
         }
 
         // The name, drawn here rather than by the window (whose title is
         // kept for the Window menu), so simple mode's can be renamed.
         ToolbarItem(placement: .navigation) {
             WindowTitleField(model: model)
-                .disabled(model.fleetServing != nil)
+                .disabled(model.windowGivenOver)
         }
         .sharedBackgroundVisibility(.hidden)
 
@@ -52,7 +52,7 @@ struct TitleBarContent: ToolbarContent {
         if model.screen == .editor {
             ToolbarItem(placement: .primaryAction) {
                 TitleBarControls(model: model, scheme: scheme)
-                    .disabled(model.fleetServing != nil)
+                    .disabled(model.windowGivenOver)
             }
             .sharedBackgroundVisibility(.hidden)
         }
@@ -237,9 +237,13 @@ struct TitleBarControls: View {
 
     /// What acts on the editor: zoom, the ground, markup, the inspector
     /// and share, the search.
+    /// Each out of reach while the window is given over (a fleet job, a
+    /// closed project's tasks stopping): the groups are hosted apart, and
+    /// some kept their look when only the item was disabled.
     @ViewBuilder
     private var editorGroups: some View {
                 ZoomGroup(model: model)
+                    .disabled(model.windowGivenOver)
 
                 TitleBarButton(
                     symbol: "square.split.2x1", title: "Compare",
@@ -287,10 +291,12 @@ struct TitleBarControls: View {
                     ShareButton(model: model)
                         .shortcutHint("⌘E")
                 }
+                .disabled(model.windowGivenOver)
                 .titleBarCapsule()
 
                 TitleBarSearchField(model: model)
                     .shortcutHint("⌘F")
+                    .disabled(model.windowGivenOver)
     }
 }
 
@@ -550,7 +556,7 @@ struct ShareButton: View {
             // The menu opens under the button itself; the anchor is an
             // AppKit view in the button's place.
             .background(MenuAnchorView(anchor: anchor))
-            .disabled(model.currentAsset?.url == nil)
+            .disabled(!model.canExportStage)
             .onChange(of: model.shareRequest) { openMenu() }
     }
 
@@ -558,7 +564,7 @@ struct ShareButton: View {
     static weak var openedMenu: NSMenu?
 
     private func openMenu() {
-        guard model.currentAsset?.url != nil else { return }
+        guard model.canExportStage else { return }
         let menu = NSMenu()
         let save = MenuAction.item(
             model.saveItemTitle,
@@ -618,7 +624,7 @@ struct ShareButton: View {
     /// from a SwiftUI action, a modal panel held the main queue -- and
     /// with it every main-actor task -- until it closed.
     static func save(_ model: AppModel) {
-        guard model.currentAsset?.url != nil else { return }
+        guard model.canExportStage else { return }
         let panel = NSSavePanel()
         let kind = model.currentAsset?.kind ?? "image"
         panel.title = model.savePanelTitle
@@ -889,9 +895,14 @@ final class SaveOptions: NSObject {
         optionLabel.stringValue = format.hasDepth
             ? String(localized: "Depth:")
             : jpeg ? String(localized: "Quality:") : ""
-        note.stringValue = format == .original
-            ? String(localized: "The file as it is, nothing re-encoded")
-            : String(localized: "Every value the picture holds, highlights included")
+        note.stringValue = switch format {
+        case .original:
+            String(localized: "The file as it is, nothing re-encoded")
+        case .pdf:
+            String(localized: "Shapes and words stay sharp at any size; every page in one file")
+        default:
+            String(localized: "Every value the picture holds, highlights included")
+        }
         qualityValue.stringValue = "\(Int(quality))"
         video?.show(format)
         fit()

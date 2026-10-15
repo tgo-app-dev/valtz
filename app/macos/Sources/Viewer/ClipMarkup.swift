@@ -150,7 +150,8 @@ final class ClipMarkupNSView: NSView {
         onPointer?(MarkupPointer(
             phase: phase, point: canvasPoint(p),
             shift: e.modifierFlags.contains(.shift),
-            clickCount: e.clickCount,
+            option: e.modifierFlags.contains(.option),
+            clickCount: MarkupPointer.clicks(e),
             pixelsPerPoint: Double(1 / max(0.0001, pointsPerPixel))))
     }
 
@@ -198,6 +199,7 @@ final class ClipMarkupNSView: NSView {
     override func mouseExited(with e: NSEvent) {
         pointerAt = nil
         updateRing()
+        send(.exit, e)
     }
 
     private func updateRing() {
@@ -240,6 +242,8 @@ final class ClipMarkupNSView: NSView {
             onKey?(.delete)
         case 53:        // escape
             onKey?(.escape)
+        case 36, 76:    // return: a polygon or a path being drawn made
+            onKey?(.enter)
         default:
             super.keyDown(with: e)
         }

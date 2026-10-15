@@ -54,6 +54,7 @@
 #include "valtz/media/keyframes.h"
 #include "valtz/media/markup.h"
 #include "valtz/media/model-input.h"
+#include "valtz/media/pdf.h"
 #include "valtz/media/sound.h"
 #include "valtz/models/capabilities.h"
 #include "valtz/models/tuning.h"
@@ -316,7 +317,8 @@ struct GenerateAudioRequest {
 // the project is not changed. `quality` is a JPEG's, 1..100 (0: vpipe's
 // default, 90); a PNG's or TIFF's quality is its depth, the format. A
 // still with PAGES writes one file a page, each `destination` numbered
-// (page_path); job.finished lists them ("paths").
+// (page_path); job.finished lists them ("paths") -- but a PDF, which is
+// one file of its pages, its vectors kept (Controller::pdf_document).
 struct ExportRequest {
   ProjectId             project;
   AssetId               asset;
@@ -1150,7 +1152,9 @@ public:
   // `dir` and no package. Save As names it.
   Result<ProjectId> create_untitled(const std::filesystem::path& dir,
                                     std::string name);
-  // Closed: its working copy goes when it is clean, or `discard`.
+  // Closed: its working copy goes when it is clean, or `discard`; its
+  // agent sessions and its jobs still queued or running stopped (a
+  // running one asked to: it ends cancelled as its graph stops).
   Status close_project(ProjectId, bool discard = false);
 
   // ---- saving, reverting, undoing (DESIGN §5b) ----------------------
@@ -1377,6 +1381,11 @@ public:
   // Write an asset out (ExportRequest). `job.finished` carries the
   // `path` written.
   Result<JobId> export_asset(ExportRequest);
+  // A picture as a PDF draws it (media/pdf.h): a still composition's
+  // pages, each its layers -- a markup's objects as vectors, a still
+  // composition a layer shows as its own layers, pictures and a clip's
+  // frame as files -- or a markup, or a picture, alone on its page.
+  Result<media::PdfDocument> pdf_document(ProjectId, AssetId);
   // Rebuild a stale (or never-built) derived asset from its recipe.
   Result<JobId> build_asset(ProjectId, AssetId);
 
@@ -1778,6 +1787,13 @@ private:
                         media::PixelSize frame,
                         const std::set<std::string>& hidden,
                         media::LayerPicture&, int depth);
+  // A composition's page -- anything else, itself -- as a PDF's STACK
+  // (pdf_document): its layers as stack_pictures_ has them, on their
+  // canvas; what each shows as pdf_layer_ finds it.
+  Result<media::PdfLayer> pdf_stack_(ProjectId, AssetId, std::int64_t page,
+                                     int depth);
+  Status pdf_layer_(ProjectId, project::Project&, const project::Layer&,
+                    media::PixelSize frame, media::PdfLayer&, int depth);
   // What a timeline's layer shows, as a writer takes it.
   struct TimedSource {
     std::filesystem::path file;

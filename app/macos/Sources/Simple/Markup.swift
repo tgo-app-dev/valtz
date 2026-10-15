@@ -3,7 +3,8 @@ import SwiftUI
 
 /// The markup toolbar's tools.
 enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
-    case select, brush, eraser, line, rect, ellipse, polygon, text
+    case select, brush, eraser, line, rect, ellipse, polygon, pen, text
+    case eyedropper
     var id: String { rawValue }
 
     var symbol: String {
@@ -15,7 +16,9 @@ enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
         case .rect: "rectangle"
         case .ellipse: "circle"
         case .polygon: "pentagon"
+        case .pen: "point.bottomleft.forward.to.point.topright.scurvepath"
         case .text: "textformat"
+        case .eyedropper: "eyedropper"
         }
     }
 
@@ -28,12 +31,24 @@ enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
         case .rect: String(localized: "Rectangle")
         case .ellipse: String(localized: "Ellipse")
         case .polygon: String(localized: "Polygon")
+        case .pen: String(localized: "Curvature Pen")
         case .text: String(localized: "Text")
+        case .eyedropper: String(localized: "Eyedropper")
+        }
+    }
+
+    /// What its button's help says beyond its name, where using it is not
+    /// plain from its name.
+    var hint: String? {
+        switch self {
+        case .pen: String(localized: "Click to place points the curve passes through, ⌥-click for a corner; click the first point to close it, Return to end it. On a selected path: click its curve to add a point, double-click a point to switch it between smooth and corner.")
+        case .eyedropper: String(localized: "Click the picture to take its colour as the Color, ⌥-click as the Fill — the selected objects' too.")
+        default: nil
         }
     }
 
     /// Its key, as a painting app's: V select, B brush, E eraser, L line,
-    /// R rectangle, C circle (the ellipse).
+    /// R rectangle, C circle (the ellipse), P the pen, I the eyedropper.
     var key: Character? {
         switch self {
         case .select: "v"
@@ -42,6 +57,8 @@ enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
         case .line: "l"
         case .rect: "r"
         case .ellipse: "c"
+        case .pen: "p"
+        case .eyedropper: "i"
         default: nil
         }
     }
@@ -56,9 +73,14 @@ enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
         case .line: 37
         case .rect: 15
         case .ellipse: 8
+        case .pen: 35
+        case .eyedropper: 34
         default: nil
         }
     }
+
+    /// X's key code on a US keyboard: Color and Fill swapped.
+    static let swapKeyCode: UInt16 = 7
 
     /// It makes a vector object.
     var shape: MarkupObject.Kind? {
@@ -71,13 +93,40 @@ enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var cursor: NSCursor {
+    @MainActor var cursor: NSCursor {
         switch self {
         case .select: .arrow
         case .text: .iBeam
+        case .eyedropper: Self.dropper
         default: .crosshair
         }
     }
+
+    /// The eyedropper's cursor: its symbol, black edged in white to show
+    /// on any picture, its tip -- the bottom left -- the hot spot.
+    @MainActor private static let dropper: NSCursor = {
+        let size = NSSize(width: 20, height: 20)
+        func symbol(_ c: NSColor) -> NSImage? {
+            NSImage(systemSymbolName: "eyedropper",
+                    accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 14, weight: .medium)
+                    .applying(.init(paletteColors: [c])))
+        }
+        guard let ink = symbol(.black), let edge = symbol(.white) else {
+            return .crosshair
+        }
+        let img = NSImage(size: size, flipped: false) { _ in
+            let r = NSRect(x: 2, y: 2, width: size.width - 4,
+                           height: size.height - 4)
+            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                edge.draw(in: r.offsetBy(dx: CGFloat(dx), dy: CGFloat(dy)))
+            }
+            ink.draw(in: r)
+            return true
+        }
+        // Flipped, as a cursor's hot spot is: from the top left.
+        return NSCursor(image: img, hotSpot: NSPoint(x: 3, y: size.height - 3))
+    }()
 }
 
 /// What the toolbar's ARRANGE does with the selected objects (the core's
@@ -190,6 +239,23 @@ final class MarkupState {
     /// to it. Closed on its first corner, a double-click or Return.
     var polygon: [CGPoint] = []
     var polygonHover: CGPoint?
+    /// A PATH being drawn with the curvature pen: its points so far
+    /// (canvas pixels), each SMOOTH -- the curve passes through it without
+    /// a turn -- or a corner (⌥ as it is placed, or a double-click on it),
+    /// and where the pointer is: the curve shown on to it. Closed on its
+    /// first point; Return, Escape or another tool end it open.
+    var pen: [CGPoint] = []
+    var penSmooth: [Bool] = []
+    var penHover: CGPoint?
+    /// The eyedropper over the picture: where (canvas pixels), and the
+    /// colour there -- shown in a ring round the pointer.
+    var sampleAt: CGPoint?
+    var sampleColor: RGBA?
+    /// ⌥ held: the colour taken would be the Fill.
+    var sampleFill = false
+    /// A clip's frame as the player draws it, for the eyedropper: drawn
+    /// once a frame (by its key: the clip, its plan, the frame).
+    @ObservationIgnored var sampleFrame: (key: String, image: CGImage?)?
 
     /// The brush stroke being drawn.
     var stroke: [CGPoint] = []
@@ -220,6 +286,10 @@ final class MarkupState {
 
     enum Drag {
         case none, stroke, shape, move, handle(String, Int), polygon
+        /// A pen's point placed (or pressed) following the pointer.
+        case penPoint(Int)
+        /// The eyedropper held down: the colour taken where it is let go.
+        case sample
         /// A selected object's gradient's end (0 from, 1 to).
         case gradient(String, Int)
         /// A drawing pressed (where): dragged, it is lifted and moved.
@@ -322,7 +392,25 @@ extension AppModel {
         }
         o.objects = m.selection + (m.draft.map { [$0] } ?? [])
         if let d = polygonDraft { o.objects.append(d) }
+        if let d = penDraft { o.objects.append(d) }
         o.path = m.polygon + (m.polygonHover.map { [$0] } ?? [])
+        if !m.pen.isEmpty {
+            // The pen's: its points by their kind, the curve shown on to
+            // the pointer.
+            o.path = m.pen + (m.penHover.map { [$0] } ?? [])
+            o.pathSmooth = m.penSmooth + (m.penHover == nil ? [] : [true])
+            o.pathCurved = true
+        }
+        // A path selected with the pen: its points to drag and switch.
+        o.editsPath = m.tool == .pen
+        if m.tool == .eyedropper, let at = m.sampleAt {
+            o.sampleAt = at
+            o.sampleColor = m.sampleColor
+            // What it would replace: the Color, or with ⌥ the Fill.
+            o.sampleNow = m.sampleFill
+                ? m.selection.first(where: \.fillable)?.fill ?? m.fill
+                : m.selection.first?.stroke ?? m.edge
+        }
         o.selected = m.selectedIds
         // Drawn by the core, in its layer's place, but while it changes.
         o.drawsSelection = m.live || m.settling
@@ -383,9 +471,11 @@ extension AppModel {
     func markupPointer(_ e: MarkupPointer) {
         guard markupReady else { return }
         // A mark that would go on a LOCKED layer (the selected one): said
-        // at the press, nothing begun.
-        if e.phase == .down, markup.tool != .select,
-           let t = markupTargetPreview, t.locked {
+        // at the press, nothing begun -- the eyedropper marks nothing, and
+        // the pen on a path selected works on the path's own layer.
+        let marks = markup.tool != .select && markup.tool != .eyedropper
+            && !(markup.tool == .pen && !markup.selection.isEmpty)
+        if e.phase == .down, marks, let t = markupTargetPreview, t.locked {
             flash(String(localized: "\(t.title) is locked: unlock it to change it."))
             return
         }
@@ -450,6 +540,22 @@ extension AppModel {
             m.drag = .none
         case (.hover, .polygon):
             if !m.polygon.isEmpty { m.polygonHover = p }
+        case (.down, .pen):
+            penDown(e)
+        case (.drag, .pen):
+            penDrag(e)
+        case (.up, .pen):
+            if case .handle = m.drag {
+                if m.moved { commitSelection(keep: true) } else {
+                    settleSelection()
+                }
+            }
+            m.drag = .none
+            m.moved = false
+        case (.hover, .pen):
+            if !m.pen.isEmpty { m.penHover = p }
+        case (_, .eyedropper):
+            eyedropper(e)
         case (.down, .select):
             selectDown(e)
         case (.drag, .select):
@@ -473,14 +579,18 @@ extension AppModel {
         switch k {
         case .delete: deleteSelectedObjects()
         case .escape:
-            // A polygon being drawn goes; else the selection is let go.
+            // A polygon being drawn goes; a path being drawn is ended,
+            // open (as a curvature pen's); else the selection is let go.
             if !markup.polygon.isEmpty {
                 markup.polygon = []
                 markup.polygonHover = nil
+            } else if !markup.pen.isEmpty {
+                finishPen()
             } else {
                 commitSelection()
             }
-        case .enter: finishPolygon()
+        case .enter:
+            if markup.pen.isEmpty { finishPolygon() } else { finishPen() }
         case .cut: copySelectedObjects(cut: true)
         case .copy: copySelectedObjects(cut: false)
         case .paste: pasteObjects()
@@ -496,11 +606,12 @@ extension AppModel {
         }
     }
 
-    /// A tool's KEY (MarkupTool.key) -- V, B, E, L, R, C -- while the
-    /// markup toolbar can be used, wherever the keyboard is in the window
-    /// but text (a prompt, a field: a letter typed there is a letter) or a
-    /// list (its letters find a row); no modifier held, held down once.
-    /// Handled -- true -- or left to go on.
+    /// A tool's KEY (MarkupTool.key) -- V, B, E, L, R, C, P, I -- and X
+    /// (Color and Fill swapped), while the markup toolbar can be used,
+    /// wherever the keyboard is in the window but text (a prompt, a field:
+    /// a letter typed there is a letter) or a list (its letters find a
+    /// row); no modifier held, held down once. Handled -- true -- or left
+    /// to go on.
     func markupToolKey(_ e: NSEvent) -> Bool {
         guard markupOpen, markupReady, !e.isARepeat,
               let w = e.window, !(w is NSPanel),
@@ -515,6 +626,11 @@ extension AppModel {
         let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
         let latin = ch.count == 1 && ch.first.map {
             $0.isASCII && $0.isLetter } == true
+        // X: Color and Fill swapped, as a painting app's.
+        if latin ? ch == "x" : e.keyCode == MarkupTool.swapKeyCode {
+            swapMarkupColors()
+            return true
+        }
         guard let tool = MarkupTool.allCases.first(where: { t in
             latin ? t.key.map { String($0) } == ch
                   : t.keyCode == e.keyCode
@@ -567,7 +683,7 @@ extension AppModel {
             return NSPasteboard.general.availableType(
                 from: [Self.markupPasteboardType]) != nil
         case .escape, .smaller, .larger, .softer, .harder: return true
-        case .enter: return !markup.polygon.isEmpty
+        case .enter: return !markup.polygon.isEmpty || !markup.pen.isEmpty
         }
     }
 
@@ -675,6 +791,260 @@ extension AppModel {
         var o = newObject(.polygon, at: pts[0])
         MarkupRender.setPolygon(&o, pts)
         addObject(o)
+    }
+
+    // MARK: The curvature pen
+
+    /// The path being drawn, as an object with the toolbar's settings --
+    /// on to the pointer -- for the overlay; nil while there is none.
+    private var penDraft: MarkupObject? {
+        let m = markup
+        let pts = m.pen + (m.penHover.map { [$0] } ?? [])
+        guard pts.count >= 2 else { return nil }
+        var o = newObject(.polygon, at: pts[0])
+        o.id = "pen-draft"
+        MarkupRender.setPolygon(&o, pts)
+        o.smooth = m.penSmooth + (m.penHover == nil ? [] : [true])
+        o.open = true
+        o.fill = .clear
+        o.gradient = nil
+        return o
+    }
+
+    /// The pen's reach for a point or a curve: a few points on screen.
+    private func penReach(_ e: MarkupPointer) -> Double {
+        6 * e.pixelsPerPoint
+    }
+
+    /// The point of `pts` within reach of `p`, the nearest.
+    private func pointNear(_ p: CGPoint, in pts: [CGPoint],
+                           reach: Double) -> Int? {
+        pts.indices.filter { hypot(pts[$0].x - p.x, pts[$0].y - p.y) <= reach }
+            .min { hypot(pts[$0].x - p.x, pts[$0].y - p.y)
+                   < hypot(pts[$1].x - p.x, pts[$1].y - p.y) }
+    }
+
+    /// A press with the CURVATURE PEN. Drawing a path: on one of its
+    /// points a double-click switches it between smooth and corner, a
+    /// click on the first (three or more) closes the path, a press drags
+    /// it; anywhere else a new point -- smooth, or with ⌥ a corner --
+    /// following the pointer until let go. A PATH SELECTED (one polygon):
+    /// its points dragged and switched alike, a click on its curve a new
+    /// smooth point there. Else a new path begins.
+    private func penDown(_ e: MarkupPointer) {
+        let m = markup
+        let p = e.point
+        let reach = penReach(e)
+        m.moved = false
+        if !m.pen.isEmpty {
+            if let i = pointNear(p, in: m.pen, reach: reach) {
+                if e.clickCount >= 2 {
+                    m.penSmooth[i].toggle()
+                    m.drag = .none
+                } else if i == 0 && m.pen.count >= 3 {
+                    finishPen(closed: true)
+                } else {
+                    m.drag = .penPoint(i)
+                }
+                return
+            }
+            m.pen.append(p)
+            m.penSmooth.append(!e.option)
+            m.drag = .penPoint(m.pen.count - 1)
+            return
+        }
+        if m.selection.count == 1, let o = m.selection.first,
+           o.kind == .polygon {
+            if let i = pointNear(p, in: MarkupRender.polygonPoints(o),
+                                 reach: reach) {
+                if e.clickCount >= 2 {
+                    editSelection { $0 = MarkupRender.togglingPoint($0, i) }
+                    m.drag = .none
+                } else {
+                    m.drag = .handle(o.id, i)
+                }
+                return
+            }
+            if let hit = MarkupRender.nearest(o, to: p),
+               hit.distance <= o.width / 2 + reach {
+                // Drawn live from here; kept when let go -- the new point
+                // dragged on meanwhile.
+                liveSelection()
+                m.selection[0] = MarkupRender.addingPoint(o, after: hit.piece,
+                                                          at: hit.at)
+                m.drag = .handle(o.id, hit.piece + 1)
+                m.moved = true
+                return
+            }
+        }
+        commitSelection()
+        m.pen = [p]
+        m.penSmooth = [!e.option]
+        m.penHover = nil
+        m.drag = .penPoint(0)
+    }
+
+    /// The pen's point pressed -- one placed, or a selected path's --
+    /// following the pointer.
+    private func penDrag(_ e: MarkupPointer) {
+        let m = markup
+        switch m.drag {
+        case .penPoint(let i) where m.pen.indices.contains(i):
+            m.pen[i] = e.point
+        case .handle(let id, let i):
+            guard let k = m.selection.firstIndex(where: { $0.id == id })
+            else { return }
+            liveSelection()
+            m.selection[k] = MarkupRender.moving(m.selection[k], handle: i,
+                                                 to: e.point)
+            m.moved = true
+        default:
+            break
+        }
+    }
+
+    /// The path drawn made an object and selected -- `closed` (three
+    /// points or more), else open (two or more); the same point twice
+    /// running taken once. Fewer: none.
+    func finishPen(closed: Bool = false) {
+        let m = markup
+        var pts: [CGPoint] = [], flags: [Bool] = []
+        for (p, s) in zip(m.pen, m.penSmooth) {
+            if let q = pts.last, hypot(p.x - q.x, p.y - q.y) < 1 { continue }
+            pts.append(p)
+            flags.append(s)
+        }
+        if closed, let a = pts.first, let z = pts.last, pts.count > 1,
+           hypot(a.x - z.x, a.y - z.y) < 1 {
+            pts.removeLast()
+            flags.removeLast()
+        }
+        m.pen = []
+        m.penSmooth = []
+        m.penHover = nil
+        m.drag = .none
+        guard pts.count >= (closed ? 3 : 2) else { return }
+        var o = newObject(.polygon, at: pts[0])
+        MarkupRender.setPolygon(&o, pts)
+        o.smooth = flags.contains(true) ? flags : []
+        o.open = !closed
+        if o.open {
+            o.fill = .clear
+            o.gradient = nil
+        }
+        addObject(o)
+    }
+
+    // MARK: The eyedropper and the colours
+
+    /// The EYEDROPPER: the colour under the pointer shown beside the one
+    /// it would replace; pressed and let go, taken -- as the Color, or
+    /// with ⌥ the Fill (`takeSampledColor`).
+    private func eyedropper(_ e: MarkupPointer) {
+        let m = markup
+        let p = e.point
+        switch e.phase {
+        case .down, .drag, .hover:
+            if e.phase == .down { m.drag = .sample }
+            m.sampleAt = p
+            m.sampleFill = e.option
+            m.sampleColor = sampledColor(at: p)
+        case .exit:
+            m.sampleAt = nil
+            m.sampleColor = nil
+        case .up:
+            guard case .sample = m.drag else { return }
+            m.drag = .none
+            if let c = sampledColor(at: p) {
+                takeSampledColor(c, fill: e.option)
+            } else if markupOnClip {
+                // The clip's frame not drawn yet: taken once it is.
+                Task { [weak self] in
+                    guard let self, let c = await self.clipSample(at: p)
+                    else { return }
+                    self.takeSampledColor(c, fill: e.option)
+                }
+            }
+        }
+    }
+
+    /// The colour the stage shows at `p` (markup's canvas pixels): a
+    /// picture's as its canvas lays it out; a clip's from its frame as
+    /// the player draws it, once that is drawn (it is drawn, a frame at
+    /// a time, as the pointer comes). nil off the picture.
+    func sampledColor(at p: CGPoint) -> RGBA? {
+        guard markupOnClip else {
+            return CompareCanvas.shown?.sampleColor(atCanvas: p)
+        }
+        let key = clipSampleKey
+        let m = markup
+        if let f = m.sampleFrame, f.key == key {
+            return f.image.flatMap { clipPixel($0, at: p) }
+        }
+        Task { [weak self] in _ = await self?.clipSample(at: p) }
+        return nil
+    }
+
+    /// Which frame a clip's sample is of: the clip, its plan, the frame.
+    private var clipSampleKey: String {
+        "\(markupAsset?.id ?? "")/\(stackPlayback?.plan ?? 0)/\(videoFrame)"
+    }
+
+    /// The clip's frame drawn (once a frame) and the colour at `p`.
+    private func clipSample(at p: CGPoint) async -> RGBA? {
+        let m = markup
+        let key = clipSampleKey
+        if m.sampleFrame?.key != key {
+            m.sampleFrame = (key, nil)
+            var img: CGImage?
+            if let core, let plan = stackPlayback, !plan.soundOnly {
+                img = core.stackStill(plan: plan.plan, frame: videoFrame)
+            } else if let core, let url = stage.video,
+                      let look = stageClipLook {
+                img = await VideoPlayerView.frame(url, videoFrame,
+                                                  look: look, core: core)
+            }
+            guard m.sampleFrame?.key == key else { return nil }
+            m.sampleFrame = (key, img)
+            if let at = m.sampleAt, m.tool == .eyedropper {
+                m.sampleColor = img.flatMap { clipPixel($0, at: at) }
+            }
+        }
+        return m.sampleFrame?.image.flatMap { clipPixel($0, at: p) }
+    }
+
+    /// The pixel of a clip's frame under markup's pixel `p`: on its canvas
+    /// where markup's frame lies, at the frame's own scale.
+    private func clipPixel(_ img: CGImage, at p: CGPoint) -> RGBA? {
+        let canvas = clipMarkupCanvas
+        guard canvas.width > 0, canvas.height > 0 else { return nil }
+        let o = clipMarkupOrigin
+        return CompareCanvas.pixel(img, at: CGPoint(
+            x: (p.x + o.x) * CGFloat(img.width) / canvas.width,
+            y: (p.y + o.y) * CGFloat(img.height) / canvas.height))
+    }
+
+    /// A colour the eyedropper took: the Color -- or the Fill -- as its
+    /// well sets it, the toolbar's and the selected objects'.
+    func takeSampledColor(_ c: RGBA, fill: Bool) {
+        let m = markup
+        if fill {
+            m.fill = c
+            editSelection { if $0.fillable { $0.fill = c } }
+        } else {
+            m.edge = c
+            editSelection { $0.stroke = c }
+        }
+    }
+
+    /// X: the toolbar's Color and Fill swapped -- and each selected
+    /// shape's outline and inside, which the wells show.
+    func swapMarkupColors() {
+        let m = markup
+        (m.edge, m.fill) = (m.fill, m.edge)
+        editSelection {
+            if $0.fillable { ($0.stroke, $0.fill) = ($0.fill, $0.stroke) }
+        }
     }
 
     /// The selected objects on the pasteboard -- the texts' words as
@@ -1128,7 +1498,14 @@ extension AppModel {
         let byId = Dictionary(uniqueKeysWithValues:
                                 m.selection.map { ($0.id, $0) })
         let now = markupObjects(layer).map { byId[$0.id] ?? $0 }
-        if now != markupObjects(layer) { saveObjects(now, on: layer) }
+        if now != markupObjects(layer) {
+            saveObjects(now, on: layer)
+            // Changed at once (a colour, the eyedropper's, X), not live:
+            // the core draws it, so the picture is made again -- a live
+            // one is when it settles. (A well's colour was kept and not
+            // shown until something else drew the picture.)
+            if !m.live { markupChanged() }
+        }
         if !keep {
             // A drawing lifted, let go: laid back into the raster where
             // it now lies -- over another, the two are one (a command of
@@ -1460,16 +1837,24 @@ extension AppModel {
             // the objects selected on it).
             if let layer = drawingHit(p, e) {
                 // The DRAWING there -- the strokes that touch -- selected,
-                // outlined by its box; dragged, it is lifted and moved.
-                if !(e.shift && m.selectionLayer == layer) {
+                // outlined by its box; dragged, it is lifted and moved. The
+                // drawing selected already, pressed: the objects selected
+                // with it stay so, ⇧ or not, and go with it (they were
+                // let go, and it moved alone).
+                let reach = min(12, max(1, Int((4 * e.pixelsPerPoint)
+                    .rounded())))
+                let pressedSelected = m.drawing && m.selectionLayer == layer
+                    && (m.drawingBox?.insetBy(dx: -Double(reach),
+                                              dy: -Double(reach))
+                        .contains(p) ?? false)
+                if !(e.shift && m.selectionLayer == layer)
+                    && !pressedSelected {
                     commitSelection()
                     m.selection = []
                     m.selectionLayer = layer
                     m.selectionAsset = markupAsset?.id
                     if activeLayer != layer { selectLayer(layer) }
                 }
-                let reach = min(12, max(1, Int((4 * e.pixelsPerPoint)
-                    .rounded())))
                 m.drawingAt = p
                 m.drawingBox = drawingBox(at: p, on: layer, reach: reach)
                 m.drawing = true
@@ -1502,6 +1887,17 @@ extension AppModel {
     private func selectDrag(_ e: MarkupPointer) {
         let m = markup
         let p = e.point
+        // The selected objects dragged with a DRAWING selected beside
+        // them: it is lifted too and goes with them (it stayed behind).
+        if case .move = m.drag, m.drawing, let at = m.drawingAt,
+           let layer = m.selectionLayer,
+           let lifted = liftDrawing(at: at, on: layer, e) {
+            m.drawing = false
+            m.drawingAt = nil
+            m.drawingBox = nil
+            select(m.selection + [lifted], on: layer)
+            m.moveStart.append(lifted)
+        }
         // Moved or reshaped: drawn live from its first step.
         switch m.drag {
         case .move, .handle, .gradient: liveSelection()
@@ -1633,9 +2029,19 @@ extension AppModel {
     /// The toolbar closed, or its tool changed: the selection let go.
     func markupToolChanged() {
         let m = markup
-        // Another tool: a polygon being drawn is made (or let go).
+        // Another tool: a polygon being drawn is made (or let go), a path
+        // being drawn ended open.
         if m.tool != .polygon && !m.polygon.isEmpty { finishPolygon() }
-        if m.tool != .select && m.tool != .text { commitSelection() }
+        if m.tool != .pen && !m.pen.isEmpty { finishPen() }
+        if m.tool != .eyedropper {
+            m.sampleAt = nil
+            m.sampleColor = nil
+        }
+        // The pen edits a selected path; the eyedropper colours what is
+        // selected: they keep it.
+        if ![.select, .text, .pen, .eyedropper].contains(m.tool) {
+            commitSelection()
+        }
         // The brush or the eraser takes the keyboard from the prompt (as
         // a painting app's tools do): [ ] are its size then, not words.
         if m.tool == .brush || m.tool == .eraser,

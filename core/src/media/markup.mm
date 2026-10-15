@@ -10,6 +10,7 @@
 #include <cstring>
 #include <format>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <tuple>
 #include <vector>
@@ -319,30 +320,115 @@ draw_gradient(CGContextRef ctx, const Gradient& g, double x0, double y0,
   CGGradientRelease(cg);
 }
 
+// A cubic Bezier piece of a path: from A to B, its control points C1, C2.
+struct Piece {
+  CGPoint a, c1, c2, b;
+};
+
+// The share of a segment a smooth point's handle reaches along it, for a
+// turn of `theta` there: what puts a circle's arc through points evenly
+// round it -- (2/3) tan(θ/4) / sin(θ/2), a third for no turn -- the turn
+// held to 120° (a sharper one would loop).
+double
+handle_share(double theta)
+{
+  const double t = std::min(theta, 2 * std::numbers::pi / 3);
+  if (t < 1e-4) {
+    return 1.0 / 3;
+  }
+  return 2.0 / 3 * std::tan(t / 4) / std::sin(t / 2);
+}
+
+// A PATH's pieces (2026-10-15): the curve through a polygon's points on
+// the canvas, as a curvature pen draws it -- a cubic Bezier from each
+// point to the next (and the last back to the first, closed). A SMOOTH
+// point is passed through without a turn: its tangent runs along the
+// line from the point before it to the one after, its handles that way,
+// each a share of the segment it reaches into (handle_share) -- four
+// smooth points round a square make a circle. A CORNER -- and an open
+// path's ends -- has none: its segments leave it straight for the next
+// handle. Computed on the canvas, not in the box's units: the curve the
+// points make where they are. The app draws it the same (MarkupRender).
+std::vector<Piece>
+path_pieces(const std::vector<CGPoint>& p, const std::vector<bool>& smooth,
+            bool closed)
+{
+  const std::size_t n = p.size();
+  std::vector<CGPoint> in(p), out(p);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (i >= smooth.size() || !smooth[i] ||
+        (!closed && (i == 0 || i + 1 == n)) || n < 3) {
+      continue;
+    }
+    const CGPoint a = p[(i + n - 1) % n], b = p[(i + 1) % n];
+    const double dx = b.x - a.x, dy = b.y - a.y;
+    const double len = std::hypot(dx, dy);
+    if (len < 1e-9) {
+      continue;
+    }
+    const double vx = p[i].x - a.x, vy = p[i].y - a.y;
+    const double wx = b.x - p[i].x, wy = b.y - p[i].y;
+    const double turn =
+        std::atan2(std::abs(vx * wy - vy * wx), vx * wx + vy * wy);
+    const double f = handle_share(turn);
+    const double back = std::hypot(vx, vy) * f / len;
+    const double on = std::hypot(wx, wy) * f / len;
+    in[i] = CGPointMake(p[i].x - dx * back, p[i].y - dy * back);
+    out[i] = CGPointMake(p[i].x + dx * on, p[i].y + dy * on);
+  }
+  std::vector<Piece> pieces;
+  for (std::size_t i = 0; i + 1 < n || (closed && i < n && n > 1); ++i) {
+    const std::size_t j = (i + 1) % n;
+    pieces.push_back({p[i], out[i], in[j], p[j]});
+  }
+  return pieces;
+}
+
 // A rectangle's, an ellipse's or a POLYGON's outline: a polygon's points
-// are its box's units (as its corners move, so do they), closed.
+// are its box's units (as its corners move, so do they), closed -- or, a
+// PATH, through its smooth points (path_pieces), OPEN where it says so.
 CGMutablePathRef
 shape_path(const Json& o, const std::string& kind, double x0, double y0,
            double x1, double y1)
 {
   CGMutablePathRef path = CGPathCreateMutable();
   if (kind == "polygon") {
-    bool first = true;
-    for (const auto& p : jget(o, "points", Json::array())) {
+    std::vector<CGPoint> pts;
+    std::vector<bool> smooth;
+    const Json flags = jget(o, "smooth", Json::array());
+    const Json all = jget(o, "points", Json::array());
+    for (std::size_t i = 0; i < all.size(); ++i) {
+      const Json& p = all[i];
       if (!p.is_array() || p.size() != 2 || !p[0].is_number() ||
           !p[1].is_number()) {
         continue;
       }
-      const double x = x0 + p[0].get<double>() * (x1 - x0);
-      const double y = y0 + p[1].get<double>() * (y1 - y0);
-      if (first) {
-        CGPathMoveToPoint(path, nullptr, x, y);
-        first = false;
+      pts.push_back(CGPointMake(x0 + p[0].get<double>() * (x1 - x0),
+                                y0 + p[1].get<double>() * (y1 - y0)));
+      smooth.push_back(flags.is_array() && i < flags.size() &&
+                       flags[i].is_boolean() && flags[i].get<bool>());
+    }
+    if (pts.empty()) {
+      return path;
+    }
+    const bool closed = !jget(o, "open", false);
+    CGPathMoveToPoint(path, nullptr, pts[0].x, pts[0].y);
+    const auto pieces = path_pieces(pts, smooth, closed);
+    for (std::size_t i = 0; i < pieces.size(); ++i) {
+      const Piece& c = pieces[i];
+      const bool straight = CGPointEqualToPoint(c.c1, c.a) &&
+                            CGPointEqualToPoint(c.c2, c.b);
+      if (straight && closed && i + 1 == pieces.size()) {
+        break;  // the closing edge: the subpath's close draws it
+      }
+      if (straight) {
+        CGPathAddLineToPoint(path, nullptr, c.b.x, c.b.y);
       } else {
-        CGPathAddLineToPoint(path, nullptr, x, y);
+        CGPathAddCurveToPoint(path, nullptr, c.c1.x, c.c1.y, c.c2.x,
+                              c.c2.y, c.b.x, c.b.y);
       }
     }
-    if (!first) {
+    if (closed) {
       CGPathCloseSubpath(path);
     }
     return path;
@@ -356,10 +442,55 @@ shape_path(const Json& o, const std::string& kind, double x0, double y0,
   return path;
 }
 
-// One object, on a context whose CTM is canvas pixels, y down: itself,
-// without its effects.
+// A LINE's glyphs as outlines into `glyphs`, its underlines' bars into
+// `bars`, its origin at `origin` (y up): words a gradient fills in a
+// vector context (draw_body).
 void
-draw_body(CGContextRef ctx, const Json& o)
+add_outlines(CGMutablePathRef glyphs, CGMutablePathRef bars, CTLineRef line,
+             CGPoint origin)
+{
+  CFArrayRef runs = CTLineGetGlyphRuns(line);
+  for (CFIndex r = 0; r < CFArrayGetCount(runs); ++r) {
+    auto run = static_cast<CTRunRef>(CFArrayGetValueAtIndex(runs, r));
+    NSDictionary* attrs = (__bridge NSDictionary*)CTRunGetAttributes(run);
+    auto font = (__bridge CTFontRef)
+        attrs[(__bridge NSString*)kCTFontAttributeName];
+    const CFIndex n = CTRunGetGlyphCount(run);
+    if (!font || n <= 0) {
+      continue;
+    }
+    std::vector<CGGlyph> ids(static_cast<std::size_t>(n));
+    std::vector<CGPoint> at(static_cast<std::size_t>(n));
+    CTRunGetGlyphs(run, CFRangeMake(0, 0), ids.data());
+    CTRunGetPositions(run, CFRangeMake(0, 0), at.data());
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      const CGAffineTransform t = CGAffineTransformMakeTranslation(
+          origin.x + at[i].x, origin.y + at[i].y);
+      if (CGPathRef g = CTFontCreatePathForGlyph(font, ids[i], &t)) {
+        CGPathAddPath(glyphs, nullptr, g);
+        CGPathRelease(g);
+      }
+    }
+    if ([attrs[(__bridge NSString*)kCTUnderlineStyleAttributeName]
+            intValue] != 0) {
+      const double w = CTRunGetTypographicBounds(run, CFRangeMake(0, 0),
+                                                 nullptr, nullptr, nullptr);
+      const double th = std::max(1.0, CTFontGetUnderlineThickness(font));
+      const double y = origin.y + CTFontGetUnderlinePosition(font);
+      CGPathAddRect(bars, nullptr, CGRectMake(origin.x + at[0].x,
+                                              y - th / 2, w, th));
+    }
+  }
+}
+
+// One object, on a context whose CTM is canvas pixels, y down: itself,
+// without its effects. For a VECTOR context (`vectors`: a PDF's), a
+// gradient in a text box's words is laid through their glyphs' outlines
+// as a clip -- the words made shapes -- not into a layer of them
+// source-in, which a PDF cannot hold (Quartz lays the gradient over the
+// whole layer).
+void
+draw_body(CGContextRef ctx, const Json& o, bool vectors)
 {
   const auto kind = jget<std::string>(o, "kind", "");
   const double x0 = finite_or(o, "x0", 0), y0 = finite_or(o, "y0", 0);
@@ -390,21 +521,28 @@ draw_body(CGContextRef ctx, const Json& o)
     }
   } else if (kind == "rect" || kind == "ellipse" || kind == "polygon") {
     // Its inside: a gradient through its outline as a clip, else its
-    // flat fill; then its outline.
+    // flat fill; then its outline. An OPEN path has no inside: a line,
+    // its ends and turns round.
+    const bool open = kind == "polygon" && jget(o, "open", false);
     CGMutablePathRef path = shape_path(o, kind, x0, y0, x1, y1);
-    if (const auto g = gradient_of(o)) {
+    const std::optional<Gradient> g =
+        open ? std::optional<Gradient>() : gradient_of(o);
+    if (g) {
       CGContextSaveGState(ctx);
       CGContextAddPath(ctx, path);
       CGContextClip(ctx);
       draw_gradient(ctx, *g, x0, y0, x1, y1);
       CGContextRestoreGState(ctx);
-    } else if (fill[3] > 0) {
+    } else if (!open && fill[3] > 0) {
       set_fill(ctx, fill);
       CGContextAddPath(ctx, path);
       CGContextFillPath(ctx);
     }
     if (width > 0) {
-      CGContextSetLineJoin(ctx, kCGLineJoinMiter);
+      CGContextSetLineJoin(ctx, open ? kCGLineJoinRound : kCGLineJoinMiter);
+      if (open) {
+        CGContextSetLineCap(ctx, kCGLineCapRound);
+      }
       CGContextSetLineWidth(ctx, width);
       set_stroke(ctx, stroke);
       CGContextAddPath(ctx, path);
@@ -440,10 +578,12 @@ draw_body(CGContextRef ctx, const Json& o)
                                              length:text.size()
                                            encoding:NSUTF8StringEncoding];
       // A gradient colours the words: drawn in a layer of their own, the
-      // gradient laid only where they are (source-in).
+      // gradient laid only where they are (source-in) -- or, in a vector
+      // context, through their outlines.
       const auto grad = gradient_of(o);
+      const bool outlined = vectors && grad;
       const double size = finite_or(font, "size", 48);
-      if (grad) {
+      if (grad && !outlined) {
         CGContextBeginTransparencyLayerWithRect(
             ctx, CGRectInset(CGRectMake(bx, by, bw, bh), -size, -size),
             nullptr);
@@ -466,6 +606,8 @@ draw_body(CGContextRef ctx, const Json& o)
         CTFrameGetLineOrigins(frame, CFRangeMake(0, 0), origins.data());
         const bool stretch = jget(o, "justify_last", false) &&
                              alignment_of(o) == kCTTextAlignmentJustified;
+        CGMutablePathRef glyphs = outlined ? CGPathCreateMutable() : nullptr;
+        CGMutablePathRef bars = outlined ? CGPathCreateMutable() : nullptr;
         for (CFIndex i = 0; i < n; ++i) {
           auto l = static_cast<CTLineRef>(CFArrayGetValueAtIndex(lines, i));
           const CFRange r = CTLineGetStringRange(l);
@@ -474,18 +616,45 @@ draw_body(CGContextRef ctx, const Json& o)
               r.location + r.length >= static_cast<CFIndex>(s.length)) {
             drawn = CTLineCreateJustifiedLine(l, 1.0, bw);
           }
-          CGContextSetTextPosition(ctx, origins[i].x, origins[i].y);
-          CTLineDraw(drawn ? drawn : l, ctx);
+          if (outlined) {
+            add_outlines(glyphs, bars, drawn ? drawn : l, origins[i]);
+          } else {
+            CGContextSetTextPosition(ctx, origins[i].x, origins[i].y);
+            CTLineDraw(drawn ? drawn : l, ctx);
+          }
           if (drawn) {
             CFRelease(drawn);
           }
+        }
+        if (outlined) {
+          // The gradient through the glyphs, then through the underlines
+          // apart (one path, their windings could cancel where they
+          // cross), at the words' colour's alpha -- as source-in leaves
+          // it. Its ends are the object's: back to canvas pixels, the
+          // clip kept.
+          for (CGPathRef clip : {static_cast<CGPathRef>(glyphs),
+                                 static_cast<CGPathRef>(bars)}) {
+            if (CGPathIsEmpty(clip)) {
+              continue;
+            }
+            CGContextSaveGState(ctx);
+            CGContextAddPath(ctx, clip);
+            CGContextClip(ctx);
+            CGContextScaleCTM(ctx, 1, -1);
+            CGContextTranslateCTM(ctx, -bx, -(by + bh));
+            CGContextSetAlpha(ctx, stroke[3]);
+            draw_gradient(ctx, *grad, x0, y0, x1, y1);
+            CGContextRestoreGState(ctx);
+          }
+          CGPathRelease(glyphs);
+          CGPathRelease(bars);
         }
         CFRelease(frame);
         CGPathRelease(path);
         CFRelease(fs);
       }
       CGContextRestoreGState(ctx);
-      if (grad) {
+      if (grad && !outlined) {
         CGContextSaveGState(ctx);
         CGContextSetBlendMode(ctx, kCGBlendModeSourceIn);
         draw_gradient(ctx, *grad, x0, y0, x1, y1);
@@ -565,6 +734,22 @@ passes_of(const Json& o)
   return out;
 }
 
+// An object's box -- a polygon's with its path's, which a curve takes
+// past its points.
+CGRect
+shape_box(const Json& o, double x0, double y0, double x1, double y1)
+{
+  CGRect r = CGRectStandardize(CGRectMake(x0, y0, x1 - x0, y1 - y0));
+  if (jget<std::string>(o, "kind", "") == "polygon") {
+    CGMutablePathRef p = shape_path(o, "polygon", x0, y0, x1, y1);
+    if (!CGPathIsEmpty(p)) {
+      r = CGRectUnion(r, CGPathGetPathBoundingBox(p));
+    }
+    CGPathRelease(p);
+  }
+  return r;
+}
+
 // What an object covers, its outline included; a text without a box
 // (unmeasured here): none -- the whole canvas then.
 CGRect
@@ -578,20 +763,125 @@ object_rect(const Json& o)
   const double x1 = finite_or(o, "x1", 0), y1 = finite_or(o, "y1", 0);
   const double w = kind == "text" ? 0 : std::max(0.0, finite_or(o, "width",
                                                                 0));
-  return CGRectInset(CGRectStandardize(CGRectMake(x0, y0, x1 - x0, y1 - y0)),
-                     -w, -w);
+  return CGRectInset(shape_box(o, x0, y0, x1, y1), -w, -w);
+}
+
+void draw_object(CGContextRef ctx, const Json& o, bool vectors);
+
+// The pixels in an object's effects drawn in a VECTOR context: as many a
+// canvas pixel as twice the context's own, and no more than this all
+// told (a 16-bit bitmap of them, twice).
+constexpr double kEffectsScale = 2;
+constexpr double kMostEffectsPixels = 16.0 * 1024 * 1024;
+
+// What an object's EFFECTS lay BENEATH it -- its shadows and glows, each
+// round the ones before, as a bitmap draws them -- over `r` (canvas
+// pixels, y down) at `k` pixels a canvas pixel: for a vector context,
+// which draws the object itself over it. A bitmap draws the object WITH
+// its effects as the object over what lies beneath; that is taken back
+// out of it -- (with - alone) / (1 - the object's alpha), in 16 bits --
+// and where the object covers all, nothing beneath shows. 8-bit
+// premultiplied sRGB, cut to what it covers: `r` made that. Null with
+// nothing beneath.
+CGImageRef
+effects_beneath(const Json& o, CGRect& r, double k)
+{
+  const auto w = static_cast<std::size_t>(std::ceil(r.size.width * k));
+  const auto h = static_cast<std::size_t>(std::ceil(r.size.height * k));
+  if (w == 0 || h == 0) {
+    return nullptr;
+  }
+  CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  auto bitmap = [&] {
+    CGContextRef c = CGBitmapContextCreate(
+        nullptr, w, h, 16, 0, srgb,
+        kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder16Host);
+    if (c) {
+      CGContextClearRect(c, CGRectMake(0, 0, w, h));
+      CGContextTranslateCTM(c, 0, static_cast<CGFloat>(h));
+      CGContextScaleCTM(c, k, -k);
+      CGContextTranslateCTM(c, -r.origin.x, -r.origin.y);
+    }
+    return c;
+  };
+  CGContextRef with = bitmap();
+  CGContextRef alone = bitmap();
+  CGImageRef out = nullptr;
+  if (with && alone) {
+    draw_object(with, o, false);
+    draw_body(alone, o, false);
+    const auto* a =
+        static_cast<const std::uint16_t*>(CGBitmapContextGetData(with));
+    const auto* b =
+        static_cast<const std::uint16_t*>(CGBitmapContextGetData(alone));
+    const std::size_t ra = CGBitmapContextGetBytesPerRow(with) / 2;
+    const std::size_t rb = CGBitmapContextGetBytesPerRow(alone) / 2;
+    std::vector<std::uint8_t> under(w * h * 4, 0);
+    std::size_t x0 = w, y0 = h, x1 = 0, y1 = 0;  // what it covers
+    for (std::size_t y = 0; y < h; ++y) {
+      const std::uint16_t* pa = a + y * ra;
+      const std::uint16_t* pb = b + y * rb;
+      std::uint8_t* pu = under.data() + y * w * 4;
+      for (std::size_t x = 0; x < w; ++x, pa += 4, pb += 4, pu += 4) {
+        const double clear = 1 - pb[3] / 65535.0;
+        if (clear < 1.0 / 1024) {
+          continue;
+        }
+        double v[4];
+        for (int c = 0; c < 4; ++c) {
+          v[c] = std::clamp((pa[c] - pb[c]) / 65535.0 / clear, 0.0, 1.0);
+        }
+        for (int c = 0; c < 3; ++c) {
+          v[c] = std::min(v[c], v[3]);  // premultiplied
+        }
+        for (int c = 0; c < 4; ++c) {
+          pu[c] = static_cast<std::uint8_t>(std::lround(v[c] * 255));
+        }
+        if (pu[3] > 0) {
+          x0 = std::min(x0, x);
+          y0 = std::min(y0, y);
+          x1 = std::max(x1, x + 1);
+          y1 = std::max(y1, y + 1);
+        }
+      }
+    }
+    if (x1 > x0 && y1 > y0) {
+      CGContextRef cut = CGBitmapContextCreate(
+          under.data() + (y0 * w + x0) * 4, x1 - x0, y1 - y0, 8, w * 4,
+          srgb, kCGImageAlphaPremultipliedLast);
+      if (cut) {
+        out = CGBitmapContextCreateImage(cut);
+        CGContextRelease(cut);
+      }
+      r = CGRectMake(r.origin.x + x0 / k, r.origin.y + y0 / k,
+                     (x1 - x0) / k, (y1 - y0) / k);
+    }
+  }
+  CGColorSpaceRelease(srgb);
+  if (with) {
+    CGContextRelease(with);
+  }
+  if (alone) {
+    CGContextRelease(alone);
+  }
+  return out;
 }
 
 // One object with its effects: each a transparency layer composited with
 // its shadow -- the outermost begun first -- the object drawn once inside
 // them all. A bitmap's shadow is measured in its pixels, y up: the offset
-// and blur converted from canvas pixels through the CTM.
+// and blur converted from canvas pixels through the CTM. In a VECTOR
+// context (a PDF's) the effects are pixels beneath it (effects_beneath),
+// the object itself drawn as vectors: Quartz would draw the layers as PDF
+// groups blended in Generic RGB, a saturated colour in them shifting
+// (sRGB's red came back 255, 37, 0), and its shadows' offsets are its
+// base space's, y up.
 void
-draw_object(CGContextRef ctx, const Json& o)
+draw_object(CGContextRef ctx, const Json& o, bool vectors)
 {
   const std::vector<Pass> passes = passes_of(o);
   if (passes.empty()) {
-    draw_body(ctx, o);
+    draw_body(ctx, o, vectors);
     return;
   }
   const CGAffineTransform dev =
@@ -600,6 +890,29 @@ draw_object(CGContextRef ctx, const Json& o)
   double pad = 0;
   for (const auto& p : passes) {
     pad += p.blur * 2 + std::max(std::abs(p.dx), std::abs(p.dy));
+  }
+  if (vectors) {
+    const auto b = object_bounds(o);
+    CGRect r = CGRectInset(CGRectMake(b[0], b[1], b[2], b[3]), -pad - 2,
+                           -pad - 2);
+    double k = std::clamp(kEffectsScale * scale, 0.25, 8.0);
+    const double area = r.size.width * r.size.height * k * k;
+    if (area > kMostEffectsPixels) {
+      k *= std::sqrt(kMostEffectsPixels / area);
+    }
+    if (CGImageRef under = effects_beneath(o, r, k)) {
+      // Upright on the y-down canvas.
+      CGContextSaveGState(ctx);
+      CGContextTranslateCTM(ctx, r.origin.x, r.origin.y + r.size.height);
+      CGContextScaleCTM(ctx, 1, -1);
+      CGContextSetInterpolationQuality(ctx, kCGInterpolationHigh);
+      CGContextDrawImage(ctx, CGRectMake(0, 0, r.size.width, r.size.height),
+                         under);
+      CGContextRestoreGState(ctx);
+      CGImageRelease(under);
+    }
+    draw_body(ctx, o, true);
+    return;
   }
   CGRect r = object_rect(o);
   r = CGRectIsNull(r) ? CGContextGetClipBoundingBox(ctx)
@@ -624,7 +937,7 @@ draw_object(CGContextRef ctx, const Json& o)
     CGContextBeginTransparencyLayerWithRect(ctx, r, nullptr);
   }
   CGColorSpaceRelease(srgb);
-  draw_body(ctx, o);
+  draw_body(ctx, o, false);
   for (std::size_t i = 0; i < passes.size(); ++i) {
     CGContextEndTransparencyLayer(ctx);
     CGContextRestoreGState(ctx);
@@ -754,8 +1067,9 @@ object_bounds(const Json& o)
   }
   const double half = kind == "text"
                           ? 0 : std::max(0.0, finite_or(o, "width", 0)) / 2;
-  return {std::min(x0, x1) - half, std::min(y0, y1) - half,
-          std::abs(x1 - x0) + 2 * half, std::abs(y1 - y0) + 2 * half};
+  const CGRect r = shape_box(o, x0, y0, x1, y1);
+  return {r.origin.x - half, r.origin.y - half, r.size.width + 2 * half,
+          r.size.height + 2 * half};
 }
 
 namespace {
@@ -998,17 +1312,32 @@ normalize_objects(const Json& in)
         n["justify_last"] = true;
       }
     }
-    // A polygon's points, its box's units.
+    // A polygon's points, its box's units -- a PATH's smooth ones marked
+    // (none: all corners, as before), and whether it is open.
     if (kind == "polygon") {
-      Json pts = Json::array();
-      for (const auto& p : jget(o, "points", Json::array())) {
+      Json pts = Json::array(), smooth = Json::array();
+      const Json all = jget(o, "points", Json::array());
+      const Json flags = jget(o, "smooth", Json::array());
+      bool curved = false;
+      for (std::size_t i = 0; i < all.size(); ++i) {
+        const Json& p = all[i];
         if (p.is_array() && p.size() == 2 && p[0].is_number() &&
             p[1].is_number() && std::isfinite(p[0].get<double>()) &&
             std::isfinite(p[1].get<double>())) {
           pts.push_back({p[0].get<double>(), p[1].get<double>()});
+          const bool s = flags.is_array() && i < flags.size() &&
+                         flags[i].is_boolean() && flags[i].get<bool>();
+          smooth.push_back(s);
+          curved = curved || s;
         }
       }
       n["points"] = std::move(pts);
+      if (curved) {
+        n["smooth"] = std::move(smooth);
+      }
+      if (jget(o, "open", false)) {
+        n["open"] = true;
+      }
     }
     // Its gradient (a shape's inside, a text's words): its stops sorted
     // and held, at least two; its ends where they were put.
@@ -1438,6 +1767,26 @@ render_markup(const fs::path& raster, PixelSize canvas, const Json& objects,
   return write_image_png(pic.get(), out);
 }
 
+Status
+draw_markup(CGContextRef ctx, const fs::path& raster, PixelSize canvas,
+            const Json& objects, const std::set<std::string>& hidden,
+            bool vectors)
+{
+  VALTZ_TRY(draw_raster(ctx, canvas, raster));
+  CGContextSaveGState(ctx);
+  CGContextTranslateCTM(ctx, 0, canvas.height);
+  CGContextScaleCTM(ctx, 1, -1);
+  if (objects.is_array()) {
+    for (const auto& o : objects) {
+      if (!hidden.count(jget<std::string>(o, "id", ""))) {
+        draw_object(ctx, o, vectors);
+      }
+    }
+  }
+  CGContextRestoreGState(ctx);
+  return ok_status();
+}
+
 Result<DrawnPicture>
 render_markup_picture(const fs::path& raster, PixelSize canvas,
                       const Json& objects,
@@ -1451,18 +1800,10 @@ render_markup_picture(const fs::path& raster, PixelSize canvas,
     if (!ctx) {
       return make_error(Code::Internal, "cannot make the markup canvas");
     }
-    if (Status st = draw_raster(ctx, canvas, raster); !st.ok()) {
+    if (Status st = draw_markup(ctx, raster, canvas, objects, hidden, false);
+        !st.ok()) {
       CGContextRelease(ctx);
       return st.error();
-    }
-    CGContextTranslateCTM(ctx, 0, canvas.height);
-    CGContextScaleCTM(ctx, 1, -1);
-    if (objects.is_array()) {
-      for (const auto& o : objects) {
-        if (!hidden.count(jget<std::string>(o, "id", ""))) {
-          draw_object(ctx, o);
-        }
-      }
     }
     CGImageRef img = CGBitmapContextCreateImage(ctx);
     CGContextRelease(ctx);

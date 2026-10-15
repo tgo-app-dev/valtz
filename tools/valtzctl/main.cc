@@ -307,7 +307,10 @@ usage()
       "                 radial|none,stops=#..@0/#..@1,from=u:v,to=u:v;\n"
       "                 text and shape take them too)\n"
       "         | shape <layer> polygon <x,y;x,y;x,y...> [options]\n"
-      "                 (a polygon through its corners)\n"
+      "                 (a polygon through its corners; a PATH -- the\n"
+      "                 curvature pen's: smooth=all, or smooth=1+3 the\n"
+      "                 points from 1 the curve passes through without a\n"
+      "                 turn; open, a curve not closed: two points or more)\n"
       "         | arrange <layer> <how> <object-id...>  (the order:\n"
       "                 to-top|to-bottom|up|down; lined up: left|center|\n"
       "                 right|top|middle|bottom -- one object on the\n"
@@ -2845,7 +2848,8 @@ main(int argc, char** argv)
         // bounds, its points in the box's units (media/markup.h).
         const auto xy = numbers_arg(args.size() > 5 ? args[5] : "");
         const Json o = options_arg(args.size() > 6 ? args[6] : "");
-        if (xy.size() < 6 || xy.size() % 2 != 0) {
+        const bool open = jget(o, "open", false);
+        if (xy.size() < (open ? 4u : 6u) || xy.size() % 2 != 0) {
           return usage();
         }
         double x0 = xy[0], y0 = xy[1], x1 = xy[0], y1 = xy[1];
@@ -2863,6 +2867,32 @@ main(int argc, char** argv)
         obj = {{"kind", "polygon"}, {"x0", x0}, {"y0", y0},
                {"x1", x1}, {"y1", y1}, {"points", std::move(pts)},
                {"width", jget(o, "width", 4.0)}};
+        // A PATH: its smooth points -- all, or by their place from 1
+        // ("1+3") -- and an open one.
+        if (o.contains("smooth")) {
+          const auto which = o["smooth"].is_number()
+                                 ? std::to_string(jget<int>(o, "smooth", 0))
+                                 : jget<std::string>(o, "smooth", "");
+          Json flags = Json::array();
+          for (std::size_t i = 0; i < xy.size() / 2; ++i) {
+            flags.push_back(which == "all");
+          }
+          for (std::size_t at = 0; which != "all" && at < which.size();) {
+            const auto end = which.find('+', at);
+            const int n = std::atoi(which.substr(at, end - at).c_str());
+            if (n >= 1 && static_cast<std::size_t>(n) <= flags.size()) {
+              flags[n - 1] = true;
+            }
+            if (end == std::string::npos) {
+              break;
+            }
+            at = end + 1;
+          }
+          obj["smooth"] = std::move(flags);
+        }
+        if (open) {
+          obj["open"] = true;
+        }
         if (Json st = rgba_arg(jget<std::string>(o, "stroke", ""));
             !st.is_null()) {
           obj["stroke"] = st;
@@ -3073,7 +3103,19 @@ main(int argc, char** argv)
                                 jget(g, "stops", Json::array()).size());
           }
           if (const Json pts = jget(o, "points", Json()); pts.is_array()) {
-            more += std::format(" {} corners", pts.size());
+            // A path's smooth points by their place from 1 ("~2~4"),
+            // and whether it is open.
+            std::string smooth;
+            const Json f = jget(o, "smooth", Json::array());
+            for (std::size_t i = 0; f.is_array() && i < f.size(); ++i) {
+              if (f[i].is_boolean() && f[i].get<bool>()) {
+                smooth += std::format("~{}", i + 1);
+              }
+            }
+            more += std::format(" {} {}{}{}", pts.size(),
+                                smooth.empty() ? "corners" : "points",
+                                smooth.empty() ? "" : " smooth" + smooth,
+                                jget(o, "open", false) ? " open" : "");
           }
           const auto r = media::object_bounds(o);
           more += std::format(" at {:.4g},{:.4g} {:.4g}x{:.4g}", r[0], r[1],

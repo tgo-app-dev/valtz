@@ -70,6 +70,18 @@ Result<IOSurfaceRef> flatten_layers_surface(
     const std::vector<LayerPicture>& layers,
     const StackCanvas& canvas = {});
 
+// A layer's picture as a stack lays it -- a file read upright (a RAW
+// developed), or one drawn in memory -- before it is placed: its size
+// (0 x 0 with nothing on it), and its pixels through its LOOK, in 8-bit
+// sRGB with alpha, scaled by `scale` (at most 1): what a PDF page lays
+// in as an image (pdf.h). Null with nothing on it.
+Result<PixelSize> look_size(const std::filesystem::path& file,
+                            const DrawnPicture& drawn);
+Result<DrawnPicture> look_picture(const std::filesystem::path& file,
+                                  const DrawnPicture& drawn,
+                                  const Adjustments& adjust,
+                                  double scale = 1);
+
 }
 
 #endif

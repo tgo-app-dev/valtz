@@ -395,6 +395,9 @@ struct ComposerStack: View {
             // a button up or down cannot change the wrap again.) In the
             // editor, the editor's alone in the top corner.
             .padding(.trailing, immersive ? 44 : clearInText ? 130 : 100)
+            // Beside the words, under the buttons: the text's too -- a
+            // click, a drop.
+            .background { PromptMargin(model: model) }
             .overlay(alignment: .topLeading) {
                 if model.prompt.isEmpty && model.promptAttachments.isEmpty {
                     // How the model Start runs reads a prompt.
@@ -1376,22 +1379,8 @@ private struct StartButton: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        HStack(spacing: 6) {
-            if model.isGenerating {
-                Button(action: model.stop) {
-                    ZStack {
-                        ProgressPie(fraction: progress)
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 7))
-                    }
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .keyboardShortcut(".", modifiers: .command)
-                .help("Stop the task on the stage (⌘.)")
-                .shortcutHint("⌘.")
-                .transition(Self.stopTransition)
-            }
+        HStack(spacing: 0) {
+            stop(shown: model.isGenerating)
             Button(action: model.start) {
                 Text("Start")
                     .frame(minWidth: 70)
@@ -1410,20 +1399,51 @@ private struct StartButton: View {
         .controlSize(.large)
     }
 
+    /// Stop is always THERE, shown while the stage watches a task -- never
+    /// put in and taken out. Taken out with a transition of its own, it
+    /// was now and then left on screen after its task ended (refused for
+    /// memory, something on the stage): its arc going round, a click on it
+    /// doing nothing, the view a removal had not let go of. Its look, its
+    /// place and whether it takes a click are now what the state says,
+    /// whatever an animation does on the way.
+    private func stop(shown: Bool) -> some View {
+        Button(action: model.stop) {
+            ZStack {
+                ProgressPie(fraction: progress, running: shown)
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 7))
+            }
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.circle)
+        .keyboardShortcut(".", modifiers: .command)
+        .help("Stop the task on the stage (⌘.)")
+        .shortcutHint("⌘.")
+        .disabled(!shown)
+        .environment(\.shortcutHintsHidden, !shown)
+        .scaleEffect(shown ? 1 : 0.02)
+        .opacity(shown ? 1 : 0)
+        .animation(shown ? Self.arrives : Self.goes, value: shown)
+        .allowsHitTesting(shown)
+        .accessibilityHidden(!shown)
+        .padding(.trailing, 6)
+        .fixedSize()
+        // Hidden, it takes no room: the card's motion moves Start's
+        // neighbours as it comes and goes.
+        .frame(width: shown ? nil : 0)
+    }
+
     /// The phase's count; a spinner while nothing is counted.
     private var progress: Double? { model.generationPhase?.fraction }
 
     /// Stop forms where it stands: magnified from a dot at its centre,
     /// a little past its size, settling -- quicker than the motion it
     /// arrives with, which moves the card around it. Going, it shrinks
-    /// back into the dot.
-    private static let stopTransition = AnyTransition.asymmetric(
-        insertion: .scale(scale: 0.02, anchor: .center)
-            .animation(.spring(duration: 0.32 * AppModel.animationScale,
-                               bounce: 0.35)),
-        removal: .scale(scale: 0.02, anchor: .center)
-            .combined(with: .opacity)
-            .animation(.easeIn(duration: 0.15 * AppModel.animationScale)))
+    /// back into the dot, fading.
+    private static let arrives = Animation.spring(
+        duration: 0.32 * AppModel.animationScale, bounce: 0.35)
+    private static let goes = Animation.easeIn(
+        duration: 0.15 * AppModel.animationScale)
 }
 
 /// A task's progress as macOS draws a small determinate circle -- a pie
@@ -1434,6 +1454,8 @@ private struct StartButton: View {
 private struct ProgressPie: View {
     var fraction: Double?
     var diameter: CGFloat = 16
+    /// Off: the arc stands still (Stop hidden draws nothing to move).
+    var running = true
 
     var body: some View {
         ZStack {
@@ -1445,7 +1467,8 @@ private struct ProgressPie: View {
                     .padding(1.5)
                     .animation(.linear(duration: 0.2), value: f)
             } else {
-                TimelineView(.animation) { ctx in
+                TimelineView(.animation(minimumInterval: nil,
+                                        paused: !running)) { ctx in
                     let t = ctx.date.timeIntervalSinceReferenceDate
                     Circle()
                         .trim(from: 0, to: 0.28)

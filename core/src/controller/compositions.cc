@@ -2545,6 +2545,148 @@ Controller::flatten(ProjectId pid, AssetId aid, const fs::path& out,
   return media::flatten_layers(pics, out, canvas_setting_(pid, aid));
 }
 
+// ---- a still as a PDF (media/pdf.h) -----------------------------------
+
+Status
+Controller::pdf_layer_(ProjectId pid, project::Project& p,
+                       const project::Layer& l, media::PixelSize frame,
+                       media::PdfLayer& out, int depth)
+{
+  using Kind = media::PdfLayer::Kind;
+  if (!l.source) {
+    return ok_status();
+  }
+  VALTZ_ASSIGN(project::Asset s, p.asset(*l.source));
+  if (s.cls == AssetClass::Markup) {
+    // Its objects as vectors, over its raster as it is.
+    const project::Markup mk = s.markup.value_or(project::Markup{});
+    out.kind = Kind::Markup;
+    out.size = mk.width > 0 && mk.height > 0
+                   ? media::PixelSize{mk.width, mk.height} : frame;
+    out.file = mk.raster.empty() ? fs::path() : p.blobs().path_of(mk.raster);
+    out.objects = drawn_objects_(p, mk.objects);
+    return ok_status();
+  }
+  if (sound_like(s)) {
+    return ok_status();  // a sound has no picture
+  }
+  if (clip_like(s)) {
+    // A still shows the frame at its mark-in: pixels.
+    out.kind = Kind::Picture;
+    VALTZ_ASSIGN(out.file, rendered_frame_(pid, s.id, l.source_version,
+                                           std::max<std::int64_t>(
+                                               0, l.time.in),
+                                           depth + 1));
+    return ok_status();
+  }
+  if (s.cls == AssetClass::Still) {
+    // A still composition: its own layers in its place -- a still with
+    // pages, the page at its mark-in.
+    const std::int64_t page =
+        paged(s) ? std::max<std::int64_t>(0, l.time.in) : 0;
+    VALTZ_ASSIGN(media::PdfLayer st, pdf_stack_(pid, s.id, page,
+                                                depth + 1));
+    out.kind = Kind::Stack;
+    out.layers = std::move(st.layers);
+    out.canvas = st.canvas;
+    return ok_status();
+  }
+  out.kind = Kind::Picture;
+  VALTZ_ASSIGN(out.file, rendered_(pid, s.id, l.source_version, depth + 1));
+  return ok_status();
+}
+
+Result<media::PdfLayer>
+Controller::pdf_stack_(ProjectId pid, AssetId aid, std::int64_t page,
+                       int depth)
+{
+  using Kind = media::PdfLayer::Kind;
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  if (depth > kMaxNesting) {
+    return make_error(Code::InvalidArgument, msg::kRecursiveAsset,
+                      {{"name", aid.str()}});
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  media::PdfLayer st;
+  st.kind = Kind::Stack;
+  if (!is_comp(a)) {
+    // Alone on its page: a markup's objects as vectors, anything else
+    // as it is drawn.
+    media::PdfLayer l;
+    if (a.cls == AssetClass::Markup) {
+      const project::Markup mk = a.markup.value_or(project::Markup{});
+      l.kind = Kind::Markup;
+      l.size = {mk.width, mk.height};
+      l.file = mk.raster.empty() ? fs::path()
+                                 : p->blobs().path_of(mk.raster);
+      l.objects = drawn_objects_(*p, mk.objects);
+    } else {
+      l.kind = Kind::Picture;
+      VALTZ_ASSIGN(l.file, rendered_frame_(pid, aid, 0, 0, depth));
+    }
+    st.layers.push_back(std::move(l));
+    return st;
+  }
+  // The layers as stack_pictures_ lays them: on the page, looking as
+  // their keys say there.
+  VALTZ_ASSIGN(media::PixelSize frame, own_frame_(*p, a, depth));
+  const bool pages = paged(a);
+  const std::int64_t at =
+      pages ? std::clamp<std::int64_t>(page, 0, a.pages - 1) : 0;
+  for (const auto& l : a.layers) {
+    media::PdfLayer pl;
+    pl.visible = l.visible;
+    pl.mask = l.mask;
+    if (pages) {
+      pl.visible = pl.visible && on_page(l.time, at, a.pages);
+      const auto u = static_cast<double>(at - l.time.offset);
+      pl.adjust = adjustment_keys_of(a, l.id).at(u);
+      pl.crop = crop_keys_of(a, l.id).at(u);
+    } else {
+      pl.adjust = adjustments_of(a, l.id);
+      pl.crop = crop_of(a, l.id);
+    }
+    VALTZ_TRY(pdf_layer_(pid, *p, l, frame, pl, depth));
+    st.layers.push_back(std::move(pl));
+  }
+  if (st.layers.empty() && !a.canvas.framed()) {
+    st.layers.emplace_back();
+  }
+  // Without a frame of its own, the bottom sets the canvas: one with
+  // nothing on it, a clear one the frame's size.
+  if (!a.canvas.framed() && st.layers.front().kind == Kind::Empty) {
+    st.layers.front().kind = Kind::Markup;
+    st.layers.front().size = frame;
+  }
+  st.canvas = a.canvas;
+  return st;
+}
+
+Result<media::PdfDocument>
+Controller::pdf_document(ProjectId pid, AssetId aid)
+{
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  if (a.kind != AssetKind::Image) {
+    return make_error(Code::InvalidArgument, msg::kExportNeedsPicture,
+                      {{"format", "pdf"}});
+  }
+  media::PdfDocument doc;
+  doc.title = a.name;
+  const std::int64_t pages = paged(a) ? a.pages : 1;
+  for (std::int64_t i = 0; i < pages; ++i) {
+    VALTZ_ASSIGN(media::PdfLayer page, pdf_stack_(pid, aid, i, 0));
+    doc.pages.push_back(std::move(page));
+  }
+  return doc;
+}
+
 Result<IOSurfaceRef>
 Controller::flatten_surface(ProjectId pid, AssetId aid,
                             const std::optional<LayerLook>& look,

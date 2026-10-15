@@ -644,6 +644,59 @@ final class PromptScrollView: NSScrollView {
     }
 }
 
+/// The card's room beside the words -- the corner buttons' column, which
+/// the text wraps before -- passed on to the text as the scroll view's
+/// room under it is: one field, one drop target. The scroll view stops
+/// where the words wrap, and a drop beside them fell through to the
+/// window's (a project's), refused: a thumbnail dragged in from the row
+/// and let go right of the words was lost. Behind the buttons, it hears
+/// only what nothing else takes; a mention lands at the end of the line
+/// beside it.
+struct PromptMargin: NSViewRepresentable {
+    let model: AppModel
+
+    final class Margin: NSView {
+        var text: () -> NSTextView? = { nil }
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            registerForDraggedTypes([.fileURL, .string])
+        }
+
+        required init?(coder: NSCoder) { fatalError("not used") }
+
+        override func mouseDown(with event: NSEvent) {
+            if let t = text() { window?.makeFirstResponder(t) }
+        }
+
+        override func draggingEntered(_ sender: NSDraggingInfo)
+            -> NSDragOperation {
+            text()?.draggingEntered(sender) ?? []
+        }
+
+        override func draggingUpdated(_ sender: NSDraggingInfo)
+            -> NSDragOperation {
+            text()?.draggingUpdated(sender) ?? []
+        }
+
+        override func draggingExited(_ sender: NSDraggingInfo?) {
+            text()?.draggingExited(sender)
+        }
+
+        override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+            text()?.performDragOperation(sender) ?? false
+        }
+    }
+
+    func makeNSView(context: Context) -> Margin {
+        let v = Margin()
+        v.text = { [weak model] in model?.promptTextView }
+        return v
+    }
+
+    func updateNSView(_ v: Margin, context: Context) {}
+}
+
 /// SwiftUI host: keeps `model.prompt` (the text) and
 /// `model.promptMentions` (the staged media it mentions, in order) in
 /// sync -- the mentions drawn as the row has them, those of media taken

@@ -2912,6 +2912,18 @@ Controller::close_project(ProjectId id, bool discard)
   if (_agent) {
     _agent->project_closing(id);
   }
+  // Its jobs stopped -- a queued one dropped, a running one asked to
+  // stop: nothing works on a project that is gone. They ran on before,
+  // holding the machine, their results dropped (2026-10-15). The app
+  // asks first and waits for them; this is for any close.
+  for (const auto& j : _jobs.list()) {
+    if (j.project == id &&
+        (j.state == JobState::Queued || j.state == JobState::Running)) {
+      VALTZ_LOG_INFO("jobs", "job {}: its project closed, stopped",
+                     j.id.str());
+      (void)cancel(j.id);
+    }
+  }
   std::unique_ptr<project::Workspace> ws;
   {
     std::lock_guard lk(_projects_mu);
@@ -6212,7 +6224,17 @@ Controller::export_asset(ExportRequest req)
     VALTZ_TRY(media::convert_picture(pic, out, *c));
     return out;
   };
-  if (!drawn) {
+  if (req.format == "pdf") {
+    // A still as a PDF: its pages in one file, its vectors kept -- drawn
+    // in the export lane (media::write_pdf) from the files it reads.
+    VALTZ_ASSIGN(media::PdfDocument doc,
+                 pdf_document(req.project, req.asset));
+    for (const auto& file : media::files_of(doc)) {
+      VALTZ_ASSIGN(ContentHash h, hash_file(file));
+      spec.inputs.push_back({"file", file, h, {}});
+    }
+    spec.params["pdf"] = media::to_json(doc);
+  } else if (!drawn) {
     // A flat or generated asset: its file, as it is.
     VALTZ_ASSIGN(fs::path path, p->media_path(req.asset));
     VALTZ_ASSIGN(project::AssetVersion v, p->version(req.asset));

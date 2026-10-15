@@ -1316,6 +1316,16 @@
         }
       }
     },
+    "A new anonymous project starts once it has stopped." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止后将开始一个新的匿名项目。"
+          }
+        }
+      }
+    },
     "A new composition" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3432,6 +3442,26 @@
         }
       }
     },
+    "Click the picture to take its colour as the Color, ⌥-click as the Fill — the selected objects' too." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "点按画面，将该处颜色取为“色彩”，按住 ⌥ 点按则取为“填充”——所选对象也一并更改。"
+          }
+        }
+      }
+    },
+    "Click to place points the curve passes through, ⌥-click for a corner; click the first point to close it, Return to end it. On a selected path: click its curve to add a point, double-click a point to switch it between smooth and corner." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "点按放置曲线经过的点，按住 ⌥ 点按放置角点；点按第一个点闭合路径，按 Return 结束。在选中的路径上：点按曲线添加点，连按一个点使其在平滑点与角点之间切换。"
+          }
+        }
+      }
+    },
     "Click to rename" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3538,6 +3568,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "关闭此提示词"
+          }
+        }
+      }
+    },
+    "Closing it stops this work, and what it was making is lost:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关闭它会停止这些工作，正在制作的内容将会丢失："
           }
         }
       }
@@ -4047,6 +4087,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "当前"
+          }
+        }
+      }
+    },
+    "Curvature Pen" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "曲率钢笔"
           }
         }
       }
@@ -5424,6 +5474,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "曝光补偿"
+          }
+        }
+      }
+    },
+    "Eyedropper" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "吸管"
           }
         }
       }
@@ -9997,6 +10057,16 @@
         }
       }
     },
+    "PDF (vectors kept)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "PDF（保留矢量）"
+          }
+        }
+      }
+    },
     "PNG" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12389,6 +12459,16 @@
         }
       }
     },
+    "Shapes and words stay sharp at any size; every page in one file" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "形状与文字在任何尺寸下都保持清晰；所有页面合为一个文件"
+          }
+        }
+      }
+    },
     "Share" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13474,6 +13554,26 @@
         }
       }
     },
+    "Stop and Close" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止并关闭"
+          }
+        }
+      }
+    },
+    "Stop and Quit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止并退出"
+          }
+        }
+      }
+    },
     "Stop puts the recording on this composition." : {
       "localizations" : {
         "zh-Hans" : {
@@ -13540,6 +13640,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "因错误而停止"
+          }
+        }
+      }
+    },
+    "Stopping the work of “%@”" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在停止“%@”的工作"
           }
         }
       }
@@ -13650,6 +13760,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "交换 A 和 B"
+          }
+        }
+      }
+    },
+    "Swap Color and Fill" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "交换色彩与填充"
+          }
+        }
+      }
+    },
+    "Swap Color and Fill (X)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "交换色彩与填充（X）"
           }
         }
       }
@@ -13790,6 +13920,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "任务"
+          }
+        }
+      }
+    },
+    "Tasks still stopping after two minutes: the project closes without waiting for them." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "两分钟后仍有任务未停止：项目将不再等待，直接关闭。"
           }
         }
       }
@@ -13984,6 +14124,16 @@
         }
       }
     },
+    "The agent, at work on it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在处理它的智能体"
+          }
+        }
+      }
+    },
     "The arithmetic Valtz achieves, in trillions of operations a second (TFLOP/s). The first figure and the bar in front: the GPU's. The second figure and the grey bar after it: the Neural Engine's. The last figure, the bar's full length: the highest the two have reached together since Valtz started. Counted as the models that report it count it: the picture and video models' transformers, not yet their decoders or text encoders." : {
       "localizations" : {
         "zh-Hans" : {
@@ -14171,6 +14321,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "任意一秒内最多可用的码率——留空则不设上限"
+          }
+        }
+      }
+    },
+    "The next project opens once it has stopped." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止后将打开下一个项目。"
           }
         }
       }
@@ -14392,6 +14552,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "整个时间线"
+          }
+        }
+      }
+    },
+    "The window closes once it has stopped." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止后窗口将关闭。"
           }
         }
       }
@@ -15462,6 +15632,16 @@
         }
       }
     },
+    "Valtz quits once it has stopped." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止后 Valtz 将退出。"
+          }
+        }
+      }
+    },
     "Valtz will be in %@ when it opens again." : {
       "localizations" : {
         "zh-Hans" : {
@@ -15926,11 +16106,22 @@
       }
     },
     "What rectangles, ellipses and polygons are filled with" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "矩形、椭圆和多边形的填充色"
+          }
+        }
+      }
+    },
+    "What rectangles, ellipses, polygons and closed curves are filled with" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "矩形、椭圆、多边形和闭合曲线的填充色"
           }
         }
       }
@@ -19089,6 +19280,16 @@
         }
       }
     },
+    "running" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "运行中"
+          }
+        }
+      }
+    },
     "sRGB" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19199,6 +19400,16 @@
         }
       }
     },
+    "waiting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "等待中"
+          }
+        }
+      }
+    },
     "was %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19231,6 +19442,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "原为 %1$@ × %2$@"
+          }
+        }
+      }
+    },
+    "“%@” has work still under way" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“%@”仍有工作正在进行"
           }
         }
       }

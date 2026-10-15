@@ -46,6 +46,7 @@
 #include "valtz/media/exif.h"
 #include "valtz/media/model-input.h"
 #include "valtz/media/movie.h"
+#include "valtz/media/pdf.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/sound.h"
 #include "engine/vpipe/flex-json.h"
@@ -674,15 +675,74 @@ private:
     q.sink(done);
   }
 
+  // A still written as a PDF (export-media's "pdf"): no graph -- Core
+  // Graphics' PDF context draws its pages (media::write_pdf), vectors
+  // kept. Files in (the document's), a file out, as any export; a page
+  // counted as it is drawn, Stop between pages.
+  void
+  export_pdf_(Lane& lane, Queued& q)
+  {
+    const JobSpec& spec = q.spec;
+    const media::PdfDocument doc =
+        media::pdf_document_from_json(jget(spec.params, "pdf", Json()));
+    if (doc.pages.empty()) {
+      fail_(q, Code::InvalidArgument, "a PDF export takes its pages");
+      return;
+    }
+    JobEvent started;
+    started.job = spec.id;
+    started.kind = JobEventKind::Started;
+    started.text = _desc;
+    q.sink(started);
+    std::error_code ec;
+    fs::create_directories(spec.output_dir, ec);
+    const fs::path out = spec.output_dir / (spec.id.str() + ".pdf");
+    auto page_done = [&](int done, int pages) {
+      JobEvent p;
+      p.job = spec.id;
+      p.kind = JobEventKind::Progress;
+      p.progress = static_cast<float>(done) / static_cast<float>(pages);
+      p.step = done;
+      p.steps = pages;
+      q.sink(p);
+      return !lane.cancel.load();
+    };
+    if (auto st = media::write_pdf(doc, out, page_done); !st.ok()) {
+      if (st.code() == Code::Cancelled) {
+        JobEvent ev;
+        ev.job = spec.id;
+        ev.kind = JobEventKind::Cancelled;
+        q.sink(ev);
+        return;
+      }
+      fail_(q, st.code(), st.error().message);
+      return;
+    }
+    JobEvent o;
+    o.job = spec.id;
+    o.kind = JobEventKind::Output;
+    o.output = out;
+    q.sink(o);
+    JobEvent done;
+    done.job = spec.id;
+    done.kind = JobEventKind::Finished;
+    done.progress = 1.0f;
+    q.sink(done);
+  }
+
   void
   run_job_(Lane& lane, Queued& q)
   {
     const JobSpec& spec = q.spec;
     if (spec.op == kOpExportMedia) {
-      const auto* f = export_format(jget<std::string>(spec.params,
-                                                      "format", ""));
+      const auto format = jget<std::string>(spec.params, "format", "");
+      const auto* f = export_format(format);
       if (f && f->sound) {
         export_sound_(lane, q, *f);
+        return;
+      }
+      if (format == "pdf") {
+        export_pdf_(lane, q);
         return;
       }
     }

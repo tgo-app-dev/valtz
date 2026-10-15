@@ -11,6 +11,7 @@
 #include "engine/vpipe/host-exchange.h"
 #include "engine/vpipe/job-progress.h"
 #include "valtz/engine/engine.h"
+#include "valtz/media/pdf.h"
 #include "valtz/models/catalog.h"
 #include "valtz-vpipe/exchange.h"
 #include "scene-cut.h"
@@ -699,6 +700,79 @@ TEST(vpipe_plugin, a_refused_download_fails_in_words)
   CHECK(end->text.find("publishes 2 models") != std::string::npos);
   CHECK(end->text.find('\n') == std::string::npos);
   CHECK(!fs::exists(dir / "models" / "MiniMaxAI"));
+  e->shutdown();
+}
+
+// A still exported as a PDF runs in the export lane with no graph
+// (media::write_pdf): started, a page counted as each is drawn, the file
+// handed over -- one PDF of the document's pages.
+TEST(vpipe_plugin, a_pdf_export_is_written_in_the_export_lane)
+{
+  if (!plugin_present()) {
+    SKIP("valtz-vpipe.so not found");
+  }
+  const auto dir = test::temp_dir("pdf-export");
+  EngineConfig cfg;
+  cfg.state_dir = dir / "engine";
+  cfg.temp_dir = dir / "tmp";
+  cfg.log_level = "error";
+  auto e = make_vpipe_engine(cfg);
+  REQUIRE(e && e->available());
+  media::PdfLayer words;
+  words.kind = media::PdfLayer::Kind::Markup;
+  words.size = {300, 200};
+  words.objects = Json::array({{{"id", "t"}, {"kind", "text"},
+                                {"box", true}, {"x0", 10}, {"y0", 10},
+                                {"x1", 290}, {"y1", 60}, {"text", "Page"},
+                                {"stroke", {0, 0, 0, 1}},
+                                {"font", {{"family", "Helvetica"},
+                                          {"size", 32}}}}});
+  media::PdfLayer page;
+  page.kind = media::PdfLayer::Kind::Stack;
+  page.layers = {words};
+  media::PdfDocument doc;
+  doc.title = "Two pages";
+  doc.pages = {page, page};
+  JobSpec spec;
+  spec.id = JobId::make();
+  spec.op = std::string(kOpExportMedia);
+  spec.params = {{"format", "pdf"}, {"pdf", media::to_json(doc)}};
+  spec.output_dir = dir / "out";
+  std::mutex mu;
+  std::condition_variable cv;
+  std::vector<JobEvent> events;
+  bool ended = false;
+  REQUIRE_OK(e->submit(spec, [&](const JobEvent& ev) {
+    std::lock_guard lk(mu);
+    events.push_back(ev);
+    ended = ended || ev.terminal();
+    cv.notify_all();
+  }));
+  {
+    std::unique_lock lk(mu);
+    REQUIRE(cv.wait_for(lk, std::chrono::seconds(60), [&] { return ended; }));
+  }
+  REQUIRE(!events.empty());
+  CHECK(events.front().kind == JobEventKind::Started);
+  CHECK(events.back().kind == JobEventKind::Finished);
+  int pages = 0;
+  fs::path out;
+  for (const auto& ev : events) {
+    if (ev.kind == JobEventKind::Progress) {
+      CHECK(ev.steps == 2);
+      pages = ev.step;
+    }
+    if (ev.kind == JobEventKind::Output) {
+      out = ev.output;
+    }
+  }
+  CHECK(pages == 2);
+  REQUIRE(fs::exists(out));
+  CHECK(out.extension() == ".pdf");
+  std::ifstream f(out, std::ios::binary);
+  std::string head(5, '\0');
+  f.read(head.data(), 5);
+  CHECK(head == "%PDF-");
   e->shutdown();
 }
 

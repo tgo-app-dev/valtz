@@ -494,6 +494,9 @@ struct VideoCommand: Equatable, Sendable {
 enum ExportChoice: String, CaseIterable, Identifiable, Sendable {
     case original
     case png16, tiff16, exr, png, tiff, jpeg
+    /// A picture as a PDF: a still's shapes and words kept as vectors, its
+    /// pages one file (the core's media/pdf.h).
+    case pdf
     case prores4444, prores422hq, hevc10, h264
     case wav, m4a
     var id: String { rawValue }
@@ -519,6 +522,7 @@ enum ExportChoice: String, CaseIterable, Identifiable, Sendable {
         case .tiff16, .tiff: "tif"
         case .exr: "exr"
         case .jpeg: "jpg"
+        case .pdf: "pdf"
         case .prores4444, .prores422hq, .hevc10: "mov"
         case .h264: "mp4"
         case .wav: "wav"
@@ -556,6 +560,7 @@ enum ExportChoice: String, CaseIterable, Identifiable, Sendable {
         case .tiff, .tiff16: String(localized: "TIFF")
         case .exr: String(localized: "OpenEXR (linear, half float)")
         case .jpeg: String(localized: "JPEG")
+        case .pdf: String(localized: "PDF (vectors kept)")
         case .prores4444: String(localized: "ProRes 4444 (keeps alpha)")
         case .prores422hq: String(localized: "ProRes 422 HQ")
         case .hevc10: String(localized: "HEVC")
@@ -1007,6 +1012,9 @@ final class AppModel {
     /// they go to the model: the base (the picture to edit) leads, then
     /// the references as the row has them.
     var promptAttachments: [PromptAttachment] = []
+    /// A thumbnail of the row being dragged, and the row's order when it
+    /// began (ReferenceRow).
+    var rowDrag: RowDrag?
     /// Their thumbnails, as they load.
     var referenceThumbs: [UUID: CGImage] = [:]
     /// The picture whose pencil the EDIT-BASE SUGGESTION points at: the
@@ -3960,9 +3968,10 @@ final class AppModel {
                        .path {
                 return
             }
-            guard confirmClose() else { return }
-            rememberPanel(.project, chose: url)
-            openProject(path: url.path)
+            closeProject(.open) { [weak self] in
+                self?.rememberPanel(.project, chose: url)
+                self?.openProject(path: url.path)
+            }
         }
     }
 
@@ -7014,7 +7023,7 @@ final class AppModel {
     /// file, or the picture dropped there to edit.
     var canDragStage: Bool {
         stageVisible && !isGenerating
-            && (currentAsset?.url != nil || stageBaseURL != nil)
+            && (canExportStage || stageBaseURL != nil)
             // The whole picture: with a layer hidden, there is none.
             && !(stageLayered && stageHasHiddenLayer)
     }
@@ -7488,6 +7497,186 @@ final class AppModel {
         }
     }
 
+    // MARK: Closing a project with tasks under way
+
+    /// What closes the project: what the veil says comes next.
+    enum CloseReason: Equatable { case quit, open, newProject, newAnonymous,
+                                       window }
+
+    /// The project going with its TASKS being stopped: the window veiled
+    /// until they have, saying what it waits for (ClosingTasksOverlay).
+    struct ClosingTasks: Equatable {
+        var project: String
+        var reason: CloseReason
+        var total: Int
+        /// The tasks not stopped yet: their titles.
+        var left: [String]
+    }
+    var closingTasks: ClosingTasks?
+
+    /// The window given over -- to a fleet job served here, or to a
+    /// closed project's tasks being stopped: its controls out of reach.
+    var windowGivenOver: Bool { fleetServing != nil || closingTasks != nil }
+
+    enum CloseOutcome { case proceed, cancelled, waiting }
+
+    /// An agent session at work in the project: it stops with it.
+    private var agentAtWork: Bool {
+        guard let a = agent, a.project == projectId else { return false }
+        return !a.ended && !a.listening
+    }
+
+    /// Before the project goes -- `why`: a quit, another project opened or
+    /// made, the window closed -- its TASKS still running or queued
+    /// (generations, upscales, exports, transcripts) and an agent at work
+    /// are asked about: stopped, what they were making lost, or nothing
+    /// goes. Agreed, they are stopped and waited for, the window veiled
+    /// meanwhile; then its changes are asked about (`confirm`,
+    /// confirmClose's question by default), the project as it will be
+    /// left. They ran on before, unasked, after the project had gone
+    /// (2026-10-15). `.proceed`: nothing was running and the person
+    /// agreed -- go on now; `.cancelled`: nothing goes; `.waiting`: `then`
+    /// runs once they have stopped, told whether the person agreed to the
+    /// rest.
+    func prepareClose(_ why: CloseReason, confirm: (() -> Bool)? = nil,
+                      then: @escaping @MainActor (Bool) -> Void)
+        -> CloseOutcome
+    {
+        // Already waiting for one close: the next is not taken.
+        guard closingTasks == nil else { return .cancelled }
+        let ask = confirm ?? { [unowned self] in self.confirmClose() }
+        reloadTasks()
+        let live = tasks
+        let agent = agentAtWork
+        guard !live.isEmpty || agent else {
+            return ask() ? .proceed : .cancelled
+        }
+        guard confirmStopTasks(live, agent: agent, why) else {
+            return .cancelled
+        }
+        stopTasks(live, agent: agent, why) { then(ask()) }
+        return .waiting
+    }
+
+    /// The project closed -- asked about, its tasks stopped -- then
+    /// `proceed`, now or once they have.
+    func closeProject(_ why: CloseReason, confirm: (() -> Bool)? = nil,
+                      then proceed: @escaping @MainActor () -> Void) {
+        switch prepareClose(why, confirm: confirm,
+                            then: { if $0 { proceed() } }) {
+        case .proceed: proceed()
+        case .cancelled, .waiting: break
+        }
+    }
+
+    /// The question: the project's tasks named, Stop Tasks and Close (or
+    /// Quit) -- what they were making is lost -- or Cancel. A scripted
+    /// run takes VALTZ_SNAPSHOT_STOP_TASKS's answer (stop | cancel; stop
+    /// without one).
+    private func confirmStopTasks(_ live: [TaskDTO], agent: Bool,
+                                  _ why: CloseReason) -> Bool {
+        let name = projectName ?? windowTitle
+        let title = String(localized: "“\(name)” has work still under way")
+        var lines = live.prefix(6).map { t in
+            "• " + (t.title.isEmpty ? t.op : t.title) + " — "
+                + (t.running ? String(localized: "running")
+                             : String(localized: "waiting"))
+        }
+        if live.count > 6 { lines.append("…") }
+        if agent {
+            lines.append("• " + String(localized: "The agent, at work on it"))
+        }
+        let info = String(localized: "Closing it stops this work, and what it was making is lost:")
+            + "\n\n" + lines.joined(separator: "\n")
+        let stop = why == .quit ? String(localized: "Stop and Quit")
+                                : String(localized: "Stop and Close")
+        let env = ProcessInfo.processInfo.environment
+        if env["VALTZ_SNAPSHOT"] != nil {
+            let answer = env["VALTZ_SNAPSHOT_STOP_TASKS"] ?? "stop"
+            FileHandle.standardError.write(Data(
+                "snapshot: stop-tasks title=\(title) tasks=\(live.map { "\($0.badge):\($0.state):\($0.kind)" }.joined(separator: ",")) agent=\(agent) button=\(stop) answer=\(answer)\n".utf8))
+            return answer != "cancel"
+        }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = info
+        let first = alert.addButton(withTitle: stop)
+        first.hasDestructiveAction = true
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// The tasks stopped and waited for: the agent first (it would ask
+    /// for more), the queued ones before the running (none starts as it
+    /// stops), the window veiled -- its keys swallowed, its menus' document
+    /// commands greyed -- until the core lists none. Two minutes at most:
+    /// one that will not stop is left to the core, which stops what is
+    /// left of a project it closes. Then `done`.
+    private func stopTasks(_ live: [TaskDTO], agent: Bool,
+                           _ why: CloseReason,
+                           then done: @escaping @MainActor () -> Void) {
+        withAnimation(Self.motion) {
+            closingTasks = ClosingTasks(
+                project: projectName ?? windowTitle, reason: why,
+                total: live.count, left: live.map(\.title))
+        }
+        // Nothing typed meanwhile.
+        editorWindow?.makeFirstResponder(nil)
+        if agent { agentControl("stop") }
+        for t in live.sorted(by: { !$0.running && $1.running }) {
+            cancel(job: t.job)
+        }
+        let began = Date.now
+        // A scripted run may hold the veil this long, to draw it.
+        let hold = Double(ProcessInfo.processInfo
+            .environment["VALTZ_SNAPSHOT_STOP_HOLD"] ?? "") ?? 0
+        // Polled by a run-loop timer, not a task: a quit asked for from
+        // inside a main-actor task waits in a nested run loop that runs no
+        // other main-queue work, and a task's poll never ran there.
+        let poll = Timer(timeInterval: 0.15, repeats: true) { [weak self] t in
+            let finished = MainActor.assumeIsolated { () -> Bool in
+                guard let self else { return true }
+                return self.stopped(live, since: began, hold: hold)
+            }
+            guard finished else { return }
+            // Gone before what comes next: the question after it is modal,
+            // and its run loop would fire this again.
+            t.invalidate()
+            MainActor.assumeIsolated { [weak self] in
+                guard let self else { return }
+                withAnimation(Self.motion) { self.closingTasks = nil }
+                done()
+            }
+        }
+        RunLoop.main.add(poll, forMode: .common)
+    }
+
+    /// One look at the tasks being stopped: the veil's list brought up
+    /// to date, any new one stopped too (the agent's last turn may have
+    /// asked for one). Done -- none left, or two minutes gone -- true.
+    private func stopped(_ live: [TaskDTO], since began: Date,
+                         hold: Double) -> Bool {
+        reloadTasks()
+        for t in tasks where !live.contains(where: { $0.job == t.job }) {
+            cancel(job: t.job)
+        }
+        let left = tasks.map(\.title)
+        if closingTasks?.left != left { closingTasks?.left = left }
+        let waited = Date.now.timeIntervalSince(began)
+        guard (tasks.isEmpty && waited >= hold) || waited > 120 else {
+            return false
+        }
+        if !tasks.isEmpty {
+            note("warning", String(localized: "Tasks still stopping after two minutes: the project closes without waiting for them."))
+        }
+        if ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] != nil {
+            FileHandle.standardError.write(Data(String(
+                format: "snapshot: tasks-stopped took=%.1fs left=%d\n",
+                waited, tasks.count).utf8))
+        }
+        return true
+    }
+
     /// The project closed in the core: the anonymous session discarded
     /// and deleted; a named one closed -- its working copy kept when it
     /// has changes not saved (resumed at the next open), unless "Don't
@@ -7546,11 +7735,23 @@ final class AppModel {
     /// Cancel keeps it (before, the window went, and Cancel at the quit
     /// that followed left Valtz running with no window, asking again).
     /// Agreed, what a quit does is done; Valtz then quits as it goes.
+    /// With tasks under way the window stays while they are stopped, and
+    /// is closed once they have.
     func confirmWindowClose() -> Bool {
-        guard confirmClose() else { return false }
-        closeForQuit()
-        closeConfirmed = true
-        return true
+        if closeConfirmed { return true }
+        switch prepareClose(.window, then: { [weak self] ok in
+            guard let self, ok else { return }
+            self.closeForQuit()
+            self.closeConfirmed = true
+            self.editorWindow?.close()  // asks no delegate: it goes
+        }) {
+        case .proceed:
+            closeForQuit()
+            closeConfirmed = true
+            return true
+        case .cancelled, .waiting:
+            return false
+        }
     }
     @ObservationIgnored private var pendingWindowSize: CGSize?
 
@@ -7718,6 +7919,12 @@ final class AppModel {
         if let m = NSEvent.addLocalMonitorForEvents(
             matching: .keyDown, handler: { [weak self] event in
                 let handled = MainActor.assumeIsolated {
+                    // A closed project's tasks being stopped: the window
+                    // takes no key -- typing, its shortcuts, the menus'.
+                    if let self, self.closingTasks != nil,
+                       event.window === self.editorWindow {
+                        return true
+                    }
                     if ShortcutHints.shared.handle(event) { return true }
                     guard let self else { return false }
                     return self.deselectKey(event) || self.brushKey(event)
@@ -7909,7 +8116,14 @@ final class AppModel {
     /// no result, and the generation settings and adjustments at their
     /// defaults.
     func startOver() {
-        guard isAnonymous, !isBusy, let core else { return }
+        guard isAnonymous, !isBusy else { return }
+        anonymousAfresh()
+    }
+
+    /// The anonymous session deleted and a new one begun (Start Over's,
+    /// New Anonymous Project's once its work has stopped).
+    private func anonymousAfresh() {
+        guard let core else { return }
         if let id = projectId { _ = core.discardProject(id) }
         removeOwnSession()
         projectId = nil
@@ -7923,28 +8137,43 @@ final class AppModel {
     /// §10a). A named project closes first, its changes saved or let go
     /// (confirmClose); an anonymous one is deleted, as Start Over deletes
     /// it -- asked first when it holds work.
+    /// Its tasks are asked about and stopped first (prepareClose).
     func newAnonymousProject() {
         guard core != nil else { return }
-        guard !isBusy else {
+        // Work that is no task (the assistant, an import): waited for.
+        let taskJobs = Set(tasks.map(\.job))
+        guard enhanceJob == nil, !jobs.contains(where: { id, j in
+            (j.state == "queued" || j.state == "running")
+                && !taskJobs.contains(id) && j.purpose != "build"
+                && j.purpose != "export"
+        }) else {
             flash(String(localized: "Wait for the work in progress to finish."))
             return
         }
-        if isAnonymous {
-            guard confirmCloseAnonymous(String(localized: "A new one starts in its place, and this one is deleted with everything in it — its results, imports and history — unless you save it.")) else { return }
+        // An anonymous one is asked about as what goes in its place; a
+        // named one as any close.
+        var anonymous = isAnonymous
+        closeProject(.newAnonymous, confirm: { [unowned self] in
+            anonymous = self.isAnonymous
+            guard anonymous else { return self.confirmClose() }
+            guard self.confirmCloseAnonymous(String(localized: "A new one starts in its place, and this one is deleted with everything in it — its results, imports and history — unless you save it.")) else { return false }
             // Saved: it is a named project now, and closes as one.
-            if isAnonymous {
-                startOver()
+            if !self.isAnonymous { anonymous = false }
+            return true
+        }) { [weak self] in
+            guard let self else { return }
+            if anonymous {
+                anonymousAfresh()
                 return
             }
+            if let before = projectId {
+                retireProject(before, path: projectPath, anonymous: false)
+            }
+            projectId = nil
+            withAnimation(Self.motion) { resetSession() }
+            anonymousName = Self.randomAnonymousName()
+            startAnonymousSession()
         }
-        guard confirmClose() else { return }
-        if let before = projectId {
-            retireProject(before, path: projectPath, anonymous: false)
-        }
-        projectId = nil
-        withAnimation(Self.motion) { resetSession() }
-        anonymousName = Self.randomAnonymousName()
-        startAnonymousSession()
     }
 
     private func resetSession() {
@@ -8270,13 +8499,24 @@ final class AppModel {
         return Self.writePNG(img, to: out) ? out : nil
     }
 
+    /// What is on the stage can be saved, shared and dragged out: an
+    /// asset with a file, or a COMPOSITION, which the core draws. A
+    /// composition is handed a stand-in file -- its bottom-most picture
+    /// or clip -- and one of markups alone has none: its export was greyed
+    /// (2026-10-15), though the core draws it as any other.
+    var canExportStage: Bool {
+        guard let a = currentAsset else { return false }
+        return a.url != nil || a.isComposition
+    }
+
     /// A file to hand the share sheet: what is shown -- a stack
     /// flattened, an adjusted picture as a PNG -- named as Save… names
     /// it. Not the blob itself: its name is its hash. A linked original
     /// has its own name, and may be large: it goes as it is.
     func shareableFile() -> URL? {
-        guard let a = currentAsset, let url = a.url else { return nil }
+        guard let a = currentAsset else { return nil }
         if stageComposed { return flattenedFile() }
+        guard let url = a.url else { return nil }
         if adjustedResult != nil || a.linked { return shownFile() }
         let dir = Self.shareRoot
         try? FileManager.default.createDirectory(
@@ -8293,7 +8533,8 @@ final class AppModel {
     var savedPicture: CGImage? {
         guard currentAsset?.kind == "image" else { return nil }
         if let img = adjustedResult { return img }
-        if stageOriginal != nil, let shown = currentImage {
+        // As composed (a composition of markups has no file to read).
+        if stageOriginal != nil || stageComposed, let shown = currentImage {
             return shown
         }
         guard let url = currentAsset?.url,

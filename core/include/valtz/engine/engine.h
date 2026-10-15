@@ -116,8 +116,10 @@ inline constexpr std::string_view kOpFetchModel = "fetch-model";
 // a 16-bit PNG / TIFF, OpenEXR, or 8-bit; a movie as ProRes 4444 (with
 // its alpha) / 422 HQ, HEVC Main10 (keeping HDR) or H.264 -- as deep as
 // the source and tagged with its colour; a sound as WAV or AAC, its trim
-// (param "trim") cut to the sample. Param `format`: one of
-// export_formats(). The output is the file, in `output_dir`.
+// (param "trim") cut to the sample; a still as a PDF (param "pdf", a
+// media::PdfDocument: its pages, vectors kept -- every file it reads an
+// input, role "file"). Param `format`: one of export_formats(). The
+// output is the file, in `output_dir`.
 inline constexpr std::string_view kOpExportMedia = "export-media";
 
 // A format export-media writes: the name a request uses, the file's

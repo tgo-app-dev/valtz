@@ -30,6 +30,8 @@ constexpr ExportFormat kExportFormats[] = {
   {"png", "png", false, "PNG, 8 bits per channel"},
   {"tiff", "tif", false, "TIFF, 8 bits per channel"},
   {"jpeg", "jpg", false, "JPEG"},
+  {"pdf", "pdf", false,
+   "PDF, shapes and words kept as vectors (a still's pages, one file)"},
   {"prores4444", "mov", true, "ProRes 4444, keeps alpha (12-bit)"},
   {"prores422hq", "mov", true, "ProRes 422 HQ (10-bit)"},
   {"hevc10", "mov", true, "HEVC Main10, keeps HDR (PQ / HLG)"},

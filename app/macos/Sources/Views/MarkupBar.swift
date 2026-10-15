@@ -3,14 +3,14 @@ import SwiftUI
 
 /// The markup toolbar (View › Show Markup Toolbar): a narrow row under
 /// the title bar's hairline, as Preview's. Its tools -- select, brush,
-/// eraser, line, rectangle, ellipse, text -- then what the tool (or the
-/// selection) takes: a brush's size and softness, a line's width, a
-/// text's font (and line spacing), its alignment and the button opening
-/// its words' edit window (MarkupTextPanel); the colour and the fill
-/// (sRGB with opacity); an object's EFFECTS -- a shadow, a glow; what can
-/// be done with a selection -- ARRANGE it (its order, alignment,
-/// spacing), make it pixels, delete it; and which layer the markup goes
-/// on.
+/// eraser, line, rectangle, ellipse, polygon, the curvature pen, text, the
+/// eyedropper -- then what the tool (or the selection) takes: a brush's
+/// size and softness, a line's width, a text's font (and line spacing),
+/// its alignment and the button opening its words' edit window
+/// (MarkupTextPanel); the colour and the fill (sRGB with opacity), swapped
+/// by X; an object's EFFECTS -- a shadow, a glow; what can be done with a
+/// selection -- ARRANGE it (its order, alignment, spacing), make it
+/// pixels, delete it; and which layer the markup goes on.
 struct MarkupBar: View {
     @Bindable var model: AppModel
     @State private var fontPanel = false
@@ -69,9 +69,11 @@ struct MarkupBar: View {
                                       : .clear))
                 .foregroundStyle(m.tool == t ? Color.accentColor
                                              : Color.primary)
-                // Its key beside its name: "Brush (B)".
-                .help(t.key.map { "\(t.label) (\(String($0).uppercased()))" }
-                      ?? t.label)
+                // Its key beside its name: "Brush (B)"; how to use it,
+                // where its name does not say.
+                .help([t.key.map { "\(t.label) (\(String($0).uppercased()))" }
+                       ?? t.label, t.hint].compactMap { $0 }
+                      .joined(separator: " — "))
                 .accessibilityLabel(Text(verbatim: t.label))
                 .shortcutHint(t.key.map { String($0).uppercased() } ?? "")
                 if t == .select {
@@ -150,7 +152,7 @@ struct MarkupBar: View {
                 .shortcutHint("⇧[  ⇧]")
         }
         if tool == .line || tool == .rect || tool == .ellipse
-            || tool == .polygon
+            || tool == .polygon || tool == .pen
             || kinds.contains(.line) || kinds.contains(.rect)
             || kinds.contains(.ellipse) || kinds.contains(.polygon) {
             slider("Width", value: Binding(
@@ -279,7 +281,7 @@ struct MarkupBar: View {
     @ViewBuilder
     private var effectsButton: some View {
         if m.tool.shape != nil || m.tool == .text || m.tool == .polygon
-            || !m.selection.isEmpty {
+            || m.tool == .pen || !m.selection.isEmpty {
             let fx = m.selection.first?.effects ?? m.effects
             Button {
                 m.effectsOpen = true
@@ -318,9 +320,8 @@ struct MarkupBar: View {
     private var colors: some View {
         let kinds = Set(m.selection.map(\.kind))
         let fills = m.tool == .rect || m.tool == .ellipse
-            || m.tool == .polygon
-            || kinds.contains(.rect) || kinds.contains(.ellipse)
-            || kinds.contains(.polygon)
+            || m.tool == .polygon || m.tool == .pen
+            || m.selection.contains(where: \.fillable)
         return HStack(spacing: 8) {
             HStack(spacing: 3) {
                 Text("Color").foregroundStyle(.secondary)
@@ -333,6 +334,7 @@ struct MarkupBar: View {
                     .labelsHidden()
             }
             .help("The colour lines, outlines, text and the brush draw with")
+            swapButton
             HStack(spacing: 3) {
                 Text("Fill").foregroundStyle(.secondary)
                 ColorPicker("Fill", selection: Binding(
@@ -349,11 +351,28 @@ struct MarkupBar: View {
                     .labelsHidden()
             }
             .disabled(!fills)
-            .help("What rectangles, ellipses and polygons are filled with")
+            .help("What rectangles, ellipses, polygons and closed curves are filled with")
             if fills || kinds.contains(.text) {
                 gradientButton
             }
         }
+    }
+
+    /// Color and Fill swapped (X): the toolbar's, and the selected
+    /// shapes' outlines and insides.
+    private var swapButton: some View {
+        Button {
+            model.swapMarkupColors()
+        } label: {
+            Image(systemName: "arrow.left.arrow.right")
+                .font(.system(size: 10, weight: .semibold))
+                .frame(width: 18, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .shortcutHint("X")
+        .help("Swap Color and Fill (X)")
+        .accessibilityLabel(Text("Swap Color and Fill"))
     }
 
     /// The gradient: the selected shapes' insides or texts' words, or the

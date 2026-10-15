@@ -157,6 +157,32 @@ struct VideoPlayerView: NSViewRepresentable {
                           height: v.bounds.height * scale)
         }
 
+        var moveRelay: Any?
+
+        /// AVKit's views over the clip take the pointer's moves and keep
+        /// them, so SwiftUI around the player never heard the pointer come
+        /// in. The stage's drag band stayed as it last heard -- armed, the
+        /// open hand, the card lifted -- and SwiftUI went on handing presses
+        /// over the clip to the band: the player's controls took no click,
+        /// only a drag of the clip. Each move over the player is told to
+        /// the window's SwiftUI too, as the canvas's are (its mouseMoved
+        /// calls super).
+        func relayMoves(_ v: AVPlayerView) {
+            guard moveRelay == nil else { return }
+            moveRelay = NSEvent.addLocalMonitorForEvents(
+                matching: .mouseMoved, handler: { [weak v] e in
+                    MainActor.assumeIsolated {
+                        guard let v, let w = v.window, e.window === w,
+                              let host = w.contentView, host !== v,
+                              v.bounds.contains(v.convert(e.locationInWindow,
+                                                          from: nil))
+                        else { return }
+                        host.mouseMoved(with: e)
+                    }
+                    return e
+                })
+        }
+
         /// Watched once: the stage resized, its frames drawn at the new
         /// size (a quarter second after the last change).
         func watchResize(_ v: AVPlayerView) {
@@ -303,6 +329,7 @@ struct VideoPlayerView: NSViewRepresentable {
         v.showsFullScreenToggleButton = true
         v.videoGravity = .resizeAspect
         v.allowsVideoFrameAnalysis = false
+        context.coordinator.relayMoves(v)
         return v
     }
 
@@ -593,6 +620,10 @@ struct VideoPlayerView: NSViewRepresentable {
 
     static func dismantleNSView(_ v: AVPlayerView, coordinator: Coordinator) {
         coordinator.stop()
+        if let m = coordinator.moveRelay {
+            NSEvent.removeMonitor(m)
+            coordinator.moveRelay = nil
+        }
         if let r = coordinator.resized {
             NotificationCenter.default.removeObserver(r)
             coordinator.resized = nil

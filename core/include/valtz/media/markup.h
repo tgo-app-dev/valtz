@@ -14,6 +14,13 @@
 //    "points": [[u, v], ...]  a POLYGON's corners, closed, in its box's
 //                             units -- 0 at (x0, y0), 1 at (x1, y1) -- so
 //                             they move and scale with the box,
+//    "smooth": [bool, ...]    a PATH (2026-10-15): a polygon whose points
+//                             marked true are SMOOTH -- the curve passes
+//                             through them without a turn (a curvature
+//                             pen's); the rest corners (absent: all),
+//    "open": true             a path not closed: a curve, a line without
+//                             an inside -- its ends and turns round,
+//                             neither fill nor gradient drawn,
 //    "gradient": {"kind": "linear" | "radial", "stops": [{"at" 0..1,
 //                 "color"}, ...] (two or more), "from": [u, v], "to":
 //                 [u, v]}     a shape's inside -- or a text box's words --
@@ -73,6 +80,15 @@
 // measures a shadow otherwise, so the app draws an object with effects
 // into a bitmap of its own and lays that in.
 //
+// A PATH's curve is cubic Beziers from point to point, worked out on the
+// canvas (not in the box's units): a smooth point's tangent runs from the
+// point before it to the one after, each handle a share of the segment it
+// reaches into that puts a circle's arc through points evenly round one
+// -- four smooth points round a square are a circle -- by the turn there
+// (held to 120 degrees); a corner, and an open path's ends, have none.
+// What a path covers is its box with its curve's, which can bulge past
+// its points.
+//
 // A BRUSH STROKE is round dabs along its points, each solid out to
 // (1 - softness) of its radius and fading to nothing at the radius. The
 // dabs of one stroke join as their maximum, so a stroke is as opaque as
@@ -86,6 +102,8 @@
 #include "valtz/base/result.h"
 #include "valtz/media/format.h"
 #include "valtz/media/layers.h"
+
+#include <CoreGraphics/CGContext.h>
 
 #include <array>
 #include <filesystem>
@@ -226,6 +244,19 @@ Status render_markup(const std::filesystem::path& raster, PixelSize canvas,
 Result<DrawnPicture> render_markup_picture(
     const std::filesystem::path& raster, PixelSize canvas,
     const Json& objects, const std::set<std::string>& hidden);
+
+// The same, drawn on `ctx`, its CTM putting the canvas at (0, 0) to
+// (width, height), y up, a unit a pixel: a bitmap's, as above -- or, with
+// `vectors`, a PDF page's (pdf.h), which keeps what is drawn as it is
+// drawn: the raster and drawings as images, the other objects as paths,
+// shadings and text. Two things are drawn otherwise there, as a PDF
+// cannot take them as a bitmap does: a text box's words in a GRADIENT are
+// their glyphs' outlines, the gradient through them; an object's EFFECTS
+// are pixels beneath it (twice the page's, a shadow's soft edge and
+// all), the object over them still vectors.
+Status draw_markup(CGContextRef ctx, const std::filesystem::path& raster,
+                   PixelSize canvas, const Json& objects,
+                   const std::set<std::string>& hidden, bool vectors);
 
 }
 

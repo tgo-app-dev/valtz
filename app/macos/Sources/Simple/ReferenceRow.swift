@@ -11,13 +11,17 @@ import UniformTypeIdentifiers
 ///                            in the text, and the stage is as it was
 ///   drag within the row      the order the model gets them in
 ///   drag into the text       a mention there (released there, the
-///                            stage stays as it is)
+///                            stage stays as it is); the row's order as
+///                            it was once the pointer leaves the row
 ///   pencil badge             the picture to edit, or no longer
 ///   ×                        out of the prompt, its mentions with it
 struct ReferenceRow: View {
     @Bindable var model: AppModel
-    /// The thumbnail being dragged, for the row's reordering.
-    @State private var dragging: UUID?
+    /// The row in the window (SwiftUI's global space): where a dragged
+    /// thumbnail is still reordering it.
+    @State private var frame: CGRect = .zero
+    /// Off for a scripted run, whose pointer and button are not a drag's.
+    static var followsPointer = true
 
     static let thumbHeight: CGFloat = 44
     /// The row, its padding included.
@@ -27,8 +31,7 @@ struct ReferenceRow: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(model.promptAttachments) { item in
-                    ReferenceThumb(model: model, item: item,
-                                   dragging: $dragging)
+                    ReferenceThumb(model: model, item: item)
                         // A capture's card flying into it: hidden until
                         // it lands, where it says it is.
                         .opacity(model.capturedItem == item.id ? 0 : 1)
@@ -48,6 +51,13 @@ struct ReferenceRow: View {
             .padding(.bottom, 9)
         }
         .frame(height: Self.height)
+        .onGeometryChange(for: CGRect.self) {
+            $0.frame(in: .global)
+        } action: { frame = $0 }
+        .task(id: model.rowDrag?.id) {
+            guard model.rowDrag != nil, Self.followsPointer else { return }
+            await followDrag()
+        }
         // Fewer references, for a clip refused for memory to fit.
         .overlay {
             if model.suggestsFewerReferences {
@@ -88,12 +98,38 @@ struct ReferenceRow: View {
             return true
         }
     }
+
+    /// While a thumbnail is dragged. SwiftUI's drop targets hear nothing
+    /// once the pointer is off them, and the drag's end only where it is
+    /// dropped on one, so the pointer and the button are watched: off the
+    /// row, its order goes back as it was (a drag into the text is no
+    /// reordering); the button let go, the drag is over -- dropped in the
+    /// text, on the row or nowhere.
+    private func followDrag() async {
+        while !Task.isCancelled, model.rowDrag != nil {
+            try? await Task.sleep(for: .milliseconds(30))
+            let inRow = pointerInRow
+            if NSEvent.pressedMouseButtons & 1 == 0 {
+                model.endRowDrag(inRow: inRow)
+                return
+            }
+            model.rowDragMoved(inRow: inRow)
+        }
+    }
+
+    private var pointerInRow: Bool {
+        guard let w = model.editorWindow, let host = w.contentView
+        else { return true }
+        var p = host.convert(w.convertPoint(fromScreen: NSEvent.mouseLocation),
+                             from: nil)
+        if !host.isFlipped { p.y = host.bounds.height - p.y }
+        return frame.contains(p)
+    }
 }
 
 private struct ReferenceThumb: View {
     @Bindable var model: AppModel
     let item: PromptAttachment
-    @Binding var dragging: UUID?
     @State private var hovering = false
 
     private var h: CGFloat { ReferenceRow.thumbHeight }
@@ -178,7 +214,7 @@ private struct ReferenceThumb: View {
             // is not a click.
             .onTapGesture { model.toggleReferenceFocus(item.id) }
             .onDrag {
-                dragging = item.id
+                model.beginRowDrag(item.id)
                 return NSItemProvider(object:
                     (PromptTextView.referencePrefix + item.id.uuidString)
                         as NSString)
@@ -189,8 +225,7 @@ private struct ReferenceThumb: View {
                                                 style: .continuous))
             }
             .onDrop(of: [.utf8PlainText],
-                    delegate: ReorderDrop(target: item.id, model: model,
-                                          dragging: $dragging))
+                    delegate: ReorderDrop(target: item.id, model: model))
             .help(help(number))
             .contextMenu {
                 if item.kind == "image" {
@@ -318,32 +353,83 @@ private struct BaseHint: View {
 private struct ReorderDrop: DropDelegate {
     let target: UUID
     let model: AppModel
-    @Binding var dragging: UUID?
 
     func validateDrop(info: DropInfo) -> Bool {
-        dragging != nil && info.hasItemsConforming(to: [.utf8PlainText])
+        model.rowDrag != nil && info.hasItemsConforming(to: [.utf8PlainText])
     }
 
-    @MainActor
     func dropEntered(info: DropInfo) {
-        guard let d = dragging, d != target,
-              let to = model.promptAttachments.firstIndex(where: {
-                  $0.id == target }) else { return }
-        model.moveReference(d, to: to)
+        model.rowDragEntered(target)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
         DropProposal(operation: .move)
     }
 
-    @MainActor
     func performDrop(info: DropInfo) -> Bool {
-        dragging = nil
+        model.endRowDrag(inRow: true)
         return true
     }
 }
 
+/// A thumbnail of the row dragged: which, the order the row had when it
+/// began, and whether the pointer is off the row now.
+struct RowDrag: Equatable {
+    let id: UUID
+    let order: [UUID]
+    var outside = false
+}
+
 extension AppModel {
+    /// A thumbnail's drag began: the row's order kept to go back to.
+    func beginRowDrag(_ id: UUID) {
+        rowDrag = RowDrag(id: id, order: promptAttachments.map(\.id))
+    }
+
+    /// The dragged thumbnail over another: it takes that one's place (the
+    /// pointer is in the row, whatever was last seen).
+    func rowDragEntered(_ target: UUID) {
+        guard var d = rowDrag else { return }
+        if d.outside {
+            d.outside = false
+            rowDrag = d
+        }
+        guard d.id != target,
+              let to = promptAttachments.firstIndex(where: {
+                  $0.id == target }) else { return }
+        moveReference(d.id, to: to)
+    }
+
+    /// The pointer left the row, or came back. Off it, the row as it was:
+    /// a thumbnail on its way into the text is no reordering. Back on it,
+    /// the thumbnails it passes over take it in again.
+    func rowDragMoved(inRow: Bool) {
+        guard var d = rowDrag, d.outside == inRow else { return }
+        d.outside = !inRow
+        rowDrag = d
+        if !inRow { restoreReferenceOrder(d.order) }
+    }
+
+    /// Let go: on the row, the order as it is now; off it, as it was.
+    func endRowDrag(inRow: Bool) {
+        rowDragMoved(inRow: inRow)
+        rowDrag = nil
+    }
+
+    /// The row in `order` again (anything staged since at its end).
+    func restoreReferenceOrder(_ order: [UUID]) {
+        let rank = Dictionary(uniqueKeysWithValues:
+            order.enumerated().map { ($1, $0) })
+        let list = promptAttachments.enumerated().sorted {
+            (rank[$0.element.id] ?? order.count + $0.offset,
+             $0.offset)
+                < (rank[$1.element.id] ?? order.count + $1.offset,
+                   $1.offset)
+        }.map(\.element)
+        guard list != promptAttachments else { return }
+        withAnimation(Self.motion) { promptAttachments = list }
+    }
+
     /// The row's pictures changed: the first picture staged in an image
     /// prompt -- not marked the base -- gets the suggestion, once its
     /// thumbnail is there (the pencil sits where it ends up); a picture

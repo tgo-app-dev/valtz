@@ -25,6 +25,7 @@ set(VALTZ_CORE_SOURCES
   src/media/model-input.mm
   src/media/markup.mm
   src/media/movie.mm
+  src/media/pdf.mm
   src/media/probe.mm
   src/media/sound.mm
   src/media/text-flow.cc
@@ -163,7 +164,7 @@ set_source_files_properties(
   src/media/camera.mm src/media/capture.mm
   src/fleet/fleet.mm src/agent/cloud.mm
   src/media/exif.mm src/media/markup.mm src/media/model-input.mm
-  src/media/movie.mm
+  src/media/movie.mm src/media/pdf.mm
   src/media/probe.mm src/media/thumbnail.mm
   src/models/hardware.mm src/project/bookmark.mm
   PROPERTIES COMPILE_OPTIONS "-fobjc-arc")

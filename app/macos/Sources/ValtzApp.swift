@@ -86,12 +86,59 @@ struct ValtzApp: App {
                         a: Double(v & 0xff) / 255)
         }
         func pointer(_ phase: MarkupPointer.Phase, _ p: CGPoint,
-                     clicks: Int = 1, shift: Bool = false) {
+                     clicks: Int = 1, shift: Bool = false,
+                     option: Bool = false) {
             m.markupPointer(MarkupPointer(phase: phase, point: p,
-                                          shift: shift, clickCount: clicks,
+                                          shift: shift, option: option,
+                                          clickCount: clicks,
                                           pixelsPerPoint: 1))
         }
+        // A colour as the hooks print it: #rrggbbaa.
+        func hex(_ c: RGBA?) -> String {
+            guard let c else { return "-" }
+            return "#" + [c.r, c.g, c.b, c.a].map {
+                String(format: "%02x", Int(($0 * 255).rounded()))
+            }.joined()
+        }
         switch kv[0] {
+        // The PATH selected -- or the one the pen is drawing: its points
+        // (canvas pixels, `~` smooth), open or closed, and the undo
+        // step: "path".
+        case "path":
+            let o = mk.selection.first { $0.kind == .polygon }
+            let pts = o.map(MarkupRender.polygonPoints) ?? mk.pen
+            let pointsText = pts.enumerated().map { i, p in
+                let smooth = o.map { $0.isSmooth(i) }
+                    ?? (i < mk.penSmooth.count && mk.penSmooth[i])
+                return (smooth ? "~" : "")
+                    + String(format: "%.0f,%.0f", p.x, p.y)
+            }.joined(separator: ";")
+            let b = o.map { MarkupRender.bounds($0) }.map {
+                String(format: "%.0f,%.0f,%.0fx%.0f", $0.minX, $0.minY,
+                       $0.width, $0.height)
+            } ?? "-"
+            print("snapshot: path drawing=\(mk.pen.count) selected=\(o?.id ?? "-") open=\(o?.open ?? true) points=\(pointsText.isEmpty ? "-" : pointsText) bounds=\(b) fill=\(hex(o?.fill)) tool=\(mk.tool.rawValue) undo=\(m.document.undo ?? "-")")
+        // The pointer leaving the picture -- a real exited event handed to
+        // the stage (or a clip's markup view), as its tracking area sends
+        // one: "exit". (Its click count read once aborted Valtz.)
+        case "exit":
+            let target: NSView? = m.markupOnClip
+                ? ClipMarkupNSView.shown : CompareCanvas.shown
+            if let v = target, let w = v.window,
+               let e = NSEvent.enterExitEvent(
+                   with: .mouseExited, location: .zero, modifierFlags: [],
+                   timestamp: 0, windowNumber: w.windowNumber, context: nil,
+                   eventNumber: 0, trackingNumber: 0, userData: nil) {
+                v.mouseExited(with: e)
+            }
+            print("snapshot: exit view=\(target.map { "\(type(of: $0))" } ?? "-") sample=\(mk.sampleAt == nil ? "-" : "shown")")
+        // The colours: the toolbar's Color and Fill, the selection's, the
+        // eyedropper's sample where it is: "colors".
+        case "colors":
+            let sel = mk.selection.map {
+                "\($0.id):\(hex($0.stroke))/\(hex($0.fill))"
+            }.joined(separator: ",")
+            print("snapshot: colors edge=\(hex(mk.edge)) fill=\(hex(mk.fill)) selection=\(sel.isEmpty ? "-" : sel) sample=\(hex(mk.sampleColor)) at=\(mk.sampleAt.map { String(format: "%.0f,%.0f", $0.x, $0.y) } ?? "-") tool=\(mk.tool.rawValue)")
         // The magnet (Snap to Guides): "magnet=on|off".
         case "magnet":
             m.snapsToGuides = arg != "off"
@@ -312,11 +359,14 @@ struct ValtzApp: App {
             pointer(.up, ps.last!)
             // Refused (a locked layer): the banner says why.
             if let b = m.banner { print("snapshot: drag banner=\(b)") }
-        case "click", "dclick", "sclick":
+        case "click", "dclick", "sclick", "aclick":
+            // aclick: with ⌥ (the pen's corner, the eyedropper's Fill).
             if let p = points(arg).first {
                 let n = kv[0] == "dclick" ? 2 : 1
-                pointer(.down, p, clicks: n, shift: kv[0] == "sclick")
-                pointer(.up, p, clicks: n, shift: kv[0] == "sclick")
+                pointer(.down, p, clicks: n, shift: kv[0] == "sclick",
+                        option: kv[0] == "aclick")
+                pointer(.up, p, clicks: n, shift: kv[0] == "sclick",
+                        option: kv[0] == "aclick")
             }
         case "key":
             m.markupKey(arg == "delete" ? .delete
@@ -335,7 +385,8 @@ struct ValtzApp: App {
             let tool = MarkupTool.allCases.first {
                 $0.key.map { String($0) } == key }
             let code: UInt16 = tool?.keyCode
-                ?? (key == "d" ? 2 : key == "[" || key == "{" ? 33 : 30)
+                ?? (key == "d" ? 2 : key == "x" ? MarkupTool.swapKeyCode
+                    : key == "[" || key == "{" ? 33 : 30)
             var flags: NSEvent.ModifierFlags = shift ? [.shift] : []
             if command { flags.insert(.command) }
             var viaMenu = "-"
@@ -550,43 +601,52 @@ struct ValtzApp: App {
                     }
                 }
             }
+            // While a closed project's tasks are being stopped, what would
+            // change or close a document waits (AppModel.closingTasks).
             CommandGroup(replacing: .newItem) {
                 Button("New Project…") { newProject() }
                     .keyboardShortcut("n")
+                    .disabled(model.closingTasks != nil)
                 // Private and untitled, as a browser's private window (⇧⌘N).
                 Button("New Anonymous Project") {
                     model.newAnonymousProject()
                 }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
+                    .disabled(model.closingTasks != nil)
                 Button("Open Project…") { openProject() }
                     .keyboardShortcut("o")
+                    .disabled(model.closingTasks != nil)
             }
             // The project as a document (DESIGN §5b): Save writes its
             // working copy to its file; Revert to Saved goes back to it.
             CommandGroup(replacing: .saveItem) {
                 Button("Save") { model.saveDocument() }
                     .keyboardShortcut("s")
-                    .disabled(model.projectId == nil)
+                    .disabled(model.projectId == nil
+                              || model.closingTasks != nil)
                 Button("Save As…") { model.saveDocumentAs() }
                     .keyboardShortcut("s", modifiers: [.command, .shift])
-                    .disabled(model.projectId == nil)
+                    .disabled(model.projectId == nil
+                              || model.closingTasks != nil)
                 Button("Revert to Saved") { model.revertDocument() }
                     .disabled(!model.document.dirty || model.document.untitled
-                              || model.isAnonymous)
+                              || model.isAnonymous
+                              || model.closingTasks != nil)
             }
             // ⌘Z: the text being typed while it has typing to undo, else
             // the project's history of commands.
             CommandGroup(replacing: .undoRedo) {
                 Button(model.undoMenuTitle) { model.undoAny() }
                     .keyboardShortcut("z")
-                    .disabled(!model.canUndoAny)
+                    .disabled(!model.canUndoAny || model.closingTasks != nil)
                 Button(model.redoMenuTitle) { model.redoAny() }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
-                    .disabled(!model.canRedoAny)
+                    .disabled(!model.canRedoAny || model.closingTasks != nil)
             }
             CommandGroup(after: .importExport) {
                 Button("Attach Media…") { attachMedia() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
+                    .disabled(model.closingTasks != nil)
             }
             // The image, video or sound on screen, as the share menu's Save…
             // writes it: a format, its quality.
@@ -596,14 +656,16 @@ struct ValtzApp: App {
                     ShareButton.save(model)
                 }
                     .keyboardShortcut("e")
-                    .disabled(model.currentAsset?.url == nil)
+                    .disabled(!model.canExportStage
+                              || model.closingTasks != nil)
             }
             // The markup's selection let go, as Photoshop's ⌘D (the
             // markup toolbar's button beside Select).
             CommandGroup(after: .pasteboard) {
                 Button("Deselect") { model.deselectMarkup() }
                     .keyboardShortcut("d")
-                    .disabled(!model.markupCanDeselect)
+                    .disabled(!model.markupCanDeselect
+                              || model.closingTasks != nil)
             }
             CommandGroup(after: .textEditing) {
                 Button("Find") { model.findRequest += 1 }
@@ -688,7 +750,8 @@ struct ValtzApp: App {
                     if let key = how.shortcut {
                         Button(how.label) { model.arrangeSelection(how) }
                             .keyboardShortcut(key)
-                            .disabled(!model.markupCanArrange(how))
+                            .disabled(!model.markupCanArrange(how)
+                                      || model.closingTasks != nil)
                     }
                 }
             }
@@ -773,29 +836,32 @@ struct ValtzApp: App {
         CFRunLoopWakeUp(CFRunLoopGetMain())
     }
 
+    /// The new project chosen first, then the one open closed -- asked
+    /// about, its tasks stopped (AppModel.closeProject): none is stopped
+    /// for a panel that is then cancelled.
     private func newProject() {
-        guard model.confirmClose() else { return }
         let panel = NSSavePanel()
         panel.title = String(localized: "New Valtz Project")
         panel.nameFieldStringValue = "Untitled.valtz"
         panel.allowedContentTypes = [.valtzProject]
         panel.directoryURL = model.panelFolder(.project)
-        if panel.runModal() == .OK, let url = panel.url {
-            model.rememberPanel(.project, chose: url)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.rememberPanel(.project, chose: url)
+        model.closeProject(.newProject) { [model] in
             model.createProject(at: url)
         }
     }
 
     private func openProject() {
-        guard model.confirmClose() else { return }
         let panel = NSOpenPanel()
         panel.title = String(localized: "Open Valtz Project")
         panel.canChooseDirectories = true
         panel.treatsFilePackagesAsDirectories = false
         panel.allowedContentTypes = [.valtzProject]
         panel.directoryURL = model.panelFolder(.project)
-        if panel.runModal() == .OK, let url = panel.url {
-            model.rememberPanel(.project, chose: url)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.rememberPanel(.project, chose: url)
+        model.closeProject(.open) { [model] in
             model.openProject(path: url.path)
         }
     }
@@ -833,8 +899,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func openPending() {
         guard let model, let url = pending.last else { return }
         pending = []
-        guard model.confirmClose() else { return }
-        model.openProject(path: url.path)
+        model.closeProject(.open) { model.openProject(path: url.path) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -849,6 +914,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// too, as it was once called).
     nonisolated static func layerId(_ s: String) -> String {
         s == "0" || s == "bg" ? "" : s
+    }
+
+    /// A closed project's tasks being stopped, as a task step prints it:
+    /// `closing=<reason>:<left>/<total> project=<name>`.
+    @MainActor
+    static func closingSummary(_ m: AppModel) -> String {
+        let closing = m.closingTasks.map {
+            "\($0.reason):\($0.left.count)/\($0.total)"
+        } ?? "-"
+        let name = (m.projectName ?? "-")
+            .replacingOccurrences(of: " ", with: "_")
+        return "closing=\(closing) project=\(name)"
     }
 
     /// The main window drawn by AppKit (cacheDisplay) to a PNG: a second
@@ -1116,9 +1193,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // its end), "move=2:0" (along the row), "remove=1",
                 // "base=1" (its pencil badge).
                 if let spec = env["VALTZ_SNAPSHOT_REFS"] {
+                    // A thumbnail's drag, its pointer scripted: `drag=n`
+                    // begun on the n-th, `over=n` onto another, `out` off
+                    // the row, `in` back, `drop` let go on the row,
+                    // `dropout` off it -- each printing the row's order.
+                    ReferenceRow.followsPointer = false
                     for step in spec.split(separator: ";") {
                         try? await Task.sleep(for: .milliseconds(500))
                         let kv = step.split(separator: "=").map(String.init)
+                        let at = kv.count > 1 ? Int(kv[1]) : nil
+                        let ids = m.promptAttachments.map(\.id)
+                        var dragged = true
+                        switch kv[0] {
+                        case "drag" where at.map(ids.indices.contains)
+                                            == true:
+                            m.beginRowDrag(ids[at!])
+                        case "over" where at.map(ids.indices.contains)
+                                            == true:
+                            m.rowDragEntered(ids[at!])
+                        case "out": m.rowDragMoved(inRow: false)
+                        case "in": m.rowDragMoved(inRow: true)
+                        case "drop": m.endRowDrag(inRow: true)
+                        case "dropout": m.endRowDrag(inRow: false)
+                        default: dragged = false
+                        }
+                        if dragged {
+                            try? await Task.sleep(for: .milliseconds(100))
+                            FileHandle.standardError.write(Data(
+                                "snapshot: refs \(step) order=\(m.promptAttachments.map(\.url.lastPathComponent).joined(separator: ",")) dragging=\(m.rowDrag.map { d in m.promptAttachments.first { $0.id == d.id }?.url.lastPathComponent ?? "?" } ?? "-") outside=\(m.rowDrag?.outside == true)\n".utf8))
+                            continue
+                        }
                         let args = (kv.count > 1 ? kv[1] : "")
                             .split(separator: ":").compactMap { Int($0) }
                         let row = m.promptAttachments
@@ -3030,7 +3134,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         switch kv[0] {
                         case "prompt": m.setPrompt(arg)
                         case "start": m.start()
+                        // The project closed while tasks run -- asked
+                        // (VALTZ_SNAPSHOT_STOP_TASKS), stopped, waited
+                        // for: "close:open:<pkg>" another opened (as a
+                        // drop opens one), "close:new" a new anonymous
+                        // one.
+                        case "close":
+                            if arg.hasPrefix("open:") {
+                                m.openDropped(URL(fileURLWithPath:
+                                    String(arg.dropFirst(5))))
+                            } else if arg == "new" {
+                                m.newAnonymousProject()
+                            }
+                        // The window drawn now -- the veil while it waits:
+                        // "draw:<file.png>".
+                        case "draw":
+                            Self.drawWindow(to: arg)
                         case "model": m.modelChoice = arg
+                        // The generation card's rows, as the env hooks
+                        // set them before Start: "size:1920x1088",
+                        // "length:10" (or "100 frames"), "modality:video".
+                        case "size": m.setCustomSize(arg)
+                        case "length":
+                            if let n = Int(arg),
+                               AppModel.clipLengths.contains(n) {
+                                m.clipSeconds = n
+                            } else {
+                                m.setClipLength(arg)
+                            }
+                        case "modality":
+                            if let v = Modality(rawValue: arg) {
+                                m.setModality(v)
+                            }
                         case "wait":
                             try? await Task.sleep(
                                 for: .seconds(Double(arg) ?? 1))
@@ -3054,6 +3189,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 m.cancel(job: t.job)
                             }
                         case "undo": m.undoProject()
+                        // "click:x,y": a click posted to the window, points
+                        // from its top left (a card's button, say).
+                        case "click":
+                            let xy = arg.split(separator: ",").compactMap {
+                                Double($0)
+                            }
+                            if xy.count == 2 {
+                                Self.postClick(x: xy[0], y: xy[1])
+                            }
+                        // Valtz hidden (Hide Valtz, ⌘H) and shown again,
+                        // the keyboard left where it is: a task landing
+                        // while its window is out of sight.
+                        case "hide": NSApp.hide(nil)
+                        case "unhide": NSApp.unhideWithoutActivation()
+                        // The AppKit views SwiftUI hosts in the window --
+                        // a player, a preview, the canvas -- each with its
+                        // frame and alpha: one left behind shows here.
+                        case "hosts":
+                            if let w = NSApp.windows.first(where: {
+                                $0.isVisible }),
+                               let root = w.contentView {
+                                var out: [String] = []
+                                var queue = [root]
+                                while !queue.isEmpty {
+                                    let v = queue.removeFirst()
+                                    let t = String(describing: type(of: v))
+                                    if t.hasPrefix("AppKitPlatformViewHost"),
+                                       let inner = v.subviews.first {
+                                        let f = v.convert(v.bounds, to: nil)
+                                        // Seen: the alphas and layer
+                                        // opacities above it, multiplied;
+                                        // "h" hidden itself or above.
+                                        var a = 1.0
+                                        var up: NSView? = v
+                                        while let u = up {
+                                            a *= Double(u.alphaValue)
+                                            a *= Double(u.layer?.opacity ?? 1)
+                                            up = u.superview
+                                        }
+                                        out.append("\(type(of: inner))@\(Int(f.minX)),\(Int(w.frame.height - f.maxY)),\(Int(f.width))x\(Int(f.height))a\(String(format: "%.2f", a))\(v.isHiddenOrHasHiddenAncestor ? "h" : "")")
+                                    }
+                                    queue += v.subviews
+                                }
+                                FileHandle.standardError.write(Data(
+                                    "snapshot: hosts \(out.joined(separator: " "))\n".utf8))
+                            }
+                        // "hit:x,y": the AppKit view a click there goes
+                        // to, and its ancestors (points from the window's
+                        // top left) -- printed as `snapshot: hit`.
+                        case "hit":
+                            let xy = arg.split(separator: ",").compactMap {
+                                Double($0)
+                            }
+                            if xy.count == 2 {
+                                FileHandle.standardError.write(Data(
+                                    "snapshot: hit \(arg) dragReady=\(m.stageDragReady) chain=\(Self.hitChain(x: xy[0], y: xy[1]))\n".utf8))
+                            }
+                        // "move:x,y>x,y>...": the pointer moved through
+                        // the window, a mouse-moved event at each point
+                        // (from its top left), 80 ms apart, through the
+                        // app's event queue -- its monitors see it; the
+                        // tracking areas do not, the window server's --
+                        // or, "hmove:", handed to the window's SwiftUI as
+                        // over its own views: the drag band armed and let
+                        // go, the cursor, where a click would go -- each
+                        // printed as `snapshot: move`.
+                        case "move", "hmove":
+                            for pt in arg.split(separator: ">") {
+                                let xy = pt.split(separator: ",")
+                                    .compactMap { Double($0) }
+                                guard xy.count == 2 else { continue }
+                                Self.postMove(x: xy[0], y: xy[1],
+                                              toHost: kv[0] == "hmove")
+                                try? await Task.sleep(for: .milliseconds(80))
+                                let c = m.stageCardFrame
+                                FileHandle.standardError.write(Data(
+                                    "snapshot: \(kv[0]) \(pt) dragReady=\(m.stageDragReady) canDrag=\(m.canDragStage) cursor=\(Self.cursorName(NSCursor.current)) card=\(Int(c.minX)),\(Int(c.minY)),\(Int(c.width))x\(Int(c.height)) chain=\(Self.hitChain(x: xy[0], y: xy[1]))\n".utf8))
+                            }
                         // The title bar's compare button.
                         case "compare": m.toggleCompare()
                         // "export:<format>:<file>": what the stage shows,
@@ -3074,7 +3287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                         try? await Task.sleep(for: .milliseconds(400))
                         FileHandle.standardError.write(Data(
-                            "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) stage=\(m.stageAssetId.flatMap { id in m.assets.first { $0.id == id }?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m))\n".utf8))
+                            "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) stage=\(m.stageAssetId.flatMap { id in m.assets.first { $0.id == id }?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) \(Self.closingSummary(m))\n".utf8))
                     }
                 }
                 // THE AGENT (DESIGN §9b), driven as its card drives it:
@@ -3933,6 +4146,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     for sub in v.subviews { walk(sub, depth + 1) }
                 }
                 walk(root, 0)
+                if let host = w.contentView {
+                    var names: [String] = []
+                    var k: AnyClass? = object_getClass(host)
+                    while let c = k, c != NSView.self {
+                        var n: UInt32 = 0
+                        if let ms = class_copyMethodList(c, &n) {
+                            for j in 0..<Int(n) {
+                                let m = NSStringFromSelector(
+                                    method_getName(ms[j]))
+                                let l = m.lowercased()
+                                if l.contains("drag") || l.contains("hittest") {
+                                    names.append(m)
+                                }
+                            }
+                            free(ms)
+                        }
+                        k = class_getSuperclass(c)
+                    }
+                    FileHandle.standardError.write(Data(
+                        "snapshot: drop-host \(type(of: host)) methods=\(names.joined(separator: ","))\n".utf8))
+                }
                 let a = model?.assetListFrame ?? .zero
                 FileHandle.standardError.write(Data(
                     "snapshot: drop-views assetList=\(Int(a.minX)),\(Int(a.minY)) \(Int(a.width))x\(Int(a.height))\n".utf8))
@@ -3946,8 +4180,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         // "hover:<file>@x,y": entered and moved, never
                         // dropped -- the capture shows what a drag over
                         // there shows.
-                        let hover = one.hasPrefix("hover:")
-                        let parts = (hover ? String(one.dropFirst(6)) : one)
+                        // "win:...": handed to the view AppKit's own search
+                        // finds (the window's), not the one found here.
+                        let viaWindow = one.hasPrefix("win:")
+                        let spec = viaWindow ? String(one.dropFirst(4)) : one
+                        let hover = spec.hasPrefix("hover:")
+                        let parts = (hover ? String(spec.dropFirst(6)) : spec)
                             .split(separator: "@").map(String.init)
                         guard parts.count == 2 else { continue }
                         let xy = parts[1].split(separator: ",")
@@ -3964,6 +4202,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             for sub in v.subviews { front(sub) }
                         }
                         front(root)
+                        // As AppKit's own search goes: into a view only
+                        // where the point is inside it.
+                        var inside: NSView?
+                        func within(_ v: NSView) {
+                            guard !v.isHidden,
+                                  v.convert(v.bounds, to: nil).contains(p)
+                            else { return }
+                            if !v.registeredDraggedTypes.isEmpty {
+                                inside = v
+                            }
+                            for sub in v.subviews { within(sub) }
+                        }
+                        within(root)
                         let before = model?.assets.count ?? 0
                         // "row:<asset name>": a row of the list dragged,
                         // as its drag carries it (text, "valtz-asset:id").
@@ -3971,12 +4222,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             ? model?.assets.first(where: {
                                 $0.name == String(parts[0].dropFirst(4))
                             }) : nil
-                        let info = row.map {
+                        // "ref:<n>": the prompt row's n-th medium, as its
+                        // thumbnail's drag carries it.
+                        let ref = parts[0].hasPrefix("ref:")
+                            ? Int(parts[0].dropFirst(4)).flatMap { n in
+                                model?.promptAttachments.indices
+                                    .contains(n) == true
+                                    ? model?.promptAttachments[n].id : nil
+                            } : nil
+                        let info = ref.map {
+                            FakeDrag(text: PromptTextView.referencePrefix
+                                         + $0.uuidString,
+                                     at: p, window: w)
+                        } ?? row.map {
                             FakeDrag(text: AppModel.assetPrefix + $0.id,
                                      at: p, window: w)
                         } ?? FakeDrag(
                             file: URL(fileURLWithPath: parts[0]),
                             at: p, window: w)
+                        // Where AppKit itself would hand this drag.
+                        let find = NSSelectorFromString("_findDragTargetFrom:")
+                        let appkit = w.responds(to: find)
+                            ? w.perform(find, with: info)?
+                                .takeUnretainedValue() as? NSView
+                            : nil
+                        if viaWindow { hit = appkit }
                         let entered = hit.map {
                             ($0 as NSDraggingDestination)
                                 .draggingEntered?(info) ?? []
@@ -4007,7 +4277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     .name ?? fid)
                         }
                         FileHandle.standardError.write(Data(
-                            "snapshot: fake-drop at=\(parts[1]) view=\(hit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") entered=\(entered.rawValue) updated=\(updated.rawValue) performed=\(performed) assets=\(before)>\(model?.assets.count ?? 0) rowFolder=\(rowFolder)\n".utf8))
+                            "snapshot: fake-drop at=\(parts[1]) view=\(hit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") entered=\(entered.rawValue) updated=\(updated.rawValue) performed=\(performed) assets=\(before)>\(model?.assets.count ?? 0) rowFolder=\(rowFolder) inside=\(inside.map { "\(type(of: $0))" } ?? "-") appkit=\(appkit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") mentions=\(model?.promptMentions.count ?? 0)\n".utf8))
                     }
                 }
             }
@@ -4543,6 +4813,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The pointer moved to (x, y) points from the window's top left:
+    /// posted to the app's event queue (its monitors see it), or handed to
+    /// the window's SwiftUI itself (`toHost`), as the pointer's moves over
+    /// its own views are.
+    @MainActor
+    private static func postMove(x: Double, y: Double, toHost: Bool) {
+        guard let win = NSApp.windows.first(where: { $0.isVisible }),
+              let ev = NSEvent.mouseEvent(
+                  with: .mouseMoved,
+                  location: NSPoint(x: x, y: win.frame.height - y),
+                  modifierFlags: [],
+                  timestamp: ProcessInfo.processInfo.systemUptime,
+                  windowNumber: win.windowNumber, context: nil,
+                  eventNumber: 0, clickCount: 0, pressure: 0)
+        else { return }
+        if toHost {
+            win.contentView?.mouseMoved(with: ev)
+        } else {
+            NSApp.postEvent(ev, atStart: false)
+        }
+    }
+
+    /// The AppKit view a click at (x, y) points from the window's top
+    /// left goes to, then its ancestors: "AVPlayerView<AppKitPlatform...".
+    @MainActor
+    private static func hitChain(x: Double, y: Double) -> String {
+        guard let w = NSApp.windows.first(where: { $0.isVisible }),
+              let root = w.contentView?.superview else { return "-" }
+        var chain: [String] = []
+        var v = root.hitTest(NSPoint(x: x, y: w.frame.height - y))
+        while let view = v, chain.count < 8 {
+            chain.append(String(describing: type(of: view)))
+            v = view.superview
+        }
+        return chain.joined(separator: "<")
+    }
+
+    /// The cursor by name, as far as AppKit's own are told apart.
+    @MainActor
+    private static func cursorName(_ c: NSCursor) -> String {
+        let known: [(NSCursor, String)] = [
+            (.arrow, "arrow"), (.openHand, "openHand"),
+            (.closedHand, "closedHand"), (.pointingHand, "pointingHand"),
+            (.iBeam, "iBeam"), (.crosshair, "crosshair"),
+        ]
+        return known.first { $0.0 == c }?.1 ?? "other"
+    }
+
     /// A click -- down, then up -- posted to the window at (x, y) points
     /// from its top left, through the app's own event queue.
     @MainActor
@@ -4691,7 +5009,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { model?.editorWasShown ?? false }
     }
 
-    /// Unsaved changes: saved, let go, or the quit cancelled.
+    /// Unsaved changes: saved, let go, or the quit cancelled. Tasks under
+    /// way: asked about, and -- agreed -- stopped before Valtz quits, the
+    /// window veiled meanwhile (AppModel.prepareClose): the quit waits.
     @MainActor
     func applicationShouldTerminate(
         _ sender: NSApplication
@@ -4699,9 +5019,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let m = model else { return .terminateNow }
         // Asked already, as its window closed.
         if m.closeConfirmed { return .terminateNow }
-        guard m.confirmClose() else { return .terminateCancel }
-        m.closeForQuit()
-        return .terminateNow
+        switch m.prepareClose(.quit, then: { ok in
+            if ok { m.closeForQuit() }
+            NSApp.reply(toApplicationShouldTerminate: ok)
+        }) {
+        case .proceed:
+            m.closeForQuit()
+            return .terminateNow
+        case .cancelled:
+            return .terminateCancel
+        case .waiting:
+            return .terminateLater
+        }
     }
 
     @MainActor
