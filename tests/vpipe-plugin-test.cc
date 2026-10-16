@@ -581,6 +581,38 @@ TEST(engine_progress, a_song_s_passes)
   CHECK(p.read(reports(Json::array()), 4).phase == kPhaseFinish);
 }
 
+// A COMPRESSED copy is made in passes -- a pipeline's DiT, then its
+// text encoder -- each with its quantizer's report: counted as one, the
+// passes before done, what comes before a quantizer in its pass (its
+// components copied, a calibration) counting nothing.
+TEST(engine_progress, a_compress_s_passes)
+{
+  vp::JobProgress p(0, false, false, false, 0, /*passes=*/2);
+  vp::JobPhase copy =
+      p.read(reports({report(1, "copy components", 3, 9)}), 0);
+  CHECK(copy.phase == kPhaseWork);
+  CHECK(copy.pass == 1 && copy.passes == 2);
+  CHECK(copy.estimate == 0);
+  vp::JobPhase q1 = p.read(reports({report(1, "copy components", 9, 9),
+                                    report(2, "quantize", 50, 100)}), 1);
+  CHECK(q1.phase == kPhaseQuantize && q1.pass == 1);
+  CHECK(std::abs(q1.estimate - 0.25) < 1e-9);
+  vp::JobPhase c2 = p.read(reports({report(2, "quantize", 100, 100),
+                                    report(3, "copy components", 1, 9)}), 2);
+  CHECK(c2.pass == 2 && std::abs(c2.estimate - 0.5) < 1e-9);
+  CHECK(p.read(reports({report(4, "calibrate", 2, 8)}), 3).phase ==
+        kPhaseCalibrate);
+  vp::JobPhase q2 = p.read(reports({report(5, "quantize", 25, 100)}), 4);
+  CHECK(q2.pass == 2 && std::abs(q2.estimate - 0.625) < 1e-9);
+  CHECK(q2.data()["passes"] == 2 && q2.data()["pass"] == 2);
+  // One pass (a quantized variant): its own count, no passes.
+  vp::JobProgress one(0, false);
+  vp::JobPhase q = one.read(reports({report(1, "quantize", 30, 100)}), 0);
+  CHECK(q.phase == kPhaseQuantize && q.passes == 0);
+  CHECK(q.fraction() == 0.3f);
+  CHECK(!q.data().contains("passes"));
+}
+
 // Between counts the phase moves on its own, at the recent pace: in step
 // with it, slowing short of the next count, never past it, and never
 // backwards when the count arrives.

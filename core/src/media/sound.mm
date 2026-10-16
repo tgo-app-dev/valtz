@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <set>
 
@@ -795,6 +796,234 @@ mono_sound(const fs::path& in, const fs::path& out, int rate)
     [dst close];
     return static_cast<double>(sum.size()) / rate;
   }
+}
+
+Result<double>
+stereo_sound(const fs::path& in, const fs::path& out, int rate)
+{
+  if (rate < 8000) {
+    return make_error(Code::InvalidArgument, std::format(
+        "{} Hz is not a sound to write", rate));
+  }
+  @autoreleasepool {
+    AVURLAsset* asset = [AVURLAsset
+        URLAssetWithURL:[NSURL fileURLWithPath:@(in.c_str())]
+                options:nil];
+    // Kept past the handler (this file is not ARC's: retained by hand).
+    __block NSArray<AVAssetTrack*>* tracks = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [asset loadTracksWithMediaType:AVMediaTypeAudio
+                 completionHandler:^(NSArray<AVAssetTrack*>* t, NSError*) {
+                   tracks = [t retain];
+                   dispatch_semaphore_signal(sem);
+                 }];
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    dispatch_release(sem);
+    [tracks autorelease];
+    if (tracks.count == 0) {
+      return make_error(Code::Corrupt, std::format(
+          "{} has no sound", in.filename().string()));
+    }
+    NSError* err = nil;
+    AVAssetReader* r = [AVAssetReader assetReaderWithAsset:asset
+                                                     error:&err];
+    if (!r) {
+      return make_error(Code::Io, std::format("cannot read {}",
+                                              in.string()));
+    }
+    // Every track through the mixer, as two channels named stereo: a
+    // mono track goes to both sides, a 5.1 is folded down by its layout.
+    AudioChannelLayout layout{};
+    layout.mChannelLayoutTag = kAudioChannelLayoutTag_Stereo;
+    AVAssetReaderAudioMixOutput* o = [AVAssetReaderAudioMixOutput
+        assetReaderAudioMixOutputWithAudioTracks:tracks
+                                   audioSettings:@{
+      AVFormatIDKey : @(kAudioFormatLinearPCM),
+      AVSampleRateKey : @(rate),
+      AVNumberOfChannelsKey : @2,
+      AVChannelLayoutKey : [NSData dataWithBytes:&layout
+                                          length:sizeof layout],
+      AVLinearPCMBitDepthKey : @32,
+      AVLinearPCMIsFloatKey : @YES,
+      AVLinearPCMIsNonInterleaved : @NO,
+      AVLinearPCMIsBigEndianKey : @NO,
+    }];
+    [r addOutput:o];
+    if (![r startReading]) {
+      return make_error(Code::Io, std::format("cannot read {}",
+                                              in.string()));
+    }
+    FloatWav wav;
+    VALTZ_TRY(wav.open(out, 2, rate));
+    std::vector<float> chunk;
+    while (CMSampleBufferRef sb = [o copyNextSampleBuffer]) {
+      const auto frames = static_cast<std::size_t>(
+          CMSampleBufferGetNumSamples(sb));
+      CMBlockBufferRef bb = CMSampleBufferGetDataBuffer(sb);
+      const std::size_t bytes = bb ? CMBlockBufferGetDataLength(bb) : 0;
+      chunk.resize(bytes / sizeof(float));
+      Status st = ok_status();
+      if (bb && CMBlockBufferCopyDataBytes(bb, 0, bytes, chunk.data()) ==
+                    kCMBlockBufferNoErr) {
+        st = wav.append_interleaved(chunk.data(),
+                                    std::min(frames, chunk.size() / 2));
+      }
+      CFRelease(sb);
+      VALTZ_TRY(st);
+    }
+    if (r.status == AVAssetReaderStatusFailed) {
+      return make_error(Code::Io, std::format(
+          "cannot read {}: {}", in.string(),
+          r.error ? r.error.localizedDescription.UTF8String : "?"));
+    }
+    VALTZ_TRY(wav.close());
+    return static_cast<double>(wav.frames()) / rate;
+  }
+}
+
+namespace {
+
+// Little-endian, as a WAV is.
+void
+put_u32(std::uint8_t* at, std::uint32_t v)
+{
+  for (int i = 0; i < 4; ++i) {
+    at[i] = static_cast<std::uint8_t>(v >> (8 * i));
+  }
+}
+
+void
+put_u16(std::uint8_t* at, std::uint16_t v)
+{
+  at[0] = static_cast<std::uint8_t>(v);
+  at[1] = static_cast<std::uint8_t>(v >> 8);
+}
+
+// RIFF, a "fmt " of IEEE float (format 3), a "fact" (its frames: what
+// a non-PCM WAV carries) and the "data" chunk's header: 58 bytes.
+constexpr std::size_t kFloatWavHeader = 58;
+
+void
+float_wav_header(std::uint8_t* h, int channels, int rate,
+                 std::uint64_t frames)
+{
+  const auto block = static_cast<std::uint32_t>(channels * 4);
+  const auto data = static_cast<std::uint32_t>(frames * block);
+  std::memcpy(h, "RIFF", 4);
+  put_u32(h + 4, static_cast<std::uint32_t>(kFloatWavHeader - 8 + data));
+  std::memcpy(h + 8, "WAVEfmt ", 8);
+  put_u32(h + 16, 18);
+  put_u16(h + 20, 3);
+  put_u16(h + 22, static_cast<std::uint16_t>(channels));
+  put_u32(h + 24, static_cast<std::uint32_t>(rate));
+  put_u32(h + 28, static_cast<std::uint32_t>(rate) * block);
+  put_u16(h + 32, static_cast<std::uint16_t>(block));
+  put_u16(h + 34, 32);
+  put_u16(h + 36, 0);
+  std::memcpy(h + 38, "fact", 4);
+  put_u32(h + 42, 4);
+  put_u32(h + 46, static_cast<std::uint32_t>(frames));
+  std::memcpy(h + 50, "data", 4);
+  put_u32(h + 54, data);
+}
+
+}
+
+FloatWav::~FloatWav()
+{
+  (void)close();
+}
+
+Status
+FloatWav::open(const fs::path& path, int channels, int rate)
+{
+  if (_f) {
+    return make_error(Code::InvalidArgument, "the WAV is open already");
+  }
+  if (channels < 1 || channels > 8 || rate < 8000) {
+    return make_error(Code::InvalidArgument, std::format(
+        "{} channels at {} Hz is not a sound to write", channels, rate));
+  }
+  std::error_code ec;
+  fs::create_directories(path.parent_path(), ec);
+  _f = std::fopen(path.c_str(), "wb");
+  if (!_f) {
+    return make_error(Code::Io, std::format("cannot write {}",
+                                            path.string()));
+  }
+  _path = path;
+  _channels = channels;
+  _rate = rate;
+  _frames = 0;
+  std::uint8_t h[kFloatWavHeader];
+  float_wav_header(h, channels, rate, 0);
+  if (std::fwrite(h, 1, sizeof h, _f) != sizeof h) {
+    return make_error(Code::Io, std::format("cannot write {}",
+                                            path.string()));
+  }
+  return ok_status();
+}
+
+Status
+FloatWav::write_(const float* interleaved, std::size_t frames)
+{
+  if (!_f) {
+    return make_error(Code::InvalidArgument, "the WAV is not open");
+  }
+  const std::uint64_t block = static_cast<std::uint64_t>(_channels) * 4;
+  if ((_frames + frames) * block + kFloatWavHeader >= 0xFFFFFFFFull) {
+    return make_error(Code::Unsupported, std::format(
+        "{} is too long for a WAV", _path.filename().string()));
+  }
+  const std::size_t n = frames * static_cast<std::size_t>(_channels);
+  if (std::fwrite(interleaved, sizeof(float), n, _f) != n) {
+    return make_error(Code::Io, std::format("cannot write {}",
+                                            _path.string()));
+  }
+  _frames += frames;
+  return ok_status();
+}
+
+Status
+FloatWav::append_interleaved(const float* samples, std::size_t frames)
+{
+  return frames == 0 ? ok_status() : write_(samples, frames);
+}
+
+Status
+FloatWav::append_planar(const float* samples, std::size_t frames)
+{
+  if (frames == 0) {
+    return ok_status();
+  }
+  const auto ch = static_cast<std::size_t>(_channels);
+  _scratch.resize(frames * ch);
+  for (std::size_t c = 0; c < ch; ++c) {
+    const float* plane = samples + c * frames;
+    for (std::size_t i = 0; i < frames; ++i) {
+      _scratch[i * ch + c] = plane[i];
+    }
+  }
+  return write_(_scratch.data(), frames);
+}
+
+Status
+FloatWav::close()
+{
+  if (!_f) {
+    return ok_status();
+  }
+  std::uint8_t h[kFloatWavHeader];
+  float_wav_header(h, _channels, _rate, _frames);
+  const bool ok = std::fseek(_f, 0, SEEK_SET) == 0 &&
+                  std::fwrite(h, 1, sizeof h, _f) == sizeof h;
+  const bool closed = std::fclose(_f) == 0;
+  _f = nullptr;
+  if (!ok || !closed) {
+    return make_error(Code::Io, std::format("cannot write {}",
+                                            _path.string()));
+  }
+  return ok_status();
 }
 
 Status

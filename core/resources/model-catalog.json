@@ -49,8 +49,9 @@
   "auto": {
     "image": {
       "generate": ["krea2-turbo", "qwen-image-2.1-turbo", "qwen-image-2.1",
-                   "z-image-turbo", "flux2-klein-9b"],
-      "edit": ["qwen-image-2.1", "qwen-image-2.1-turbo", "flux2-klein-9b"]
+                   "z-image-turbo", "flux3-klein", "flux2-klein-9b"],
+      "edit": ["qwen-image-2.1", "qwen-image-2.1-turbo", "flux3-klein",
+               "flux2-klein-9b"]
     },
     "video": {
       "generate": ["minimax-h3-fl2va"],
@@ -100,11 +101,12 @@
       ]
     },
     {
-      "id": "flux2", "name": "FLUX.2 klein",
+      "id": "flux2", "name": "FLUX klein",
       "features": ["image-gen", "image-edit"],
       "members": [
+        {"model": "flux3-klein", "label": "FLUX.3 Image Klein (5.6B)"},
         {"model": "flux2-klein-9b", "label": "FLUX.2 klein 9B"},
-        {"model": "taef2", "label": "TAE"}
+        {"model": "taef2", "label": "TAE (FLUX.2 and FLUX.3)"}
       ]
     },
     {
@@ -163,6 +165,14 @@
       ]
     },
     {
+      "id": "separate", "name": "Stem Separation",
+      "features": ["audio-separate"],
+      "members": [
+        {"model": "bs-roformer-vocals", "label": "BS-RoFormer, vocals model (pcunwa, no license stated)"},
+        {"model": "bs-roformer-instrumental", "label": "BS-RoFormer, instrumental model (pcunwa, no license stated)"}
+      ]
+    },
+    {
       "id": "other", "name": "Other",
       "features": [],
       "members": [
@@ -177,6 +187,7 @@
       "family": "qwen3.5",
       "role": "assistant",
       "hf_path": "mlx-community/Qwen3.5-9B-OptiQ-4bit",
+      "check": {"is": {"config.json": "qwen3_5"}},
       "capabilities": ["prompt-enhance", "intent", "caption", "video-summary"],
       "disk_gb": 7.7, "disk_measured": true,
       "min_ram_gb": 16, "rank": 1,
@@ -193,6 +204,7 @@
       "family": "qwen3.5",
       "role": "assistant",
       "hf_path": "mlx-community/Qwen3.8-27B-OptiQ-4bit",
+      "check": {"is": {"config.json": "qwen3_5"}},
       "capabilities": ["prompt-enhance", "intent", "caption", "video-summary"],
       "disk_gb": 20.7, "disk_measured": true,
       "min_ram_gb": 32, "rank": 2,
@@ -209,6 +221,7 @@
       "family": "qwen3.5",
       "role": "assistant",
       "hf_path": "mlx-community/Qwen3.8-27B-4bit",
+      "check": {"is": {"config.json": "qwen3_5"}},
       "capabilities": ["prompt-enhance", "intent", "caption", "video-summary"],
       "disk_gb": 16.1, "disk_measured": true,
       "min_ram_gb": 24, "rank": 1,
@@ -227,6 +240,7 @@
       "family": "qwen3.5",
       "role": "drafter",
       "hf_path": "mlx-community/Qwen3.8-27B-MTP-4bit",
+      "check": {"is": {"config.json": "qwen3_5_mtp"}},
       "capabilities": [],
       "disk_gb": 0.24, "disk_measured": true,
       "min_ram_gb": 24,
@@ -239,6 +253,7 @@
       "family": "qwen3.5",
       "role": "drafter",
       "hf_path": "incoai/Qwen3.8-27B-DFlash2",
+      "check": {"is": {"config.json": "DFlash2DraftModel"}},
       "capabilities": [],
       "disk_gb": 3.8,
       "min_ram_gb": 24,
@@ -251,6 +266,9 @@
       "family": "z-image",
       "role": "image",
       "hf_path": "Tongyi-MAI/Z-Image-Turbo",
+      "check": {"is": {"model_index.json": "ZImagePipeline",
+                       "transformer/config.json": "ZImageTransformer2DModel"}},
+      "compress": {"parts": [{"target": "dit"}, {"target": "text_encoder"}]},
       "capabilities": ["text-to-image"],
       "disk_gb": 31, "disk_measured": true,
       "min_ram_gb": 16, "rank": 2,
@@ -268,11 +286,64 @@
       "notes": "6B DiT, 8 steps. Streams its F32 checkpoint on 16 GB (46 s at 1024^2 on an M5)."
     },
     {
+      "id": "flux3-klein",
+      "name": "FLUX.3 Image Klein",
+      "family": "flux3",
+      "role": "image",
+      "hf_path": "black-forest-labs/flux-3-image-klein",
+      "check": {"is": {"transformer/config.json": "Flux3Transformer2DModel"},
+                "files": ["config.json"]},
+      "compress": {"parts": [{"target": "dit"}]},
+      "capabilities": ["text-to-image", "image-edit"],
+      "disk_gb": 21, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 2,
+      "preview_with": "taef2",
+      "license": "flux-kommunity",
+      "gated": true,
+      "engine": {
+        "vpipe": {
+          "config_stage": "flux3-model-config",
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn"],
+          "config": {},
+          "defaults": { "steps": 16, "width": 1024, "height": 1024 },
+          "max_edge": 4096,
+          "presets": {
+            "speed": { "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
+                       "i8_gemm": true },
+            "balanced": { "sage_attn": true, "i8_gemm": true },
+            "quality": { "sol_attn": false, "sage_attn": false,
+                         "i8_gemm": false }
+          },
+          "edit": {
+            "reference_to_conditioner": false,
+            "reference_area": 1048576,
+            "reference_fit": "crop_to_grid",
+            "base_area": 4194304,
+            "max_references": 10
+          }
+        }
+      },
+      "prompting": {
+        "language": "english",
+        "enhance": {
+          "generate": "flux3-klein-t2i",
+          "edit": "flux3-klein-edit"
+        }
+      },
+      "notes": "Black Forest Labs' 5.6B flow-map DiT, distilled to 16 steps with no guidance pass: text to image, and edits from up to ten references. Pictures up to 4096 x 4096 (any side from 64): a 4096-pixel square takes over an hour, the VAE decoded in exact tiles. It reads a full scene caption -- framing, subject, background, light -- and an edit written as the picture wanted, the change folded in. Its text encoder is Qwen3-VL-4B, text only; its VAE and preview are FLUX.2's. Compressing packs its DiT (11.1 GB) at 8 or 4 bits; the encoder stays as published."
+    },
+    {
       "id": "flux2-klein-9b",
       "name": "FLUX.2 [klein] 9B",
       "family": "flux2",
       "role": "image",
       "hf_path": "black-forest-labs/FLUX.2-klein-9B",
+      "check": {"is": {"model_index.json": "Flux2KleinPipeline",
+                       "transformer/config.json": "Flux2Transformer2DModel"}},
+      "compress": {"parts": [
+        {"target": "dit", "options_4bit": {"awq": true, "awq_clip": true}},
+        {"target": "text_encoder",
+         "options_4bit": {"awq": true, "awq_clip": true}}]},
       "capabilities": ["text-to-image", "image-edit"],
       "disk_gb": 17, "disk_measured": false,
       "min_ram_gb": 16, "rank": 3,
@@ -301,6 +372,9 @@
       "family": "krea2",
       "role": "image",
       "hf_path": "krea/Krea-2-Turbo",
+      "check": {"is": {"model_index.json": "Krea2Pipeline",
+                       "transformer/config.json": "Krea2Transformer2DModel"}},
+      "compress": {"parts": [{"target": "dit"}, {"target": "text_encoder"}]},
       "capabilities": ["text-to-image"],
       "disk_gb": 33, "disk_measured": true,
       "min_ram_gb": 16, "rank": 2,
@@ -330,6 +404,9 @@
       "family": "qwen-image-21",
       "role": "image",
       "hf_path": "Qwen/Qwen-Image-2.1",
+      "check": {"is": {"model_index.json": "QwenImage21Pipeline",
+                       "transformer/config.json": "QwenImage21Transformer2DModel"}},
+      "compress": {"parts": [{"target": "dit"}, {"target": "text_encoder"}]},
       "capabilities": ["text-to-image", "image-edit", "alpha-output"],
       "disk_gb": 31, "disk_measured": true,
       "min_ram_gb": 16, "rank": 2,
@@ -378,6 +455,9 @@
       "family": "qwen-image-21",
       "role": "image",
       "hf_path": "Qwen/Qwen-Image-2.1-Turbo",
+      "check": {"is": {"model_index.json": "QwenImage21Pipeline",
+                       "transformer/config.json": "QwenImage21Transformer2DModel"}},
+      "compress": {"parts": [{"target": "dit"}, {"target": "text_encoder"}]},
       "capabilities": ["text-to-image", "image-edit", "alpha-output"],
       "disk_gb": 30.2, "disk_measured": false,
       "min_ram_gb": 16, "rank": 3,
@@ -421,6 +501,11 @@
       "family": "minimax-h3",
       "role": "video",
       "hf_path": "MiniMaxAI/MiniMax-H3",
+      "check": {"is": {"model_index.json": "MiniMaxH3Pipeline",
+                       "transformer/config.json": "MiniMaxH3DiTModel"}},
+      "compress": {"parts": [
+        {"target": "dit", "options": {"quant_modulation": true}},
+        {"target": "text_encoder"}]},
       "subdir": "FL2VA",
       "fetch_variant": "MiniMaxAI/MiniMax-H3-FL2VA",
       "capabilities": ["text-to-video", "image-to-video", "audio-output"],
@@ -522,6 +607,11 @@
       "family": "minimax-h3",
       "role": "video",
       "hf_path": "MiniMaxAI/MiniMax-H3",
+      "check": {"is": {"model_index.json": "MiniMaxH3Pipeline",
+                       "transformer/config.json": "MiniMaxH3DiTModel"}},
+      "compress": {"parts": [
+        {"target": "dit", "options": {"quant_modulation": true}},
+        {"target": "text_encoder"}]},
       "subdir": "Ref2VA",
       "fetch_variant": "MiniMaxAI/MiniMax-H3-Ref2VA",
       "capabilities": ["reference-to-video", "audio-output"],
@@ -662,6 +752,7 @@
       "family": "yue2",
       "role": "audio",
       "hf_path": "m-a-p/YuE2-3B",
+      "check": {"is": {"config.json": "yue2"}},
       "capabilities": ["text-to-audio"],
       "disk_gb": 7.3, "disk_measured": false,
       "min_ram_gb": 16, "rank": 1,
@@ -719,6 +810,7 @@
       "family": "moss-tts",
       "role": "audio",
       "hf_path": "OpenMOSS-Team/MOSS-TTS-v1.5",
+      "check": {"is": {"config.json": "moss_tts_delay"}},
       "capabilities": ["text-to-speech"],
       "disk_gb": 17.0, "disk_measured": false,
       "min_ram_gb": 16, "rank": 1,
@@ -785,6 +877,7 @@
       "id": "moss-audio-tokenizer", "name": "MOSS Audio Tokenizer",
       "family": "moss-tts", "role": "vae",
       "hf_path": "OpenMOSS-Team/MOSS-Audio-Tokenizer",
+      "check": {"is": {"config.json": "moss-audio-tokenizer"}},
       "capabilities": [],
       "disk_gb": 7.1, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "apache-2.0",
@@ -793,6 +886,7 @@
     {
       "id": "yue2-vae", "name": "YuE2 VAE", "family": "yue2",
       "role": "vae", "hf_path": "m-a-p/YuE2-Vae",
+      "check": {"is": {"config.json": "yue2_vae"}},
       "capabilities": [],
       "disk_gb": 0.53, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "cc-by-nc-4.0",
@@ -801,6 +895,7 @@
     {
       "id": "yue2-vae-legacy", "name": "YuE2 VAE (legacy)", "family": "yue2",
       "role": "vae", "hf_path": "m-a-p/YuE2-Vae-legacy",
+      "check": {"is": {"config.json": "yue2_vae"}},
       "capabilities": [],
       "disk_gb": 0.53, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "cc-by-nc-4.0",
@@ -812,6 +907,7 @@
       "family": "flashvsr",
       "role": "upscale",
       "hf_path": "JunhaoZhuang/FlashVSR-v1.1",
+      "check": {"is": {"model_index.json": "FlashVSRPipeline"}},
       "capabilities": ["upscale-video"],
       "engine": {"vpipe": {
         "upscale": {"grid": 128, "group": 24, "clip_frames": 41, "blend_frames": 8, "ahead": 1, "hidden": 1536},
@@ -828,6 +924,9 @@
       "family": "vosr",
       "role": "upscale",
       "hf_path": "CSWRY/VOSR",
+      "check": {"is": {"Qwen-Image-vae-2d/config.json":
+                         "AutoencoderKLQwenImage2D"},
+                "files": ["VOSR2"]},
       "capabilities": ["upscale-image"],
       "engine": {"vpipe": {
         "upscale": {"grid": 16, "encoder": "dinov2-large"},
@@ -845,6 +944,7 @@
       "family": "dinov2",
       "role": "encoder",
       "hf_path": "facebook/dinov2-large",
+      "check": {"is": {"config.json": "dinov2"}},
       "capabilities": [],
       "disk_gb": 1.2, "disk_measured": false,
       "min_ram_gb": 16, "rank": 0,
@@ -860,6 +960,7 @@
     {
       "id": "taef2", "name": "TAE (FLUX.2 latents)", "family": "tae",
       "role": "preview", "hf_path": "madebyollin/taef2",
+      "check": {"files": ["taef2.safetensors"]},
       "capabilities": ["live-preview"],
       "disk_gb": 0.01, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
       "license": "mit"
@@ -867,6 +968,7 @@
     {
       "id": "taew2_1", "name": "TAE (Wan 2.1 latents)", "family": "tae",
       "role": "preview", "hf_path": "madebyollin/taehv",
+      "check": {"tensors": ["encoder", "decoder"]},
       "file": "taew2_1.safetensors", "fetch_variant": "madebyollin/taew2_1",
       "capabilities": ["live-preview"],
       "disk_gb": 0.05, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
@@ -875,6 +977,7 @@
     {
       "id": "taeqi2_1", "name": "TAE (Qwen-Image 2.1, RGBA)", "family": "tae",
       "role": "preview", "hf_path": "madebyollin/taeqi2_1",
+      "check": {"files": ["taeqi2_1.safetensors"]},
       "capabilities": ["live-preview"],
       "disk_gb": 0.01, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "mit"
@@ -882,6 +985,7 @@
     {
       "id": "taeh3", "name": "TAE (MiniMax H3)", "family": "tae",
       "role": "preview", "hf_path": "madebyollin/taehv",
+      "check": {"tensors": ["encoder", "decoder"]},
       "file": "taeh3.safetensors", "fetch_variant": "madebyollin/taeh3",
       "capabilities": ["live-preview"],
       "disk_gb": 0.02, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
@@ -892,6 +996,7 @@
       "id": "minimax-h3-turbo", "name": "MiniMax H3 Turbo LoRA (6-step)",
       "family": "minimax-h3", "role": "lora",
       "hf_path": "larryvrh/MiniMax-H3-Turbo-Lora",
+      "check": {"tensors": ["lora"]},
       "file": "minimax_h3_turbo_v4_step600_ema.safetensors",
       "fetch_variant": "larryvrh/MiniMax-H3-Turbo-Lora-v4-600-ema",
       "capabilities": [],
@@ -903,6 +1008,7 @@
       "id": "minimax-h3-hyperflow", "name": "MiniMax H3 HyperFlow",
       "family": "minimax-h3", "role": "lora",
       "hf_path": "videorebirth/hyperflow",
+      "check": {"tensors": ["lora"]},
       "file": "minimax_h3_hyperflow_8step_v1.0.safetensors",
       "fetch_variant": "videorebirth/hyperflow",
       "capabilities": [],
@@ -914,6 +1020,7 @@
       "id": "minimax-h3-vdn", "name": "MiniMax H3 VDN linear branch",
       "family": "minimax-h3", "role": "branch",
       "hf_path": "OpenVDN/vdn-minimax-h3",
+      "check": {"files": ["model_spec.json"]},
       "subdir": "stage-dmd-step-250",
       "fetch_variant": "OpenVDN/vdn-minimax-h3-stage-dmd",
       "capabilities": [],
@@ -936,6 +1043,7 @@
       "id": "minimax-h3-turbo-3step", "name": "MiniMax H3 TaoMate adapter",
       "family": "minimax-h3", "role": "lora",
       "hf_path": "TaoLiveAIGC/TaoMate-H3",
+      "check": {"tensors": ["lora"]},
       "file": "adapter_model.safetensors",
       "capabilities": [],
       "disk_gb": 1.5, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
@@ -946,6 +1054,7 @@
       "id": "minimax-h3-turbo-4step", "name": "MiniMax H3 FL2VA 4-step LoRA",
       "family": "minimax-h3", "role": "lora",
       "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
       "file": "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors",
       "fetch_variant": "lightx2v/Minimax-h3-Turbo-4step-768p-v1.2",
       "capabilities": [],
@@ -958,6 +1067,7 @@
       "name": "MiniMax H3 Ref2VA 4-step LoRA",
       "family": "minimax-h3", "role": "lora",
       "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
       "file": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
       "fetch_variant": "lightx2v/Minimax-h3-Turbo-ref2va-4step",
       "capabilities": [],
@@ -969,6 +1079,7 @@
       "id": "minimax-h3-turbo-8step", "name": "MiniMax H3 FL2VA 8-step LoRA",
       "family": "minimax-h3", "role": "lora",
       "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
       "file": "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
       "fetch_variant": "lightx2v/Minimax-h3-Turbo-8step-768p-split",
       "capabilities": [],
@@ -981,6 +1092,7 @@
       "name": "MiniMax H3 Ref2VA 8-step LoRA",
       "family": "minimax-h3", "role": "lora",
       "hf_path": "lightx2v/Minimax-h3-Turbo",
+      "check": {"tensors": ["lora"]},
       "file": "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors",
       "fetch_variant": "lightx2v/Minimax-h3-Turbo-ref2va-8step-768p",
       "capabilities": [],
@@ -992,6 +1104,7 @@
       "id": "qwen-image-21-turbo", "name": "Qwen-Image 2.1 Turbo LoRA",
       "family": "qwen-image-21", "role": "lora",
       "hf_path": "Viggle/Qwen-Image-2.1-viggle-turbo",
+      "check": {"tensors": ["lora"]},
       "file": "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
       "fetch_variant": "Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-r128",
       "capabilities": [],
@@ -1020,6 +1133,7 @@
       "id": "qwen3-asr-1.7b", "name": "Qwen3-ASR 1.7B",
       "family": "listen", "role": "asr",
       "hf_path": "mlx-community/Qwen3-ASR-1.7B-8bit",
+      "check": {"is": {"config.json": "qwen3_asr"}},
       "capabilities": ["audio-transcribe"],
       "disk_gb": 2.5, "disk_measured": false, "min_ram_gb": 16, "rank": 2,
       "requires": ["silero-vad"],
@@ -1031,6 +1145,7 @@
       "id": "qwen3-asr-0.6b", "name": "Qwen3-ASR 0.6B",
       "family": "listen", "role": "asr",
       "hf_path": "mlx-community/Qwen3-ASR-0.6B-8bit",
+      "check": {"is": {"config.json": "qwen3_asr"}},
       "capabilities": ["audio-transcribe"],
       "disk_gb": 1.0, "disk_measured": true, "min_ram_gb": 16, "rank": 1,
       "requires": ["silero-vad"],
@@ -1061,6 +1176,46 @@
       "disk_gb": 0.2, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "mit",
       "notes": "Microsoft's audio tagger (CoreML): the sounds heard -- music, laughter, a dog, rain -- by AudioSet's 527 labels, ten seconds at a time. Optional: with it, a transcript lists the sound events."
+    },
+    {
+      "id": "bs-roformer-vocals", "name": "BS-RoFormer Resurrection (vocals)",
+      "family": "separate", "role": "separator",
+      "hf_path": "pcunwa/BS-Roformer-Resurrection",
+      "file": "BS-Roformer-Resurrection.ckpt",
+      "fetch_variant": "vocals",
+      "capabilities": ["audio-separate"],
+      "engine": {
+        "vpipe": {
+          "separate": {
+            "split": "vocals", "rate": 44100,
+            "sources": ["vocals", "accompaniment"],
+            "stem": "vocals", "residual": "accompaniment"
+          }
+        }
+      },
+      "disk_gb": 0.2, "disk_measured": false, "min_ram_gb": 16, "rank": 2,
+      "license": "",
+      "notes": "A Band-Split RoPE Transformer (MSST's format: a torch checkpoint beside its YAML) trained to take the VOICE out of a song: the vocals, and the accompaniment as what is left. 51M parameters, under 1 GB of memory whatever the song's length; a 3:34 song in 37-55 s. Its repository states NO license: fetchable, not shipped -- decide before using what it makes beyond your own listening."
+    },
+    {
+      "id": "bs-roformer-instrumental", "name": "BS-RoFormer Resurrection (instrumental)",
+      "family": "separate", "role": "separator",
+      "hf_path": "pcunwa/BS-Roformer-Resurrection",
+      "file": "BS-Roformer-Resurrection-Inst.ckpt",
+      "fetch_variant": "instrumental",
+      "capabilities": ["audio-separate"],
+      "engine": {
+        "vpipe": {
+          "separate": {
+            "split": "vocals", "rate": 44100,
+            "sources": ["vocals", "accompaniment"],
+            "stem": "accompaniment", "residual": "vocals"
+          }
+        }
+      },
+      "disk_gb": 0.2, "disk_measured": false, "min_ram_gb": 16, "rank": 1,
+      "license": "",
+      "notes": "The same network trained on the ACCOMPANIMENT: the cleaner instrumental (a karaoke track), the vocals as what is left. A little slower than the vocals model (finer time steps). Its repository states NO license."
     }
   ]
 }

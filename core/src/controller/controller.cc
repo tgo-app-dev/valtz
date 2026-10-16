@@ -349,6 +349,29 @@ Controller::create(ControllerConfig cfg)
           ? models::ModelStore::default_roots(paths.models)
           : cfg.model_roots,
       paths.support / "model-links.json");
+  // A compress a crash stopped (DESIGN §8b): its passes, never marked,
+  // never read -- gone. Only one untouched for six hours: another Valtz
+  // (the app, valtzctl) may be writing one now.
+  {
+    std::error_code ec;
+    const fs::path dir = c->_store->download_root() / "compressed";
+    const auto stale = fs::file_time_type::clock::now() -
+                       std::chrono::hours(6);
+    for (const auto& d : fs::directory_iterator(dir, ec)) {
+      const std::string n = d.path().filename().string();
+      if (!n.starts_with(".") || n.find(".compressing") == std::string::npos) {
+        continue;
+      }
+      auto newest = fs::last_write_time(d.path(), ec);
+      for (const auto& f : fs::directory_iterator(d.path(), ec)) {
+        newest = std::max(newest, fs::last_write_time(f.path(), ec));
+      }
+      if (newest < stale) {
+        VALTZ_LOG_INFO("models", "a stopped compress's {} removed", n);
+        fs::remove_all(d.path(), ec);
+      }
+    }
+  }
   {
     const Json helper = read_settings(paths.support / "assistant.json");
     c->_assistant_choice = jget<std::string>(helper, "model", "");
@@ -875,6 +898,8 @@ Controller::engine_runs_(models::Capability c) const
     return _engine->supports(engine::kOpTranscribeAudio);
   case Capability::VideoSummary:
     return _engine->supports(engine::kOpSummarizeVideo);
+  case Capability::AudioSeparate:
+    return _engine->supports(engine::kOpSeparateAudio);
   case Capability::UpscaleVideo:
     return _engine->supports(engine::kOpUpscaleVideo);
   case Capability::UpscaleImage:
@@ -937,6 +962,40 @@ Controller::capability_tree() const
             {"group_size", e->quantize_group},
             {"ready", src && _store->info(*src).state ==
                                  models::InstallState::Installed}};
+      }
+      // A compressed copy in its download's place (DESIGN §8b): its
+      // width, and what the download took.
+      Json& row = members.back();
+      if (info.compressed_bits > 0) {
+        std::ifstream in(info.dir / models::ModelStore::kCompressedMarker);
+        const Json mark = in ? Json::parse(in, nullptr, false) : Json();
+        row["compressed"] = {
+            {"bits", info.compressed_bits},
+            {"original_bytes", jget<std::uint64_t>(mark, "original_bytes",
+                                                   0)}};
+      }
+      // Compressible: what each width would take -- or why not here (not
+      // installed, compressed already, a link's or vpipe's files).
+      if (!e->compress.empty()) {
+        const std::string why =
+            !installed                ? "missing"
+            : info.compressed_bits > 0 ? "compressed"
+            : info.linked              ? "link"
+            : !under(info.dir, valtz_root) ? "vpipe"
+            : !_engine->supports(engine::kOpQuantizeModel) ? "engine"
+                                                           : "";
+        Json widths = Json::array();
+        if (why.empty()) {
+          for (const int bits : {8, 4}) {
+            const auto est = compress_estimate_(*e, info.dir, bits);
+            widths.push_back(
+                {{"bits", bits}, {"bytes", est.total},
+                 {"saves", est.original > est.total
+                               ? est.original - est.total : 0}});
+          }
+        }
+        row["compress"] = {{"ready", why.empty()}, {"why", why},
+                           {"widths", std::move(widths)}};
       }
     }
     // A feature is ready where a member makes it here: installed, it
@@ -1046,9 +1105,12 @@ Controller::storage_report() const
       const std::string hf = org.path().filename().string() + "/" +
                              repo.path().filename().string();
       Json names = Json::array();
+      // A compressed copy's folder (compressed/<id>-<bits>bit) is named
+      // by where its model is, not by its repo.
       for (const auto& e : _catalog.models()) {
-        if (e.hf_path == hf &&
-            _store->info(e).dir.string().starts_with(repo.path().string())) {
+        const auto info = _store->info(e);
+        if ((e.hf_path == hf || info.compressed_bits > 0) &&
+            info.dir.string().starts_with(repo.path().string())) {
           names.push_back(e.name);
         }
       }
@@ -1130,16 +1192,64 @@ Controller::storage_report() const
   return out;
 }
 
-Status
+Result<Json>
 Controller::link_model(const std::string& id, const fs::path& target)
 {
   const models::ModelEntry* e = _catalog.find(id);
   if (!e) {
     return make_error(Code::NotFound, msg::kUnknownModel, {{"model", id}});
   }
-  VALTZ_TRY(_store->link(*e, target));
+  std::error_code ec;
+  if (!fs::exists(target, ec)) {
+    return make_error(Code::NotFound,
+                      std::format("{} is not there", target.string()));
+  }
+  // Checked before it is linked: a wrong folder is said now, not at the
+  // first generation.
+  const models::ModelCheck check = models::check_model(*e, target,
+                                                       &_catalog);
+  Json out = check.to_json();
+  out["linked"] = false;
+  if (!check.usable) {
+    VALTZ_LOG_INFO("models", "{} not linked to {}: {}", id,
+                   target.string(),
+                   jget<std::string>(check.error(), "message", ""));
+    return out;
+  }
+  VALTZ_TRY(_store->link(*e, check.path));
+  out["linked"] = true;
+  VALTZ_LOG_INFO("models", "{} linked to {} ({}{})", id,
+                 check.path.string(),
+                 check.confirmed ? "confirmed" : "unconfirmed",
+                 check.moved.empty() ? "" : ", moved " + check.moved);
   post_("models.changed", JobId{}, {{"model", id}, {"reason", "linked"}});
-  return ok_status();
+  return out;
+}
+
+Result<Json>
+Controller::check_model(const std::string& id, const fs::path& target) const
+{
+  const models::ModelEntry* e = _catalog.find(id);
+  if (!e) {
+    return make_error(Code::NotFound, msg::kUnknownModel, {{"model", id}});
+  }
+  fs::path at = target;
+  if (at.empty()) {
+    const auto info = _store->info(*e);
+    if (info.state != models::InstallState::Installed) {
+      return make_error(Code::NotFound, msg::kModelNotInstalled,
+                        {{"model", e->name}});
+    }
+    at = info.path();
+  }
+  std::error_code ec;
+  if (!fs::exists(at, ec)) {
+    return make_error(Code::NotFound,
+                      std::format("{} is not there", at.string()));
+  }
+  Json out = models::check_model(*e, at, &_catalog).to_json();
+  out["installed"] = target.empty();
+  return out;
 }
 
 Status
@@ -1689,6 +1799,11 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
   }
   // The rest as settled: what the graph builder lays on the stages.
   r.params["tuning"] = t;
+  // Made by a compressed copy of the model (DESIGN §8b): its width, for
+  // whoever compares it with the original's.
+  if (const int bits = _store->info(m).compressed_bits; bits > 0) {
+    r.params["weights_bits"] = bits;
+  }
 }
 
 Json
@@ -1894,6 +2009,10 @@ void
 Controller::rescan_models()
 {
   _store->rescan();
+  {
+    std::lock_guard lk(_downloads_mu);
+    _compress_est.clear();
+  }
   post_("models.changed", JobId{});
 }
 
@@ -1999,6 +2118,17 @@ Controller::download_model(const std::string& model_id,
     }
     case engine::JobEventKind::Finished:
       finish_job_(ev.job, JobState::Finished, "");
+      // Fetched again over a compressed copy (DESIGN §8b): the original
+      // is back, the copy goes.
+      for (const int bits : {8, 4}) {
+        std::error_code ec;
+        const fs::path d = _store->compressed_dir(id, bits);
+        if (fs::exists(d / models::ModelStore::kCompressedMarker, ec)) {
+          VALTZ_LOG_INFO("models", "{} downloaded: its {}-bit copy at {} "
+                         "deleted", id, bits, d.string());
+          fs::remove_all(d, ec);
+        }
+      }
       _store->rescan();
       download_ended_(id, true, false);
       post_("job.finished", ev.job);
@@ -2289,6 +2419,313 @@ Controller::quantize_model(const std::string& model_id)
     }
   }));
   return rec.id;
+}
+
+namespace {
+
+// `p` inside `root` (or it).
+bool
+inside(const fs::path& p, const fs::path& root)
+{
+  const auto rel = p.lexically_normal().lexically_relative(
+      root.lexically_normal());
+  return !rel.empty() && *rel.begin() != "..";
+}
+
+// The passes a compressed copy is made in, as the engine takes them: a
+// part's options, and at 4 bits its 4-bit ones over them.
+Json
+compress_parts(const models::ModelEntry& e, int bits)
+{
+  Json parts = Json::array();
+  for (const auto& p : e.compress) {
+    Json options = p.options;
+    if (bits == 4) {
+      options.update(p.options_4bit);
+    }
+    parts.push_back({{"target", p.target}, {"options", std::move(options)}});
+  }
+  return parts;
+}
+
+}
+
+models::CompressEstimate
+Controller::compress_estimate_(const models::ModelEntry& e,
+                               const fs::path& dir, int bits) const
+{
+  const std::string key = std::format("{}|{}", dir.string(), bits);
+  {
+    std::lock_guard lk(_downloads_mu);
+    if (auto it = _compress_est.find(key); it != _compress_est.end()) {
+      return it->second;
+    }
+  }
+  const auto est = models::estimate_compressed(dir, e.compress, bits);
+  std::lock_guard lk(_downloads_mu);
+  _compress_est[key] = est;
+  return est;
+}
+
+Result<JobId>
+Controller::compress_model(const std::string& model_id, int bits)
+{
+  const auto* e = _catalog.find(model_id);
+  if (!e) {
+    return make_error(Code::NotFound, msg::kUnknownModel,
+                      {{"model", model_id}});
+  }
+  if (e->compress.empty()) {
+    return make_error(Code::InvalidArgument, msg::kNotCompressible,
+                      {{"model", e->name}});
+  }
+  if (bits != 8 && bits != 4) {
+    return make_error(Code::InvalidArgument, msg::kCompressBits);
+  }
+  {
+    std::lock_guard lk(_downloads_mu);
+    if (auto it = _compressing.find(e->id); it != _compressing.end()) {
+      return it->second;
+    }
+  }
+  const auto info = _store->info(*e);
+  if (info.state != models::InstallState::Installed) {
+    return make_error(Code::NotFound, msg::kModelNotInstalled,
+                      {{"model", e->name}});
+  }
+  if (info.compressed_bits > 0) {
+    return make_error(Code::AlreadyExists, msg::kAlreadyCompressed,
+                      {{"model", e->name},
+                       {"bits", std::to_string(info.compressed_bits)}});
+  }
+  // Valtz's own download only: the copy replaces it, and a link's files
+  // or vpipe's are not Valtz's to delete.
+  const fs::path root = _store->download_root();
+  if (info.linked || !inside(info.dir, root)) {
+    return make_error(Code::InvalidArgument, msg::kCompressNotOurs,
+                      {{"model", e->name}, {"path", info.dir.string()}});
+  }
+  if (!_engine->supports(engine::kOpQuantizeModel)) {
+    return make_error(Code::Unsupported, msg::kEngineCannotRun,
+                      {{"operation",
+                        std::string(engine::kOpQuantizeModel)}});
+  }
+  // Both on disk while it runs: what the passes write (vpipe hard-links
+  // the rest), and room to spare.
+  const auto est = compress_estimate_(*e, info.dir, bits);
+  constexpr std::uint64_t kSpare = 2'000'000'000ULL;
+  std::error_code ec;
+  const auto space = fs::space(root, ec);
+  if (!ec && space.available < est.written + kSpare) {
+    return make_error(Code::Io, msg::kCompressNoRoom,
+                      {{"model", e->name},
+                       {"need", models::size_text(est.written + kSpare)},
+                       {"free", models::size_text(space.available)}});
+  }
+  // Written beside where it goes, under a name the store does not read,
+  // and moved in whole once it passed its check.
+  const fs::path dest = _store->compressed_dir(e->id, bits);
+  const fs::path staging =
+      dest.parent_path() / std::format(".{}.compressing",
+                                       dest.filename().string());
+  const std::size_t passes = e->compress.size();
+  const auto clear = [staging, passes] {
+    std::error_code ec;
+    fs::remove_all(staging, ec);
+    for (std::size_t i = 1; i <= passes; ++i) {
+      fs::remove_all(std::format("{}.pass{}", staging.string(), i), ec);
+    }
+  };
+  clear();
+  fs::create_directories(dest.parent_path(), ec);
+
+  engine::JobSpec spec;
+  spec.id = JobId::make();
+  spec.op = std::string(engine::kOpQuantizeModel);
+  spec.model.id = e->id;
+  spec.model.dir = info.dir;
+  spec.params = {{"output", staging.string()},
+                 {"bits", bits},
+                 {"group_size", 64},
+                 {"parts", compress_parts(*e, bits)}};
+
+  JobRecord rec;
+  rec.id = spec.id;
+  rec.op = spec.op;
+  rec.purpose = "compress";
+  rec.title = std::format("Compress {} to {}-bit", e->name, bits);
+  rec.destination = dest.string();
+  rec.created_ms = project::now_ms();
+  _jobs.add(rec);
+  {
+    std::lock_guard lk(_downloads_mu);
+    _compressing[e->id] = spec.id;
+  }
+  post_("job.queued", spec.id, {{"title", rec.title}, {"op", rec.op},
+                                {"purpose", rec.purpose},
+                                {"model", e->id}, {"bits", bits}});
+  VALTZ_LOG_INFO("models", "compressing {} at {} to {} bits ({} parts) "
+                 "into {}: about {} of {}", e->id, info.dir.string(), bits,
+                 passes, dest.string(), models::size_text(est.total),
+                 models::size_text(est.original));
+
+  const models::ModelEntry entry = *e;
+  const fs::path original = info.dir;
+  const auto ended = [this, id = e->id] {
+    std::lock_guard lk(_downloads_mu);
+    _compressing.erase(id);
+  };
+  Status submitted = _engine->submit(
+      std::move(spec), [this, entry, bits, staging, original, clear,
+                        ended](const engine::JobEvent& ev) {
+    switch (ev.kind) {
+    case engine::JobEventKind::Started:
+      _jobs.update(ev.job, [](JobRecord& r) { r.state = JobState::Running; });
+      post_("job.started", ev.job, {{"engine", ev.text}});
+      break;
+    case engine::JobEventKind::Progress: {
+      if (ev.progress >= 0) {
+        _jobs.update(ev.job, [&](JobRecord& r) { r.progress = ev.progress; });
+      }
+      Json d = {{"progress", ev.progress}};
+      if (ev.data.is_object()) {
+        d.update(ev.data);
+      }
+      post_("job.progress", ev.job, d);
+      break;
+    }
+    case engine::JobEventKind::Finished: {
+      std::uint64_t freed = 0;
+      const std::string why =
+          compress_finished_(entry, bits, staging, original, &freed);
+      clear();
+      ended();
+      if (!why.empty()) {
+        finish_job_(ev.job, JobState::Failed, why);
+        Json d = message_fields(msg::kCompressBadCopy,
+                                {{"model", entry.name}, {"why", why}});
+        d["code"] = "io";
+        post_("job.failed", ev.job, d);
+      } else {
+        const fs::path dest = _store->compressed_dir(entry.id, bits);
+        finish_job_(ev.job, JobState::Finished, dest.string());
+        post_("job.finished", ev.job, {{"path", dest.string()},
+                                       {"model", entry.id},
+                                       {"bits", bits}, {"freed", freed}});
+      }
+      post_("models.changed", JobId{}, {{"model", entry.id}});
+      break;
+    }
+    case engine::JobEventKind::Failed:
+      clear();
+      ended();
+      finish_job_(ev.job, JobState::Failed, ev.text);
+      post_("job.failed", ev.job, {{"code", to_str(ev.error)},
+                                   {"message", ev.text}});
+      break;
+    case engine::JobEventKind::Cancelled:
+      clear();
+      ended();
+      finish_job_(ev.job, JobState::Cancelled, "");
+      post_("job.cancelled", ev.job);
+      break;
+    default:
+      break;
+    }
+  });
+  if (!submitted.ok()) {
+    clear();
+    ended();
+    finish_job_(rec.id, JobState::Failed, submitted.error().message);
+    return submitted.error();
+  }
+  return rec.id;
+}
+
+std::string
+Controller::compress_finished_(const models::ModelEntry& e, int bits,
+                               const fs::path& staging,
+                               const fs::path& original,
+                               std::uint64_t* freed)
+{
+  std::error_code ec;
+  // The copy checked as a link is: the same model, whole. Until it is,
+  // the download stays.
+  const models::ModelCheck check = models::check_model(e, staging,
+                                                       &_catalog);
+  if (!check.usable || check.path != staging.lexically_normal()) {
+    const std::string why = check.usable
+        ? std::string("the copy was not where it was written")
+        : jget<std::string>(check.error(), "message", "");
+    VALTZ_LOG_ERROR("models", "compressed {} not kept: {}", e.id, why);
+    return why;
+  }
+  const auto est = compress_estimate_(e, original, bits);
+  {
+    std::ofstream out(staging / models::ModelStore::kCompressedMarker);
+    out << to_text({{"model", e.id},
+                    {"bits", bits},
+                    {"group_size", 64},
+                    {"parts", compress_parts(e, bits)},
+                    {"from", original.string()},
+                    {"original_bytes", est.original},
+                    {"made", project::now_ms()}}, 2) << "\n";
+    if (!out) {
+      return "its mark could not be written";
+    }
+  }
+  const fs::path dest = _store->compressed_dir(e.id, bits);
+  fs::remove_all(dest, ec);
+  ec.clear();
+  fs::rename(staging, dest, ec);
+  if (ec) {
+    return ec.message();
+  }
+  _store->rescan();
+  const auto now = _store->info(e);
+  if (now.compressed_bits != bits) {
+    fs::remove_all(dest, ec);
+    _store->rescan();
+    return "the copy is not where the model is looked for";
+  }
+  // The download it replaces, deleted -- unless another model's files
+  // are in it (one folder holding several), or it holds another's.
+  for (const auto& o : _catalog.models()) {
+    if (o.id == e.id) {
+      continue;
+    }
+    const auto oi = _store->info(o);
+    if (oi.state != models::InstallState::Missing &&
+        (inside(oi.dir, original) || inside(original, oi.dir))) {
+      VALTZ_LOG_INFO("models", "{}'s download kept: {} is in it", e.id,
+                     o.id);
+      return "";
+    }
+  }
+  const std::uint64_t before = est.original;
+  fs::remove_all(original, ec);
+  if (ec) {
+    VALTZ_LOG_ERROR("models", "{}'s download not deleted: {}", e.id,
+                    ec.message());
+  } else {
+    *freed = before > now.bytes ? before - now.bytes : 0;
+    // Its folders left empty, up to the models folder.
+    const fs::path root = _store->download_root();
+    for (fs::path up = original.parent_path();
+         inside(up, root) && up != root && fs::is_empty(up, ec);
+         up = up.parent_path()) {
+      fs::remove(up, ec);
+    }
+  }
+  _store->rescan();
+  {
+    std::lock_guard lk(_downloads_mu);
+    _compress_est.clear();
+  }
+  VALTZ_LOG_INFO("models", "{} compressed to {} bits: {} at {}, {} freed",
+                 e.id, bits, models::size_text(now.bytes), dest.string(),
+                 models::size_text(*freed));
+  return "";
 }
 
 // ---- projects ---------------------------------------------------------
@@ -2731,10 +3168,13 @@ Controller::tasks() const
     const bool exp = j.purpose == "export";
     const std::string line = exp && j.runner.empty() ? runner + " exports"
                                                       : runner;
+    // An asset operation's (asset-ops.h): its name.
+    const AssetOperation* aop = asset_operation_of(j.op);
     Json t = {{"job", j.id.str()},
               {"project", j.project.str()},
               {"asset", exp ? std::string() : j.asset.str()},
               {"kind", exp ? "export" : upscale ? "upscale" : "generate"},
+              {"operation", aop ? std::string(aop->name) : std::string()},
               {"op", j.op},
               {"title", j.title},
               {"state", to_str(j.state)},
@@ -2744,6 +3184,14 @@ Controller::tasks() const
               {"progress", j.progress}};
     if (wait != waits.end()) {
       t["waiting"] = wait->second;
+    }
+    // Every asset it makes (a separation's sources), its own first.
+    if (!exp) {
+      Json all = Json::array({j.asset.str()});
+      for (const auto& c : j.companions) {
+        all.push_back(c.second.str());
+      }
+      t["assets"] = std::move(all);
     }
     if (exp) {
       t["source"] = j.asset.str();
@@ -4156,6 +4604,16 @@ Controller::generate_image(GenerateImageRequest req)
   if (!edit && (!m || !m->has(models::Capability::TextToImage))) {
     return make_error(Code::NotFound, msg::kNoImageModel);
   }
+  // Past the longest side the model makes (FLUX.3: 4096), said here --
+  // not left to a graph that would fail at its first stage.
+  if (const int edge = models::max_edge(*m);
+      edge > 0 && std::max(req.width, req.height) > edge) {
+    return make_error(Code::InvalidArgument, msg::kSizeTooLarge,
+                      {{"model", m->name},
+                       {"size", std::format("{} x {}", req.width,
+                                            req.height)},
+                       {"edge", std::to_string(edge)}});
+  }
   // An edit's inline pictures become what the model calls them.
   const std::string prompt = assist::tag_pictures(
       pf.text,
@@ -4646,187 +5104,192 @@ Controller::video_references_(project::Project& p,
   return out;
 }
 
-Result<JobId>
-Controller::upscale_layer(UpscaleRequest req)
+// ---- ASSET OPERATIONS (asset-ops.h, DESIGN §4j) ------------------------
+
+Result<Controller::AssetOpResult>
+Controller::run_asset_operation(AssetOpRequest req)
 {
-  auto undo = command_(req.project, "upscale", req.composition, req.layer);
+  const AssetOperation* op = find_asset_operation(req.operation);
+  if (!op) {
+    return make_error(Code::InvalidArgument, msg::kUnknownOperation,
+                      {{"operation", req.operation}});
+  }
+  // One command each, its kind the operation's name: undone, the request
+  // goes -- its assets, its task -- and, once made, what it made.
+  auto undo = command_(req.project, std::string(op->name), req.asset,
+                       req.layer);
   project::Project* p = project(req.project);
   if (!p) {
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
-  VALTZ_ASSIGN(project::Asset comp, p->asset(req.composition));
-  VALTZ_TRY(unlocked_(comp, req.layer));
-  if (comp.layers.empty()) {
-    return make_error(Code::InvalidArgument, msg::kNotComposition,
-                      {{"name", comp.name}});
+  VALTZ_ASSIGN(project::Asset a, p->asset(req.asset));
+  if (req.model.empty()) {
+    req.model = "auto";
   }
-  const project::Layer* layer = nullptr;
-  for (const auto& l : comp.layers) {
-    if (l.id == req.layer) {
-      layer = &l;
-    }
+  if (!req.options.is_object()) {
+    req.options = Json::object();
   }
-  if (!layer || !layer->source) {
-    return make_error(Code::InvalidArgument, "no such layer");
+  if (op->name == "transcribe") {
+    return transcribe_(req, *p, a);
   }
-  VALTZ_ASSIGN(project::Asset src, p->asset(*layer->source));
-  // A composition is many things drawn: flat first (flatten_layer).
-  if (src.cls == project::AssetClass::Composition ||
-      src.cls == project::AssetClass::Still ||
-      src.cls == project::AssetClass::Markup) {
-    return make_error(Code::InvalidArgument, msg::kUpscaleFlattenFirst,
-                      {{"name", src.name}});
+  if (op->name == "summarize") {
+    return summarize_(req, *p, a);
   }
-  const bool clip = src.kind == project::AssetKind::Video;
-  if (!clip && src.kind != project::AssetKind::Image) {
-    return make_error(Code::Unsupported, msg::kUpscaleKind);
+  if (op->name == "separate") {
+    return separate_(req, *p, a);
   }
-  const auto need = clip ? models::Capability::UpscaleVideo
-                         : models::Capability::UpscaleImage;
-  VALTZ_ASSIGN(project::AssetVersion v, p->version(src.id));
-  // One size: the crop's one key (or none: nothing to upscale).
-  const media::KeyedCrop keys = crop_keys_of(comp, req.layer);
-  if (keys.place.keys.size() > 1) {
-    return make_error(Code::InvalidArgument, msg::kUpscaleKeyed,
-                      {{"name", src.name}});
-  }
-  const media::Crop c = keys.place.at(0);
-  const media::PixelSize from{v.info.frame.width, v.info.frame.height};
-  const double sx = std::max(1.0, c.scale_x);
-  const double sy = std::max(1.0, c.scale_y);
-  if ((sx <= 1.0 && sy <= 1.0) || from.width <= 0 || from.height <= 0) {
-    return make_error(Code::InvalidArgument, msg::kUpscaleNotScaled,
-                      {{"name", src.name}});
-  }
-  // Even sides, as the writer takes them.
-  auto even = [](double x) {
-    return std::max(2, static_cast<int>(std::lround(x / 2)) * 2);
-  };
-  const media::PixelSize to{even(from.width * sx), even(from.height * sy)};
-  // The upscaler: the one named, else the first installed that runs --
-  // else one downloading (its job waits for it).
-  const models::ModelEntry* m = nullptr;
-  for (const bool soon : {false, true}) {
-    for (const auto& e : _catalog.models()) {
-      if (m) {
-        break;
-      }
-      if ((req.model.empty() || req.model == "auto" || req.model == e.id) &&
-          e.has(need) && engine_runs_(need) &&
-          (soon ? coming_(e)
-                : _store->info(e).state == models::InstallState::Installed)) {
-        m = &e;
-      }
-    }
-  }
-  if (!m) {
-    return make_error(Code::NotFound, msg::kNoUpscaler);
-  }
-  // Its span: the layer's marks (at their own rate), else the whole clip.
-  const Rational own = v.info.frame_rate;
-  const Rational marks = layer->time.rate;
-  auto in_source = [&](std::int64_t f) {
-    if (f < 0 || marks.num <= 0 || own.num <= 0 || marks == own) {
-      return f;
-    }
-    return static_cast<std::int64_t>(std::llround(
-        f * own.to_double() / marks.to_double()));
-  };
-  const std::int64_t first =
-      std::max<std::int64_t>(0, in_source(layer->time.in));
-  const std::int64_t out = in_source(layer->time.out);
-  const std::int64_t last = out >= first ? out : v.info.frame_count - 1;
-  const std::int64_t count = std::max<std::int64_t>(1, last - first + 1);
-  const Json up = jget(jget(m->engine, "vpipe", Json::object()), "upscale",
-                       Json::object());
-  project::Recipe r;
-  r.model = m->id;
-  r.deterministic = false;
-  if (clip) {
-    r.op = std::string(engine::kOpUpscaleVideo);
-    r.params = {{"width", to.width},
-                {"height", to.height},
-                {"first", first},
-                {"count", count},
-                {"seed", req.seed},
-                {"group", jget(up, "group", 25)},
-                {"overlap", jget(up, "overlap", 4)}};
-  } else {
-    r.op = std::string(engine::kOpUpscaleImage);
-    r.params = {{"width", to.width},
-                {"height", to.height},
-                {"seed", req.seed}};
-    // Its eyes (VOSR's DINOv2), by catalog id: resolved at submit.
-    if (const auto enc = jget<std::string>(up, "encoder", "");
-        !enc.empty()) {
-      r.params["encoder"] = enc;
-    }
-  }
-  // Its arithmetic, as Settings › Upscaling has it: the stages' int8
-  // GEMMs, Sage, Sol (graph-builder's accel_of).
-  r.params["tuning"] = upscale_tuning(*m);
-  r.inputs.push_back({"source", src.id, v.number});
-  stamp_origin(r, *m);
-  VALTZ_ASSIGN(project::Asset a, p->define_derived(
-      std::format("{} {}×{}", src.name, to.width, to.height),
-      clip ? project::AssetKind::Video : project::AssetKind::Image, r,
-      96));
-  {
-    std::lock_guard lk(_upscale_mu);
-    _upscale_targets[a.id] = {req.composition, req.layer, from, to};
-  }
-  post_("assets.changed", JobId{}, {{"project", req.project},
-                                    {"asset", a.id},
-                                    {"reason", "defined"}});
-  auto job = submit_build_(req.project, a.id, a.name);
-  if (!job.ok()) {
-    std::lock_guard lk(_upscale_mu);
-    _upscale_targets.erase(a.id);
-  }
-  return job;
+  return upscale_(req, *p, a);
 }
 
-Result<std::pair<AssetId, JobId>>
-Controller::transcribe(ProjectId pid, AssetId asset, std::string model,
-                       std::string language)
+Json
+Controller::asset_operations_json() const
 {
-  auto undo = command_(pid, "transcribe", asset);
-  project::Project* p = project(pid);
-  if (!p) {
-    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  const auto caps = capabilities();
+  // The helper, which watches video when it can (summarize's first pick).
+  const models::ModelEntry* helper = assistant_model();
+  Json out = Json::array();
+  for (const auto& op : asset_operations()) {
+    Json takes = Json::array();
+    for (const auto& t : op.takes) {
+      const auto it = std::ranges::find(
+          caps, t.capability, &models::CapabilityStatus::capability);
+      const auto avail = it != caps.end()
+                             ? it->availability
+                             : models::Availability::NotOffered;
+      // What Auto runs -- or, none here, what it would once downloaded.
+      const models::ModelEntry* m =
+          operation_model_(t.capability, "auto", helper);
+      if (!m && it != caps.end() && !it->chosen.empty()) {
+        m = _catalog.find(it->chosen);
+      }
+      Json tk = {{"kind", project::to_str(t.kind)},
+                 {"op", std::string(t.op)},
+                 {"capability", models::to_str(t.capability)},
+                 {"ready", avail == models::Availability::Ready},
+                 {"availability", models::to_str(avail)},
+                 {"model", m ? m->id : std::string()},
+                 {"model_name", m ? m->name : std::string()},
+                 {"family", m ? m->family : std::string()}};
+      takes.push_back(std::move(tk));
+    }
+    Json makes = Json::array();
+    for (const auto& k : op.makes) {
+      makes.push_back(std::string(k));
+    }
+    out.push_back({{"name", std::string(op.name)},
+                   {"label", std::string(op.label)},
+                   {"on_layer", op.on_layer},
+                   {"makes", std::move(makes)},
+                   {"takes", std::move(takes)}});
   }
-  VALTZ_ASSIGN(project::Asset src, p->asset(asset));
+  return out;
+}
+
+const models::ModelEntry*
+Controller::operation_model_(
+    models::Capability cap, const std::string& model,
+    const models::ModelEntry* prefer,
+    const std::function<bool(const models::ModelEntry&)>& fits) const
+{
+  if (!engine_runs_(cap)) {
+    return nullptr;
+  }
+  const auto serves = [&](const models::ModelEntry& e) {
+    return e.has(cap) && (!fits || fits(e));
+  };
+  const auto installed = [&](const models::ModelEntry& e) {
+    return _store->info(e).state == models::InstallState::Installed;
+  };
+  // Named: installed, or downloading (its job waits for it).
+  if (!model.empty() && model != "auto") {
+    const auto* e = _catalog.find(model);
+    return e && serves(*e) && coming_(*e) ? e : nullptr;
+  }
+  if (prefer && serves(*prefer) && installed(*prefer)) {
+    return prefer;
+  }
+  const models::ModelEntry* best = nullptr;
+  for (const bool soon : {false, true}) {
+    for (const auto& e : _catalog.models()) {
+      if (serves(e) && (soon ? coming_(e) : installed(e)) &&
+          (!best || e.rank > best->rank)) {
+        best = &e;
+      }
+    }
+    if (best) {
+      break;
+    }
+  }
+  return best;
+}
+
+Result<Controller::AssetOpResult>
+Controller::make_from_(
+    ProjectId pid, project::Project& p, const project::Asset& src,
+    std::vector<OpMade> made, bool beside,
+    const std::function<void(const std::vector<AssetId>&)>& before,
+    const std::function<void(const std::vector<AssetId>&)>& failed)
+{
+  if (made.empty()) {
+    return make_error(Code::Internal, "an operation that makes nothing");
+  }
+  AssetOpResult out;
+  std::string title;
+  for (auto& m : made) {
+    // Each says which of the job's outputs it holds: rebuilt alone, it
+    // keeps that one.
+    if (!m.output.empty()) {
+      m.recipe.params["output"] = m.output;
+    }
+    VALTZ_ASSIGN(project::Asset a,
+                 p.define_derived(m.name, m.kind, m.recipe, 96));
+    // Beside what it is made from, in the list.
+    if (beside && !src.folder.empty()) {
+      (void)p.set_asset_folder(a.id, src.folder);
+    }
+    post_("assets.changed", JobId{}, {{"project", pid},
+                                      {"asset", a.id},
+                                      {"reason", "defined"}});
+    if (out.made.empty()) {
+      title = a.name;
+    }
+    out.made.push_back(a.id);
+  }
+  if (before) {
+    before(out.made);
+  }
+  std::vector<std::pair<std::string, AssetId>> companions;
+  for (std::size_t i = 1; i < made.size(); ++i) {
+    companions.emplace_back(made[i].output, out.made[i]);
+  }
+  auto job = submit_build_(pid, out.made.front(), title,
+                           std::move(companions));
+  if (!job.ok()) {
+    if (failed) {
+      failed(out.made);
+    }
+    return job.error();
+  }
+  out.job = *job;
+  return out;
+}
+
+Result<Controller::AssetOpResult>
+Controller::transcribe_(const AssetOpRequest& req, project::Project& p,
+                        const project::Asset& src)
+{
   // A sound, or a clip with one (a composition's: its mix).
   const bool timed = src.kind == project::AssetKind::Audio ||
                      src.kind == project::AssetKind::Video;
-  if (!timed || !sounds_(*p, src, 0) ||
+  if (!timed || !sounds_(p, src, 0) ||
       ((src.cls == project::AssetClass::Flat ||
         src.cls == project::AssetClass::Generated) && src.head == 0)) {
     return make_error(Code::InvalidArgument, msg::kTranscribeNeedsSound,
                       {{"name", src.name}});
   }
-  // The speech model: the one named, else the best installed -- else
-  // the best downloading (its job waits for it); its voice detector; the
-  // tagger when there is one.
-  const models::ModelEntry* m = nullptr;
-  for (const bool soon : {false, true}) {
-    for (const auto& e : _catalog.models()) {
-      if (!e.has(models::Capability::Transcribe) ||
-          (!model.empty() && model != "auto" && model != e.id) ||
-          !(soon ? coming_(e)
-                 : _store->info(e).state ==
-                       models::InstallState::Installed) ||
-          !engine_runs_(models::Capability::Transcribe)) {
-        continue;
-      }
-      if (!m || e.rank > m->rank) {
-        m = &e;
-      }
-    }
-    if (m) {
-      break;
-    }
-  }
+  // The speech model; its voice detector; the tagger when there is one.
+  const models::ModelEntry* m =
+      operation_model_(models::Capability::Transcribe, req.model);
   if (!m) {
     return make_error(Code::NotFound, msg::kNoTranscriber);
   }
@@ -4849,36 +5312,23 @@ Controller::transcribe(ProjectId pid, AssetId asset, std::string model,
   if (!tagger.empty() && installed(tagger)) {
     r.params["tagger"] = tagger;
   }
-  if (!language.empty()) {
+  if (const auto language = jget<std::string>(req.options, "language", "");
+      !language.empty()) {
     r.params["language"] = language;
   }
   const bool drawn = src.cls == project::AssetClass::Composition;
   r.inputs.push_back({"source", src.id, drawn ? 0 : src.head});
   stamp_origin(r, *m);
-  VALTZ_ASSIGN(project::Asset a, p->define_derived(
-      std::format("{} transcript", src.name), project::AssetKind::Text, r,
-      96));
-  // Beside what it transcribes, in the list.
-  if (!src.folder.empty()) {
-    (void)p->set_asset_folder(a.id, src.folder);
-  }
-  post_("assets.changed", JobId{}, {{"project", pid},
-                                    {"asset", a.id},
-                                    {"reason", "defined"}});
-  VALTZ_ASSIGN(JobId job, submit_build_(pid, a.id, a.name));
-  return std::pair{a.id, job};
+  std::vector<OpMade> made;
+  made.push_back({std::format("{} transcript", src.name),
+                  project::AssetKind::Text, std::move(r), ""});
+  return make_from_(req.project, p, src, std::move(made), true);
 }
 
-Result<std::pair<AssetId, JobId>>
-Controller::summarize_video(ProjectId pid, AssetId asset, std::string model,
-                            double every)
+Result<Controller::AssetOpResult>
+Controller::summarize_(const AssetOpRequest& req, project::Project& p,
+                       const project::Asset& src)
 {
-  auto undo = command_(pid, "summarize", asset);
-  project::Project* p = project(pid);
-  if (!p) {
-    return make_error(Code::NotFound, msg::kProjectNotOpen);
-  }
-  VALTZ_ASSIGN(project::Asset src, p->asset(asset));
   // A clip, or a timeline with a picture (one of sound alone is kind
   // audio): what it shows, as it plays.
   const bool drawn = src.cls == project::AssetClass::Composition;
@@ -4887,31 +5337,14 @@ Controller::summarize_video(ProjectId pid, AssetId asset, std::string model,
     return make_error(Code::InvalidArgument, msg::kSummarizeNeedsPicture,
                       {{"name", src.name}});
   }
-  // The model: the one named (installed or downloading: its job waits
-  // for it); else the helper, when it watches video; else the best
-  // installed that does.
-  const auto watches = [&](const models::ModelEntry& e) {
-    return e.has(models::Capability::VideoSummary) &&
-           _store->info(e).state == models::InstallState::Installed;
-  };
-  const models::ModelEntry* m = nullptr;
-  if (!model.empty() && model != "auto") {
-    m = _catalog.find(model);
-    if (m && !(m->has(models::Capability::VideoSummary) && coming_(*m))) {
-      m = nullptr;
-    }
-  } else if (const auto* h = assistant_model(); h && watches(*h)) {
-    m = h;
-  } else {
-    for (const auto& e : _catalog.models()) {
-      if (watches(e) && (!m || e.rank > m->rank)) {
-        m = &e;
-      }
-    }
-  }
-  if (!m || !engine_runs_(models::Capability::VideoSummary)) {
+  // The model: the one named; else the helper, when it watches video;
+  // else the best that does.
+  const models::ModelEntry* m = operation_model_(
+      models::Capability::VideoSummary, req.model, assistant_model());
+  if (!m) {
     return make_error(Code::NotFound, msg::kNoVideoWatcher);
   }
+  const double every = jget(req.options, "every", 0.0);
   project::Recipe r;
   r.op = std::string(engine::kOpSummarizeVideo);
   r.model = m->id;
@@ -4926,18 +5359,186 @@ Controller::summarize_video(ProjectId pid, AssetId asset, std::string model,
               {"language", assist::language_name(_cfg.language)}};
   r.inputs.push_back({"source", src.id, drawn ? 0 : src.head});
   stamp_origin(r, *m);
-  VALTZ_ASSIGN(project::Asset a, p->define_derived(
-      std::format("{} summary", src.name), project::AssetKind::Text, r,
-      96));
-  // Beside what it tells, in the list.
-  if (!src.folder.empty()) {
-    (void)p->set_asset_folder(a.id, src.folder);
+  std::vector<OpMade> made;
+  made.push_back({std::format("{} summary", src.name),
+                  project::AssetKind::Text, std::move(r), ""});
+  return make_from_(req.project, p, src, std::move(made), true);
+}
+
+Result<Controller::AssetOpResult>
+Controller::separate_(const AssetOpRequest& req, project::Project& p,
+                      const project::Asset& src)
+{
+  // A sound: imported, made, or a composition of sound alone -- its mix.
+  const bool drawn = src.cls == project::AssetClass::Composition;
+  if (src.kind != project::AssetKind::Audio || !sounds_(p, src, 0) ||
+      (!drawn && src.head == 0)) {
+    return make_error(Code::InvalidArgument, msg::kSeparateNeedsSound,
+                      {{"name", src.name}});
   }
-  post_("assets.changed", JobId{}, {{"project", pid},
-                                    {"asset", a.id},
-                                    {"reason", "defined"}});
-  VALTZ_ASSIGN(JobId job, submit_build_(pid, a.id, a.name));
-  return std::pair{a.id, job};
+  // The SPLIT asked for (catalog engine.vpipe.separate `split`): "vocals"
+  // -- the voice and the accompaniment. A model serves it when it is its
+  // split; each of its two outputs is one of the split's sources.
+  const auto split = jget<std::string>(req.options, "split", "vocals");
+  const auto block = [](const models::ModelEntry& e) {
+    return jget(jget(e.engine, "vpipe", Json::object()), "separate",
+                Json::object());
+  };
+  const models::ModelEntry* m = operation_model_(
+      models::Capability::AudioSeparate, req.model, nullptr,
+      [&](const models::ModelEntry& e) {
+        return jget<std::string>(block(e), "split", "") == split;
+      });
+  if (!m) {
+    return make_error(Code::NotFound, msg::kNoSeparator);
+  }
+  std::vector<std::string> sources;
+  for (const auto& s : jget(block(*m), "sources", Json::array())) {
+    if (s.is_string()) {
+      sources.push_back(s.get<std::string>());
+    }
+  }
+  if (sources.empty()) {
+    return make_error(Code::Internal, std::format(
+        "{} names no sources for its split", m->name));
+  }
+  project::Recipe r;
+  r.op = std::string(engine::kOpSeparateAudio);
+  r.model = m->id;
+  r.deterministic = true;
+  // The checkpoint by its file: its folder may hold another model.
+  r.params = {{"name", src.name}, {"split", split}, {"checkpoint", m->file}};
+  r.inputs.push_back({"source", src.id, drawn ? 0 : src.head});
+  stamp_origin(r, *m);
+  std::vector<OpMade> made;
+  for (const auto& source : sources) {
+    made.push_back({std::format("{} {}", src.name, source),
+                    project::AssetKind::Audio, r, source});
+  }
+  return make_from_(req.project, p, src, std::move(made), true);
+}
+
+Result<Controller::AssetOpResult>
+Controller::upscale_(const AssetOpRequest& req, project::Project& p,
+                     const project::Asset& comp)
+{
+  VALTZ_TRY(unlocked_(comp, req.layer));
+  if (comp.layers.empty()) {
+    return make_error(Code::InvalidArgument, msg::kNotComposition,
+                      {{"name", comp.name}});
+  }
+  const project::Layer* layer = nullptr;
+  for (const auto& l : comp.layers) {
+    if (l.id == req.layer) {
+      layer = &l;
+    }
+  }
+  if (!layer || !layer->source) {
+    return make_error(Code::InvalidArgument, "no such layer");
+  }
+  VALTZ_ASSIGN(project::Asset src, p.asset(*layer->source));
+  // A composition is many things drawn: flat first (flatten_layer).
+  if (src.cls == project::AssetClass::Composition ||
+      src.cls == project::AssetClass::Still ||
+      src.cls == project::AssetClass::Markup) {
+    return make_error(Code::InvalidArgument, msg::kUpscaleFlattenFirst,
+                      {{"name", src.name}});
+  }
+  const bool clip = src.kind == project::AssetKind::Video;
+  if (!clip && src.kind != project::AssetKind::Image) {
+    return make_error(Code::Unsupported, msg::kUpscaleKind);
+  }
+  const auto need = clip ? models::Capability::UpscaleVideo
+                         : models::Capability::UpscaleImage;
+  VALTZ_ASSIGN(project::AssetVersion v, p.version(src.id));
+  // One size: the crop's one key (or none: nothing to upscale).
+  const media::KeyedCrop keys = crop_keys_of(comp, req.layer);
+  if (keys.place.keys.size() > 1) {
+    return make_error(Code::InvalidArgument, msg::kUpscaleKeyed,
+                      {{"name", src.name}});
+  }
+  const media::Crop c = keys.place.at(0);
+  const media::PixelSize from{v.info.frame.width, v.info.frame.height};
+  const double sx = std::max(1.0, c.scale_x);
+  const double sy = std::max(1.0, c.scale_y);
+  if ((sx <= 1.0 && sy <= 1.0) || from.width <= 0 || from.height <= 0) {
+    return make_error(Code::InvalidArgument, msg::kUpscaleNotScaled,
+                      {{"name", src.name}});
+  }
+  // Even sides, as the writer takes them.
+  auto even = [](double x) {
+    return std::max(2, static_cast<int>(std::lround(x / 2)) * 2);
+  };
+  const media::PixelSize to{even(from.width * sx), even(from.height * sy)};
+  // The upscaler: the one named, else the best installed that runs --
+  // else one downloading (its job waits for it).
+  const models::ModelEntry* m = operation_model_(need, req.model);
+  if (!m) {
+    return make_error(Code::NotFound, msg::kNoUpscaler);
+  }
+  // Its span: the layer's marks (at their own rate), else the whole clip.
+  const Rational own = v.info.frame_rate;
+  const Rational marks = layer->time.rate;
+  auto in_source = [&](std::int64_t f) {
+    if (f < 0 || marks.num <= 0 || own.num <= 0 || marks == own) {
+      return f;
+    }
+    return static_cast<std::int64_t>(std::llround(
+        f * own.to_double() / marks.to_double()));
+  };
+  const std::int64_t first =
+      std::max<std::int64_t>(0, in_source(layer->time.in));
+  const std::int64_t out = in_source(layer->time.out);
+  const std::int64_t last = out >= first ? out : v.info.frame_count - 1;
+  const std::int64_t count = std::max<std::int64_t>(1, last - first + 1);
+  const Json up = jget(jget(m->engine, "vpipe", Json::object()), "upscale",
+                       Json::object());
+  const auto seed = jget<std::int64_t>(req.options, "seed", 0);
+  project::Recipe r;
+  r.model = m->id;
+  r.deterministic = false;
+  if (clip) {
+    r.op = std::string(engine::kOpUpscaleVideo);
+    r.params = {{"width", to.width},
+                {"height", to.height},
+                {"first", first},
+                {"count", count},
+                {"seed", seed},
+                {"group", jget(up, "group", 25)},
+                {"overlap", jget(up, "overlap", 4)}};
+  } else {
+    r.op = std::string(engine::kOpUpscaleImage);
+    r.params = {{"width", to.width},
+                {"height", to.height},
+                {"seed", seed}};
+    // Its eyes (VOSR's DINOv2), by catalog id: resolved at submit.
+    if (const auto enc = jget<std::string>(up, "encoder", "");
+        !enc.empty()) {
+      r.params["encoder"] = enc;
+    }
+  }
+  // Its arithmetic, as Settings › Upscaling has it: the stages' int8
+  // GEMMs, Sage, Sol (graph-builder's accel_of).
+  r.params["tuning"] = upscale_tuning(*m);
+  r.inputs.push_back({"source", src.id, v.number});
+  stamp_origin(r, *m);
+  std::vector<OpMade> made;
+  made.push_back({std::format("{} {}×{}", src.name, to.width, to.height),
+                  clip ? project::AssetKind::Video
+                       : project::AssetKind::Image,
+                  std::move(r), ""});
+  // Its layer, to show it once it is made (apply_upscale_).
+  const UpscaleTarget target{req.asset, req.layer, from, to};
+  return make_from_(
+      req.project, p, src, std::move(made), false,
+      [&](const std::vector<AssetId>& ids) {
+        std::lock_guard lk(_upscale_mu);
+        _upscale_targets[ids.front()] = target;
+      },
+      [&](const std::vector<AssetId>& ids) {
+        std::lock_guard lk(_upscale_mu);
+        _upscale_targets.erase(ids.front());
+      });
 }
 
 Result<fs::path>
@@ -5371,7 +5972,9 @@ Controller::build_asset(ProjectId pid, AssetId aid)
 }
 
 Result<JobId>
-Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
+Controller::submit_build_(
+    ProjectId pid, AssetId aid, std::string title,
+    std::vector<std::pair<std::string, AssetId>> companions)
 {
   project::Project* p = project(pid);
   if (!p) {
@@ -5527,6 +6130,7 @@ Controller::submit_build_(ProjectId pid, AssetId aid, std::string title)
   rec.title = std::move(title);
   rec.project = pid;
   rec.asset = aid;
+  rec.companions = std::move(companions);
   rec.recipe = r;
   rec.inputs = inputs;
   rec.rendered_base = rendered_base;
@@ -5839,8 +6443,37 @@ Controller::on_build_event_(const engine::JobEvent& ev)
                      ev.job.str());
       break;
     }
+    // A job that makes several assets (a separation's sources): the one
+    // this output is -- by its recipe's "output" -- else none asked for it
+    // (one rebuilt alone: its own kept, the other dropped).
+    AssetId target = rec->asset;
+    project::Recipe recipe = rec->recipe;
+    if (const auto out = jget<std::string>(ev.data, "output", "");
+        !out.empty() &&
+        jget<std::string>(rec->recipe.params, "output", "") != out) {
+      target = AssetId{};
+      for (const auto& [name, id] : rec->companions) {
+        if (name != out) {
+          continue;
+        }
+        auto a = p->asset(id);
+        auto r = a.ok() ? p->recipe(a->recipe)
+                        : Result<project::Recipe>(a.error());
+        if (r.ok()) {
+          target = id;
+          recipe = std::move(*r);
+        }
+      }
+      if (target.is_nil()) {
+        VALTZ_LOG_INFO("build", "job {}: its {} is not asked for, dropped",
+                       ev.job.str(), out);
+        std::error_code ec;
+        fs::remove(ev.output, ec);
+        break;
+      }
+    }
     project::Project::BuildRecord b;
-    b.recipe = rec->recipe;
+    b.recipe = recipe;
     b.inputs = rec->inputs;
     b.output = ev.output;
     b.info = ev.output_info;
@@ -5872,7 +6505,7 @@ Controller::on_build_event_(const engine::JobEvent& ev)
     }
     // Into the command it was submitted in (its place in the history).
     auto undo = join_(rec->project, ev.job);
-    auto v = p->commit_build(rec->asset, std::move(b));
+    auto v = p->commit_build(target, std::move(b));
     if (!v.ok()) {
       VALTZ_LOG_ERROR("build", "could not store the result: {}",
                       v.error().message);
@@ -5883,7 +6516,7 @@ Controller::on_build_event_(const engine::JobEvent& ev)
       r.message = std::format("version {}", v->number);
     });
     post_("assets.changed", ev.job, {{"project", rec->project},
-                                     {"asset", rec->asset},
+                                     {"asset", target},
                                      {"version", v->number},
                                      {"reason", "built"}});
     // An upscale: its layer shows it now.
@@ -5903,6 +6536,14 @@ Controller::on_build_event_(const engine::JobEvent& ev)
     Json d = Json::object();
     if (rec) {
       d = {{"project", rec->project}, {"asset", rec->asset}};
+      // Every asset it made, its own first.
+      if (!rec->companions.empty()) {
+        Json all = Json::array({rec->asset.str()});
+        for (const auto& c : rec->companions) {
+          all.push_back(c.second.str());
+        }
+        d["assets"] = std::move(all);
+      }
     }
     post_("job.finished", ev.job, d);
     break;
@@ -6429,7 +7070,8 @@ holds_engine(std::string_view op)
          op == engine::kOpGenerateSpeech || op == engine::kOpUpscaleVideo ||
          op == engine::kOpUpscaleImage || op == engine::kOpChat ||
          op == engine::kOpTranscribeAudio || op == engine::kOpExportMedia ||
-         op == engine::kOpQuantizeModel || op == engine::kOpSummarizeVideo;
+         op == engine::kOpQuantizeModel || op == engine::kOpSummarizeVideo ||
+         op == engine::kOpSeparateAudio;
 }
 
 // A member's refusal, worded for the person.
@@ -6665,6 +7307,11 @@ Controller::fleet_self_() const
   };
   for (const auto& c : caps) {
     const auto task = feature_task(c.capability);
+    // A separation runs here alone: a job's several outputs do not come
+    // back from a member yet.
+    if (c.capability == models::Capability::AudioSeparate) {
+      continue;
+    }
     if (c.availability == models::Availability::Ready &&
         (task.empty() || fc.shares(task, ""))) {
       features.push_back(models::to_str(c.capability));

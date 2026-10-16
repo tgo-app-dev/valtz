@@ -183,6 +183,8 @@ Each entry uses the schema of Valtz's built-in catalog
 | `required_features` | Features this model needs (above). |
 | `engine.vpipe` | Its graph, below. |
 | `prompting` | How it reads a prompt, below. |
+| `check` | What its files are, so a folder linked for it is checked before it is used: `is` -- `{"<file>.json": "<name>"}`, the `_class_name`, `model_type` or architecture each JSON file names (`{"model_index.json": "Krea2Pipeline", "transformer/config.json": "Krea2Transformer2DModel"}`) -- `files` that must be there, `tensors` words some tensor name of a single-file model holds (`["lora"]`). A folder naming something else is refused; without a `check`, only whether its files are whole is checked. |
+| `compress` | `{"parts": [{"target": "dit", "options": {}, "options_4bit": {}}, ...]}`: the person can replace its download with a copy quantized to 8 or 4 bits, freeing disk -- vpipe's model-quantize, a pass a part, each `target` its component, `options` that stage's own keys (`options_4bit` at 4 bits only). Only for a model whose backend runs the quantized copy. |
 
 #### `engine.vpipe`: the graph
 

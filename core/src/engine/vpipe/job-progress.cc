@@ -25,6 +25,8 @@ phase_of(std::string_view desc)
     {"audio vae decode", kPhaseSound},
     {"encoding references", kPhaseReferences},
     {"restore", kPhaseRestore},
+    {"quantize", kPhaseQuantize},
+    {"calibrate", kPhaseCalibrate},
   };
   for (const auto& n : kNames) {
     if (n.desc == desc) {
@@ -120,6 +122,10 @@ JobPhase::data() const
             {"estimate", estimate}, {"rate", rate}};
   if (made >= 0) {
     d["made"] = made;
+  }
+  if (passes > 1) {
+    d["pass"] = pass;
+    d["passes"] = passes;
   }
   return d;
 }
@@ -247,6 +253,29 @@ JobProgress::estimate_(JobPhase& p, double now) const
   p.estimate = std::min(1.0, units / total);
 }
 
+// The whole of a quantize of several passes, as one count: the passes
+// before this one done, this one's quantizer as far as it is -- what
+// comes before it in a pass (its components copied, its calibration)
+// counts nothing.
+void
+JobProgress::across_passes_(JobPhase& p, bool quantizing) const
+{
+  if (_passes <= 1) {
+    return;
+  }
+  const int seen = static_cast<int>(_quantized.size());
+  p.passes = _passes;
+  p.pass = std::clamp(quantizing ? seen : seen + 1, 1, _passes);
+  double f = 0;
+  if (quantizing) {
+    f = p.estimate >= 0 ? p.estimate
+        : p.total > 0   ? static_cast<double>(p.done) / p.total
+                        : 0;
+  }
+  p.estimate = std::min(1.0, (p.pass - 1 + f) / _passes);
+  p.rate = quantizing ? p.rate / _passes : 0;
+}
+
 JobPhase
 JobProgress::read(const Json& doc, double now)
 {
@@ -337,10 +366,17 @@ JobProgress::read(const Json& doc, double now)
                                 return a.seq < b.seq;
                               });
   }
+  // A quantize of several passes: each pass's quantizer its own report.
+  for (const auto& i : live) {
+    if (i.phase.phase == kPhaseQuantize) {
+      _quantized.insert(i.id);
+    }
+  }
   if (pick != nullptr) {
     JobPhase p = pick->phase;
     track_(pick->id, p, now);
     estimate_(p, now);
+    across_passes_(p, p.phase == kPhaseQuantize);
     return p;
   }
   _followed = 0;
@@ -351,6 +387,7 @@ JobProgress::read(const Json& doc, double now)
   idle.phase = _download ? kPhaseDownload
                : _past   ? kPhaseFinish
                          : kPhasePrepare;
+  across_passes_(idle, false);
   return idle;
 }
 

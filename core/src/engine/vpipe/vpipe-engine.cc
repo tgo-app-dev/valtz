@@ -318,7 +318,8 @@ public:
            op == kOpChat || op == kOpAgentTurn || op == kOpFetchModel ||
            op == kOpExportMedia ||
            op == kOpUpscaleVideo || op == kOpUpscaleImage ||
-           op == kOpTranscribeAudio || op == kOpSummarizeVideo;
+           op == kOpTranscribeAudio || op == kOpSummarizeVideo ||
+           op == kOpSeparateAudio;
   }
 
   Status
@@ -747,23 +748,33 @@ private:
       }
     }
     Result<vp::BuiltGraph> built = make_error(Code::Internal, "");
-    // A sound to transcribe: heard as one channel at 16 kHz -- every
-    // track of it, each sample's channels averaged (media::mono_sound) --
-    // which the graph reads.
-    fs::path mono;
-    double mono_seconds = 0;
-    if (spec.op == kOpTranscribeAudio) {
+    // The SOUND an asset operation hears (DESIGN §4j), made by Valtz from
+    // whatever holds it -- every track, a clip's too -- as one plain WAV
+    // the graph reads: a transcription's one channel at 16 kHz, each
+    // sample's channels averaged (media::mono_sound); a separation's two
+    // at its model's rate (media::stereo_sound). How far into it a job's
+    // results reach is its progress.
+    fs::path heard;
+    double heard_seconds = 0;
+    const int separate_rate = jget(
+        jget(jget(spec.model.engine, "vpipe", Json::object()), "separate",
+             Json::object()),
+        "rate", 44100);
+    if (spec.op == kOpTranscribeAudio || spec.op == kOpSeparateAudio) {
       if (spec.inputs.empty()) {
-        fail_(q, Code::InvalidArgument, "nothing to transcribe");
+        fail_(q, Code::InvalidArgument, "no sound to hear");
         return;
       }
-      mono = spec.output_dir / (spec.id.str() + "-mono.wav");
-      auto s = media::mono_sound(spec.inputs.front().path, mono, 16000);
+      heard = spec.output_dir / (spec.id.str() + "-heard.wav");
+      const fs::path& in = spec.inputs.front().path;
+      auto s = spec.op == kOpTranscribeAudio
+                   ? media::mono_sound(in, heard, 16000)
+                   : media::stereo_sound(in, heard, separate_rate);
       if (!s.ok()) {
         fail_(q, s.code(), s.error().message);
         return;
       }
-      mono_seconds = *s;
+      heard_seconds = *s;
     }
     if (spec.op == kOpGenerateImage) {
       built = vp::build_text_to_image(spec);
@@ -794,7 +805,9 @@ private:
     } else if (spec.op == kOpAgentTurn) {
       built = vp::build_agent_turn(spec);
     } else if (spec.op == kOpTranscribeAudio) {
-      built = vp::build_transcribe(spec, mono);
+      built = vp::build_transcribe(spec, heard);
+    } else if (spec.op == kOpSeparateAudio) {
+      built = vp::build_separate(spec, heard);
     } else if (spec.op == kOpSummarizeVideo) {
       // Its frames' size: the clip's shape, upright, within the most a
       // frame may be (576 x 320), on the tower's 32-pixel grid.
@@ -872,7 +885,7 @@ private:
     // A sound transcribed: its lines of speech -- how far into the sound
     // they reach is its progress -- and the tagger's windows.
     assist::Transcript transcript;
-    transcript.seconds = mono_seconds;
+    transcript.seconds = heard_seconds;
     std::vector<Json> windows;
     auto on_transcript = [&](vp::SinkBeat&& b) {
       auto line = assist::transcript_line(b.meta);
@@ -882,12 +895,12 @@ private:
       JobEvent ev;
       ev.job = spec.id;
       ev.kind = JobEventKind::Progress;
-      ev.progress = mono_seconds > 0
-          ? static_cast<float>(std::min(1.0, line->end / mono_seconds))
+      ev.progress = heard_seconds > 0
+          ? static_cast<float>(std::min(1.0, line->end / heard_seconds))
           : -1.0f;
       ev.data = {{"phase", "transcribe"},
                  {"done", std::lround(line->end)},
-                 {"total", std::lround(mono_seconds)}};
+                 {"total", std::lround(heard_seconds)}};
       {
         std::lock_guard lk(result_mu);
         transcript.lines.push_back(std::move(*line));
@@ -931,6 +944,67 @@ private:
         summary.overall = std::move(all);
       }
     };
+    // A sound separated: its two outputs' PCM, each written as it streams
+    // out into a float WAV of its own -- how far the model's own output
+    // reaches into the sound is the progress.
+    struct Stem {
+      std::string    name;
+      fs::path       file;
+      media::FloatWav wav;
+      Status         st = ok_status();
+    };
+    std::array<Stem, 2> stems;
+    if (spec.op == kOpSeparateAudio) {
+      const Json sep = jget(jget(spec.model.engine, "vpipe",
+                                 Json::object()),
+                            "separate", Json::object());
+      stems[0].name = jget<std::string>(sep, "stem", "stem");
+      stems[1].name = jget<std::string>(sep, "residual", "residual");
+      for (auto& st : stems) {
+        st.file = spec.output_dir /
+                  std::format("{}-{}.wav", spec.id.str(), st.name);
+        st.st = st.wav.open(st.file, 2, separate_rate);
+        if (!st.st.ok()) {
+          fail_(q, st.st.code(), st.st.error().message);
+          return;
+        }
+      }
+    }
+    auto on_stem = [&](Stem& st, bool counts, vp::SinkBeat&& b) {
+      const TensorPtr& t = b.tensor;
+      if (!t || t->dtype != Tensor::DType::F32 || !st.st.ok() ||
+          t->shape.empty()) {
+        return;
+      }
+      // Planar [C, n], or [n] mono: what the WAV's two channels take.
+      const std::int64_t ch = t->shape.size() > 1 ? t->shape[0] : 1;
+      const std::int64_t n = t->shape.back();
+      const auto* f = reinterpret_cast<const float*>(t->data);
+      if (ch == 2) {
+        st.st = st.wav.append_planar(f, static_cast<std::size_t>(n));
+      } else {
+        std::vector<float> two(static_cast<std::size_t>(2 * n));
+        std::copy_n(f, n, two.begin());
+        std::copy_n(f, n, two.begin() + n);
+        st.st = st.wav.append_planar(two.data(),
+                                     static_cast<std::size_t>(n));
+      }
+      if (!counts) {
+        return;
+      }
+      const double done = static_cast<double>(st.wav.frames()) /
+                          separate_rate;
+      JobEvent ev;
+      ev.job = spec.id;
+      ev.kind = JobEventKind::Progress;
+      ev.progress = heard_seconds > 0
+          ? static_cast<float>(std::min(1.0, done / heard_seconds))
+          : -1.0f;
+      ev.data = {{"phase", "separate"},
+                 {"done", std::lround(std::min(done, heard_seconds))},
+                 {"total", std::lround(heard_seconds)}};
+      q.sink(ev);
+    };
     // A song's score: one string beat, the ABC it followed.
     std::string score;
     auto on_score = [&](vp::SinkBeat&& b) {
@@ -955,10 +1029,14 @@ private:
         g.movie && g.movie->gate.group > 1
             ? static_cast<std::uint64_t>(g.movie->gate.group)
             : 0;
+    // A compressed copy's passes (a pipeline's parts), counted as one.
+    const Json parts = spec.op == kOpQuantizeModel
+        ? jget(spec.params, "parts", Json::array()) : Json::array();
     vp::JobProgress progress(
         vp::JobProgress::last_id(vp::from_flex(_session->progress())),
         spec.op == kOpFetchModel, spec.op == kOpExportMedia,
-        spec.op == kOpUpscaleVideo, group);
+        spec.op == kOpUpscaleVideo, group,
+        parts.is_array() ? static_cast<int>(parts.size()) : 0);
     std::uint64_t progress_seen = 0;
     std::optional<vp::JobPhase> phase;
     double sent = 0;
@@ -998,7 +1076,8 @@ private:
     // its lines reach; a summary's, how far its scenes do.
     const bool reports = spec.op != kOpChat && spec.op != kOpAgentTurn &&
                          spec.op != kOpTranscribeAudio &&
-                         spec.op != kOpSummarizeVideo;
+                         spec.op != kOpSummarizeVideo &&
+                         spec.op != kOpSeparateAudio;
 
     // A long export shows what it writes (kPhaseExport): a small frame
     // every half second, as a generation's preview -- drawn from the
@@ -1090,6 +1169,12 @@ private:
     read(g.transcript_sink, on_transcript);
     read(g.events_sink, on_events);
     read(g.summary_sink, on_summary);
+    read(g.stem_sink, [&](vp::SinkBeat&& b) {
+      on_stem(stems[0], true, std::move(b));
+    });
+    read(g.residual_sink, [&](vp::SinkBeat&& b) {
+      on_stem(stems[1], false, std::move(b));
+    });
 
     // References go in now, decoded straight into beats the graph leased
     // us: no file is re-read by vpipe and no pixel is copied after the
@@ -1276,7 +1361,7 @@ private:
           return;
         }
       }
-      fs::remove(mono, ec);
+      fs::remove(heard, ec);
       JobEvent out;
       out.job = spec.id;
       out.kind = JobEventKind::Output;
@@ -1285,6 +1370,34 @@ private:
       out.output_info.uti = "public.utf8-plain-text";
       out.data = {{"transcript", assist::to_json(transcript)}};
       q.sink(out);
+    } else if (spec.op == kOpSeparateAudio) {
+      // Each output a sound of its own, the whole length of the source.
+      fs::remove(heard, ec);
+      for (auto& st : stems) {
+        if (st.st.ok()) {
+          st.st = st.wav.close();
+        }
+        if (!st.st.ok()) {
+          fail_(q, st.st.code(), st.st.error().message);
+          return;
+        }
+        if (st.wav.frames() == 0) {
+          fail_(q, Code::Engine, std::format(
+              "the separator gave no {} (see the log)", st.name));
+          return;
+        }
+      }
+      for (auto& st : stems) {
+        JobEvent out;
+        out.job = spec.id;
+        out.kind = JobEventKind::Output;
+        out.output = st.file;
+        if (auto info = media::probe_file(st.file); info.ok()) {
+          out.output_info = *info;
+        }
+        out.data = {{"output", st.name}};
+        q.sink(out);
+      }
     } else if (spec.op == kOpSummarizeVideo) {
       // Told as text: the whole, then the scenes in order.
       if (summary.scenes.empty()) {

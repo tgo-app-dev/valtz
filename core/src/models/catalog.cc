@@ -21,7 +21,7 @@ struct CapName {
   const char* label;
 };
 
-constexpr std::array<CapName, 17> kCapNames = {{
+constexpr std::array<CapName, 18> kCapNames = {{
   {Capability::TextToImage, "text-to-image", "Text to image"},
   {Capability::ImageEdit, "image-edit", "Image edit"},
   {Capability::TextToVideo, "text-to-video", "Text to video"},
@@ -39,6 +39,7 @@ constexpr std::array<CapName, 17> kCapNames = {{
   {Capability::TextToSpeech, "text-to-speech", "Text to speech"},
   {Capability::Transcribe, "audio-transcribe", "Transcribe audio"},
   {Capability::VideoSummary, "video-summary", "Video summary"},
+  {Capability::AudioSeparate, "audio-separate", "Separate audio"},
 }};
 
 }
@@ -203,6 +204,34 @@ read_entry(const Json& m, const Contributor& who, ModelEntry& e,
     // What it leaves out is its source's (Catalog::merge_).
     e.min_ram_gb = jget<std::uint32_t>(m, "min_ram_gb", 0);
   }
+  if (const Json c = jget(m, "compress", Json()); !c.is_null()) {
+    const Json parts = jget(c, "parts", Json());
+    bool good = parts.is_array() && !parts.empty() &&
+                e.file.empty() && e.quantize_from.empty();
+    for (const auto& p : good ? parts : Json::array()) {
+      ModelEntry::CompressPart part;
+      part.target = jget<std::string>(p, "target", "");
+      part.options = jget(p, "options", Json::object());
+      part.options_4bit = jget(p, "options_4bit", Json::object());
+      if (part.target.empty() || !part.options.is_object() ||
+          !part.options_4bit.is_object()) {
+        good = false;
+        break;
+      }
+      e.compress.push_back(std::move(part));
+    }
+    if (!good) {
+      w.why = "bad-entry";
+      w.detail = std::format("{} has a bad compress block", e.id);
+      return false;
+    }
+  }
+  e.check = jget(m, "check", Json::object());
+  if (!e.check.is_object()) {
+    w.why = "bad-entry";
+    w.detail = std::format("{} has a bad check block", e.id);
+    return false;
+  }
   e.origin = who.id;
   e.origin_version = who.version;
   return true;
@@ -236,6 +265,11 @@ inherit_from_source(ModelEntry& e, const ModelEntry& src)
   }
   if (e.min_ram_gb == 0) {
     e.min_ram_gb = src.min_ram_gb;
+  }
+  // Quantized, it is still that model: its files are checked as its
+  // source's are.
+  if (e.check.empty()) {
+    e.check = src.check;
   }
 }
 
@@ -559,6 +593,7 @@ feature_capabilities(std::string_view f)
   if (f == "audio-transcribe") { return {C::Transcribe}; }
   if (f == "helper") { return {C::PromptEnhance, C::Intent}; }
   if (f == "video-summary") { return {C::VideoSummary}; }
+  if (f == "audio-separate") { return {C::AudioSeparate}; }
   if (f == "video-upscale") { return {C::UpscaleVideo}; }
   if (f == "image-upscale") { return {C::UpscaleImage}; }
   return {};
@@ -623,6 +658,13 @@ Catalog::serving(Capability c) const
   return out;
 }
 
+int
+max_edge(const ModelEntry& e)
+{
+  return std::max(0, jget(jget(e.engine, "vpipe", Json::object()),
+                          "max_edge", 0));
+}
+
 void
 to_json(Json& j, const ModelEntry& e)
 {
@@ -662,6 +704,10 @@ to_json(Json& j, const ModelEntry& e)
     {"last_frame",
      jget(jget(e.engine, "vpipe", Json::object()), "last_frame", false)},
   };
+  // The longest side it makes (FLUX.3: 4096): the app offers its 4K size.
+  if (const int edge = max_edge(e); edge > 0) {
+    j["max_edge"] = edge;
+  }
   // A clip's lengths: frames = offset + n * step (17n + 5 for H3), at the
   // model's own rate -- the app offers what will be made.
   const Json vp = jget(e.engine, "vpipe", Json::object());

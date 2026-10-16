@@ -242,9 +242,37 @@ Core::link_model(const std::string& request_json)
     if (!j.ok()) {
       return err(j.error());
     }
-    auto st = _impl->ctl->link_model(jget<std::string>(*j, "model", ""),
+    auto r = _impl->ctl->link_model(jget<std::string>(*j, "model", ""),
+                                    jget<std::string>(*j, "path", ""));
+    if (!r.ok()) {
+      return err(r.error());
+    }
+    if (!jget(*r, "linked", false)) {
+      // Refused: why, first, and the whole check.
+      Json out = jget(*r, "notes", Json::array()).empty()
+          ? Json::object()
+          : (*r)["notes"][0];
+      out.erase("level");
+      out["ok"] = false;
+      out["code"] = to_str(Code::InvalidArgument);
+      out["check"] = *r;
+      return to_text(out);
+    }
+    return ok({{"check", *r}});
+  });
+}
+
+std::string
+Core::check_model(const std::string& request_json) const
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto r = _impl->ctl->check_model(jget<std::string>(*j, "model", ""),
                                      jget<std::string>(*j, "path", ""));
-    return st.ok() ? ok() : err(st.error());
+    return r.ok() ? ok({{"check", *r}}) : err(r.error());
   });
 }
 
@@ -1125,24 +1153,6 @@ Core::asset_op(const std::string& request_json)
       return *placed ? ok({{"asset", (*placed)->str()}, {"placed", true}})
                      : ok({{"placed", false}});
     }
-    if (op == "transcribe") {
-      // A sound -- a clip's -- transcribed into a text asset (DESIGN §4h).
-      auto made = c.transcribe(*pid, *aid,
-                               jget<std::string>(*j, "model", ""),
-                               jget<std::string>(*j, "language", ""));
-      return made.ok() ? ok({{"asset", made->first.str()},
-                             {"job", made->second.str()}})
-                       : err(made.error());
-    }
-    if (op == "summarize") {
-      // A clip told scene by scene, into a text asset (DESIGN §4i).
-      auto made = c.summarize_video(*pid, *aid,
-                                    jget<std::string>(*j, "model", ""),
-                                    jget(*j, "every", 0.0));
-      return made.ok() ? ok({{"asset", made->first.str()},
-                             {"job", made->second.str()}})
-                       : err(made.error());
-    }
     if (op == "instantiate") {
       std::optional<AssetId> onto;
       if (!jget<std::string>(*j, "onto", "").empty()) {
@@ -1393,14 +1403,13 @@ Core::generate_video(const std::string& request_json)
 }
 
 std::string
-Core::upscale_layer(const std::string& request_json)
+Core::run_asset_operation(const std::string& request_json)
 {
   return guarded([&] {
     auto j = parse(request_json);
     if (!j.ok()) {
       return err(j.error());
     }
-    UpscaleRequest req;
     auto pid = parse_id<ProjectId>(jget<std::string>(*j, "project", ""));
     auto aid = parse_id<AssetId>(jget<std::string>(*j, "asset", ""));
     if (!pid.ok()) {
@@ -1409,13 +1418,33 @@ Core::upscale_layer(const std::string& request_json)
     if (!aid.ok()) {
       return err(aid.error());
     }
+    Controller::AssetOpRequest req;
     req.project = *pid;
-    req.composition = *aid;
+    req.asset = *aid;
+    req.operation = jget<std::string>(*j, "operation", "");
     req.layer = jget<std::string>(*j, "layer", "");
     req.model = jget<std::string>(*j, "model", "auto");
-    req.seed = jget<std::int64_t>(*j, "seed", 0);
-    auto r = _impl->ctl->upscale_layer(std::move(req));
-    return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
+    req.options = jget(*j, "options", Json::object());
+    auto r = _impl->ctl->run_asset_operation(std::move(req));
+    if (!r.ok()) {
+      return err(r.error());
+    }
+    Json made = Json::array();
+    for (const auto& id : r->made) {
+      made.push_back(id.str());
+    }
+    return ok({{"assets", made},
+               {"asset", made.empty() ? std::string()
+                                      : made.front().get<std::string>()},
+               {"job", r->job.str()}});
+  });
+}
+
+std::string
+Core::asset_operations()
+{
+  return guarded([&] {
+    return ok({{"operations", _impl->ctl->asset_operations_json()}});
   });
 }
 
@@ -2571,6 +2600,20 @@ Core::quantize_model(const std::string& model_id)
 {
   return guarded([&] {
     auto r = _impl->ctl->quantize_model(model_id);
+    return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
+  });
+}
+
+std::string
+Core::compress_model(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto r = _impl->ctl->compress_model(jget<std::string>(*j, "model", ""),
+                                        jget(*j, "bits", 8));
     return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
   });
 }

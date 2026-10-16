@@ -77,9 +77,18 @@ final class CoreService: @unchecked Sendable {
     func storageReportJSON() -> Data {
         Data(String(core.storage_report_json()).utf8)
     }
-    /// A model used from a file or folder anywhere, or no longer.
+    /// A model used from a file or folder anywhere, or no longer. Its
+    /// files are checked first: the reply's "check", refused or not.
     func linkModel(_ id: String, path: String) -> CoreReply {
         send(core.link_model, ["model": id, "path": path])
+    }
+    /// A model's files checked as a link's are: where it is installed.
+    func checkModel(_ id: String) -> CoreReply {
+        send(core.check_model, ["model": id])
+    }
+    /// Its download replaced by a copy quantized to `bits` (8, 4).
+    func compressModel(_ id: String, bits: Int) -> CoreReply {
+        send(core.compress_model, ["model": id, "bits": bits])
     }
     func unlinkModel(_ id: String) -> CoreReply {
         send(core.unlink_model, ["model": id])
@@ -433,10 +442,18 @@ final class CoreService: @unchecked Sendable {
         send(core.generate_audio, request)
     }
 
-    /// A layer's clip rendered at its scale by an upscaler; the layer then
-    /// shows it at scale 1 (core Controller::upscale_layer).
-    func upscaleLayer(_ request: [String: Any]) -> CoreReply {
-        send(core.upscale_layer, request)
+    /// An ASSET OPERATION (DESIGN §4j; core
+    /// Controller::run_asset_operation): {"project", "operation", "asset",
+    /// "layer"?, "model"?, "options"?} -> {"assets", "asset", "job"}.
+    func runAssetOperation(_ request: [String: Any]) -> CoreReply {
+        send(core.run_asset_operation, request)
+    }
+
+    /// Every asset operation as this Mac can run it (core
+    /// Controller::asset_operations_json).
+    func assetOperations() -> [AssetOperationDTO] {
+        let r = reply(core.asset_operations())
+        return DTO.decode([AssetOperationDTO].self, r["operations"]) ?? []
     }
 
     /// The prompt as a song's words, as generate_audio reads it: its

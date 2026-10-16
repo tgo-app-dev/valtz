@@ -72,7 +72,43 @@ struct CapabilitiesView: View {
         .sheet(item: $model.gatedDownload) { m in
             GatedDownloadSheet(model: model, member: m)
         }
+        // A compress asked for: what it replaces, what it costs.
+        .alert(compressTitle, isPresented: Binding(
+            get: { model.compressAsk != nil },
+            set: { if !$0 { model.compressAsk = nil } })) {
+            Button("Compress") {
+                if let ask = model.compressAsk {
+                    model.compress(model: ask.member.model, bits: ask.bits)
+                }
+                model.compressAsk = nil
+            }
+            Button("Cancel", role: .cancel) { model.compressAsk = nil }
+        } message: {
+            Text(verbatim: compressMessage)
         }
+        }
+    }
+
+    private var compressTitle: String {
+        guard let ask = model.compressAsk else { return "" }
+        return String(localized: "Compress \(ask.member.name) to \(String(ask.bits))-bit?")
+    }
+
+    /// What the copy replaces and costs: the download deleted once the
+    /// copy is checked; pictures a little different, 4 bits more so; the
+    /// original a download away.
+    private var compressMessage: String {
+        guard let ask = model.compressAsk,
+              let w = ask.member.compress?.widths.first(where: {
+                  $0.bits == ask.bits })
+        else { return "" }
+        let style = ByteCountFormatStyle(style: .file)
+        let now = ask.member.bytes.formatted(style)
+        let copy = w.bytes.formatted(style)
+        let quality = ask.bits == 4
+            ? String(localized: "At 4 bits its results lose some detail and follow the prompt a little less closely.")
+            : String(localized: "At 8 bits its results are very close to the original's.")
+        return String(localized: "Its \(now) download is replaced by a copy of about \(copy), made here and checked before the download is deleted. \(quality) To have the original back, download it again.")
     }
 
     /// The family asked for opened, and scrolled to the top: one far down
@@ -151,6 +187,7 @@ private struct FeatureBadge: View {
         case "image-upscale": "plus.magnifyingglass"
         case "audio-transcribe": "captions.bubble"
         case "video-summary": "text.below.photo"
+        case "audio-separate": "music.mic"
         default: "questionmark"
         }
     }
@@ -168,6 +205,7 @@ private struct FeatureBadge: View {
         case "image-upscale": String(localized: "Image upscaling")
         case "audio-transcribe": String(localized: "Transcription, sound events")
         case "video-summary": String(localized: "Video summary")
+        case "audio-separate": String(localized: "Vocals and accompaniment")
         default: f
         }
     }
@@ -205,6 +243,18 @@ private struct MemberRow: View {
                 .padding(.leading, 26)
                 .textSelection(.enabled)
             }
+            // Its files as last checked (a link made or refused), and its
+            // last compress: what was found, what it freed.
+            if let check = model.modelChecks[member.model] {
+                NotesView(notes: check.notes) {
+                    model.modelChecks[member.model] = nil
+                }
+            }
+            if let note = model.compressNotes[member.model], fetching == nil {
+                NotesView(notes: [note]) {
+                    model.compressNotes[member.model] = nil
+                }
+            }
         }
     }
 
@@ -231,6 +281,17 @@ private struct MemberRow: View {
                     .padding(.vertical, 1)
                     .background(.quaternary, in: Capsule())
                     .help(m.path)
+            }
+            // A compressed copy in its download's place.
+            if let c = m.compressed {
+                Text(verbatim: String(localized: "\(String(c.bits))-bit"))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Color.accentColor.opacity(0.12),
+                                in: Capsule())
+                    .help(String(localized: "Compressed to \(String(c.bits)) bits in place of its \(c.originalBytes.formatted(ByteCountFormatStyle(style: .file))) download"))
             }
             actions
         }
@@ -291,11 +352,12 @@ private struct MemberRow: View {
         }
     }
 
-    /// A download of it -- or, a quantized variant, its quantizing --
-    /// still running.
+    /// A download of it -- or, a quantized variant, its quantizing; a
+    /// download, its compressing -- still running.
     private var fetching: JobInfo? {
         model.jobs.values.first {
-            ($0.purpose == "download" || $0.purpose == "quantize")
+            ($0.purpose == "download" || $0.purpose == "quantize"
+             || $0.purpose == "compress")
                 && $0.model == member.model
                 && ($0.state == "queued" || $0.state == "running")
         }
@@ -311,8 +373,13 @@ private struct MemberRow: View {
                     .frame(width: 70)
                 Text(verbatim: job.phase?.percent
                      ?? (job.purpose == "quantize"
-                         ? String(localized: "Quantizing…") : ""))
+                         ? String(localized: "Quantizing…")
+                         : job.purpose == "compress"
+                         ? String(localized: "Compressing…") : ""))
                     .font(.caption.monospacedDigit())
+                    // Its own width: the row squeezed it to nothing.
+                    .fixedSize()
+                    .help(job.phase?.caption(kind: .image) ?? job.title)
             } else if let q = m.quantize, m.state != "installed" {
                 // Made here from its source -- no download of its own.
                 Button("Quantize") { model.quantize(model: m.model) }
@@ -341,12 +408,19 @@ private struct MemberRow: View {
                         .help("Gated on Hugging Face: its license is accepted there first")
                 }
             }
+            if m.state == "installed", let c = m.compress, fetching == nil {
+                compressMenu(c)
+            }
             Menu {
                 ForEach(LinkPlace.found) { place in
                     Button(place.title) { link(from: place.url) }
                 }
                 Divider()
                 Button("Choose a File or Folder…") { link(from: nil) }
+                if m.state == "installed" {
+                    Divider()
+                    Button("Check Files") { model.checkModel(m.model) }
+                }
                 if m.source == "link" {
                     Divider()
                     Button("Unlink") { model.unlinkModel(m.model) }
@@ -356,7 +430,7 @@ private struct MemberRow: View {
             }
             .menuStyle(.borderlessButton)
             .fixedSize()
-            .help("Use it from where it already is")
+            .help("Use it from where it already is — its files checked first")
             if m.state == "installed" && !m.path.isEmpty {
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting(
@@ -377,6 +451,53 @@ private struct MemberRow: View {
         .controlSize(.small)
     }
 
+    /// COMPRESS (DESIGN §8b): its download replaced by a copy at 8 or 4
+    /// bits, what each would take -- confirmed first; compressed, the way
+    /// back (the original downloaded again); not Valtz's own download,
+    /// greyed, saying why.
+    @ViewBuilder
+    private func compressMenu(_ c: CapabilityTree.Compress) -> some View {
+        let m = member
+        let style = ByteCountFormatStyle(style: .file)
+        Menu {
+            if let done = m.compressed {
+                Text("Compressed to \(String(done.bits))-bit")
+                Button("Download the Original Again (\(done.originalBytes.formatted(style)))") {
+                    if m.isGated {
+                        model.gatedDownload = m
+                    } else {
+                        model.download(model: m.model)
+                    }
+                }
+            } else {
+                Text("Compress to free disk space")
+                ForEach(c.widths) { w in
+                    Button("\(String(w.bits))-bit · about \(w.bytes.formatted(style)), \(w.saves.formatted(style)) freed") {
+                        model.compressAsk = (m, w.bits)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(!c.ready && m.compressed == nil)
+        .help(compressHelp(c))
+    }
+
+    private func compressHelp(_ c: CapabilityTree.Compress) -> String {
+        if let done = member.compressed {
+            return String(localized: "Compressed to \(String(done.bits)) bits: download the original again to have it back")
+        }
+        switch c.why {
+        case "link": return String(localized: "Linked from elsewhere: Valtz compresses only the models it downloaded, replacing the download")
+        case "vpipe": return String(localized: "In vpipe's models folder: Valtz compresses only the models it downloaded, replacing the download")
+        case "engine": return String(localized: "The engine here cannot compress models")
+        default: return String(localized: "Compress to 8 or 4 bits to free disk space: the download is replaced by a smaller copy")
+        }
+    }
+
     /// A file or folder chosen -- starting in `from` -- linked.
     private func link(from: URL?) {
         let panel = NSOpenPanel()
@@ -389,6 +510,56 @@ private struct MemberRow: View {
         if let from { panel.directoryURL = from }
         if panel.runModal() == .OK, let url = panel.url {
             model.linkModel(member.model, to: url)
+        }
+    }
+}
+
+/// Notes under a model's row -- its files checked, its compress -- each
+/// with its level's sign; closed by its ×.
+private struct NotesView: View {
+    let notes: [ModelCheck.Note]
+    let close: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(notes.prefix(5).enumerated()), id: \.offset) {
+                    _, n in
+                    Label {
+                        Text(verbatim: n.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: Self.symbol(n.level))
+                            .foregroundStyle(Self.color(n.level))
+                    }
+                }
+            }
+            Spacer(minLength: 4)
+            Button(action: close) {
+                Image(systemName: "xmark").font(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+        .padding(.leading, 26)
+    }
+
+    static func symbol(_ level: String) -> String {
+        switch level {
+        case "error": "xmark.octagon.fill"
+        case "warning": "exclamationmark.triangle.fill"
+        default: "checkmark.seal.fill"
+        }
+    }
+
+    static func color(_ level: String) -> Color {
+        switch level {
+        case "error": .red
+        case "warning": .orange
+        default: .green
         }
     }
 }

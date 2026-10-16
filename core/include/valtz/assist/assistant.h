@@ -300,9 +300,11 @@ std::string tag_inline(std::string_view prompt,
 // and "minimax-h3-ref" (with the full-reference guide too) -- and
 // Valtz's own skills from core/resources/skills -- "yue2-song" (a style
 // line and sectioned lyrics, replied as {"style", "lyrics", "title"}),
-// "moss-tts", and "qwen-image-2.1-t2i" / "qwen-image-2.1-edit"
+// "moss-tts", "qwen-image-2.1-t2i" / "qwen-image-2.1-edit"
 // (Qwen-Image's, which QwenLM's own rewriters replace once downloaded:
-// Controller::skill_text). Empty for a name it does not know.
+// Controller::skill_text) and "flux3-klein-t2i" / "flux3-klein-edit"
+// (FLUX.3's full scene captions; an edit the picture wanted, not an
+// instruction). Empty for a name it does not know.
 std::string_view rewrite_prompt(std::string_view name);
 
 // `text` with each name a model writes (first: "<Picture 1>") made what

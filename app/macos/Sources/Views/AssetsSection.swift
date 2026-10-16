@@ -364,53 +364,6 @@ extension AppModel {
         return true
     }
 
-    /// Its speech, and the sound events heard, transcribed into a text
-    /// asset of the project's (core Controller::transcribe, DESIGN §4h): a
-    /// task, its asset in the list from the request.
-    func transcribe(_ a: AssetDTO) {
-        guard let core, let projectId else { return }
-        let r = core.assetOp(project: projectId, "transcribe",
-                             ["asset": a.id])
-        guard r.ok else {
-            flash(r.message)
-            return
-        }
-        reloadAssets()
-        reloadTasks()
-        flash(String(localized: "Transcribing \(a.name): the transcript goes to Assets."))
-    }
-
-    /// A speech model and its voice detector are here (Settings ›
-    /// Capabilities › Listening).
-    var transcribeReady: Bool {
-        capabilities.first { $0.capability == "audio-transcribe" }?
-            .availability == "ready"
-    }
-
-    /// What a clip shows, told scene by scene by the helper and then
-    /// whole, into a text asset of the project's beside it (core
-    /// Controller::summarize_video, DESIGN §4i): a task, its asset in the
-    /// list from the request.
-    func summarize(_ a: AssetDTO) {
-        guard let core, let projectId else { return }
-        let r = core.assetOp(project: projectId, "summarize",
-                             ["asset": a.id])
-        guard r.ok else {
-            flash(r.message)
-            return
-        }
-        reloadAssets()
-        reloadTasks()
-        flash(String(localized: "Summarizing \(a.name): the summary goes to Assets."))
-    }
-
-    /// A helper that watches video is here (Settings › Capabilities ›
-    /// Agentic helpers).
-    var summarizeReady: Bool {
-        capabilities.first { $0.capability == "video-summary" }?
-            .availability == "ready"
-    }
-
     /// Files dropped on the stage: imported, then each instantiated as an
     /// asset is (a picture, a clip or a sound; the first that is one).
     func dropFilesOnStage(_ urls: [URL]) -> Bool {
@@ -1058,23 +1011,15 @@ private struct AssetRow: View {
                     Button("Show on Stage") { model.showMadeOnStage(a) }
                 }
                 Button("Add to Prompt") { model.addAssetReferences([a.id]) }
-                // Its speech, and the sounds heard: a text asset of it
-                // (DESIGN §4h).
-                if a.kind == "audio" || a.kind == "video" {
-                    Button("Transcribe") { model.transcribe(a) }
-                        .disabled(!model.transcribeReady)
-                        .help(model.transcribeReady
-                              ? "Its speech line by line, and the sounds heard, into a text asset"
-                              : "Download Qwen3-ASR and Silero VAD in Settings › Capabilities › Listening to transcribe")
-                }
-                // What it shows, scene by scene and whole: a text asset of
-                // it (DESIGN §4i).
-                if a.kind == "video" {
-                    Button("Summarize Video") { model.summarize(a) }
-                        .disabled(!model.summarizeReady)
-                        .help(model.summarizeReady
-                              ? "What it shows, scene by scene and as a whole, into a text asset"
-                              : "Download Qwen3.5 9B in Settings › Capabilities › Agentic helpers to summarize")
+                // The ASSET OPERATIONS it takes (DESIGN §4j), as the core
+                // lists them -- a sound's or a clip's speech transcribed,
+                // a clip summarized, a song's vocals and accompaniment
+                // separated -- each new assets made from it, a task.
+                ForEach(model.operations(for: a)) { op in
+                    let ready = op.take(a.kind)?.ready == true
+                    Button(op.title) { model.perform(op, on: a) }
+                        .disabled(!ready)
+                        .help(ready ? op.help : op.needs)
                 }
                 if a.kind == "image" {
                     Divider()
@@ -1303,6 +1248,9 @@ private struct AssetRow: View {
         case "edit-image": String(localized: "Edited by a model \(made)")
         case "transcribe-audio": String(localized: "Transcribed \(made)")
         case "summarize-video": String(localized: "Summarized \(made)")
+        case "separate-audio": String(localized: "Separated \(made)")
+        case "upscale-image", "upscale-video":
+            String(localized: "Upscaled \(made)")
         default:
             a.isPrompt ? promptSubtitle
                 : a.kind == "audio" ? String(localized: "Sound")

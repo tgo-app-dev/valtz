@@ -310,6 +310,47 @@ TEST(graph_builder, a_transcription_hears_one_channel)
   CHECK(!vp::build_transcribe(job, "/tmp/x-mono.wav").ok());
 }
 
+// A song SEPARATED (DESIGN §4j): the engine's two-channel WAV read at the
+// model's rate, through vpipe's audio-separate -- the checkpoint by its
+// folder and its file -- each output to a sink of its own, every beat
+// kept (a source is written as it streams out).
+TEST(graph_builder, a_song_is_separated_into_two_sinks)
+{
+  JobSpec job;
+  job.id = JobId::make();
+  job.op = std::string(kOpSeparateAudio);
+  job.model.dir = "/m/pcunwa/BS-Roformer-Resurrection";
+  job.model.engine = {{"vpipe", {{"separate", {{"rate", 44100},
+                                               {"stem", "vocals"},
+                                               {"residual",
+                                                "accompaniment"}}}}}};
+  job.params = {{"checkpoint", "BS-Roformer-Resurrection.ckpt"}};
+  auto g = vp::build_separate(job, "/tmp/x-heard.wav");
+  REQUIRE_OK(g);
+  const Json* load = find_stage(g->spec, "load");
+  const Json* pcm = find_stage(g->spec, "pcm");
+  const Json* sep = find_stage(g->spec, "separate");
+  const Json* stem = find_stage(g->spec, g->stem_sink);
+  const Json* rest = find_stage(g->spec, g->residual_sink);
+  REQUIRE(load && pcm && sep && stem && rest);
+  CHECK(jget<std::string>(config_of(load), "input_url", "") ==
+        "/tmp/x-heard.wav");
+  CHECK(jget(config_of(pcm), "channels", 0) == 2);
+  CHECK(jget(config_of(pcm), "output_sample_rate", 0) == 44100);
+  CHECK(jget(config_of(pcm), "flush_on_eos", false));
+  CHECK(src_of(sep, 0) == "pcm");
+  CHECK(jget<std::string>(config_of(sep), "hf_dir", "") ==
+        "/m/pcunwa/BS-Roformer-Resurrection");
+  CHECK(jget<std::string>(config_of(sep), "checkpoint", "") ==
+        "BS-Roformer-Resurrection.ckpt");
+  CHECK(src_of(stem, 0) == "separate");
+  CHECK(src_of(rest, 0) == "separate");
+  CHECK((*stem)["iports"][0]["oport"] == 0);
+  CHECK((*rest)["iports"][0]["oport"] == 1);
+  CHECK(jget<std::string>(config_of(stem), "policy", "") == "queue");
+  CHECK(!vp::build_separate(job, "").ok());
+}
+
 // A video summary (DESIGN §4i): the clip read sparse into a valtz-source
 // at the size given, the helper's model loaded as its chat loads it (its
 // drafters, its warm hold), its sampler on the stage's port, Valtz's own
@@ -726,6 +767,68 @@ TEST(graph_builder, klein_edit_skips_the_conditioner)
   CHECK(g->references[1].fitted.height == 608);
   check_lists(g->spec, /*to_cond=*/false);
   CHECK(!find_stage(g->spec, "qwen-image-21-model-config"));
+}
+
+// FLUX.3 Image Klein (vpipe b56bc04a): its own config stage, no
+// scheduler (the checkpoint states its sampler), 16 steps, up to 4096 a
+// side. An edit's references are fitted as BFL's pipeline fits them --
+// under a megapixel, each side cut to the grid about the centre -- and
+// its base at 4 MP at most, the output's shape kept: a 4096-pixel square
+// does not carry a reference as long as itself.
+TEST(graph_builder, flux3_klein_makes_4k_and_fits_as_bfl)
+{
+  auto job = job_for("flux3-klein", kOpGenerateImage);
+  REQUIRE(job.model.id == "flux3-klein");
+  job.params.erase("steps");
+  job.params["width"] = 4096;
+  job.params["height"] = 4096;
+  auto g = vp::build_text_to_image(job);
+  REQUIRE_OK(g);
+  CHECK(g->width == 4096 && g->height == 4096);
+  CHECK(!find_stage(g->spec, "scheduler-select"));
+  const Json* cfg = find_stage(g->spec, "flux3-model-config");
+  REQUIRE(cfg);
+  const Json* gen = find_stage(g->spec, "generate-image");
+  REQUIRE(gen);
+  CHECK(jget(config_of(gen), "steps", 0) == 16);
+  CHECK(jget(config_of(gen), "width", 0) == 4096);
+  CHECK(src_of(gen, 7) == "flux3-model-config");
+
+  auto edit = job_for("flux3-klein", kOpEditImage);
+  edit.params["width"] = 4096;
+  edit.params["height"] = 2752;
+  auto e = vp::build_image_edit(edit, {{"/a.jpg", {6000, 4000}, false, true},
+                                       {"/b.png", {1500, 1000}, false, false},
+                                       {"/c.png", {700, 500}, false, false}});
+  REQUIRE_OK(e);
+  REQUIRE(e->references.size() == 3);
+  // The base: the output's shape at 4 MP, on the 16-pixel grid.
+  const auto& base = e->references[0].fitted;
+  CHECK(base.width % 16 == 0 && base.height % 16 == 0);
+  CHECK(static_cast<double>(base.width) * base.height <= 4194304.0);
+  CHECK(std::abs(static_cast<double>(base.width) / base.height -
+                 4096.0 / 2752.0) < 0.02);
+  const Json bf = config_of(find_stage(e->spec, "ref-0-fit"));
+  CHECK(jget<std::string>(bf, "fit", "") == "crop");
+  CHECK(jget(bf, "width", 0) == base.width);
+  // A reference past a megapixel: shrunk, cut to the grid; one under:
+  // only cut.
+  const Json rf = config_of(find_stage(e->spec, "ref-1-fit"));
+  CHECK(jget<std::string>(rf, "fit", "") == "crop_to_grid");
+  CHECK(jget<std::int64_t>(rf, "max_pixels", 0) == 1048576);
+  CHECK(jget(rf, "grid", 0) == 16);
+  CHECK(e->references[1].fitted.width == 1248);   // 1254 cut to the grid
+  CHECK(e->references[1].fitted.height == 832);   // 836
+  CHECK(e->references[2].fitted.width == 688);
+  CHECK(e->references[2].fitted.height == 496);
+  check_lists(e->spec, /*to_cond=*/false);
+  // At its own default size the base is the output's frame, as before.
+  auto small = job_for("flux3-klein", kOpEditImage);
+  auto s1 = vp::build_image_edit(small, {{"/a.jpg", {1200, 800}, false,
+                                          true}});
+  REQUIRE_OK(s1);
+  CHECK(s1->references[0].fitted.width == s1->width);
+  CHECK(s1->references[0].fitted.height == s1->height);
 }
 
 // Qwen-Image 2.1 Turbo: the base model's graph -- its config stage, the
@@ -1150,6 +1253,46 @@ TEST(graph_builder, quantize_model_names_its_output)
         "/models/local/.MOSS-TTS-v1.5-8bit.quantizing");
   CHECK(jget(qc, "bits", 0) == 8 && jget(qc, "group_size", 0) == 64);
   j.params.erase("output");
+  CHECK(!vp::build_quantize_model(j).ok());
+}
+
+// A COMPRESSED copy (DESIGN §8b): a model-quantize pass a part, chained
+// -- the DiT from the download, the text encoder from that pass -- the
+// passes before the last beside the output, the last into it; a part's
+// own options laid under the job's width.
+TEST(graph_builder, a_compressed_copy_is_quantized_part_by_part)
+{
+  JobSpec j = job_for("flux2-klein-9b", kOpQuantizeModel);
+  j.model.dir = "/models/black-forest-labs/FLUX.2-klein-9B";
+  const std::string out = "/models/compressed/.flux2-klein-9b-4bit.x";
+  j.params = {
+      {"output", out}, {"bits", 4}, {"group_size", 64},
+      {"parts", Json::array(
+                    {{{"target", "dit"},
+                      {"options", {{"awq", true}, {"bits", 8}}}},
+                     {{"target", "text_encoder"},
+                      {"options", Json::object()}}})}};
+  auto g = vp::build_quantize_model(j);
+  REQUIRE_OK(g);
+  CHECK(g->spec["stages"].size() == 2);
+  const Json* q1 = find_stage(g->spec, "quantize-1");
+  const Json* q2 = find_stage(g->spec, "quantize-2");
+  REQUIRE(q1 && q2);
+  const Json c1 = config_of(q1);
+  const Json c2 = config_of(q2);
+  CHECK(jget<std::string>(c1, "src_model", "") == j.model.dir.string());
+  CHECK(jget<std::string>(c1, "output_name", "") == out + ".pass1");
+  CHECK(jget<std::string>(c1, "target", "") == "dit");
+  CHECK(jget(c1, "awq", false));
+  CHECK(jget(c1, "bits", 0) == 4);  // the job's, not the part's
+  CHECK(src_of(q1, 0) == "<none>");
+  CHECK(jget<std::string>(c2, "src_model", "") == out + ".pass1");
+  CHECK(jget<std::string>(c2, "output_name", "") == out);
+  CHECK(jget<std::string>(c2, "target", "") == "text_encoder");
+  CHECK(!c2.contains("awq"));
+  CHECK(src_of(q2, 0) == "quantize-1");
+  CHECK(!jget(c2, "skip_existing", true));
+  j.params["parts"] = Json::array({{{"options", Json::object()}}});
   CHECK(!vp::build_quantize_model(j).ok());
 }
 

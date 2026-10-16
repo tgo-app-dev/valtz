@@ -193,6 +193,10 @@ struct BuiltGraph {
   std::string           events_sink;
   // A clip summarized (DESIGN §4i): a beat a scene, then the whole's.
   std::string           summary_sink;
+  // A sound separated (DESIGN §4j): its two outputs' PCM as they stream
+  // out -- what the model takes out, and the rest.
+  std::string           stem_sink;
+  std::string           residual_sink;
   std::optional<SampleFeed> samples;
   std::filesystem::path output;        // file the graph writes
   // A still's pages exported (DESIGN §6a): every file, `output` the
@@ -279,7 +283,11 @@ Result<BuiltGraph> build_audio(const JobSpec&);
 // "voice") into its reference port -- written as a WAV.
 Result<BuiltGraph> build_speech(const JobSpec&);
 // quantize-model: vpipe's model-quantize, job.model.dir into params
-// "output" ("bits", "group_size").
+// "output" ("bits", "group_size"). With "parts" (a COMPRESSED copy,
+// DESIGN §8b: [{"target", "options"}]) a pass a part, chained -- the
+// first over the model, each next over the pass before, written beside
+// the output as "<output>.pass<n>" (the caller removes them), the last
+// into the output: vpipe's prepare-*-4bit recipes.
 Result<BuiltGraph> build_quantize_model(const JobSpec&);
 Result<BuiltGraph> build_chat(const JobSpec&);
 // agent-turn (DESIGN §9b): the conversation so far into vpipe's text-chat
@@ -292,6 +300,14 @@ Result<BuiltGraph> build_agent_turn(const JobSpec&);
 // sound events when the job names a tagger.
 Result<BuiltGraph> build_transcribe(const JobSpec&,
                                     const std::filesystem::path& wav);
+// separate-audio (DESIGN §4j): `wav` -- two channels at the model's rate
+// (catalog engine.vpipe.separate `rate`), the engine's
+// (media::stereo_sound) -- through vpipe's audio-separate, the checkpoint
+// job.model.dir with param "checkpoint" its file there; the model's own
+// target to g.stem_sink, the mix without it to g.residual_sink, planar
+// f32 [2, n] as they stream out.
+Result<BuiltGraph> build_separate(const JobSpec&,
+                                  const std::filesystem::path& wav);
 // summarize-video (DESIGN §4i): the clip -- input "source" -- read sparse
 // at `size` (a frame every param `every` s: g.samples) into Valtz's
 // valtz-video-summary, which cuts it into scenes and has the model

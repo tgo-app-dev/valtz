@@ -47,6 +47,11 @@ struct CapabilityTree: Decodable, Sendable {
         /// A quantized variant (core catalog `quantize`): made here from
         /// its source -- which must be here first -- not downloaded.
         var quantize: Quantize?
+        /// COMPRESSIBLE (core catalog `compress`, DESIGN §8b): what each
+        /// width would take, or why not here.
+        var compress: Compress?
+        /// A compressed copy in its download's place.
+        var compressed: Compressed?
         var id: String { model }
     }
 
@@ -57,6 +62,59 @@ struct CapabilityTree: Decodable, Sendable {
         var groupSize: Int
         var ready: Bool
     }
+
+    /// `why`: "" ready, "missing" (not here), "compressed" (already),
+    /// "link" / "vpipe" (files Valtz did not download), "engine".
+    struct Compress: Decodable, Sendable {
+        var ready: Bool
+        var why: String
+        var widths: [Width]
+
+        struct Width: Decodable, Sendable, Identifiable {
+            var bits: Int
+            var bytes: Int64
+            var saves: Int64
+            var id: Int { bits }
+        }
+    }
+
+    struct Compressed: Decodable, Sendable {
+        var bits: Int
+        var originalBytes: Int64
+    }
+}
+
+/// A model's files CHECKED (core models/model-check.h, DESIGN §8b): a
+/// link's, before it is made, or what is installed -- the model found in
+/// or around what was chosen, whether its files say they are it, and
+/// what was found wrong or could not be told.
+struct ModelCheck: Sendable, Equatable {
+    struct Note: Sendable, Equatable {
+        let level: String   // "error" | "warning" | "info"
+        let text: String    // in the UI's language
+    }
+    let path: String
+    let moved: String       // "down" | "up" | ""
+    let confirmed: Bool
+    let usable: Bool
+    let linked: Bool?
+    let notes: [Note]
+
+    init?(_ j: [String: Any]?) {
+        guard let j, let path = j["path"] as? String else { return nil }
+        self.path = path
+        moved = j["moved"] as? String ?? ""
+        confirmed = j["confirmed"] as? Bool ?? false
+        usable = j["usable"] as? Bool ?? false
+        linked = j["linked"] as? Bool
+        notes = (j["notes"] as? [[String: Any]] ?? []).map {
+            Note(level: $0["level"] as? String ?? "info",
+                 text: L10n.coreMessage($0))
+        }
+    }
+
+    /// The headline: the first note (errors come first).
+    var headline: Note? { notes.first }
 }
 
 /// Settings › Upscaling (core Controller::upscale_settings): an

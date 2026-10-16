@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace valtz {
@@ -31,6 +32,10 @@ struct JobRecord {
   std::string                title;
   ProjectId                  project;
   AssetId                    asset;      // the derived asset it builds
+  // More it makes beside `asset` -- a separation's sources -- each by the
+  // output that holds it (an Output event's data "output"; `asset`'s own
+  // is its recipe's param "output").
+  std::vector<std::pair<std::string, AssetId>> companions;
   project::Recipe            recipe;     // as submitted
   std::vector<project::ResolvedInput> inputs;
   std::string                model_digest;

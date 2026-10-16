@@ -75,7 +75,10 @@ inline constexpr std::string_view kOpGenerateAudio = "generate-audio";
 inline constexpr std::string_view kOpGenerateSpeech = "generate-speech";
 // A model QUANTIZED (vpipe's model-quantize; catalog `quantize`): the
 // source checkpoint is ModelRef::dir, params "output" (the folder made),
-// "bits", "group_size". No output file: the folder is the result.
+// "bits", "group_size". No output file: the folder is the result. A
+// COMPRESSED copy (catalog `compress`, DESIGN §8b) adds "parts": a pass
+// each ([{"target", "options"}]), its progress counted across them
+// (kPhaseQuantize's "pass" of "passes").
 inline constexpr std::string_view kOpQuantizeModel = "quantize-model";
 // A clip RESTORED at a larger size (FlashVSR, DESIGN §4f): input
 // "source" (a clip), params `width`, `height` (the size made), `first`,
@@ -111,6 +114,15 @@ inline constexpr std::string_view kOpTranscribeAudio = "transcribe-audio";
 // helper's, loaded as its chat loads it (`mtp_model`, `draft_model`,
 // `keep_loaded`, `sampling`), writing in `language`.
 inline constexpr std::string_view kOpSummarizeVideo = "summarize-video";
+// A sound SEPARATED into its sources (DESIGN §4j): input "source" (a
+// sound), heard as two channels at the model's rate (catalog
+// engine.vpipe.separate `rate`), by a source separator (BS-RoFormer:
+// the checkpoint ModelRef::dir, param "checkpoint" its file) -- what the
+// model takes out of the mix and what is left of it, each a 32-bit float
+// WAV (a source may peak past the mix it came from: nothing is clipped).
+// An Output event each, data {"output": the catalog's name for it --
+// separate's `stem`, then `residual`}.
+inline constexpr std::string_view kOpSeparateAudio = "separate-audio";
 inline constexpr std::string_view kOpFetchModel = "fetch-model";
 // One input (role "source") written again in another format: a still as
 // a 16-bit PNG / TIFF, OpenEXR, or 8-bit; a movie as ProRes 4444 (with
@@ -248,6 +260,11 @@ inline constexpr std::string_view kPhaseDownload = "download";
 // stage as a generation does.
 inline constexpr std::string_view kPhaseExport = "export";
 inline constexpr std::string_view kPhaseFinish = "finish";
+// A model's weights quantized, counted by tensor -- data "pass" of
+// "passes" where it takes several (a pipeline's DiT, then its encoder) --
+// and, where a pass is calibrated first (AWQ), its calibration.
+inline constexpr std::string_view kPhaseQuantize = "quantize";
+inline constexpr std::string_view kPhaseCalibrate = "calibrate";
 // Anything else; data "label" is the engine's own words.
 inline constexpr std::string_view kPhaseWork = "work";
 

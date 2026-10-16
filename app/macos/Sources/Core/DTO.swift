@@ -87,6 +87,7 @@ struct CapabilityStatus: Decodable, Sendable, Identifiable {
         case "audio-output": String(localized: "Video with audio")
         case "audio-transcribe": String(localized: "Transcribe audio")
         case "video-summary": String(localized: "Video summary")
+        case "audio-separate": String(localized: "Separate audio")
         case "text-to-audio": String(localized: "Text to audio")
         case "text-to-speech": String(localized: "Text to speech")
         default: english ?? capability.replacingOccurrences(of: "-", with: " ")
@@ -143,6 +144,9 @@ struct CatalogModel: Decodable, Sendable, Identifiable {
     /// A clip model that ends on a picture as well as opening on one
     /// (catalog `last_frame`: MiniMax H3 FL2VA).
     var lastFrame: Bool?
+    /// The longest side it makes (catalog `max_edge`: FLUX.3 Image
+    /// Klein's 4096) -- its 4K size offered; nil when it says nothing.
+    var maxEdge: Int?
     /// A quantized variant of `quantizeFrom` (its bits): listed as that
     /// one -- Favor picks the file (core Controller::weights_variant_).
     var quantizeFrom: String?
@@ -530,6 +534,77 @@ struct FolderDTO: Decodable, Sendable, Hashable, Identifiable {
     var name: String
 }
 
+/// An ASSET OPERATION (DESIGN §4j; core asset-ops.h) as this Mac can run
+/// it: what is done to an asset with no prompt -- transcribed, summarized,
+/// separated, upscaled. One protocol: the menus list these as the core
+/// does, and each is asked for by its name (AppModel.runOperation).
+struct AssetOperationDTO: Decodable, Sendable, Hashable, Identifiable {
+    /// What it does to one kind of asset, and whether it can here.
+    struct Take: Decodable, Sendable, Hashable {
+        var kind: String
+        var op: String
+        var capability: String
+        var ready: Bool
+        var availability: String
+        /// What Auto runs -- or would, once downloaded -- and where
+        /// Settings › Capabilities lists it.
+        var model: String
+        var modelName: String
+        var family: String
+    }
+    var name: String
+    var label: String
+    /// Done to a composition's layer (an upscale), not to the asset.
+    var onLayer: Bool
+    var makes: [String]
+    var takes: [Take]
+    var id: String { name }
+
+    func take(_ kind: String) -> Take? { takes.first { $0.kind == kind } }
+
+    /// Its menu item.
+    var title: String {
+        switch name {
+        case "transcribe": String(localized: "Transcribe")
+        case "summarize": String(localized: "Summarize Video")
+        case "separate": String(localized: "Separate Vocals and Accompaniment")
+        case "upscale": String(localized: "Render Upscaled")
+        default: label
+        }
+    }
+
+    /// What it makes, as the item's help.
+    var help: String {
+        switch name {
+        case "transcribe": String(localized: "Its speech line by line, and the sounds heard, into a text asset")
+        case "summarize": String(localized: "What it shows, scene by scene and as a whole, into a text asset")
+        case "separate": String(localized: "Its voice and its accompaniment, each into a sound of its own")
+        case "upscale": String(localized: "The layer's picture or clip restored at the size it is shown")
+        default: label
+        }
+    }
+
+    /// What to download, and where, while it cannot run.
+    var needs: String {
+        switch name {
+        case "transcribe": String(localized: "Download Qwen3-ASR and Silero VAD in Settings › Capabilities › Listening to transcribe")
+        case "summarize": String(localized: "Download Qwen3.5 9B in Settings › Capabilities › Agentic helpers to summarize")
+        case "separate": String(localized: "Download BS-RoFormer in Settings › Capabilities › Stem Separation to separate")
+        default: String(localized: "Download a model for it in Settings › Capabilities")
+        }
+    }
+
+    /// Said as it starts on `asset`.
+    func started(_ asset: String) -> String {
+        switch name {
+        case "transcribe": String(localized: "Transcribing \(asset): the transcript goes to Assets.")
+        case "summarize": String(localized: "Summarizing \(asset): the summary goes to Assets.")
+        case "separate": String(localized: "Separating \(asset): its vocals and accompaniment go to Assets.")
+        default: title
+        }
+    }
+}
+
 /// A TASK of the queue (DESIGN §3a; core Controller::tasks): a job that
 /// makes something -- a generation, an upscale, an export -- in the order
 /// they run. `position` 0 is the one running (T0 in Assets).
@@ -538,6 +613,11 @@ struct TaskDTO: Decodable, Sendable, Hashable, Identifiable {
     var project: String
     /// The asset it makes ("" an export).
     var asset: String
+    /// Every asset it makes, `asset` first: a separation's sources.
+    var assets: [String]?
+    /// The asset operation it is (transcribe, summarize, separate,
+    /// upscale: DESIGN §4j); "" for anything else.
+    var operation: String?
     /// What an export is of; an upscale's composition (`layer` its layer).
     var source: String?
     var layer: String?

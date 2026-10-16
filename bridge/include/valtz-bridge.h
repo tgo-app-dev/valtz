@@ -68,10 +68,18 @@ public:
   // managed models, the projects, the cache. Walks folders: off the main
   // thread.
   std::string storage_report_json() const;
-  // {"model", "path"} -> {"ok"}: a model linked to a file or folder
-  // anywhere; {"model"} -> {"ok"}: the link undone.
+  // {"model", "path"} -> {"ok", "check"}: a model linked to a file or
+  // folder anywhere, its files checked first (Controller::link_model;
+  // models/model-check.h: "path" -- the model found in or around what
+  // was chosen -- "moved", "confirmed", "usable", "identity", "bytes",
+  // "files", "notes" [{"level": "error" | "warning" | "info", message,
+  // key, args}]); refused, ok false with the first error's message and
+  // the check. {"model"} -> {"ok"}: the link undone.
   std::string link_model(const std::string& request_json);
   std::string unlink_model(const std::string& request_json);
+  // {"model", "path"?} -> {"ok", "check"}: its files checked as a link's
+  // are -- `path`'s, else where it is installed (Controller::check_model).
+  std::string check_model(const std::string& request_json) const;
   // Settings > Agentic Helper (Controller::assistants): the helpers, the
   // one chosen ("" Auto), Auto's pick and the one in use; {"model"} ->
   // {"ok"}: that one chosen ("" Auto), kept for later runs;
@@ -222,10 +230,16 @@ public:
   //  the prompt its fields then its words, "voice"?: a sound to clone
   //  (none: the row's first), "seconds"?: about how long.
   std::string generate_audio(const std::string& request_json);
-  // {"project", "asset" (the composition), "layer"?, "model"?, "seed"?}:
-  // the layer's clip rendered at its scale by an upscaler, which the
-  // layer then shows at scale 1 (Controller::upscale_layer) -> {"job"}.
-  std::string upscale_layer(const std::string& request_json);
+  // An ASSET OPERATION (Controller::run_asset_operation, DESIGN §4j):
+  // {"project", "operation" (transcribe | summarize | separate | upscale),
+  //  "asset" (an on-layer operation's composition), "layer"?, "model"?,
+  //  "options"?: its own -- transcribe {"language"}, summarize {"every"},
+  //  separate {"split"}, upscale {"seed"}} -> {"assets": [what it makes,
+  //  in order], "asset" (the first), "job"}.
+  std::string run_asset_operation(const std::string& request_json);
+  // -> {"operations": [...]}: every operation as this Mac can run it
+  // (Controller::asset_operations_json).
+  std::string asset_operations();
   // A PROMPT as an asset (Controller::capture_prompt; DESIGN §10c):
   // {"project", "prompt", "inline"?: [ids], "row"?: [ids],
   //  "prompt_asset"?, "prompt_name"?: the person's name for it} ->
@@ -409,6 +423,12 @@ public:
   // "from_name", "bits", "group_size", "ready") -> {"ok", "job"}; its
   // events are a job's, purpose "quantize".
   std::string quantize_model(const std::string& model_id);
+  // {"model", "bits": 8 | 4} -> {"ok", "job"}: its download replaced by
+  // a compressed copy (Controller::compress_model; the capability tree's
+  // member "compress": "ready", "why", "widths" [{"bits", "bytes",
+  // "saves"}], and "compressed": {"bits", "original_bytes"}); its events
+  // a job's, purpose "compress", "freed" when it finishes.
+  std::string compress_model(const std::string& request_json);
   // Sound CAPTURED (Controller::capture_*; DESIGN §7b): {"sources":
   // [{"id", "name", "kind": "microphone" | "system", "preferred"}],
   // "microphone": "granted" | "denied" | "undetermined"}; and

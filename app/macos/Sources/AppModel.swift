@@ -416,6 +416,10 @@ extension Comparable {
 
 enum SizeClass: Int, CaseIterable, Identifiable, Sendable {
     case draft = 512, standard = 1024, large = 1536
+    /// 4K: 4096 pixels on the LONG side (4096 x 4096 square, 4096 x 2304
+    /// at 16:9) -- offered only for a model that makes them (catalog
+    /// `max_edge`: FLUX.3 Image Klein), for pictures.
+    case ultra = 4096
     var id: Int { rawValue }
     /// The side of the square of its area, for what is made: a picture is
     /// about rawValue² pixels; a clip about 832 × 480, 960 × 544 or
@@ -426,7 +430,7 @@ enum SizeClass: Int, CaseIterable, Identifiable, Sendable {
         switch self {
         case .draft: return 632
         case .standard: return 723
-        case .large: return 960
+        case .large, .ultra: return 960
         }
     }
     var label: String {
@@ -434,6 +438,16 @@ enum SizeClass: Int, CaseIterable, Identifiable, Sendable {
         case .draft: String(localized: "Draft")
         case .standard: String(localized: "Standard")
         case .large: String(localized: "Large")
+        case .ultra: String(localized: "4K")
+        }
+    }
+    /// A picture's preset, as its segment's tooltip says it.
+    var tip: String {
+        switch self {
+        case .draft: String(localized: "About 512 × 512 pixels: the quickest")
+        case .standard: String(localized: "About 1024 × 1024 pixels")
+        case .large: String(localized: "About 1536 × 1536 pixels")
+        case .ultra: String(localized: "4096 pixels on the long side: up to 16 times Standard's pixels, and an hour or more to make")
         }
     }
 }
@@ -684,6 +698,9 @@ struct JobPhase: Equatable {
     /// Seconds the whole job has left (core controller/job-timing.h):
     /// nil until a count has passed 5%.
     var left: Double?
+    /// A model compressed part by part: which pass (from 1), of how many.
+    var pass = 0
+    var passes = 0
 
     init(phase: String) { self.phase = phase }
 
@@ -700,12 +717,14 @@ struct JobPhase: Equatable {
         rate = p["rate"] as? Double ?? 0
         left = p["left"] as? Double
         made = p["made"] as? Double
+        pass = p["pass"] as? Int ?? 0
+        passes = p["passes"] as? Int ?? 0
     }
 
     /// The phases in the order a generation runs them.
     static let order = ["prepare", "references", "score", "song", "speech",
-                        "transcribe", "summarize", "denoise", "decode",
-                        "sound", "restore", "finish"]
+                        "transcribe", "summarize", "separate", "denoise",
+                        "decode", "sound", "restore", "finish"]
 
     /// A phase's name, as the inspector lists how long each took -- a
     /// song's sound rendered and decoded, a clip's soundtrack.
@@ -718,6 +737,7 @@ struct JobPhase: Equatable {
         case "speech": String(localized: "Speaking")
         case "transcribe": String(localized: "Transcribing")
         case "summarize": String(localized: "Summarizing")
+        case "separate": String(localized: "Separating")
         case "denoise": kind == .audio ? String(localized: "Rendering")
             : String(localized: "Generating")
         case "decode": String(localized: "Decoding")
@@ -790,6 +810,12 @@ struct JobPhase: Equatable {
         case "download": name = label.isEmpty
             ? String(localized: "Downloading")
             : String(localized: "Downloading \(label)")
+        // A model compressed (DESIGN §8b): its weights quantized, a part
+        // a pass -- the estimate is the whole's.
+        case "quantize": name = passes > 1
+            ? String(localized: "Compressing, part \(String(pass)) of \(String(passes))")
+            : String(localized: "Quantizing")
+        case "calibrate": name = String(localized: "Calibrating")
         default: name = label   // the engine's own words
         }
         guard let pct = percent else { return name }
@@ -968,6 +994,49 @@ final class AppModel {
     var helpers: HelperList?
     /// Settings › Upscaling: each upscaler's arithmetic.
     var upscalers: [UpscalerSettings] = []
+
+    /// The ASSET OPERATIONS (DESIGN §4j) as this Mac runs them -- what is
+    /// done to an asset with no prompt -- read with the capabilities.
+    var assetOperations: [AssetOperationDTO] = []
+
+    func operation(_ name: String) -> AssetOperationDTO? {
+        assetOperations.first { $0.name == name }
+    }
+
+    /// The operations done to `a` itself (not to a layer of it): its
+    /// menu's, in the core's order.
+    func operations(for a: AssetDTO) -> [AssetOperationDTO] {
+        assetOperations.filter { !$0.onLayer && $0.take(a.kind) != nil }
+    }
+
+    /// An ASSET OPERATION asked for (core run_asset_operation): what it
+    /// makes is in Assets from the request, a task. A refusal is said.
+    @discardableResult
+    func runOperation(_ name: String, on asset: String,
+                      layer: String? = nil,
+                      options: [String: Any] = [:]) -> CoreReply? {
+        guard let core, let projectId else { return nil }
+        var req: [String: Any] = ["project": projectId, "operation": name,
+                                  "asset": asset]
+        if let layer { req["layer"] = layer }
+        if !options.isEmpty { req["options"] = options }
+        let r = core.runAssetOperation(req)
+        guard r.ok else {
+            flash(r.message)
+            return r
+        }
+        reloadAssets()
+        reloadTasks()
+        return r
+    }
+
+    /// From an asset's menu: the operation on it, what it does said.
+    @discardableResult
+    func perform(_ op: AssetOperationDTO, on a: AssetDTO) -> [String] {
+        guard let r = runOperation(op.name, on: a.id), r.ok else { return [] }
+        flash(op.started(a.name))
+        return r["assets"] as? [String] ?? []
+    }
     /// Settings › Agentic Helper › Agent: where its model thinks, whether
     /// each step is asked for, the cloud's provider and model.
     var agentSettings: AgentSettings?
@@ -1568,11 +1637,10 @@ final class AppModel {
 
     /// The Crop panel offers to RENDER UPSCALED (DESIGN §4f): the layer
     /// shows a clip scaled up at one size -- one key at most -- and an
-    /// upscaler for clips runs here.
+    /// upscaler for clips runs here (the asset operation's take).
     var canUpscaleLayer: Bool {
         guard let src = activeLayerSource, !src.isDrawn,
-              src.kind == "video" || src.kind == "image",
-              capability("upscale-\(src.kind)")?.availability == "ready"
+              operation("upscale")?.take(src.kind)?.ready == true
         else { return false }
         if keyedStage && clipCropKeys.place.keys.count > 1 { return false }
         return crop.scaleX > 1.001 || crop.scaleY > 1.001
@@ -1583,8 +1651,7 @@ final class AppModel {
     /// (Flatten First), then upscaled.
     var upscaleNeedsFlatten: Bool {
         guard let src = activeLayerSource, src.isDrawn,
-              src.kind == "video" || src.kind == "image",
-              capability("upscale-\(src.kind)")?.availability == "ready"
+              operation("upscale")?.take(src.kind)?.ready == true
         else { return false }
         if keyedStage && clipCropKeys.place.keys.count > 1 { return false }
         return crop.scaleX > 1.001 || crop.scaleY > 1.001
@@ -1631,19 +1698,15 @@ final class AppModel {
     }
 
     /// Render Upscaled: the layer's clip at its scale, by the upscaler; the
-    /// layer then shows the result at scale 1 (core upscale_layer).
+    /// layer then shows the result at scale 1 -- the asset operation
+    /// "upscale" on the layer (DESIGN §4j).
     func upscaleLayer() {
-        guard let core, let projectId, let stack = stageStack,
-              upscaleJob == nil else { return }
+        guard let stack = stageStack, upscaleJob == nil else { return }
         persistCrop()
         if clipOnStage { persistClipTracks() }
-        let r = core.upscaleLayer(["project": projectId,
-                                   "asset": composedTarget(stack.id),
-                                   "layer": activeLayer])
-        guard r.ok, let job = r.job else {
-            flash(r.message)
-            return
-        }
+        guard let r = runOperation("upscale", on: composedTarget(stack.id),
+                                   layer: activeLayer),
+              r.ok, let job = r.job else { return }
         withAnimation(Self.motion) {
             upscaleJob = job
             memoryFailure = nil
@@ -1789,6 +1852,7 @@ final class AppModel {
                                     core.capabilityTreeJSON())
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
         upscalers = core.upscaleSettings()
+        assetOperations = core.assetOperations()
         agentSettings = DTO.decode(AgentSettings.self,
                                    core.agentSettingsJSON())
         reloadFleet()
@@ -1811,6 +1875,7 @@ final class AppModel {
             ?? catalog
         auto = DTO.decode([String: [String: AutoChoice]].self,
                           core.autoJSON()) ?? auto
+        assetOperations = core.assetOperations()
     }
 
     /// Auto's pick for `op` ("generate" | "edit") in the modality; "" when
@@ -2525,6 +2590,15 @@ final class AppModel {
     /// Why a model's last download failed, by model id: shown under its
     /// row until it is tried again.
     var downloadFailures: [String: String] = [:]
+    /// A model's files as last CHECKED (a link made or refused, Check
+    /// Files), by model id: shown under its row (DESIGN §8b).
+    var modelChecks: [String: ModelCheck] = [:]
+    /// How a model's last compress went, by model id: shown under its row
+    /// -- what it freed, or why it did not.
+    var compressNotes: [String: ModelCheck.Note] = [:]
+    /// A model whose compress is being confirmed: its alert open
+    /// (Capabilities), at that width.
+    var compressAsk: (member: CapabilityTree.Member, bits: Int)?
     /// A token the snapshot hooks type into the gated sheet.
     @ObservationIgnored var snapshotGatedToken: String?
     func openCapabilities(family: String?) {
@@ -3818,11 +3892,18 @@ final class AppModel {
         refreshMachine()
     }
 
-    /// A model used from a file or folder where it already is.
+    /// A model used from a file or folder where it already is -- its files
+    /// checked first: what was found, refused or linked, stays under its
+    /// row (`modelChecks`).
     func linkModel(_ id: String, to url: URL) {
         guard let core else { return }
         let r = core.linkModel(id, path: url.path)
-        if !r.ok { flash(r.message) }
+        if let check = ModelCheck(r["check"] as? [String: Any]) {
+            modelChecks[id] = check
+        } else if !r.ok {
+            modelChecks[id] = nil
+            flash(r.message)
+        }
         refreshMachine()
     }
 
@@ -3830,7 +3911,31 @@ final class AppModel {
         guard let core else { return }
         let r = core.unlinkModel(id)
         if !r.ok { flash(r.message) }
+        modelChecks[id] = nil
         refreshMachine()
+    }
+
+    /// Its files, where it is installed, checked as a link's are.
+    func checkModel(_ id: String) {
+        guard let core else { return }
+        let r = core.checkModel(id)
+        if let check = ModelCheck(r["check"] as? [String: Any]) {
+            modelChecks[id] = check
+        } else if !r.ok {
+            flash(r.message)
+        }
+    }
+
+    /// Its download replaced by a copy quantized to `bits` (Settings ›
+    /// Capabilities' compress button, once confirmed): a job, its row's
+    /// progress; refused, why under the row.
+    func compress(model: String, bits: Int) {
+        guard let core else { return }
+        compressNotes[model] = nil
+        let r = core.compressModel(model, bits: bits)
+        if !r.ok {
+            compressNotes[model] = .init(level: "error", text: r.message)
+        }
     }
 
     /// The agentic helper chosen ("" Auto), kept by the core for later
@@ -4196,11 +4301,13 @@ final class AppModel {
             }
             return (snap(c.width), snap(c.height))
         }
-        let edge = sizeClass.edge(activeModality)
-        let area = Double(edge * edge)
+        let size = shownSizeClass
+        let edge = size.edge(activeModality)
         let r = orientation == .square ? 1 : aspectRatio.ratio
-        let long = (area * r).squareRoot()
-        let short = area / long
+        // 4K is its long side; the others an area.
+        let area = Double(edge * edge)
+        let long = size == .ultra ? Double(edge) : (area * r).squareRoot()
+        let short = size == .ultra ? Double(edge) / r : area / long
         // A clip's edges are on the video model's grid (32 for H3), so
         // 16:9 Draft is 832 × 480; a picture's on 64.
         let grid = activeModality == .video ? Double(sizeGrid) : 64
@@ -4216,6 +4323,25 @@ final class AppModel {
     private var sizeGrid: Int {
         let id = willEdit ? editModel : imageModel
         return max(16, catalog.first { $0.id == id }?.sizeAlign ?? 16)
+    }
+
+    /// The model Start will run makes 4096 pixels a side (catalog
+    /// `max_edge`: FLUX.3 Image Klein): a picture's Size row offers 4K.
+    var makes4K: Bool {
+        guard activeModality == .image else { return false }
+        let id = willEdit ? editModel : imageModel
+        return (catalog.first { $0.id == id }?.maxEdge ?? 0) >= 4096
+    }
+
+    /// The Size row's presets: 4K only where the model makes it.
+    var sizeClasses: [SizeClass] {
+        SizeClass.allCases.filter { $0 != .ultra || makes4K }
+    }
+
+    /// The preset made: 4K chosen, then another model chosen that does
+    /// not make it, is Large -- and 4K again when one that does is.
+    var shownSizeClass: SizeClass {
+        sizeClass == .ultra && !makes4K ? .large : sizeClass
     }
 
     /// The orientation shown: chosen, or read off a custom size.
@@ -4234,7 +4360,7 @@ final class AppModel {
     /// preset leaves the custom size, keeping its shape as near as the
     /// presets go: its orientation, and the closest aspect ratio.
     var sizeChoice: SizeClass? {
-        get { customSize == nil ? sizeClass : nil }
+        get { customSize == nil ? shownSizeClass : nil }
         set {
             guard let newValue else { return }
             if customSize != nil { keepCustomShape() }
@@ -4343,7 +4469,7 @@ final class AppModel {
 
     private func nearestSizeClass(area: Int) -> SizeClass {
         let m = activeModality
-        return SizeClass.allCases.min {
+        return sizeClasses.filter { $0 != .ultra }.min {
             abs($0.edge(m) * $0.edge(m) - area)
                 < abs($1.edge(m) * $1.edge(m) - area)
         } ?? .standard
@@ -4642,9 +4768,13 @@ final class AppModel {
         }
     }
 
-    /// The task making an asset, while it is queued or running.
+    /// The task making an asset, while it is queued or running -- one of
+    /// several it makes too (a separation's sources).
     func task(of asset: String) -> TaskDTO? {
-        tasks.first { $0.asset == asset && !$0.asset.isEmpty }
+        guard !asset.isEmpty else { return nil }
+        return tasks.first {
+            $0.asset == asset || ($0.assets ?? []).contains(asset)
+        }
     }
 
     /// The stage WATCHES a task: a generation's latest preview (or, before
@@ -8361,6 +8491,8 @@ final class AppModel {
         case "transition": String(localized: "Transition")
         case "transcribe": String(localized: "Transcribe")
         case "summarize": String(localized: "Summarize Video")
+        case "separate": String(localized: "Separate Vocals and Accompaniment")
+        case "upscale": String(localized: "Render Upscaled")
         case "layer.group": String(localized: "Group Layers")
         case "layer.ungroup": String(localized: "Ungroup Layers")
         case "layer.folder-rename": String(localized: "Rename Layer Folder")
@@ -8959,12 +9091,26 @@ final class AppModel {
         jobs[job]?.phase = nil
         if !tasks.isEmpty || taskContexts[job] != nil { reloadTasks() }
         if state == "finished" { jobs[job]?.progress = 1 }
+        // A compress done: what it freed, under its row.
+        if state == "finished", let j = jobs[job], j.purpose == "compress",
+           !j.model.isEmpty {
+            let bits = ev.payload["bits"] as? Int ?? 0
+            let freed = Int64(ev.payload["freed"] as? Int ?? 0)
+                .formatted(.byteCount(style: .file))
+            compressNotes[j.model] = .init(
+                level: "info",
+                text: String(localized: "Compressed to \(String(bits))-bit: \(freed) freed."))
+        }
         if ev.kind == "job.failed" {
             let msg = L10n.coreMessage(ev.payload)
             note("error", msg)
-            // A download's failure stays under its row in Capabilities.
+            // A download's failure stays under its row in Capabilities,
+            // and a compress's.
             if let j = jobs[job], j.purpose == "download", !j.model.isEmpty {
                 downloadFailures[j.model] = msg
+            }
+            if let j = jobs[job], j.purpose == "compress", !j.model.isEmpty {
+                compressNotes[j.model] = .init(level: "error", text: msg)
             }
             // Refused for memory: its numbers and what to change stay over
             // the prompt, rather than a line that goes in six seconds.

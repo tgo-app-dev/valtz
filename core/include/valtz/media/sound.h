@@ -26,6 +26,8 @@
 #include "valtz/media/keyframes.h"
 #include "valtz/media/timing.h"
 
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <utility>
 #include <vector>
@@ -92,6 +94,45 @@ Result<bool> mix_sound(const SoundPlan& plan,
 // tracks averaged where they overlap. Its length, in seconds. Blocking.
 Result<double> mono_sound(const std::filesystem::path& in,
                           const std::filesystem::path& out, int rate);
+
+// A file's SOUND as TWO channels at `rate` Hz, written as a 32-bit float
+// WAV -- what a source separator hears (DESIGN §4j): every sound track of
+// it (a clip's too) mixed by AVFoundation's own mixer, a mono one on both
+// sides, more channels folded down by their layout. Its length, in
+// seconds. Blocking.
+Result<double> stereo_sound(const std::filesystem::path& in,
+                            const std::filesystem::path& out, int rate);
+
+// A WAV WRITTEN AS IT COMES -- 32-bit float -- so a stream of PCM (a
+// separator's output) goes to disk piece by piece: nothing held, nothing
+// clipped. The header is sized when it is closed (a WAV holds at most
+// 4 GB of samples). One writer a stream; not thread-safe.
+class FloatWav {
+public:
+  FloatWav() = default;
+  ~FloatWav();  // closes
+  FloatWav(const FloatWav&) = delete;
+  FloatWav& operator=(const FloatWav&) = delete;
+
+  Status open(const std::filesystem::path&, int channels, int rate);
+  // `frames` frames, the channels side by side (L R L R ...).
+  Status append_interleaved(const float* samples, std::size_t frames);
+  // `frames` frames, a channel after another (L L ... R R ...).
+  Status append_planar(const float* samples, std::size_t frames);
+  Status close();
+  std::uint64_t frames() const noexcept { return _frames; }
+  int channels() const noexcept { return _channels; }
+  int rate() const noexcept { return _rate; }
+
+private:
+  Status write_(const float* interleaved, std::size_t frames);
+  std::FILE*            _f = nullptr;
+  std::filesystem::path _path;
+  int                   _channels = 0;
+  int                   _rate = 0;
+  std::uint64_t         _frames = 0;
+  std::vector<float>    _scratch;
+};
 
 // A sound as `channels` (1, mixed down; 2) at `rate` Hz -- a project's
 // output (project::OutputSettings) -- written as a 24-bit WAV. Blocking.

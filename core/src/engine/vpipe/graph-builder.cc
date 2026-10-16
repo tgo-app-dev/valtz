@@ -310,6 +310,18 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
                      refs.size());
     }
     const double budget = jget(ed, "reference_area", 1024.0 * 1024.0);
+    // How a reference is fitted (catalog `reference_fit`): padded right
+    // and bottom to the grid ("pad", the default), or as Black Forest
+    // Labs' own pipeline fits FLUX.3's ("crop_to_grid": shrunk under the
+    // area, each side cut down to the grid, centred).
+    const bool crop_grid =
+        jget<std::string>(ed, "reference_fit", "pad") == "crop_to_grid";
+    // The base's area at most (catalog `base_area`: FLUX.3's 4 MP, as
+    // BFL fits one): a reference is tokens beside the picture made, and
+    // a 4096-pixel square made from a base its size doubles a sequence
+    // whose attention grows with its square. Without one, the base is
+    // fitted at the output's own size.
+    const double base_area = jget(ed, "base_area", 0.0);
     for (std::size_t i = 0; i < nref; ++i) {
       const auto& r = refs[i];
       RefFeed f;
@@ -331,10 +343,27 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
       Json fit;
       if (f.base) {
         // The base becomes the output's frame: fill it, centre-crop the
-        // (alignment-sized) difference.
+        // (alignment-sized) difference -- at the output's shape, under
+        // the model's base area where it has one.
         f.fitted = {width, height};
-        fit = {{"width", width}, {"height", height}, {"fit", "crop"},
-               {"algorithm", "lanczos"}};
+        if (base_area > 0 &&
+            static_cast<double>(width) * height > base_area) {
+          f.fitted = fit_area(f.fitted, base_area, align);
+        }
+        fit = {{"width", f.fitted.width}, {"height", f.fitted.height},
+               {"fit", "crop"}, {"algorithm", "lanczos"}};
+      } else if (crop_grid) {
+        // Shrunk (sides floored) under the area, then each side cut to
+        // the grid about the centre: vpipe's image-resample does it.
+        const double area =
+            static_cast<double>(f.size.width) * f.size.height;
+        const double k = area > budget ? std::sqrt(budget / area) : 1.0;
+        const int nw = std::max(align, static_cast<int>(f.size.width * k));
+        const int nh = std::max(align, static_cast<int>(f.size.height * k));
+        f.fitted = {nw / align * align, nh / align * align};
+        fit = {{"fit", "crop_to_grid"},
+               {"max_pixels", static_cast<std::int64_t>(budget)},
+               {"grid", align}, {"algorithm", "lanczos"}};
       } else {
         // A reference keeps its pixels, padded right and bottom to the
         // grid; only one larger than the model's reference area is
@@ -1128,13 +1157,44 @@ build_quantize_model(const JobSpec& job)
   }
   BuiltGraph g;
   Json stages = Json::array();
-  stages.push_back(stage("quantize", "model-quantize", Json::array(),
-                         {{"src_model", job.model.dir.string()},
-                          {"output_name", out},
-                          {"bits", jget(job.params, "bits", 8)},
-                          {"group_size", jget(job.params, "group_size",
-                                              64)},
-                          {"skip_existing", false}}));
+  const Json base = {{"bits", jget(job.params, "bits", 8)},
+                     {"group_size", jget(job.params, "group_size", 64)},
+                     {"skip_existing", false}};
+  const Json parts = jget(job.params, "parts", Json::array());
+  if (!parts.is_array() || parts.empty()) {
+    Json cfg = base;
+    cfg["src_model"] = job.model.dir.string();
+    cfg["output_name"] = out;
+    stages.push_back(stage("quantize", "model-quantize", Json::array(),
+                           std::move(cfg)));
+  }
+  std::string src = job.model.dir.string();
+  for (std::size_t i = 0; parts.is_array() && i < parts.size(); ++i) {
+    const std::string target = jget<std::string>(parts[i], "target", "");
+    if (target.empty()) {
+      return make_error(Code::InvalidArgument,
+                        "a compressed part names no target");
+    }
+    const std::string to = i + 1 == parts.size()
+        ? out : std::format("{}.pass{}", out, i + 1);
+    // The part's own keys (AWQ, the modulation) under the job's: the
+    // source, the output and the width.
+    Json cfg = jget(parts[i], "options", Json::object());
+    if (!cfg.is_object()) {
+      cfg = Json::object();
+    }
+    cfg.update(base);
+    cfg["src_model"] = src;
+    cfg["output_name"] = to;
+    cfg["target"] = target;
+    const std::string id = std::format("quantize-{}", i + 1);
+    stages.push_back(stage(id, "model-quantize",
+                           i == 0 ? Json::array()
+                                  : Json::array({port(std::format(
+                                        "quantize-{}", i))}),
+                           std::move(cfg)));
+    src = to;
+  }
   g.spec = {{"id", "valtz-" + job.id.str()},
             {"stages", stages},
             {"subpipelines", Json::array()}};
@@ -1992,6 +2052,51 @@ build_transcribe(const JobSpec& job, const fs::path& wav)
                             {"score_threshold", 0.1}}));
     stages.push_back(sink(g.events_sink, port("tags"), false));
   }
+  g.spec = {{"id", "valtz-" + job.id.str()},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+// The sound's packets (load-audio) decoded into 10 s pieces of PCM at
+// the model's rate (audio-to-pcm: the wav is that rate already, two
+// channels), separated as they come by vpipe's audio-separate -- MSST's
+// overlapping chunks cross-faded, the output trailing the input by about
+// a chunk -- its two outputs streamed to sinks of their own: what the
+// model takes out (`stem`) and the mix without it (`residual`).
+Result<BuiltGraph>
+build_separate(const JobSpec& job, const fs::path& wav)
+{
+  const Json sep = jget(jget(job.model.engine, "vpipe", Json::object()),
+                        "separate", Json::object());
+  const int rate = jget(sep, "rate", 44100);
+  if (job.model.dir.empty() || wav.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "a separation needs its model and a sound");
+  }
+  BuiltGraph g;
+  g.stem_sink = "stem-sink";
+  g.residual_sink = "residual-sink";
+  Json stages = Json::array();
+  stages.push_back(stage("load", "load-audio", Json::array(),
+                         {{"input_url", wav.string()}}));
+  stages.push_back(stage("pcm", "audio-to-pcm",
+                         Json::array({port("load")}),
+                         {{"output_sample_rate", rate},
+                          {"channels", 2},
+                          {"chunk_duration_s", 10.0},
+                          {"flush_on_eos", true}}));
+  // The checkpoint by its folder and its file: one repository may hold
+  // several models (BS-RoFormer Resurrection: vocals and instrumental).
+  Json cfg = {{"hf_dir", job.model.dir.string()}};
+  if (const auto ckpt = jget<std::string>(job.params, "checkpoint", "");
+      !ckpt.empty()) {
+    cfg["checkpoint"] = ckpt;
+  }
+  stages.push_back(stage("separate", "audio-separate",
+                         Json::array({port("pcm")}), std::move(cfg)));
+  stages.push_back(sink(g.stem_sink, port("separate", 0), false));
+  stages.push_back(sink(g.residual_sink, port("separate", 1), false));
   g.spec = {{"id", "valtz-" + job.id.str()},
             {"stages", stages},
             {"subpipelines", Json::array()}};

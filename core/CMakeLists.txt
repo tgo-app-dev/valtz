@@ -43,6 +43,7 @@ set(VALTZ_CORE_SOURCES
   src/models/catalog.cc
   src/models/capabilities.cc
   src/models/hardware.mm
+  src/models/model-check.cc
   src/models/model-store.cc
   src/models/tuning.cc
   src/assist/assistant.cc
@@ -59,6 +60,7 @@ set(VALTZ_CORE_SOURCES
   src/engine/null-engine.cc
   src/controller/agent.cc
   src/controller/agent-tools.cc
+  src/controller/asset-ops.cc
   src/controller/compositions.cc
   src/controller/controller.cc
   src/controller/event-bus.cc
@@ -113,6 +115,12 @@ valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/qwen-image-t2i.md"
   kQwenImageT2iSkill qwen-image-t2i-skill.cc)
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/qwen-image-edit.md"
   kQwenImageEditSkill qwen-image-edit-skill.cc)
+# FLUX.3 Image Klein's caption writer, generate and edit: Valtz's own,
+# from vpipe's guide to the model (BFL's prompt upsampler is not used).
+valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/flux3-klein-t2i.md"
+  kFlux3KleinT2iSkill flux3-klein-t2i-skill.cc)
+valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/flux3-klein-edit.md"
+  kFlux3KleinEditSkill flux3-klein-edit-skill.cc)
 # MiniMax H3's prompt-writing skill, as its makers publish it (MiniMax
 # H3 Community License, 3rd-party/minimax-h3): the base guide (FL2VA)
 # and the full-reference one (Ref2VA).

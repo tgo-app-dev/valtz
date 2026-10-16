@@ -166,12 +166,33 @@ InstallInfo::path() const
   return file.empty() ? dir : dir / file;
 }
 
+fs::path
+ModelStore::compressed_dir(const std::string& id, int bits) const
+{
+  return download_root() / "compressed" / std::format("{}-{}bit", id, bits);
+}
+
 InstallInfo
 ModelStore::scan_(const ModelEntry& e) const
 {
   // Linked: there, and nowhere else.
   if (const fs::path l = link_of(e.id); !l.empty()) {
     return scan_link_(e, l);
+  }
+  // Compressed: the copy that replaced its download, whole (marked last,
+  // once it passed its check).
+  for (const int bits : {8, 4}) {
+    const fs::path d = compressed_dir(e.id, bits);
+    std::ifstream in(d / kCompressedMarker);
+    const Json m = in ? Json::parse(in, nullptr, false) : Json();
+    if (!m.is_object() || jget<std::string>(m, "model", "") != e.id) {
+      continue;
+    }
+    InstallInfo info = scan_dir_(e, d, InstallInfo{});
+    if (info.state == InstallState::Installed) {
+      info.compressed_bits = bits;
+      return info;
+    }
   }
   InstallInfo best;
   for (const auto& root : _roots) {

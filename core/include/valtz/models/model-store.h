@@ -10,6 +10,12 @@
 // then where it is, ahead of the roots (Settings > Capabilities). The
 // links are kept in a small JSON file beside the models folder, by
 // catalog id.
+//
+// A download can be replaced by a COMPRESSED copy of itself (DESIGN
+// §8b): <download root>/compressed/<id>-<bits>bit, marked by the file
+// Valtz writes in it (kCompressedMarker). Where one is, the model is
+// there -- after a link, before the roots -- until its download is
+// fetched again.
 
 #ifndef VALTZ_MODELS_MODEL_STORE_H
 #define VALTZ_MODELS_MODEL_STORE_H
@@ -40,6 +46,7 @@ struct InstallInfo {
   std::filesystem::path file;   // the entry's `file`, in `dir`; or empty
   std::uint64_t         bytes = 0;
   bool                  linked = false;  // where its link points
+  int                   compressed_bits = 0;  // a compressed copy: 8, 4
 
   // What the engine is given: the entry's file when it names one, else
   // the folder.
@@ -79,6 +86,11 @@ public:
   void unlink(const std::string& id);
   // Where `id` is linked to; empty when it is not.
   std::filesystem::path link_of(const std::string& id) const;
+
+  // Where `id`'s copy compressed to `bits` is kept.
+  std::filesystem::path compressed_dir(const std::string& id,
+                                       int bits) const;
+  static constexpr const char* kCompressedMarker = "valtz-compressed.json";
 
 private:
   InstallInfo scan_(const ModelEntry&) const;

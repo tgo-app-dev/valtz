@@ -72,7 +72,15 @@ usage()
       "         default)\n"
       "  link <model-id> <file|folder> | unlink <model-id>\n"
       "         (a model kept somewhere else -- ComfyUI's, Draw Things',\n"
-      "         anywhere -- used from there)\n"
+      "         anywhere -- used from there; its files checked first: the\n"
+      "         model found in or around the folder linked, a wrong or\n"
+      "         broken one refused)\n"
+      "  check <model-id> [file|folder]  (its files checked as a link's\n"
+      "         are -- that path's, else where it is installed)\n"
+      "  compress <model-id> --bits 8|4  (Settings > Capabilities'\n"
+      "         compress button: the download replaced by a copy\n"
+      "         quantized to 8 or 4 bits, its DiT then its text encoder;\n"
+      "         download it again for the original)\n"
       "  assistant [<model-id>|auto] [--keep <seconds>]\n"
       "            [--drafter mtp|dflash] [--bits 8|4]\n"
       "            [--video-every <seconds>|auto]\n"
@@ -278,6 +286,9 @@ usage()
       "         prompt captured, as --name here: the person's name, kept\n"
       "         as its words change)\n"
       "  classify <file|folder>...  (lora, dit or vae: how a drop is filed)\n"
+      "  ASSET OPERATIONS (one protocol: what is done to an asset with\n"
+      "  no prompt -- a task, new assets made from it):\n"
+      "  ops   (each, what it takes, whether it runs here and on what)\n"
       "  transcribe <project.valtz> <sound|clip-id> [--model ID]\n"
       "         [--language L]  (its speech line by line, the sound\n"
       "         events heard: a text asset made from it, printed)\n"
@@ -285,6 +296,9 @@ usage()
       "         (watched by the helper -- a frame every S seconds, the\n"
       "         setting's by default -- scene by scene, then whole: a\n"
       "         text asset made from it, printed)\n"
+      "  separate <project.valtz> <sound-id> [--model ID]  (a song split\n"
+      "         into its vocals and its accompaniment: two sounds made\n"
+      "         from it, their files printed)\n"
       "  layers <project.valtz> <picture-id> [add [above] | move <layer> <by>\n"
       "         | show|hide <layer> | lock|unlock <layer>\n"
       "         | source <layer> <picture-id>\n"
@@ -809,6 +823,26 @@ print_out_of_memory(const Json& d)
   }
 }
 
+// A model's files checked (models/model-check.h): what was found, then
+// each note -- errors first.
+void
+print_check(const Json& r)
+{
+  const auto moved = jget<std::string>(r, "moved", "");
+  std::printf("%s: %s%s\n",
+              !jget(r, "usable", false)  ? "refused"
+              : jget(r, "confirmed", false) ? "confirmed"
+                                            : "unconfirmed",
+              jget<std::string>(r, "path", "").c_str(),
+              moved.empty() ? ""
+              : moved == "up" ? " (found around the path given)"
+                              : " (found inside the path given)");
+  for (const auto& n : jget(r, "notes", Json::array())) {
+    std::printf("  [%s] %s\n", jget<std::string>(n, "level", "").c_str(),
+                jget<std::string>(n, "message", "").c_str());
+  }
+}
+
 int
 follow(Controller& c, JobId job)
 {
@@ -848,6 +882,12 @@ follow(Controller& c, JobId job)
       }
       const auto label = jget<std::string>(ev.data, "label", "");
       std::string line = "  " + now + (label.empty() ? "" : " " + label);
+      // A compressed copy's passes (a pipeline's parts).
+      if (const int passes = jget(ev.data, "passes", 0); passes > 1) {
+        line += std::format(" pass {}/{} ({:.0f}% in all)",
+                            jget(ev.data, "pass", 0), passes,
+                            jget(ev.data, "estimate", 0.0) * 100);
+      }
       if (total > 0) {
         line += std::format(" {}% ({}/{})", done * 100 / total, done,
                             total);
@@ -1740,8 +1780,8 @@ main(int argc, char** argv)
   // Its working copies live on between runs: their history with them.
   cfg.keep_working_copies = true;
   cfg.with_engine = cmd == "generate" || cmd == "video" || cmd == "audio" ||
-                    cmd == "upscale" || cmd == "quantize" ||
-                    cmd == "transcribe" || cmd == "summarize" ||
+                    cmd == "quantize" || cmd == "compress" || cmd == "ops" ||
+                    find_asset_operation(cmd) != nullptr ||
                     (cmd == "ext" && (args.empty() || args[0] == "list")) ||
                     cmd == "status" || cmd == "families" ||
                     cmd == "enhance" ||
@@ -1822,10 +1862,28 @@ main(int argc, char** argv)
       for (const auto& m : f["members"]) {
         const auto state = m["state"].get<std::string>();
         const auto src = m["source"].get<std::string>();
-        std::printf("  %-9s %-6s %-40s %s\n", state.c_str(),
+        // Compressed in its download's place, or what compressing would
+        // take (DESIGN §8b).
+        std::string small;
+        if (const Json cm = jget(m, "compressed", Json()); cm.is_object()) {
+          small = std::format("  {}-bit copy (was {:.1f} GB)",
+                              jget(cm, "bits", 0),
+                              jget(cm, "original_bytes", 0.0) / 1e9);
+        } else if (const Json cp = jget(m, "compress", Json());
+                   cp.is_object()) {
+          for (const auto& w : jget(cp, "widths", Json::array())) {
+            small += std::format("  {}-bit ~{:.1f} GB", jget(w, "bits", 0),
+                                 jget(w, "bytes", 0.0) / 1e9);
+          }
+          if (small.empty()) {
+            small = "  (compress: " + jget<std::string>(cp, "why", "") +
+                    ")";
+          }
+        }
+        std::printf("  %-9s %-6s %-40s %s%s\n", state.c_str(),
                     src.empty() ? "-" : src.c_str(),
                     m["label"].get<std::string>().c_str(),
-                    m["model"].get<std::string>().c_str());
+                    m["model"].get<std::string>().c_str(), small.c_str());
       }
     }
     return 0;
@@ -1988,13 +2046,31 @@ main(int argc, char** argv)
     }
     return 0;
   }
-  if (cmd == "link" || cmd == "unlink") {
+  if (cmd == "unlink") {
+    if (args.empty()) {
+      return usage();
+    }
+    auto st = c.unlink_model(args[0]);
+    return st.ok() ? 0 : fail(st.error());
+  }
+  if (cmd == "link" || cmd == "check") {
     if (args.empty() || (cmd == "link" && args.size() < 2)) {
       return usage();
     }
-    auto st = cmd == "link" ? c.link_model(args[0], args[1])
-                            : c.unlink_model(args[0]);
-    return st.ok() ? 0 : fail(st.error());
+    auto r = cmd == "link"
+        ? c.link_model(args[0], args[1])
+        : c.check_model(args[0], args.size() > 1 ? args[1] : "");
+    if (!r.ok()) {
+      return fail(r.error());
+    }
+    print_check(*r);
+    if (cmd == "link") {
+      const bool linked = jget(*r, "linked", false);
+      std::printf("%s %s\n", linked ? "linked" : "not linked:",
+                  jget<std::string>(*r, "path", "").c_str());
+      return linked ? 0 : 1;
+    }
+    return jget(*r, "usable", false) ? 0 : 1;
   }
   if (cmd == "status") {
     // The ANE's reading is a delta: a first call starts it, a second a
@@ -3581,72 +3657,29 @@ main(int argc, char** argv)
     std::printf("%s\n", made->str().c_str());
     return 0;
   }
-  if (cmd == "upscale") {
-    // A layer's clip rendered larger, at its layer's scale (DESIGN §4f):
-    // the layer then shows the result at scale 1.
-    if (args.size() < 2) {
-      return usage();
-    }
-    auto pid = open_or_fail(c, args[0]);
-    auto aid = AssetId::parse(args[1]);
-    if (!pid.ok() || !aid) {
-      return usage();
-    }
-    UpscaleRequest req;
-    req.project = *pid;
-    req.composition = *aid;
-    for (std::size_t i = 2; i + 1 < args.size(); ++i) {
-      if (args[i] == "--layer") {
-        req.layer = layer_id(args[++i]);
-      } else if (args[i] == "--model") {
-        req.model = args[++i];
-      } else if (args[i] == "--seed") {
-        req.seed = std::atoll(args[++i].c_str());
+  if (cmd == "ops") {
+    // The ASSET OPERATIONS (DESIGN §4j) as this Mac runs them: each, what
+    // it takes, and on what model.
+    for (const auto& op : c.asset_operations_json()) {
+      std::printf("%-11s %s%s\n", jget<std::string>(op, "name", "").c_str(),
+                  jget<std::string>(op, "label", "").c_str(),
+                  jget(op, "on_layer", false) ? " (a layer's)" : "");
+      for (const auto& t : op["takes"]) {
+        const auto model = jget<std::string>(t, "model_name", "");
+        std::printf("  %-6s %-14s %s%s\n",
+                    jget<std::string>(t, "kind", "").c_str(),
+                    jget<std::string>(t, "availability", "").c_str(),
+                    model.empty() ? "-" : model.c_str(),
+                    jget(t, "ready", false) ? "" : " (not here)");
       }
     }
-    auto j = c.upscale_layer(req);
-    if (!j.ok()) {
-      return fail(j.error());
-    }
-    return follow(c, *j);
-  }
-  if (cmd == "transcribe") {
-    // A sound -- a clip's -- transcribed (DESIGN §4h): its speech and
-    // the sound events heard, summarized in a text asset, printed.
-    if (args.size() < 2) {
-      return usage();
-    }
-    auto pid = open_or_fail(c, args[0]);
-    auto aid = AssetId::parse(args[1]);
-    if (!pid.ok() || !aid) {
-      return usage();
-    }
-    std::string model, language;
-    for (std::size_t i = 2; i + 1 < args.size(); ++i) {
-      if (args[i] == "--model") {
-        model = args[++i];
-      } else if (args[i] == "--language") {
-        language = args[++i];
-      }
-    }
-    auto made = c.transcribe(*pid, *aid, model, language);
-    if (!made.ok()) {
-      return fail(made.error());
-    }
-    if (const int rc = follow(c, made->second); rc != 0) {
-      return rc;
-    }
-    auto text = c.project(*pid)->read_text(made->first);
-    if (!text.ok()) {
-      return fail(text.error());
-    }
-    std::printf("%s %s\n%s", made->first.str().c_str(), "transcript",
-                text->c_str());
     return 0;
   }
-  if (cmd == "summarize") {
-    // A clip told scene by scene, then whole (DESIGN §4i): a text asset,
-    // printed.
+  if (const AssetOperation* op = find_asset_operation(cmd)) {
+    // An ASSET OPERATION (DESIGN §4j): `transcribe`, `summarize`,
+    // `separate`, `upscale` (on a composition's --layer) -- one request
+    // whatever it is, its task followed, what it made printed: a text's
+    // words, a picture's, a clip's or a sound's file.
     if (args.size() < 2) {
       return usage();
     }
@@ -3655,28 +3688,52 @@ main(int argc, char** argv)
     if (!pid.ok() || !aid) {
       return usage();
     }
-    std::string model;
-    double every = 0;
+    Controller::AssetOpRequest req;
+    req.project = *pid;
+    req.asset = *aid;
+    req.operation = std::string(op->name);
     for (std::size_t i = 2; i + 1 < args.size(); ++i) {
       if (args[i] == "--model") {
-        model = args[++i];
+        req.model = args[++i];
+      } else if (args[i] == "--layer") {
+        req.layer = layer_id(args[++i]);
+      } else if (args[i] == "--language") {
+        req.options["language"] = args[++i];
       } else if (args[i] == "--every") {
-        every = std::atof(args[++i].c_str());
+        req.options["every"] = std::atof(args[++i].c_str());
+      } else if (args[i] == "--seed") {
+        req.options["seed"] = std::atoll(args[++i].c_str());
+      } else if (args[i] == "--split") {
+        req.options["split"] = args[++i];
       }
     }
-    auto made = c.summarize_video(*pid, *aid, model, every);
+    auto made = c.run_asset_operation(std::move(req));
     if (!made.ok()) {
       return fail(made.error());
     }
-    if (const int rc = follow(c, made->second); rc != 0) {
+    if (const int rc = follow(c, made->job); rc != 0) {
       return rc;
     }
-    auto text = c.project(*pid)->read_text(made->first);
-    if (!text.ok()) {
-      return fail(text.error());
+    project::Project* p = c.project(*pid);
+    for (std::size_t i = 0; i < made->made.size(); ++i) {
+      const AssetId id = made->made[i];
+      const std::string what = i < op->makes.size()
+                                   ? std::string(op->makes[i])
+                                   : std::string("made");
+      auto a = p->asset(id);
+      if (a.ok() && a->kind == project::AssetKind::Text) {
+        auto text = p->read_text(id);
+        if (!text.ok()) {
+          return fail(text.error());
+        }
+        std::printf("%s %s\n%s", id.str().c_str(), what.c_str(),
+                    text->c_str());
+        continue;
+      }
+      auto file = p->media_path(id);
+      std::printf("%s %s %s\n", id.str().c_str(), what.c_str(),
+                  file.ok() ? file->c_str() : "(not made)");
     }
-    std::printf("%s %s\n%s", made->first.str().c_str(), "summary",
-                text->c_str());
     return 0;
   }
   if (cmd == "history") {
@@ -4505,6 +4562,25 @@ main(int argc, char** argv)
       return usage();
     }
     auto j = c.quantize_model(args[0]);
+    if (!j.ok()) {
+      return fail(j.error());
+    }
+    return follow(c, *j);
+  }
+  if (cmd == "compress") {
+    int bits = 0;
+    for (std::size_t i = 0; i + 1 < args.size(); ++i) {
+      if (args[i] == "--bits") {
+        bits = std::atoi(args[i + 1].c_str());
+        args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
+                   args.begin() + static_cast<std::ptrdiff_t>(i) + 2);
+        break;
+      }
+    }
+    if (args.empty() || bits == 0) {
+      return usage();
+    }
+    auto j = c.compress_model(args[0], bits);
     if (!j.ok()) {
       return fail(j.error());
     }

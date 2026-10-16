@@ -6,10 +6,13 @@
 // prompt-writing skill from 3rd-party/minimax-h3, unmodified, under the
 // MiniMax H3 Community License (its LICENSE and NOTICE), and Valtz's own
 // skills, from core/resources/skills -- Qwen-Image's among them, which a
-// download of QwenLM's own rewriters replaces (Controller::skill_text).
+// download of QwenLM's own rewriters replaces (Controller::skill_text),
+// and FLUX.3 Image Klein's caption writer.
 namespace valtz::resources {
 extern const char kQwenImageT2iSkill[];
 extern const char kQwenImageEditSkill[];
+extern const char kFlux3KleinT2iSkill[];
+extern const char kFlux3KleinEditSkill[];
 extern const char kYue2SongSkill[];
 extern const char kMossTtsSkill[];
 extern const char kValtzAgentSkill[];
@@ -47,6 +50,12 @@ rewrite_prompt(std::string_view name)
   }
   if (name == "qwen-image-2.1-edit") {
     return resources::kQwenImageEditSkill;
+  }
+  if (name == "flux3-klein-t2i") {
+    return resources::kFlux3KleinT2iSkill;
+  }
+  if (name == "flux3-klein-edit") {
+    return resources::kFlux3KleinEditSkill;
   }
   if (name == "yue2-song") {
     return resources::kYue2SongSkill;

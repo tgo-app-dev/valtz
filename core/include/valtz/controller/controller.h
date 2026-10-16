@@ -40,6 +40,7 @@
 #include "valtz/base/paths.h"
 #include "valtz/base/result.h"
 #include "valtz/cache/cache-store.h"
+#include "valtz/controller/asset-ops.h"
 #include "valtz/controller/event-bus.h"
 #include "valtz/controller/job-timing.h"
 #include "valtz/controller/log-book.h"
@@ -57,6 +58,7 @@
 #include "valtz/media/pdf.h"
 #include "valtz/media/sound.h"
 #include "valtz/models/capabilities.h"
+#include "valtz/models/model-check.h"
 #include "valtz/models/tuning.h"
 #include "valtz/project/project.h"
 #include "valtz/project/workspace.h"
@@ -259,20 +261,6 @@ struct GenerateVideoRequest {
 // decides how long the song runs. The result is a derived audio asset,
 // a 16-bit WAV; the score it followed is kept with the version
 // (AssetVersion::outputs).
-// A layer's clip or picture rendered LARGER by an upscaler (DESIGN §4f):
-// what its layer shows -- a clip over its marks (FlashVSR), a picture
-// (VOSR) -- restored at its size times the layer's scale, a new asset,
-// which the layer then shows instead, its scale divided by as much: it
-// looks as it did, at the pixels it is shown at. Its crop has one key at
-// most: an upscale renders one size.
-struct UpscaleRequest {
-  ProjectId    project;
-  AssetId      composition;
-  std::string  layer;             // "" = layer 0
-  std::string  model = "auto";    // an upscaler; auto: the first that runs
-  std::int64_t seed = 0;
-};
-
 struct GenerateAudioRequest {
   ProjectId            project;
   // Pictures inline in it (U+FFFC) are dropped: a song reads the words.
@@ -472,10 +460,18 @@ public:
   // when none.
   std::string skill_text(std::string_view name) const;
   // A model kept somewhere else -- a file or folder anywhere -- linked,
-  // or the link undone (ModelStore::link).
-  Status link_model(const std::string& id,
-                    const std::filesystem::path& target);
+  // or the link undone (ModelStore::link). Its files are CHECKED first
+  // (models/model-check.h, DESIGN §8b): the model found in or around
+  // what was chosen is linked, and a folder that is another model, or
+  // not whole, is not. The check (ModelCheck::to_json), with "linked";
+  // an error only for an unknown model or a path that is not there.
+  Result<Json> link_model(const std::string& id,
+                          const std::filesystem::path& target);
   Status unlink_model(const std::string& id);
+  // A model's files checked as a link's are, without linking: `target`'s,
+  // else where it is installed.
+  Result<Json> check_model(const std::string& id,
+                           const std::filesystem::path& target = {}) const;
   // Settings > Storage: what Valtz keeps on the volume of its support
   // folder (the internal SSD), by category -- every model in the
   // models folder it manages, every project package (an open one's
@@ -925,27 +921,54 @@ public:
   Result<SplitParts> split_layer(ProjectId, AssetId,
                                  const std::string& layer,
                                  std::int64_t frame);
-  // A sound TRANSCRIBED (DESIGN §4h): a sound, a clip's sound or a
-  // composition's mix -- its speech line by line, and the sound events
-  // heard when a tagger is installed -- summarized in a new TEXT asset
-  // made from it, the job's result (its data kept beside: outputs
-  // "transcript"). The speech model named, else the best installed; the
-  // voice detector it needs. The text asset and the job.
-  Result<std::pair<AssetId, JobId>> transcribe(ProjectId, AssetId,
-                                               std::string model = {},
-                                               std::string language = {});
-  // A clip SUMMARIZED (DESIGN §4i): a clip, a timeline's picture -- read
-  // a frame every video_every() seconds at 576 x 320 at most, cut into
-  // scenes where the picture changes, each scene told in a few sentences
-  // by a vision-language model, the whole in a paragraph -- in a new TEXT
-  // asset made from it, beside it in the list, its data kept beside it
-  // (outputs "summary"). The model: the one named, else the helper when it
-  // watches video, else the best installed that does; it writes in the
-  // interface's language. `every` > 0: seconds a frame for this one, in
-  // place of the setting. The text asset and the job.
-  Result<std::pair<AssetId, JobId>> summarize_video(ProjectId, AssetId,
-                                                    std::string model = {},
-                                                    double every = 0);
+  // ---- ASSET OPERATIONS (asset-ops.h, DESIGN §4j) ----------------------
+  //
+  // What is done TO an asset with no prompt, one protocol for all: asked
+  // for by the operation's name, on the asset -- a composition, for one
+  // done to its `layer` -- by a model ("auto": the best installed, else
+  // the best downloading, its job waiting for it), with the operation's
+  // own options:
+  //   transcribe  {"language"}: a sound, a clip's sound or a composition's
+  //               mix -- its speech line by line, the sound events heard
+  //               when a tagger is installed -- in a TEXT asset (its data
+  //               in outputs "transcript"; DESIGN §4h);
+  //   summarize   {"every": seconds a frame, 0 the setting}: a clip, a
+  //               timeline's picture, cut into scenes each told by a
+  //               vision-language model -- the helper when it watches
+  //               video -- then whole, in the interface's language: a TEXT
+  //               asset (outputs "summary"; DESIGN §4i);
+  //   separate    {}: a sound -- a song, a composition's mix -- split by
+  //               a source separator into its VOCALS and its
+  //               ACCOMPANIMENT: two sounds from one job (DESIGN §4j);
+  //   upscale     {"seed"}: what a composition's layer shows -- a clip
+  //               over its marks (FlashVSR), a picture (VOSR) -- restored
+  //               at its size times the layer's scale, which the layer
+  //               then shows at scale 1: it looks as it did, at the pixels
+  //               it is shown at. Its crop has one key at most (DESIGN
+  //               §4f).
+  // One command, one task. What it makes exists from the request, named
+  // after the asset and beside it in the list (an upscale's shown in the
+  // layer once made).
+  struct AssetOpRequest {
+    ProjectId   project;
+    AssetId     asset;
+    std::string operation;
+    std::string layer;            // an operation on a layer: "" layer 0
+    std::string model = "auto";
+    Json        options = Json::object();
+  };
+  struct AssetOpResult {
+    std::vector<AssetId> made;    // in the operation's `makes` order
+    JobId                job;
+  };
+  Result<AssetOpResult> run_asset_operation(AssetOpRequest);
+  // Every operation as this Mac can run it, in a menu's order: [{"name",
+  // "label", "on_layer", "makes", "takes": [{"kind", "op", "capability",
+  // "ready" (its model is here, with what it needs beside it),
+  // "availability" (models::Availability), "model" (what Auto runs -- or,
+  // not ready, would once downloaded), "model_name", "family" (where
+  // Settings › Capabilities lists it)}]}].
+  Json asset_operations_json() const;
   // Layer FOLDERS (DESIGN §6a): `layers` gathered into a new folder
   // named `name` (none: "Folder N"), where the topmost of them is -- its
   // id. A folder's layers lie together in the stack
@@ -1137,6 +1160,16 @@ public:
   // it first and moved in whole, so a stopped one leaves nothing that
   // looks installed. Refused when it is installed already.
   Result<JobId> quantize_model(const std::string& model_id);
+  // A DOWNLOAD REPLACED BY A SMALLER COPY OF ITSELF (catalog `compress`,
+  // DESIGN §8b): its parts quantized to `bits` (8 or 4) by vpipe's
+  // model-quantize, one pass each, into <download root>/compressed/
+  // <id>-<bits>bit; the copy CHECKED as a link is, marked, and then the
+  // download deleted -- the disk it frees the point. Only Valtz's own
+  // download (not a link, not vpipe's folders), with room for both while
+  // it runs; a task of the work lane, as a quantize is. Fetching the
+  // model again brings the original back and deletes the copy. Asked
+  // again while it runs: the same job.
+  Result<JobId> compress_model(const std::string& model_id, int bits);
   void rescan_models();
 
   // ---- projects -----------------------------------------------------
@@ -1377,7 +1410,6 @@ public:
   // Define a derived audio asset -- a song, or speech when the model
   // speaks (MOSS-TTS) -- and build it.
   Result<JobId> generate_audio(GenerateAudioRequest);
-  Result<JobId> upscale_layer(UpscaleRequest);
   // Write an asset out (ExportRequest). `job.finished` carries the
   // `path` written.
   Result<JobId> export_asset(ExportRequest);
@@ -1526,6 +1558,16 @@ private:
   // A download of `model` ended: the jobs waiting for it go on (`ok`) or
   // fail (`stopped`: it was cancelled).
   void download_ended_(const std::string& model, bool ok, bool stopped);
+  // A compressed copy finished: checked, marked, put in place, and the
+  // download it replaces deleted. Its failure, in words; "" kept.
+  std::string compress_finished_(const models::ModelEntry& e, int bits,
+                                 const std::filesystem::path& staging,
+                                 const std::filesystem::path& original,
+                                 std::uint64_t* freed);
+  // What compressing a download takes at `bits` (cached).
+  models::CompressEstimate
+  compress_estimate_(const models::ModelEntry& e,
+                     const std::filesystem::path& dir, int bits) const;
   bool waiting_(JobId) const;
   // ---- the agent (agent.cc, agent-tools.cc)
   class AgentHost;
@@ -1570,7 +1612,48 @@ private:
   // id, and all of them as "tuning".
   void apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
                      const Json& t, int steps) const;
-  Result<JobId> submit_build_(ProjectId, AssetId, std::string title);
+  // `companions`: more assets the job makes, each by the output that
+  // holds it (an Output event's data "output"; JobRecord::companions).
+  Result<JobId> submit_build_(
+      ProjectId, AssetId, std::string title,
+      std::vector<std::pair<std::string, AssetId>> companions = {});
+  // The ASSET OPERATIONS' own work (run_asset_operation, in its command):
+  // each checks what it is given, picks its model, and has its assets
+  // made (make_from_).
+  Result<AssetOpResult> transcribe_(const AssetOpRequest&,
+                                    project::Project&,
+                                    const project::Asset& src);
+  Result<AssetOpResult> summarize_(const AssetOpRequest&, project::Project&,
+                                   const project::Asset& src);
+  Result<AssetOpResult> separate_(const AssetOpRequest&, project::Project&,
+                                  const project::Asset& src);
+  Result<AssetOpResult> upscale_(const AssetOpRequest&, project::Project&,
+                                 const project::Asset& comp);
+  // The model an operation runs for `cap`: the one named (installed or
+  // downloading); else `prefer` when it serves and is installed; else
+  // the best-ranked installed -- `fits` it, when given -- else the
+  // best-ranked downloading. Null: none.
+  const models::ModelEntry* operation_model_(
+      models::Capability cap, const std::string& model,
+      const models::ModelEntry* prefer = nullptr,
+      const std::function<bool(const models::ModelEntry&)>& fits = {})
+      const;
+  // What an operation makes from `src`: each a derived asset of its own
+  // recipe, beside `src` in the list when `beside`; the first is its
+  // job's asset, the rest companions by the output each holds
+  // (`output`, its recipe's param "output" too). `before` sees them
+  // defined, before the job is asked for.
+  struct OpMade {
+    std::string        name;
+    project::AssetKind kind;
+    project::Recipe    recipe;
+    std::string        output;
+  };
+  Result<AssetOpResult> make_from_(
+      ProjectId, project::Project&, const project::Asset& src,
+      std::vector<OpMade>, bool beside,
+      const std::function<void(const std::vector<AssetId>&)>& before = {},
+      const std::function<void(const std::vector<AssetId>&)>& failed = {});
   bool is_ephemeral_(ProjectId) const;
   // generate_audio's speech: `m` speaks, `words` its prompt as read.
   Result<JobId> generate_speech_(GenerateAudioRequest&,
@@ -1844,6 +1927,11 @@ private:
   mutable std::mutex                 _downloads_mu;
   std::map<std::string, JobId>       _downloads;
   std::map<JobId, Waiting>           _waiting;
+  // The models being compressed (compress_model), and what each would
+  // take at each width (capability_tree reads them often; a rescan
+  // forgets them): "<dir>|<bits>".
+  std::map<std::string, JobId>       _compressing;
+  mutable std::map<std::string, models::CompressEstimate> _compress_est;
   // A job's command (UndoLog seq), by job: what its commit joins.
   std::map<JobId, std::uint64_t>     _job_commands;
   mutable std::mutex                 _job_commands_mu;

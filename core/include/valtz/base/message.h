@@ -242,6 +242,16 @@ inline constexpr Message kNoVideoWatcher{
     "core.no_video_watcher",
     "No model here can watch a video: download Qwen3.5 9B in Settings › "
     "Capabilities › Agentic helpers."};
+inline constexpr Message kSeparateNeedsSound{
+    "core.separate_needs_sound",
+    "{name} has no sound to separate: a sound or a composition of sound "
+    "does."};
+inline constexpr Message kNoSeparator{
+    "core.no_separator",
+    "No source separator is installed: download BS-RoFormer in Settings › "
+    "Capabilities › Stem Separation."};
+inline constexpr Message kUnknownOperation{
+    "core.unknown_operation", "Valtz has no operation called {operation}."};
 inline constexpr Message kModelNotUnpacked{
     "core.model_not_unpacked",
     "{model} was downloaded but not unpacked: download it again."};
@@ -375,8 +385,90 @@ inline constexpr Message kOutputColorUnknown{
     "core.output_color_unknown", "{color} is not an output colour space."};
 inline constexpr Message kNoCamera{
     "core.no_camera", "The camera is not on, or not recording."};
+inline constexpr Message kSizeTooLarge{
+    "core.size_too_large",
+    "{model} makes pictures up to {edge} pixels a side, not {size}."};
 inline constexpr Message kNotQuantizable{
     "core.not_quantizable", "{model} is not made by quantizing."};
+// A model's files checked (models/model-check.h): a link, a compressed
+// copy, or what is installed.
+inline constexpr Message kCheckConfirmed{
+    "core.check_confirmed",
+    "This is {model} ({identity}): {size}, every weight file whole."};
+inline constexpr Message kCheckWhole{
+    "core.check_whole",
+    "Its weight files ({size}) are whole, but Valtz has nothing to tell "
+    "{model}'s apart by."};
+inline constexpr Message kCheckUnconfirmed{
+    "core.check_unconfirmed",
+    "Valtz cannot tell that this is {model}: {path} is not laid out as its "
+    "download is ({wanted}). It is used as it is."};
+inline constexpr Message kCheckNotThere{
+    "core.check_not_there",
+    "{path} does not hold {model}: no {wanted} in it, nor in the folders "
+    "inside it."};
+inline constexpr Message kCheckWrongModel{
+    "core.check_wrong_model",
+    "{path} holds {found}, not {model} ({wanted})."};
+inline constexpr Message kCheckWrongPart{
+    "core.check_wrong_part", "{path} is {found}, not {model}."};
+inline constexpr Message kCheckWrongTensors{
+    "core.check_wrong_tensors",
+    "{file} is not {model}: none of its tensors is named as {model}'s are "
+    "({wanted})."};
+inline constexpr Message kCheckNoWeights{
+    "core.check_no_weights", "{path} holds no model weights."};
+inline constexpr Message kCheckCutShort{
+    "core.check_cut_short",
+    "{file} is cut short -- {have} of {want}: an unfinished download or "
+    "copy."};
+inline constexpr Message kCheckUnreadable{
+    "core.check_unreadable", "{file} cannot be read as a {format} file."};
+inline constexpr Message kCheckPartsMissing{
+    "core.check_parts_missing",
+    "{count} of the parts {index} lists are not there: {files}."};
+inline constexpr Message kCheckTensorsMissing{
+    "core.check_tensors_missing",
+    "{count} of the tensors {index} lists are in none of its parts: the "
+    "parts are from different versions."};
+inline constexpr Message kCheckComponentMissing{
+    "core.check_component_missing",
+    "{path} has no {component} folder, which its pipeline lists."};
+inline constexpr Message kCheckFileMissing{
+    "core.check_file_missing", "{file} is not in {path}."};
+inline constexpr Message kCheckUnfinished{
+    "core.check_unfinished",
+    "{path} holds an unfinished download: {file}."};
+inline constexpr Message kCheckSeveral{
+    "core.check_several",
+    "{path} holds {count} copies of {model}: choose one of them -- {paths}."};
+inline constexpr Message kCheckFoundInside{
+    "core.check_found_inside",
+    "Found {model} in {path}, inside the folder chosen."};
+inline constexpr Message kCheckFoundAbove{
+    "core.check_found_above",
+    "Found {model} in {path}, the folder the one chosen is part of."};
+// A download replaced by a smaller copy of itself (DESIGN §8b).
+inline constexpr Message kNotCompressible{
+    "core.not_compressible", "{model} cannot be compressed."};
+inline constexpr Message kCompressBits{
+    "core.compress_bits", "A model is compressed to 8 or 4 bits."};
+inline constexpr Message kAlreadyCompressed{
+    "core.already_compressed",
+    "{model} is compressed already ({bits}-bit): download it again to "
+    "compress it otherwise."};
+inline constexpr Message kCompressNotOurs{
+    "core.compress_not_ours",
+    "{model} is used from {path}, which Valtz did not download: Valtz "
+    "compresses only its own downloads, which the copy replaces."};
+inline constexpr Message kCompressNoRoom{
+    "core.compress_no_room",
+    "Compressing {model} needs {need} free while both copies are on disk; "
+    "{free} is."};
+inline constexpr Message kCompressBadCopy{
+    "core.compress_bad_copy",
+    "The compressed copy of {model} did not pass its check, so the "
+    "download was kept: {why}"};
 inline constexpr Message kNoReferenceModel{
     "core.no_reference_model",
     "No video model that reads references is installed."};

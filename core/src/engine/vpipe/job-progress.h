@@ -67,6 +67,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -88,6 +89,10 @@ struct JobPhase {
   // What an uncounted phase has made so far, in its own measure -- a
   // song's score in tokens, the song in seconds; -1 for none.
   double        made = -1;
+  // A quantize of several passes: which one (from 1), of how many; the
+  // estimate is then the whole's.
+  int           pass = 0;
+  int           passes = 0;
 
   float fraction() const;  // done / total, -1 when indeterminate
 
@@ -118,10 +123,13 @@ public:
   // decode show only before the first frame is out.
   // `group`: an upscale's frames a group -- about what its
   // writer's count moves by (see GROUPS above).
+  // `passes`: a quantize's (several: a pipeline compressed part by
+  // part), counted as one.
   JobProgress(std::uint64_t after, bool download, bool exporting = false,
-              bool restoring = false, std::uint64_t group = 0)
+              bool restoring = false, std::uint64_t group = 0,
+              int passes = 0)
       : _after(after), _download(download), _export(exporting),
-        _restore(restoring), _group(group)
+        _restore(restoring), _group(group), _passes(passes)
   {
   }
 
@@ -143,12 +151,15 @@ private:
   void track_groups_(const JobPhase& p, double now);
   bool grouped_(const JobPhase& p) const;
   void estimate_(JobPhase& p, double now) const;
+  void across_passes_(JobPhase& p, bool quantizing) const;
 
   std::uint64_t _after;
   bool          _download;
   bool          _export;
   bool          _restore;
   std::uint64_t _group;
+  int           _passes = 0;
+  std::set<std::uint64_t> _quantized;  // the quantizers' reports seen
   bool          _alone = false;
   bool          _past = false;  // denoised
   std::uint64_t _followed = 0;  // its id

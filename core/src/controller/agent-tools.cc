@@ -3738,12 +3738,16 @@ Controller::AgentHost::t_describe_clip(Session& s, Step&, const Json& args,
     }
   }
   if (!text) {
-    VALTZ_ASSIGN(auto made, _c.summarize_video(s.project, *asset));
-    text = made.first;
-    if (!wait_job_(s, made.second)) {
+    Controller::AssetOpRequest req;
+    req.project = s.project;
+    req.asset = *asset;
+    req.operation = "summarize";
+    VALTZ_ASSIGN(auto made, _c.run_asset_operation(std::move(req)));
+    text = made.made.front();
+    if (!wait_job_(s, made.job)) {
       return make_error(Code::Cancelled, "stopped");
     }
-    const auto rec = _c._jobs.get(made.second);
+    const auto rec = _c._jobs.get(made.job);
     if (rec && rec->state != JobState::Finished) {
       return make_error(Code::Engine, rec->message.empty()
                                           ? std::string("it could not be "

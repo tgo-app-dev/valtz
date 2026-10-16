@@ -848,6 +848,32 @@
         }
       }
     },
+    "%@-bit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 位"
+          }
+        }
+      }
+    },
+    "%@-bit · about %@, %@ freed" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@-bit · about %2$@, %3$@ freed"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 位 · 约 %@，腾出 %@"
+          }
+        }
+      }
+    },
     "%@. Click to see it on the stage; drag it into the text to mention it." : {
       "localizations" : {
         "zh-Hans" : {
@@ -1130,6 +1156,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "30 分钟"
+          }
+        }
+      }
+    },
+    "4096 pixels on the long side: up to 16 times Standard's pixels, and an hour or more to make" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "长边 4096 像素：像素最多为“标准”的 16 倍，生成需要一小时或更久"
+          }
+        }
+      }
+    },
+    "4K" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "4K"
           }
         }
       }
@@ -1512,6 +1558,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "约 %lld 秒：模型据此调整语速"
+          }
+        }
+      }
+    },
+    "About 1024 × 1024 pixels" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "约 1024 × 1024 像素"
+          }
+        }
+      }
+    },
+    "About 1536 × 1536 pixels" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "约 1536 × 1536 像素"
+          }
+        }
+      }
+    },
+    "About 512 × 512 pixels: the quickest" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "约 512 × 512 像素：最快"
           }
         }
       }
@@ -2481,6 +2557,26 @@
         }
       }
     },
+    "At 4 bits its results lose some detail and follow the prompt a little less closely." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "4 位时，结果会损失一些细节，对提示词的遵循也会稍弱。"
+          }
+        }
+      }
+    },
+    "At 8 bits its results are very close to the original's." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "8 位时，结果与原模型非常接近。"
+          }
+        }
+      }
+    },
     "At most %@: a song past it is cut there" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3102,6 +3198,16 @@
         }
       }
     },
+    "Calibrating" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在校准"
+          }
+        }
+      }
+    },
     "Camera" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3298,6 +3404,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "声道"
+          }
+        }
+      }
+    },
+    "Check Files" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "检查文件"
           }
         }
       }
@@ -3700,6 +3816,130 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "合成 · 声音"
+          }
+        }
+      }
+    },
+    "Compress" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "压缩"
+          }
+        }
+      }
+    },
+    "Compress %@ to %@-bit?" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Compress %1$@ to %2$@-bit?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将 %@ 压缩为 %@ 位？"
+          }
+        }
+      }
+    },
+    "Compress to 8 or 4 bits to free disk space: the download is replaced by a smaller copy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "压缩为 8 位或 4 位以腾出磁盘空间：下载的文件将被更小的副本替换"
+          }
+        }
+      }
+    },
+    "Compress to free disk space" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "压缩以腾出磁盘空间"
+          }
+        }
+      }
+    },
+    "Compressed to %@ bits in place of its %@ download" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Compressed to %1$@ bits in place of its %2$@ download"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已压缩为 %@ 位，替换了 %@ 的下载文件"
+          }
+        }
+      }
+    },
+    "Compressed to %@ bits: download the original again to have it back" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已压缩为 %@ 位：重新下载原模型即可恢复"
+          }
+        }
+      }
+    },
+    "Compressed to %@-bit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已压缩为 %@ 位"
+          }
+        }
+      }
+    },
+    "Compressed to %@-bit: %@ freed." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Compressed to %1$@-bit: %2$@ freed."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已压缩为 %@ 位：腾出 %@。"
+          }
+        }
+      }
+    },
+    "Compressing, part %@ of %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Compressing, part %1$@ of %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在压缩，第 %@ 部分，共 %@ 部分"
+          }
+        }
+      }
+    },
+    "Compressing…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在压缩…"
           }
         }
       }
@@ -4694,6 +4934,16 @@
         }
       }
     },
+    "Download BS-RoFormer in Settings › Capabilities › Stem Separation to separate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "要分离，请在“设置 › 能力 › Stem Separation”中下载 BS-RoFormer"
+          }
+        }
+      }
+    },
     "Download Qwen3-ASR and Silero VAD in Settings › Capabilities › Listening to transcribe" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4714,12 +4964,32 @@
         }
       }
     },
+    "Download a model for it in Settings › Capabilities" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请在“设置 › 能力”中下载所需的模型"
+          }
+        }
+      }
+    },
     "Download into the models folder Valtz manages" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "下载到 Valtz 管理的模型文件夹"
+          }
+        }
+      }
+    },
+    "Download the Original Again (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "重新下载原模型（%@）"
           }
         }
       }
@@ -7109,6 +7379,16 @@
         }
       }
     },
+    "In vpipe's models folder: Valtz compresses only the models it downloaded, replacing the download" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "位于 vpipe 的模型文件夹：Valtz 只压缩自己下载的模型，并替换其下载文件"
+          }
+        }
+      }
+    },
     "Incoming Connections" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7249,6 +7529,22 @@
         }
       }
     },
+    "Its %@ download is replaced by a copy of about %@, made here and checked before the download is deleted. %@ To have the original back, download it again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Its %1$@ download is replaced by a copy of about %2$@, made here and checked before the download is deleted. %3$@ To have the original back, download it again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "其 %@ 的下载文件将被约 %@ 的副本替换；副本在本机制作，检查无误后才会删除下载文件。%@若要恢复原模型，重新下载即可。"
+          }
+        }
+      }
+    },
     "Its %@ pages are saved as a file each, numbered after the name: Name-1, Name-2, …" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7355,6 +7651,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "它的回合在这台 Mac 的助手上运行——或者按照“分流策略”对“智能体回合”的设置，在机群成员的助手上运行：一台 Mac 提供模型所需的内存，另一台用 GPU 生成图片。成员在回合之间把对话保留在内存中，时长按这里的设置。"
+          }
+        }
+      }
+    },
+    "Its voice and its accompaniment, each into a sound of its own" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将其中的人声与伴奏分别存为独立的声音素材"
           }
         }
       }
@@ -7879,6 +8185,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已链接"
+          }
+        }
+      }
+    },
+    "Linked from elsewhere: Valtz compresses only the models it downloaded, replacing the download" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "链接自其他位置：Valtz 只压缩自己下载的模型，并替换其下载文件"
           }
         }
       }
@@ -10936,6 +11252,16 @@
         }
       }
     },
+    "Quantizing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在量化"
+          }
+        }
+      }
+    },
     "Quantizing…" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12334,6 +12660,56 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已发送到 %@"
+          }
+        }
+      }
+    },
+    "Separate Vocals and Accompaniment" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分离人声与伴奏"
+          }
+        }
+      }
+    },
+    "Separate audio" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分离音频"
+          }
+        }
+      }
+    },
+    "Separated %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分离于 %@"
+          }
+        }
+      }
+    },
+    "Separating" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在分离"
+          }
+        }
+      }
+    },
+    "Separating %@: its vocals and accompaniment go to Assets." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在分离 %@：人声与伴奏将放入素材。"
           }
         }
       }
@@ -14174,6 +14550,16 @@
         }
       }
     },
+    "The engine here cannot compress models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此处的引擎无法压缩模型"
+          }
+        }
+      }
+    },
     "The file as it is, nothing re-encoded" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14240,6 +14626,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "图像已生成并保存在项目中，但无法显示：%@"
+          }
+        }
+      }
+    },
+    "The layer's picture or clip restored at the size it is shown" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按显示尺寸修复放大图层中的图片或片段"
           }
         }
       }
@@ -15428,6 +15824,16 @@
         }
       }
     },
+    "Upscaled %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放大于 %@"
+          }
+        }
+      }
+    },
     "Upscaled: the layer shows the result at its own pixels" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15540,11 +15946,22 @@
       }
     },
     "Use it from where it already is" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "直接使用已有位置的文件"
+          }
+        }
+      }
+    },
+    "Use it from where it already is — its files checked first" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "直接使用已有位置的文件——先检查其文件"
           }
         }
       }
@@ -15858,6 +16275,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在查看 %@"
+          }
+        }
+      }
+    },
+    "Vocals and accompaniment" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "人声与伴奏"
           }
         }
       }
@@ -16869,6 +17296,23 @@
         }
       }
     },
+    "core.already_compressed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is compressed already ({bits}-bit): download it again to compress it otherwise."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 已经压缩过了（{bits} 位）：若要以其他方式压缩，请重新下载。"
+          }
+        }
+      }
+    },
     "core.asset_has_no_content" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -17022,6 +17466,312 @@
         }
       }
     },
+    "core.check_component_missing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{path} has no {component} folder, which its pipeline lists."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 缺少 {component} 文件夹，而其管线列出了它。"
+          }
+        }
+      }
+    },
+    "core.check_confirmed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This is {model} ({identity}): {size}, every weight file whole."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这是 {model}（{identity}）：{size}，每个权重文件都完整。"
+          }
+        }
+      }
+    },
+    "core.check_cut_short" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} is cut short -- {have} of {want}: an unfinished download or copy."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 不完整——只有 {have}，应为 {want}：下载或复制未完成。"
+          }
+        }
+      }
+    },
+    "core.check_file_missing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} is not in {path}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 中没有 {file}。"
+          }
+        }
+      }
+    },
+    "core.check_found_above" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Found {model} in {path}, the folder the one chosen is part of."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在 {path} 中找到了 {model}，所选文件夹是它的一部分。"
+          }
+        }
+      }
+    },
+    "core.check_found_inside" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Found {model} in {path}, inside the folder chosen."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在所选文件夹内的 {path} 中找到了 {model}。"
+          }
+        }
+      }
+    },
+    "core.check_no_weights" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{path} holds no model weights."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 中没有模型权重。"
+          }
+        }
+      }
+    },
+    "core.check_not_there" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{path} does not hold {model}: no {wanted} in it, nor in the folders inside it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 中没有 {model}：其中及其内的文件夹里都没有 {wanted}。"
+          }
+        }
+      }
+    },
+    "core.check_parts_missing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{count} of the parts {index} lists are not there: {files}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{index} 列出的分片中有 {count} 个不在：{files}。"
+          }
+        }
+      }
+    },
+    "core.check_several" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{path} holds {count} copies of {model}: choose one of them -- {paths}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 中有 {count} 份 {model}：请选择其中一份——{paths}。"
+          }
+        }
+      }
+    },
+    "core.check_tensors_missing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{count} of the tensors {index} lists are in none of its parts: the parts are from different versions."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{index} 列出的张量中有 {count} 个不在任何分片里：这些分片来自不同版本。"
+          }
+        }
+      }
+    },
+    "core.check_unconfirmed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Valtz cannot tell that this is {model}: {path} is not laid out as its download is ({wanted}). It is used as it is."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 无法确认这是 {model}：{path} 的结构与其下载不同（{wanted}）。将按原样使用。"
+          }
+        }
+      }
+    },
+    "core.check_unfinished" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{path} holds an unfinished download: {file}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 中有未完成的下载：{file}。"
+          }
+        }
+      }
+    },
+    "core.check_unreadable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} cannot be read as a {format} file."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 无法作为 {format} 文件读取。"
+          }
+        }
+      }
+    },
+    "core.check_whole" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Its weight files ({size}) are whole, but Valtz has nothing to tell {model}'s apart by."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "其权重文件（{size}）都完整，但 Valtz 无法据此确认这是 {model}。"
+          }
+        }
+      }
+    },
+    "core.check_wrong_model" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{path} holds {found}, not {model} ({wanted})."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 中是 {found}，不是 {model}（{wanted}）。"
+          }
+        }
+      }
+    },
+    "core.check_wrong_part" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{path} is {found}, not {model}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 是 {found}，不是 {model}。"
+          }
+        }
+      }
+    },
+    "core.check_wrong_tensors" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} is not {model}: none of its tensors is named as {model}'s are ({wanted})."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 不是 {model}：其中没有一个张量的命名与 {model} 相符（{wanted}）。"
+          }
+        }
+      }
+    },
     "core.clip_has_no_sound" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -17035,6 +17785,74 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“{name}”没有声音，声音合成无从取用。"
+          }
+        }
+      }
+    },
+    "core.compress_bad_copy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The compressed copy of {model} did not pass its check, so the download was kept: {why}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 的压缩副本未通过检查，因此保留了下载文件：{why}"
+          }
+        }
+      }
+    },
+    "core.compress_bits" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A model is compressed to 8 or 4 bits."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型只能压缩为 8 位或 4 位。"
+          }
+        }
+      }
+    },
+    "core.compress_no_room" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Compressing {model} needs {need} free while both copies are on disk; {free} is."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "压缩 {model} 时两份副本同时在磁盘上，需要 {need} 可用空间；当前可用 {free}。"
+          }
+        }
+      }
+    },
+    "core.compress_not_ours" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is used from {path}, which Valtz did not download: Valtz compresses only its own downloads, which the copy replaces."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 使用的是 {path} 中的文件，并非 Valtz 下载：Valtz 只压缩自己下载的模型，压缩副本会替换其下载。"
           }
         }
       }
@@ -18025,6 +18843,23 @@
         }
       }
     },
+    "core.no_separator" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No source separator is installed: download BS-RoFormer in Settings › Capabilities › Stem Separation."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未安装音源分离模型：请在“设置 › 能力 › Stem Separation”中下载 BS-RoFormer。"
+          }
+        }
+      }
+    },
     "core.no_speech_model" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18174,6 +19009,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "{name} 按原样显示：只有合成才有图层和外观。请修改它的编辑副本。"
+          }
+        }
+      }
+    },
+    "core.not_compressible" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} cannot be compressed."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 无法压缩。"
           }
         }
       }
@@ -18518,6 +19370,40 @@
         }
       }
     },
+    "core.separate_needs_sound" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{name} has no sound to separate: a sound or a composition of sound does."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{name} 没有可分离的声音：声音素材或声音合成才有。"
+          }
+        }
+      }
+    },
+    "core.size_too_large" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} makes pictures up to {edge} pixels a side, not {size}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 生成的图片每边最多 {edge} 像素，无法生成 {size}。"
+          }
+        }
+      }
+    },
     "core.sound_only_composition" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18752,6 +19638,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "未知模型：{model}。"
+          }
+        }
+      }
+    },
+    "core.unknown_operation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Valtz has no operation called {operation}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 没有名为 {operation} 的操作。"
           }
         }
       }

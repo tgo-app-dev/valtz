@@ -2,6 +2,8 @@
 
 #include "valtz/models/capabilities.h"
 #include "valtz/models/hardware.h"
+#include "valtz/models/model-check.h"
+#include "valtz/models/model-store.h"
 #include "valtz/models/tuning.h"
 
 #include <format>
@@ -20,6 +22,90 @@ box(std::uint32_t gb)
   hw.chip = "test";
   hw.ram_bytes = std::uint64_t{gb} << 30;
   return hw;
+}
+
+// A safetensors file as model-fetch writes it: its header, then every
+// tensor's bytes -- or `cut` of them short, as a copy stopped midway.
+void
+write_safetensors(const std::filesystem::path& f,
+                  const std::vector<std::pair<std::string,
+                                              std::vector<int>>>& tensors,
+                  std::size_t cut = 0)
+{
+  Json h = Json::object();
+  std::uint64_t off = 0;
+  for (const auto& [name, shape] : tensors) {
+    std::uint64_t n = 2;
+    for (int d : shape) {
+      n *= static_cast<std::uint64_t>(d);
+    }
+    h[name] = {{"dtype", "BF16"}, {"shape", shape},
+               {"data_offsets", {off, off + n}}};
+    off += n;
+  }
+  std::string text = h.dump();
+  text.append((8 - text.size() % 8) % 8, ' ');
+  std::filesystem::create_directories(f.parent_path());
+  std::ofstream out(f, std::ios::binary);
+  std::uint64_t len = text.size();
+  for (int i = 0; i < 8; ++i) {
+    out.put(static_cast<char>((len >> (8 * i)) & 0xff));
+  }
+  out << text << std::string(off - std::min<std::uint64_t>(off, cut), '\0');
+}
+
+// A diffusers pipeline's folder, as Krea 2's download lays it out (its
+// pipeline and DiT named `pipeline` / `dit`).
+void
+fake_pipeline(const std::filesystem::path& dir,
+              const std::string& pipeline = "Krea2Pipeline",
+              const std::string& dit = "Krea2Transformer2DModel")
+{
+  std::filesystem::create_directories(dir / "transformer");
+  std::ofstream(dir / "model_index.json") << Json{
+      {"_class_name", pipeline},
+      {"transformer", {"diffusers", dit}},
+      {"text_encoder", {"transformers", "Qwen3VLModel"}},
+      {"vae", {"diffusers", "AutoencoderKLQwenImage"}},
+      {"scheduler", Json::array({nullptr, nullptr})}}.dump();
+  std::ofstream(dir / "transformer" / "config.json")
+      << Json{{"_class_name", dit}}.dump();
+  write_safetensors(dir / "transformer" / "dit-00001-of-00002.safetensors",
+                    {{"blocks.0.attn.to_q.weight", {256, 256}},
+                     {"blocks.0.norm.weight", {256}}});
+  write_safetensors(dir / "transformer" / "dit-00002-of-00002.safetensors",
+                    {{"blocks.1.attn.to_q.weight", {256, 256}}});
+  std::ofstream(dir / "transformer" /
+                "diffusion_pytorch_model.safetensors.index.json")
+      << Json{{"weight_map",
+               {{"blocks.0.attn.to_q.weight",
+                 "dit-00001-of-00002.safetensors"},
+                {"blocks.0.norm.weight", "dit-00001-of-00002.safetensors"},
+                {"blocks.1.attn.to_q.weight",
+                 "dit-00002-of-00002.safetensors"}}}}.dump();
+  write_safetensors(dir / "text_encoder" / "model.safetensors",
+                    {{"model.embed_tokens.weight", {512, 64}},
+                     {"model.layers.0.mlp.up_proj.weight", {128, 64}}});
+  write_safetensors(dir / "vae" / "diffusion_pytorch_model.safetensors",
+                    {{"decoder.conv_in.weight", {16, 16, 3, 3}}});
+}
+
+// The keys of a check's notes, in order.
+std::vector<std::string>
+note_keys(const ModelCheck& c)
+{
+  std::vector<std::string> out;
+  for (const auto& n : c.notes) {
+    out.push_back(jget<std::string>(n.message, "key", ""));
+  }
+  return out;
+}
+
+bool
+has_key(const ModelCheck& c, std::string_view key)
+{
+  const auto ks = note_keys(c);
+  return std::ranges::find(ks, key) != ks.end();
 }
 
 void
@@ -213,10 +299,10 @@ TEST(models, auto_order_is_catalog_data)
   CHECK((c->auto_order("image", "generate") ==
          std::vector<std::string>{"krea2-turbo", "qwen-image-2.1-turbo",
                                   "qwen-image-2.1", "z-image-turbo",
-                                  "flux2-klein-9b"}));
+                                  "flux3-klein", "flux2-klein-9b"}));
   CHECK((c->auto_order("image", "edit") ==
          std::vector<std::string>{"qwen-image-2.1", "qwen-image-2.1-turbo",
-                                  "flux2-klein-9b"}));
+                                  "flux3-klein", "flux2-klein-9b"}));
   CHECK((c->auto_order("video", "generate") ==
          std::vector<std::string>{"minimax-h3-fl2va"}));
   CHECK((c->auto_order("video", "edit") ==
@@ -1133,4 +1219,194 @@ TEST(models, memory_bandwidth_by_chip)
   // A later generation, as M5's of its tier.
   CHECK(memory_bandwidth_of_chip("Apple M7 Pro", 24) == 307);
   CHECK(memory_bandwidth_of_chip("Intel(R) Core(TM) i9", 0) == 0);
+}
+
+// A folder offered for a model -- a link -- CHECKED (DESIGN §8b): the
+// model found in or around it, the right one, whole. What a person picks
+// by mistake -- the parent, a part, another model, the other partition,
+// a copy cut short, a shard missing -- is found and said.
+TEST(models, a_linked_folder_is_checked)
+{
+  namespace fs = std::filesystem;
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const auto* krea = c->find("krea2-turbo");
+  REQUIRE(krea);
+  const auto root = test::temp_dir("models-check");
+  const fs::path pipe = root / "krea" / "Krea-2-Turbo";
+  fake_pipeline(pipe);
+
+  ModelCheck ok = check_model(*krea, pipe, &*c);
+  CHECK(ok.usable && ok.confirmed);
+  CHECK(ok.path == pipe);
+  CHECK(ok.identity == "Krea2Pipeline");
+  CHECK(ok.weight_files == 4);
+  CHECK(ok.moved.empty());
+  CHECK(note_keys(ok).front() == "core.check_confirmed");
+  CHECK(ok.to_json()["notes"][0]["level"] == "info");
+
+  // Its parent chosen, or a part of it, or one of its files: the
+  // pipeline.
+  ModelCheck down = check_model(*krea, root, &*c);
+  CHECK(down.usable && down.path == pipe && down.moved == "down");
+  CHECK(has_key(down, "core.check_found_inside"));
+  ModelCheck up = check_model(*krea, pipe / "transformer", &*c);
+  CHECK(up.usable && up.path == pipe && up.moved == "up");
+  CHECK(has_key(up, "core.check_found_above"));
+  CHECK(check_model(*krea, pipe / "transformer" /
+                               "dit-00001-of-00002.safetensors", &*c)
+            .path == pipe);
+
+  // Another model: refused, named.
+  const fs::path klein = root / "bfl" / "FLUX.2-klein-9B";
+  fake_pipeline(klein, "Flux2KleinPipeline", "Flux2Transformer2DModel");
+  ModelCheck wrong = check_model(*krea, klein, &*c);
+  CHECK(!wrong.usable);
+  CHECK(note_keys(wrong).front() == "core.check_wrong_model");
+  CHECK(jget<std::string>(wrong.error()["args"], "found", "") ==
+        "Flux2KleinPipeline");
+  // Two copies inside: which one is the person's to say -- unless one is
+  // named as the repo is.
+  const fs::path both = root / "both";
+  fake_pipeline(both / "a");
+  fake_pipeline(both / "b");
+  CHECK(note_keys(check_model(*krea, both, &*c)).front() ==
+        "core.check_several");
+  fake_pipeline(both / "Krea-2-Turbo");
+  CHECK(check_model(*krea, both, &*c).path == both / "Krea-2-Turbo");
+  // Nothing of it anywhere in it.
+  const fs::path empty = root / "empty";
+  fs::create_directories(empty / "x");
+  CHECK(note_keys(check_model(*krea, empty, &*c)).front() ==
+        "core.check_not_there");
+
+  // Not whole: a part cut short, a shard missing, a tensor of the index
+  // in none, a component missing, a download unfinished.
+  const fs::path broken = root / "broken" / "Krea-2-Turbo";
+  fake_pipeline(broken);
+  write_safetensors(broken / "vae" / "diffusion_pytorch_model.safetensors",
+                    {{"decoder.conv_in.weight", {16, 16, 3, 3}}}, 100);
+  fs::remove(broken / "transformer" / "dit-00002-of-00002.safetensors");
+  write_safetensors(broken / "transformer" /
+                        "dit-00001-of-00002.safetensors",
+                    {{"blocks.0.attn.to_q.weight", {256, 256}}});
+  fs::remove_all(broken / "text_encoder");
+  std::ofstream(broken / "transformer" / "dit-3.safetensors.part") << "x";
+  ModelCheck bad = check_model(*krea, broken, &*c);
+  CHECK(!bad.usable);
+  for (const char* k : {"core.check_cut_short", "core.check_parts_missing",
+                        "core.check_tensors_missing",
+                        "core.check_component_missing",
+                        "core.check_unfinished"}) {
+    CHECK(has_key(bad, k));
+  }
+  // A Comfy-Org repack: not as its download is, run as it is.
+  const fs::path repack = root / "repack";
+  write_safetensors(repack / "diffusion_models" / "krea2.safetensors",
+                    {{"x.weight", {64, 64}}});
+  ModelCheck rp = check_model(*krea, repack, &*c);
+  CHECK(rp.usable && !rp.confirmed);
+  CHECK(note_keys(rp).front() == "core.check_unconfirmed");
+
+  // One repo, two models: FL2VA is not its Ref2VA; the repo chosen, its
+  // own folder in it.
+  const auto* fl = c->find("minimax-h3-fl2va");
+  REQUIRE(fl);
+  const fs::path h3 = root / "MiniMax-H3";
+  fake_pipeline(h3 / "FL2VA", "MiniMaxH3Pipeline", "MiniMaxH3DiTModel");
+  fake_pipeline(h3 / "Ref2VA", "MiniMaxH3Pipeline", "MiniMaxH3DiTModel");
+  CHECK(note_keys(check_model(*fl, h3 / "Ref2VA", &*c)).front() ==
+        "core.check_wrong_part");
+  ModelCheck repo = check_model(*fl, h3, &*c);
+  CHECK(repo.usable && repo.path == h3 / "FL2VA");
+
+  // A LoRA: a file whose tensors are a LoRA's -- or the largest in a
+  // folder of them; a TAE's are not.
+  const auto* lora = c->find("minimax-h3-turbo-4step");
+  REQUIRE(lora);
+  const fs::path loras = root / "loras";
+  write_safetensors(loras / "turbo.safetensors",
+                    {{"blocks.0.attn.to_q.lora_A.weight", {8, 64}},
+                     {"blocks.0.attn.to_q.lora_B.weight", {64, 8}}});
+  write_safetensors(loras / "small.safetensors",
+                    {{"x.lora_A.weight", {2, 2}}});
+  ModelCheck lc = check_model(*lora, loras, &*c);
+  CHECK(lc.usable && lc.confirmed);
+  CHECK(lc.path == loras / "turbo.safetensors");
+  write_safetensors(root / "tae.safetensors",
+                    {{"decoder.1.weight", {8, 8}}});
+  CHECK(note_keys(check_model(*lora, root / "tae.safetensors", &*c))
+            .front() == "core.check_wrong_tensors");
+}
+
+// A COMPRESSED copy (DESIGN §8b): what each width would take, from the
+// headers -- a part's matrices at bits/8 + 4/64 bytes a weight, its norms
+// and embeddings as they are, the rest hard-linked -- and the store
+// finding the copy, marked, before the roots.
+TEST(models, a_compressed_copy_is_estimated_and_found)
+{
+  namespace fs = std::filesystem;
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const auto* krea = c->find("krea2-turbo");
+  REQUIRE(krea);
+  REQUIRE(krea->compress.size() == 2);
+  CHECK(krea->compress[0].target == "dit");
+  CHECK(krea->compress[1].target == "text_encoder");
+  const auto* klein = c->find("flux2-klein-9b");
+  REQUIRE(klein && klein->compress.size() == 2);
+  CHECK(jget(klein->compress[0].options_4bit, "awq", false));
+  // Only the models whose engine runs the copy.
+  CHECK(c->find("yue2-3b")->compress.empty());
+
+  const auto root = test::temp_dir("models-compress");
+  const fs::path dir = root / krea->hf_path;
+  fake_pipeline(dir);
+  CHECK(compress_part_folder(dir, "dit") == "transformer");
+  CHECK(compress_part_folder(dir, "text_encoder") == "text_encoder");
+  const auto e8 = estimate_compressed(dir, krea->compress, 8);
+  const auto e4 = estimate_compressed(dir, krea->compress, 4);
+  CHECK(e8.original > 0);
+  CHECK(e4.total < e8.total && e8.total < e8.original);
+  // The DiT's two 256 x 256 at 8 bits; its norm, the encoder's
+  // embeddings as they are; its 128 x 64 at 8 bits.
+  const std::uint64_t q8 = 2 * 256 * 256 * 17 / 16 + 256 * 2 +
+                           512 * 64 * 2 + 128 * 64 * 17 / 16;
+  const std::uint64_t meta = e8.written - q8;
+  CHECK(meta < 2000);  // the two configs and the index, as they are
+
+  // The store: a copy marked for it, before the roots; one marked for
+  // another model, or not marked, is nothing.
+  ModelStore store({root});
+  CHECK(store.info(*krea).compressed_bits == 0);
+  const fs::path copy = store.compressed_dir(krea->id, 4);
+  CHECK(copy == root / "compressed" / "krea2-turbo-4bit");
+  fake_pipeline(copy);
+  store.rescan();
+  CHECK(store.info(*krea).dir == dir);
+  std::ofstream(copy / ModelStore::kCompressedMarker)
+      << Json{{"model", "qwen-image-2.1"}, {"bits", 4}}.dump();
+  store.rescan();
+  CHECK(store.info(*krea).dir == dir);
+  std::ofstream(copy / ModelStore::kCompressedMarker)
+      << Json{{"model", krea->id}, {"bits", 4}}.dump();
+  store.rescan();
+  const auto info = store.info(*krea);
+  CHECK(info.compressed_bits == 4);
+  CHECK(info.dir == copy);
+  CHECK(info.state == InstallState::Installed);
+
+  // A compress block on a single-file model, or a part with no target,
+  // is not taken.
+  Json one = {{"models", Json::array(
+                             {{{"id", "v"}, {"hf_path", "o/v"},
+                               {"file", "v.safetensors"},
+                               {"compress", {{"parts", Json::array(
+                                   {{{"target", "dit"}}})}}}}})}};
+  CHECK(!Catalog::parse(one).ok());
+  Json bare = {{"models", Json::array(
+                              {{{"id", "v"}, {"hf_path", "o/v"},
+                                {"compress", {{"parts", Json::array(
+                                    {Json::object()})}}}}})}};
+  CHECK(!Catalog::parse(bare).ok());
 }

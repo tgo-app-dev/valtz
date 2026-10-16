@@ -228,6 +228,107 @@ TEST(media, a_sound_is_heard_as_one_channel)
   fs::remove_all(dir);
 }
 
+// A separator's sound (DESIGN §4j): any sound as TWO channels at its
+// rate -- a mono one on both sides -- written as a float WAV; and its
+// sources written as they stream out, nothing clipped past full scale.
+TEST(media, a_sound_is_heard_as_two_channels_and_written_unclipped)
+{
+  const auto dir = fs::temp_directory_path() / "valtz-stereo-test";
+  fs::create_directories(dir);
+  // A mono 48 kHz tone, a second.
+  const auto in = dir / "mono.wav";
+  {
+    const std::uint32_t rate = 48000, n = 48000;
+    std::ofstream f(in, std::ios::binary);
+    auto u32 = [&](std::uint32_t v) { f.write((const char*)&v, 4); };
+    auto u16 = [&](std::uint16_t v) { f.write((const char*)&v, 2); };
+    f.write("RIFF", 4);
+    u32(36 + n * 2);
+    f.write("WAVEfmt ", 8);
+    u32(16);
+    u16(1);
+    u16(1);
+    u32(rate);
+    u32(rate * 2);
+    u16(2);
+    u16(16);
+    f.write("data", 4);
+    u32(n * 2);
+    for (std::uint32_t i = 0; i < n; ++i) {
+      const auto v = static_cast<std::int16_t>(
+          8000 * std::sin(2 * M_PI * 440.0 * i / rate));
+      f.write((const char*)&v, 2);
+    }
+  }
+  // A float WAV's samples, interleaved, and its channel count.
+  auto read_float = [](const fs::path& p, int* channels, int* rate) {
+    std::ifstream f(p, std::ios::binary);
+    std::vector<char> b((std::istreambuf_iterator<char>(f)),
+                        std::istreambuf_iterator<char>());
+    std::vector<float> out;
+    for (std::size_t at = 12; at + 8 <= b.size();) {
+      std::uint32_t len = 0;
+      std::memcpy(&len, b.data() + at + 4, 4);
+      if (std::memcmp(b.data() + at, "fmt ", 4) == 0) {
+        std::uint16_t tag = 0, ch = 0;
+        std::memcpy(&tag, b.data() + at + 8, 2);
+        std::memcpy(&ch, b.data() + at + 10, 2);
+        std::memcpy(rate, b.data() + at + 12, 4);
+        *channels = tag == 3 ? ch : -1;
+      }
+      if (std::memcmp(b.data() + at, "data", 4) == 0) {
+        out.resize(len / 4);
+        std::memcpy(out.data(), b.data() + at + 8, out.size() * 4);
+        break;
+      }
+      at += 8 + len + (len & 1);
+    }
+    return out;
+  };
+  const auto two = dir / "two.wav";
+  auto secs = media::stereo_sound(in, two, 44100);
+  REQUIRE_OK(secs);
+  CHECK(std::abs(*secs - 1.0) < 0.01);
+  int ch = 0, rate = 0;
+  auto s = read_float(two, &ch, &rate);
+  CHECK(ch == 2);
+  CHECK(rate == 44100);
+  REQUIRE(s.size() > 2 * 40000);
+  float peak = 0;
+  for (std::size_t i = 0; i + 1 < s.size(); i += 2) {
+    CHECK(std::abs(s[i] - s[i + 1]) < 1e-4f);  // both sides alike
+    peak = std::max(peak, std::abs(s[i]));
+  }
+  CHECK(peak > 0.15f && peak < 0.35f);
+  auto info = media::probe_file(two);
+  REQUIRE_OK(info);
+  CHECK(info->type == media::MediaType::Audio);
+
+  // Written as it comes, planar pieces: past full scale kept as it is.
+  const auto out = dir / "loud.wav";
+  {
+    media::FloatWav w;
+    REQUIRE_OK(w.open(out, 2, 44100));
+    const std::vector<float> a = {1.5f, -2.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+    REQUIRE_OK(w.append_planar(a.data(), 3));    // L 1.5 -2 .25, R .5 .75 1
+    REQUIRE_OK(w.append_interleaved(a.data(), 3));
+    CHECK(w.frames() == 6);
+    REQUIRE_OK(w.close());
+  }
+  auto l = read_float(out, &ch, &rate);
+  REQUIRE(l.size() == 12);
+  CHECK(l[0] == 1.5f);
+  CHECK(l[1] == 0.5f);
+  CHECK(l[2] == -2.0f);
+  CHECK(l[5] == 1.0f);
+  CHECK(l[6] == 1.5f);
+  CHECK(l[7] == -2.0f);
+  auto loud = media::probe_file(out);
+  REQUIRE_OK(loud);
+  CHECK(loud->type == media::MediaType::Audio);
+  fs::remove_all(dir);
+}
+
 // A clip's picture and sound, written apart, joined: the video passed
 // through, a 16-bit WAV made AAC at its own rate -- and AS LONG AS IT
 // IS. (Telling the encoder the WAV's 16-bit format while the reader hands

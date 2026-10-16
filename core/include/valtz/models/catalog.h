@@ -40,6 +40,7 @@ enum class Capability : std::uint8_t {
   TextToSpeech,    // speech from text, a voice cloned (MOSS-TTS)
   Transcribe,      // speech to text, sound events heard (Qwen3-ASR)
   VideoSummary,    // a clip told scene by scene (a VLM: Qwen3.5)
+  AudioSeparate,   // a song split into its sources (BS-RoFormer)
 };
 
 inline constexpr Capability kAllCapabilities[] = {
@@ -51,7 +52,7 @@ inline constexpr Capability kAllCapabilities[] = {
   Capability::Caption,       Capability::AlphaOutput,
   Capability::AudioOutput,   Capability::TextToAudio,
   Capability::TextToSpeech,  Capability::Transcribe,
-  Capability::VideoSummary,
+  Capability::VideoSummary,  Capability::AudioSeparate,
 };
 
 const char* to_str(Capability);
@@ -118,6 +119,28 @@ struct ModelEntry {
   std::string              quantize_from;
   int                      quantize_bits = 0;
   int                      quantize_group = 0;
+  // COMPRESSIBLE (catalog `compress`: {"parts": [{"target", "options",
+  // "options_4bit"}]}): a download of it can be replaced by a copy
+  // quantized to 8 or 4 bits, to free disk (Controller::compress_model,
+  // DESIGN §8b). Each part is a vpipe model-quantize pass, in order, the
+  // first over the download, each next over the one before: `target`
+  // the component ("dit", "text_encoder"), `options` the stage's own
+  // keys at any width, `options_4bit` those at 4 bits only -- vpipe's
+  // own recipes (prepare-klein-9b-4bit's AWQ, H3's quant_modulation).
+  // Only models whose engine runs the quantized copy have one.
+  struct CompressPart {
+    std::string target;
+    Json        options = Json::object();
+    Json        options_4bit = Json::object();
+  };
+  std::vector<CompressPart> compress;
+  // What its files ARE, for a folder or file offered for it -- a link,
+  // a compressed copy -- to be checked against (catalog `check`;
+  // models/model-check.h): `is` {"<file>.json": "<name>" | [names]} --
+  // the class, model type or architecture that JSON file names --
+  // `files` paths that must be there, `tensors` words some tensor name
+  // of a single-file model holds ("lora").
+  Json                     check = Json::object();
 
   bool has(Capability c) const;
   int rank_in(Capability c) const;
@@ -144,6 +167,11 @@ struct Family {
   std::vector<std::string> features;
   std::vector<Member>      members;
 };
+
+// The longest side a picture model makes, by its engine block
+// (`engine.vpipe.max_edge`: FLUX.3 Image Klein's 4096); 0 when it says
+// nothing -- the size is then the engine's to refuse.
+int max_edge(const ModelEntry& e);
 
 // The capabilities that make a feature: video-gen is text- or
 // image-to-video, video-edit reference-to-video, and so on.

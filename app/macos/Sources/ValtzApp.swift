@@ -1936,9 +1936,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         try? await Task.sleep(for: .milliseconds(600))
                         let p = step.split(separator: ":").map(String.init)
                         var arg = p.count > 1 ? p[1] : ""
-                        // "newest-capture": the last capture made; "transcribe:<id>"
-                // a sound or a clip transcribed, its text printed;
-                // "summarize:<id>" a clip summarized, likewise.
+                        // "newest-capture": the last capture made.
                         if arg == "newest-capture",
                            let c = m.assets.filter(\.isCapture)
                                .max(by: { $0.created < $1.created }) {
@@ -1962,48 +1960,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 m.setActive(a)
                             }
                         case "stage": m.dropAssetOnStage(arg)
-                        // Transcribed (DESIGN §4h): the request, then --
-                        // its task done -- the transcript's words.
-                        case "transcribe":
-                            if let a = m.assets.first(where: { $0.id == arg }) {
-                                let before = Set(m.assets.map(\.id))
-                                m.transcribe(a)
-                                for _ in 0..<1200 {
-                                    try? await Task.sleep(for: .milliseconds(100))
-                                    m.reloadAssets()
-                                    if let t = m.assets.first(where: {
-                                        !before.contains($0.id) && $0.kind == "text"
-                                            && $0.head > 0
-                                    }) {
-                                        let words = (t.text ?? "")
-                                            .replacingOccurrences(of: "\n", with: " | ")
-                                        print("snapshot: transcribed asset=\(t.id) name=\(t.name) text=\(words)")
-                                        break
-                                    }
-                                }
+                        // An ASSET OPERATION from the row's menu (DESIGN
+                        // §4j): "transcribe:<id>", "summarize:<id>",
+                        // "separate:<id>" -- the request, then, its task
+                        // done, what it made: a transcript's or a
+                        // summary's words; a separation's sounds.
+                        case "transcribe", "summarize", "separate":
+                            guard let a = m.assets.first(where: { $0.id == arg }),
+                                  let op = m.operation(p[0]) else {
+                                print("snapshot: \(p[0]) offered=\(m.operation(p[0]) != nil) asset=\(arg) -")
+                                break
                             }
-                        // Summarized (DESIGN §4i): the request, then --
-                        // its task done -- the summary's words, and what
-                        // the clip's Information links to.
-                        case "summarize":
-                            if let a = m.assets.first(where: { $0.id == arg }) {
-                                let before = Set(m.assets.map(\.id))
-                                m.summarize(a)
-                                for _ in 0..<3000 {
-                                    try? await Task.sleep(for: .milliseconds(100))
-                                    m.reloadAssets()
-                                    if let t = m.assets.first(where: {
-                                        !before.contains($0.id) && $0.kind == "text"
-                                            && $0.head > 0
-                                    }) {
-                                        let words = (t.text ?? "")
-                                            .replacingOccurrences(of: "\n", with: " | ")
-                                        let from = t.recipe?.inputs?.first {
-                                            $0.role == "source" }?.asset ?? "-"
-                                        print("snapshot: summarized asset=\(t.id) name=\(t.name) from=\(from) text=\(words)")
-                                        break
-                                    }
+                            let ready = op.take(a.kind)?.ready == true
+                            let items = m.operations(for: a).map(\.name)
+                                .joined(separator: ",")
+                            let made = m.perform(op, on: a)
+                            print("snapshot: operation \(op.name) on=\(a.kind) ready=\(ready) menu=\(items) made=\(made.count) tasks=\(made.map { m.task(of: $0)?.badge ?? "-" }.joined(separator: ","))")
+                            let limit = p[0] == "transcribe" ? 1200 : 3000
+                            for _ in 0..<limit where !made.isEmpty {
+                                try? await Task.sleep(for: .milliseconds(100))
+                                m.reloadAssets()
+                                let done = made.compactMap { id in
+                                    m.assets.first { $0.id == id && $0.head > 0 }
                                 }
+                                guard done.count == made.count else { continue }
+                                if op.name == "separate" {
+                                    let list = done.map { d in
+                                        "\(d.id):\(d.name):\(String(format: "%.2f", d.info?.seconds ?? 0))s"
+                                    }.joined(separator: ",")
+                                    print("snapshot: separated from=\(a.id) made=\(list) folder=\(done.map { $0.folder ?? "" }.joined(separator: ","))")
+                                    break
+                                }
+                                let t = done[0]
+                                let words = (t.text ?? "")
+                                    .replacingOccurrences(of: "\n", with: " | ")
+                                if op.name == "transcribe" {
+                                    print("snapshot: transcribed asset=\(t.id) name=\(t.name) text=\(words)")
+                                } else {
+                                    let from = t.recipe?.inputs?.first {
+                                        $0.role == "source" }?.asset ?? "-"
+                                    print("snapshot: summarized asset=\(t.id) name=\(t.name) from=\(from) text=\(words)")
+                                }
+                                break
                             }
                         // A single click on a row: the asset VIEWED on
                         // the stage ("view:<id>"); "unview" the list
@@ -3905,6 +3903,103 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 m.openCapabilities(family: fam)
                 try? await Task.sleep(for: .milliseconds(800))
             }
+            // Capabilities' models (DESIGN §8b), in turn (";" between):
+            // "link:<id>=<path>" (the link menu's file or folder chosen),
+            // "check:<id>" (Check Files), "unlink:<id>", "ask:<id>:<bits>"
+            // (a width of the compress menu: its alert open),
+            // "answer:compress|cancel" (its buttons), "compress:<id>:<bits>"
+            // (unasked), "wait:<s>" (until no compress runs, s at most),
+            // "sleep:<s>" (held, for a capture by window id) --
+            // each printing `snapshot: models <step> row=state/source/bits/
+            // why check=<notes> compress=<note> job=<phase>`.
+            if settings, let spec = env["VALTZ_SNAPSHOT_MODELS"],
+               let m = model {
+                try? await Task.sleep(for: .milliseconds(1200))
+                var last = ""
+                @MainActor
+                func member(_ id: String) -> CapabilityTree.Member? {
+                    m.capabilityTree?.families.flatMap(\.members)
+                        .first { $0.model == id }
+                }
+                @MainActor
+                func running() -> JobInfo? {
+                    m.jobs.values.first {
+                        $0.purpose == "compress"
+                            && ($0.state == "queued" || $0.state == "running")
+                    }
+                }
+                for step in spec.split(separator: ";").map(String.init) {
+                    let parts = step.split(separator: ":", maxSplits: 1)
+                        .map(String.init)
+                    let verb = parts.first ?? ""
+                    let arg = parts.count > 1 ? parts[1] : ""
+                    let idBits = arg.split(separator: ":").map(String.init)
+                    switch verb {
+                    case "link":
+                        let lp = arg.split(separator: "=", maxSplits: 1)
+                            .map(String.init)
+                        if lp.count == 2 {
+                            last = lp[0]
+                            m.linkModel(lp[0], to: URL(fileURLWithPath: lp[1]))
+                        }
+                    case "check":
+                        last = arg
+                        m.checkModel(arg)
+                    case "unlink":
+                        last = arg
+                        m.unlinkModel(arg)
+                    case "ask":
+                        if idBits.count == 2, let mm = member(idBits[0]) {
+                            last = idBits[0]
+                            m.compressAsk = (mm, Int(idBits[1]) ?? 8)
+                        }
+                    case "answer":
+                        if arg == "compress", let ask = m.compressAsk {
+                            last = ask.member.model
+                            m.compress(model: ask.member.model,
+                                       bits: ask.bits)
+                        }
+                        m.compressAsk = nil
+                    case "compress":
+                        if idBits.count == 2 {
+                            last = idBits[0]
+                            m.compress(model: idBits[0],
+                                       bits: Int(idBits[1]) ?? 8)
+                        }
+                    case "sleep":
+                        try? await Task.sleep(
+                            for: .seconds(Double(arg) ?? 1))
+                    case "wait":
+                        let until = Date().addingTimeInterval(
+                            Double(arg) ?? 60)
+                        try? await Task.sleep(for: .milliseconds(500))
+                        while running() != nil, Date() < until {
+                            try? await Task.sleep(for: .milliseconds(500))
+                        }
+                    default:
+                        break
+                    }
+                    try? await Task.sleep(for: .milliseconds(700))
+                    let r = member(last)
+                    let row = r.map {
+                        "\($0.state)/\($0.source)/"
+                            + "\($0.compressed.map { String($0.bits) } ?? "-")/"
+                            + "\($0.compress?.why ?? "none")"
+                    } ?? "-"
+                    let check = m.modelChecks[last]?.notes
+                        .map { "\($0.level):\($0.text)" }
+                        .joined(separator: " | ") ?? "-"
+                    let note = m.compressNotes[last]
+                        .map { "\($0.level):\($0.text)" } ?? "-"
+                    let job = running().map {
+                        "\($0.phase?.caption(kind: .image) ?? $0.state)"
+                    } ?? "-"
+                    FileHandle.standardError.write(Data(
+                        ("snapshot: models \(step) row=\(row) "
+                         + "ask=\(m.compressAsk != nil) check=\(check) "
+                         + "compress=\(note) job=\(job)\n").utf8))
+                }
+            }
             // A gated model's Download (Capabilities): its sheet opened,
             // a token typed if given (never downloaded here), the sheet
             // drawn to <snapshot>-gated.png.
@@ -4370,6 +4465,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     + "installed=\(models) ready=\(ready) "
                     + "zoom=\(m.currentViewer.zoomText) fit=\(m.currentViewer.fitting) actual=\(m.currentViewer.isActualSize) "
                     + "output=\(m.dimensions.width)x\(m.dimensions.height) "
+                    + "sizes=\(m.sizeClasses.map { "\($0)" }.joined(separator: ",")) "
+                    + "sizeShown=\(m.sizeChoice.map { "\($0)" } ?? "custom") "
                     + "custom=\(m.customSize != nil) orientation=\(m.shownOrientation.rawValue) "
                     + "ratioShown=\(m.showsAspectRatio) "
                     + "marked=\(m.promptMarked.replacingOccurrences(of: "\u{FFFC}", with: "[*]").replacingOccurrences(of: " ", with: "_")) "

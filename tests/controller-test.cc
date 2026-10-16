@@ -1099,6 +1099,36 @@ public:
     sink(end);
   }
 
+  // Several results, each the output it is (an Output event's data
+  // "output": a separation's sources), then the end.
+  void
+  finish_outputs(JobId id,
+                 const std::vector<std::pair<std::string, fs::path>>& outs)
+  {
+    auto it = find(id);
+    auto sink = it->sink;
+    const fs::path dir = it->spec.output_dir;
+    _jobs.erase(it);
+    for (const auto& [name, file] : outs) {
+      const fs::path out = dir / std::format(
+          "{}-{}{}", id.str(), name, file.extension().string());
+      fs::copy_file(file, out, fs::copy_options::overwrite_existing);
+      engine::JobEvent ev;
+      ev.job = id;
+      ev.kind = engine::JobEventKind::Output;
+      ev.output = out;
+      if (auto info = media::probe_file(out); info.ok()) {
+        ev.output_info = *info;
+      }
+      ev.data = {{"output", name}};
+      sink(ev);
+    }
+    engine::JobEvent end;
+    end.job = id;
+    end.kind = engine::JobEventKind::Finished;
+    sink(end);
+  }
+
   // Ended with nothing to hand over: a download done.
   void
   end(JobId id)
@@ -1604,6 +1634,391 @@ TEST(controller, tasks_queue_and_are_withdrawn_by_undo)
 // download failing or stopped, it fails saying so; cancelled, it waits
 // no more. What is neither here nor coming is refused as before. Auto
 // and a preset's LoRA count what is on its way.
+// The ASSET OPERATIONS (DESIGN §4j) share one protocol: listed with what
+// each takes, asked for by name -- refused, by name, on what it does not
+// take -- and a SEPARATION is one task making two sounds: each output
+// committed to its own asset, beside the song; rebuilt alone, one keeps
+// its own and drops the other's.
+TEST(controller, a_song_is_split_into_its_voice_and_accompaniment)
+{
+  auto root = test::temp_dir("ctl-separate");
+  // BS-RoFormer's vocals model, "installed": its checkpoint where it is
+  // looked for.
+  const fs::path repo = root / "models" / "pcunwa" /
+                        "BS-Roformer-Resurrection";
+  fs::create_directories(repo);
+  std::ofstream(repo / "BS-Roformer-Resurrection.ckpt") << "w";
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "S.valtz", "separate");
+  REQUIRE_OK(pid);
+
+  // Listed: each operation, what it takes, whether it runs here.
+  const Json ops = ctl.asset_operations_json();
+  std::vector<std::string> names;
+  Json separate;
+  for (const auto& o : ops) {
+    names.push_back(jget<std::string>(o, "name", ""));
+    if (names.back() == "separate") {
+      separate = o;
+    }
+  }
+  CHECK((names == std::vector<std::string>{"transcribe", "summarize",
+                                           "separate", "upscale"}));
+  REQUIRE(separate.is_object());
+  CHECK(!jget(separate, "on_layer", true));
+  CHECK(separate["makes"] == Json::array({"vocals", "accompaniment"}));
+  REQUIRE(separate["takes"].size() == 1);
+  const Json take = separate["takes"][0];
+  CHECK(jget<std::string>(take, "kind", "") == "audio");
+  CHECK(jget(take, "ready", false));
+  CHECK(jget<std::string>(take, "model", "") == "bs-roformer-vocals");
+  CHECK(jget<std::string>(take, "family", "") == "separate");
+  CHECK(find_asset_operation("upscale")->on_layer);
+  CHECK(asset_operation_of(engine::kOpSeparateAudio)->name == "separate");
+  CHECK(asset_operation_of(engine::kOpUpscaleImage)->name == "upscale");
+
+  auto folder = ctl.create_folder(*pid, "Songs");
+  REQUIRE_OK(folder);
+  REQUIRE(write_tone(root / "song.wav", 1, 440, 0.5));
+  auto song = import_and_wait(ctl, *pid, root / "song.wav");
+  REQUIRE(song);
+  REQUIRE_OK(ctl.move_asset(*pid, *song, *folder));
+  REQUIRE(write_png(root / "pic.png", 16, 16, {0x40, 0x80, 0xc0, 0xff}));
+  auto pic = import_and_wait(ctl, *pid, root / "pic.png");
+  REQUIRE(pic);
+  auto ask = [&](AssetId a, const char* op) {
+    Controller::AssetOpRequest req;
+    req.project = *pid;
+    req.asset = a;
+    req.operation = op;
+    return ctl.run_asset_operation(std::move(req));
+  };
+  // A picture is not separated; nothing is "whittled".
+  auto refused = ask(*pic, "separate");
+  REQUIRE(!refused.ok());
+  CHECK(refused.error().key == msg::kSeparateNeedsSound.key);
+  auto unknown = ask(*song, "whittle");
+  REQUIRE(!unknown.ok());
+  CHECK(unknown.error().key == msg::kUnknownOperation.key);
+
+  // One task, two sounds, beside the song.
+  auto split = ask(*song, "separate");
+  REQUIRE_OK(split);
+  REQUIRE(split->made.size() == 2);
+  project::Project* p = ctl.project(*pid);
+  auto voice = p->asset(split->made[0]);
+  auto rest = p->asset(split->made[1]);
+  REQUIRE_OK(voice);
+  REQUIRE_OK(rest);
+  CHECK(voice->name.ends_with(" vocals"));
+  CHECK(rest->name.ends_with(" accompaniment"));
+  CHECK(voice->name.starts_with(p->asset(*song)->name));
+  CHECK(voice->folder == *folder);
+  CHECK(rest->folder == *folder);
+  const Json ts = ctl.tasks();
+  REQUIRE(ts.size() == 1);
+  CHECK(jget<std::string>(ts[0], "operation", "") == "separate");
+  CHECK(ts[0]["assets"] == Json::array({voice->id.str(), rest->id.str()}));
+  const engine::JobSpec* spec = engine->spec(split->job);
+  REQUIRE(spec != nullptr);
+  CHECK(spec->op == engine::kOpSeparateAudio);
+  CHECK(jget<std::string>(spec->params, "checkpoint", "") ==
+        "BS-Roformer-Resurrection.ckpt");
+  CHECK(jget<std::string>(spec->params, "output", "") == "vocals");
+  REQUIRE(spec->inputs.size() == 1);
+  CHECK(spec->inputs[0].role == "source");
+
+  // Each output into its own asset, as the model names it.
+  REQUIRE(write_tone(root / "voice.wav", 1, 880, 0.3));
+  REQUIRE(write_tone(root / "band.wav", 1, 220, 0.3));
+  engine->finish_outputs(split->job, {{"vocals", root / "voice.wav"},
+                                      {"accompaniment", root / "band.wav"}});
+  CHECK(ctl.tasks().empty());
+  auto vv = p->version(voice->id);
+  auto rv = p->version(rest->id);
+  REQUIRE_OK(vv);
+  REQUIRE_OK(rv);
+  CHECK(vv->number == 1);
+  CHECK(rv->number == 1);
+  CHECK(vv->content != rv->content);
+  CHECK(jget<std::string>(rv->executed, "output", "") == "accompaniment");
+  CHECK(p->recipe(rv->recipe)->id == rest->recipe);
+
+  // The accompaniment rebuilt alone: its own kept, the voice dropped.
+  auto again = ctl.build_asset(*pid, rest->id);
+  REQUIRE_OK(again);
+  engine->finish_outputs(*again, {{"vocals", root / "band.wav"},
+                                  {"accompaniment", root / "voice.wav"}});
+  CHECK(p->version(rest->id)->number == 2);
+  CHECK(p->version(voice->id)->number == 1);
+
+  // Undone, the request goes: both sounds with it.
+  REQUIRE_OK(ctl.undo(*pid));
+  REQUIRE_OK(ctl.undo(*pid));
+  CHECK(!p->asset(voice->id).ok());
+  CHECK(!p->asset(rest->id).ok());
+}
+
+namespace {
+
+// A diffusers pipeline's folder as a download lays it out: its pipeline
+// and DiT named, a DiT and an encoder of one real (tiny) safetensors
+// each.
+void
+fake_pipeline(const fs::path& dir, const std::string& pipeline,
+              const std::string& dit)
+{
+  auto st = [](const fs::path& f, const std::string& tensor) {
+    fs::create_directories(f.parent_path());
+    std::string h = Json{{tensor, {{"dtype", "BF16"},
+                                   {"shape", {64, 64}},
+                                   {"data_offsets", {0, 8192}}}}}.dump();
+    h.append((8 - h.size() % 8) % 8, ' ');
+    std::ofstream out(f, std::ios::binary);
+    for (int i = 0; i < 8; ++i) {
+      out.put(static_cast<char>((h.size() >> (8 * i)) & 0xff));
+    }
+    out << h << std::string(8192, '\0');
+  };
+  fs::create_directories(dir / "transformer");
+  std::ofstream(dir / "model_index.json") << Json{
+      {"_class_name", pipeline}, {"transformer", {"diffusers", dit}},
+      {"text_encoder", {"transformers", "Qwen3VLModel"}}}.dump();
+  std::ofstream(dir / "transformer" / "config.json")
+      << Json{{"_class_name", dit}}.dump();
+  st(dir / "transformer" / "model.safetensors", "blocks.0.to_q.weight");
+  st(dir / "text_encoder" / "model.safetensors", "layers.0.q_proj.weight");
+}
+
+}
+
+// A DOWNLOAD REPLACED BY A SMALLER COPY OF ITSELF (DESIGN §8b): Valtz's
+// own download only -- not vpipe's, not a link -- its parts quantized in
+// passes, the copy CHECKED before the download is deleted (a bad one
+// keeps it, a stopped one leaves nothing), found where the model is,
+// and gone once the download is fetched again. And a LINK is checked
+// first: another model's folder refused, a parent's the model in it.
+TEST(controller, a_download_is_compressed_and_a_link_checked)
+{
+  auto root = test::temp_dir("ctl-compress");
+  const fs::path models = root / "models";
+  const fs::path vpipe = root / "vpipe-models";
+  const fs::path krea = models / "krea" / "Krea-2-Turbo";
+  fake_pipeline(krea, "Krea2Pipeline", "Krea2Transformer2DModel");
+  fake_pipeline(vpipe / "Qwen" / "Qwen-Image-2.1", "QwenImage21Pipeline",
+                "QwenImage21Transformer2DModel");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models, vpipe};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto member = [&](const std::string& id) {
+    const Json tree = ctl.capability_tree();
+    for (const auto& f : tree["families"]) {
+      for (const auto& m : f["members"]) {
+        if (m["model"] == id) {
+          return m;
+        }
+      }
+    }
+    return Json();
+  };
+
+  // What each width would take; why not, for vpipe's files.
+  Json m = member("krea2-turbo");
+  CHECK(jget(m["compress"], "ready", false));
+  REQUIRE(m["compress"]["widths"].size() == 2);
+  CHECK(m["compress"]["widths"][0]["bits"] == 8);
+  CHECK(jget<std::uint64_t>(m["compress"]["widths"][1], "bytes", 0) <
+        jget<std::uint64_t>(m["compress"]["widths"][0], "bytes", 0));
+  CHECK(member("qwen-image-2.1")["compress"]["why"] == "vpipe");
+  CHECK(ctl.compress_model("qwen-image-2.1", 8).error().key ==
+        msg::kCompressNotOurs.key);
+  CHECK(ctl.compress_model("krea2-turbo", 6).error().key ==
+        msg::kCompressBits.key);
+  CHECK(ctl.compress_model("yue2-3b", 8).error().key ==
+        msg::kNotCompressible.key);
+  CHECK(ctl.compress_model("z-image-turbo", 8).error().key ==
+        msg::kModelNotInstalled.key);
+
+  // Asked: one job, its passes the catalog's parts.
+  auto job = ctl.compress_model("krea2-turbo", 8);
+  REQUIRE_OK(job);
+  auto again = ctl.compress_model("krea2-turbo", 8);
+  REQUIRE_OK(again);
+  CHECK(*again == *job);
+  const auto* spec = engine->spec(*job);
+  REQUIRE(spec != nullptr);
+  CHECK(spec->op == engine::kOpQuantizeModel);
+  CHECK(spec->model.dir == krea);
+  CHECK(jget(spec->params, "bits", 0) == 8);
+  REQUIRE(spec->params["parts"].size() == 2);
+  CHECK(spec->params["parts"][0]["target"] == "dit");
+  CHECK(spec->params["parts"][1]["target"] == "text_encoder");
+  const fs::path staging = jget<std::string>(spec->params, "output", "");
+  CHECK(staging.filename() == ".krea2-turbo-8bit.compressing");
+  CHECK(ctl.jobs().get(*job)->purpose == "compress");
+
+  // vpipe's passes write it: checked, marked, in place -- the download
+  // and the folders it leaves empty deleted, the passes before the last.
+  fake_pipeline(staging, "Krea2Pipeline", "Krea2Transformer2DModel");
+  fs::create_directories(staging.string() + ".pass1");
+  engine->end(*job);
+  const fs::path dest = models / "compressed" / "krea2-turbo-8bit";
+  CHECK(ctl.jobs().get(*job)->state == JobState::Finished);
+  CHECK(fs::exists(dest / models::ModelStore::kCompressedMarker));
+  CHECK(!fs::exists(staging));
+  CHECK(!fs::exists(staging.string() + ".pass1"));
+  CHECK(!fs::exists(krea));
+  CHECK(!fs::exists(models / "krea"));
+  m = member("krea2-turbo");
+  CHECK(m["compressed"]["bits"] == 8);
+  CHECK(jget<std::uint64_t>(m["compressed"], "original_bytes", 0) > 0);
+  CHECK(m["compress"]["why"] == "compressed");
+  CHECK(m["path"] == dest.string());
+  CHECK(ctl.compress_model("krea2-turbo", 4).error().key ==
+        msg::kAlreadyCompressed.key);
+  auto checked = ctl.check_model("krea2-turbo");
+  REQUIRE_OK(checked);
+  CHECK(jget(*checked, "confirmed", false));
+
+  // Fetched again: the original back, the copy gone.
+  auto dl = ctl.download_model("krea2-turbo");
+  REQUIRE_OK(dl);
+  fake_pipeline(krea, "Krea2Pipeline", "Krea2Transformer2DModel");
+  engine->end(*dl);
+  CHECK(!fs::exists(dest));
+  m = member("krea2-turbo");
+  CHECK(m["compressed"].is_null());
+  CHECK(m["path"] == krea.string());
+
+  // A copy that fails its check keeps the download; a stopped one leaves
+  // nothing.
+  auto bad = ctl.compress_model("krea2-turbo", 4);
+  REQUIRE_OK(bad);
+  const fs::path staging4 =
+      jget<std::string>(engine->spec(*bad)->params, "output", "");
+  fake_pipeline(staging4, "Flux2KleinPipeline", "Flux2Transformer2DModel");
+  engine->end(*bad);
+  CHECK(ctl.jobs().get(*bad)->state == JobState::Failed);
+  CHECK(fs::exists(krea));
+  CHECK(!fs::exists(staging4));
+  CHECK(!fs::exists(models / "compressed" / "krea2-turbo-4bit"));
+  auto stop = ctl.compress_model("krea2-turbo", 4);
+  REQUIRE_OK(stop);
+  fs::create_directories(staging4);
+  REQUIRE_OK(engine->cancel(*stop));
+  CHECK(!fs::exists(staging4));
+  CHECK(fs::exists(krea));
+
+  // klein at 4 bits: vpipe's own recipe, calibrated (AWQ); at 8, plain.
+  const fs::path elsewhere = root / "elsewhere";
+  fake_pipeline(elsewhere / "bfl" / "FLUX.2-klein-9B", "Flux2KleinPipeline",
+                "Flux2Transformer2DModel");
+  // A link, checked: Krea 2's folder is not klein; the folder holding
+  // klein's, the one in it.
+  auto wrong = ctl.link_model("flux2-klein-9b", krea);
+  REQUIRE_OK(wrong);
+  CHECK(!jget(*wrong, "linked", true));
+  CHECK((*wrong)["notes"][0]["key"] == "core.check_wrong_model");
+  CHECK(member("flux2-klein-9b")["state"] == "missing");
+  auto good = ctl.link_model("flux2-klein-9b", elsewhere);
+  REQUIRE_OK(good);
+  CHECK(jget(*good, "linked", false));
+  CHECK((*good)["path"] == (elsewhere / "bfl" / "FLUX.2-klein-9B").string());
+  CHECK(member("flux2-klein-9b")["source"] == "link");
+  CHECK(member("flux2-klein-9b")["compress"]["why"] == "link");
+  CHECK(ctl.compress_model("flux2-klein-9b", 4).error().key ==
+        msg::kCompressNotOurs.key);
+  REQUIRE_OK(ctl.unlink_model("flux2-klein-9b"));
+  fake_pipeline(models / "black-forest-labs" / "FLUX.2-klein-9B",
+                "Flux2KleinPipeline", "Flux2Transformer2DModel");
+  ctl.rescan_models();
+  auto k4 = ctl.compress_model("flux2-klein-9b", 4);
+  REQUIRE_OK(k4);
+  const Json parts = engine->spec(*k4)->params["parts"];
+  CHECK(jget(parts[0]["options"], "awq", false));
+  CHECK(jget(parts[1]["options"], "awq_clip", false));
+  REQUIRE_OK(engine->cancel(*k4));
+  auto k8 = ctl.compress_model("flux2-klein-9b", 8);
+  REQUIRE_OK(k8);
+  CHECK(!engine->spec(*k8)->params["parts"][0]["options"].contains("awq"));
+  REQUIRE_OK(engine->cancel(*k8));
+}
+
+// FLUX.3 Image Klein makes pictures up to 4096 a side (catalog
+// `max_edge`, which the app reads to offer its 4K size): asked for that,
+// the job is; past it, refused by name before any graph.
+TEST(controller, flux3_klein_makes_up_to_4096_a_side)
+{
+  auto root = test::temp_dir("ctl-flux3");
+  const fs::path models = root / "models";
+  fake_pipeline(models / "black-forest-labs" / "flux-3-image-klein",
+                "Flux3Pipeline", "Flux3Transformer2DModel");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  const auto* flux3 = ctl.catalog().find("flux3-klein");
+  REQUIRE(flux3);
+  CHECK(models::max_edge(*flux3) == 4096);
+  CHECK(Json(*flux3)["max_edge"] == 4096);
+  CHECK(!Json(*ctl.catalog().find("krea2-turbo")).contains("max_edge"));
+  auto pid = ctl.create_project(root / "F.valtz", "flux3");
+  REQUIRE_OK(pid);
+  GenerateImageRequest req;
+  req.project = *pid;
+  req.prompt = "A wide-angle photograph of a bison in steam";
+  req.model = "flux3-klein";
+  req.width = 4096;
+  req.height = 4096;
+  auto job = ctl.generate_image(req);
+  REQUIRE_OK(job);
+  const auto* spec = engine->spec(*job);
+  REQUIRE(spec != nullptr);
+  CHECK(spec->model.id == "flux3-klein");
+  CHECK(jget(spec->params, "width", 0) == 4096);
+  req.width = 5000;
+  auto big = ctl.generate_image(req);
+  REQUIRE(!big.ok());
+  CHECK(big.error().key == msg::kSizeTooLarge.key);
+  CHECK(big.error().message.find("4096") != std::string::npos);
+}
+
 TEST(controller, a_job_waits_only_for_what_it_needs_downloading)
 {
   auto root = test::temp_dir("ctl-downloads");
@@ -1879,7 +2294,7 @@ TEST(controller, a_gated_download_takes_a_token_kept_nowhere)
   Controller& ctl = **made;
   const std::string token = "hf_secretTokenForTheTest";
 
-  // Both gated models are said to be, in Capabilities' tree.
+  // The gated models are said to be, in Capabilities' tree.
   int gated = 0;
   for (const auto& f : jget(ctl.capability_tree(), "families",
                             Json::array())) {
@@ -1887,11 +2302,12 @@ TEST(controller, a_gated_download_takes_a_token_kept_nowhere)
       const auto id = jget<std::string>(m, "model", "");
       if (jget(m, "gated", false)) {
         ++gated;
-        CHECK(id == "krea2-turbo" || id == "flux2-klein-9b");
+        CHECK(id == "krea2-turbo" || id == "flux2-klein-9b" ||
+              id == "flux3-klein");
       }
     }
   }
-  CHECK(gated == 2);
+  CHECK(gated == 3);
 
   // What everything the controller says carries: never the token.
   auto drain = [&] {
@@ -4433,10 +4849,17 @@ TEST(composition, a_clip_is_read_sparse_for_a_summary)
   CHECK(colours[3][2] > 200 && colours[3][0] < 50);  // blue
 
   // A picture is not summarized; a clip is, by a model that watches.
-  auto pic = ctl.summarize_video(pid, *red);
+  auto summarize = [&](AssetId a) {
+    Controller::AssetOpRequest req;
+    req.project = pid;
+    req.asset = a;
+    req.operation = "summarize";
+    return ctl.run_asset_operation(std::move(req));
+  };
+  auto pic = summarize(*red);
   REQUIRE(!pic.ok());
   CHECK(pic.error().key == msg::kSummarizeNeedsPicture.key);
-  auto none = ctl.summarize_video(pid, *tl);
+  auto none = summarize(*tl);
   REQUIRE(!none.ok());
   CHECK(none.error().key == msg::kNoVideoWatcher.key);
 
@@ -5983,13 +6406,14 @@ TEST(controller, upscalers_run_as_settings_have_them)
   media::Crop twice;
   twice.scale_x = twice.scale_y = 2;
   REQUIRE_OK(ctl.set_crop(*pid, *still, twice, placed->second));
-  UpscaleRequest up;
+  Controller::AssetOpRequest up;
   up.project = *pid;
-  up.composition = *still;
+  up.asset = *still;
   up.layer = placed->second;
-  auto job = ctl.upscale_layer(up);
-  REQUIRE_OK(job);
-  const engine::JobSpec* spec = engine->spec(*job);
+  up.operation = "upscale";
+  auto upscaled = ctl.run_asset_operation(up);
+  REQUIRE_OK(upscaled);
+  const engine::JobSpec* spec = engine->spec(upscaled->job);
   REQUIRE(spec != nullptr);
   CHECK(spec->op == engine::kOpUpscaleImage);
   const Json t = jget(spec->params, "tuning", Json());

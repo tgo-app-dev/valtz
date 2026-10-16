@@ -1753,7 +1753,9 @@ private struct DrawerSettings: View {
         }
         GridRow {
             label("Size", row: SettingsRow.size)
-            selector("Size", SizeClass.allCases.map { ($0, $0.label) },
+            selector("Size", model.sizeClasses.map { ($0, $0.label) },
+                     tips: model.activeModality == .image
+                        ? model.sizeClasses.map(\.tip) : [],
                      selection: sizeChoice)
             SizeField(model: model)
         }
