@@ -86,6 +86,7 @@ struct Item {
   std::uint64_t id = 0;
   std::uint64_t seq = 0;
   JobPhase      phase;
+  bool          whole = false;  // a whole download's (all its files)
 
   // Still at work: short of its total, or uncounted.
   bool
@@ -102,6 +103,12 @@ names_a_file(std::string_view desc)
 {
   const auto dot = desc.rfind('.');
   return dot != std::string_view::npos && dot > 0 && dot + 1 < desc.size();
+}
+
+bool
+a_download_report(std::string_view desc)
+{
+  return desc.starts_with(kWholeDownloadPrefix) || names_a_file(desc);
 }
 
 float
@@ -294,7 +301,7 @@ JobProgress::read(const Json& doc, double now)
       i.seq = jget<std::uint64_t>(it, "seq", 0);
       const auto desc = jget<std::string>(it, "desc", "");
       // A download running beside a graph: the other lane's.
-      if (names_a_file(desc) != _download) {
+      if (a_download_report(desc) != _download) {
         continue;
       }
       // An export's writer: the export's alone, never a generation's.
@@ -309,7 +316,10 @@ JobProgress::read(const Json& doc, double now)
       p.detail = jget<std::string>(it, "detail", "");
       if (_download) {
         p.phase = kPhaseDownload;
-        p.label = desc;
+        // The whole's report says no file: its count is all of them.
+        p.label = desc.starts_with(kWholeDownloadPrefix) ? std::string()
+                                                         : desc;
+        i.whole = p.label.empty();
       } else if (exporting) {
         p.phase = kPhaseExport;
       } else if (desc == "save video") {
@@ -352,10 +362,17 @@ JobProgress::read(const Json& doc, double now)
       _past = true;
     }
   }
-  // The document lists the oldest-opened first.
+  // The document lists the oldest-opened first. A whole download, while
+  // its report is live, is followed alone.
   const Item* pick = nullptr;
   for (const auto& i : live) {
-    if (i.going()) {
+    if (i.whole) {
+      pick = &i;
+      break;
+    }
+  }
+  for (const auto& i : live) {
+    if (pick == nullptr && i.going()) {
       pick = &i;
       break;
     }

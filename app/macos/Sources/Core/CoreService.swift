@@ -86,9 +86,20 @@ final class CoreService: @unchecked Sendable {
     func checkModel(_ id: String) -> CoreReply {
         send(core.check_model, ["model": id])
     }
-    /// Its download replaced by a copy quantized to `bits` (8, 4).
-    func compressModel(_ id: String, bits: Int) -> CoreReply {
-        send(core.compress_model, ["model": id, "bits": bits])
+    /// Its download replaced by a copy quantized to `bits` (8, 4) -- or,
+    /// `keepOriginal`, the copy in use beside it, to be tried first.
+    func compressModel(_ id: String, bits: Int,
+                       keepOriginal: Bool = false) -> CoreReply {
+        send(core.compress_model, ["model": id, "bits": bits,
+                                   "keep_original": keepOriginal])
+    }
+    /// A copy and its original both kept: which one runs.
+    func useCompressed(_ id: String, _ compressed: Bool) -> CoreReply {
+        send(core.use_compressed, ["model": id, "compressed": compressed])
+    }
+    /// ...and one kept, the other deleted ("freed").
+    func keepCompressed(_ id: String, _ compressed: Bool) -> CoreReply {
+        send(core.keep_compressed, ["model": id, "compressed": compressed])
     }
     func unlinkModel(_ id: String) -> CoreReply {
         send(core.unlink_model, ["model": id])
@@ -709,6 +720,13 @@ final class CoreService: @unchecked Sendable {
     /// handed through for this download, kept nowhere.
     func downloadModel(_ id: String, token: String = "") -> CoreReply {
         reply(core.download_model(std.string(id), std.string(token)))
+    }
+
+    /// A model's download stopped (bridge stop_download): PAUSED, what
+    /// came down kept for the next download to go on from; CANCELLED
+    /// (`discard`), deleted -- as it stops, or at once when paused before.
+    func stopDownload(_ id: String, discard: Bool) -> CoreReply {
+        reply(core.stop_download(std.string(id), discard))
     }
 
     /// A quantized variant made from its source (bridge quantize_model).

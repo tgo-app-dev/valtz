@@ -1154,6 +1154,18 @@ public:
   // download does. Asked again while it downloads: the same job.
   Result<JobId> download_model(const std::string& model_id,
                                const std::string& hf_token = "");
+  // A model's download STOPPED (Settings › Capabilities' Pause and
+  // Cancel, DESIGN §8): its job, queued or running, cancelled -- what
+  // waits for it fails, the download stopped. PAUSED (`discard` false),
+  // what came down stays and the model reads "partial": downloaded
+  // again, it goes on from there (vpipe's fetch skips the files it has
+  // and resumes each `.part`). CANCELLED (`discard`), that is deleted
+  // too -- once the job has let go of its files, or at once when none
+  // runs (a download paused before, a launch ago). Only Valtz's own
+  // download folder, and in a repo holding other models' files only this
+  // one's (discard_download_). NotFound: pausing with no download of it
+  // running (kNoDownloadRunning).
+  Status stop_download(const std::string& model_id, bool discard);
   // A QUANTIZED VARIANT made here (catalog `quantize`): its source, which
   // must be installed (downloaded or linked), through vpipe's
   // model-quantize into <download root>/<its hf_path> -- written beside
@@ -1168,8 +1180,21 @@ public:
   // download (not a link, not vpipe's folders), with room for both while
   // it runs; a task of the work lane, as a quantize is. Fetching the
   // model again brings the original back and deletes the copy. Asked
-  // again while it runs: the same job.
-  Result<JobId> compress_model(const std::string& model_id, int bits);
+  // again while it runs: the same job. `keep_original`: the download is
+  // not deleted -- the copy is in use beside it, to be tried first, until
+  // use_compressed / keep_compressed decide (nothing freed until then).
+  Result<JobId> compress_model(const std::string& model_id, int bits,
+                               bool keep_original = false);
+  // A compressed copy and its original both kept: which one the model's
+  // jobs load from now on -- the copy (`compressed`) or the original.
+  // InvalidArgument when the two are not both on disk.
+  Status use_compressed(const std::string& model_id, bool compressed);
+  // ...and one of them kept for good, the other deleted: the copy (its
+  // original deleted, as a compress that does not keep it ends) or the
+  // original (the copy deleted). The bytes freed. Busy while tasks run
+  // here: their weights are not deleted under them.
+  Result<std::uint64_t> keep_compressed(const std::string& model_id,
+                                        bool compressed);
   void rescan_models();
 
   // ---- projects -----------------------------------------------------
@@ -1558,12 +1583,26 @@ private:
   // A download of `model` ended: the jobs waiting for it go on (`ok`) or
   // fail (`stopped`: it was cancelled).
   void download_ended_(const std::string& model, bool ok, bool stopped);
+  // What a download of `e` brought down, deleted (stop_download): its
+  // repo's folder in the download root -- unless another model's files
+  // are in it, or another download goes into it (a repo of several
+  // LoRAs, H3's two partitions); then its own file and its partial copy,
+  // its own subfolder, or else its partial files alone. The bytes freed.
+  std::uint64_t discard_download_(const models::ModelEntry& e);
   // A compressed copy finished: checked, marked, put in place, and the
-  // download it replaces deleted. Its failure, in words; "" kept.
+  // download it replaces deleted (not when `keep_original`). Its
+  // failure, in words; "" kept.
   std::string compress_finished_(const models::ModelEntry& e, int bits,
                                  const std::filesystem::path& staging,
                                  const std::filesystem::path& original,
-                                 std::uint64_t* freed);
+                                 bool keep_original, std::uint64_t* freed);
+  // The download a compressed copy replaces, deleted, and the folders it
+  // leaves empty up to the models folder -- unless another model's files
+  // are in it (one folder holding several), or it holds another's: then
+  // that model's name in `kept_for`, nothing deleted. True deleted.
+  bool delete_original_(const models::ModelEntry& e,
+                        const std::filesystem::path& original,
+                        std::string* kept_for);
   // What compressing a download takes at `bits` (cached).
   models::CompressEstimate
   compress_estimate_(const models::ModelEntry& e,
@@ -1927,6 +1966,8 @@ private:
   mutable std::mutex                 _downloads_mu;
   std::map<std::string, JobId>       _downloads;
   std::map<JobId, Waiting>           _waiting;
+  // Downloads cancelled whose files go once their job has ended.
+  std::set<std::string>              _discards;
   // The models being compressed (compress_model), and what each would
   // take at each width (capability_tree reads them often; a rescan
   // forgets them): "<dir>|<bits>".

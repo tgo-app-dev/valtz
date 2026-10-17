@@ -274,8 +274,9 @@ final class PromptTextView: NSTextView {
         }
         storage.endEditing()
         // Undo kept the text's old ranges; a length that changed outside
-        // it would replay them in the wrong places.
-        if removed { undoManager?.removeAllActions() }
+        // it would replay them in the wrong places. Only the text's own
+        // steps (its storage's): the other fields' and Clear's stay.
+        if removed { undoManager?.removeAllActions(withTarget: storage) }
         return removed
     }
 
@@ -1240,6 +1241,7 @@ struct PromptEditor: NSViewRepresentable {
                                       range: NSRange(location: 0, length: 1))
                 out.append(mention)
             }
+            model.dropStalePromptUndo(tv)
             storage.setAttributedString(out)
             tv.setSelectedRange(NSRange(location: storage.length, length: 0))
             tv.scrollRangeToVisible(tv.selectedRange())
@@ -1248,6 +1250,7 @@ struct PromptEditor: NSViewRepresentable {
         let current = storage.string.replacingOccurrences(of: "\u{FFFC}",
                                                           with: "")
         if current == text && !text.isEmpty { return }
+        model.dropStalePromptUndo(tv)
         storage.setAttributedString(attributedWords(text, in: tv))
         tv.setSelectedRange(NSRange(location: storage.length, length: 0))
         tv.scrollRangeToVisible(tv.selectedRange())

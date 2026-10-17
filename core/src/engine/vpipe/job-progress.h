@@ -20,6 +20,14 @@
 // phase is PREPARE until the job has denoised and FINISH after; a
 // download's is DOWNLOAD, uncounted (vpipe counts only its big files).
 //
+// A DOWNLOAD OF SEVERAL FILES is counted WHOLE: vpipe's model-fetch opens
+// one report for the repo (kWholeDownloadPrefix, "download <repo>") --
+// every file's bytes, those on disk already done, the one in flight as
+// far as it has come -- and while it is live the download follows it
+// alone. A file's own report restarted the percentage at every shard and
+// said nothing of the small files or of those not started. An older
+// vpipe opens none: its files are followed as before.
+//
 // A clip's WRITER (avf-save-video's "save video") counts its frames:
 // in a generation the frames are written as they are decoded, and after
 // the decode it is FINISH. An EXPORT runs beside a generation (the
@@ -111,8 +119,13 @@ struct JobPhase {
   Json data() const;  // a Progress event's data
 };
 
+// A whole download's report: "download krea/Krea-2-Turbo".
+inline constexpr char kWholeDownloadPrefix[] = "download ";
+
 // vpipe's report names a file: a download's.
 bool names_a_file(std::string_view desc);
+// A download's report: a file's, or the whole's.
+bool a_download_report(std::string_view desc);
 
 class JobProgress {
 public:

@@ -136,9 +136,12 @@ struct SimpleView: View {
                             .combined(with: .opacity))
                         .padding(.bottom, 41 - 24)
                         .onAppear { model.startupSweep() }
-                    // Before the first frame: what it is doing.
+                    // Before the first frame: what it is doing, at the
+                    // width it has over the stage.
                     if model.isGenerating {
-                        GenerationStatus(model: model)
+                        GenerationStatus(
+                            model: model,
+                            width: min(GenerationStatus.defaultWidth, base))
                             .padding(.bottom, 20)
                             .transition(.opacity)
                     }
@@ -179,6 +182,10 @@ struct SimpleView: View {
             }
             ComposerStack(model: model, maxPromptHeight: size.height / 2,
                           immersive: immersive, cardWidth: card)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                    model.composerWidth = $0
+                    model.composerColumn = base
+                }
                 .frame(width: immersive ? card : nil)
                 // The timeline is wide: the window's width but the
                 // margins, where its switch back sits.
@@ -445,6 +452,22 @@ private struct ResultStage: View {
                     }
                     .animation(.smooth(duration: 0.2), value: ready)
                     .frame(width: size.width, height: size.height)
+                    // A generation's progress over the card's foot, at its
+                    // own width, not the card's: a narrow picture -- a
+                    // portrait in a short window -- squeezed it into a tall
+                    // capsule, its caption cut, its time on two lines.
+                    // Wider than the card it lies over the stage around it,
+                    // bounded by the prompt box (or the timeline) alone.
+                    .overlay(alignment: .bottom) {
+                        if !small && model.isGenerating {
+                            GenerationStatus(
+                                model: model,
+                                width: min(GenerationStatus.defaultWidth,
+                                           statusRoom(geo.size.width)))
+                                .padding(.bottom, 10)
+                                .transition(.opacity)
+                        }
+                    }
                     .position(x: geo.size.width / 2, y: geo.size.height / 2)
             }
             if small && model.stageHasTransport {
@@ -485,6 +508,13 @@ private struct ResultStage: View {
             .transition(.opacity)
             }
         }
+    }
+
+    /// How wide the progress over the card may be: the prompt box's
+    /// width -- the column's, at most -- or, while the timeline is open in
+    /// its place, the timeline's (the stage's whole width).
+    private func statusRoom(_ stage: CGFloat) -> CGFloat {
+        model.timelineOpen ? stage : min(SimpleView.columnWidth, stage)
     }
 
     /// A clip's live preview loops; a finished clip plays; a picture is
@@ -611,19 +641,15 @@ private struct ResultStage: View {
                         .transition(.opacity)
                 }
             }
+            // The small stage's progress: a thin bar in it. The stage's
+            // is over the card, not in it (body).
             .overlay(alignment: .bottom) {
-                if model.isGenerating {
-                    if small {
-                        ProgressView(value: model.generationPhase?.fraction)
-                            .progressViewStyle(.linear)
-                            .padding(8)
-                            .help(model.generationCaption)
-                            .transition(.opacity)
-                    } else {
-                        GenerationStatus(model: model)
-                            .padding(.bottom, 10)
-                            .transition(.opacity)
-                    }
+                if model.isGenerating && small {
+                    ProgressView(value: model.generationPhase?.fraction)
+                        .progressViewStyle(.linear)
+                        .padding(8)
+                        .help(model.generationCaption)
+                        .transition(.opacity)
                 }
             }
             .background(Color(nsColor: .textBackgroundColor))

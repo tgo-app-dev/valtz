@@ -181,6 +181,8 @@ ModelStore::scan_(const ModelEntry& e) const
   }
   // Compressed: the copy that replaced its download, whole (marked last,
   // once it passed its check).
+  InstallInfo copy;
+  Json mark;
   for (const int bits : {8, 4}) {
     const fs::path d = compressed_dir(e.id, bits);
     std::ifstream in(d / kCompressedMarker);
@@ -191,9 +193,40 @@ ModelStore::scan_(const ModelEntry& e) const
     InstallInfo info = scan_dir_(e, d, InstallInfo{});
     if (info.state == InstallState::Installed) {
       info.compressed_bits = bits;
-      return info;
+      copy = info;
+      mark = m;
+      break;
     }
   }
+  InstallInfo orig = scan_roots_(e);
+  if (copy.compressed_bits == 0) {
+    return orig;
+  }
+  // Its original KEPT beside it -- the download it was made from, still
+  // whole where it was (not another copy found in vpipe's folders): the
+  // copy in use unless its mark set it aside.
+  const fs::path from = jget<std::string>(mark, "from", "");
+  const bool kept = orig.state == InstallState::Installed &&
+                    !from.empty() &&
+                    orig.dir.lexically_normal() == from.lexically_normal();
+  if (!kept) {
+    return copy;
+  }
+  if (!jget(mark, "in_use", true)) {
+    orig.other_dir = copy.dir;
+    orig.other_bits = copy.compressed_bits;
+    orig.other_bytes = copy.bytes;
+    return orig;
+  }
+  copy.other_dir = orig.dir;
+  copy.other_bytes = orig.bytes;
+  return copy;
+}
+
+// The roots in order: the first whole copy, else the first partial one.
+InstallInfo
+ModelStore::scan_roots_(const ModelEntry& e) const
+{
   InstallInfo best;
   for (const auto& root : _roots) {
     fs::path dir = root / e.hf_path;
@@ -219,6 +252,11 @@ ModelStore::scan_(const ModelEntry& e) const
       }
       if (fs::exists(part, ec) && best.state == InstallState::Missing) {
         info.state = InstallState::Partial;
+        // What has come down: a paused download's row says how far.
+        info.bytes = fs::file_size(part, ec);
+        if (ec) {
+          info.bytes = 0;
+        }
         best = info;
       }
       continue;

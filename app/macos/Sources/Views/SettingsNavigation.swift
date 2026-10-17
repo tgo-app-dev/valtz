@@ -66,7 +66,8 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "GPU"), String(localized: "Neural Engine"),
              String(localized: "Engine"), String(localized: "Projects"),
              String(localized: "Models"), String(localized: "Cache"),
-             String(localized: "Project")]
+             String(localized: "Project"), String(localized: "Generations"),
+             String(localized: "Timeline"), String(localized: "Assets")]
         case .page(.capabilities):
             [String(localized: "Models"), String(localized: "Download"),
              String(localized: "Link"), String(localized: "Quantize")]

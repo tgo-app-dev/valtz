@@ -82,11 +82,95 @@ struct CapabilitiesView: View {
                 }
                 model.compressAsk = nil
             }
+            // Both kept, to try the copy before the original goes.
+            Button("Compress and Keep Original") {
+                if let ask = model.compressAsk {
+                    model.compress(model: ask.member.model, bits: ask.bits,
+                                   keepOriginal: true)
+                }
+                model.compressAsk = nil
+            }
             Button("Cancel", role: .cancel) { model.compressAsk = nil }
         } message: {
             Text(verbatim: compressMessage)
         }
+        // A copy kept beside its original: one of them kept, the other
+        // deleted.
+        .alert(keepTitle, isPresented: Binding(
+            get: { model.compressKeepAsk != nil },
+            set: { if !$0 { model.compressKeepAsk = nil } })) {
+            if let ask = model.compressKeepAsk {
+                Button("Delete", role: .destructive) {
+                    model.keepCompressed(model: ask.member.model,
+                                         ask.compressed)
+                    model.compressKeepAsk = nil
+                }
+            }
+            Button("Cancel", role: .cancel) { model.compressKeepAsk = nil }
+        } message: {
+            Text(verbatim: keepMessage)
         }
+        // A download's Cancel: what has come down is deleted -- or, while
+        // it runs, paused instead.
+        .alert(cancelTitle, isPresented: Binding(
+            get: { model.downloadCancelAsk != nil },
+            set: { if !$0 { model.downloadCancelAsk = nil } })) {
+            if let m = model.downloadCancelAsk {
+                Button(cancelRunning == nil ? String(localized: "Delete")
+                       : String(localized: "Cancel Download"),
+                       role: .destructive) {
+                    model.cancelDownload(model: m.model)
+                    model.downloadCancelAsk = nil
+                }
+                if cancelRunning != nil {
+                    Button("Pause Instead") {
+                        model.pauseDownload(model: m.model)
+                        model.downloadCancelAsk = nil
+                    }
+                }
+            }
+            Button(cancelRunning == nil ? String(localized: "Keep")
+                   : String(localized: "Keep Downloading"),
+                   role: .cancel) { model.downloadCancelAsk = nil }
+        } message: {
+            Text(verbatim: cancelMessage)
+        }
+        }
+    }
+
+    /// The download the cancel alert asks about, while it runs.
+    private var cancelRunning: JobInfo? {
+        guard let m = model.downloadCancelAsk else { return nil }
+        return model.jobs.values.first {
+            $0.purpose == "download" && $0.model == m.model
+                && ($0.state == "queued" || $0.state == "running")
+        }
+    }
+
+    private var cancelTitle: String {
+        guard let m = model.downloadCancelAsk else { return "" }
+        return cancelRunning == nil
+            ? String(localized: "Delete the paused download of \(m.name)?")
+            : String(localized: "Cancel the download of \(m.name)?")
+    }
+
+    /// What goes: the bytes come down so far -- the download's own count
+    /// while it runs, what is on disk once paused.
+    private var cancelMessage: String {
+        guard let m = model.downloadCancelAsk else { return "" }
+        let style = ByteCountFormatStyle(style: .file)
+        if let job = cancelRunning {
+            guard let p = job.phase, p.phase == "download", p.done > 0 else {
+                return String(localized: "What has come down so far is deleted. Pause it instead to go on later.")
+            }
+            let have = Int64(p.done).formatted(style)
+            return String(localized: "The \(have) that has come down so far is deleted. Pause it instead to go on later.")
+        }
+        guard m.bytes > 0 else {
+            return String(localized: "What has come down is deleted; downloading it again starts from the beginning.")
+        }
+        let have = m.bytes.formatted(style)
+        return String(localized: "The \(have) that has come down is deleted; downloading it again starts from the beginning.")
     }
 
     private var compressTitle: String {
@@ -108,7 +192,30 @@ struct CapabilitiesView: View {
         let quality = ask.bits == 4
             ? String(localized: "At 4 bits its results lose some detail and follow the prompt a little less closely.")
             : String(localized: "At 8 bits its results are very close to the original's.")
-        return String(localized: "Its \(now) download is replaced by a copy of about \(copy), made here and checked before the download is deleted. \(quality) To have the original back, download it again.")
+        let both = String(localized: "Or keep the original to try the copy first: both stay on disk, the copy in use, until you keep one of them in the compress menu.")
+        return String(localized: "Its \(now) download is replaced by a copy of about \(copy), made here and checked before the download is deleted. \(quality) To have the original back, download it again.") + "\n\n" + both
+    }
+
+    private var keepTitle: String {
+        guard let ask = model.compressKeepAsk,
+              let c = ask.member.compressed else { return "" }
+        let bits = String(c.bits)
+        return ask.compressed
+            ? String(localized: "Keep the \(bits)-bit copy of \(ask.member.name) and delete its original?")
+            : String(localized: "Keep the original of \(ask.member.name) and delete its \(bits)-bit copy?")
+    }
+
+    /// What goes, and how to have it again.
+    private var keepMessage: String {
+        guard let ask = model.compressKeepAsk,
+              let c = ask.member.compressed else { return "" }
+        let style = ByteCountFormatStyle(style: .file)
+        if ask.compressed {
+            let size = c.originalBytes.formatted(style)
+            return String(localized: "The original's \(size) is deleted. To have it back, download it again.")
+        }
+        let size = (c.bytes ?? 0).formatted(style)
+        return String(localized: "The copy's \(size) is deleted. It can be compressed again later.")
     }
 
     /// The family asked for opened, and scrolled to the top: one far down
@@ -282,16 +389,22 @@ private struct MemberRow: View {
                     .background(.quaternary, in: Capsule())
                     .help(m.path)
             }
-            // A compressed copy in its download's place.
+            // A compressed copy in its download's place -- or beside
+            // it, the one in use said.
             if let c = m.compressed {
-                Text(verbatim: String(localized: "\(String(c.bits))-bit"))
+                let bits = String(c.bits)
+                let tint = c.copyInUse ? Color.accentColor : Color.secondary
+                Text(verbatim: !c.besideOriginal
+                     ? String(localized: "\(bits)-bit")
+                     : c.copyInUse
+                     ? String(localized: "\(bits)-bit · original kept")
+                     : String(localized: "original · \(bits)-bit kept"))
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(tint)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
-                    .background(Color.accentColor.opacity(0.12),
-                                in: Capsule())
-                    .help(String(localized: "Compressed to \(String(c.bits)) bits in place of its \(c.originalBytes.formatted(ByteCountFormatStyle(style: .file))) download"))
+                    .background(tint.opacity(0.12), in: Capsule())
+                    .help(compressedHelp(c))
             }
             actions
         }
@@ -305,9 +418,9 @@ private struct MemberRow: View {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                 .help("Installed")
         case "partial":
-            Image(systemName: "exclamationmark.circle")
+            Image(systemName: "pause.circle")
                 .foregroundStyle(.orange)
-                .help("A download was interrupted")
+                .help("Paused or interrupted: Resume goes on from where it stopped")
         default:
             Image(systemName: "circle.dashed").foregroundStyle(.secondary)
                 .help("Not installed")
@@ -340,6 +453,11 @@ private struct MemberRow: View {
             return member.bytes.formatted(style)
         }
         let est = Int64(member.diskGb * 1e9).formatted(style)
+        // Paused: how far it came.
+        if member.state == "partial" && member.bytes > 0 && fetching == nil {
+            let have = member.bytes.formatted(style)
+            return String(localized: "\(have) of about \(est)")
+        }
         return String(localized: "about \(est)")
     }
 
@@ -368,10 +486,15 @@ private struct MemberRow: View {
         let m = member
         HStack(spacing: 6) {
             if let job = fetching {
+                let stopping = job.purpose == "download"
+                    ? model.downloadStopping[m.model] : nil
                 ProgressView(value: job.phase?.fraction)
                     .controlSize(.small)
                     .frame(width: 70)
-                Text(verbatim: job.phase?.percent
+                Text(verbatim: stopping.map {
+                        $0 ? String(localized: "Cancelling…")
+                            : String(localized: "Pausing…")
+                     } ?? job.phase?.percent
                      ?? (job.purpose == "quantize"
                          ? String(localized: "Quantizing…")
                          : job.purpose == "compress"
@@ -379,7 +502,28 @@ private struct MemberRow: View {
                     .font(.caption.monospacedDigit())
                     // Its own width: the row squeezed it to nothing.
                     .fixedSize()
-                    .help(job.phase?.caption(kind: .image) ?? job.title)
+                    .help(progressHelp(job))
+                // A download PAUSED -- what came down kept, Resume going
+                // on from there -- or CANCELLED, that deleted (asked
+                // first).
+                if job.purpose == "download" {
+                    Button {
+                        model.pauseDownload(model: m.model)
+                    } label: {
+                        Image(systemName: "pause.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(stopping != nil)
+                    .help("Pause the download: what has come down stays, and Resume goes on from there")
+                    Button {
+                        model.downloadCancelAsk = m
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(stopping == true)
+                    .help("Cancel the download and delete what has come down")
+                }
             } else if let q = m.quantize, m.state != "installed" {
                 // Made here from its source -- no download of its own.
                 Button("Quantize") { model.quantize(model: m.model) }
@@ -406,6 +550,17 @@ private struct MemberRow: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .help("Gated on Hugging Face: its license is accepted there first")
+                }
+                // Paused in the models folder Valtz manages: what came
+                // down can go (asked first).
+                if m.state == "partial" && m.source == "valtz" {
+                    Button {
+                        model.downloadCancelAsk = m
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Delete what has come down of it")
                 }
             }
             if m.state == "installed", let c = m.compress, fetching == nil {
@@ -451,6 +606,16 @@ private struct MemberRow: View {
         .controlSize(.small)
     }
 
+    /// What the row's percentage is of: a download's the WHOLE model --
+    /// every file, "482.2 MB / 963.9 MB" (vpipe's model-fetch counts them
+    /// as one) -- else the job's phase.
+    private func progressHelp(_ job: JobInfo) -> String {
+        guard let p = job.phase else { return job.title }
+        let caption = p.caption(kind: .image)
+        guard p.phase == "download", !p.detail.isEmpty else { return caption }
+        return String(localized: "\(caption) (\(p.detail))")
+    }
+
     /// COMPRESS (DESIGN §8b): its download replaced by a copy at 8 or 4
     /// bits, what each would take -- confirmed first; compressed, the way
     /// back (the original downloaded again); not Valtz's own download,
@@ -460,7 +625,24 @@ private struct MemberRow: View {
         let m = member
         let style = ByteCountFormatStyle(style: .file)
         Menu {
-            if let done = m.compressed {
+            if let done = m.compressed, done.besideOriginal {
+                // Both kept: which runs, then which stays.
+                let bits = String(done.bits)
+                Text("Compressed to \(bits)-bit, the original kept")
+                Toggle("Use the \(bits)-bit Copy", isOn: Binding(
+                    get: { done.copyInUse },
+                    set: { if $0 { model.useCompressed(model: m.model, true) } }))
+                Toggle("Use the Original", isOn: Binding(
+                    get: { !done.copyInUse },
+                    set: { if $0 { model.useCompressed(model: m.model, false) } }))
+                Divider()
+                Button("Keep the \(bits)-bit Copy, Delete the Original (\(done.originalBytes.formatted(style)))…") {
+                    model.compressKeepAsk = (m, true)
+                }
+                Button("Keep the Original, Delete the \(bits)-bit Copy (\((done.bytes ?? 0).formatted(style)))…") {
+                    model.compressKeepAsk = (m, false)
+                }
+            } else if let done = m.compressed {
                 Text("Compressed to \(String(done.bits))-bit")
                 Button("Download the Original Again (\(done.originalBytes.formatted(style)))") {
                     if m.isGated {
@@ -487,6 +669,9 @@ private struct MemberRow: View {
     }
 
     private func compressHelp(_ c: CapabilityTree.Compress) -> String {
+        if let done = member.compressed, done.besideOriginal {
+            return String(localized: "A \(String(done.bits))-bit copy beside the original: choose which one runs, and which one to keep")
+        }
         if let done = member.compressed {
             return String(localized: "Compressed to \(String(done.bits)) bits: download the original again to have it back")
         }
@@ -496,6 +681,17 @@ private struct MemberRow: View {
         case "engine": return String(localized: "The engine here cannot compress models")
         default: return String(localized: "Compress to 8 or 4 bits to free disk space: the download is replaced by a smaller copy")
         }
+    }
+
+    private func compressedHelp(_ c: CapabilityTree.Compressed) -> String {
+        let style = ByteCountFormatStyle(style: .file)
+        let bits = String(c.bits)
+        guard c.besideOriginal else {
+            return String(localized: "Compressed to \(bits) bits in place of its \(c.originalBytes.formatted(style)) download")
+        }
+        return c.copyInUse
+            ? String(localized: "The \(bits)-bit copy is in use; the \(c.originalBytes.formatted(style)) original is kept beside it")
+            : String(localized: "The original is in use; its \(bits)-bit copy is kept beside it, set aside")
     }
 
     /// A file or folder chosen -- starting in `from` -- linked.

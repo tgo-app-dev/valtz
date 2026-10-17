@@ -1970,6 +1970,122 @@ TEST(controller, a_download_is_compressed_and_a_link_checked)
   REQUIRE_OK(engine->cancel(*k8));
 }
 
+// A compressed copy TRIED FIRST (DESIGN §8b): asked to keep the
+// original, the compress deletes nothing -- the copy in use beside its
+// download -- until one of the two is kept: the original used again, the
+// copy kept (its original deleted, as a compress that does not keep it
+// ends) or the original kept (the copy deleted). Nothing is deleted while
+// a task runs.
+TEST(controller, a_compressed_copy_is_tried_beside_its_original)
+{
+  auto root = test::temp_dir("ctl-compress-keep");
+  const fs::path models = root / "models";
+  const fs::path krea = models / "krea" / "Krea-2-Turbo";
+  fake_pipeline(krea, "Krea2Pipeline", "Krea2Transformer2DModel");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto member = [&](const std::string& id) {
+    const Json tree = ctl.capability_tree();
+    for (const auto& f : tree["families"]) {
+      for (const auto& m : f["members"]) {
+        if (m["model"] == id) {
+          return m;
+        }
+      }
+    }
+    return Json();
+  };
+  const fs::path dest = models / "compressed" / "krea2-turbo-8bit";
+  auto compress = [&] {
+    auto job = ctl.compress_model("krea2-turbo", 8, true);
+    REQUIRE_OK(job);
+    const fs::path staging =
+        jget<std::string>(engine->spec(*job)->params, "output", "");
+    fake_pipeline(staging, "Krea2Pipeline", "Krea2Transformer2DModel");
+    engine->end(*job);
+    CHECK(ctl.jobs().get(*job)->state == JobState::Finished);
+  };
+  CHECK(ctl.use_compressed("krea2-turbo", false).error().key ==
+        msg::kNotBothKept.key);
+
+  // Kept: both on disk, the copy in use.
+  compress();
+  CHECK(fs::exists(dest / models::ModelStore::kCompressedMarker));
+  CHECK(fs::exists(krea));
+  Json m = member("krea2-turbo");
+  CHECK(m["compressed"]["bits"] == 8);
+  CHECK(jget(m["compressed"], "in_use", false));
+  CHECK(jget(m["compressed"], "original_kept", false));
+  CHECK(jget<std::uint64_t>(m["compressed"], "bytes", 0) > 0);
+  CHECK(m["path"] == dest.string());
+  CHECK(m["compress"]["why"] == "compressed");
+  CHECK(ctl.compress_model("krea2-turbo", 4).error().key ==
+        msg::kCompressedBesideOriginal.key);
+
+  // The original in use again; the copy set aside, still listed.
+  REQUIRE_OK(ctl.use_compressed("krea2-turbo", false));
+  m = member("krea2-turbo");
+  CHECK(m["path"] == krea.string());
+  CHECK(m["compressed"]["bits"] == 8);
+  CHECK(!jget(m["compressed"], "in_use", true));
+  CHECK(jget(m["compressed"], "original_kept", false));
+  CHECK(fs::exists(dest));
+  REQUIRE_OK(ctl.use_compressed("krea2-turbo", false));
+  REQUIRE_OK(ctl.use_compressed("krea2-turbo", true));
+  CHECK(member("krea2-turbo")["path"] == dest.string());
+
+  // Nothing deleted under a task.
+  fake_pipeline(models / "black-forest-labs" / "FLUX.2-klein-9B",
+                "Flux2KleinPipeline", "Flux2Transformer2DModel");
+  ctl.rescan_models();
+  auto busy = ctl.compress_model("flux2-klein-9b", 8);
+  REQUIRE_OK(busy);
+  CHECK(ctl.keep_compressed("krea2-turbo", false).error().key ==
+        msg::kWeightsBusy.key);
+  REQUIRE_OK(engine->cancel(*busy));
+
+  // The original kept: the copy deleted, the compressed folder with it.
+  auto freed = ctl.keep_compressed("krea2-turbo", false);
+  REQUIRE_OK(freed);
+  CHECK(*freed > 0);
+  CHECK(!fs::exists(dest));
+  CHECK(!fs::exists(models / "compressed"));
+  m = member("krea2-turbo");
+  CHECK(m["compressed"].is_null());
+  CHECK(m["path"] == krea.string());
+  CHECK(jget(m["compress"], "ready", false));
+
+  // Again, the copy kept: its original deleted, as without keeping it.
+  compress();
+  REQUIRE_OK(ctl.use_compressed("krea2-turbo", false));
+  freed = ctl.keep_compressed("krea2-turbo", true);
+  REQUIRE_OK(freed);
+  CHECK(*freed > 0);
+  CHECK(!fs::exists(krea));
+  CHECK(!fs::exists(models / "krea"));
+  m = member("krea2-turbo");
+  CHECK(m["path"] == dest.string());
+  CHECK(jget(m["compressed"], "in_use", false));
+  CHECK(!jget(m["compressed"], "original_kept", true));
+  CHECK(ctl.keep_compressed("krea2-turbo", false).error().key ==
+        msg::kNotBothKept.key);
+  CHECK(ctl.compress_model("krea2-turbo", 4).error().key ==
+        msg::kAlreadyCompressed.key);
+}
+
 // FLUX.3 Image Klein makes pictures up to 4096 a side (catalog
 // `max_edge`, which the app reads to offer its 4K size): asked for that,
 // the job is; past it, refused by name before any graph.
@@ -2155,6 +2271,141 @@ TEST(controller, a_job_waits_only_for_what_it_needs_downloading)
   const Json after = ctl.preset_summary(*h3, "speed");
   CHECK(jget(after, "missing", Json::array()).empty());
   CHECK(!jget<std::string>(after, "turbo", "").empty());
+}
+
+// Settings › Capabilities' Pause and Cancel (DESIGN §8): a download
+// PAUSED keeps what came down -- the model partial, a download of it
+// again going on from there -- and one CANCELLED deletes it once its job
+// lets go of the files (at once, queued or paused before); in a repo
+// holding other models' files, only its own.
+TEST(controller, a_download_is_paused_or_cancelled)
+{
+  auto root = test::temp_dir("ctl-download-stop");
+  const fs::path models = root / "models";
+  auto write = [&](const fs::path& rel) {
+    fs::create_directories((models / rel).parent_path());
+    std::ofstream(models / rel) << "weights";
+  };
+  write("krea/Krea-2-Turbo/model.safetensors");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "S.valtz", "stops");
+  REQUIRE_OK(pid);
+  auto on_disk = [&](const char* id) {
+    models::ModelStore store({models});
+    return store.info(*ctl.catalog().find(id)).state;
+  };
+
+  // PAUSED while it runs: asked to stop, then stopped -- what waited for
+  // it fails, saying so; what came down stays, the model partial.
+  const fs::path z = "Tongyi-MAI/Z-Image-Turbo";
+  auto dl = ctl.download_model("z-image-turbo");
+  REQUIRE_OK(dl);
+  engine->start(*dl);
+  write(z / "config.json");
+  write(z / "transformer/diffusion.safetensors.part");
+  GenerateImageRequest req;
+  req.project = *pid;
+  req.prompt = "a blue boat";
+  req.model = "z-image-turbo";
+  req.width = 64;
+  req.height = 64;
+  auto boat = ctl.generate_image(req);
+  REQUIRE_OK(boat);
+  REQUIRE_OK(ctl.stop_download("z-image-turbo", false));
+  CHECK(engine->stopping(*dl));
+  CHECK(ctl.downloading("z-image-turbo"));
+  engine->stopped(*dl);
+  CHECK(!ctl.downloading("z-image-turbo"));
+  CHECK(ctl.jobs().get(*dl)->state == JobState::Cancelled);
+  CHECK(ctl.jobs().get(*boat)->state == JobState::Failed);
+  CHECK(ctl.jobs().get(*boat)->message.find("stopped") !=
+        std::string::npos);
+  CHECK(fs::exists(models / z / "config.json"));
+  CHECK(fs::exists(models / z / "transformer/diffusion.safetensors.part"));
+  CHECK(on_disk("z-image-turbo") == models::InstallState::Partial);
+  // Nothing running to pause now.
+  Status idle = ctl.stop_download("z-image-turbo", false);
+  REQUIRE(!idle.ok());
+  CHECK(idle.error().key == msg::kNoDownloadRunning.key);
+
+  // Downloaded again, then CANCELLED: its files stay while the job
+  // holds them, and go -- the empty folder above with them -- once it
+  // has stopped.
+  auto again = ctl.download_model("z-image-turbo");
+  REQUIRE_OK(again);
+  engine->start(*again);
+  REQUIRE_OK(ctl.stop_download("z-image-turbo", true));
+  CHECK(fs::exists(models / z / "config.json"));
+  engine->stopped(*again);
+  CHECK(!fs::exists(models / z));
+  CHECK(!fs::exists(models / "Tongyi-MAI"));
+  CHECK(on_disk("z-image-turbo") == models::InstallState::Missing);
+  CHECK(fs::exists(models / "krea/Krea-2-Turbo/model.safetensors"));
+
+  // Queued, cancelled: dropped at once, and what an earlier try left
+  // deleted with it.
+  write("Qwen/Qwen-Image-2.1/model-00001-of-00004.safetensors.part");
+  auto queued = ctl.download_model("qwen-image-2.1");
+  REQUIRE_OK(queued);
+  REQUIRE_OK(ctl.stop_download("qwen-image-2.1", true));
+  CHECK(engine->spec(*queued) == nullptr);
+  CHECK(!fs::exists(models / "Qwen"));
+
+  // Paused a launch ago -- no job: deleted at once.
+  write("black-forest-labs/FLUX.2-klein-9B/vae/model.safetensors.part");
+  REQUIRE_OK(ctl.stop_download("flux2-klein-9b", true));
+  CHECK(!fs::exists(models / "black-forest-labs"));
+
+  // One file of a repo holding several: its partial copy goes, the
+  // other model's file and the repo's own files stay.
+  const fs::path lx = "lightx2v/Minimax-h3-Turbo";
+  write(lx / "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors");
+  write(lx / "README.md");
+  auto four = ctl.download_model("minimax-h3-turbo-4step");
+  REQUIRE_OK(four);
+  engine->start(*four);
+  write(lx / "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors.part");
+  REQUIRE_OK(ctl.stop_download("minimax-h3-turbo-4step", true));
+  engine->stopped(*four);
+  CHECK(!fs::exists(
+      models / lx /
+      "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors.part"));
+  CHECK(fs::exists(
+      models / lx / "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors"));
+  CHECK(fs::exists(models / lx / "README.md"));
+
+  // A partition of a repo whose other partition is here: its own folder
+  // goes, the other stays.
+  const fs::path h3 = "MiniMaxAI/MiniMax-H3";
+  write(h3 / "FL2VA/transformer/model.safetensors");
+  write(h3 / "Ref2VA/transformer/model.safetensors.part");
+  REQUIRE_OK(ctl.stop_download("minimax-h3-ref2va", true));
+  CHECK(!fs::exists(models / h3 / "Ref2VA"));
+  CHECK(fs::exists(models / h3 / "FL2VA/transformer/model.safetensors"));
+
+  // Finished before the cancel took: whole, kept.
+  auto tae = ctl.download_model("taeh3");
+  REQUIRE_OK(tae);
+  engine->start(*tae);
+  REQUIRE_OK(ctl.stop_download("taeh3", true));
+  write("madebyollin/taehv/taeh3.safetensors");
+  engine->end(*tae);
+  CHECK(fs::exists(models / "madebyollin/taehv/taeh3.safetensors"));
+  CHECK(on_disk("taeh3") == models::InstallState::Installed);
 }
 
 // The same with the REAL engine and a real download (DESIGN §3a; the
@@ -6283,19 +6534,24 @@ TEST(controller, the_chosen_helper_is_kept_and_falls_back_to_auto)
   CHECK(ctl.assistant_keep_loaded() == Controller::kDefaultKeepLoaded);
   REQUIRE_OK(ctl.set_assistant_keep_loaded(1800));
   CHECK(ctl.assistants()["keep_loaded"] == 1800.0);
-  // What it drafts with: its MTP head until DFlash 2 is chosen; the 27B
-  // 4-bit names its DFlash 2 drafter.
+  // What it drafts with: its MTP head until DFlash 2 is chosen; both
+  // 27Bs -- the 4-bit, the OptiQ pack -- name the DFlash 2 drafter.
   CHECK(ctl.assistants()["drafter"] == "mtp");
   REQUIRE_OK(ctl.set_assistant_drafter("dflash", 4));
   CHECK(ctl.assistants()["drafter"] == "dflash");
   CHECK(ctl.assistants()["drafter_bits"] == 4);
   CHECK(ctl.set_assistant_drafter("eagle", 8).code() ==
         Code::InvalidArgument);
-  for (const auto& m : ctl.assistants()["models"]) {
-    if (m["id"] == "qwen3.8-27b-4bit") {
+  // Bound first: a range-for over a temporary's member dangles.
+  const Json helpers = ctl.assistants();
+  int dflash_27b = 0;
+  for (const auto& m : helpers["models"]) {
+    if (m["id"] == "qwen3.8-27b-4bit" || m["id"] == "qwen3.8-27b") {
       CHECK(m["dflash"]["id"] == "qwen3.8-27b-dflash2");
+      ++dflash_27b;
     }
   }
+  CHECK(dflash_27b == 2);
   // A later run over the same support folder.
   ControllerConfig cfg;
   cfg.support_root = b.root / "support";

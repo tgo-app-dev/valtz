@@ -433,6 +433,30 @@ private struct GeneralSettings: View {
             } message: {
                 Text("The pictures made in this session are deleted when Valtz quits. Save anything you want to keep first.")
             }
+            // What a result landing does (AppModel.landed, revealTasks).
+            Section {
+                Picker("When a generation finishes on a composition that has content",
+                       selection: $model.landingOpensTimeline) {
+                    Text("Switch to the Timeline").tag(true)
+                    Text("Do Nothing").tag(false)
+                }
+                Group {
+                    Toggle("Highlight the timeline and prompt switch when it switches by itself",
+                           isOn: $model.landingFlashesSwitch)
+                        .disabled(!model.landingOpensTimeline)
+                    Toggle("Show Assets when several tasks are queued",
+                           isOn: $model.revealsTasks)
+                    Toggle("Show Assets once more than one result has been generated",
+                           isOn: $model.revealsResults)
+                }
+                .toggleStyle(.checkbox)
+            } header: {
+                Text("Generations")
+            } footer: {
+                Text("The timeline shows a clip's or a sound's composition, or a still with pages.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section {
                 LabeledContent("Version") {
                     Text(verbatim: model.updater.version)

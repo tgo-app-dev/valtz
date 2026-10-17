@@ -15,7 +15,9 @@
 // §8b): <download root>/compressed/<id>-<bits>bit, marked by the file
 // Valtz writes in it (kCompressedMarker). Where one is, the model is
 // there -- after a link, before the roots -- until its download is
-// fetched again.
+// fetched again. A copy made with its original KEPT (to try it first)
+// is in use beside it until its mark sets it aside ("in_use": false);
+// the original is used then.
 
 #ifndef VALTZ_MODELS_MODEL_STORE_H
 #define VALTZ_MODELS_MODEL_STORE_H
@@ -34,7 +36,7 @@ namespace valtz::models {
 
 enum class InstallState : std::uint8_t {
   Missing,
-  Partial,    // a download was interrupted (*.part files present)
+  Partial,    // a download paused or interrupted (*.part files present)
   Installed,
 };
 
@@ -44,9 +46,16 @@ struct InstallInfo {
   InstallState          state = InstallState::Missing;
   std::filesystem::path dir;
   std::filesystem::path file;   // the entry's `file`, in `dir`; or empty
-  std::uint64_t         bytes = 0;
+  std::uint64_t         bytes = 0;   // on disk (Partial: so far)
   bool                  linked = false;  // where its link points
   int                   compressed_bits = 0;  // a compressed copy: 8, 4
+  // Its OTHER weights, kept beside these (a compress that kept the
+  // original): while a compressed copy is in use, the original it was
+  // made from (`other_bits` 0); while the original is -- the copy set
+  // aside -- the copy. `other_dir` empty: none.
+  std::filesystem::path other_dir;
+  int                   other_bits = 0;
+  std::uint64_t         other_bytes = 0;
 
   // What the engine is given: the entry's file when it names one, else
   // the folder.
@@ -94,6 +103,7 @@ public:
 
 private:
   InstallInfo scan_(const ModelEntry&) const;
+  InstallInfo scan_roots_(const ModelEntry&) const;
   InstallInfo scan_dir_(const ModelEntry&, const std::filesystem::path&,
                         InstallInfo best) const;
   InstallInfo scan_link_(const ModelEntry&,

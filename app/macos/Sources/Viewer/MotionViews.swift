@@ -323,6 +323,28 @@ struct VideoPlayerView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    /// AVKit's floating bar keeps its GLASS when the controls are taken
+    /// off while it shows -- the pointer over the clip as the timeline
+    /// opens, a project opened into its timeline: its controls go, its
+    /// platter stays on the picture, an empty glass bar. Neither the
+    /// player handed back, nor a round trip through .inline or .minimal
+    /// (a 10-point speck of glass stayed), nor a layout pass clears it.
+    /// So the glass under the player is hidden while the style is .none
+    /// and shown again for .floating, whose bar AVKit builds on the same
+    /// platter. Found by type: the public glass views, or a class named
+    /// for glass; one AVKit names otherwise is left as it is.
+    static func strayGlass(in v: AVPlayerView, hidden: Bool) {
+        var queue: [NSView] = [v]
+        while let u = queue.popLast() {
+            if u is NSGlassEffectContainerView || u is NSGlassEffectView
+                || String(describing: type(of: u)).contains("Glass") {
+                if u.isHidden != hidden { u.isHidden = hidden }
+                continue
+            }
+            queue += u.subviews
+        }
+    }
+
     func makeNSView(context: Context) -> AVPlayerView {
         let v = AVPlayerView()
         v.controlsStyle = .floating
@@ -336,7 +358,10 @@ struct VideoPlayerView: NSViewRepresentable {
     func updateNSView(_ v: AVPlayerView, context: Context) {
         let c = context.coordinator
         let style: AVPlayerViewControlsStyle = controls ? .floating : .none
-        if v.controlsStyle != style { v.controlsStyle = style }
+        if v.controlsStyle != style {
+            v.controlsStyle = style
+            Self.strayGlass(in: v, hidden: style == .none)
+        }
         if let overlay = v.contentOverlayView {
             let iv = overlay.subviews.compactMap { $0 as? NSImageView }.first
                 ?? {

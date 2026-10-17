@@ -77,10 +77,16 @@ usage()
       "         broken one refused)\n"
       "  check <model-id> [file|folder]  (its files checked as a link's\n"
       "         are -- that path's, else where it is installed)\n"
-      "  compress <model-id> --bits 8|4  (Settings > Capabilities'\n"
-      "         compress button: the download replaced by a copy\n"
-      "         quantized to 8 or 4 bits, its DiT then its text encoder;\n"
-      "         download it again for the original)\n"
+      "  compress <model-id> --bits 8|4 [--keep-original]\n"
+      "         (Settings > Capabilities' compress button: the download\n"
+      "         replaced by a copy quantized to 8 or 4 bits, its DiT then\n"
+      "         its text encoder; download it again for the original.\n"
+      "         --keep-original: the copy in use BESIDE the download, to\n"
+      "         try first)\n"
+      "  compress <model-id> --use compressed|original\n"
+      "  compress <model-id> --keep compressed|original\n"
+      "         (the two kept: which one runs; one kept, the other\n"
+      "         deleted)\n"
       "  assistant [<model-id>|auto] [--keep <seconds>]\n"
       "            [--drafter mtp|dflash] [--bits 8|4]\n"
       "            [--video-every <seconds>|auto]\n"
@@ -447,11 +453,15 @@ usage()
       "         the editor's tools; each step asked for at the terminal\n"
       "         unless --auto. key: a cloud provider's API key, asked for\n"
       "         unechoed, kept in the Keychain)\n"
-      "  download <model-id> [--hf-token]\n"
+      "  download <model-id> [--hf-token] [--pause-after <s> |\n"
+      "          --cancel-after <s>] | download <model-id> --cancel\n"
       "          (--hf-token: asks for a Hugging Face access token, not\n"
       "          echoed, for a GATED model -- used for this download only,\n"
       "          kept nowhere; without it, $HF_TOKEN, or vpipe asks when\n"
-      "          Hugging Face refuses)\n",
+      "          Hugging Face refuses. --pause-after: stopped s in, what\n"
+      "          came down kept -- `download` again goes on from there;\n"
+      "          --cancel-after: stopped and deleted; --cancel alone: what\n"
+      "          a paused download left, deleted)\n",
       stderr);
   return 2;
 }
@@ -1866,9 +1876,15 @@ main(int argc, char** argv)
         // take (DESIGN §8b).
         std::string small;
         if (const Json cm = jget(m, "compressed", Json()); cm.is_object()) {
-          small = std::format("  {}-bit copy (was {:.1f} GB)",
-                              jget(cm, "bits", 0),
-                              jget(cm, "original_bytes", 0.0) / 1e9);
+          small = !jget(cm, "original_kept", false)
+              ? std::format("  {}-bit copy (was {:.1f} GB)",
+                            jget(cm, "bits", 0),
+                            jget(cm, "original_bytes", 0.0) / 1e9)
+              : std::format("  {}-bit copy ({:.1f} GB) beside the "
+                            "original, {} in use", jget(cm, "bits", 0),
+                            jget(cm, "bytes", 0.0) / 1e9,
+                            jget(cm, "in_use", true) ? "the copy"
+                                                     : "the original");
         } else if (const Json cp = jget(m, "compress", Json());
                    cp.is_object()) {
           for (const auto& w : jget(cp, "widths", Json::array())) {
@@ -4569,18 +4585,56 @@ main(int argc, char** argv)
   }
   if (cmd == "compress") {
     int bits = 0;
-    for (std::size_t i = 0; i + 1 < args.size(); ++i) {
-      if (args[i] == "--bits") {
-        bits = std::atoi(args[i + 1].c_str());
-        args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
-                   args.begin() + static_cast<std::ptrdiff_t>(i) + 2);
-        break;
+    bool keep_original = false;
+    std::string use;
+    std::string keep;
+    for (std::size_t i = 0; i < args.size();) {
+      const bool value = i + 1 < args.size();
+      if (args[i] == "--keep-original") {
+        keep_original = true;
+      } else if (value && (args[i] == "--bits" || args[i] == "--use" ||
+                           args[i] == "--keep")) {
+        if (args[i] == "--bits") {
+          bits = std::atoi(args[i + 1].c_str());
+        } else {
+          (args[i] == "--use" ? use : keep) = args[i + 1];
+        }
+        args.erase(args.begin() + static_cast<std::ptrdiff_t>(i));
+      } else {
+        ++i;
+        continue;
       }
+      args.erase(args.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+    const auto which = [](const std::string& w) {
+      return w == "compressed" ? 1 : w == "original" ? 0 : -1;
+    };
+    if (!args.empty() && (!use.empty() || !keep.empty())) {
+      const int w = which(use.empty() ? keep : use);
+      if (w < 0) {
+        return usage();
+      }
+      if (!use.empty()) {
+        if (auto st = c.use_compressed(args[0], w == 1); !st.ok()) {
+          return fail(st.error());
+        }
+        std::printf("%s: its %s in use\n", args[0].c_str(),
+                    w == 1 ? "compressed copy" : "original");
+        return 0;
+      }
+      auto freed = c.keep_compressed(args[0], w == 1);
+      if (!freed.ok()) {
+        return fail(freed.error());
+      }
+      std::printf("%s: its %s kept, %.2f GB freed\n", args[0].c_str(),
+                  w == 1 ? "compressed copy" : "original",
+                  static_cast<double>(*freed) / 1e9);
+      return 0;
     }
     if (args.empty() || bits == 0) {
       return usage();
     }
-    auto j = c.compress_model(args[0], bits);
+    auto j = c.compress_model(args[0], bits, keep_original);
     if (!j.ok()) {
       return fail(j.error());
     }
@@ -4606,15 +4660,79 @@ main(int argc, char** argv)
       token = buf;
       std::fill(std::begin(buf), std::end(buf), '\0');
     }
+    // Settings › Capabilities' Pause and Cancel (stop_download): s into
+    // the download -- paused, what came down kept for the next
+    // `download` to go on from; cancelled, deleted -- or, --cancel
+    // alone, what a paused one left deleted.
+    const bool discard = std::erase(args, std::string("--cancel")) > 0;
+    double pause_after = -1;
+    double cancel_after = -1;
+    for (std::size_t i = 0; i + 1 < args.size();) {
+      if (args[i] == "--pause-after" || args[i] == "--cancel-after") {
+        (args[i] == "--pause-after" ? pause_after : cancel_after) =
+            std::atof(args[i + 1].c_str());
+        args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
+                   args.begin() + static_cast<std::ptrdiff_t>(i) + 2);
+      } else {
+        ++i;
+      }
+    }
     if (args.empty()) {
       return usage();
     }
-    auto j = c.download_model(args[0], token);
+    const std::string id = args[0];
+    // What is on disk of it now.
+    const auto left = [&c, &id] {
+      const auto* e = c.catalog().find(id);
+      if (!e) {
+        return;
+      }
+      models::ModelStore store(
+          models::ModelStore::default_roots(c.paths().models));
+      const auto i = store.info(*e);
+      std::printf("%s: %s%s\n", id.c_str(), models::to_str(i.state),
+                  i.state == models::InstallState::Missing
+                      ? ""
+                      : std::format(", {} at {}", models::size_text(i.bytes),
+                                    i.dir.string()).c_str());
+    };
+    if (discard && pause_after < 0 && cancel_after < 0) {
+      Status st = c.stop_download(id, true);
+      if (!st.ok()) {
+        return fail(st.error());
+      }
+      left();
+      return 0;
+    }
+    auto j = c.download_model(id, token);
     std::fill(token.begin(), token.end(), '\0');
     if (!j.ok()) {
       return fail(j.error());
     }
-    return follow(c, *j);
+    std::jthread stopper;
+    if (pause_after >= 0 || cancel_after >= 0) {
+      const bool drop = cancel_after >= 0;
+      const auto wait = std::chrono::duration<double>(
+          drop ? cancel_after : pause_after);
+      stopper = std::jthread([&c, id, drop, wait](std::stop_token stop) {
+        const auto until = std::chrono::steady_clock::now() + wait;
+        while (!stop.stop_requested() &&
+               std::chrono::steady_clock::now() < until) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        if (stop.stop_requested()) {
+          return;
+        }
+        std::fprintf(stderr, "  %s\n", drop ? "cancelling" : "pausing");
+        if (Status st = c.stop_download(id, drop); !st.ok()) {
+          std::fprintf(stderr, "  %s\n", st.error().message.c_str());
+        }
+      });
+    }
+    const int rc = follow(c, *j);
+    stopper.request_stop();
+    left();
+    return rc;
   }
   return usage();
 }

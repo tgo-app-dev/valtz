@@ -493,6 +493,49 @@ TEST(engine_progress, a_download_beside_a_graph)
         kPhaseDownload);
 }
 
+// A download of several files is counted WHOLE (vpipe's model-fetch's
+// "download <repo>" report: all the files' bytes, those present done):
+// followed alone while it is live, whichever file is in flight -- not
+// each shard's own percentage, restarting at every one. A generation
+// beside it never takes it.
+TEST(engine_progress, a_download_is_counted_whole)
+{
+  CHECK(vp::a_download_report("download krea/Krea-2-Turbo"));
+  CHECK(vp::a_download_report("download black-forest-labs/FLUX.2-klein-9B"));
+  CHECK(vp::a_download_report("model-00002-of-00004.safetensors"));
+  CHECK(!vp::a_download_report("denoise"));
+  vp::JobProgress dl(/*after=*/0, /*download=*/true);
+  const std::uint64_t gb = 1'000'000'000;
+  // 8 of 33 GB down: the first shard whole, the second at a quarter.
+  vp::JobPhase d = dl.read(
+      reports({report(1, "download krea/Krea-2-Turbo", 8 * gb, 33 * gb),
+               report(2, "diffusion_pytorch_model-00002-of-00005"
+                         ".safetensors", 1 * gb, 4 * gb)}), 0);
+  CHECK(d.phase == kPhaseDownload);
+  CHECK(d.done == 8 * gb && d.total == 33 * gb);
+  CHECK(d.label.empty());
+  // Between shards, and on the next one: still the whole, never back.
+  vp::JobPhase gap = dl.read(
+      reports({report(1, "download krea/Krea-2-Turbo", 11 * gb, 33 * gb)}),
+      1);
+  CHECK(gap.done == 11 * gb && gap.total == 33 * gb);
+  vp::JobPhase next = dl.read(
+      reports({report(1, "download krea/Krea-2-Turbo", 12 * gb, 33 * gb),
+               report(3, "text_encoder/model-00001-of-00002.safetensors",
+                      1 * gb, 5 * gb)}), 2);
+  CHECK(next.done == 12 * gb && next.label.empty());
+  CHECK(next.fraction() > 0.36f && next.fraction() < 0.37f);
+  // A generation beside it reads none of it.
+  vp::JobProgress gen(/*after=*/0, /*download=*/false);
+  CHECK(gen.read(reports({report(1, "download krea/Krea-2-Turbo", gb,
+                                 33 * gb)}), 0).phase == kPhasePrepare);
+  // An older vpipe, no whole: its files, as before.
+  vp::JobProgress old(/*after=*/0, /*download=*/true);
+  vp::JobPhase f = old.read(
+      reports({report(1, "model-00001-of-00002.safetensors", 3, 10)}), 0);
+  CHECK(f.label == "model-00001-of-00002.safetensors" && f.done == 3);
+}
+
 // A clip's writer counts its frames: an export's (its report named
 // kExportReport) its phase, counted; in a generation ("save video"), the
 // frames written after the decode -- finishing.

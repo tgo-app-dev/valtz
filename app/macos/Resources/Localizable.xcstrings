@@ -47,6 +47,22 @@
         }
       }
     },
+    "%@ (%@)" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ (%2$@)"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@（%@）"
+          }
+        }
+      }
+    },
     "%@ (this Mac)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -371,6 +387,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 需要 Turbo LoRA"
+          }
+        }
+      }
+    },
+    "%@ of about %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ of about %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ / 约 %2$@"
           }
         }
       }
@@ -874,6 +906,16 @@
         }
       }
     },
+    "%@-bit · original kept" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 位 · 保留原模型"
+          }
+        }
+      }
+    },
     "%@. Click to see it on the stage; drag it into the text to mention it." : {
       "localizations" : {
         "zh-Hans" : {
@@ -1231,6 +1273,16 @@
         }
       }
     },
+    "A %@-bit copy beside the original: choose which one runs, and which one to keep" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 位副本与原模型并存：选择使用哪一个，以及保留哪一个"
+          }
+        }
+      }
+    },
     "A chat with the helper goes to a member's own helper." : {
       "localizations" : {
         "zh-Hans" : {
@@ -1272,6 +1324,7 @@
       }
     },
     "A download was interrupted" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -3228,12 +3281,52 @@
         }
       }
     },
+    "Cancel Download" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "取消下载"
+          }
+        }
+      }
+    },
+    "Cancel the download and delete what has come down" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "取消下载并删除已下载的部分"
+          }
+        }
+      }
+    },
+    "Cancel the download of %@?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "取消下载 %@？"
+          }
+        }
+      }
+    },
     "Cancelled" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已取消"
+          }
+        }
+      }
+    },
+    "Cancelling…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在取消…"
           }
         }
       }
@@ -3846,6 +3939,16 @@
         }
       }
     },
+    "Compress and Keep Original" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "压缩并保留原模型"
+          }
+        }
+      }
+    },
     "Compress to 8 or 4 bits to free disk space: the download is replaced by a smaller copy" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3898,6 +4001,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已压缩为 %@ 位"
+          }
+        }
+      }
+    },
+    "Compressed to %@-bit, the original kept" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已压缩为 %@ 位，原模型已保留"
+          }
+        }
+      }
+    },
+    "Compressed to %@-bit, the original kept beside it: the copy is in use. Choose which to keep in the compress menu." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已压缩为 %@ 位，原模型保留在旁：当前使用副本。可在压缩菜单中选择保留哪一个。"
           }
         }
       }
@@ -4511,6 +4634,16 @@
         }
       }
     },
+    "Delete" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "删除"
+          }
+        }
+      }
+    },
     "Delete Drawing" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4531,12 +4664,32 @@
         }
       }
     },
+    "Delete the paused download of %@?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "删除 %@ 已暂停的下载？"
+          }
+        }
+      }
+    },
     "Delete the selected objects" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "删除所选对象"
+          }
+        }
+      }
+    },
+    "Delete what has come down of it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "删除它已下载的部分"
           }
         }
       }
@@ -4850,6 +5003,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "垂直分布"
+          }
+        }
+      }
+    },
+    "Do Nothing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不执行任何操作"
           }
         }
       }
@@ -6557,6 +6720,16 @@
         }
       }
     },
+    "Generations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成"
+          }
+        }
+      }
+    },
     "Glow" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6985,6 +7158,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "越高保留的块越少：更快，但不够精确"
+          }
+        }
+      }
+    },
+    "Highlight the timeline and prompt switch when it switches by itself" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动切换时突出显示时间线与提示词的切换按钮"
           }
         }
       }
@@ -7725,6 +7908,26 @@
         }
       }
     },
+    "Keep" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保留"
+          }
+        }
+      }
+    },
+    "Keep Downloading" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "继续下载"
+          }
+        }
+      }
+    },
     "Keep Loaded" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7741,6 +7944,70 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "保留在素材中"
+          }
+        }
+      }
+    },
+    "Keep the %@-bit Copy, Delete the Original (%@)…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Keep the %1$@-bit Copy, Delete the Original (%2$@)…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保留 %@ 位副本，删除原模型（%@）…"
+          }
+        }
+      }
+    },
+    "Keep the %@-bit copy of %@ and delete its original?" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Keep the %1$@-bit copy of %2$@ and delete its original?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保留 %@ 位副本并删除 %@ 的原模型？"
+          }
+        }
+      }
+    },
+    "Keep the Original, Delete the %@-bit Copy (%@)…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Keep the Original, Delete the %1$@-bit Copy (%2$@)…"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保留原模型，删除 %@ 位副本（%@）…"
+          }
+        }
+      }
+    },
+    "Keep the original of %@ and delete its %@-bit copy?" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Keep the original of %1$@ and delete its %2$@-bit copy?"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保留 %@ 的原模型并删除其 %@ 位副本？"
           }
         }
       }
@@ -10313,6 +10580,16 @@
         }
       }
     },
+    "Or keep the original to try the copy first: both stay on disk, the copy in use, until you keep one of them in the compress menu." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "也可以保留原模型，先试用副本：两者都保留在磁盘上并使用副本，直到你在压缩菜单中保留其中之一。"
+          }
+        }
+      }
+    },
     "Order" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10525,12 +10802,52 @@
         }
       }
     },
+    "Pause Instead" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "改为暂停"
+          }
+        }
+      }
+    },
+    "Pause the download: what has come down stays, and Resume goes on from there" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "暂停下载：已下载的部分会保留，点“继续”即从中断处接着下载"
+          }
+        }
+      }
+    },
     "Paused" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已暂停"
+          }
+        }
+      }
+    },
+    "Paused or interrupted: Resume goes on from where it stopped" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已暂停或中断：点“继续”即从停下处接着下载"
+          }
+        }
+      }
+    },
+    "Pausing…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在暂停…"
           }
         }
       }
@@ -12905,6 +13222,26 @@
         }
       }
     },
+    "Show Assets once more than one result has been generated" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成的结果多于一个时显示素材"
+          }
+        }
+      }
+    },
+    "Show Assets when several tasks are queued" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "有多个任务排队时显示素材"
+          }
+        }
+      }
+    },
     "Show B" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14160,6 +14497,16 @@
         }
       }
     },
+    "Switch to the Timeline" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "切换到时间线"
+          }
+        }
+      }
+    },
     "System Default (%@)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14420,6 +14767,42 @@
         }
       }
     },
+    "The %@ that has come down is deleted; downloading it again starts from the beginning." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已下载的 %@ 将被删除；再次下载时会从头开始。"
+          }
+        }
+      }
+    },
+    "The %@ that has come down so far is deleted. Pause it instead to go on later." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "目前已下载的 %@ 将被删除。若想稍后接着下载，请改为暂停。"
+          }
+        }
+      }
+    },
+    "The %@-bit copy is in use; the %@ original is kept beside it" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The %1$@-bit copy is in use; the %2$@ original is kept beside it"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在使用 %@ 位副本；%@ 的原模型保留在旁"
+          }
+        }
+      }
+    },
     "The Agent tab over the prompt: ask for a deck, a poster or a video of your clips with music, and a model builds it in your document with the editor's tools, a step at a time. Switched off, the tab goes, and a session at work stops." : {
       "localizations" : {
         "zh-Hans" : {
@@ -14536,6 +14919,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "直线、轮廓、文字和画笔所用的颜色"
+          }
+        }
+      }
+    },
+    "The compressed copy kept, its original deleted: %@ freed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已保留压缩副本并删除原模型：腾出 %@。"
+          }
+        }
+      }
+    },
+    "The copy's %@ is deleted. It can be compressed again later." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "副本的 %@ 将被删除。之后可以再次压缩。"
           }
         }
       }
@@ -14727,6 +15130,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "停止后将打开下一个项目。"
+          }
+        }
+      }
+    },
+    "The original is in use; its %@-bit copy is kept beside it, set aside" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在使用原模型；其 %@ 位副本保留在旁，暂不使用"
+          }
+        }
+      }
+    },
+    "The original kept, the compressed copy deleted: %@ freed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已保留原模型并删除压缩副本：腾出 %@。"
+          }
+        }
+      }
+    },
+    "The original's %@ is deleted. To have it back, download it again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "原模型的 %@ 将被删除。如需恢复，请重新下载。"
           }
         }
       }
@@ -14928,6 +15361,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "系统正在降频——生成的每一步将耗时更长。"
+          }
+        }
+      }
+    },
+    "The timeline shows a clip's or a sound's composition, or a still with pages." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "时间线显示视频或声音的合成，或带页面的静态合成。"
           }
         }
       }
@@ -15966,6 +16409,26 @@
         }
       }
     },
+    "Use the %@-bit Copy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "使用 %@ 位副本"
+          }
+        }
+      }
+    },
+    "Use the Original" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "使用原模型"
+          }
+        }
+      }
+    },
     "Use this prompt" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -16501,6 +16964,26 @@
         }
       }
     },
+    "What has come down is deleted; downloading it again starts from the beginning." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已下载的部分将被删除；再次下载时会从头开始。"
+          }
+        }
+      }
+    },
+    "What has come down so far is deleted. Pause it instead to go on later." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "目前已下载的部分将被删除。若想稍后接着下载，请改为暂停。"
+          }
+        }
+      }
+    },
     "What is still being built: switched on here to try it. It may change, or go." : {
       "localizations" : {
         "zh-Hans" : {
@@ -16569,6 +17052,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "速度带来的变化"
+          }
+        }
+      }
+    },
+    "When a generation finishes on a composition that has content" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成在已有内容的合成上完成时"
           }
         }
       }
@@ -17857,6 +18350,23 @@
         }
       }
     },
+    "core.compressed_beside_original" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} already has a copy at {bits} bits beside its original: keep one of the two first."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 已有一份 {bits} 位副本与原模型并存：请先保留其中之一。"
+          }
+        }
+      }
+    },
     "core.continue_needs_clip" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18741,6 +19251,23 @@
         }
       }
     },
+    "core.no_download_running" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is not downloading."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 没有在下载。"
+          }
+        }
+      }
+    },
     "core.no_drawing_there" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -18996,6 +19523,23 @@
         }
       }
     },
+    "core.not_both_kept" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} has no compressed copy kept beside its original."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 没有与原模型并存的压缩副本。"
+          }
+        }
+      }
+    },
     "core.not_composition" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -19060,6 +19604,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "没有可导入的内容。"
+          }
+        }
+      }
+    },
+    "core.original_shared" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The original of {model} is not deleted: {other}'s files are in its folder."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未删除 {model} 的原模型：其文件夹中有 {other} 的文件。"
           }
         }
       }
@@ -19863,6 +20424,23 @@
         }
       }
     },
+    "core.weights_busy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The weights of {model} are not deleted while tasks are under way: try again once they have ended."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "任务进行期间不会删除 {model} 的权重：请在任务结束后重试。"
+          }
+        }
+      }
+    },
     "core.weights_missing" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -20093,6 +20671,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "预算 %@，需要时重新生成"
+          }
+        }
+      }
+    },
+    "original · %@-bit kept" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "原模型 · 保留 %@ 位副本"
           }
         }
       }

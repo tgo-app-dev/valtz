@@ -107,13 +107,55 @@ extension AppModel {
     var timelineOpen: Bool { timelineWanted && timelineAvailable }
 
     /// The timeline in the prompt's place, or the prompt back: the
-    /// generation card goes with the prompt.
-    func showTimeline(_ on: Bool) {
+    /// generation card goes with the prompt. `flash`: the switch shown
+    /// then flashes once (a switch made by itself) -- asked for FIRST,
+    /// as the new switch's onAppear can run within this very change;
+    /// any switch made clears a flash still asked for.
+    func showTimeline(_ on: Bool, flash: Bool = false) {
+        switchFlash = flash ? Date() : nil
         withAnimation(Self.motion) {
             timelineWanted = on
             if on && openPanel == .generate { openPanel = nil }
             if !on { timelineCutting = false }
         }
+    }
+
+    /// A result LANDED as `layer`, a new layer of `doc` (DESIGN §10a
+    /// Timeline): with the composition holding something already -- a
+    /// layer not empty beside it -- and on the stage, the timeline slides
+    /// in for the prompt, to show where it went, and the switch back to
+    /// the prompt flashes once it is in (Settings › General ›
+    /// Generations). Only where the timeline is offered: a timeline (a
+    /// sound's too) or a still with pages; not over the Prompt Editor,
+    /// nor when it is open already.
+    func landed(on doc: AssetDTO, layer: String) {
+        guard landingOpensTimeline, !promptImmersive, !timelineOpen,
+              doc.isTimeline || doc.isPaged, doc.id == stageAssetId,
+              doc.layerStack.contains(where: {
+                  $0.id != layer && !$0.isEmpty })
+        else { return }
+        landingCounts.timeline += 1
+        showTimeline(true, flash: landingFlashesSwitch)
+    }
+
+    /// A scripted run's landing (VALTZ_SNAPSHOT_TASKS `land:`): `asset`
+    /// placed as a generation's result is -- a new layer of the active
+    /// composition -- then what follows a landing not watched, the stage
+    /// on that composition.
+    func snapshotLand(_ asset: String) {
+        guard let core, let projectId, let onto = activeComposition
+        else { return }
+        let r = core.assetOp(project: projectId, "place-result",
+                             ["asset": asset, "onto": onto.id])
+        guard r.ok, let view = r["asset"] as? String else {
+            note("error", r.message)
+            return
+        }
+        reloadAssets()
+        guard let doc = assets.first(where: { $0.id == view }),
+              doc.id == stageAssetId else { return }
+        layersChanged()
+        landed(on: doc, layer: r["layer"] as? String ?? "")
     }
 
     var timelineModel: TimelineModel {
@@ -787,9 +829,12 @@ struct TimelineCard: View {
 /// right), and beside the timeline back to the prompt and its
 /// generation settings (pointing left): a grey tab of its own.
 struct TimelineSwitch: View {
+    let model: AppModel
     let toTimeline: Bool
     let action: () -> Void
     @State private var hovering = false
+    /// Flashed: in the accent, for a moment.
+    @State private var lit = false
 
     var body: some View {
         Button(action: action) {
@@ -800,17 +845,41 @@ struct TimelineSwitch: View {
                                              : "chevron.left")
                     .font(.system(size: 12, weight: .bold))
             }
-            .foregroundStyle(.secondary)
+            .foregroundStyle(lit ? AnyShapeStyle(Color.white)
+                                 : AnyShapeStyle(.secondary))
             .frame(width: 24, height: 58)
-            .background(Capsule().fill(Color.primary.opacity(
-                hovering ? 0.12 : 0.07)))
+            .background(Capsule().fill(lit ? Color.accentColor
+                                           : Color.primary.opacity(
+                                               hovering ? 0.12 : 0.07)))
+            .scaleEffect(lit ? 1.12 : 1)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        // The timeline came by itself (AppModel.landed): the way back to
+        // the prompt flashes once, when it is in.
+        .onAppear { flashIfAsked() }
+        .onChange(of: model.switchFlash) { _, _ in flashIfAsked() }
         .help(toTimeline ? "Show the timeline in place of the prompt"
                          : "Back to the prompt and its generation settings")
         .accessibilityLabel(Text(toTimeline ? "Timeline" : "Prompt"))
+    }
+
+    /// Asked within the last few seconds (the timeline's stack can take a
+    /// moment to load): taken, and -- once the slide that brings the
+    /// switch in is over -- the switch lit quickly and let go.
+    private func flashIfAsked() {
+        guard !toTimeline, let asked = model.switchFlash else { return }
+        model.switchFlash = nil
+        guard Date().timeIntervalSince(asked) < 5 else { return }
+        let scale = AppModel.animationScale
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(0.45 * scale))
+            model.landingCounts.flash += 1
+            withAnimation(.easeOut(duration: 0.12 * scale)) { lit = true }
+            try? await Task.sleep(for: .seconds(0.22 * scale))
+            withAnimation(.easeIn(duration: 0.45 * scale)) { lit = false }
+        }
     }
 }
 

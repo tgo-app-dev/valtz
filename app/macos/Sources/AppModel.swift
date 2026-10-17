@@ -676,6 +676,16 @@ struct JobInfo {
     var model = ""
     /// What it is doing now, while it runs.
     var phase: JobPhase?
+
+    /// Work on this Mac's models -- a download, a compress, a quantize --
+    /// or a job served for a fleet member: in no project, so it runs on
+    /// while projects change. Start Over and New Anonymous Project
+    /// waited for a download before (2026-10-16).
+    var inNoProject: Bool { Self.noProjectPurposes.contains(purpose) }
+    static let noProjectPurposes: Set<String> =
+        ["download", "compress", "quantize", "fleet"]
+
+    var live: Bool { state == "queued" || state == "running" }
 }
 
 /// What a running job is doing -- the core's phases (engine.h, kPhase*)
@@ -846,6 +856,21 @@ final class AppModel {
     /// The title is being renamed (a field in the title bar).
     var renamingTitle = false
     var inspectorOpen = false
+    /// The inspector's column is in the window: open, on the editor.
+    var showsInspectorColumn: Bool { inspectorOpen && screen == .editor }
+
+    /// The editor's narrowest: the composer's column whole -- 680 between
+    /// its margins. Its cards' rows hold the composer near 640 however
+    /// little room it is given, so with the inspector open at the
+    /// window's old 820 the editor had 520 and the prompt card ran past
+    /// both its edges.
+    static let editorMinWidth: CGFloat = 820
+    /// The window's narrowest: the editor's, and the inspector beside it
+    /// while it is open.
+    var windowMinWidth: CGFloat {
+        Self.editorMinWidth
+            + (showsInspectorColumn ? InspectorColumn.width : 0)
+    }
     /// The status bar along the window's bottom (View › Show Status Bar):
     /// the machine's load and thermal state, remembered between launches
     /// -- except by a scripted snapshot run, which neither reads nor
@@ -1245,6 +1270,50 @@ final class AppModel {
     /// for (its switch beside the box), shown while the stage works on a
     /// timeline or a still with pages (`timelineOpen`).
     var timelineWanted = false
+    /// Settings › General › Generations (DESIGN §10a Timeline): a result
+    /// LANDING as a new layer of a composition that holds something
+    /// already slides the timeline in for the prompt -- or does nothing;
+    /// the switch back to the prompt flashes once when the timeline came
+    /// by itself; the inspector opens on Assets as tasks reach two
+    /// (revealTasks), and as the results made reach two (off unless
+    /// checked). Kept between launches -- a scripted snapshot run takes
+    /// VALTZ_SNAPSHOT_LANDING's instead ("timeline=off,flash=on,
+    /// tasks=off,results=on"), saving nothing.
+    var landingOpensTimeline = AppModel.storedLanding(
+        "timeline", default: true) {
+        didSet { Self.keep(landingOpensTimeline, as: "landing.timeline") }
+    }
+    var landingFlashesSwitch = AppModel.storedLanding(
+        "flash", default: true) {
+        didSet { Self.keep(landingFlashesSwitch, as: "landing.flash") }
+    }
+    var revealsTasks = AppModel.storedLanding("tasks", default: true) {
+        didSet { Self.keep(revealsTasks, as: "landing.tasks") }
+    }
+    var revealsResults = AppModel.storedLanding("results", default: false) {
+        didSet { Self.keep(revealsResults, as: "landing.results") }
+    }
+    /// The switch back to the prompt asked to flash, once it is shown
+    /// (TimelineSwitch takes it): the timeline came by itself.
+    var switchFlash: Date?
+    /// What the landings did, for the snapshot summary: the timeline
+    /// opened by itself, the switch flashed, Assets shown for a result.
+    @ObservationIgnored var landingCounts = (timeline: 0, flash: 0,
+                                             results: 0)
+    private static func storedLanding(_ name: String,
+                                      default fallback: Bool) -> Bool {
+        guard keepsViewState else {
+            let spec = ProcessInfo.processInfo
+                .environment["VALTZ_SNAPSHOT_LANDING"] ?? ""
+            for item in spec.split(separator: ",") {
+                let kv = item.split(separator: "=").map(String.init)
+                if kv.count == 2, kv[0] == name { return kv[1] == "on" }
+            }
+            return fallback
+        }
+        return UserDefaults.standard.object(forKey: "landing." + name)
+            as? Bool ?? fallback
+    }
     /// The timeline's rows of layers in view (its ⌃ ⌄), remembered
     /// between launches (not by a scripted snapshot run).
     var timelineRows = AppModel.storedTimelineRows {
@@ -1284,6 +1353,12 @@ final class AppModel {
     /// the stage's slot, or the mark and the room around it -- as last
     /// laid out (SimpleView): what a tray opening would leave it.
     @ObservationIgnored var editorRoom: CGFloat = 0
+    /// The composer's width as laid out, the column it is given, and each
+    /// drawer's content as laid out (the snapshot summary's `composer=`):
+    /// the composer is never wider than its column.
+    @ObservationIgnored var composerWidth: CGFloat = 0
+    @ObservationIgnored var composerColumn: CGFloat = 0
+    @ObservationIgnored var drawerWidths: [String: CGFloat] = [:]
     @ObservationIgnored var stageRoom: CGFloat = 0
     @ObservationIgnored var markRoom: [Int: CGFloat] = [:]
     var pictureRoom: CGFloat {
@@ -2599,6 +2674,16 @@ final class AppModel {
     /// A model whose compress is being confirmed: its alert open
     /// (Capabilities), at that width.
     var compressAsk: (member: CapabilityTree.Member, bits: Int)?
+    /// A copy kept beside its original: which of the two to keep, the
+    /// other deleted -- asked (`compressed`: the copy kept).
+    var compressKeepAsk: (member: CapabilityTree.Member, compressed: Bool)?
+    /// A download whose cancel is being confirmed (Capabilities): its
+    /// alert open -- what came down would be deleted.
+    var downloadCancelAsk: CapabilityTree.Member?
+    /// Downloads asked to stop and not stopped yet, by model id: true
+    /// cancelled (its files to be deleted), false paused. Their rows say
+    /// so until the job ends.
+    var downloadStopping: [String: Bool] = [:]
     /// A token the snapshot hooks type into the gated sheet.
     @ObservationIgnored var snapshotGatedToken: String?
     func openCapabilities(family: String?) {
@@ -3879,6 +3964,33 @@ final class AppModel {
         gatedDownload = nil
     }
 
+    /// A running download PAUSED (Capabilities' pause button): what came
+    /// down stays -- the row's Resume goes on from there, a launch later
+    /// too. What waited for it fails, saying the download was stopped.
+    func pauseDownload(model: String) {
+        guard let core else { return }
+        let r = core.stopDownload(model, discard: false)
+        if r.ok { downloadStopping[model] = false } else { flash(r.message) }
+    }
+
+    /// A download CANCELLED -- running, queued, or paused before: what
+    /// came down is deleted (by the core, once the download has let go of
+    /// its files), the model back to not installed.
+    func cancelDownload(model: String) {
+        guard let core else { return }
+        downloadFailures[model] = nil
+        let downloading = jobs.values.contains {
+            $0.purpose == "download" && $0.model == model
+                && ($0.state == "queued" || $0.state == "running")
+        }
+        let r = core.stopDownload(model, discard: true)
+        if !r.ok {
+            flash(r.message)
+        } else if downloading {
+            downloadStopping[model] = true
+        }
+    }
+
     /// A quantized variant made here from its source (Settings ›
     /// Capabilities' Quantize): a job, its row's progress.
     func quantize(model: String) {
@@ -3927,15 +4039,48 @@ final class AppModel {
     }
 
     /// Its download replaced by a copy quantized to `bits` (Settings ›
-    /// Capabilities' compress button, once confirmed): a job, its row's
+    /// Capabilities' compress button, once confirmed) -- or, keeping the
+    /// original, the copy in use beside it, to try first: a job, its row's
     /// progress; refused, why under the row.
-    func compress(model: String, bits: Int) {
+    func compress(model: String, bits: Int, keepOriginal: Bool = false) {
         guard let core else { return }
         compressNotes[model] = nil
-        let r = core.compressModel(model, bits: bits)
+        let r = core.compressModel(model, bits: bits,
+                                   keepOriginal: keepOriginal)
         if !r.ok {
             compressNotes[model] = .init(level: "error", text: r.message)
         }
+    }
+
+    /// A copy kept beside its original: which one the model runs from
+    /// now on (its compress menu).
+    func useCompressed(model: String, _ compressed: Bool) {
+        guard let core else { return }
+        compressNotes[model] = nil
+        let r = core.useCompressed(model, compressed)
+        if !r.ok {
+            compressNotes[model] = .init(level: "error", text: r.message)
+        }
+        refreshMachine()
+    }
+
+    /// ...and one of the two kept, the other deleted -- asked first
+    /// (`compressKeepAsk`): what it freed, under the row.
+    func keepCompressed(model: String, _ compressed: Bool) {
+        guard let core else { return }
+        let r = core.keepCompressed(model, compressed)
+        if r.ok {
+            let freed = Int64(r["freed"] as? Int ?? 0)
+                .formatted(.byteCount(style: .file))
+            compressNotes[model] = .init(
+                level: "info",
+                text: compressed
+                    ? String(localized: "The compressed copy kept, its original deleted: \(freed) freed.")
+                    : String(localized: "The original kept, the compressed copy deleted: \(freed) freed."))
+        } else {
+            compressNotes[model] = .init(level: "error", text: r.message)
+        }
+        refreshMachine()
     }
 
     /// The agentic helper chosen ("" Auto), kept by the core for later
@@ -4757,6 +4902,8 @@ final class AppModel {
     /// Assets, where each is a row -- its badge, what it is doing, what it
     /// waits for -- so what runs and what waits is in sight. Once, as
     /// their number reaches two; shut again by hand, it stays shut.
+    /// (Settings › General › Generations can turn it off: `revealsTasks`;
+    /// and have the second result made open it: `revealsResults`.)
     func revealTasks() {
         withAnimation(Self.motion) {
             inspectorOpen = true
@@ -5000,19 +5147,96 @@ final class AppModel {
     /// the assistant's suggestion -- a row item active on the stage let
     /// go first; the picture to edit gone, the stage's own work is back
     /// (baseChanged, from the view).
+    /// Clear: the words, the row, the prompt asset they were -- an undo
+    /// step of their own ("Undo Clear Prompt"), the caret left in the
+    /// empty box. ⌘Z after it crashed Valtz (2026-10-16): the text's
+    /// typing steps, of the words gone, were replayed past the end.
     func clearPrompt() {
-        clearReferenceFocus()
-        promptAssetId = nil
-        promptName = nil
-        promptAttachments = []
-        referenceThumbs = [:]
-        promptMentions = []
-        promptMarked = ""
-        prompt = ""
-        dropSuggestion()
+        let before = promptState
+        let had = !before.prompt.isEmpty || !before.attachments.isEmpty
+        setPromptState(PromptState())
         promptCompact = false
+        guard let tv = promptTextView else { return }
+        if had {
+            // The typing steps were of the words gone.
+            if let storage = tv.textStorage {
+                tv.undoManager?.removeAllActions(withTarget: storage)
+            }
+            registerPromptUndo(back: before,
+                               name: String(localized: "Clear Prompt"))
+        }
+        if tv.isEditable { tv.window?.makeFirstResponder(tv) }
+    }
+
+    /// What the box holds, as Clear takes it and its undo puts it back.
+    struct PromptState {
+        var prompt = ""
+        var marked = ""
+        var mentions: [UUID] = []
+        var attachments: [PromptAttachment] = []
+        var thumbs: [UUID: CGImage] = [:]
+        var assetId: String?
+        var name: String?
+    }
+
+    private var promptState: PromptState {
+        PromptState(prompt: prompt, marked: promptMarked,
+                    mentions: promptMentions, attachments: promptAttachments,
+                    thumbs: referenceThumbs, assetId: promptAssetId,
+                    name: promptName)
+    }
+
+    private func setPromptState(_ s: PromptState) {
+        clearReferenceFocus()
+        promptAssetId = s.assetId
+        promptName = s.name
+        promptAttachments = s.attachments
+        referenceThumbs = s.thumbs
+        promptMentions = s.mentions
+        promptMarked = s.marked
+        prompt = s.prompt
+        dropSuggestion()
         promptRevision += 1
         promptChanged()
+    }
+
+    /// The box's own undo steps (Clear's) are registered for this on the
+    /// window's undo manager, beside its text's -- which are its
+    /// storage's -- so either can go without the other fields'.
+    @ObservationIgnored let promptUndoTarget = NSObject()
+    /// The revision the last of them left the box at. Its words drawn
+    /// keep the steps; words put in at any other (Use in Prompt, a tab,
+    /// a suggestion applied) drop them (dropStalePromptUndo).
+    @ObservationIgnored private var promptUndoRevision = -1
+
+    /// `back` made the box's undo step, called `name`: ⌘Z puts it back,
+    /// ⇧⌘Z what it replaced. On the prompt's undo manager -- the
+    /// window's, its typing's -- so ⌘Z reaches it as the text's own
+    /// (undoAny).
+    private func registerPromptUndo(back: PromptState, name: String) {
+        guard let um = promptTextView?.undoManager else { return }
+        let now = promptState
+        um.registerUndo(withTarget: promptUndoTarget) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                withAnimation(Self.motion) { self.setPromptState(back) }
+                self.registerPromptUndo(back: now, name: name)
+            }
+        }
+        um.setActionName(name)
+        promptUndoRevision = promptRevision
+    }
+
+    /// The box's words replaced from outside its typing (PromptEditor's
+    /// replaceText): the text's undo steps were of other words -- their
+    /// ranges replayed on these run past the end, NSRangeException --
+    /// and Clear's were of another box; both go, unless these are the
+    /// words Clear or its undo put there.
+    func dropStalePromptUndo(_ tv: NSTextView) {
+        guard promptRevision != promptUndoRevision, let um = tv.undoManager,
+              let storage = tv.textStorage else { return }
+        um.removeAllActions(withTarget: storage)
+        um.removeAllActions(withTarget: promptUndoTarget)
     }
 
     /// Media into the prompt's row, each file once (one staged already
@@ -7847,6 +8071,8 @@ final class AppModel {
                 pendingWindowSize = nil
                 applyWindowSize(size)
             }
+            // The inspector open from the first: room for it.
+            fitWindowToInspector()
         }
     }
     /// The editor's window has been there: closing the last window quits
@@ -7970,6 +8196,41 @@ final class AppModel {
 
     /// Its top left where it is; within the screen, and no smaller than
     /// the window may be.
+    /// The window widened for the inspector -- by how much, to what -- so
+    /// shutting it gives that back while the window is still as it was
+    /// left.
+    @ObservationIgnored private var widenedForInspector:
+        (by: CGFloat, to: CGFloat)?
+
+    /// The inspector opened or shut: the window as wide as the editor and
+    /// the inspector need -- widened to the right (kept on the screen;
+    /// where the screen is narrower, the editor has what is left) -- and
+    /// narrowed back as it shuts, if it was widened for it and is the width
+    /// it was left at. A window already wide enough is left alone.
+    func fitWindowToInspector() {
+        guard let win = editorWindow else { return }
+        let room = win.screen?.visibleFrame ?? win.frame
+        var f = win.frame
+        if showsInspectorColumn {
+            let need = min(windowMinWidth, room.width)
+            guard f.width < need - 0.5 else { return }
+            widenedForInspector = (need - f.width, need)
+            f.size.width = need
+            f.origin.x = min(max(f.origin.x, room.minX), room.maxX - need)
+            win.setFrame(f, display: true, animate: win.isVisible)
+            return
+        }
+        guard let widened = widenedForInspector else { return }
+        widenedForInspector = nil
+        guard abs(f.width - widened.to) < 0.5 else { return }
+        f.size.width = max(Self.editorMinWidth, f.width - widened.by)
+        // After this pass: its minimum, still the inspector's, comes down
+        // with the layout.
+        DispatchQueue.main.async {
+            win.setFrame(f, display: true, animate: win.isVisible)
+        }
+    }
+
     private func applyWindowSize(_ size: CGSize) {
         guard let win = editorWindow else { return }
         var f = win.frame
@@ -8218,11 +8479,12 @@ final class AppModel {
         refreshDocument()
     }
 
-    /// Something is running (a generation, the assistant, an import):
-    /// the session cannot be discarded under it.
+    /// Something is running for the project (a generation, the
+    /// assistant, an import): the session cannot be discarded under it.
+    /// A download -- any work in no project -- runs on beside it.
     var isBusy: Bool {
         generationJob != nil || enhanceJob != nil
-            || jobs.values.contains { $0.state == "queued" || $0.state == "running" }
+            || jobs.values.contains { $0.live && !$0.inNoProject }
     }
 
     /// Undo and redo wait for the project's own short jobs -- an import,
@@ -8270,10 +8532,11 @@ final class AppModel {
     /// Its tasks are asked about and stopped first (prepareClose).
     func newAnonymousProject() {
         guard core != nil else { return }
-        // Work that is no task (the assistant, an import): waited for.
+        // Work that is no task (the assistant, an import): waited for. A
+        // download -- any work in no project -- runs on into the new one.
         let taskJobs = Set(tasks.map(\.job))
         guard enhanceJob == nil, !jobs.contains(where: { id, j in
-            (j.state == "queued" || j.state == "running")
+            j.live && !j.inNoProject
                 && !taskJobs.contains(id) && j.purpose != "build"
                 && j.purpose != "export"
         }) else {
@@ -9091,6 +9354,11 @@ final class AppModel {
         jobs[job]?.phase = nil
         if !tasks.isEmpty || taskContexts[job] != nil { reloadTasks() }
         if state == "finished" { jobs[job]?.progress = 1 }
+        // A download ended -- stopped as asked, or not: its row is itself
+        // again.
+        if let j = jobs[job], j.purpose == "download", !j.model.isEmpty {
+            downloadStopping[j.model] = nil
+        }
         // A compress done: what it freed, under its row.
         if state == "finished", let j = jobs[job], j.purpose == "compress",
            !j.model.isEmpty {
@@ -9099,7 +9367,9 @@ final class AppModel {
                 .formatted(.byteCount(style: .file))
             compressNotes[j.model] = .init(
                 level: "info",
-                text: String(localized: "Compressed to \(String(bits))-bit: \(freed) freed."))
+                text: ev.payload["kept_original"] as? Bool == true
+                    ? String(localized: "Compressed to \(String(bits))-bit, the original kept beside it: the copy is in use. Choose which to keep in the compress menu.")
+                    : String(localized: "Compressed to \(String(bits))-bit: \(freed) freed."))
         }
         if ev.kind == "job.failed" {
             let msg = L10n.coreMessage(ev.payload)
@@ -9205,12 +9475,24 @@ final class AppModel {
                 note("error", r.message)
             }
         }
+        // The second result made: Assets shown, where both are
+        // (Settings › General › Generations).
+        if state == "finished", revealsResults, let asset,
+           asset.isGeneration {
+            let made = assets.filter { $0.isGeneration && $0.head > 0 }
+                .count
+            if made == 2 {
+                landingCounts.results += 1
+                revealTasks()
+            }
+        }
         guard watched else {
             // Not watched: the stage stays with what is being done there
             // -- drawn again when that is what the result went into.
             if let placed, placed.doc.id == stageAssetId,
                generationJob == nil {
                 layersChanged()
+                landed(on: placed.doc, layer: placed.layer)
             }
             return
         }
@@ -9218,6 +9500,7 @@ final class AppModel {
             finishStage(state: "finished", asset: placed.doc, result: asset,
                         layer: placed.layer, task: ctx)
             selectLayer(placed.layer)
+            landed(on: placed.doc, layer: placed.layer)
             return
         }
         finishStage(state: state, asset: asset, task: ctx)

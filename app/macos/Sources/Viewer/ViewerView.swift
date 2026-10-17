@@ -191,33 +191,51 @@ struct ExportStatus: View {
 struct GenerationStatus: View {
     @Bindable var model: AppModel
     var cancel: (() -> Void)? = nil
+    /// Its width, when given one: the bar takes what the caption and the
+    /// time leave it (40 at least), the caption is cut only past that,
+    /// the time never. Without one, a 140-point bar and the capsule its
+    /// content's width.
+    var width: CGFloat? = nil
+
+    /// The width it is given over the stage and over the mark: the bar,
+    /// "Generating · 47.3%" and "1:05 of ~3:30" each on one line. Less
+    /// only where the prompt box (or the timeline) is narrower.
+    static let defaultWidth: CGFloat = 460
 
     var body: some View {
         HStack(spacing: 10) {
             ProgressView(value: model.generationPhase?.fraction)
                 .progressViewStyle(.linear)
-                .frame(width: 140)
+                .frame(minWidth: width == nil ? 140 : 40,
+                       maxWidth: width == nil ? 140 : .infinity)
             Text(model.generationCaption)
                 .monospacedDigit()
                 .lineLimit(1)
+                .layoutPriority(1)
             if let start = model.generationStarted {
                 TimelineView(.periodic(from: start, by: 1)) { ctx in
                     Text(Self.timing(start: start, now: ctx.date,
                                      ends: model.generationEnds))
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize()
                         .foregroundStyle(.secondary)
                         .help(model.generationEnds == nil
                               ? String(localized: "Time since Start")
                               : String(localized: "Time since Start, of the estimated total"))
                 }
+                .layoutPriority(2)
             }
             if let cancel {
                 Button("Cancel", action: cancel)
+                    .fixedSize()
+                    .layoutPriority(2)
             }
         }
         .controlSize(.small)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        .frame(width: width)
         .glassEffect(.regular, in: Capsule())
     }
 

@@ -2500,6 +2500,15 @@ Core::download_model(const std::string& model_id,
 }
 
 std::string
+Core::stop_download(const std::string& model_id, bool discard)
+{
+  return guarded([&] {
+    Status st = _impl->ctl->stop_download(model_id, discard);
+    return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
 Core::capture_sources_json() const
 {
   return guarded([&] { return ok(_impl->ctl->capture_sources()); });
@@ -2613,8 +2622,37 @@ Core::compress_model(const std::string& request_json)
       return err(j.error());
     }
     auto r = _impl->ctl->compress_model(jget<std::string>(*j, "model", ""),
-                                        jget(*j, "bits", 8));
+                                        jget(*j, "bits", 8),
+                                        jget(*j, "keep_original", false));
     return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
+  });
+}
+
+std::string
+Core::use_compressed(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->use_compressed(
+        jget<std::string>(*j, "model", ""), jget(*j, "compressed", true));
+    return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::keep_compressed(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto r = _impl->ctl->keep_compressed(
+        jget<std::string>(*j, "model", ""), jget(*j, "compressed", true));
+    return r.ok() ? ok({{"freed", *r}}) : err(r.error());
   });
 }
 

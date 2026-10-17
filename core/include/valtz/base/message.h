@@ -314,6 +314,8 @@ inline constexpr Message kAwaitedDownloadFailed{
 inline constexpr Message kAwaitedDownloadStopped{
     "core.awaited_download_stopped",
     "It waited for {model} to download, and the download was stopped."};
+inline constexpr Message kNoDownloadRunning{
+    "core.no_download_running", "{model} is not downloading."};
 // The agent (DESIGN §9b).
 inline constexpr Message kAgentEmptyRequest{
     "core.agent_empty_request", "Say what the agent should do."};
@@ -469,6 +471,21 @@ inline constexpr Message kCompressBadCopy{
     "core.compress_bad_copy",
     "The compressed copy of {model} did not pass its check, so the "
     "download was kept: {why}"};
+inline constexpr Message kCompressedBesideOriginal{
+    "core.compressed_beside_original",
+    "{model} already has a copy at {bits} bits beside its original: keep "
+    "one of the two first."};
+inline constexpr Message kNotBothKept{
+    "core.not_both_kept",
+    "{model} has no compressed copy kept beside its original."};
+inline constexpr Message kOriginalShared{
+    "core.original_shared",
+    "The original of {model} is not deleted: {other}'s files are in its "
+    "folder."};
+inline constexpr Message kWeightsBusy{
+    "core.weights_busy",
+    "The weights of {model} are not deleted while tasks are under way: "
+    "try again once they have ended."};
 inline constexpr Message kNoReferenceModel{
     "core.no_reference_model",
     "No video model that reads references is installed."};

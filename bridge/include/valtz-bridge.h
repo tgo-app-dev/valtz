@@ -418,17 +418,31 @@ public:
   // kept (Controller::download_model).
   std::string download_model(const std::string& model_id,
                              const std::string& hf_token);
+  // A model's download stopped (Controller::stop_download) -> {"ok"}:
+  // PAUSED (`discard` false), what came down kept -- download_model
+  // again goes on from there; CANCELLED, that deleted too (as the job
+  // ends; at once for one paused before). Its job's events say when it
+  // has stopped, and models.changed when the files have gone.
+  std::string stop_download(const std::string& model_id, bool discard);
   // A quantized variant made from its source (Controller::quantize_model:
   // capability_tree_json lists a member's "quantize" -- "from",
   // "from_name", "bits", "group_size", "ready") -> {"ok", "job"}; its
   // events are a job's, purpose "quantize".
   std::string quantize_model(const std::string& model_id);
-  // {"model", "bits": 8 | 4} -> {"ok", "job"}: its download replaced by
-  // a compressed copy (Controller::compress_model; the capability tree's
-  // member "compress": "ready", "why", "widths" [{"bits", "bytes",
-  // "saves"}], and "compressed": {"bits", "original_bytes"}); its events
-  // a job's, purpose "compress", "freed" when it finishes.
+  // {"model", "bits": 8 | 4, "keep_original"} -> {"ok", "job"}: its
+  // download replaced by a compressed copy -- or, `keep_original`, the
+  // copy in use beside it (Controller::compress_model; the capability
+  // tree's member "compress": "ready", "why", "widths" [{"bits", "bytes",
+  // "saves"}], and "compressed": {"bits", "bytes", "original_bytes",
+  // "in_use", "original_kept"}); its events a job's, purpose "compress",
+  // "freed" and "kept_original" when it finishes.
   std::string compress_model(const std::string& request_json);
+  // A copy and its original both kept: {"model", "compressed"} -> {"ok"},
+  // which one its jobs load (Controller::use_compressed); and the same ->
+  // {"ok", "freed"}, that one kept and the other deleted
+  // (Controller::keep_compressed).
+  std::string use_compressed(const std::string& request_json);
+  std::string keep_compressed(const std::string& request_json);
   // Sound CAPTURED (Controller::capture_*; DESIGN §7b): {"sources":
   // [{"id", "name", "kind": "microphone" | "system", "preferred"}],
   // "microphone": "granted" | "denied" | "undetermined"}; and

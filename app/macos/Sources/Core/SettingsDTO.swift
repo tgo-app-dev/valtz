@@ -78,9 +78,17 @@ struct CapabilityTree: Decodable, Sendable {
         }
     }
 
+    /// A compressed copy: in its download's place, or kept BESIDE it
+    /// (`originalKept`: a compress that kept the original, to try the
+    /// copy first) -- in use or set aside for the original.
     struct Compressed: Decodable, Sendable {
         var bits: Int
         var originalBytes: Int64
+        var bytes: Int64?
+        var inUse: Bool?
+        var originalKept: Bool?
+        var copyInUse: Bool { inUse ?? true }
+        var besideOriginal: Bool { originalKept ?? false }
     }
 }
 

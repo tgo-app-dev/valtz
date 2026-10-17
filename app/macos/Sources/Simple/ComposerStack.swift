@@ -109,7 +109,7 @@ struct ComposerStack: View {
                 if timeline {
                     TimelineCard(model: model)
                         .overlay(alignment: .leading) {
-                            TimelineSwitch(toTimeline: false) {
+                            TimelineSwitch(model: model, toTimeline: false) {
                                 model.showTimeline(false)
                             }
                             .offset(x: -36)
@@ -120,7 +120,8 @@ struct ComposerStack: View {
                     promptCard
                         .overlay(alignment: .trailing) {
                             if !immersive && model.timelineAvailable {
-                                TimelineSwitch(toTimeline: true) {
+                                TimelineSwitch(model: model,
+                                               toTimeline: true) {
                                     model.showTimeline(true)
                                 }
                                 .offset(x: 36)
@@ -644,6 +645,9 @@ struct ComposerStack: View {
     private func drawerPanel(_ p: ComposerPanel) -> some View {
         let open = model.openPanel == p
         return panel(p)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                model.drawerWidths["\(p)"] = $0
+            }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 20)
             .padding(.vertical, 18)

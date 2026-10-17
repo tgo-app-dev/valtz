@@ -17,9 +17,14 @@ struct RootView: View {
                 main
                 // A plain column rather than SwiftUI's .inspector, which
                 // over-sizes the stage.
-                if model.inspectorOpen && model.screen == .editor {
+                if model.showsInspectorColumn {
                     InspectorColumn(model: model)
                 }
+            }
+            // The editor keeps its width beside it: the window widened
+            // for it, and narrowed back after (AppModel.fitWindowToInspector).
+            .onChange(of: model.showsInspectorColumn) { _, _ in
+                model.fitWindowToInspector()
             }
             // The machine's load and thermal state, the window's width
             // (View › Show Status Bar).
@@ -97,9 +102,12 @@ struct RootView: View {
             if model.markup.selectionAsset != id { model.commitSelection() }
         }
         // Several tasks under way: Assets shows them (AppModel.revealTasks)
-        // -- as their number reaches two, not again while it stays there.
+        // -- as their number reaches two, not again while it stays there;
+        // unless Settings › General › Generations says not to.
         .onChange(of: model.tasks.count) { was, now in
-            if was < 2 && now >= 2 { model.revealTasks() }
+            if was < 2 && now >= 2 && model.revealsTasks {
+                model.revealTasks()
+            }
         }
         // The window, for a project's size (AppModel.editorWindow).
         .background(WindowReader { model.editorWindow = $0 })
@@ -160,11 +168,15 @@ struct RootView: View {
 struct InspectorColumn: View {
     @Bindable var model: AppModel
 
+    /// Its width, the edge included: what the window widens by for it
+    /// (AppModel.windowMinWidth).
+    static let width: CGFloat = 301
+
     var body: some View {
         HStack(spacing: 0) {
             Divider()
             InspectorView(model: model)
-                .frame(width: 300)
+                .frame(width: Self.width - 1)
         }
         .transition(.move(edge: .trailing).combined(with: .opacity))
     }

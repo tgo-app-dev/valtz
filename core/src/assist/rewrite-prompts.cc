@@ -7,7 +7,9 @@
 // MiniMax H3 Community License (its LICENSE and NOTICE), and Valtz's own
 // skills, from core/resources/skills -- Qwen-Image's among them, which a
 // download of QwenLM's own rewriters replaces (Controller::skill_text),
-// and FLUX.3 Image Klein's caption writer.
+// and FLUX.3 Image Klein's, in Valtz's words after BFL's prompting guide
+// and the system prompts of its prompt upsampler (Apache-2.0), which
+// wrote the captions the model was trained on.
 namespace valtz::resources {
 extern const char kQwenImageT2iSkill[];
 extern const char kQwenImageEditSkill[];

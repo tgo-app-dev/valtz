@@ -207,20 +207,28 @@ TEST(assist, the_helper_writes_in_the_model_s_language)
         std::string::npos);
 }
 
-// FLUX.3 Image Klein's caption writer (core/resources/skills/flux3-*):
-// a full scene caption to generate; an edit written as the picture wanted
-// with the change folded in -- a bare instruction reframes the shot --
-// its references named by what they show (the model is told no tags).
-// The catalog names both; FLUX.3 is prompted in English.
+// FLUX.3 Image Klein's prompt writer (core/resources/skills/flux3-*),
+// written as BFL's own upsampler writes for it: a full scene caption to
+// generate, a real photograph's convention opening it unless a style is
+// asked for; an edit an expanded instruction -- its voice by the task's
+// shape, the end state and its effects, a closing clause of what stays
+// -- the pictures called by order (the model is told no tags). The
+// catalog names both; FLUX.3 is prompted in English.
 TEST(assist, flux3_klein_is_written_a_caption)
 {
   const std::string_view t2i = rewrite_prompt("flux3-klein-t2i");
   const std::string_view edit = rewrite_prompt("flux3-klein-edit");
-  CHECK(t2i.find("full caption of the scene") != std::string_view::npos);
-  CHECK(t2i.find("TEXT IN THE PICTURE") != std::string_view::npos);
-  CHECK(edit.find("It reads a CAPTION, not an instruction") !=
+  CHECK(t2i.find("detailed, self-contained caption") !=
         std::string_view::npos);
-  CHECK(edit.find("never as \"image 1\"") != std::string_view::npos);
+  CHECK(t2i.find("\"Full-color outdoor photograph, ...\"") !=
+        std::string_view::npos);
+  CHECK(t2i.find("TEXT IN THE PICTURE") != std::string_view::npos);
+  CHECK(edit.find("CHOOSE THE VOICE BY WHAT IS ASKED") !=
+        std::string_view::npos);
+  CHECK(edit.find("\"the first image\", \"the second image\"") !=
+        std::string_view::npos);
+  CHECK(edit.find("never <image1>, \"image 1\" or any tag") !=
+        std::string_view::npos);
   auto cat = models::Catalog::builtin();
   REQUIRE_OK(cat);
   const auto* m = cat->find("flux3-klein");
@@ -230,8 +238,9 @@ TEST(assist, flux3_klein_is_written_a_caption)
   CHECK(!rewrite_prompt(jget<std::string>(en, "edit", "")).empty());
   CHECK(jget<std::string>(m->prompting, "language", "") == "english");
   auto r = parse_enhance_reply(
-      "{\"prompt\": \"The same street at night under a full moon. "
-      "Everything else as in the reference.\", \"title\": \"Night\"}");
+      "{\"prompt\": \"Change the daylight street in the first image to "
+      "night under a full moon. Keep the buildings unchanged.\", "
+      "\"title\": \"Night\"}");
   REQUIRE_OK(r);
   CHECK(r->title == "Night");
 }

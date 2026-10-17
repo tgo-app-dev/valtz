@@ -158,10 +158,18 @@ public:
       plugins.as_array().push_back(vp::flex_str(b.file.string()));
     }
     const std::string db = (cfg.state_dir / "vpipe-db").string();
+    // The kernel tuners' answers kept for the session (DESIGN §15 0zd):
+    // every job's models are given back as its graph goes
+    // (release_idle_models_), so each load measured its kernels again --
+    // an H3 clip's GEMM routes 2.8 s on the M5 Pro, the helper's attention
+    // half a second.
+    // vpipe keeps them by default; said here so Valtz's runs stay so.
     const vpipe::FlexData scfg = vp::flex_object({
       {"db", vp::flex_object({{"path", vp::flex_str(db)}})},
       {"log", vp::flex_object({{"level", vp::flex_str(cfg.log_level)}})},
       {"plugins", std::move(plugins)},
+      {"kernel_tuning",
+       vp::flex_object({{"cache", vpipe::FlexData::make_bool(true)}})},
     });
     auto& mgr = vpipe::SessionManager::get();
     _session = const_cast<vpipe::SessionIntf*>(mgr.create_session(scfg));

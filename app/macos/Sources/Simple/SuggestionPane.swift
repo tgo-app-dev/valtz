@@ -177,6 +177,13 @@ struct SuggestionEditor: NSViewRepresentable {
         if let text, text != c.shown {
             let was = c.shown ?? ""
             c.shown = text
+            // Words put in from outside the typing: its undo steps were
+            // of others, and replayed on these their ranges run past the
+            // end (the prompt's ⌘Z after Clear crashed so). Only this
+            // text's own (its storage's).
+            if let storage = tv.textStorage {
+                tv.undoManager?.removeAllActions(withTarget: storage)
+            }
             if !was.isEmpty && text.hasPrefix(was) {
                 // Written on: what is new, at the end -- followed while
                 // the assistant writes.

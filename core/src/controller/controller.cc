@@ -964,22 +964,30 @@ Controller::capability_tree() const
                                  models::InstallState::Installed}};
       }
       // A compressed copy in its download's place (DESIGN §8b): its
-      // width, and what the download took.
+      // width, and what the download took -- or kept beside it, which
+      // of the two is in use.
       Json& row = members.back();
-      if (info.compressed_bits > 0) {
-        std::ifstream in(info.dir / models::ModelStore::kCompressedMarker);
+      if (const int bits = std::max(info.compressed_bits, info.other_bits);
+          bits > 0) {
+        const bool in_use = info.compressed_bits > 0;
+        const fs::path copy = in_use ? info.dir : info.other_dir;
+        std::ifstream in(copy / models::ModelStore::kCompressedMarker);
         const Json mark = in ? Json::parse(in, nullptr, false) : Json();
         row["compressed"] = {
-            {"bits", info.compressed_bits},
+            {"bits", bits},
+            {"bytes", in_use ? info.bytes : info.other_bytes},
             {"original_bytes", jget<std::uint64_t>(mark, "original_bytes",
-                                                   0)}};
+                                                   0)},
+            {"in_use", in_use},
+            {"original_kept", !info.other_dir.empty()}};
       }
       // Compressible: what each width would take -- or why not here (not
       // installed, compressed already, a link's or vpipe's files).
       if (!e->compress.empty()) {
         const std::string why =
             !installed                ? "missing"
-            : info.compressed_bits > 0 ? "compressed"
+            : info.compressed_bits > 0 || info.other_bits > 0
+                ? "compressed"
             : info.linked              ? "link"
             : !under(info.dir, valtz_root) ? "vpipe"
             : !_engine->supports(engine::kOpQuantizeModel) ? "engine"
@@ -1107,10 +1115,16 @@ Controller::storage_report() const
       Json names = Json::array();
       // A compressed copy's folder (compressed/<id>-<bits>bit) is named
       // by where its model is, not by its repo.
+      // The original kept beside one too, in use or not.
       for (const auto& e : _catalog.models()) {
         const auto info = _store->info(e);
-        if ((e.hf_path == hf || info.compressed_bits > 0) &&
-            info.dir.string().starts_with(repo.path().string())) {
+        const auto in = [&](const fs::path& d) {
+          return !d.empty() &&
+                 d.string().starts_with(repo.path().string());
+        };
+        if ((e.hf_path == hf || info.compressed_bits > 0 ||
+             info.other_bits > 0) &&
+            (in(info.dir) || in(info.other_dir))) {
           names.push_back(e.name);
         }
       }
@@ -2097,8 +2111,23 @@ Controller::download_model(const std::string& model_id,
   const bool gated = e->gated;
   const std::string name = e->name;
   const std::string id = e->id;
+  // Cancelled to be deleted (stop_download): its files go once the job
+  // has let go of them -- unless it finished first, whole.
+  const auto discarded = [this, id](bool finished) {
+    bool drop = false;
+    {
+      std::lock_guard lk(_downloads_mu);
+      drop = _discards.erase(id) > 0;
+    }
+    if (drop && !finished) {
+      if (const auto* d = _catalog.find(id)) {
+        (void)discard_download_(*d);
+      }
+    }
+  };
   Status submitted = _engine->submit(
-      std::move(spec), [this, gated, name, id](const engine::JobEvent& ev) {
+      std::move(spec),
+      [this, gated, name, id, discarded](const engine::JobEvent& ev) {
     switch (ev.kind) {
     case engine::JobEventKind::Started:
       _jobs.update(ev.job, [](JobRecord& r) { r.state = JobState::Running; });
@@ -2118,6 +2147,7 @@ Controller::download_model(const std::string& model_id,
     }
     case engine::JobEventKind::Finished:
       finish_job_(ev.job, JobState::Finished, "");
+      discarded(true);
       // Fetched again over a compressed copy (DESIGN §8b): the original
       // is back, the copy goes.
       for (const int bits : {8, 4}) {
@@ -2136,6 +2166,7 @@ Controller::download_model(const std::string& model_id,
       break;
     case engine::JobEventKind::Failed: {
       finish_job_(ev.job, JobState::Failed, ev.text);
+      discarded(false);
       _store->rescan();
       download_ended_(id, false, false);
       // A gated repo refused: its file list is public, its files are
@@ -2155,6 +2186,7 @@ Controller::download_model(const std::string& model_id,
     }
     case engine::JobEventKind::Cancelled:
       finish_job_(ev.job, JobState::Cancelled, "");
+      discarded(false);
       _store->rescan();
       download_ended_(id, false, true);
       post_("job.cancelled", ev.job);
@@ -2181,6 +2213,48 @@ Controller::downloading(const std::string& id) const
 {
   std::lock_guard lk(_downloads_mu);
   return _downloads.contains(id);
+}
+
+Status
+Controller::stop_download(const std::string& model_id, bool discard)
+{
+  const auto* e = _catalog.find(model_id);
+  if (!e) {
+    return make_error(Code::NotFound, msg::kUnknownModel,
+                      {{"model", model_id}});
+  }
+  std::optional<JobId> job;
+  {
+    std::lock_guard lk(_downloads_mu);
+    if (auto it = _downloads.find(e->id); it != _downloads.end()) {
+      job = it->second;
+      if (discard) {
+        _discards.insert(e->id);
+      }
+    }
+  }
+  if (job) {
+    VALTZ_LOG_INFO("models", "{}'s download {}", e->id,
+                   discard ? "cancelled: its files go as it stops"
+                           : "paused: its files kept");
+    // A queued one ends at once, a running one at the fetch's next look
+    // (a transfer's progress callback): the job's end deletes it.
+    if (Status st = cancel(*job); !st.ok()) {
+      std::lock_guard lk(_downloads_mu);
+      _discards.erase(e->id);
+      return st;
+    }
+    return ok_status();
+  }
+  if (!discard) {
+    return make_error(Code::NotFound, msg::kNoDownloadRunning,
+                      {{"model", e->name}});
+  }
+  // Paused before: nothing holds its files.
+  (void)discard_download_(*e);
+  _store->rescan();
+  post_("models.changed", JobId{});
+  return ok_status();
 }
 
 bool
@@ -2468,7 +2542,8 @@ Controller::compress_estimate_(const models::ModelEntry& e,
 }
 
 Result<JobId>
-Controller::compress_model(const std::string& model_id, int bits)
+Controller::compress_model(const std::string& model_id, int bits,
+                           bool keep_original)
 {
   const auto* e = _catalog.find(model_id);
   if (!e) {
@@ -2492,6 +2567,12 @@ Controller::compress_model(const std::string& model_id, int bits)
   if (info.state != models::InstallState::Installed) {
     return make_error(Code::NotFound, msg::kModelNotInstalled,
                       {{"model", e->name}});
+  }
+  // A copy kept beside its original: one of the two kept first.
+  if (const int b = std::max(info.compressed_bits, info.other_bits);
+      b > 0 && !info.other_dir.empty()) {
+    return make_error(Code::AlreadyExists, msg::kCompressedBesideOriginal,
+                      {{"model", e->name}, {"bits", std::to_string(b)}});
   }
   if (info.compressed_bits > 0) {
     return make_error(Code::AlreadyExists, msg::kAlreadyCompressed,
@@ -2563,11 +2644,13 @@ Controller::compress_model(const std::string& model_id, int bits)
   }
   post_("job.queued", spec.id, {{"title", rec.title}, {"op", rec.op},
                                 {"purpose", rec.purpose},
-                                {"model", e->id}, {"bits", bits}});
+                                {"model", e->id}, {"bits", bits},
+                                {"keep_original", keep_original}});
   VALTZ_LOG_INFO("models", "compressing {} at {} to {} bits ({} parts) "
-                 "into {}: about {} of {}", e->id, info.dir.string(), bits,
-                 passes, dest.string(), models::size_text(est.total),
-                 models::size_text(est.original));
+                 "into {}: about {} of {}{}", e->id, info.dir.string(),
+                 bits, passes, dest.string(), models::size_text(est.total),
+                 models::size_text(est.original),
+                 keep_original ? ", the original kept" : "");
 
   const models::ModelEntry entry = *e;
   const fs::path original = info.dir;
@@ -2577,7 +2660,7 @@ Controller::compress_model(const std::string& model_id, int bits)
   };
   Status submitted = _engine->submit(
       std::move(spec), [this, entry, bits, staging, original, clear,
-                        ended](const engine::JobEvent& ev) {
+                        ended, keep_original](const engine::JobEvent& ev) {
     switch (ev.kind) {
     case engine::JobEventKind::Started:
       _jobs.update(ev.job, [](JobRecord& r) { r.state = JobState::Running; });
@@ -2596,8 +2679,8 @@ Controller::compress_model(const std::string& model_id, int bits)
     }
     case engine::JobEventKind::Finished: {
       std::uint64_t freed = 0;
-      const std::string why =
-          compress_finished_(entry, bits, staging, original, &freed);
+      const std::string why = compress_finished_(
+          entry, bits, staging, original, keep_original, &freed);
       clear();
       ended();
       if (!why.empty()) {
@@ -2609,9 +2692,10 @@ Controller::compress_model(const std::string& model_id, int bits)
       } else {
         const fs::path dest = _store->compressed_dir(entry.id, bits);
         finish_job_(ev.job, JobState::Finished, dest.string());
-        post_("job.finished", ev.job, {{"path", dest.string()},
-                                       {"model", entry.id},
-                                       {"bits", bits}, {"freed", freed}});
+        post_("job.finished", ev.job,
+              {{"path", dest.string()}, {"model", entry.id},
+               {"bits", bits}, {"freed", freed},
+               {"kept_original", keep_original}});
       }
       post_("models.changed", JobId{}, {{"model", entry.id}});
       break;
@@ -2646,7 +2730,7 @@ std::string
 Controller::compress_finished_(const models::ModelEntry& e, int bits,
                                const fs::path& staging,
                                const fs::path& original,
-                               std::uint64_t* freed)
+                               bool keep_original, std::uint64_t* freed)
 {
   std::error_code ec;
   // The copy checked as a link is: the same model, whole. Until it is,
@@ -2669,6 +2753,8 @@ Controller::compress_finished_(const models::ModelEntry& e, int bits,
                     {"parts", compress_parts(e, bits)},
                     {"from", original.string()},
                     {"original_bytes", est.original},
+                    {"original_kept", keep_original},
+                    {"in_use", true},
                     {"made", project::now_ms()}}, 2) << "\n";
     if (!out) {
       return "its mark could not be written";
@@ -2688,34 +2774,19 @@ Controller::compress_finished_(const models::ModelEntry& e, int bits,
     _store->rescan();
     return "the copy is not where the model is looked for";
   }
-  // The download it replaces, deleted -- unless another model's files
-  // are in it (one folder holding several), or it holds another's.
-  for (const auto& o : _catalog.models()) {
-    if (o.id == e.id) {
-      continue;
-    }
-    const auto oi = _store->info(o);
-    if (oi.state != models::InstallState::Missing &&
-        (inside(oi.dir, original) || inside(original, oi.dir))) {
-      VALTZ_LOG_INFO("models", "{}'s download kept: {} is in it", e.id,
-                     o.id);
-      return "";
-    }
+  // Kept, to be tried first: both on disk until one is kept
+  // (keep_compressed).
+  if (keep_original) {
+    VALTZ_LOG_INFO("models", "{} compressed to {} bits: {} at {}, its "
+                   "download kept at {}", e.id, bits,
+                   models::size_text(now.bytes), dest.string(),
+                   original.string());
+    return "";
   }
-  const std::uint64_t before = est.original;
-  fs::remove_all(original, ec);
-  if (ec) {
-    VALTZ_LOG_ERROR("models", "{}'s download not deleted: {}", e.id,
-                    ec.message());
-  } else {
+  std::string kept_for;
+  if (delete_original_(e, original, &kept_for)) {
+    const std::uint64_t before = est.original;
     *freed = before > now.bytes ? before - now.bytes : 0;
-    // Its folders left empty, up to the models folder.
-    const fs::path root = _store->download_root();
-    for (fs::path up = original.parent_path();
-         inside(up, root) && up != root && fs::is_empty(up, ec);
-         up = up.parent_path()) {
-      fs::remove(up, ec);
-    }
   }
   _store->rescan();
   {
@@ -2726,6 +2797,278 @@ Controller::compress_finished_(const models::ModelEntry& e, int bits,
                  e.id, bits, models::size_text(now.bytes), dest.string(),
                  models::size_text(*freed));
   return "";
+}
+
+bool
+Controller::delete_original_(const models::ModelEntry& e,
+                             const fs::path& original,
+                             std::string* kept_for)
+{
+  for (const auto& o : _catalog.models()) {
+    if (o.id == e.id) {
+      continue;
+    }
+    const auto oi = _store->info(o);
+    if (oi.state != models::InstallState::Missing &&
+        (inside(oi.dir, original) || inside(original, oi.dir))) {
+      VALTZ_LOG_INFO("models", "{}'s download kept: {} is in it", e.id,
+                     o.id);
+      *kept_for = o.name;
+      return false;
+    }
+  }
+  std::error_code ec;
+  fs::remove_all(original, ec);
+  if (ec) {
+    VALTZ_LOG_ERROR("models", "{}'s download not deleted: {}", e.id,
+                    ec.message());
+    return false;
+  }
+  // Its folders left empty, up to the models folder.
+  const fs::path root = _store->download_root();
+  for (fs::path up = original.parent_path();
+       inside(up, root) && up != root && fs::is_empty(up, ec);
+       up = up.parent_path()) {
+    fs::remove(up, ec);
+  }
+  return true;
+}
+
+namespace {
+
+// A compressed copy's mark with `fields` laid over it.
+bool
+remark_copy(const fs::path& dir, const Json& fields)
+{
+  const fs::path f = dir / models::ModelStore::kCompressedMarker;
+  Json m;
+  {
+    std::ifstream in(f);
+    m = in ? Json::parse(in, nullptr, false) : Json();
+  }
+  if (!m.is_object()) {
+    return false;
+  }
+  m.update(fields);
+  const fs::path tmp = f.string() + ".new";
+  {
+    std::ofstream out(tmp);
+    out << to_text(m, 2) << "\n";
+    if (!out) {
+      return false;
+    }
+  }
+  std::error_code ec;
+  fs::rename(tmp, f, ec);
+  return !ec;
+}
+
+}
+
+Status
+Controller::use_compressed(const std::string& model_id, bool compressed)
+{
+  const auto* e = _catalog.find(model_id);
+  if (!e) {
+    return make_error(Code::NotFound, msg::kUnknownModel,
+                      {{"model", model_id}});
+  }
+  const auto info = _store->info(*e);
+  if (info.other_dir.empty()) {
+    return make_error(Code::InvalidArgument, msg::kNotBothKept,
+                      {{"model", e->name}});
+  }
+  // In use already as asked.
+  if ((info.compressed_bits > 0) == compressed) {
+    return {};
+  }
+  const fs::path copy = compressed ? info.other_dir : info.dir;
+  if (!remark_copy(copy, {{"in_use", compressed}})) {
+    return make_error(Code::Io, msg::kCompressBadCopy,
+                      {{"model", e->name},
+                       {"why", "its mark could not be written"}});
+  }
+  _store->rescan();
+  VALTZ_LOG_INFO("models", "{}: its {} in use", e->id,
+                 compressed ? "compressed copy" : "original");
+  post_("models.changed", JobId{}, {{"model", e->id}});
+  return {};
+}
+
+Result<std::uint64_t>
+Controller::keep_compressed(const std::string& model_id, bool compressed)
+{
+  const auto* e = _catalog.find(model_id);
+  if (!e) {
+    return make_error(Code::NotFound, msg::kUnknownModel,
+                      {{"model", model_id}});
+  }
+  const auto info = _store->info(*e);
+  if (info.other_dir.empty()) {
+    return make_error(Code::InvalidArgument, msg::kNotBothKept,
+                      {{"model", e->name}});
+  }
+  // A job reading its files -- or about to -- keeps them.
+  if (busy_here_()) {
+    return make_error(Code::Busy, msg::kWeightsBusy, {{"model", e->name}});
+  }
+  const bool copy_in_use = info.compressed_bits > 0;
+  const fs::path copy = copy_in_use ? info.dir : info.other_dir;
+  const fs::path original = copy_in_use ? info.other_dir : info.dir;
+  const std::uint64_t copy_bytes =
+      copy_in_use ? info.bytes : info.other_bytes;
+  const std::uint64_t original_bytes =
+      copy_in_use ? info.other_bytes : info.bytes;
+  std::uint64_t freed = 0;
+  if (compressed) {
+    // In use, and its original's place taken, as a compress that does
+    // not keep it leaves them.
+    if (!remark_copy(copy, {{"in_use", true}, {"original_kept", false}})) {
+      return make_error(Code::Io, msg::kCompressBadCopy,
+                        {{"model", e->name},
+                         {"why", "its mark could not be written"}});
+    }
+    std::string kept_for;
+    if (!delete_original_(*e, original, &kept_for)) {
+      _store->rescan();
+      post_("models.changed", JobId{}, {{"model", e->id}});
+      return make_error(Code::Busy, msg::kOriginalShared,
+                        {{"model", e->name}, {"other", kept_for}});
+    }
+    freed = original_bytes;
+  } else {
+    std::error_code ec;
+    fs::remove_all(copy, ec);
+    if (ec) {
+      return make_error(Code::Io, msg::kCompressBadCopy,
+                        {{"model", e->name}, {"why", ec.message()}});
+    }
+    // The compressed folder too, once nothing else is in it.
+    fs::remove(copy.parent_path(), ec);
+    freed = copy_bytes;
+  }
+  _store->rescan();
+  {
+    std::lock_guard lk(_downloads_mu);
+    _compress_est.clear();
+  }
+  VALTZ_LOG_INFO("models", "{}: its {} kept, {} freed", e->id,
+                 compressed ? "compressed copy" : "original",
+                 models::size_text(freed));
+  post_("models.changed", JobId{}, {{"model", e->id}});
+  return freed;
+}
+
+std::uint64_t
+Controller::discard_download_(const models::ModelEntry& e)
+{
+  const fs::path root = _store->download_root().lexically_normal();
+  const fs::path repo = (root / e.hf_path).lexically_normal();
+  // Never the models folder itself, nor anything outside it: a link's
+  // files and vpipe's folders are not a download of Valtz's.
+  if (e.hf_path.empty() || repo == root || !inside(repo, root)) {
+    return 0;
+  }
+  fs::path own = repo;
+  if (!e.subdir.empty()) {
+    own = (own / e.subdir).lexically_normal();
+  }
+  const fs::path file = e.file.empty() ? fs::path() : own / e.file;
+  const fs::path mine = file.empty() ? own : file;
+  std::error_code ec;
+  // Another model in `dir` (or `dir` in its place): its download going
+  // there, or -- `files` -- its files there. One of the very same place
+  // (an extension's model framed from the same weights) is this one.
+  const auto taken = [&](const fs::path& dir, bool files) {
+    for (const auto& o : _catalog.models()) {
+      if (o.id == e.id || o.hf_path.empty()) {
+        continue;
+      }
+      fs::path place = root / o.hf_path;
+      if (!o.subdir.empty()) {
+        place /= o.subdir;
+      }
+      if (!o.file.empty()) {
+        place /= o.file;
+      }
+      place = place.lexically_normal();
+      if (!inside(place, dir) && !inside(dir, place)) {
+        continue;
+      }
+      if (downloading(o.id)) {
+        return true;
+      }
+      fs::path part = place;
+      part += ".part";
+      if (files && place != mine &&
+          (fs::exists(place, ec) || fs::exists(part, ec))) {
+        return true;
+      }
+    }
+    return false;
+  };
+  // Installed there already, and fetched over itself: only what the
+  // fetch had not finished goes.
+  const auto info = _store->info(e);
+  const bool whole = info.state == models::InstallState::Installed &&
+                     (inside(info.dir, repo) || inside(repo, info.dir));
+  std::uint64_t freed = 0;
+  const auto drop = [&](const fs::path& p) {
+    if (!fs::exists(fs::symlink_status(p, ec))) {
+      return;
+    }
+    const std::uint64_t n = folder_bytes(p);
+    fs::remove_all(p, ec);
+    if (ec) {
+      VALTZ_LOG_ERROR("models", "{} not deleted: {}", p.string(),
+                      ec.message());
+    } else {
+      freed += n;
+    }
+  };
+  std::string what;
+  if (!whole && !taken(repo, true)) {
+    what = repo.string();
+    drop(repo);
+    // Its folders left empty, up to the models folder.
+    for (fs::path up = repo.parent_path();
+         inside(up, root) && up != root && fs::is_empty(up, ec);
+         up = up.parent_path()) {
+      fs::remove(up, ec);
+    }
+  } else if (!file.empty()) {
+    what = file.string();
+    fs::path part = file;
+    part += ".part";
+    drop(part);
+    if (!whole) {
+      drop(file);
+    }
+  } else if (!whole && own != repo && !taken(own, true)) {
+    what = own.string();
+    drop(own);
+  } else if (!taken(own, false)) {
+    // Only its partial files: the whole ones may be another's too.
+    what = "the partial files in " + own.string();
+    std::vector<fs::path> parts;
+    for (auto it = fs::recursive_directory_iterator(
+             own, fs::directory_options::skip_permission_denied, ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec)) {
+      if (ec) {
+        break;
+      }
+      if (it->path().extension() == ".part") {
+        parts.push_back(it->path());
+      }
+    }
+    for (const auto& p : parts) {
+      drop(p);
+    }
+  }
+  VALTZ_LOG_INFO("models", "{}'s download deleted: {} ({} freed)", e.id,
+                 what.empty() ? std::string("nothing") : what,
+                 models::size_text(freed));
+  return freed;
 }
 
 // ---- projects ---------------------------------------------------------
