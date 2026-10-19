@@ -44,12 +44,19 @@
     "continuation between the decode and the writer, its config this",
     "object -- against the tail the model was given. Its tone only: the",
     "geometry it measures pairs the pixels, but across a moving shot's",
-    "seam it is the camera's motion (apply_geometry false)."
+    "seam it is the camera's motion (apply_geometry false).",
+    "engine.vpipe.negative: \"conditioner\" -- the family's conditioner",
+    "emits the negative conditioning on its second output (MOSS-Image: the",
+    "empty prompt's, for its CFG), wired to generate-image's negative port",
+    "and kept with the conditioning. engine.vpipe.config_shift: the",
+    "schedule's shift is taken by the family's config stage (`shift`), not",
+    "a scheduler-select -- this its default -- so Custom's shift offers it."
   ],
   "auto": {
     "image": {
       "generate": ["krea2-turbo", "qwen-image-2.1-turbo", "qwen-image-2.1",
-                   "z-image-turbo", "flux3-klein", "flux2-klein-9b"],
+                   "z-image-turbo", "flux3-klein", "flux2-klein-9b",
+                   "moss-image-sft", "moss-image-base"],
       "edit": ["qwen-image-2.1", "qwen-image-2.1-turbo", "flux3-klein",
                "flux2-klein-9b"]
     },
@@ -118,6 +125,14 @@
       ]
     },
     {
+      "id": "moss-image", "name": "MOSS-Image",
+      "features": ["image-gen"],
+      "members": [
+        {"model": "moss-image-sft", "label": "MOSS-Image SFT (5B)"},
+        {"model": "moss-image-base", "label": "MOSS-Image Base (5B)"}
+      ]
+    },
+    {
       "id": "yue2", "name": "YuE2",
       "features": ["audio-gen"],
       "members": [
@@ -150,7 +165,9 @@
       "id": "upscalers", "name": "Upscalers",
       "features": ["video-upscale", "image-upscale"],
       "members": [
-        {"model": "flashvsr", "label": "FlashVSR (video)"},
+        {"model": "flashvsr-plus-turbo", "label": "FlashVSR+ Turbo (video)"},
+        {"model": "flashvsr-plus-base", "label": "FlashVSR+ Base (video)"},
+        {"model": "flashvsr", "label": "FlashVSR 1.1 (video)"},
         {"model": "vosr", "label": "VOSR (image)"}
       ]
     },
@@ -278,7 +295,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "z-image-model-config",
-          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": { "guidance_scale": 0.0 },
           "scheduler": { "steps": 8, "shift": 3.0, "type": "simple", "shift_type": "linear" },
           "defaults": { "steps": 8, "width": 1024, "height": 1024 }
@@ -334,6 +351,102 @@
       "notes": "Black Forest Labs' 5.6B flow-map DiT, distilled to 16 steps with no guidance pass: text to image, and edits from up to ten references. Pictures up to 4096 x 4096 (any side from 64): a 4096-pixel square takes over an hour, the VAE decoded in exact tiles. It reads a full scene caption -- medium, scene, light, camera, each subject placed in the frame -- and an edit as an expanded instruction: the change, its effects, what stays. BFL's upsampler wrote its training captions; Enhance writes them here. Its text encoder is Qwen3-VL-4B, text only; its VAE and preview are FLUX.2's. Compressing packs its DiT (11.1 GB) at 8 or 4 bits; the encoder stays as published."
     },
     {
+      "id": "moss-image-sft",
+      "name": "MOSS-Image SFT",
+      "family": "moss-image",
+      "role": "image",
+      "hf_path": "OpenMOSS-Team/MOSS-Image-SFT",
+      "check": {
+        "is": {
+          "model_index.json": "MOSSImagePipeline",
+          "transformer/config.json": "MOSSImageTransformer"
+        }
+      },
+      "compress": {"parts": [{"target": "dit"}]},
+      "capabilities": ["text-to-image"],
+      "disk_gb": 27.2, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 2,
+      "preview_with": "taef2",
+      "license": "apache-2.0",
+      "engine": {
+        "vpipe": {
+          "config_stage": "moss-image-model-config",
+          "negative": "conditioner",
+          "config_shift": 5.0,
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier",
+                    "ane_ffn", "ane_qkv"],
+          "config": {},
+          "defaults": { "steps": 50, "width": 1024, "height": 1024 },
+          "presets": {
+            "speed": { "steps": 20, "sol_attn": true, "sol_tau": 0.0,
+                       "sage_attn": true, "i8_gemm": true },
+            "balanced": { "steps": 30, "sage_attn": true, "i8_gemm": true },
+            "quality": { "steps": 50, "sol_attn": false, "sage_attn": false,
+                         "i8_gemm": false }
+          },
+          "options": [
+            {"key": "guidance_scale", "type": "real", "min": 1.0,
+             "max": 8.0, "step": 0.5, "default": 3.0, "stage": "config",
+             "group": "steps",
+             "label": "Guidance",
+             "note": "CFG against the empty prompt (3: its own); 1 runs one forward a step"}
+          ]
+        }
+      },
+      "prompting": {
+        "enhance": {"generate": "moss-image"}
+      },
+      "notes": "OpenMOSS's 5B single-stream DiT, fine-tuned from MOSS-Image Base for clearer text grouping and layout: text to image, words in the picture in English and Chinese (prompts in natural language, tags, or a JSON layout). 50 steps at CFG 3 against the empty prompt, two forwards a step (its block 22 skipped in the negative): Fine runs them, Med 30, Fast 20. Its text encoder is the full Qwen3.5-9B (16.8 GB, bf16); the model streams, so a 16 GB Mac runs it. Its VAE (FLUX.2's small decoder) and preview are FLUX.2's. Compressing packs its DiT (10.2 GB) at 8 or 4 bits (plain: its SITU feed-forward takes no AWQ); the encoder stays as published."
+    },
+    {
+      "id": "moss-image-base",
+      "name": "MOSS-Image Base",
+      "family": "moss-image",
+      "role": "image",
+      "hf_path": "OpenMOSS-Team/MOSS-Image-Base",
+      "check": {
+        "is": {
+          "model_index.json": "MOSSImagePipeline",
+          "transformer/config.json": "MOSSImageTransformer"
+        }
+      },
+      "compress": {"parts": [{"target": "dit"}]},
+      "capabilities": ["text-to-image"],
+      "disk_gb": 27.2, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 1,
+      "preview_with": "taef2",
+      "license": "apache-2.0",
+      "engine": {
+        "vpipe": {
+          "config_stage": "moss-image-model-config",
+          "negative": "conditioner",
+          "config_shift": 5.0,
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier",
+                    "ane_ffn", "ane_qkv"],
+          "config": {},
+          "defaults": { "steps": 50, "width": 1024, "height": 1024 },
+          "presets": {
+            "speed": { "steps": 20, "sol_attn": true, "sol_tau": 0.0,
+                       "sage_attn": true, "i8_gemm": true },
+            "balanced": { "steps": 30, "sage_attn": true, "i8_gemm": true },
+            "quality": { "steps": 50, "sol_attn": false, "sage_attn": false,
+                         "i8_gemm": false }
+          },
+          "options": [
+            {"key": "guidance_scale", "type": "real", "min": 1.0,
+             "max": 8.0, "step": 0.5, "default": 3.0, "stage": "config",
+             "group": "steps",
+             "label": "Guidance",
+             "note": "CFG against the empty prompt (3: its own); 1 runs one forward a step"}
+          ]
+        }
+      },
+      "prompting": {
+        "enhance": {"generate": "moss-image"}
+      },
+      "notes": "OpenMOSS's 5B single-stream DiT, the pretrained checkpoint SFT is fine-tuned from: the same network, sampler and files but its weights. 50 steps at CFG 3 against the empty prompt, two forwards a step: Fine runs them, Med 30, Fast 20. Its text encoder is the full Qwen3.5-9B (16.8 GB, bf16); the model streams, so a 16 GB Mac runs it. Compressing packs its DiT (10.2 GB); the encoder stays as published."
+    },
+    {
       "id": "flux2-klein-9b",
       "name": "FLUX.2 [klein] 9B",
       "family": "flux2",
@@ -354,7 +467,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "flux2-model-config",
-          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "defaults": { "steps": 4, "width": 1024, "height": 1024 },
           "edit": {
@@ -385,14 +498,15 @@
       "engine": {
         "vpipe": {
           "config_stage": "krea2-model-config",
-          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "scheduler": { "steps": 8, "shift": 0.3 },
           "defaults": { "steps": 8, "width": 1024, "height": 1024 },
           "presets": {
             "speed": { "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
-                       "i8_gemm": true },
-            "balanced": { "sage_attn": true, "i8_gemm": true },
+                       "i8_gemm": true, "i8_gemm_tier": "token" },
+            "balanced": { "sage_attn": true, "i8_gemm": true,
+                          "i8_gemm_tier": "token" },
             "quality": { "steps": 12, "sol_attn": false, "sage_attn": false,
                          "i8_gemm": false }
           }
@@ -405,7 +519,11 @@
       "family": "qwen-image-21",
       "role": "image",
       "hf_path": "Qwen/Qwen-Image-2.1",
-      "check": {"is": {"model_index.json": "QwenImage21Pipeline",
+      "check": {"drawthings": {
+                  "dit": {"family": "qwen-image-21", "not_named": ["turbo"]},
+                  "encoder": {"family": "qwen3-vl", "width": 4096},
+                  "vae": {"family": "qwen-image-21-vae"}},
+                "is": {"model_index.json": "QwenImage21Pipeline",
                        "transformer/config.json": "QwenImage21Transformer2DModel"}},
       "compress": {"parts": [{"target": "dit"}, {"target": "text_encoder"}]},
       "capabilities": ["text-to-image", "image-edit", "alpha-output"],
@@ -417,7 +535,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "qwen-image-21-model-config",
-          "accel": ["sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "accel": ["sage_attn", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "scheduler": { "steps": 20 },
           "defaults": { "steps": 20, "width": 1024, "height": 1024 },
@@ -456,7 +574,11 @@
       "family": "qwen-image-21",
       "role": "image",
       "hf_path": "Qwen/Qwen-Image-2.1-Turbo",
-      "check": {"is": {"model_index.json": "QwenImage21Pipeline",
+      "check": {"drawthings": {
+                  "dit": {"family": "qwen-image-21", "named": ["turbo"]},
+                  "encoder": {"family": "qwen3-vl", "width": 4096},
+                  "vae": {"family": "qwen-image-21-vae"}},
+                "is": {"model_index.json": "QwenImage21Pipeline",
                        "transformer/config.json": "QwenImage21Transformer2DModel"}},
       "compress": {"parts": [{"target": "dit"}, {"target": "text_encoder"}]},
       "capabilities": ["text-to-image", "image-edit", "alpha-output"],
@@ -468,7 +590,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "qwen-image-21-model-config",
-          "accel": ["sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "accel": ["sage_attn", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "steps_fixed": true,
           "defaults": { "steps": 8, "width": 1024, "height": 1024 },
@@ -502,7 +624,11 @@
       "family": "minimax-h3",
       "role": "video",
       "hf_path": "MiniMaxAI/MiniMax-H3",
-      "check": {"is": {"model_index.json": "MiniMaxH3Pipeline",
+      "check": {"drawthings": {
+                  "dit": {"family": "minimax-h3", "not_named": ["ref2va"]},
+                  "encoder": {"family": "qwen3-vl", "width": 5120},
+                  "vae": {"family": "minimax-h3-vae"}},
+                "is": {"model_index.json": "MiniMaxH3Pipeline",
                        "transformer/config.json": "MiniMaxH3DiTModel"}},
       "compress": {"parts": [
         {"target": "dit", "options": {"quant_modulation": true}},
@@ -560,7 +686,7 @@
                       "lora_only": {"steps": 3,
                                     "fixes": {"video_shift": 12, "audio_shift": 3}}},
           "vdn": {"branch": "minimax-h3-vdn"},
-          "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
           "first_frame": true,
           "last_frame": true,
@@ -608,7 +734,10 @@
       "family": "minimax-h3",
       "role": "video",
       "hf_path": "MiniMaxAI/MiniMax-H3",
-      "check": {"is": {"model_index.json": "MiniMaxH3Pipeline",
+      "check": {"drawthings": {
+                  "encoder": {"family": "qwen3-vl", "width": 5120},
+                  "vae": {"family": "minimax-h3-vae"}},
+                "is": {"model_index.json": "MiniMaxH3Pipeline",
                        "transformer/config.json": "MiniMaxH3DiTModel"}},
       "compress": {"parts": [
         {"target": "dit", "options": {"quant_modulation": true}},
@@ -664,7 +793,7 @@
             "speed": {"turbo": [], "hyperflow": true},
             "balanced": {"turbo": [], "hyperflow": true, "sol_attn": false}
           },
-          "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
           "references": {
             "max_pictures": 9, "max_clips": 3, "max_sounds": 3,
@@ -911,13 +1040,56 @@
       "check": {"is": {"model_index.json": "FlashVSRPipeline"}},
       "capabilities": ["upscale-video"],
       "engine": {"vpipe": {
-        "upscale": {"grid": 128, "group": 24, "clip_frames": 41, "blend_frames": 8, "ahead": 1, "hidden": 1536},
+        "upscale": {"grid": 128, "group": 24, "clip_frames": 41, "blend_frames": 8, "open_frames": 25, "chunk_frames": 8, "ahead": 1, "hidden": 1536},
         "accel": ["sage_attn", "i8_gemm"],
+        "options": [{"key": "color_fix", "type": "bool", "default": true, "stage": "encode"}],
         "steps_fixed": true, "defaults": {"steps": 1}
       }},
       "disk_gb": 12, "disk_measured": false,
       "min_ram_gb": 24, "rank": 1,
       "license": "apache-2.0"
+    },
+    {
+      "id": "flashvsr-plus-turbo",
+      "name": "FlashVSR+ Turbo",
+      "family": "flashvsr",
+      "role": "upscale",
+      "hf_path": "ruchangyao/FlashVSR_plus",
+      "subdir": "turbo",
+      "fetch_variant": "ruchangyao/FlashVSR_plus-turbo",
+      "check": {"files": ["dit.safetensors", "lq_proj_in.safetensors"]},
+      "capabilities": ["upscale-video"],
+      "engine": {"vpipe": {
+        "upscale": {"grid": 128, "group": 24, "clip_frames": 49, "blend_frames": 8, "open_frames": 17, "chunk_frames": 16, "ahead": 1, "hidden": 1536, "color_reference": true},
+        "accel": ["sage_attn", "i8_gemm"],
+        "options": [{"key": "color_fix", "type": "bool", "default": true, "stage": "encode"}],
+        "steps_fixed": true, "defaults": {"steps": 1}
+      }},
+      "disk_gb": 7.5, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 3,
+      "license": "apache-2.0",
+      "notes": "FlashVSR 1.1's successor (OpenImagingLab): the same 1.3B restorer retrained, with hybrid attention on 25 of its 30 layers -- faster, and its makers' pick for high resolutions. Decodes with its tiny decoder, which reads the source beside each frame."
+    },
+    {
+      "id": "flashvsr-plus-base",
+      "name": "FlashVSR+ Base",
+      "family": "flashvsr",
+      "role": "upscale",
+      "hf_path": "ruchangyao/FlashVSR_plus",
+      "subdir": "base",
+      "fetch_variant": "ruchangyao/FlashVSR_plus-base",
+      "check": {"files": ["dit.safetensors", "lq_proj_in.safetensors"]},
+      "capabilities": ["upscale-video"],
+      "engine": {"vpipe": {
+        "upscale": {"grid": 128, "group": 24, "clip_frames": 49, "blend_frames": 8, "open_frames": 17, "chunk_frames": 16, "ahead": 1, "hidden": 1536, "color_reference": true},
+        "accel": ["sage_attn", "i8_gemm"],
+        "options": [{"key": "color_fix", "type": "bool", "default": true, "stage": "encode"}],
+        "steps_fixed": true, "defaults": {"steps": 1}
+      }},
+      "disk_gb": 7.5, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 2,
+      "license": "apache-2.0",
+      "notes": "FlashVSR+ with sparse attention on every layer: slower than Turbo, a stream taking more memory, its makers' pick where the quality comes first. Shares Turbo's decoder and VAE (one download of them)."
     },
     {
       "id": "vosr",

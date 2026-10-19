@@ -1,4 +1,5 @@
 #include "engine/vpipe/graph-builder.h"
+#include "engine/vpipe/encoding-cache.h"
 #include "engine/vpipe/job-progress.h"
 
 #include "valtz/assist/video-summary.h"
@@ -6,6 +7,7 @@
 #include "valtz-vpipe/exchange.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 #include <limits>
@@ -24,6 +26,19 @@ namespace {
 // so the cap costs nothing held.
 constexpr int kHelperPageTokens = 16;
 constexpr int kHelperMaxPages = 4096;
+
+// A picture's models kept BUILT between jobs (DESIGN §4n): vpipe hands
+// the text encoder, the DiT and its VAE to its model manager as the
+// graph goes, where the box has room for them, and the next graph asking
+// for the same checkpoint and settings takes them back resident -- a
+// Qwen-Image 2.1 Turbo picture's 0.85 s of blocks read back, 0.69 s of
+// VAE built and, for new words, 1.7 s of encoder loaded. How long: the
+// engine's, by the Mac (param "keep_models", seconds; 0 lets them go).
+double
+keep_models_s(const JobSpec& job)
+{
+  return std::max(0.0, jget(job.params, "keep_models", 0.0));
+}
 
 Json
 port(std::string_view src, int oport = 0)
@@ -50,6 +65,30 @@ accel_of(const JobSpec& job)
     if (t.is_object() && t.contains(k)) {
       out[k] = t[k];
     }
+  }
+  // The int8 GEMMs' tier, only with them on and only when it is not the
+  // one vpipe runs anyway: an Accurate job's graph is as it always was. (A
+  // vpipe from before the tiers ignores the key -- and runs Accurate.)
+  const auto tier = jget<std::string>(t, "i8_gemm_tier", "accurate");
+  if (jget(t, "i8_gemm", false) && tier != "accurate") {
+    out["i8_gemm_tier"] = tier;
+  }
+  return out;
+}
+
+// Favor's CODEC int8 (tuning `vae_i8_gemm`, `vae_i8_gemm_tier`) as
+// vae-decode and vae-encode spell it: their own `i8_gemm` and tier. Empty
+// when off, so an f16 job's graph -- and its kept latents' key -- are as
+// they always were. (A vpipe whose codec has no int8 ignores both.)
+Json
+codec_accel_of(const JobSpec& job)
+{
+  const Json t = jget(job.params, "tuning", Json::object());
+  Json out = Json::object();
+  if (jget(t, "vae_i8_gemm", false)) {
+    out["i8_gemm"] = true;
+    const auto tier = jget<std::string>(t, "vae_i8_gemm_tier", "accurate");
+    if (tier != "accurate") { out["i8_gemm_tier"] = tier; }
   }
   return out;
 }
@@ -82,6 +121,52 @@ stage(std::string_view id, std::string_view type, Json iports, Json config)
           {"type", std::string(type)},
           {"iports", std::move(iports)},
           {"config", std::move(config)}};
+}
+
+// The text encoder's and the VAE's WEIGHTS where they are linked apart
+// (Draw Things checkpoints: ModelRef::encoder_weights / vae_weights), on
+// the stage that reads them -- its config, tokenizer and latent
+// statistics still hf_dir's.
+Json
+with_encoder(Json cfg, const JobSpec& job)
+{
+  if (!job.model.encoder_weights.empty()) {
+    cfg["encoder_dir"] = job.model.encoder_weights.string();
+  }
+  return cfg;
+}
+
+Json
+with_vae(Json cfg, const JobSpec& job)
+{
+  if (!job.model.vae_weights.empty()) {
+    cfg["vae_dir"] = job.model.vae_weights.string();
+  }
+  return cfg;
+}
+
+// How a clip Valtz makes is kept: the job's "intermediate" (the
+// project's, OutputSettings) -- vpipe's codec, the file's extension, its
+// sound's. One not known (a newer Valtz's) is the default, ProRes 422 HQ.
+// Its writers ask for no alpha: what a model or a restorer makes is
+// opaque, and a ProRes 4444 then has no alpha plane (DESIGN §15 0zo:
+// before it, vpipe's writer coded one of 1s, the encoder fed RGBA).
+struct ClipFormat {
+  std::string       codec;
+  std::string_view  ext;
+  media::SoundCodec sound;
+};
+
+ClipFormat
+clip_format(const JobSpec& job)
+{
+  std::string f = jget<std::string>(job.params, "intermediate", "");
+  if (!media::is_intermediate_format(f)) {
+    f = std::string(media::kDefaultIntermediate);
+  }
+  const bool prores = media::is_prores(f);
+  return {f, prores ? "mov" : "mp4",
+          prores ? media::SoundCodec::Pcm : media::SoundCodec::Aac};
 }
 
 // A movie export's writer (avf-save-video) as the request's ENCODING
@@ -242,8 +327,62 @@ fit_area(media::PixelSize sz, double area, int align)
 // pictures -- the SAME fitted picture into the conditioner. One resize
 // feeds both: Qwen-Image-2.1's DiT drops a reference whose latent grid
 // is not exactly twice the conditioner's merged grid.
+// What a picture fed to an encoder is made from (encoding-cache.h): its
+// bytes, the look and crop laid on as it is decoded, the size it is fed
+// at, and the resample that fits it -- the pixels the encoder reads.
+Json
+picture_doc(const ContentHash& hash, const RefFeed& f, const Json& fit)
+{
+  return {{"hash", hash.hex()},
+          {"adjust", media::to_json(f.adjust)},
+          {"crop", media::to_json(f.crop)},
+          {"fed", Json::array({f.size.width, f.size.height})},
+          {"channels", f.channels},
+          {"linear", f.linear},
+          {"fit", fit}};
+}
+
+// A family config beat as an encoder reads it: the live preview's keys
+// change nothing it makes.
+Json
+without_preview(Json cfg)
+{
+  if (cfg.is_object()) {
+    for (const char* k : {"preview_vae", "preview_every",
+                          "preview_max_edge"}) {
+      cfg.erase(k);
+    }
+  }
+  return cfg;
+}
+
+// An encoding's key document: vpipe's build, the model's files, what it
+// is, then what it is made from.
+Json
+encoding_doc(const EncodingCache& c, const JobSpec& job,
+             std::string_view what, Json made_from)
+{
+  made_from["engine"] = c.engine;
+  made_from["model"] = c.model;
+  // The weights it is made by, linked apart: a conditioning the text
+  // encoder's, a latent the VAE's, Ref2VA's references both.
+  for (const char* part : {"encoder", "vae"}) {
+    const bool reads = what == "references" ||
+                       (std::string_view(part) == "encoder"
+                            ? what == "conditioning"
+                            : what == "latents" || what == "keyframe");
+    if (reads && c.weights.contains(part)) {
+      made_from["weights"][part] = c.weights[part];
+    }
+  }
+  made_from["family"] = job.model.family;
+  made_from["what"] = std::string(what);
+  return made_from;
+}
+
 Result<BuiltGraph>
-build_image(const JobSpec& job, const std::vector<RefImage>& refs)
+build_image(const JobSpec& job, const std::vector<RefImage>& refs,
+            const EncodingCache* cache)
 {
   const bool edit = job.op == kOpEditImage;
   const Json vp = jget(job.model.engine, "vpipe", Json::object());
@@ -300,6 +439,9 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
   // each picture's own resample), so the count is the model's
   // `max_references`, up to what tensor-list declares.
   std::vector<Json> fits;  // each picture's image-resample config
+  // The pictures as fed (RefFeed), in order -- into g.references only
+  // where the graph reads them (kept encodings may make them unread).
+  std::vector<RefFeed> feeds;
   if (edit) {
     const int max_refs = std::clamp(jget(ed, "max_references", 1), 1,
                                     kMaxListItems);
@@ -379,56 +521,29 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
                {"src_y", 0}, {"algorithm", "lanczos"}};
       }
       fits.push_back(std::move(fit));
-      g.references.push_back(std::move(f));
+      feeds.push_back(std::move(f));
     }
   }
   const bool ref_to_cond = edit && jget(ed, "reference_to_conditioner",
                                         false);
-
-  Json stages = Json::array();
-  stages.push_back(stage("model-select", "model-select", Json::array(),
-                         {{"hf_dir", job.model.dir.string()}}));
-  stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
-                         {{"text", prompt}}));
-  // Per picture a source and its fit; then ONE list of the fitted
-  // pictures, which both the conditioner and one vae-encode read -- so
-  // latent k is always made from the picture the conditioner sees as k.
-  const bool have_refs = !g.references.empty();
-  Json items = Json::array();
-  for (std::size_t i = 0; i < g.references.size(); ++i) {
-    const auto& f = g.references[i];
-    stages.push_back(stage(f.stage, ex::kSourceType, Json::array(),
-                           Json::object()));
-    stages.push_back(stage(f.stage + "-fit", "image-resample",
-                           Json::array({port(f.stage)}), fits[i]));
-    items.push_back(port(f.stage + "-fit"));
-  }
-  if (have_refs) {
-    stages.push_back(stage(kRefList, "tensor-list", items, Json::object()));
-    // vae-encode: 0 image (unwired), 1 model, 2 images (the list); its
-    // oport 1 is the latents list.
-    stages.push_back(stage(kRefLatents, "vae-encode",
-                           Json::array({unwired(), port("model-select"),
-                                        port(kRefList)}),
-                           Json::object()));
-  }
+  const bool have_refs = !feeds.empty();
 
   // The family's config source carries the preview keys.
   std::string cfg_stage = jget<std::string>(vp, "config_stage", "");
+  Json cfg = Json::object();
   if (!cfg_stage.empty()) {
-    Json cfg = jget(vp, "config", Json::object());
+    cfg = jget(vp, "config", Json::object());
     if (edit) {
       cfg = merged(cfg, jget(ed, "config", Json::object()));
     }
-    if (ref_to_cond && jget(ed, "vl_bounds", false) &&
-        !g.references.empty()) {
+    if (ref_to_cond && jget(ed, "vl_bounds", false) && have_refs) {
       // The conditioner's vision tower resizes on its own: down to
       // `vl_pixel_budget` (1024^2 by default) and `vl_max_pixels`, up to
       // `vl_min_pixels` (256^2). Bounded around the fitted pictures, it
       // reads them as they are -- the same pixels as the VAE.
       std::int64_t most = 0;
       std::int64_t least = std::numeric_limits<std::int64_t>::max();
-      for (const auto& f : g.references) {
+      for (const auto& f : feeds) {
         const std::int64_t a =
             static_cast<std::int64_t>(f.fitted.width) * f.fitted.height;
         most = std::max(most, a);
@@ -445,6 +560,108 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
       g.preview_sink = "preview-sink";
     }
     cfg = merged(cfg, declared_of(job, "config"));
+    // The schedule's shift where the family's config stage takes it
+    // (catalog `config_shift`: MOSS-Image), as Favor's Custom moves it.
+    const Json t = jget(job.params, "tuning", Json::object());
+    if (vp.contains("config_shift") && t.is_object() &&
+        t.contains("shift") && t["shift"].is_number()) {
+      cfg["shift"] = t["shift"];
+    }
+  }
+  // The conditioner's second output is the negative conditioning
+  // (catalog `negative`: MOSS-Image's empty prompt's, which its CFG runs
+  // against -- unwired, generate-image runs it without guidance).
+  const bool cond_negative =
+      jget<std::string>(vp, "negative", "") == "conditioner";
+
+  // KEPT ENCODINGS (encoding-cache.h): the conditioning -- the words, the
+  // family's config beat it reads, and the pictures where the text
+  // encoder sees them -- and the pictures' latents, each named by what it
+  // is made from; both need every picture's hash.
+  std::string cond_key, latents_key;
+  if (cache) {
+    Json pics = Json::array();
+    bool hashed = true;
+    for (std::size_t i = 0; i < feeds.size(); ++i) {
+      hashed = hashed && !refs[i].hash.is_zero();
+      pics.push_back(picture_doc(refs[i].hash, feeds[i], fits[i]));
+    }
+    if (hashed) {
+      Json c = {{"stage", "diffusion-conditioner"}, {"prompt", prompt}};
+      if (!cfg_stage.empty()) {
+        c["config_stage"] = cfg_stage;
+        c["config"] = without_preview(cfg);
+      }
+      if (ref_to_cond && have_refs) {
+        c["pictures"] = pics;
+      }
+      cond_key = encoding_key("conditioning",
+                              encoding_doc(*cache, job, "conditioning",
+                                           std::move(c)));
+      if (have_refs) {
+        // The codec's int8 makes other latents: keyed apart.
+        Json l = {{"stage", "vae-encode"}, {"pictures", pics}};
+        if (const Json ca = codec_accel_of(job); !ca.empty()) {
+          l["config"] = ca;
+        }
+        latents_key = encoding_key(
+            "latents", encoding_doc(*cache, job, "latents", std::move(l)));
+      }
+    }
+  }
+  const bool cond_kept = !cond_key.empty() && cache->kept(cond_key);
+  const bool latents_kept = !latents_key.empty() &&
+                            cache->kept(latents_key);
+  // The pictures are read where something still encodes them: the VAE,
+  // or the text encoder that sees them.
+  const bool read_pics = have_refs &&
+                         (!latents_kept || (!cond_kept && ref_to_cond));
+
+  Json stages = Json::array();
+  stages.push_back(stage("model-select", "model-select", Json::array(),
+                         {{"hf_dir", job.model.dir.string()}}));
+  if (!cond_kept) {
+    stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
+                           {{"text", prompt}}));
+  }
+  // Per picture a source and its fit; then ONE list of the fitted
+  // pictures, which both the conditioner and one vae-encode read -- so
+  // latent k is always made from the picture the conditioner sees as k.
+  if (read_pics) {
+    Json items = Json::array();
+    for (std::size_t i = 0; i < feeds.size(); ++i) {
+      const auto& f = feeds[i];
+      stages.push_back(stage(f.stage, ex::kSourceType, Json::array(),
+                             Json::object()));
+      stages.push_back(stage(f.stage + "-fit", "image-resample",
+                             Json::array({port(f.stage)}), fits[i]));
+      items.push_back(port(f.stage + "-fit"));
+    }
+    stages.push_back(stage(kRefList, "tensor-list", items, Json::object()));
+    g.references = feeds;
+  }
+  // The latents: vae-encode's (0 image, unwired; 1 model; 2 images, the
+  // list; its oport 1 the latents list) -- tapped -- or kept.
+  Json latents = unwired();
+  if (have_refs && latents_kept) {
+    stages.push_back(stage(kKeptLatents, ex::kSourceType, Json::array(),
+                           Json::object()));
+    latents = port(kKeptLatents);
+    g.encodings.push_back({latents_key, "latents", true,
+                           {{"latents", kKeptLatents, true}}});
+  } else if (have_refs) {
+    stages.push_back(stage(kRefLatents, "vae-encode",
+                           Json::array({unwired(), port("model-select"),
+                                        port(kRefList)}),
+                           with_vae(codec_accel_of(job), job)));
+    latents = port(kRefLatents, 1);
+    if (!latents_key.empty()) {
+      stages.push_back(sink(kLatentsTap, latents, false));
+      g.encodings.push_back({latents_key, "latents", false,
+                             {{"latents", kLatentsTap, true}}});
+    }
+  }
+  if (!cfg_stage.empty()) {
     stages.push_back(stage(cfg_stage, cfg_stage, Json::array(), cfg));
   }
 
@@ -463,25 +680,55 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
   // diffusion-conditioner: 0 prompt, 1 negative, 2 model, 3/4 single
   // reference images (unused: the list carries them all), 5
   // model_config, 6 ref_images -- the list, where the family's text
-  // encoder sees pictures (a VLM).
-  Json cond_in = Json::array({port("text-prompt"), unwired(),
-                              port("model-select")});
-  if (!cfg_stage.empty() || ref_to_cond) {
-    cond_in.push_back(unwired());
-    cond_in.push_back(unwired());
-    cond_in.push_back(cfg_stage.empty() ? unwired() : port(cfg_stage));
-    if (ref_to_cond && have_refs) {
-      cond_in.push_back(port(kRefList));
+  // encoder sees pictures (a VLM). Tapped -- or kept.
+  Json cond = port("diffusion-conditioner");
+  Json negative = cond_negative ? port("diffusion-conditioner", 1)
+                                : unwired();
+  if (cond_kept) {
+    stages.push_back(stage(kKeptConditioning, ex::kSourceType,
+                           Json::array(), Json::object()));
+    cond = port(kKeptConditioning);
+    EncodingIo io{cond_key, "conditioning", true,
+                  {{"conditioning", kKeptConditioning}}};
+    if (cond_negative) {
+      stages.push_back(stage(kKeptNegative, ex::kSourceType, Json::array(),
+                             Json::object()));
+      negative = port(kKeptNegative);
+      io.ports.push_back({"negative", kKeptNegative});
+    }
+    g.encodings.push_back(std::move(io));
+  } else {
+    Json cond_in = Json::array({port("text-prompt"), unwired(),
+                                port("model-select")});
+    if (!cfg_stage.empty() || ref_to_cond) {
+      cond_in.push_back(unwired());
+      cond_in.push_back(unwired());
+      cond_in.push_back(cfg_stage.empty() ? unwired() : port(cfg_stage));
+      if (ref_to_cond && have_refs) {
+        cond_in.push_back(port(kRefList));
+      }
+    }
+    stages.push_back(stage("diffusion-conditioner", "diffusion-conditioner",
+                           cond_in,
+                           with_encoder({{"keep_loaded", keep_models_s(job)}},
+                                        job)));
+    if (!cond_key.empty()) {
+      stages.push_back(sink(kConditioningTap, cond, false));
+      EncodingIo io{cond_key, "conditioning", false,
+                    {{"conditioning", kConditioningTap}}};
+      if (cond_negative) {
+        stages.push_back(sink(kNegativeTap, negative, false));
+        io.ports.push_back({"negative", kNegativeTap});
+      }
+      g.encodings.push_back(std::move(io));
     }
   }
-  stages.push_back(stage("diffusion-conditioner", "diffusion-conditioner",
-                         cond_in, Json::object()));
 
   // generate-image: 0 cond, 1 neg, 2 model, 3 sampler, 4 scheduler,
   // 5/6 single ref latents (unused), 7 model_config, 8 ref_latents --
   // the list, from vae-encode's oport 1.
-  Json gen_in = Json::array({port("diffusion-conditioner"), unwired(),
-                             port("model-select"), unwired(),
+  Json gen_in = Json::array({cond, negative, port("model-select"),
+                             unwired(),
                              have_sched ? port("scheduler-select")
                                         : unwired()});
   if (!cfg_stage.empty() || edit) {
@@ -489,11 +736,11 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
     gen_in.push_back(unwired());
     gen_in.push_back(cfg_stage.empty() ? unwired() : port(cfg_stage));
     if (have_refs) {
-      gen_in.push_back(port(kRefLatents, 1));
+      gen_in.push_back(latents);
     }
   }
   Json gen_cfg = {{"height", height}, {"width", width}, {"steps", steps},
-                  {"seed", seed}};
+                  {"seed", seed}, {"keep_loaded", keep_models_s(job)}};
   gen_cfg = merged(gen_cfg, accel_of(job));
   // A community DiT in place of the model's (Favor's Custom).
   if (!job.model.dit.empty()) {
@@ -517,11 +764,14 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
   const std::string vae = vae_source(job, stages);
   stages.push_back(stage("vae-decode", "vae-decode",
                          Json::array({port("generate-image"), port(vae)}),
-                         {{"dtype", "f16"}}));
+                         with_vae(merged({{"dtype", "f16"},
+                                          {"keep_loaded", keep_models_s(job)}},
+                                         codec_accel_of(job)),
+                                  job)));
   // save-image: 0 the image, 1 metadata -- the base's EXIF, carried to
   // the result. Software names Valtz, with vpipe's own line in brackets.
   Json save_in = Json::array({port("vae-decode")});
-  for (const auto& f : g.references) {
+  for (const auto& f : feeds) {
     if (f.base) {
       g.exif_from = f.path;
       stages.push_back(stage(kExifSource, ex::kSourceType, Json::array(),
@@ -547,15 +797,16 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs)
 }
 
 Result<BuiltGraph>
-build_text_to_image(const JobSpec& job)
+build_text_to_image(const JobSpec& job, const EncodingCache* cache)
 {
-  return build_image(job, {});
+  return build_image(job, {}, cache);
 }
 
 Result<BuiltGraph>
-build_image_edit(const JobSpec& job, const std::vector<RefImage>& refs)
+build_image_edit(const JobSpec& job, const std::vector<RefImage>& refs,
+                 const EncodingCache* cache)
 {
-  return build_image(job, refs);
+  return build_image(job, refs, cache);
 }
 
 // The shape of vpipe's MiniMax H3 reference graphs
@@ -572,7 +823,8 @@ build_image_edit(const JobSpec& job, const std::vector<RefImage>& refs)
 Result<BuiltGraph>
 build_video(const JobSpec& job, const std::optional<RefImage>& first,
             const std::vector<RefMedia>& refs,
-            const std::optional<RefImage>& last)
+            const std::optional<RefImage>& last,
+            const EncodingCache* cache)
 {
   const Json vp = jget(job.model.engine, "vpipe", Json::object());
   std::string cfg_stage = jget<std::string>(vp, "config_stage", "");
@@ -613,9 +865,12 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
 
   BuiltGraph g;
   const std::string jid = job.id.str();
-  g.output = job.output_dir / std::format("{}.mp4", jid);
-  g.video_part = job.output_dir / std::format("{}-picture.mp4", jid);
+  const ClipFormat kept = clip_format(job);
+  g.output = job.output_dir / std::format("{}.{}", jid, kept.ext);
+  g.video_part = job.output_dir / std::format("{}-picture.{}", jid,
+                                              kept.ext);
   g.audio_part = job.output_dir / std::format("{}-sound.wav", jid);
+  g.sound = kept.sound;
   g.width = width;
   g.height = height;
 
@@ -632,8 +887,10 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   Json stages = Json::array();
   stages.push_back(stage("model-select", "model-select", Json::array(),
                          {{"hf_dir", job.model.dir.string()}}));
-  stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
-                         {{"text", prompt}}));
+  // The words, read by whichever encoder runs (none, both kept).
+  Json prompt_stage = stage("text-prompt", "text-prompt", Json::array(),
+                            {{"text", prompt}});
+  bool prompt_read = false;
   // What conditions the denoise, and the reference rows when there are
   // references.
   Json cond = port("diffusion-conditioner");
@@ -644,35 +901,72 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   std::string seam_ref;
   if (refs.empty()) {
     // The prompt encoder (Qwen3-VL-32B for H3) streams, and is dropped
-    // before the denoise: the two never share the machine.
-    stages.push_back(stage("diffusion-conditioner", "diffusion-conditioner",
-                           Json::array({port("text-prompt"), unwired(),
-                                        port("model-select")}),
-                           jget(vp, "conditioner", Json::object())));
+    // before the denoise: the two never share the machine. KEPT
+    // (encoding-cache.h): the words and its config are all it reads.
+    const Json ccfg = jget(vp, "conditioner", Json::object());
+    std::string key;
+    if (cache) {
+      key = encoding_key("conditioning",
+                         encoding_doc(*cache, job, "conditioning",
+                                      {{"stage", "diffusion-conditioner"},
+                                       {"config", ccfg},
+                                       {"prompt", prompt}}));
+    }
+    if (!key.empty() && cache->kept(key)) {
+      stages.push_back(stage(kKeptConditioning, ex::kSourceType,
+                             Json::array(), Json::object()));
+      cond = port(kKeptConditioning);
+      g.encodings.push_back({key, "conditioning", true,
+                             {{"conditioning", kKeptConditioning}}});
+    } else {
+      prompt_read = true;
+      stages.push_back(stage("diffusion-conditioner",
+                             "diffusion-conditioner",
+                             Json::array({port("text-prompt"), unwired(),
+                                          port("model-select")}),
+                             with_encoder(ccfg, job)));
+      if (!key.empty()) {
+        stages.push_back(sink(kConditioningTap, cond, false));
+        g.encodings.push_back({key, "conditioning", false,
+                               {{"conditioning", kConditioningTap}}});
+      }
+    }
   } else {
     // vpipe's video-ref-encoder: the prompt and the references, read in
     // order -- its `references` list first, then its six ports, which is
-    // the order the job lists them in (the controller's).
+    // the order the job lists them in (the controller's). Each port's
+    // stages are gathered apart: KEPT, the encoder and what only it reads
+    // go, and the seam's clip stays.
     Json files = Json::array();
     Json enc_in = Json::array({port("text-prompt"), port("model-select")});
     Json attach = Json::array();
+    std::vector<std::pair<std::string, Json>> port_stages;  // id, stages
+    Json made = Json::array();  // what each reference is, for its key
+    bool hashed = true;
     int ref = 0;  // reference ports used, 1..6
     for (const auto& r : refs) {
       if (r.kind == "audio" && !song) {
         song = &r;
       }
+      hashed = hashed && !r.hash.is_zero();
+      made.push_back({{"hash", r.hash.hex()}, {"kind", r.kind},
+                      {"list", r.list}, {"audio", r.audio},
+                      {"first", r.first}, {"count", r.count},
+                      {"fps", r.fps}, {"start_s", r.start_s},
+                      {"duration_s", r.duration_s}});
       if (r.list) {
         files.push_back(r.path.string());
         continue;
       }
       if (r.kind == "video") {
         const std::string id = std::format("ref{}", ++ref);
-        stages.push_back(stage(id + "-read", "load-video", Json::array(),
-                               {{"input_url", r.path.string()},
-                                {"enable_audio", false}}));
-        stages.push_back(stage(id + "-rgb", "video-to-rgb",
-                               Json::array({port(id + "-read")}),
-                               {{"output_dtype", "u8"}}));
+        Json ps = Json::array();
+        ps.push_back(stage(id + "-read", "load-video", Json::array(),
+                           {{"input_url", r.path.string()},
+                            {"enable_audio", false}}));
+        ps.push_back(stage(id + "-rgb", "video-to-rgb",
+                           Json::array({port(id + "-read")}),
+                           {{"output_dtype", "u8"}}));
         // Exact to the frame (a seek lands on a keyframe).
         std::string last = id + "-rgb";
         if (r.first > 0 || r.count > 0) {
@@ -680,8 +974,8 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
           if (r.count > 0) {
             slice["end"] = r.first + r.count;
           }
-          stages.push_back(stage(id + "-span", "temporal-slice",
-                                 Json::array({port(last)}), slice));
+          ps.push_back(stage(id + "-span", "temporal-slice",
+                             Json::array({port(last)}), slice));
           last = id + "-span";
         }
         // The whole span in one beat: its bytes, with room.
@@ -689,11 +983,12 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                               r.count > 0 ? r.count : 362, 1)) *
                           3.0 * std::max(r.width, 1) *
                           std::max(r.height, 1) / (1024.0 * 1024.0);
-        stages.push_back(stage(id, "temporal-stack",
-                               Json::array({port(last)}),
-                               {{"mode", "video"}, {"group_size", 0},
-                                {"max_mb", std::max(256, static_cast<int>(
-                                                             mb) + 64)}}));
+        ps.push_back(stage(id, "temporal-stack",
+                           Json::array({port(last)}),
+                           {{"mode", "video"}, {"group_size", 0},
+                            {"max_mb", std::max(256, static_cast<int>(
+                                                         mb) + 64)}}));
+        port_stages.emplace_back(id, std::move(ps));
         enc_in.push_back(port(id));
         if (r.continues) {
           seam_ref = id;
@@ -712,18 +1007,19 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
       if (r.duration_s > 0) {
         read["duration_s"] = r.duration_s;
       }
-      stages.push_back(stage(id + "-read", "load-audio", Json::array(),
-                             read));
-      stages.push_back(stage(id + "-pcm", "audio-to-pcm",
-                             Json::array({port(id + "-read")}),
-                             {{"output_sample_rate", 32000},
-                              {"channels", 2},
-                              {"chunk_duration_s",
-                               r.duration_s > 0 ? r.duration_s : 30.0},
-                              {"max_chunk_duration_s", 60.0}}));
-      stages.push_back(stage(id, "temporal-stack",
-                             Json::array({port(id + "-pcm")}),
-                             {{"mode", "audio"}, {"group_size", 0}}));
+      Json ps = Json::array();
+      ps.push_back(stage(id + "-read", "load-audio", Json::array(), read));
+      ps.push_back(stage(id + "-pcm", "audio-to-pcm",
+                         Json::array({port(id + "-read")}),
+                         {{"output_sample_rate", 32000},
+                          {"channels", 2},
+                          {"chunk_duration_s",
+                           r.duration_s > 0 ? r.duration_s : 30.0},
+                          {"max_chunk_duration_s", 60.0}}));
+      ps.push_back(stage(id, "temporal-stack",
+                         Json::array({port(id + "-pcm")}),
+                         {{"mode", "audio"}, {"group_size", 0}}));
+      port_stages.emplace_back(id, std::move(ps));
       enc_in.push_back(port(id));
       if (r.kind == "video") {
         attach.push_back(ref);
@@ -735,17 +1031,77 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
     }
     Json enc = merged({{"frames", frames}},
                       jget(rv, "encoder", Json::object()));
-    if (!files.empty()) {
-      enc["references"] = files;
-    }
     if (!attach.empty()) {
       enc["attach_audio"] = attach;
     }
-    stages.push_back(stage("video-ref-encoder", "video-ref-encoder",
-                           std::move(enc_in), std::move(enc)));
-    cond = port("video-ref-encoder", 0);
-    ref_video = port("video-ref-encoder", 1);
-    ref_audio = port("video-ref-encoder", 2);
+    // Its key: the words, its config, every reference as content (the
+    // files' paths left out: their bytes say what they are).
+    std::string key;
+    if (cache && hashed) {
+      key = encoding_key("references",
+                         encoding_doc(*cache, job, "references",
+                                      {{"stage", "video-ref-encoder"},
+                                       {"config", enc},
+                                       {"prompt", prompt},
+                                       {"references", made}}));
+    }
+    if (!files.empty()) {
+      enc["references"] = files;
+    }
+    static constexpr std::array<const char*, 3> kRefPorts = {
+        "conditioning", "ref_video", "ref_audio"};
+    if (!key.empty() && cache->kept(key)) {
+      EncodingIo io{key, "references", true, {}};
+      std::array<Json, 3> fed;
+      for (std::size_t k = 0; k < kRefPorts.size(); ++k) {
+        const std::string id = std::format("references-kept-{}",
+                                           kRefPorts[k]);
+        stages.push_back(stage(id, ex::kSourceType, Json::array(),
+                               Json::object()));
+        io.ports.push_back({kRefPorts[k], id});
+        fed[k] = port(id);
+      }
+      g.encodings.push_back(std::move(io));
+      cond = fed[0];
+      ref_video = fed[1];
+      ref_audio = fed[2];
+      // The clip continued is still read: its seam is matched to it.
+      for (auto& [id, ps] : port_stages) {
+        if (id == seam_ref) {
+          for (auto& st : ps) {
+            stages.push_back(std::move(st));
+          }
+        }
+      }
+    } else {
+      prompt_read = true;
+      for (auto& [id, ps] : port_stages) {
+        for (auto& st : ps) {
+          stages.push_back(std::move(st));
+        }
+      }
+      stages.push_back(stage("video-ref-encoder", "video-ref-encoder",
+                             std::move(enc_in),
+                             with_vae(with_encoder(std::move(enc), job),
+                                      job)));
+      cond = port("video-ref-encoder", 0);
+      ref_video = port("video-ref-encoder", 1);
+      ref_audio = port("video-ref-encoder", 2);
+      if (!key.empty()) {
+        EncodingIo io{key, "references", false, {}};
+        for (std::size_t k = 0; k < kRefPorts.size(); ++k) {
+          const std::string id = std::format("references-tap-{}",
+                                             kRefPorts[k]);
+          stages.push_back(sink(id, port("video-ref-encoder",
+                                         static_cast<int>(k)), false));
+          io.ports.push_back({kRefPorts[k], id});
+        }
+        g.encodings.push_back(std::move(io));
+      }
+    }
+  }
+  if (prompt_read) {
+    stages.insert(stages.begin() + 1, std::move(prompt_stage));
   }
   const bool keep_song = song && jget(job.params, "reference_sound", false);
 
@@ -810,17 +1166,38 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
     f.size = own > kMaxFeedArea ? fit_area(own_size, kMaxFeedArea, 1)
                                 : own_size;
     f.fitted = {width, height};
+    const Json fit = {{"width", width}, {"height", height},
+                      {"fit", "crop"}, {"algorithm", "lanczos"}};
+    // KEPT (encoding-cache.h): the picture as fitted is all it reads.
+    std::string key;
+    if (cache && !pic.hash.is_zero()) {
+      key = encoding_key("keyframe",
+                         encoding_doc(*cache, job, "keyframe",
+                                      {{"stage", "vae-encode"},
+                                       {"picture",
+                                        picture_doc(pic.hash, f, fit)}}));
+    }
+    if (!key.empty() && cache->kept(key)) {
+      const std::string kept = id + "-latent-kept";
+      stages.push_back(stage(kept, ex::kSourceType, Json::array(),
+                             Json::object()));
+      g.encodings.push_back({key, "keyframe", true, {{"latent", kept}}});
+      return port(kept);
+    }
     stages.push_back(stage(f.stage, ex::kSourceType, Json::array(),
                            Json::object()));
     stages.push_back(stage(id + "-fit", "image-resample",
-                           Json::array({port(f.stage)}),
-                           {{"width", width}, {"height", height},
-                            {"fit", "crop"}, {"algorithm", "lanczos"}}));
+                           Json::array({port(f.stage)}), fit));
     stages.push_back(stage(id + "-latent", "vae-encode",
                            Json::array({port(id + "-fit"),
                                         port("model-select")}),
-                           {{"unload_when_idle", "always"}}));
+                           with_vae({{"unload_when_idle", "always"}}, job)));
     g.references.push_back(std::move(f));
+    if (!key.empty()) {
+      const std::string tap = id + "-latent-tap";
+      stages.push_back(sink(tap, port(id + "-latent"), false));
+      g.encodings.push_back({key, "keyframe", false, {{"latent", tap}}});
+    }
     return port(id + "-latent");
   };
   Json anchor = unwired(), anchor_last = unwired();
@@ -856,13 +1233,14 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                           /*latest_only=*/true));
   }
 
-  // The picture: decoded in F16 and written as HEVC Main10 -- ten bits,
-  // not the eight the FFmpeg path rounds to -- tagged BT.709, which is
-  // what the model's sRGB-encoded BT.709 samples are taken as in video.
+  // The picture: decoded in F16 and written in the project's intermediate
+  // format -- ProRes (12 bits in 4444, 10 in 422) or HEVC Main10, never
+  // the eight the FFmpeg path rounds to -- tagged BT.709, which is what
+  // the model's sRGB-encoded BT.709 samples are taken as in video.
   const std::string vae = vae_source(job, stages);
   stages.push_back(stage("vae-decode", "vae-decode",
                          Json::array({port("generate-video"), port(vae)}),
-                         {{"dtype", "f16"}}));
+                         with_vae({{"dtype", "f16"}}, job)));
   // A continuation's SEAM: its frames matched to the tail the model was
   // given -- the step in tone (the shadows most) and in framing it came
   // back with, measured on the frames either side and taken out of every
@@ -878,15 +1256,18 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                            seam));
     picture = "seam";
   }
+  Json save = {{"path", g.video_part.string()},
+               {"codec", kept.codec},
+               {"alpha", "drop"},
+               {"fps", fps},
+               {"color_primaries", 1},
+               {"color_transfer", 1},
+               {"color_matrix", 1}};
+  if (!media::is_prores(kept.codec)) {
+    save["quality"] = jget(vp, "quality", 0.8);
+  }
   stages.push_back(stage("save-video", "avf-save-video",
-                         Json::array({port(picture)}),
-                         {{"path", g.video_part.string()},
-                          {"codec", "hevc"},
-                          {"fps", fps},
-                          {"quality", jget(vp, "quality", 0.8)},
-                          {"color_primaries", 1},
-                          {"color_transfer", 1},
-                          {"color_matrix", 1}}));
+                         Json::array({port(picture)}), save));
   if (keep_song) {
     // The soundtrack is the song as it is, over the clip's length -- not
     // a generated one, so none is decoded.
@@ -899,7 +1280,7 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
     stages.push_back(stage("audio-vae-decode", "audio-vae-decode",
                            Json::array({port("generate-video", 1),
                                         port("model-select")}),
-                           Json::object()));
+                           with_vae(Json::object(), job)));
     stages.push_back(stage("save-audio", "save-audio",
                            Json::array({port("audio-vae-decode")}),
                            {{"output_path", g.audio_part.string()},
@@ -1771,20 +2152,32 @@ build_upscale_video(const JobSpec& job)
   // leaves it: the encoder pads the source's end and drops what that
   // makes.
   const int G = std::max(8, jget(job.params, "group", jget(up, "group", 24)));
-  const int L = std::max(25, jget(up, "clip_frames", 41));
-  const int B = std::clamp(jget(up, "blend_frames", 8), 0, L - 25);
+  // A release's cadence, which no tensor says: the source frames its
+  // stream's opening chunk reads, then each chunk after -- v1.1 25 then
+  // 8, FlashVSR+ 17 then 16 (four latent frames a chunk from the first).
+  const int open = std::max(5, jget(up, "open_frames", 25));
+  const int chunk = std::max(4, jget(up, "chunk_frames", 8));
+  const int L = std::max(open, jget(up, "clip_frames", 41));
+  const int B = std::clamp(jget(up, "blend_frames", 8), 0, L - open);
   // What it holds back of the frames given: a stream's opening chunk
-  // reads 25 frames, a clip L, before any comes out.
+  // reads `open` frames, a clip L, before any comes out.
   const int lag = L - 1;
   // The most source frames one beat restores -- what the denoiser is
-  // planned for: a clip; or a stream's first beat (its opening chunk of
-  // 25 and the chunks of 8 the first groups complete past it), or a
-  // later one (a group's chunks).
+  // planned for: a clip; or a stream's first beat (its opening chunk
+  // and the chunks the first groups complete past it), or a later one
+  // (a group's chunks).
   const int first_beat = [&] {
-    const int fed = (25 + G - 1) / G * G;
-    return 25 + 8 * ((fed - 25) / 8);
+    const int fed = (open + G - 1) / G * G;
+    return open + chunk * ((fed - open) / chunk);
   }();
-  const int beat_frames = std::max({L, first_beat, 8 * ((G + 7) / 8)});
+  const int beat_frames =
+      std::max({L, first_beat, chunk * ((G + chunk - 1) / chunk)});
+  // FlashVSR+'s tiny decoder reads the source pictures beside each
+  // latent -- they travel from the encoder to the decode on a port of
+  // their own (`color_reference`, the wavelet colour fix's too); unwired,
+  // vpipe decodes with the Wan VAE, about three times slower. v1.1 sends
+  // none: unwired, as vpipe's own v1.1 graph leaves it.
+  const bool pictures = jget(up, "color_reference", false);
   const Rational rate = in.info.frame_rate.num > 0 ? in.info.frame_rate
                                                    : Rational{24, 1};
   const double fps = rate.to_double();
@@ -1804,10 +2197,13 @@ build_upscale_video(const JobSpec& job)
 
   BuiltGraph g;
   const std::string jid = job.id.str();
-  g.output = job.output_dir / std::format("{}.mp4", jid);
+  const ClipFormat kept = clip_format(job);
+  g.output = job.output_dir / std::format("{}.{}", jid, kept.ext);
+  g.sound = kept.sound;
   fs::path written = g.output;
   if (in.info.has_audio) {
-    g.video_part = job.output_dir / std::format("{}-picture.mp4", jid);
+    g.video_part = job.output_dir / std::format("{}-picture.{}", jid,
+                                                kept.ext);
     g.audio_part = in.path;
     g.audio_is_source = true;
     g.audio_start = static_cast<double>(first) / fps;
@@ -1840,8 +2236,10 @@ build_upscale_video(const JobSpec& job)
   // and its frames decoded and fitted (F16).
   const std::uint64_t px = static_cast<std::uint64_t>(PW) * PH;
   const std::uint64_t hidden = jget<std::uint64_t>(up, "hidden", 1536);
+  // FlashVSR+'s pictures to the decode are its frames at the model's
+  // size once more.
   const std::uint64_t group_bytes =
-      2 * G * px * 3 +
+      (pictures ? 3 : 2) * G * px * 3 +
       static_cast<std::uint64_t>((G - 1) / 4 + 1) * (px / 256) * hidden * 2 +
       static_cast<std::uint64_t>(G) * 3 * 2 *
           (px + static_cast<std::uint64_t>(W) * H);
@@ -1869,9 +2267,13 @@ build_upscale_video(const JobSpec& job)
                          Json::array({port("upsample")}),
                          {{"mode", "video"}, {"group_size", G},
                           {"overlap", 0}, {"max_mb", group_mb}}));
+  // Its colour fix (Settings › Upscaling, a declared option on this
+  // stage): each frame's colour taken back toward its source's -- v1.1's
+  // AdaIN, FlashVSR+'s wavelet.
   stages.push_back(stage("encode", "flashvsr-src-encoder",
                          Json::array({port("stack"), port("model-select")}),
-                         {{"clip_frames", L}, {"blend_frames", B}}));
+                         merged({{"clip_frames", L}, {"blend_frames", B}},
+                                declared_of(job, "encode"))));
   stages.push_back(stage("generate", "generate-video",
                          Json::array({port("encode"), unwired(),
                                       port("model-select")}),
@@ -1882,9 +2284,11 @@ build_upscale_video(const JobSpec& job)
                                                              "seed", 0)},
                                  {"unload_when_idle", "auto"}},
                                 accel_of(job))));
-  stages.push_back(stage("decode", "vae-decode",
-                         Json::array({port("generate"),
-                                      port("model-select")}),
+  Json decode_in = Json::array({port("generate"), port("model-select")});
+  if (pictures) {
+    decode_in.push_back(port("encode", 1));
+  }
+  stages.push_back(stage("decode", "vae-decode", std::move(decode_in),
                          Json::object()));
   std::string last = "decode";
   if (PW != W || PH != H) {
@@ -1901,7 +2305,8 @@ build_upscale_video(const JobSpec& job)
   stages.push_back(stage("write", "avf-save-video",
                          Json::array({port("tap")}),
                          {{"path", written.string()},
-                          {"codec", "hevc"},
+                          {"codec", kept.codec},
+                          {"alpha", "drop"},
                           {"fps", fps},
                           {"frames", count}}));
   g.spec = {{"id", "valtz-" + jid},

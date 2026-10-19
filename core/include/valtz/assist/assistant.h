@@ -73,6 +73,11 @@ struct EnhanceRequest {
   // The output size the user chose ("1600x1216"): part of the request,
   // so a rewriter that picks a shape picks that one. "" = its choice.
   std::string             size;
+  // A maker's skill written for an agent with files and a shell (MOSS-
+  // Image's: it writes a JSON draft and runs a script on it): what Valtz
+  // says it is to do instead, after the skill and before the request --
+  // reply with the draft itself, which Valtz compiles (moss-image.h).
+  std::string             skill_note;
   // The model reads English only (catalog `prompting.language`: Krea 2,
   // FLUX.2): the prompt is written in English, a request in another
   // language translated. Otherwise it keeps the request's language --
@@ -304,7 +309,9 @@ std::string tag_inline(std::string_view prompt,
 // (Qwen-Image's, which QwenLM's own rewriters replace once downloaded:
 // Controller::skill_text) and "flux3-klein-t2i" / "flux3-klein-edit"
 // (FLUX.3's full scene captions; an edit the picture wanted, not an
-// instruction). Empty for a name it does not know.
+// instruction) -- and "moss-image", MOSS-Image's own prompt-enhancer
+// skill as its makers publish it (3rd-party/moss-image; its drafts
+// compiled by moss-image.h). Empty for a name it does not know.
 std::string_view rewrite_prompt(std::string_view name);
 
 // `text` with each name a model writes (first: "<Picture 1>") made what
@@ -331,11 +338,20 @@ Result<EnhanceResult> parse_enhance_reply(std::string_view reply);
 // own and its text after it. A section's name repeated at its head is
 // dropped; missing ones are left out (a reply still being written).
 std::string clip_sections(const std::map<std::string, std::string>&);
+// A clip's prompt in its guide's form read back into its SECTIONS by
+// name -- "integrated_multimodal_description", "overall_soundscape",
+// "subject_definitions", ... -- each's text trimmed: what clip_sections
+// put together, or an enhancement wrote, handed back to the agent as a
+// shot's parts (DESIGN §9b). The text before the first section (an
+// instruction line) is left out.
+std::map<std::string, std::string> clip_parts(std::string_view prompt);
 
 // A SHOT of a scene, its prompt put together in MiniMax H3's guide form
 // from its parts (the agent's generate_video, DESIGN §9b): the base
 // modes' three fields from the words alone (T2VA) or opening on a picture
-// (I2VA: the guide's instruction line first); the full-reference mode's
+// (I2VA: the guide's instruction line first) or ending on another (FL2VA:
+// its alignment line, the last shot's number from the description's);
+// the full-reference mode's
 // six when it draws on pictures or carries on from a clip (Ref2VA) -- the
 // subjects as given, then what the clip continued and its sound are to it
 // (vpipe's continuation prompts' words), the summary opened by its task
@@ -355,8 +371,12 @@ struct ShotText {
   std::vector<std::string> pictures;  // "<Picture 1>", ...
   std::string continued;              // "<Video 1>"; "": none
   std::string continued_sound;        // "<Audio 1>"; "": none
-  // I2VA: the picture it opens on, "<Picture 1>".
+  // I2VA: the picture it opens on, "<Picture 1>". FL2VA: and the one it
+  // ENDS on -- the two named as that case of the guide names them,
+  // "Picture 1" and "Picture 2" -- at `seconds`, the clip's length.
   std::string first;
+  std::string last;
+  double      seconds = 0;
 };
 std::string shot_prompt(const ShotText&);
 

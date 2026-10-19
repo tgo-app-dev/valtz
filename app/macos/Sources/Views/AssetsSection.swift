@@ -1,5 +1,6 @@
 import AppKit
 import ImageIO
+import os
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -23,6 +24,82 @@ extension AppModel {
     /// destination asks this first, or the drop is accepted and lost.
     static func draggedAssets(_ urls: [URL]) -> [String] {
         urls.compactMap { draggedAsset($0.absoluteString) }
+    }
+
+    /// Drops meant for Assets, said in the system log (category
+    /// assets-drop: what each carried, what was taken -- counts and
+    /// types, no paths): a Finder drag refused that no scripted drag
+    /// reproduced shows there (`log show --predicate 'subsystem ==
+    /// "com.tgous.valtz"'`).
+    static let dropLog = Logger(subsystem: "com.tgous.valtz",
+                                category: "assets-drop")
+
+    /// The file a drop's item carries. The Finder writes a file REFERENCE
+    /// URL (file:///.file/id=...): read as an NSURL it comes as a path;
+    /// read from its bytes -- where no URL object came -- it is resolved.
+    static func droppedURL(_ p: NSItemProvider) async -> URL? {
+        if p.canLoadObject(ofClass: NSURL.self) {
+            let u: URL? = await withCheckedContinuation { c in
+                _ = p.loadObject(ofClass: NSURL.self) { u, _ in
+                    c.resume(returning: (u as? NSURL) as URL?)
+                }
+            }
+            if let u { return u }
+        }
+        let file = UTType.fileURL.identifier
+        guard p.hasItemConformingToTypeIdentifier(file) else { return nil }
+        return await withCheckedContinuation { c in
+            _ = p.loadDataRepresentation(forTypeIdentifier: file) { d, _ in
+                let u = d.flatMap {
+                    URL(dataRepresentation: $0, relativeTo: nil)
+                }
+                c.resume(returning: u.map {
+                    ($0 as NSURL).filePathURL ?? $0
+                })
+            }
+        }
+    }
+
+    /// The asset list's rows, newest first: every asset but the project's
+    /// compositions (pinned on top) -- versionless compositions (drawn)
+    /// and a task's asset being made too.
+    var listedAssets: [AssetDTO] {
+        assets.filter {
+            ($0.head > 0 || $0.isComposition || task(of: $0.id) != nil)
+                && $0.op != "project" && !$0.isProject
+        }
+            .sorted { $0.created > $1.created }
+    }
+
+    /// An asset the list's filter keeps: its name, or its folder's, has
+    /// every word typed.
+    func passesAssetFilter(_ a: AssetDTO, words: [String]) -> Bool {
+        let folder = a.folder.flatMap { f in
+            assetFolders.first { $0.id == f }?.name
+        }
+        return Self.matches(words, in: [a.name, folder])
+    }
+
+    /// Files dropped to go into the project -- on Assets, or anywhere in
+    /// the window no panel takes them (`added`: said, as the list may not
+    /// be in sight): imported; those in Assets already -- dropped before,
+    /// or through the prompt's row -- not again, and that is said.
+    func importDropped(_ files: [URL], added: Bool = false) {
+        guard !files.isEmpty else { return }
+        let known = files.filter { asset(forFile: $0) != nil }
+        let missing = files.filter {
+            !FileManager.default.fileExists(atPath: $0.path)
+        }
+        let fresh = files.filter { f in
+            !known.contains(f) && !missing.contains(f)
+        }
+        Self.dropLog.notice("files: \(files.count) (\(known.count) in Assets already, \(missing.count) not found)")
+        importFiles(fresh)
+        if known.count == files.count {
+            flash(String(localized: "Already in Assets"))
+        } else if added && !fresh.isEmpty {
+            flash(String(localized: "Added to Assets"))
+        }
     }
 
     /// What the active project uses: the stage's asset, the prompt row's,
@@ -183,7 +260,7 @@ extension AppModel {
         }
         let r = core.assetOp(project: projectId, "new-composition", req)
         guard r.ok, let id = r["asset"] as? String else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         reloadAssets()
@@ -204,7 +281,7 @@ extension AppModel {
         let r = core.assetOp(project: projectId, "create-folder",
                              ["name": name])
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return nil
         }
         reloadAssets()
@@ -244,7 +321,7 @@ extension AppModel {
     func removeAsset(_ id: String) {
         guard !assetsInUse.contains(id) else {
             let name = assets.first { $0.id == id }?.name ?? ""
-            flash(String(localized: "\(name) is in use: on the stage, in the prompt, or a part of another asset."))
+            flash(String(localized: "\(name) is in use: on the stage, in the prompt, or a part of another asset."), level: .warning)
             return
         }
         assetListOp("remove", ["asset": id])
@@ -263,7 +340,7 @@ extension AppModel {
                              reload: Bool = true) {
         guard let core, let projectId else { return }
         let r = core.assetOp(project: projectId, op, extra)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         if reload { reloadAssets() }
     }
 
@@ -331,7 +408,7 @@ extension AppModel {
         }
         guard a.kind == "image" || a.kind == "video" || a.kind == "audio"
         else {
-            flash(String(localized: "Text does not go on the stage: put it in the prompt."))
+            flash(String(localized: "Text does not go on the stage: put it in the prompt."), level: .warning)
             return false
         }
         // Onto what the stage works on -- a flat asset there through its
@@ -348,7 +425,7 @@ extension AppModel {
         }
         let r = core.assetOp(project: projectId, "instantiate", extra)
         guard r.ok, let held = r["asset"] as? String else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return false
         }
         reloadAssets()
@@ -426,7 +503,7 @@ extension AppModel {
         if selectedOnly { extra["layers"] = Array(selectedLayers) }
         let r = core.assetOp(project: projectId, "capture", extra)
         guard r.ok, let id = r["asset"] as? String else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return nil
         }
         reloadAssets()
@@ -464,18 +541,31 @@ struct AssetsSection: View {
     @State private var renaming: String?
     @State private var dropFolder: String?
     @FocusState private var listFocused: Bool
+    @FocusState private var filterFocused: Bool
 
     var body: some View {
         let used = model.assetsInUse
         // The project's compositions are the project, pinned on top; the
         // others -- versionless, drawn -- are listed as any asset is.
         // Being made (a task's asset, no version yet) too: T0, T1, ...
-        let all = model.assets.filter {
-            ($0.head > 0 || $0.isComposition || model.task(of: $0.id) != nil)
-                && $0.op != "project" && !$0.isProject
-        }
-            .sorted { $0.created > $1.created }
+        let all = model.listedAssets
         let stale = all.filter { model.isStale($0, used: used) }
+        // The filter: the rows whose name -- or whose folder's -- has
+        // every word typed; a folder holding none is left out, the others
+        // open whatever their fold.
+        let words = AppModel.filterWords(model.assetFilter)
+        let filtering = !words.isEmpty
+        let shown = filtering
+            ? all.filter { model.passesAssetFilter($0, words: words) } : all
+        let views = filtering
+            ? model.projectViews.filter {
+                AppModel.matches(words, in: [String(localized: "Project"),
+                                             $0.name])
+            } : model.projectViews
+        let folders = filtering
+            ? model.assetFolders.filter { f in
+                shown.contains { $0.folder == f.id }
+            } : model.assetFolders
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 2) {
                 // Blank ones, to build up -- or a sound to record into.
@@ -507,10 +597,28 @@ struct AssetsSection: View {
                 }
             }
             .padding(.horizontal, 12)
+            let empty = all.isEmpty && model.projectViews.isEmpty
+                && model.assetFolders.isEmpty && model.tasks.isEmpty
+            // A long list filtered by name as it is typed.
+            if !empty || filtering {
+                FilterField(text: $model.assetFilter,
+                            prompt: "Filter by name",
+                            focused: $filterFocused) {
+                    filterFocused = false
+                }
+                .help("Show only the assets whose name, or whose folder's, has these words")
+                .padding(.horizontal, 12)
+            }
             // The project's own composition counts: a timeline of markups
             // alone (its markups no assets of their own) is listed.
-            if all.isEmpty && model.projectViews.isEmpty
-                && model.assetFolders.isEmpty && model.tasks.isEmpty {
+            if filtering && shown.isEmpty && views.isEmpty {
+                Text("No assets match “\(model.assetFilter)”")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 12)
+            } else if empty {
                 ContentUnavailableView(
                     "No assets yet", systemImage: "photo.stack",
                     description: Text("Pictures, clips and sounds put into Valtz, and everything made here, are listed here."))
@@ -519,17 +627,20 @@ struct AssetsSection: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        ForEach(model.projectViews) { v in
+                        ForEach(views) { v in
                             AssetRow(model: model, asset: v, stale: false,
                                      used: true)
                         }
-                        if !model.projectViews.isEmpty {
+                        if !views.isEmpty {
                             Divider().padding(.vertical, 4)
                         }
                         // Exports queued or running: a row each until the
-                        // file is written.
-                        ForEach(model.tasks.filter { $0.kind == "export" }) { t in
-                            ExportTaskRow(model: model, task: t)
+                        // file is written (no asset yet: not filtered for).
+                        if !filtering {
+                            ForEach(model.tasks.filter {
+                                $0.kind == "export" }) { t in
+                                ExportTaskRow(model: model, task: t)
+                            }
                         }
                         // A folder is ONE item of the list -- its header
                         // and its rows, set in -- so a row's place never
@@ -537,11 +648,14 @@ struct AssetsSection: View {
                         // it to (an asset moved into a folder kept the
                         // top level's place), and folding slides the rows
                         // up under the header.
-                        ForEach(model.assetFolders) { f in
-                            folderBlock(f, items: all.filter {
-                                $0.folder == f.id }, stale: stale, used: used)
+                        ForEach(folders) { f in
+                            folderBlock(f, items: shown.filter {
+                                $0.folder == f.id }, stale: stale, used: used,
+                                        open: filtering
+                                            || !model.closedFolders
+                                                .contains(f.id))
                         }
-                        ForEach(all.filter { ($0.folder ?? "").isEmpty }) { a in
+                        ForEach(shown.filter { ($0.folder ?? "").isEmpty }) { a in
                             AssetRow(model: model, asset: a,
                                      stale: stale.contains(a),
                                      used: used.contains(a.id))
@@ -602,6 +716,7 @@ struct AssetsSection: View {
     /// takes both: AppKit hands a drag to the front destination only, and
     /// one for rows alone in front of the files' refused every file over
     /// the list once it had a row.
+    /// Each drop is said in the system log (AppModel.dropLog).
     private func takeDrop(_ providers: [NSItemProvider],
                           into folder: String) -> Bool {
         let ours = providers.filter { p in
@@ -609,22 +724,38 @@ struct AssetsSection: View {
                 p.hasItemConformingToTypeIdentifier($0.identifier)
             }
         }
-        guard !ours.isEmpty else { return false }
+        guard !ours.isEmpty else {
+            let types = providers.map {
+                $0.registeredTypeIdentifiers.joined(separator: "+")
+            }.joined(separator: " ")
+            AppModel.dropLog.notice("refused: \(providers.count) item(s) of \(types, privacy: .public)")
+            return false
+        }
         Task { @MainActor in
             var files: [URL] = []
+            var rows = 0
+            var unread: [String] = []
             for p in ours {
                 if let s = await Self.loadText(p),
                    let id = AppModel.draggedAsset(s) {
                     model.moveAsset(id, to: folder)
-                } else if let u = await Self.loadURL(p) {
+                    rows += 1
+                } else if let u = await AppModel.droppedURL(p) {
                     if let id = AppModel.draggedAssets([u]).first {
                         model.moveAsset(id, to: folder)
+                        rows += 1
                     } else if u.isFileURL {
                         files.append(u)
+                    } else {
+                        unread.append("not a file")
                     }
+                } else {
+                    unread.append(p.registeredTypeIdentifiers
+                        .joined(separator: "+"))
                 }
             }
-            if !files.isEmpty { model.importFiles(files) }
+            AppModel.dropLog.notice("taken on the list: \(ours.count) item(s): \(rows) row(s), \(files.count) file(s), unread \(unread.joined(separator: " "), privacy: .public)")
+            model.importDropped(files)
         }
         return true
     }
@@ -638,25 +769,16 @@ struct AssetsSection: View {
         }
     }
 
-    private static func loadURL(_ p: NSItemProvider) async -> URL? {
-        guard p.canLoadObject(ofClass: NSURL.self) else { return nil }
-        return await withCheckedContinuation { c in
-            _ = p.loadObject(ofClass: NSURL.self) { u, _ in
-                c.resume(returning: (u as? NSURL) as URL?)
-            }
-        }
-    }
-
     /// A folder: its header, and -- open -- its assets set in under it.
     /// Folded, they slide up under the header as the block closes.
     private func folderBlock(_ f: FolderDTO, items: [AssetDTO],
                              stale: [AssetDTO],
-                             used: Set<String>) -> some View {
+                             used: Set<String>, open: Bool) -> some View {
         VStack(spacing: 2) {
-            folderRow(f, count: items.count)
+            folderRow(f, count: items.count, open: open)
                 .background(Color.valtzPanel)
                 .zIndex(1)
-            if !model.closedFolders.contains(f.id) {
+            if open {
                 VStack(spacing: 2) {
                     ForEach(items) { a in
                         AssetRow(model: model, asset: a,
@@ -671,9 +793,9 @@ struct AssetsSection: View {
         .clipped()
     }
 
-    private func folderRow(_ f: FolderDTO, count: Int) -> some View {
-        let open = !model.closedFolders.contains(f.id)
-        return HStack(spacing: 6) {
+    private func folderRow(_ f: FolderDTO, count: Int,
+                           open: Bool) -> some View {
+        HStack(spacing: 6) {
             Image(systemName: "chevron.right")
                 .font(.system(size: 9, weight: .semibold))
                 .rotationEffect(.degrees(open ? 90 : 0))

@@ -31,13 +31,13 @@ extension AppModel {
         guard let source = captureSources.first(where: {
             $0.kind == (system ? "system" : "microphone")
         })?.id else {
-            flash(String(localized: "There is no microphone."))
+            flash(String(localized: "There is no microphone."), level: .warning)
             return
         }
         Task { @MainActor [weak self] in
             if !system {
                 guard await Self.allowed(.audio) else {
-                    self?.flash(String(localized: "Valtz may not use the microphone: allow it in System Settings › Privacy & Security › Microphone."))
+                    self?.flash(String(localized: "Valtz may not use the microphone: allow it in System Settings › Privacy & Security › Microphone."), level: .warning)
                     return
                 }
             }
@@ -48,7 +48,7 @@ extension AppModel {
             }.value
             guard let self else { return }
             guard r.ok else {
-                self.flash(r.message)
+                self.flash(r.message, level: .error)
                 return
             }
             withAnimation(Self.motion) { self.attachCapture = .sound }
@@ -67,7 +67,7 @@ extension AppModel {
             self.capture = CaptureStateDTO()
             guard r.ok, let id = r["asset"] as? String else {
                 withAnimation(Self.motion) { self.attachCapture = nil }
-                self.flash(r.message)
+                self.flash(r.message, level: .error)
                 return
             }
             self.landCapture(id)
@@ -104,7 +104,7 @@ extension AppModel {
         guard let core, let projectId, attachCapture == nil else { return }
         Task { @MainActor [weak self] in
             guard await Self.allowed(.video) else {
-                self?.flash(String(localized: "Valtz may not use the camera: allow it in System Settings › Privacy & Security › Camera."))
+                self?.flash(String(localized: "Valtz may not use the camera: allow it in System Settings › Privacy & Security › Camera."), level: .warning)
                 return
             }
             _ = await Self.allowed(.audio)
@@ -114,7 +114,7 @@ extension AppModel {
             }.value
             guard let self else { return }
             guard r.ok else {
-                self.flash(r.message)
+                self.flash(r.message, level: .error)
                 return
             }
             withAnimation(Self.motion) { self.attachCapture = .camera }
@@ -130,7 +130,7 @@ extension AppModel {
     func cameraRecord() {
         guard let core else { return }
         let r = core.cameraOp(["op": "record"])
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
     }
 
     /// The clip stopped: in the row; the camera off.
@@ -146,7 +146,7 @@ extension AppModel {
             self.cameraOff()
             guard r.ok, let id = r["asset"] as? String else {
                 withAnimation(Self.motion) { self.attachCapture = nil }
-                self.flash(r.message)
+                self.flash(r.message, level: .error)
                 return
             }
             self.landCapture(id)

@@ -266,6 +266,86 @@ TEST(vpipe_plugin, push_gathers_strides_and_emit_sends_json)
   ts.s->unload_pipeline(h);
 }
 
+// What a kept encoding carries back (DESIGN §4l), through a real session:
+// a LIST beat -- an edit's latents, each item its own shape and sideband
+// -- handed out an item at a time and put back together; a tensor of no
+// bytes ([0, 96]: no reference rows) with its type and shape; an empty
+// list. Sidebands go as FlexData's own binary, every number's kind kept.
+TEST(vpipe_plugin, a_list_and_a_tensor_of_no_bytes_go_through)
+{
+  REQUIRE(plugin_present());
+  TestSession ts(test::temp_dir("vpx-list"));
+  REQUIRE(ts.s);
+  vpipe::PipelineHandle h = ts.s->load_pipeline(
+      graph("list", {{ex::kSinkPolicy, ex::kSinkPolicyQueue},
+                     {ex::kSinkDepth, 8}}).dump());
+  REQUIRE(h);
+  REQUIRE(ts.s->launch_pipeline(h).code == 0);
+  Collected got;
+  vp::SinkReader reader(h.stage("sink"), got.fn());
+  vp::SourceWriter src(h.stage("src"));
+  Unloader unload{ts, h};
+
+  auto floats = [](std::vector<float> v, std::vector<std::int64_t> shape) {
+    std::vector<std::uint8_t> b(v.size() * 4);
+    std::memcpy(b.data(), v.data(), b.size());
+    return make_owned_tensor(Tensor::DType::F32, std::move(shape),
+                             std::move(b), Json::object());
+  };
+  vpipe::FlexData a = vpipe::FlexData::make_object();
+  a.as_object().insert("k", vpipe::FlexData::make_int(-5));
+  vpipe::FlexData b = vpipe::FlexData::make_object();
+  b.as_object().insert("u", vpipe::FlexData::make_uint(7));
+  vpipe::FlexData whole = vpipe::FlexData::make_object();
+  whole.as_object().insert("n", vpipe::FlexData::make_uint(2));
+  // The first item in CPU memory, the second in a Metal buffer: each as
+  // it was made.
+  REQUIRE_OK(src.push_kept_list(
+      {floats({1, 2}, {1, 2}), floats({3, 4}, {2, 1})},
+      {a.to_binary(), b.to_binary()}, {false, true}, whole.to_binary()));
+  Tensor none;
+  none.dtype = Tensor::DType::F32;
+  none.shape = {0, 96};
+  REQUIRE_OK(src.push_kept(none, a.to_binary(), false));
+  REQUIRE_OK(src.push_kept_list({}, {}, {}, whole.to_binary()));
+  REQUIRE_OK(src.finish());
+  REQUIRE(ts.s->wait_pipelines(10000).code == 0);
+  reader.join();
+  CHECK(reader.reached_eos());
+
+  REQUIRE(got.beats.size() == 3);
+  const vp::SinkBeat& list = got.beats[0];
+  CHECK(list.is_list);
+  REQUIRE(list.items.size() == 2);
+  CHECK(jget(list.meta, "n", 0) == 2);
+  const TensorPtr& t0 = list.items[0].tensor;
+  const TensorPtr& t1 = list.items[1].tensor;
+  REQUIRE(t0 && t1);
+  CHECK(t0->shape == (std::vector<std::int64_t>{1, 2}));
+  CHECK(t1->shape == (std::vector<std::int64_t>{2, 1}));
+  CHECK(t0->mtl_buffer == nullptr);
+  CHECK(t1->mtl_buffer != nullptr);
+  float v[2] = {};
+  std::memcpy(v, t1->data, 8);
+  CHECK(v[0] == 3.0f && v[1] == 4.0f);
+  const auto sb0 = vpipe::FlexData::from_binary(list.items[0].sideband_bin);
+  const auto sb1 = vpipe::FlexData::from_binary(list.items[1].sideband_bin);
+  CHECK(sb0.as_object().at("k").is_int());
+  CHECK(sb0.as_object().at("k").as_int(0) == -5);
+  CHECK(sb1.as_object().at("u").is_uint());
+  const vp::SinkBeat& empty = got.beats[1];
+  CHECK(!empty.is_list);
+  REQUIRE(empty.tensor);
+  CHECK(empty.tensor->dtype == Tensor::DType::F32);
+  CHECK(empty.tensor->shape == (std::vector<std::int64_t>{0, 96}));
+  CHECK(empty.tensor->byte_size == 0);
+  CHECK(jget(empty.meta, "k", 0) == -5);
+  CHECK(got.beats[2].is_list && got.beats[2].items.empty());
+  CHECK(jget(got.beats[2].meta, "n", 0) == 2);
+  unload.release();
+  ts.s->unload_pipeline(h);
+}
+
 TEST(vpipe_plugin, latest_keeps_the_newest)
 {
   REQUIRE(plugin_present());

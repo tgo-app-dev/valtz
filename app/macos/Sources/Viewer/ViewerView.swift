@@ -50,7 +50,16 @@ struct CompareCanvasView: NSViewRepresentable {
         var unfit = 0
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator {
+        // Asked before this canvas -- of a clip's player, say: not for it.
+        let c = Coordinator()
+        c.fit = fitRequest
+        c.actual = actualSizeRequest
+        c.zoomIn = zoomInRequest
+        c.zoomOut = zoomOutRequest
+        c.unfit = unfitRequest
+        return c
+    }
 
     func makeNSView(context: Context) -> CompareCanvas {
         let v = CompareCanvas(frame: .zero)

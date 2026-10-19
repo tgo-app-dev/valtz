@@ -36,6 +36,7 @@
 #include <atomic>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -59,12 +60,28 @@ struct SinkBeat {
   std::uint64_t seq = 0;      // 1-based index into the sink this run
   std::uint64_t dropped = 0;  // beats dropped (policy latest) before it
   TensorPtr     tensor;       // null for data beats, and for element
-                              // types Tensor has no DType for (i8)
+                              // types Tensor has no DType for (i8); a
+                              // tensor of no bytes has its shape, no data
   Json          meta;         // the tensor's sideband, or the data beat
+  // The sideband as vpipe made it, in FlexData's own binary form -- every
+  // number's kind, every typed array as it was: how a beat kept for a
+  // later job is fed back (encoding-cache.h). Empty when it had none.
+  std::string   sideband_bin;
+  // A LIST beat (exchange.h: handed out an item a `next`, put back
+  // together by the reader): its items in order, each a beat of its own;
+  // `meta` and `sideband_bin` are the list's. A reply alone is one item:
+  // `item` of `items`.
+  bool                  is_list = false;
+  std::vector<SinkBeat> items;
+  std::uint64_t         item = 0;
+  std::uint64_t         item_count = 0;
 };
 
 // A replied `next` as a SinkBeat; *eos is set when the reply was the
-// end of the stream (the SinkBeat is then empty).
+// end of the stream (the SinkBeat is then empty). A list's item comes as
+// one, is_list set, its tensor and sideband in `tensor` / `sideband_bin`,
+// the list's own sideband in `items` (one beat, no tensor) -- SinkReader
+// gathers them.
 Result<SinkBeat> sink_beat_from(const vpipe::CommandHandle&, bool* eos);
 
 // Drains one valtz-sink on a thread of its own, handing each beat to
@@ -156,6 +173,19 @@ public:
   // A copy of `t` (any strides) as one beat; returns once the source's
   // oport has taken it.
   Status push(const Tensor& t, const Json& sideband = Json::object());
+  // A beat kept from an earlier job, fed back as vpipe made it: `t` (of no
+  // bytes too) with its sideband in FlexData's binary form (SinkBeat::
+  // sideband_bin), in a Metal buffer if it came in one (`shared`), else in
+  // CPU memory -- a stage may read a beat's CPU bytes alone (H3's
+  // generate-video: a shared beat's are none, and it read null). A LIST,
+  // the same way: its items in order, the list emitted whole after the
+  // last (none: an empty list).
+  Status push_kept(const Tensor& t, std::string_view sideband_bin,
+                   bool shared);
+  Status push_kept_list(const std::vector<TensorPtr>& items,
+                        const std::vector<std::string>& sideband_bins,
+                        const std::vector<bool>& shared,
+                        std::string_view list_sideband_bin);
   Status emit(const Json& value);
   Status finish();
 

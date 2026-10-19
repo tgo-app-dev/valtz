@@ -476,7 +476,7 @@ extension AppModel {
         let marks = markup.tool != .select && markup.tool != .eyedropper
             && !(markup.tool == .pen && !markup.selection.isEmpty)
         if e.phase == .down, marks, let t = markupTargetPreview, t.locked {
-            flash(String(localized: "\(t.title) is locked: unlock it to change it."))
+            flash(String(localized: "\(t.title) is locked: unlock it to change it."), level: .warning)
             return
         }
         // On a clip: drawn on the frame pressed on, the player held there.

@@ -234,6 +234,10 @@ struct InspectorView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                Text("Clips made here — generated, upscaled, rendered — are kept in the intermediate format.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         HStack {
@@ -1037,7 +1041,7 @@ struct LayersSection: View {
             let stack = pic.layerStack
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 2) {
-                    tool("plus", "Add a layer above the selected one") {
+                    tool("plus", "Add a blank layer on top") {
                         model.addLayer()
                     }
                     tool("arrow.up", "Move the selected layer up",
@@ -1067,6 +1071,22 @@ struct LayersSection: View {
                         model.setLayerMask(model.activeLayer, !isMask)
                     }
                     Spacer()
+                    // Finding one only selects it: on while a
+                    // generation runs.
+                    Button {
+                        model.layerFind = ""
+                        model.layerFindOpen = true
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                            .frame(width: 22, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Find a layer by name")
+                    .popover(isPresented: $model.layerFindOpen,
+                             arrowEdge: .bottom) {
+                        LayerFindPanel(model: model)
+                    }
                     Menu {
                         Button("Capture All Layers") {
                             model.captureStage(selectedOnly: false)
@@ -1095,22 +1115,37 @@ struct LayersSection: View {
                     PageBar(model: model)
                         .padding(.horizontal, 12)
                 }
-                ScrollView {
-                    VStack(spacing: 2) {
-                        ForEach(items(stack)) { item in
-                            switch item.kind {
-                            case .folder(let f, let members):
-                                LayerFolderRow(model: model, folder: f,
-                                               members: members)
-                            case .layer(let i, let l):
-                                LayerRow(model: model, layer: l,
-                                         masked: i + 1 < stack.count
-                                            && stack[i + 1].mask,
-                                         depth: l.folder == nil ? 0 : 1)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 2) {
+                            ForEach(items(stack)) { item in
+                                switch item.kind {
+                                case .folder(let f, let members):
+                                    LayerFolderRow(model: model, folder: f,
+                                                   members: members)
+                                case .layer(let i, let l):
+                                    LayerRow(model: model, layer: l,
+                                             masked: i + 1 < stack.count
+                                                && stack[i + 1].mask,
+                                             depth: l.folder == nil ? 0 : 1)
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 8)
+                    }
+                    .onGeometryChange(for: CGRect.self) {
+                        $0.frame(in: .global)
+                    } action: { model.layerListFrame = $0 }
+                    // A layer gone to from the find: in sight, mid-list
+                    // (its folder opened first: on the next pass).
+                    .onChange(of: model.layerScrollCount) {
+                        guard let id = model.layerScrollTarget else { return }
+                        Task { @MainActor in
+                            withAnimation(AppModel.motion) {
+                                proxy.scrollTo(id, anchor: .center)
                             }
                         }
                     }
-                    .padding(.horizontal, 8)
                 }
                 if notes {
                 Group {
@@ -1182,6 +1217,141 @@ struct LayersSection: View {
         .buttonStyle(.borderless)
         .disabled(disabled || model.isGenerating)
         .help(help)
+    }
+}
+
+/// A list's filter field: a magnifier, the words, × to clear them.
+/// Escape clears them too -- emptied, it is `escaped`'s (a popover shut).
+struct FilterField: View {
+    @Binding var text: String
+    let prompt: LocalizedStringKey
+    var focused: FocusState<Bool>.Binding
+    var escaped: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .focused(focused)
+                .onExitCommand {
+                    if text.isEmpty { escaped?() } else { text = "" }
+                }
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear the filter")
+            }
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 7)
+        .frame(height: 24)
+        .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(Color.primary.opacity(0.06)))
+        .contentShape(Rectangle())
+        .onTapGesture { focused.wrappedValue = true }
+    }
+}
+
+/// The Layers section's find (its magnifier): the layers whose name --
+/// or what they show, or their folder's name -- has the words typed, top
+/// first, every layer before a word is. Return goes to the one marked
+/// (↑ ↓ move the mark), a click to any: its folder opened, it selected,
+/// the list scrolled to it (AppModel.goToLayer).
+private struct LayerFindPanel: View {
+    @Bindable var model: AppModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let found = model.layerFindMatches
+        let mark = model.layerFindMark
+        VStack(alignment: .leading, spacing: 6) {
+            FilterField(text: $model.layerFind, prompt: "Layer name",
+                        focused: $focused) {
+                model.layerFindOpen = false
+            }
+            // Read as the key comes: the closures a TextField was given
+            // first may be the ones it calls (Return went to the first
+            // match whatever the mark).
+            .onSubmit {
+                let now = model.layerFindMatches
+                let m = model.layerFindMark
+                if now.indices.contains(m) { model.goToLayer(now[m].id) }
+            }
+            .onKeyPress(.downArrow) {
+                model.layerFindMark = min(model.layerFindMark + 1,
+                                          max(model.layerFindMatches.count
+                                              - 1, 0))
+                return .handled
+            }
+            .onKeyPress(.upArrow) {
+                model.layerFindMark = max(model.layerFindMark - 1, 0)
+                return .handled
+            }
+            if found.isEmpty {
+                Text("No layer matches")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 1) {
+                            ForEach(Array(found.enumerated()),
+                                    id: \.element.id) { i, l in
+                                row(l, marked: i == mark)
+                                    .id(l.id)
+                                    .onTapGesture { model.goToLayer(l.id) }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 260)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onChange(of: model.layerFindMark) { _, m in
+                        if found.indices.contains(m) {
+                            proxy.scrollTo(found[m].id)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(10)
+        .frame(width: 260)
+        .onAppear { focused = true }
+        .onChange(of: model.layerFind) { model.layerFindMark = 0 }
+    }
+
+    /// A layer found: its name, then what it shows and its folder.
+    private func row(_ l: LayerDTO, marked: Bool) -> some View {
+        let shows = model.source(of: l)?.name
+        let folder = l.folder.map(model.layerFolderName)
+        let more = [shows == l.title ? nil : shows, folder]
+            .compactMap { $0 }.filter { !$0.isEmpty }
+        return HStack(spacing: 6) {
+            Text(verbatim: l.title)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+            if !more.isEmpty {
+                Text(verbatim: more.joined(separator: " · "))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 5)
+            .fill(marked ? Color.accentColor.opacity(0.18) : .clear))
+        .contentShape(Rectangle())
     }
 }
 
@@ -1535,6 +1705,9 @@ private struct LayerRow: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
         .padding(.leading, (layer.mask ? 10 : 0) + CGFloat(depth) * 16)
+        .onGeometryChange(for: CGRect?.self) {
+            selected ? $0.frame(in: .global) : nil
+        } action: { if let f = $0 { model.activeLayerRowFrame = f } }
         .background(RoundedRectangle(cornerRadius: 6)
             .fill(selected ? Color.accentColor.opacity(0.18)
                   : inSelection ? Color.accentColor.opacity(0.09)
@@ -1723,7 +1896,8 @@ struct ProjectSetupForm: View {
     @State private var width = 1024
     @State private var height = 1024
     /// What exporting the project writes: Rec. 709, 24 fps, stereo at
-    /// 48 kHz unless chosen otherwise.
+    /// 48 kHz unless chosen otherwise -- from the project's as it is (an
+    /// intermediate format set before it is set up stays).
     @State private var output = OutputSettingsDTO()
 
     var body: some View {
@@ -1761,6 +1935,7 @@ struct ProjectSetupForm: View {
             }
             OutputFields(kind: ProjectKind(rawValue: kind) ?? .still,
                          output: $output)
+                .onAppear { output = model.projectOutput }
             Button("Set Up Project") {
                 model.setUpProject(ProjectKind(rawValue: kind) ?? .still,
                                    width: max(1, width),

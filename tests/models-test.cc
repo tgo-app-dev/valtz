@@ -1,13 +1,18 @@
 #include "testing.h"
 
+#include "drawthings-fixture.h"
+
 #include "valtz/models/capabilities.h"
+#include "valtz/models/drawthings.h"
 #include "valtz/models/hardware.h"
 #include "valtz/models/model-check.h"
 #include "valtz/models/model-store.h"
 #include "valtz/models/tuning.h"
 
+#include <algorithm>
 #include <format>
 #include <fstream>
+#include <map>
 #include <set>
 
 using namespace valtz;
@@ -299,7 +304,8 @@ TEST(models, auto_order_is_catalog_data)
   CHECK((c->auto_order("image", "generate") ==
          std::vector<std::string>{"krea2-turbo", "qwen-image-2.1-turbo",
                                   "qwen-image-2.1", "z-image-turbo",
-                                  "flux3-klein", "flux2-klein-9b"}));
+                                  "flux3-klein", "flux2-klein-9b",
+                                  "moss-image-sft", "moss-image-base"}));
   CHECK((c->auto_order("image", "edit") ==
          std::vector<std::string>{"qwen-image-2.1", "qwen-image-2.1-turbo",
                                   "flux3-klein", "flux2-klein-9b"}));
@@ -419,7 +425,8 @@ TEST(models, tuning_for_an_upscaler)
   REQUIRE_OK(c);
   TuningContext m5;
   m5.matrix_cores = true;
-  for (const char* id : {"flashvsr", "vosr"}) {
+  for (const char* id : {"flashvsr", "flashvsr-plus-turbo",
+                         "flashvsr-plus-base", "vosr"}) {
     const ModelEntry* m = c->find(id);
     REQUIRE(m);
     const Json opts = tuning_options(*m, m5, "balanced", false);
@@ -430,10 +437,15 @@ TEST(models, tuning_for_an_upscaler)
       }
     }
     const bool vosr = std::string_view(id) == "vosr";
+    // FlashVSR's colour fix (its encoder's, declared in the catalog): on
+    // for every release -- FlashVSR+'s own default is off.
     CHECK((keys == (vosr ? std::vector<std::string>{"sol_attn", "sol_tau",
                                                     "sage_attn", "i8_gemm"}
-                         : std::vector<std::string>{"sage_attn",
-                                                    "i8_gemm"})));
+                         : std::vector<std::string>{"sage_attn", "i8_gemm",
+                                                    "color_fix"})));
+    if (!vosr) {
+      CHECK(opts["values"]["color_fix"] == true);
+    }
     for (const char* none : {"steps", "loras", "dits", "vaes", "shift"}) {
       CHECK(!opts["values"].contains(none));
     }
@@ -1000,6 +1012,151 @@ TEST(models, favor_presets_follow_the_catalog)
   CHECK(!offers_steps);
 }
 
+// The int8 GEMMs' TIER (vpipe's i8_gemm_tier): a choice, offered only
+// where the catalog names it -- the DiTs vpipe implements the tiers for,
+// Qwen-Image 2.1 (and its Turbo), MiniMax H3, Krea 2, FLUX.2 klein and
+// Z-Image; not FLUX.3 Klein's -- refining int8 GEMM, accurate unless
+// asked; a value it does not list is not taken, a Mac without matrix
+// cores keeps it at accurate, and so does the Neural Engine's
+// feed-forward (vpipe runs the tiers off its route). A preset's table
+// may name one: Krea 2's Fast and Med run Per Token.
+TEST(models, the_int8_gemms_tier_is_a_choice)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  TuningContext m5;
+  m5.matrix_cores = true;
+  TuningContext m4;
+  const auto tier_of = [](const Json& opts) {
+    for (const auto& o : opts["options"]) {
+      if (o["key"] == "i8_gemm_tier") {
+        return o;
+      }
+    }
+    return Json();
+  };
+  for (const char* id : {"qwen-image-2.1", "qwen-image-2.1-turbo",
+                         "minimax-h3-fl2va", "minimax-h3-ref2va",
+                         "krea2-turbo", "flux2-klein-9b", "z-image-turbo"}) {
+    const ModelEntry& m = *c->find(id);
+    const Json o = tier_of(tuning_options(m, m5, "balanced", false));
+    REQUIRE(o.is_object());
+    CHECK(o["type"] == "choice" && o["available"] == true);
+    CHECK(o["needs"] == "i8_gemm");
+    CHECK((o["choices"] == Json::array({"accurate", "fast", "token",
+                                        "token_plain"})));
+    // Krea 2's Fast and Med run Per Token (its table: 1.48x Accurate on
+    // the M5 Ultra, the picture as close to bf16's); the rest Accurate.
+    const bool token = std::string_view(id) == "krea2-turbo";
+    for (const char* p : {"speed", "balanced", "quality"}) {
+      const bool t = token && std::string_view(p) != "quality";
+      CHECK(resolve_tuning(m, m5, p, false)["i8_gemm_tier"] ==
+            (t ? "token" : "accurate"));
+      CHECK(resolve_tuning(m, m4, p, false)["i8_gemm_tier"] == "accurate");
+    }
+    Json v = resolve_tuning(m, m5, "balanced", false,
+                            {{"i8_gemm_tier", "token"}});
+    CHECK(v["i8_gemm"] == true && v["i8_gemm_tier"] == "token");
+    v = resolve_tuning(m, m5, "balanced", false,
+                       {{"i8_gemm_tier", "token_plain"}});
+    CHECK(v["i8_gemm_tier"] == "token_plain");
+    // A value it does not list is not taken: the preset's stands.
+    const char* med = token ? "token" : "accurate";
+    v = resolve_tuning(m, m5, "balanced", false,
+                       {{"i8_gemm_tier", "fastest"}});
+    CHECK(v["i8_gemm_tier"] == med);
+    v = resolve_tuning(m, m5, "balanced", false, {{"i8_gemm_tier", 2}});
+    CHECK(v["i8_gemm_tier"] == med);
+    // Before M5: offered, not to be had.
+    const Json o4 = tier_of(tuning_options(m, m4, "speed", false));
+    CHECK(o4["available"] == false && o4["why"] == "needs-matrix-cores");
+    v = resolve_tuning(m, m4, "speed", false, {{"i8_gemm_tier", "fast"}});
+    CHECK(v["i8_gemm"] == false && v["i8_gemm_tier"] == "accurate");
+    // The Neural Engine's feed-forward on: back to accurate, and said so.
+    v = resolve_tuning(m, m5, "balanced", false,
+                       {{"i8_gemm_tier", "token"}, {"ane_ffn", true}});
+    CHECK(v["ane_ffn"] == true && v["i8_gemm_tier"] == "accurate");
+    bool says = false;
+    const Json listed = tuning_options(m, m5, "balanced", false);
+    for (const auto& x : listed["options"]) {
+      if (x["key"] == "ane_ffn") {
+        const Json ex = jget(x, "excludes", Json::array());
+        says = std::ranges::find(ex, Json("i8_gemm_tier")) != ex.end();
+      }
+    }
+    CHECK(says);
+  }
+  // Families whose DiTs run the accurate tier alone are offered none.
+  for (const char* id : {"flux3-klein", "yue2-3b", "flashvsr", "vosr",
+                         "moss-tts-v1.5"}) {
+    const ModelEntry& m = *c->find(id);
+    CHECK(tier_of(tuning_options(m, m5, "balanced", false)).is_null());
+    CHECK(!resolve_tuning(m, m5, "balanced", false,
+                          {{"i8_gemm_tier", "token"}})
+               .contains("i8_gemm_tier"));
+  }
+}
+
+// The CODEC's int8 (vpipe's vae-decode / vae-encode `i8_gemm` and its
+// tier): offered for the models whose catalog names it, off in every
+// preset, its tier Accurate | Fast and only with it on.
+TEST(models, the_codecs_int8_is_a_switch_and_a_tier)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  TuningContext m5;
+  m5.matrix_cores = true;
+  TuningContext m4;
+  const auto opt = [](const Json& opts, const char* key) {
+    for (const auto& o : opts["options"]) {
+      if (o["key"] == key) {
+        return o;
+      }
+    }
+    return Json();
+  };
+  for (const char* id : {"qwen-image-2.1", "qwen-image-2.1-turbo"}) {
+    const ModelEntry& m = *c->find(id);
+    const Json listed = tuning_options(m, m5, "speed", false);
+    const Json on = opt(listed, "vae_i8_gemm");
+    const Json tier = opt(listed, "vae_i8_gemm_tier");
+    REQUIRE(on.is_object() && tier.is_object());
+    CHECK(on["type"] == "bool" && on["available"] == true);
+    CHECK(tier["type"] == "choice" && tier["needs"] == "vae_i8_gemm");
+    CHECK((tier["choices"] == Json::array({"accurate", "fast"})));
+    for (const char* p : {"speed", "balanced", "quality"}) {
+      const Json v = resolve_tuning(m, m5, p, false);
+      CHECK(v["vae_i8_gemm"] == false);
+      CHECK(v["vae_i8_gemm_tier"] == "accurate");
+    }
+    Json v = resolve_tuning(m, m5, "balanced", false,
+                            {{"vae_i8_gemm", true},
+                             {"vae_i8_gemm_tier", "fast"}});
+    CHECK(v["vae_i8_gemm"] == true && v["vae_i8_gemm_tier"] == "fast");
+    // The DiT's own tier is another key: untouched.
+    CHECK(v["i8_gemm_tier"] == "accurate");
+    // A tier the codec has no word for, back to accurate.
+    v = resolve_tuning(m, m5, "balanced", false,
+                       {{"vae_i8_gemm", true},
+                        {"vae_i8_gemm_tier", "token"}});
+    CHECK(v["vae_i8_gemm_tier"] == "accurate");
+    // Before M5: offered, not to be had.
+    CHECK(opt(tuning_options(m, m4, "speed", false),
+              "vae_i8_gemm")["why"] == "needs-matrix-cores");
+    v = resolve_tuning(m, m4, "speed", false, {{"vae_i8_gemm", true}});
+    CHECK(v["vae_i8_gemm"] == false);
+  }
+  // A codec without vpipe's int8 is offered none.
+  for (const char* id : {"krea2-turbo", "flux2-klein-9b", "z-image-turbo",
+                         "minimax-h3-fl2va", "flux3-klein"}) {
+    const ModelEntry& m = *c->find(id);
+    CHECK(opt(tuning_options(m, m5, "balanced", false),
+              "vae_i8_gemm").is_null());
+    CHECK(!resolve_tuning(m, m5, "balanced", false, {{"vae_i8_gemm", true}})
+               .contains("vae_i8_gemm"));
+  }
+}
+
 // The LoRA list: eight on at most, the first in list order (vpipe's
 // slots; seven with HyperFlow); strengths held to 0..2; a file that is
 // gone kept, off. An older "turbo" file goes first, in the catalog's
@@ -1225,6 +1382,219 @@ TEST(models, memory_bandwidth_by_chip)
 // model found in or around it, the right one, whole. What a person picks
 // by mistake -- the parent, a part, another model, the other partition,
 // a copy cut short, a shard missing -- is found and said.
+// DRAW THINGS CHECKPOINTS offered for a model are checked as its PARTS
+// (models/drawthings.h): Qwen-Image 2.1's and MiniMax H3's DiTs, their
+// Qwen3-VL text encoders (8B, 32B: told by width) and their VAEs, told as
+// vpipe tells them -- another model's part, a store of nothing vpipe
+// reads, one cut short, rotated 8-bit weights, a file named as another
+// release refused -- the Turbo's DiT is told by its name alone, the
+// base's tensors; a model takes only the parts its catalog names
+// (Ref2VA's DiT is its own); a PyTorch .ckpt is not one; Draw Things'
+// Models folder looked through for every part, a part with several files
+// (an f16 beside an 8-bit) named for one to be chosen, the others
+// linked. Custom's panel files a DiT as one. The store keeps the parts
+// across a reload.
+TEST(models, a_draw_things_model_is_checked)
+{
+  namespace fs = std::filesystem;
+  using test::DrawThingsFixture;
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const auto* qi = c->find("qwen-image-2.1");
+  const auto* qt = c->find("qwen-image-2.1-turbo");
+  const auto* fl = c->find("minimax-h3-fl2va");
+  const auto* rf = c->find("minimax-h3-ref2va");
+  const auto* krea = c->find("krea2-turbo");
+  REQUIRE(qi && qt && fl && rf && krea);
+  const auto root = test::temp_dir("models-drawthings");
+  const fs::path dt = root / "Models";
+  fs::create_directories(dt);
+  const fs::path dit = dt / "qwen_image_2.1_i8x.ckpt";
+  const fs::path enc = dt / "qwen_3_vl_8b_instruct_i8x.ckpt";
+  const fs::path vae = dt / "qwen_image_2.1_vae_f16.ckpt";
+  const fs::path h3v = dt / "minimax_h3_vae_f16.ckpt";
+  const fs::path junk = dt / "sd_v1.5_f16.ckpt";
+  const fs::path tdit = dt / "qwen_image_2.1_turbo_i8x.ckpt";
+  REQUIRE(DrawThingsFixture::qwen_image_21().write(tdit));
+  REQUIRE(DrawThingsFixture::qwen_image_21().write(dit));
+  REQUIRE(DrawThingsFixture::qwen3_vl(4096).write(enc));
+  REQUIRE(DrawThingsFixture::qwen_image_21_vae().write(vae));
+  REQUIRE(DrawThingsFixture::minimax_h3_vae().write(h3v));
+  REQUIRE(DrawThingsFixture::unknown().write(junk));
+  const fs::path big = root / "qwen_3_vl_32b_i8x.ckpt";
+  REQUIRE(DrawThingsFixture::qwen3_vl(5120).write(big));
+
+  // What each store is.
+  DrawThingsStore s = read_drawthings(dit);
+  CHECK(s.store && s.error.empty() && s.part == "dit");
+  CHECK(s.family == "qwen-image-21");
+  CHECK(s.tensors == 4 && s.eight_bit == 4 && !s.cut_short());
+  s = read_drawthings(enc);
+  CHECK(s.part == "encoder" && s.family == "qwen3-vl" && s.width == 4096);
+  CHECK(read_drawthings(big).width == 5120);
+  s = read_drawthings(vae);
+  CHECK(s.part == "vae" && s.family == "qwen-image-21-vae");
+  s = read_drawthings(h3v);
+  CHECK(s.part == "vae" && s.family == "minimax-h3-vae");
+  s = read_drawthings(junk);
+  CHECK(s.store && s.part.empty());
+
+  // Each part, for the model it is.
+  ModelCheck ok = check_model(*qi, dit, &*c);
+  CHECK(ok.usable && ok.confirmed && ok.path == dit);
+  CHECK((ok.parts == std::map<std::string, fs::path>{{"dit", dit}}));
+  CHECK(note_keys(ok).front() == "core.check_drawthings_dit");
+  CHECK(has_key(ok, "core.check_drawthings_eight_bit"));
+  CHECK(has_key(ok, "core.check_drawthings_configs"));
+  CHECK(ok.to_json()["parts"]["dit"] == dit.string());
+  const ModelCheck e8 = check_model(*qi, enc, &*c);
+  CHECK(e8.usable && e8.parts.at("encoder") == enc);
+  CHECK(note_keys(e8).front() == "core.check_drawthings_encoder");
+  CHECK(!has_key(e8, "core.check_drawthings_eight_bit"));
+  const ModelCheck v = check_model(*qi, vae, &*c);
+  CHECK(v.usable && v.parts.at("vae") == vae);
+  CHECK(has_key(v, "core.check_drawthings_texture_fix"));
+  CHECK(check_model(*fl, big, &*c).usable);
+  CHECK(check_model(*fl, h3v, &*c).parts.at("vae") == h3v);
+  // The Turbo takes the shared encoder and VAE, and its own DiT -- by its
+  // name, the tensors being the base's; Ref2VA no DiT.
+  CHECK(check_model(*qt, enc, &*c).usable);
+  CHECK(check_model(*qt, vae, &*c).usable);
+  const ModelCheck td = check_model(*qt, tdit, &*c);
+  CHECK(td.usable && td.parts.at("dit") == tdit);
+  CHECK(note_keys(check_model(*qt, dit, &*c)).front() ==
+        "core.check_drawthings_unnamed");
+  CHECK(note_keys(check_model(*qi, tdit, &*c)).front() ==
+        "core.check_drawthings_release");
+  CHECK(check_model(*rf, big, &*c).usable);
+  CHECK(check_model(*rf, h3v, &*c).usable);
+  // Another model's part: by what it is.
+  const ModelCheck w = check_model(*fl, enc, &*c);
+  CHECK(note_keys(w).front() == "core.check_drawthings_wrong");
+  CHECK(w.notes.front().message["args"]["found"] ==
+        "Qwen3-VL 8B text encoder");
+  CHECK(note_keys(check_model(*qi, big, &*c)).front() ==
+        "core.check_drawthings_wrong");
+  CHECK(note_keys(check_model(*qi, h3v, &*c)).front() ==
+        "core.check_drawthings_wrong");
+  CHECK(note_keys(check_model(*fl, dit, &*c)).front() ==
+        "core.check_drawthings_wrong");
+  CHECK(note_keys(check_model(*krea, dit, &*c)).front() ==
+        "core.check_drawthings_not_for_model");
+  CHECK(note_keys(check_model(*qi, junk, &*c)).front() ==
+        "core.check_drawthings_other");
+  // H3's: FL2VA's DiT, not a file named as Ref2VA's.
+  const fs::path fd = root / "minimax_h3_fl2va_i8x.ckpt";
+  const fs::path rd = root / "minimax_h3_ref2va_i8x.ckpt";
+  REQUIRE(DrawThingsFixture::minimax_h3().write(fd));
+  REQUIRE(DrawThingsFixture::minimax_h3().write(rd));
+  CHECK(check_model(*fl, fd, &*c).usable);
+  CHECK(note_keys(check_model(*fl, rd, &*c)).front() ==
+        "core.check_drawthings_release");
+  // Cut short; rotated 8-bit weights; the raw codec, no 8-bit note.
+  auto cut = DrawThingsFixture::qwen_image_21();
+  cut.short_by = 100;
+  const fs::path cq = root / "cut.ckpt";
+  REQUIRE(cut.write(cq));
+  CHECK(read_drawthings(cq).cut_short());
+  CHECK(note_keys(check_model(*qi, cq, &*c)).front() ==
+        "core.check_cut_short");
+  auto rot = DrawThingsFixture::qwen_image_21();
+  rot.rotated = true;
+  const fs::path rq = root / "rotated.ckpt";
+  REQUIRE(rot.write(rq));
+  CHECK(note_keys(check_model(*qi, rq, &*c)).front() ==
+        "core.check_drawthings_rotated");
+  auto raw = DrawThingsFixture::qwen_image_21();
+  raw.codec = DrawThingsFixture::kRaw;
+  const fs::path wq = root / "raw.ckpt";
+  REQUIRE(raw.write(wq));
+  const ModelCheck rawc = check_model(*qi, wq, &*c);
+  CHECK(rawc.usable && !has_key(rawc, "core.check_drawthings_eight_bit"));
+  // A PyTorch .ckpt (a zip): not a store, not a model's part.
+  const fs::path pt = root / "LQ_proj_in.ckpt";
+  std::ofstream(pt, std::ios::binary) << "PK\x03\x04 not sqlite";
+  CHECK(!looks_like_drawthings(pt));
+  const ModelCheck ptc = check_model(*qi, pt, &*c);
+  CHECK(!ptc.usable && ptc.parts.empty());
+
+  // Draw Things' Models chosen: every Qwen-Image part in it, found.
+  ModelCheck in = check_model(*qi, dt, &*c);
+  CHECK(in.usable && in.path == dt && in.moved == "down");
+  CHECK((in.parts == std::map<std::string, fs::path>{
+                         {"dit", dit}, {"encoder", enc}, {"vae", vae}}));
+  CHECK(!has_key(in, "core.check_found_inside"));  // each part says it
+  CHECK(in.notes.size() == 6);
+  // ...H3 FL2VA's, its VAEs alone: that file.
+  ModelCheck hv = check_model(*fl, dt, &*c);
+  CHECK(hv.usable && hv.path == h3v);
+  CHECK(has_key(hv, "core.check_found_inside"));
+  CHECK((hv.parts == std::map<std::string, fs::path>{{"vae", h3v}}));
+  // ...the Turbo's: its own DiT beside the shared two.
+  ModelCheck tin = check_model(*qt, dt, &*c);
+  CHECK(tin.usable && tin.parts.size() == 3);
+  CHECK(tin.parts.at("dit") == tdit);
+  // ...two DiTs (an f16 beside the 8-bit): which, asked -- the encoder
+  // and VAE linked.
+  const fs::path f16 = dt / "qwen_image_2.1_f16.ckpt";
+  REQUIRE(DrawThingsFixture::qwen_image_21().write(f16));
+  ModelCheck two = check_model(*qi, dt, &*c);
+  CHECK(two.usable);
+  CHECK((two.parts == std::map<std::string, fs::path>{
+                          {"encoder", enc}, {"vae", vae}}));
+  CHECK(note_keys(two).front() == "core.check_drawthings_ambiguous");
+  CHECK(two.notes.front().level == ModelCheck::Level::Warning);
+  // ...nothing but the two: refused, which asked.
+  const fs::path only = root / "Two";
+  fs::create_directories(only);
+  fs::copy_file(dit, only / dit.filename());
+  fs::copy_file(f16, only / f16.filename());
+  ModelCheck none2 = check_model(*qi, only, &*c);
+  CHECK(!none2.usable && none2.parts.empty());
+  CHECK(note_keys(none2).front() == "core.check_drawthings_ambiguous");
+  // A folder of neither: the download's own refusal.
+  fs::create_directories(root / "empty");
+  const ModelCheck none = check_model(*qi, root / "empty", &*c);
+  CHECK(!none.usable && none.parts.empty());
+
+  // Custom's panel: a DiT is one; an encoder or a VAE is not a weight
+  // it takes.
+  CHECK(checkpoint_kind(dit) == "dit");
+  CHECK(checkpoint_kind(enc).empty());
+  CHECK(checkpoint_kind(vae).empty());
+  CHECK(checkpoint_kind(pt).empty());
+  const Json k = classify_checkpoint(dit, Json::array());
+  CHECK(k["kind"] == "dit" && k["family"] == "qwen-image-21");
+
+  // The store keeps the parts linked apart, beside a model's link,
+  // across a reload; a reader of strings alone keeps its links.
+  const fs::path links = root / "model-links.json";
+  {
+    ModelStore store({root / "store"}, links);
+    REQUIRE_OK(store.link_part(*qi, "dit", dit));
+    REQUIRE_OK(store.link_part(*qi, "encoder", enc));
+    REQUIRE_OK(store.link_part(*qi, "vae", vae));
+    CHECK(store.part_links_of(qi->id).size() == 3);
+    const InstallInfo i = store.info(*qi);
+    CHECK(i.part("dit") == dit && i.part("encoder") == enc);
+    CHECK(i.parts.at("vae").present);
+    CHECK(i.state == InstallState::Missing);
+    CHECK(!store.link_part(*qi, "dit", root / "gone.ckpt").ok());
+  }
+  {
+    ModelStore store({root / "store"}, links);
+    CHECK(store.part_links_of(qi->id).at("vae") == vae);
+    fs::remove(vae);
+    store.rescan();
+    const InstallInfo i = store.info(*qi);
+    CHECK(!i.parts.at("vae").present && i.part("vae").empty());
+    CHECK(i.part("dit") == dit);
+    store.unlink_parts(qi->id);
+    CHECK(store.part_links_of(qi->id).empty());
+    CHECK(store.info(*qi).parts.empty());
+  }
+}
+
 TEST(models, a_linked_folder_is_checked)
 {
   namespace fs = std::filesystem;
@@ -1409,4 +1779,62 @@ TEST(models, a_compressed_copy_is_estimated_and_found)
                                 {"compress", {{"parts", Json::array(
                                     {Json::object()})}}}}})}};
   CHECK(!Catalog::parse(bare).ok());
+}
+
+// MOSS-IMAGE's Custom (vpipe 3b34e70a): its steps by preset -- the
+// reference's 50 at Fine, 30 and 20 below, each two forwards under CFG --
+// its guidance, an option of its own on the config stage, and its shift,
+// which its config stage takes (`config_shift`, 5) rather than a
+// scheduler; Base and SFT alike, and in Capabilities' tree.
+TEST(models, moss_image_offers_its_steps_guidance_and_shift)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  TuningContext m5;
+  m5.matrix_cores = true;
+  const auto opt = [](const Json& opts, const char* key) {
+    for (const auto& o : opts["options"]) {
+      if (o["key"] == key) {
+        return o;
+      }
+    }
+    return Json();
+  };
+  for (const char* id : {"moss-image-sft", "moss-image-base"}) {
+    const ModelEntry* m = c->find(id);
+    REQUIRE(m);
+    CHECK(m->family == "moss-image");
+    CHECK(m->has(Capability::TextToImage));
+    CHECK(!m->has(Capability::ImageEdit));
+    CHECK(m->hf_path.starts_with("OpenMOSS-Team/MOSS-Image-"));
+    // Streamed, as the other DiTs: no larger Mac asked for.
+    CHECK(m->min_ram_gb == 16);
+    const Json listed = tuning_options(*m, m5, "balanced", false);
+    const Json shift = opt(listed, "shift");
+    REQUIRE(shift.is_object());
+    CHECK(shift["available"] == true);
+    const Json g = opt(listed, "guidance_scale");
+    REQUIRE(g.is_object());
+    CHECK(g["type"] == "real");
+    CHECK(jget(g, "declared", false));
+    CHECK(opt(listed, "i8_gemm_tier").is_object());
+    CHECK(!opt(listed, "vae_i8_gemm").is_object());
+    const Json fine = resolve_tuning(*m, m5, "quality", false);
+    const Json med = resolve_tuning(*m, m5, "balanced", false);
+    const Json fast = resolve_tuning(*m, m5, "speed", false);
+    CHECK(fine["steps"] == 50 && med["steps"] == 30 && fast["steps"] == 20);
+    CHECK(fine["shift"] == 5.0);
+    CHECK(med["guidance_scale"] == 3.0);
+    CHECK(fine["i8_gemm"] == false && med["i8_gemm"] == true);
+    CHECK(fast["sol_attn"] == true);
+    const Json moved = resolve_tuning(*m, m5, "balanced", false,
+                                      {{"guidance_scale", 5.0},
+                                       {"shift", 4.0}});
+    CHECK(moved["guidance_scale"] == 5.0 && moved["shift"] == 4.0);
+  }
+  bool listed = false;
+  for (const auto& f : c->families()) {
+    listed = listed || f.id == "moss-image";
+  }
+  CHECK(listed);
 }

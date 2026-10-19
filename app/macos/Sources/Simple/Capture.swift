@@ -74,7 +74,7 @@ extension AppModel {
                 case .authorized:
                     break
                 default:
-                    self?.flash(String(localized: "Valtz may not use the microphone: allow it in System Settings › Privacy & Security › Microphone."))
+                    self?.flash(String(localized: "Valtz may not use the microphone: allow it in System Settings › Privacy & Security › Microphone."), level: .warning)
                     return
                 }
             }
@@ -85,7 +85,7 @@ extension AppModel {
             }.value
             guard let self else { return }
             guard r.ok else {
-                self.flash(r.message)
+                self.flash(r.message, level: .error)
                 return
             }
             self.pollCapture()
@@ -119,7 +119,7 @@ extension AppModel {
             guard let self else { return }
             self.capture = CaptureStateDTO()
             guard r.ok else {
-                self.flash(r.message)
+                self.flash(r.message, level: .error)
                 return
             }
             self.layersChanged()

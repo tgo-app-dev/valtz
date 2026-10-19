@@ -25,6 +25,15 @@
 // pipeline lists has its folder, no unfinished download is in it, a
 // PyTorch archive ends as a zip does. Hashes are not computed: a 60 GB
 // model would take minutes, and the headers catch what goes wrong.
+//
+// A DRAW THINGS CHECKPOINT (a `.ckpt` that is an SQLite store) is checked
+// as a PART of the model -- its DiT, text encoder or VAE -- for a model
+// whose catalog `check.drawthings` names what vpipe reads from one, by
+// part ({part: {"family", "width": a text encoder's, "not_named": [words
+// of another release's file]}}): its table read, every payload in the
+// file, its codecs vpipe's, the part the one named. A folder holding no
+// download -- Draw Things' Models -- is looked through, at its top, for
+// each of them.
 
 #ifndef VALTZ_MODELS_MODEL_CHECK_H
 #define VALTZ_MODELS_MODEL_CHECK_H
@@ -34,6 +43,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -54,6 +64,11 @@ struct ModelCheck {
   // Nothing found wrong: it can be used.
   bool                  usable = false;
   std::string           identity;  // what they name it ("Krea2Pipeline")
+  // Not the model but PARTS of it: Draw Things checkpoints (models/
+  // drawthings.h) of its "dit", "encoder", "vae", by part -- linked
+  // beside the model, whose own files bring the rest (its configs, its
+  // tokenizer). Empty: the model.
+  std::map<std::string, std::filesystem::path> parts;
   std::uint64_t         bytes = 0;
   int                   weight_files = 0;
   std::uint64_t         tensors = 0;
@@ -62,6 +77,7 @@ struct ModelCheck {
   std::vector<Note>     notes;
 
   Json to_json() const;
+  Json parts_json() const;  // {part: file}
   // The first error's message; none: an empty object.
   Json error() const;
 };

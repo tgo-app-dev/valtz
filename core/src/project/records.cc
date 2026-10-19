@@ -170,7 +170,8 @@ to_json(Json& j, const OutputSettings& o)
   j = {{"color", o.color},
        {"fps", o.fps},
        {"channels", o.channels},
-       {"sample_rate", o.sample_rate}};
+       {"sample_rate", o.sample_rate},
+       {"intermediate", o.intermediate}};
 }
 
 void
@@ -187,6 +188,9 @@ from_json(const Json& j, OutputSettings& o)
   if (o.sample_rate < 8000 || o.sample_rate > 192000) {
     o.sample_rate = d.sample_rate;
   }
+  // A project from before it: the default, ProRes 422 HQ, for what it
+  // makes from now on.
+  o.intermediate = jget<std::string>(j, "intermediate", d.intermediate);
 }
 
 void

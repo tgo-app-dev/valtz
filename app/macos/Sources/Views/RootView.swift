@@ -34,7 +34,8 @@ struct RootView: View {
             }
         }
         // A project dropped anywhere no panel takes a drop of its own:
-        // opened, the one open asked about first.
+        // opened, the one open asked about first; other files: into
+        // Assets.
         .onDrop(of: [.fileURL],
                 delegate: ProjectDropDelegate(model: model,
                                               drag: $projectDrag))
@@ -378,8 +379,12 @@ private struct WindowReader: NSViewRepresentable {
 /// A Valtz PROJECT dragged over the window -- anywhere no panel takes the
 /// drop for itself (the prompt, Assets, Layers, the timeline, the compare
 /// bar keep theirs; the stage opens a project too) -- OPENS, the project
-/// open asked about first, as the Finder's double-click opens one. Only a
-/// project is taken: what the drag holds is read as it comes in.
+/// open asked about first, as the Finder's double-click opens one. Other
+/// FILES let go there go into Assets, as on the list: with nothing on the
+/// stage this is all of the editor, and it refused every file but a
+/// project -- a Finder drag to an empty window's Assets came back (no
+/// scripted drag reproduced it; let go here, it is taken all the same).
+/// What the drag holds is read as it comes in.
 struct ProjectDropDelegate: DropDelegate {
     let model: AppModel
     @Binding var drag: ProjectDrag
@@ -391,18 +396,21 @@ struct ProjectDropDelegate: DropDelegate {
     func dropEntered(info: DropInfo) {
         drag.number += 1
         drag.inside = true
-        drag.project = nil
+        drag.holds = nil
         let n = drag.number
         let providers = info.itemProviders(for: [.fileURL])
         Task { @MainActor in
-            let found = await Self.project(providers) != nil
+            let found = await Self.read(providers, model: model)
             // Read after the drag left or dropped: nothing to show.
-            if drag.number == n && drag.inside { drag.project = found }
+            if drag.number == n && drag.inside {
+                drag.holds = found.project != nil ? .project
+                    : found.files.isEmpty ? .nothing : .files
+            }
         }
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: drag.project == false ? .forbidden : .copy)
+        DropProposal(operation: drag.holds == .nothing ? .forbidden : .copy)
     }
 
     func dropExited(info: DropInfo) {
@@ -413,38 +421,48 @@ struct ProjectDropDelegate: DropDelegate {
         let providers = info.itemProviders(for: [.fileURL])
         drag.inside = false
         Task { @MainActor in
-            if let url = await Self.project(providers) {
+            let found = await Self.read(providers, model: model)
+            if let url = found.project {
                 model.openDropped(url)
+                return
             }
+            AppModel.dropLog.notice("taken on the window: \(providers.count) item(s), \(found.files.count) file(s)")
+            model.importDropped(found.files, added: true)
         }
         return true
     }
 
-    /// The first Valtz project among the drag's files.
+    /// The drag's files: the first Valtz project among them, else the
+    /// rest -- not the stage's own (its picture flattened, a drag of the
+    /// stage let go beside it: nothing), nor a row of Assets.
     @MainActor
-    private static func project(_ providers: [NSItemProvider]) async
-        -> URL? {
-        for p in providers where p.canLoadObject(ofClass: NSURL.self) {
-            let u: URL? = await withCheckedContinuation { c in
-                _ = p.loadObject(ofClass: NSURL.self) { u, _ in
-                    c.resume(returning: (u as? NSURL) as URL?)
-                }
+    private static func read(_ providers: [NSItemProvider],
+                             model: AppModel) async
+        -> (project: URL?, files: [URL]) {
+        var files: [URL] = []
+        for p in providers {
+            guard let u = await AppModel.droppedURL(p), u.isFileURL else {
+                continue
             }
-            if let u, AppModel.isProjectFile(u) { return u }
+            if AppModel.isProjectFile(u) { return (u, []) }
+            if !model.isStageDrag(u) && AppModel.draggedAssets([u]).isEmpty {
+                files.append(u)
+            }
         }
-        return nil
+        return (nil, files)
     }
 }
 
 /// A drag over the window: its number (a read's answer for an earlier
-/// one is dropped), whether it is still over it, and whether its files
-/// hold a project -- nil while they are read: refused only once known to
-/// hold none.
+/// one is dropped), whether it is still over it, and what its files hold
+/// -- nil while they are read: refused only once known to hold nothing
+/// to take.
 struct ProjectDrag: Equatable {
+    enum Holds { case project, files, nothing }
     var number = 0
     var inside = false
-    var project: Bool?
-    var showsProject: Bool { inside && project == true }
+    var holds: Holds?
+    var showsProject: Bool { inside && holds == .project }
 }
 
 /// The window ringed in the accent while a project is over it, and what

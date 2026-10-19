@@ -91,12 +91,32 @@ const BufferSpec kLeaseOut[] = {
 const ConfigKey kPushArgs[] = {
   {.key = ex::kSideband, .type = ConfigType::Object,
    .doc = "attached to the beat as its sideband"},
+  {.key = ex::kStorage, .type = ConfigType::String,
+   .doc = "\"shared\": a Metal shared buffer (falls back to CPU memory "
+          "without a Metal device). \"cpu\": CPU memory -- as a beat "
+          "made there is fed back, for a stage that reads its CPU bytes",
+   .def_str = ex::kStorageShared},
+  {.key = ex::kType, .type = ConfigType::String,
+   .doc = "with no buffer: the element type of a tensor with no bytes"},
+  {.key = ex::kShape, .type = ConfigType::Array,
+   .doc = "with no buffer: its shape, one dimension 0 (e.g. [0, 96])"},
+  {.key = ex::kList, .type = ConfigType::Bool,
+   .doc = "the tensor is an item of a LIST, emitted as one beat once all "
+          "its `items` are in", .def_bool = false},
+  {.key = ex::kItems, .type = ConfigType::Uint,
+   .doc = "with `list`: how many items (0: an empty list, emitted at "
+          "once)"},
+  {.key = ex::kItem, .type = ConfigType::Uint,
+   .doc = "its place in the list: items come in order, from 0"},
+  {.key = ex::kListSideband, .type = ConfigType::Object,
+   .doc = "the list's own sideband (taken from its first item)"},
 };
 const BufferSpec kPushIn[] = {
   {.name = ex::kBufData,
    .doc = "the tensor to emit, any strides; copied into engine memory, "
-          "so the caller's is free again once the reply arrives",
-   .type = kTensorTypes},
+          "so the caller's is free again once the reply arrives. "
+          "Absent: a tensor with no bytes, its `type` and `shape` said",
+   .type = kTensorTypes, .optional = true},
 };
 
 const ConfigKey kEmitArgs[] = {
@@ -112,9 +132,10 @@ const CommandSpec kCommands[] = {
    .args = kLeaseArgs, .results = kLeaseResults, .out = kLeaseOut,
    .holds = true},
   {.name = ex::kCmdPush,
-   .doc = "emit a copy of the caller's tensor; the reply comes once the "
-          "oport has taken it, so a caller that waits is paced by the "
-          "graph",
+   .doc = "emit a copy of the caller's tensor -- or, with `items`, gather "
+          "it into a list emitted whole after its last item; the reply "
+          "comes once the oport has taken it, so a caller that waits is "
+          "paced by the graph",
    .args = kPushArgs, .results = kSeqResult, .in = kPushIn},
   {.name = ex::kCmdEmit,
    .doc = "emit a JSON value as one FlexData beat",
@@ -184,7 +205,12 @@ public:
 
   const StageSpec& spec() const noexcept override { return kSpec; }
 
-  void reset_run_state() override { _emitted = 0; }
+  void
+  reset_run_state() override
+  {
+    _emitted = 0;
+    _list.reset();
+  }
 
   vpipe::Job
   process(vpipe::RuntimeContext& ctx) override
@@ -284,28 +310,101 @@ private:
   vpipe::Job
   push_(vpipe::RuntimeContext& ctx, std::shared_ptr<vpipe::StageCommand> cmd)
   {
-    const vpipe::DataBuffer* in = cmd->input(ex::kBufData);
+    const auto args = cmd->args().as_object();
+    // (Every declared argument is there, at its default when not sent:
+    // `list` says whether this is a list's item.)
+    const bool in_list = args.at(ex::kList).as_bool(false);
+    const std::uint64_t items =
+        in_list ? args.at(ex::kItems).as_uint(0) : 0;
+    if (in_list && items == 0) {
+      // An empty list, at once.
+      auto empty = std::make_unique<vpipe::TensorListPayload>();
+      const FlexData lsb = args.at(ex::kListSideband);
+      if (lsb.is_object()) {
+        empty->sideband = lsb;
+      }
+      co_await ctx.write(0, std::move(empty));
+      cmd->reply(seq_result_(++_emitted));
+      co_return;
+    }
     TensorBeat tb;
-    if (!in || !tensor_dtype_of(in->layout.type, &tb.dtype)) {
-      cmd->fail("`data` is missing or has no tensor element type");
+    if (std::string why = tensor_(*cmd, tb); !why.empty()) {
+      cmd->fail(why);
       co_return;
     }
-    tb.shape.assign(in->layout.shape.begin(), in->layout.shape.end());
-    if (!allocate_storage(tb, metal_(), true)) {
-      cmd->fail("out of memory for the beat");
-      co_return;
-    }
-    gather(*in, tb.bytes_());
-    const FlexData sb = cmd->args().as_object().at(ex::kSideband);
+    const FlexData sb = args.at(ex::kSideband);
     if (sb.is_object() && sb.as_object().size() > 0) {
       tb.sideband = sb;
     }
-    co_await ctx.write(0, vpipe::make_payload<vpipe::TensorBeatPayload>(
-                              std::move(tb)));
+    if (!in_list) {
+      co_await ctx.write(0, vpipe::make_payload<vpipe::TensorBeatPayload>(
+                                std::move(tb)));
+      cmd->reply(seq_result_(++_emitted));
+      co_return;
+    }
+    // An item: gathered in its place, the list emitted after its last.
+    if (!_list) {
+      _list = std::make_unique<vpipe::TensorListPayload>();
+      const FlexData lsb = args.at(ex::kListSideband);
+      if (lsb.is_object()) {
+        _list->sideband = lsb;
+      }
+    }
+    const std::uint64_t item = args.at(ex::kItem).as_uint(0);
+    if (item != _list->items.size()) {
+      cmd->fail(vpipe::fmt("list item {} pushed where {} was due", item,
+                           _list->items.size())());
+      _list.reset();
+      co_return;
+    }
+    _list->items.push_back(std::move(tb));
+    if (_list->items.size() < items) {
+      cmd->reply(seq_result_(_emitted + 1));
+      co_return;
+    }
+    co_await ctx.write(0, std::move(_list));
+    _list.reset();
     cmd->reply(seq_result_(++_emitted));
   }
 
-  std::uint64_t _emitted = 0;
+  // The tensor a `push` carries: a copy of buffer `data` in engine memory
+  // (a Metal shared buffer), or -- no buffer -- one of no bytes, its type
+  // and shape said. An error's words, else "".
+  std::string
+  tensor_(vpipe::StageCommand& cmd, TensorBeat& tb)
+  {
+    const vpipe::DataBuffer* in = cmd.input(ex::kBufData);
+    if (in) {
+      if (!tensor_dtype_of(in->layout.type, &tb.dtype)) {
+        return "`data` has no tensor element type";
+      }
+      tb.shape.assign(in->layout.shape.begin(), in->layout.shape.end());
+      const bool shared = cmd.args().as_object().at(ex::kStorage).as_string(
+                              "") != std::string_view(ex::kStorageCpu);
+      if (!allocate_storage(tb, metal_(), shared)) {
+        return "out of memory for the beat";
+      }
+      gather(*in, tb.bytes_());
+      return {};
+    }
+    const auto args = cmd.args().as_object();
+    const std::string tname(args.at(ex::kType).as_string(""));
+    vpipe::ElementType et{};
+    if (!vpipe::parse_element_type(tname, &et) ||
+        !tensor_dtype_of(et, &tb.dtype) ||
+        !parse_shape(args.at(ex::kShape), &tb.shape)) {
+      return "`data` is missing, and no `type` and `shape` say a tensor "
+             "of no bytes";
+    }
+    if (tb.element_count() != 0) {
+      return "a tensor with bytes needs buffer `data`";
+    }
+    allocate_storage(tb, nullptr, false);
+    return {};
+  }
+
+  std::uint64_t                             _emitted = 0;
+  std::unique_ptr<vpipe::TensorListPayload> _list;
 };
 
 }

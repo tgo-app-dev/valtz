@@ -1097,7 +1097,7 @@ struct IntentInfo: Sendable {
 /// have it (and why not), and how it bears on the others.
 struct TuningOption: Identifiable, Equatable, Sendable {
     let key: String
-    let type: String          // "bool" | "int" | "real"
+    let type: String          // "bool" | "int" | "real" | "list" | "choice"
     let available: Bool
     let why: String           // "not-installed", "needs-matrix-cores", ...
     let min: Double
@@ -1108,6 +1108,7 @@ struct TuningOption: Identifiable, Equatable, Sendable {
     // Every value it sets while it is on (TaoMate's steps and shifts).
     let fixes: [String: Double]
     let needs: String?        // the option it refines (Sol's threshold)
+    let choices: [String]     // a choice's values, in order
     // The LoRA list's: how many run at once (vpipe's slots), the catalog
     // Turbo LoRA's file ("" when not installed) and the names its entries
     // go by, and the preset's steps with the Turbo LoRA on, and off.
@@ -1145,6 +1146,7 @@ struct TuningOption: Identifiable, Equatable, Sendable {
             ($0 as? NSNumber)?.doubleValue
         }
         needs = j["needs"] as? String
+        choices = j["choices"] as? [String] ?? []
         slots = j["slots"] as? Int ?? 8
         turbo = j["turbo"] as? String ?? ""
         names = j["names"] as? [String: String] ?? [:]
@@ -1227,7 +1229,8 @@ struct TuningCheckpoint: Equatable, Codable, Sendable, Identifiable {
 struct Tuning: Equatable, Codable, Sendable {
     var flags: [String: Bool] = [:]
     var numbers: [String: Double] = [:]
-    /// An older save's Turbo LoRA selector ("turbo": "" | id | file): sent
+    /// The choices (the int8 GEMMs' tier: "i8_gemm_tier"), by key -- and
+    /// an older save's Turbo LoRA selector ("turbo": "" | id | file): sent
     /// as it is, the core folds it into the LoRA list, and what it settles
     /// has none.
     var choices: [String: String] = [:]
@@ -1258,6 +1261,8 @@ struct Tuning: Equatable, Codable, Sendable {
         for o in options {
             switch o.type {
             case "bool": flags[o.key] = values[o.key] as? Bool ?? false
+            case "choice":
+                choices[o.key] = values[o.key] as? String ?? o.choices.first
             case "list" where o.key == "loras":
                 loras = (values[o.key] as? [[String: Any]] ?? []).map {
                     TuningLoRA(path: $0["path"] as? String ?? "",
@@ -1537,14 +1542,19 @@ struct AgentTurnStats: Decodable, Sendable, Equatable {
     /// memory | disk | stage | new: where the conversation came from.
     var restored: String?
     var ctxPos: Double?
+    /// Its drafter (mtp | dflash): the tokens a verify forward bought,
+    /// and how many of its drafts were kept, in percent.
+    var drafter: String?
+    var perRound: Double?
+    var acceptedPct: Double?
     var firstMs: Double?
     var turnMs: Double?
 
     var isEmpty: Bool { turnMs == nil }
 
     /// The line under the turn: "prefill 680 tok · 3,400 tok/s   decode
-    /// 69 tok · 46.0 tok/s   7,700 reused, in memory · ctx 8,501 · turn
-    /// 2.1 s".
+    /// 69 tok · 46.0 tok/s   MTP 2.37 a round · 69% kept   7,700 reused,
+    /// in memory · ctx 8,501 · turn 2.1 s".
     var line: String {
         var parts: [String] = []
         if let n = prefillTokens {
@@ -1553,6 +1563,9 @@ struct AgentTurnStats: Decodable, Sendable, Equatable {
             } else {
                 parts.append(String(localized: "prefill \(Self.count(n)) tok"))
             }
+        } else if let ms = prefillMs {
+            // A vpipe that says how long a chat read, not how much.
+            parts.append(String(localized: "prefill \(Self.seconds(ms)) s"))
         }
         if let n = decodeTokens {
             if let r = decodeTps {
@@ -1563,6 +1576,15 @@ struct AgentTurnStats: Decodable, Sendable, Equatable {
         } else if let ms = decodeMs {
             // A vpipe that says how long it wrote, not how much.
             parts.append(String(localized: "decode \(Self.seconds(ms)) s"))
+        }
+        if let r = perRound {
+            let name = drafter == "dflash" ? "DFlash" : "MTP"
+            let round = r.formatted(.number.precision(.fractionLength(2)))
+            if let p = acceptedPct {
+                parts.append(String(localized: "\(name) \(round) a round · \(Int(p.rounded()))% kept"))
+            } else {
+                parts.append(String(localized: "\(name) \(round) a round"))
+            }
         }
         var more: [String] = []
         if let n = cachedTokens {

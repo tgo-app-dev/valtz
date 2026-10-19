@@ -52,7 +52,20 @@ struct CapabilityTree: Decodable, Sendable {
         var compress: Compress?
         /// A compressed copy in its download's place.
         var compressed: Compressed?
+        /// The parts that can run from Draw Things checkpoints (core
+        /// catalog `check.drawthings`: "dit", "encoder", "vae"), and the
+        /// ones it is linked to.
+        var drawthings: [String]?
+        var parts: [String: PartLink]?
+        var takesDrawThings: Bool { !(drawthings ?? []).isEmpty }
         var id: String { model }
+    }
+
+    /// A part of a model linked apart -- a Draw Things checkpoint -- and
+    /// whether the file is still there.
+    struct PartLink: Decodable, Sendable {
+        var path: String
+        var present: Bool
     }
 
     struct Quantize: Decodable, Sendable {
@@ -126,14 +139,16 @@ struct ModelCheck: Sendable, Equatable {
 }
 
 /// Settings › Upscaling (core Controller::upscale_settings): an
-/// upscaler -- FlashVSR for clips, VOSR for pictures -- and the arithmetic
-/// it runs with, as Favor's Custom lists a model's options: settled by
-/// the core from Med's preset with the person's own laid on.
+/// upscaler -- FlashVSR+ or FlashVSR 1.1 for clips, VOSR for pictures --
+/// and the arithmetic it runs with, as Favor's Custom lists a model's
+/// options: settled by the core from Med's preset with the person's own
+/// laid on.
 struct UpscalerSettings: Identifiable, Equatable, Sendable {
     let id: String
     let name: String
     let kind: String        // "video" | "image"
     let state: String       // "installed", "not-installed", ...
+    let runs: Bool          // what Render Upscaled runs for its kind now
     let custom: Bool        // anything set apart from the defaults
     let info: TuningInfo
 
@@ -146,6 +161,7 @@ struct UpscalerSettings: Identifiable, Equatable, Sendable {
         name = j["name"] as? String ?? id
         kind = j["kind"] as? String ?? "image"
         state = j["state"] as? String ?? ""
+        runs = j["runs"] as? Bool ?? false
         custom = j["custom"] as? Bool ?? false
         let options = opts.map(TuningOption.init)
         info = TuningInfo(family: t["family"] as? String ?? "",
@@ -155,6 +171,24 @@ struct UpscalerSettings: Identifiable, Equatable, Sendable {
     /// What the page lists: the options this upscaler takes at all.
     var options: [TuningOption] {
         info.options.filter { $0.why != "not-for-model" && $0.type != "list" }
+    }
+}
+
+/// Which upscaler a kind runs (core Controller::upscale_settings'
+/// "kinds"): the person's pick ("" Auto), Auto's -- the best installed --
+/// and what Render Upscaled runs now (the pick, else Auto's).
+struct UpscalerKind: Equatable, Sendable {
+    let kind: String        // "video" | "image"
+    let chosen: String
+    let auto: String
+    let runs: String
+
+    init?(_ j: [String: Any]) {
+        guard let kind = j["kind"] as? String else { return nil }
+        self.kind = kind
+        chosen = j["chosen"] as? String ?? ""
+        auto = j["auto"] as? String ?? ""
+        runs = j["runs"] as? String ?? ""
     }
 }
 

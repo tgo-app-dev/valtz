@@ -16,7 +16,7 @@ extension AppModel {
         guard !words.isEmpty else { return }
         if let a = agent, a.project == projectId, !a.ended {
             let r = core.agentSay(a.agent, words)
-            guard r.ok else { flash(r.message); return }
+            guard r.ok else { flash(r.message, level: .error); return }
             clearAgentPrompt()
             return
         }
@@ -29,7 +29,7 @@ extension AppModel {
         if let c = activeComposition { req["composition"] = c.id }
         let r = core.agentStart(req)
         guard r.ok, let id = r["agent"] as? String else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         withAnimation(Self.motion) {
@@ -151,14 +151,14 @@ extension AppModel {
         guard let core, let id = agent?.agent else { return }
         let r = core.agentReview(id, step: step.n, decision: decision,
                                  note: note)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
     }
 
     /// pause | resume | stop | review | auto
     func agentControl(_ action: String) {
         guard let core, let id = agent?.agent else { return }
         let r = core.agentControl(id, action)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         reloadAgent()
     }
 
@@ -176,7 +176,7 @@ extension AppModel {
     func setAgentSettings(_ s: [String: Any]) {
         guard let core else { return }
         let r = core.setAgentSettings(s)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         agentSettings = DTO.decode(AgentSettings.self,
                                    core.agentSettingsJSON())
     }
@@ -185,7 +185,7 @@ extension AppModel {
     func setAgentKey(_ provider: String, _ key: String) {
         guard let core else { return }
         let r = core.setAgentKey(provider, key)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         agentSettings = DTO.decode(AgentSettings.self,
                                    core.agentSettingsJSON())
     }
@@ -231,6 +231,7 @@ extension AppModel {
         case "get_project": String(localized: "Look at the Project")
         case "get_composition": String(localized: "Look at a Composition")
         case "view_page": String(localized: "Look at a Page")
+        case "view_asset": String(localized: "Look at an Asset")
         case "create_composition": String(localized: "Make a Composition")
         case "add_pages": String(localized: "Add Pages")
         case "remove_page": String(localized: "Remove Page")
@@ -238,10 +239,13 @@ extension AppModel {
         case "add_shape": String(localized: "Add Shape")
         case "update_object": String(localized: "Change Text or Shape")
         case "remove_object": String(localized: "Remove Text or Shape")
+        case "arrange_objects": String(localized: "Arrange Texts and Shapes")
+        case "draw_strokes": String(localized: "Draw with the Brush")
         case "flow_text": String(localized: "Lay Out Text")
         case "add_page_progress": String(localized: "Add Page Progress")
         case "place_asset": String(localized: "Place Asset")
         case "set_layer_box": String(localized: "Move Layer")
+        case "upscale_layer": String(localized: "Upscale Layer")
         case "set_layer_pages": String(localized: "Layer Pages")
         case "arrange_layer": String(localized: "Arrange Layer")
         case "remove_layer": String(localized: "Remove Layer")
@@ -249,11 +253,14 @@ extension AppModel {
         case "set_layer_visible": String(localized: "Show or Hide Layer")
         case "adjust_layer": String(localized: "Adjust Layer")
         case "create_prompt": String(localized: "Save Prompt")
+        case "enhance_prompt": String(localized: "Enhance Prompt")
         case "generate_image": String(localized: "Generate Picture")
         case "wait_for_generations":
             String(localized: "Wait for Generations")
         case "ask_user": String(localized: "Ask You")
         case "describe_clip": String(localized: "Watch a Clip")
+        case "transcribe": String(localized: "Listen to a Sound")
+        case "separate_sound": String(localized: "Separate a Song")
         case "view_frames": String(localized: "Look at Frames")
         case "add_clip": String(localized: "Add Clip")
         case "add_sound": String(localized: "Add Sound")

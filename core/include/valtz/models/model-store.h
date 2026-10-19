@@ -18,6 +18,11 @@
 // fetched again. A copy made with its original KEPT (to try it first)
 // is in use beside it until its mark sets it aside ("in_use": false);
 // the original is used then.
+//
+// A model's PARTS can be linked apart -- its DiT, text encoder, VAE, each
+// a Draw Things checkpoint (models/drawthings.h) -- the rest of it (its
+// configs, its tokenizer) where the model is: kept in the same file,
+// under "part_links".
 
 #ifndef VALTZ_MODELS_MODEL_STORE_H
 #define VALTZ_MODELS_MODEL_STORE_H
@@ -27,6 +32,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -56,6 +62,15 @@ struct InstallInfo {
   std::filesystem::path other_dir;
   int                   other_bits = 0;
   std::uint64_t         other_bytes = 0;
+  // Its parts linked apart (link_part), by part, and whether each file
+  // is there.
+  struct PartLink {
+    std::filesystem::path file;
+    bool                  present = false;
+  };
+  std::map<std::string, PartLink> parts;
+  // The part's file when linked and there; empty otherwise.
+  std::filesystem::path part(const std::string& name) const;
 
   // What the engine is given: the entry's file when it names one, else
   // the folder.
@@ -96,6 +111,15 @@ public:
   // Where `id` is linked to; empty when it is not.
   std::filesystem::path link_of(const std::string& id) const;
 
+  // `e`'s `part` ("dit", "encoder", "vae") taken from `file` (checked
+  // first: models/model-check.h), in place of the one where the model
+  // is; unlink_parts gives every one back.
+  Status link_part(const ModelEntry& e, const std::string& part,
+                   const std::filesystem::path& file);
+  void unlink_parts(const std::string& id);
+  std::map<std::string, std::filesystem::path>
+  part_links_of(const std::string& id) const;
+
   // Where `id`'s copy compressed to `bits` is kept.
   std::filesystem::path compressed_dir(const std::string& id,
                                        int bits) const;
@@ -113,6 +137,9 @@ private:
   std::vector<std::filesystem::path>                   _roots;
   std::filesystem::path                                _links_file;
   std::unordered_map<std::string, std::filesystem::path> _links;
+  std::unordered_map<std::string,
+                     std::map<std::string, std::filesystem::path>>
+                                                       _part_links;
   mutable std::mutex                                   _mu;
   mutable std::unordered_map<std::string, InstallInfo> _cache;
 };

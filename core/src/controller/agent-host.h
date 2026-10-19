@@ -51,7 +51,9 @@ public:
   Json tools_json() const;
 
   // A job's event as the controller posts it: an agent's picture landing
-  // (handled on the host's own thread, never the poster's).
+  // (handled on the host's own thread, never the poster's) -- or the
+  // prompt enhancer's reply (assist.enhanced), kept for the tool that
+  // asked for it.
   void on_event(const std::string& kind, JobId job, const Json& data);
   // The project closing: its sessions stopped.
   void project_closing(ProjectId);
@@ -211,6 +213,8 @@ private:
                                  std::vector<std::filesystem::path>&);
   Result<Json> t_view_page(Session&, Step&, const Json&,
                            std::vector<std::filesystem::path>&);
+  Result<Json> t_view_asset(Session&, Step&, const Json&,
+                            std::vector<std::filesystem::path>&);
   Result<Json> t_create_composition(Session&, Step&, const Json&,
                                     std::vector<std::filesystem::path>&);
   Result<Json> t_add_pages(Session&, Step&, const Json&,
@@ -225,6 +229,10 @@ private:
                                std::vector<std::filesystem::path>&);
   Result<Json> t_remove_object(Session&, Step&, const Json&,
                                std::vector<std::filesystem::path>&);
+  Result<Json> t_arrange_objects(Session&, Step&, const Json&,
+                                 std::vector<std::filesystem::path>&);
+  Result<Json> t_draw_strokes(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
   // ---- a long text on pages (agent-tools.cc)
   Result<Json> t_flow_text(Session&, Step&, const Json&,
                            std::vector<std::filesystem::path>&);
@@ -233,6 +241,8 @@ private:
   Result<Json> t_place_asset(Session&, Step&, const Json&,
                              std::vector<std::filesystem::path>&);
   Result<Json> t_set_layer_box(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  Result<Json> t_upscale_layer(Session&, Step&, const Json&,
                                std::vector<std::filesystem::path>&);
   Result<Json> t_set_layer_pages(Session&, Step&, const Json&,
                                  std::vector<std::filesystem::path>&);
@@ -250,6 +260,10 @@ private:
                                std::vector<std::filesystem::path>&);
   Result<Json> t_generate_image(Session&, Step&, const Json&,
                                 std::vector<std::filesystem::path>&);
+  // The PROMPT ENHANCER (Controller::enhance_prompt) on the agent's words:
+  // the fields of the tool that makes it, and what to look at in them.
+  Result<Json> t_enhance_prompt(Session&, Step&, const Json&,
+                                std::vector<std::filesystem::path>&);
   Result<Json> t_wait_for_generations(Session&, Step&, const Json&,
                                       std::vector<std::filesystem::path>&);
   Result<Json> t_ask_user(Session&, Step&, const Json&,
@@ -257,6 +271,12 @@ private:
   // ---- timelines: clips, sounds, music (agent-tools.cc)
   Result<Json> t_describe_clip(Session&, Step&, const Json&,
                                std::vector<std::filesystem::path>&);
+  // ASSET OPERATIONS (DESIGN §4j): what was said in a sound or a clip; a
+  // song split into its voice and the rest.
+  Result<Json> t_transcribe(Session&, Step&, const Json&,
+                            std::vector<std::filesystem::path>&);
+  Result<Json> t_separate_sound(Session&, Step&, const Json&,
+                                std::vector<std::filesystem::path>&);
   Result<Json> t_view_frames(Session&, Step&, const Json&,
                              std::vector<std::filesystem::path>&);
   Result<Json> t_add_clip(Session&, Step&, const Json&,
@@ -373,6 +393,12 @@ private:
                   AssetId asset);
   // A job of its own waited for (a clip's summary): false when stopped.
   bool wait_job_(Session& s, JobId job);
+  // A job made for the session that lands nowhere (a separation, an
+  // upscale): waited for as its pictures are, told when it is done.
+  void book_(Session& s, Step& step, JobId job);
+  // The enhancer's reply to `job` (assist.enhanced), taken; null when
+  // none came.
+  Json take_reply_(JobId job);
   // A SHOT asked for: its prompt put together (assist::shot_prompt) with
   // the names the model reads its references by, the request sent, its
   // landing booked -- one command, the step's.
@@ -414,6 +440,10 @@ private:
     Json        data;
   };
   std::deque<Pending>                              _events;
+  // The prompt enhancer's replies, by job, the newest few: the agent's
+  // enhance_prompt takes its own (the person's own Enhance goes to the
+  // app, and its replies age out here).
+  std::deque<std::pair<JobId, Json>>               _replies;
   // Turns served for members: each session's key, until when it is
   // kept, and the folder of its saved context.
   struct Lease {

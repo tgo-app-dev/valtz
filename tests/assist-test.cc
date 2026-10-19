@@ -1,6 +1,7 @@
 #include "testing.h"
 
 #include "valtz/assist/assistant.h"
+#include "valtz/assist/moss-image.h"
 #include "valtz/assist/transcript.h"
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/text.h"
@@ -243,6 +244,148 @@ TEST(assist, flux3_klein_is_written_a_caption)
       "\"title\": \"Night\"}");
   REQUIRE_OK(r);
   CHECK(r->title == "Night");
+}
+
+// MOSS-IMAGE's prompt (assist/moss-image.h): a draft as its makers'
+// skill has a model write it, compiled as their scripts/compile_prompt.py
+// compiles it -- these expectations are that script's own tests, and its
+// output for the same draft, byte for byte.
+TEST(assist, a_moss_image_draft_compiles_as_its_script)
+{
+  const Json draft = Json::parse(R"({
+    "width": 1536, "height": 1024,
+    "bbox_coord_space": "abs", "bbox_format": "xyxy",
+    "summary": {"meta": ["poster"], "canvas": "single",
+                "caption": "A ceramic campaign."},
+    "items": [
+      {"label": "text", "caption": "Dark-green lettering.",
+       "text": "把日常，过成诗。\n\"MOSS\" 🪴", "bbox": [928, 272, 1408, 448]},
+      {"label": "object", "caption": "An ivory ceramic cup.",
+       "bbox": [176, 224, 800, 864], "tags": ["ceramic"]}]})");
+  auto p = moss_image_prompt(draft, 1536, 1024);
+  REQUIRE_OK(p);
+  CHECK(*p ==
+        R"({"summary":{"meta":["poster"],"canvas":"single","caption":)"
+        R"("A ceramic campaign."},"items":[{"label":"text","caption":)"
+        R"("Dark-green lettering.","text":"把日常，过成诗。\n\"MOSS\" 🪴",)"
+        R"("bbox":[-240,160,-64,640]},{"label":"object","caption":)"
+        R"("An ivory ceramic cup.","bbox":[-288,-592,352,32],"tags":)"
+        R"(["ceramic"]}],"bbox_coord_space":"abs_centralized",)"
+        R"("bbox_format":"yxyx"})");
+  CHECK(p->find('\n') == std::string::npos);
+  CHECK(moss_layout_caption(*p) == "A ceramic campaign.");
+  CHECK(moss_layout_caption("a red fox").empty());
+  // Fractional edges enclosed, left / top floored, right / bottom ceiled;
+  // a hair past a whole pixel is that pixel (round to 9 places first).
+  auto box = [](Json b, int w, int h) {
+    Json d = {{"summary", {{"caption", "x"}}},
+              {"items", Json::array({{{"label", "object"},
+                                      {"caption", "y"},
+                                      {"bbox", b}}})}};
+    auto r = moss_image_prompt(d, w, h);
+    return r.ok() ? Json::parse(*r)["items"][0]["bbox"] : Json();
+  };
+  CHECK(box({0, 0, 768, 1344}, 768, 1344) ==
+        Json::array({-672, -384, 672, 384}));
+  CHECK(box({10.9, 20.1, 100.01, 200.99}, 768, 1344) ==
+        Json::array({-652, -374, -471, -283}));
+  CHECK(box({1.00000000001, 2, 100, 200}, 768, 1344) ==
+        Json::array({-670, -383, -472, -284}));
+  // A caption is the prompt, its wording exact.
+  const std::string caption =
+      "An ivory cup marked \"茶\".\nPreserve this second line.";
+  auto c = moss_image_prompt({{"caption", caption}}, 1024, 1024);
+  REQUIRE_OK(c);
+  CHECK(*c == caption);
+  CHECK(!moss_image_prompt({{"caption", ""}}, 1024, 1024).ok());
+  CHECK(!moss_image_prompt({{"caption", caption}, {"items", Json::array()}},
+                           1024, 1024)
+             .ok());
+  // The canvas is the picture's: a multiple of 16 a side.
+  CHECK(!moss_image_prompt(draft, 1530, 1024).ok());
+  // The enhancer's reply read: a caption draft is a prompt.
+  auto r = parse_enhance_reply("{\"caption\": \"A fox at dawn.\"}");
+  REQUIRE_OK(r);
+  CHECK(r->prompt == "A fox at dawn.");
+  CHECK(partial_enhance_reply("{\"caption\": \"A fox at d") == "A fox at d");
+}
+
+// Where the script refuses, a helper's slip is mended -- it has no
+// second try: a draft laid out on another canvas, or in fractions of it,
+// is scaled to the picture's; a box past the edge clipped; unknown fields
+// left out; a text item without its words an object.
+TEST(assist, a_moss_image_draft_is_mended_where_it_can_be)
+{
+  auto items = [](const std::string& prompt) {
+    return Json::parse(prompt)["items"];
+  };
+  // Half the size: the boxes doubled -- the cup lands where it would.
+  auto half = moss_image_prompt(Json::parse(R"({
+    "width": 768, "height": 512, "summary": {"caption": "c"},
+    "items": [{"label": "object", "caption": "cup",
+               "bbox": [88, 112, 400, 432]}]})"), 1536, 1024);
+  REQUIRE_OK(half);
+  CHECK(items(*half)[0]["bbox"] == Json::array({-288, -592, 352, 32}));
+  // Fractions of the canvas.
+  auto frac = moss_image_prompt(Json::parse(R"({
+    "summary": {"caption": "c"},
+    "items": [{"label": "object", "caption": "o",
+               "bbox": [0.25, 0.25, 0.75, 0.75]}]})"), 1024, 1024);
+  REQUIRE_OK(frac);
+  CHECK(items(*frac)[0]["bbox"] == Json::array({-256, -256, 256, 256}));
+  // Past the edge: clipped. Unknown fields: left out. A text item with
+  // no words: an object. A box with nothing left: dropped.
+  auto mended = moss_image_prompt(Json::parse(R"({
+    "width": 1024, "height": 1024, "summary": {"caption": "c",
+                                               "font": "x"},
+    "items": [
+      {"label": "text", "caption": "a sign", "bbox": [-10, 0, 100, 1100],
+       "font_size": 32, "children": []},
+      {"label": "banner", "caption": "a flag", "bbox": [0, 0, 10, 10]},
+      {"label": "object", "caption": "gone", "bbox": [1100, 0, 1200, 10]},
+      {"label": "object", "bbox": [0, 0, 10, 10]}]})"), 1024, 1024);
+  REQUIRE_OK(mended);
+  const Json m = items(*mended);
+  REQUIRE(m.size() == 2);
+  CHECK(m[0]["label"] == "object");
+  CHECK(m[0]["bbox"] == Json::array({-512, -512, 512, -412}));
+  CHECK(!m[0].contains("font_size"));
+  CHECK(m[1]["label"] == "object");
+  CHECK(mended->find("\"font\"") == std::string::npos);
+  // Nothing to compile: refused.
+  CHECK(!moss_image_prompt(Json::parse(R"({"summary": {"caption": ""},
+    "items": [{"label": "object", "caption": "o",
+               "bbox": [0, 0, 10, 10]}]})"), 1024, 1024).ok());
+  CHECK(!moss_image_prompt(Json::parse(R"({"summary": {"caption": "c"},
+    "items": []})"), 1024, 1024).ok());
+}
+
+// MOSS-Image's own prompt-enhancer skill, as its makers publish it
+// (3rd-party/moss-image), composed as an agent reads it: SKILL.md, then
+// the layout reference it points to.
+TEST(assist, moss_image_is_enhanced_by_its_makers_skill)
+{
+  const std::string_view s = rewrite_prompt("moss-image");
+  CHECK(s.find("# MOSS-Image Prompt Enhancer") != std::string_view::npos);
+  CHECK(s.find("# File: references/layout.md") != std::string_view::npos);
+  CHECK(s.find("# Pixel Layout draft") != std::string_view::npos);
+  auto cat = models::Catalog::builtin();
+  REQUIRE_OK(cat);
+  for (const char* id : {"moss-image-sft", "moss-image-base"}) {
+    const auto* m = cat->find(id);
+    REQUIRE(m);
+    CHECK(jget<std::string>(jget(m->prompting, "enhance", Json::object()),
+                            "generate", "") == "moss-image");
+  }
+  EnhanceRequest er;
+  er.prompt = "a poster for a tea shop";
+  er.system = std::string(s);
+  er.skill_note = "Reply with the draft itself.";
+  er.size = "1024x768";
+  const std::string text = build_enhance_prompt(er);
+  CHECK(text.find("Reply with the draft itself.\n\nThe user's request "
+                  "is:\na poster for a tea shop (Output size: 1024x768.)") !=
+        std::string::npos);
 }
 
 // Qwen-Image's prompt writer, generate and edit: Valtz's own guides

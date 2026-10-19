@@ -488,9 +488,8 @@ struct CropPanel: View {
     @ViewBuilder
     private var upscaleRow: some View {
         HStack(spacing: 8) {
-            if let job = model.upscaleJob {
-                ProgressView(value: min(1, max(0, model.jobs[job]?.progress
-                                                      ?? 0)))
+            if model.upscaleJob != nil {
+                ProgressView(value: model.upscaleFraction)
                     .frame(width: 120)
                 Text(model.upscaleCaption)
                     .font(.callout)

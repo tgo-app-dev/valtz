@@ -1,6 +1,7 @@
 #include "valtz/models/model-check.h"
 
 #include "valtz/base/message.h"
+#include "valtz/models/drawthings.h"
 
 #include <algorithm>
 #include <cctype>
@@ -750,9 +751,19 @@ ModelCheck::to_json() const
   }
   return {{"chosen", chosen.string()}, {"path", path.string()},
           {"moved", moved}, {"confirmed", confirmed}, {"usable", usable},
-          {"identity", identity}, {"bytes", bytes},
+          {"identity", identity}, {"parts", parts_json()}, {"bytes", bytes},
           {"files", weight_files}, {"tensors", tensors},
           {"notes", std::move(ns)}};
+}
+
+Json
+ModelCheck::parts_json() const
+{
+  Json out = Json::object();
+  for (const auto& [part, file] : parts) {
+    out[part] = file.string();
+  }
+  return out;
 }
 
 Json
@@ -766,6 +777,212 @@ ModelCheck::error() const
   return Json::object();
 }
 
+namespace {
+
+// What a Draw Things store vpipe reads is, as the person reads it.
+std::string
+drawthings_name(const DrawThingsStore& s)
+{
+  if (s.family == "qwen3-vl") {
+    return s.width == 4096   ? "Qwen3-VL 8B text encoder"
+           : s.width == 5120 ? "Qwen3-VL 32B text encoder"
+                             : "Qwen3-VL text encoder";
+  }
+  return s.family == "qwen-image-21"       ? "Qwen-Image 2.1 DiT"
+         : s.family == "minimax-h3"        ? "MiniMax H3 DiT"
+         : s.family == "qwen-image-21-vae" ? "Qwen-Image 2.1 VAE"
+         : s.family == "minimax-h3-vae"    ? "MiniMax H3 VAEs"
+                                           : s.family;
+}
+
+// Whether `s` is `e`'s part, as its catalog `check.drawthings` names
+// each ({part: {"family", "width", "not_named"}}): the family, the width
+// a text encoder's must have, and not a file named as another release's
+// (its tensors say the family, not the release).
+bool
+drawthings_fits(const Json& want, const DrawThingsStore& s)
+{
+  return want.is_object() && jget<std::string>(want, "family", "") ==
+                                 s.family &&
+         (!want.contains("width") || jget(want, "width", 0) == s.width);
+}
+
+std::string
+drawthings_other_release(const Json& want, const std::string& file)
+{
+  for (const auto& w : strings(jget(want, "not_named", Json::array()))) {
+    if (lower(file).find(lower(w)) != std::string::npos) {
+      return w;
+    }
+  }
+  return {};
+}
+
+// ...and, where a release is told only by its name (`named`: the Turbo's
+// DiT, its tensors the base's), the word it lacks; "" when it has one.
+std::string
+drawthings_unnamed(const Json& want, const std::string& file)
+{
+  const auto words = strings(jget(want, "named", Json::array()));
+  for (const auto& w : words) {
+    if (lower(file).find(lower(w)) != std::string::npos) {
+      return {};
+    }
+  }
+  return words.empty() ? std::string() : words.front();
+}
+
+// `file`, a Draw Things store, as the part of `e` it is (models/
+// drawthings.h): checked, and in `c.parts` when it can be used.
+void
+check_drawthings(const ModelEntry& e, ModelCheck& c, const fs::path& file)
+{
+  const std::string f = file.filename().string();
+  const DrawThingsStore s = read_drawthings(file);
+  c.bytes += s.bytes;
+  c.weight_files += 1;
+  c.tensors += s.tensors;
+  const Json dt = jget(e.check, "drawthings", Json());
+  if (!dt.is_object() || dt.empty()) {
+    note(c, Level::Error, msg::kCheckDrawThingsNotForModel,
+         {{"model", e.name}});
+    return;
+  }
+  if (!s.store || !s.error.empty()) {
+    note(c, Level::Error, msg::kCheckUnreadable,
+         {{"file", f}, {"format", "Draw Things"}});
+    return;
+  }
+  if (s.cut_short()) {
+    note(c, Level::Error, msg::kCheckCutShort,
+         {{"file", f}, {"have", size_text(s.bytes)},
+          {"want", size_text(s.reach)}});
+    return;
+  }
+  if (!s.unread.empty()) {
+    note(c, Level::Error, msg::kCheckDrawThingsUnread,
+         {{"file", f}, {"tensor", s.unread}});
+    return;
+  }
+  if (s.rotated > 0) {
+    note(c, Level::Error, msg::kCheckDrawThingsRotated, {{"file", f}});
+    return;
+  }
+  if (s.part.empty()) {
+    note(c, Level::Error, msg::kCheckDrawThingsOther, {{"file", f}});
+    return;
+  }
+  const Json want = jget(dt, s.part.c_str(), Json());
+  if (!drawthings_fits(want, s)) {
+    note(c, Level::Error, msg::kCheckDrawThingsWrong,
+         {{"file", f}, {"found", drawthings_name(s)}, {"model", e.name}});
+    return;
+  }
+  if (const auto w = drawthings_other_release(want, f); !w.empty()) {
+    note(c, Level::Error, msg::kCheckDrawThingsRelease,
+         {{"file", f}, {"model", e.name}, {"word", w}});
+    return;
+  }
+  if (const auto w = drawthings_unnamed(want, f); !w.empty()) {
+    note(c, Level::Error, msg::kCheckDrawThingsUnnamed,
+         {{"file", f}, {"model", e.name}, {"word", w}});
+    return;
+  }
+  c.parts[s.part] = file;
+  c.confirmed = true;
+  c.identity = "Draw Things";
+  const MessageArgs args = {{"file", f}, {"model", e.name},
+                            {"size", size_text(s.bytes)}};
+  note(c, Level::Info,
+       s.part == "dit"       ? msg::kCheckDrawThingsDit
+       : s.part == "encoder" ? msg::kCheckDrawThingsEncoder
+                             : msg::kCheckDrawThingsVae,
+       args);
+  if (s.part == "dit" && s.eight_bit > 0) {
+    note(c, Level::Info, msg::kCheckDrawThingsEightBit, {});
+  }
+  if (s.family == "qwen-image-21-vae") {
+    note(c, Level::Info, msg::kCheckDrawThingsTextureFix, {});
+  }
+}
+
+// A folder that holds no download of `e` -- Draw Things' Models -- looked
+// through, at its top, for the Draw Things checkpoints of `e`'s parts:
+// true when any is found, `c` then their checks. A part with one file is
+// linked; one with several (Draw Things keeps a model's f16 beside its
+// 8-bit) is named, for the one wanted to be chosen as a file -- and with
+// none of a single file, which, asked.
+bool
+find_drawthings(const ModelEntry& e, ModelCheck& c)
+{
+  const Json dt = jget(e.check, "drawthings", Json());
+  if (!dt.is_object() || dt.empty()) {
+    return false;
+  }
+  std::map<std::string, std::vector<fs::path>> found;
+  std::error_code ec;
+  for (const auto& f : fs::directory_iterator(c.chosen, ec)) {
+    const fs::path& p = f.path();
+    if (!f.is_regular_file(ec) || lower(p.extension().string()) != ".ckpt" ||
+        !looks_like_drawthings(p)) {
+      continue;
+    }
+    const DrawThingsStore s = read_drawthings(p);
+    const Json want = jget(dt, s.part.c_str(), Json());
+    const std::string name = p.filename().string();
+    if (!s.part.empty() && drawthings_fits(want, s) &&
+        drawthings_other_release(want, name).empty() &&
+        drawthings_unnamed(want, name).empty()) {
+      found[s.part].push_back(p);
+    }
+  }
+  if (found.empty()) {
+    return false;
+  }
+  c.moved = "down";
+  c.path = c.chosen;
+  // The parts with several files: named, not linked.
+  std::vector<std::string> one;
+  for (auto& [part, files] : found) {
+    if (files.size() == 1) {
+      one.push_back(part);
+      continue;
+    }
+    std::ranges::sort(files);
+    std::vector<std::string> names;
+    for (const auto& p : files) {
+      names.push_back(p.filename().string());
+    }
+    note(c, Level::Warning, msg::kCheckDrawThingsAmbiguous,
+         {{"model", e.name}, {"paths", joined(names, names.size())}});
+  }
+  if (one.empty()) {
+    // Nothing to link without a choice: which, asked.
+    for (auto& n : c.notes) {
+      n.level = Level::Error;
+    }
+    return true;
+  }
+  // (Several: each part's own note names its file.)
+  for (const char* part : {"dit", "encoder", "vae"}) {
+    if (const auto it = found.find(part);
+        it != found.end() && it->second.size() == 1) {
+      if (found.size() == 1) {
+        note(c, Level::Info, msg::kCheckFoundInside,
+             {{"model", e.name}, {"path", it->second.front().string()}});
+      }
+      check_drawthings(e, c, it->second.front());
+    }
+  }
+  // One part alone: that file is what was found.
+  if (found.size() == 1) {
+    c.path = found.begin()->second.front();
+  }
+  return true;
+}
+
+}
+
 ModelCheck
 check_model(const ModelEntry& e, const fs::path& target, const Catalog* cat)
 {
@@ -775,13 +992,29 @@ check_model(const ModelEntry& e, const fs::path& target, const Catalog* cat)
   if (c.chosen.has_filename() == false && c.chosen.has_parent_path()) {
     c.chosen = c.chosen.parent_path();  // a trailing slash
   }
-  if (e.file.empty()) {
+  if (fs::is_regular_file(c.chosen, ec) &&
+      looks_like_drawthings(c.chosen)) {
+    c.path = c.chosen;
+    check_drawthings(e, c, c.chosen);
+  } else if (e.file.empty()) {
     check_folder(e, c, cat);
+    // No download there: a Draw Things checkpoint of its DiT may be.
+    if (has_error(c) && fs::is_directory(c.chosen, ec)) {
+      ModelCheck d;
+      d.chosen = c.chosen;
+      if (find_drawthings(e, d)) {
+        c = std::move(d);
+      }
+    }
   } else {
     check_file(e, c);
   }
   c.usable = !has_error(c);
-  if (c.usable) {
+  // Draw Things' parts: each said; what they lack, said once.
+  if (c.usable && !c.parts.empty()) {
+    note(c, Level::Info, msg::kCheckDrawThingsConfigs, {{"model", e.name}});
+  }
+  if (c.usable && c.parts.empty()) {
     // The headline, first: what it is.
     const MessageArgs args = {
         {"model", e.name}, {"identity", c.identity},

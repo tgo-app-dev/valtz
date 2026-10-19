@@ -33,6 +33,10 @@
 #include <string_view>
 #include <vector>
 
+namespace valtz::cache {
+class CacheStore;
+}
+
 namespace valtz::engine {
 
 // The runtime LoRA slots vpipe applies at once to an image or video DiT:
@@ -52,8 +56,10 @@ inline constexpr std::string_view kOpEditImage = "edit-image";
 // ("last", with a first: FL2VA's two keyframes). Params: prompt, width,
 // height, frames (already what the model makes: 17n + 5 for H3), fps,
 // steps, seed, and "lora" (the catalog id of the run-time adapter in
-// ModelRef::lora) with "lora_scale". The output is one .mp4: HEVC
-// Main10 and AAC.
+// ModelRef::lora) with "lora_scale", and "intermediate" (the project's
+// format: media::intermediate_formats). The output is one movie: ProRes
+// and 24-bit PCM in a .mov (prores422hq unless named), or HEVC Main10 and
+// AAC in an .mp4.
 inline constexpr std::string_view kOpGenerateVideo = "generate-video";
 // A SONG from words (YuE2): its style and, optionally, its lyrics --
 // params "style", "lyrics" (sectioned: [Verse], [Chorus], ...), "cot"
@@ -83,13 +89,20 @@ inline constexpr std::string_view kOpQuantizeModel = "quantize-model";
 // A clip RESTORED at a larger size (FlashVSR, DESIGN §4f): input
 // "source" (a clip), params `width`, `height` (the size made), `first`,
 // `count` (its span, in its frames), and the catalog's `upscale` block
-// (`group`, `overlap`, `ahead`: how it is fed). The output is an .mp4,
-// HEVC, with the source's sound over the span.
+// (`group`, `overlap`, `ahead`: how it is fed), and "intermediate" as
+// generate-video's. The output is a movie of that format, the source's
+// sound over the span (PCM with ProRes).
 inline constexpr std::string_view kOpUpscaleVideo = "upscale-video";
 // A picture RESTORED at a larger size (VOSR, DINOv2 its eyes:
 // ModelRef::encoder): input "source", params `width`, `height`. The
 // output is a 16-bit PNG.
 inline constexpr std::string_view kOpUpscaleImage = "upscale-image";
+// The helper ASKED (an enhance, an intent): param "text", pictures
+// (inputs, role "image") ahead of it. The Output event's text is the
+// reply; its data what it cost, as vpipe's text-chat counts a turn --
+// "prefill_ms", "decode_ms", "decoded", "prefilled", "ctx_pos" and a
+// drafter's "drafter", "rounds", "drafted", "accepted" (agent::
+// turn_stats reads them).
 inline constexpr std::string_view kOpChat = "chat";
 // One TURN of an AGENT's conversation (DESIGN §9b): param "conversation"
 // -- {"messages": [{role, content, name?}], "tools": [{name,
@@ -201,6 +214,12 @@ struct ModelRef {
   // `decoder`, param "decoder") is given it here.
   std::filesystem::path dit;
   std::filesystem::path vae;
+  // A part's WEIGHTS alone, its config and tokenizer the model's own
+  // (params "encoder_weights", "vae_weights": Draw Things checkpoints of
+  // its text encoder and VAE, linked in Settings > Capabilities); empty
+  // when the model's own. The DiT's is `dit`.
+  std::filesystem::path encoder_weights;
+  std::filesystem::path vae_weights;
   // A second checkpoint beside the model's (param "branch": H3's VDN
   // linear attention branch), as its folder; empty when none.
   std::filesystem::path branch;
@@ -403,6 +422,11 @@ struct EngineConfig {
   std::function<void(int level, std::string_view text)> on_log;
   // The extensions' vpipe plugins (Engine::backends says how each went).
   std::vector<BackendPlugin> backends;
+  // The managed cache, where a generation's ENCODINGS are kept between
+  // jobs -- a prompt's conditioning, pictures' latents (DESIGN §4l) -- and
+  // read back for a job made from the same. The caller's, outliving the
+  // engine; null: nothing kept.
+  cache::CacheStore* cache = nullptr;
 };
 
 // An engine that runs nothing; used when Valtz is built without libvpipe.

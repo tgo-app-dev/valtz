@@ -6,7 +6,10 @@ import SwiftUI
 /// kept by the core for every later upscale (valtzctl's `upscaler` sets
 /// the same). The defaults are Med's: int8 GEMMs wherever the GPU has
 /// matrix cores, the rest off. An option this Mac cannot have is shown,
-/// off, with why; one an upscaler does not take is not listed.
+/// off, with why; one an upscaler does not take is not listed. Where a
+/// kind has more than one upscaler -- clips: FlashVSR+ Turbo and Base,
+/// FlashVSR 1.1 -- which one it runs is picked here too (Auto: the best
+/// downloaded).
 struct UpscalingView: View {
     @Bindable var model: AppModel
 
@@ -18,6 +21,11 @@ struct UpscalingView: View {
                     Text("No upscaler is known to this build.")
                         .foregroundStyle(.secondary)
                 }
+            }
+            ForEach(model.upscalerKinds.filter { k in
+                model.upscalers.filter { $0.kind == k.kind }.count > 1
+            }, id: \.kind) { k in
+                pick(k)
             }
             ForEach(model.upscalers) { u in
                 Section {
@@ -37,6 +45,15 @@ struct UpscalingView: View {
                         Text(verbatim: u.name)
                         Text(u.kind == "video" ? "Clips" : "Pictures")
                             .foregroundStyle(.secondary)
+                        if u.runs {
+                            Text("In Use")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(.quaternary, in: Capsule())
+                                .help("Render Upscaled runs this one")
+                        }
                         Spacer()
                         Button("Restore Defaults") { model.resetUpscaler(u.id) }
                             .controlSize(.small)
@@ -57,6 +74,65 @@ struct UpscalingView: View {
         }
         .formStyle(.grouped)
         .onAppear { model.refreshMachine() }
+    }
+
+    /// Which upscaler a kind runs: Auto (naming its pick) or one by name,
+    /// one not downloaded said so -- and, picked but not here, what runs
+    /// meanwhile.
+    @ViewBuilder
+    private func pick(_ k: UpscalerKind) -> some View {
+        let mine = model.upscalers.filter { $0.kind == k.kind }
+        let name = { (id: String) in
+            mine.first { $0.id == id }?.name ?? id
+        }
+        Section {
+            Picker(selection: Binding(
+                get: { k.chosen },
+                set: { model.useUpscaler(kind: k.kind, $0) })) {
+                if k.auto.isEmpty {
+                    Text("Auto").tag("")
+                } else {
+                    Text("Auto (\(name(k.auto)))").tag("")
+                }
+                Divider()
+                ForEach(mine) { u in
+                    if u.state == "installed" {
+                        Text(verbatim: u.name).tag(u.id)
+                    } else {
+                        Text("\(u.name) (not downloaded)").tag(u.id)
+                    }
+                }
+            } label: {
+                Text(k.kind == "video" ? "Restore Clips With"
+                                       : "Restore Pictures With")
+            }
+            if k.runs.isEmpty {
+                LabeledContent {
+                    Button("Open Capabilities") {
+                        model.openCapabilities(family: "upscalers")
+                    }
+                } label: {
+                    Text(k.kind == "video"
+                         ? "No upscaler for clips is downloaded yet."
+                         : "No upscaler for pictures is downloaded yet.")
+                        .foregroundStyle(.secondary)
+                }
+            } else if !k.chosen.isEmpty, k.chosen != k.runs {
+                LabeledContent {
+                    Button("Open Capabilities") {
+                        model.openCapabilities(family: "upscalers")
+                    }
+                } label: {
+                    Text("\(name(k.chosen)) is not downloaded yet: \(name(k.runs)) runs until it is.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } footer: {
+            Text(k.kind == "video"
+                 ? "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory."
+                 : "Auto runs the best one downloaded.")
+                .foregroundStyle(.secondary)
+        }
     }
 
     /// One option: a switch, or a number (Sol's threshold) -- its name

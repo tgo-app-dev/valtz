@@ -284,7 +284,8 @@ Core::unlink_model(const std::string& request_json)
     if (!j.ok()) {
       return err(j.error());
     }
-    auto st = _impl->ctl->unlink_model(jget<std::string>(*j, "model", ""));
+    auto st = _impl->ctl->unlink_model(jget<std::string>(*j, "model", ""),
+                                       jget(*j, "parts", false));
     return st.ok() ? ok() : err(st.error());
   });
 }
@@ -1960,6 +1961,20 @@ Core::set_upscale_tuning(const std::string& request_json)
     auto st = _impl->ctl->set_upscale_tuning(
         jget<std::string>(*j, "model", ""),
         jget(*j, "values", Json::object()), jget(*j, "reset", false));
+    return st.ok() ? ok(_impl->ctl->upscale_settings()) : err(st.error());
+  });
+}
+
+std::string
+Core::use_upscaler(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->use_upscaler(jget<std::string>(*j, "kind", ""),
+                                       jget<std::string>(*j, "model", ""));
     return st.ok() ? ok(_impl->ctl->upscale_settings()) : err(st.error());
   });
 }

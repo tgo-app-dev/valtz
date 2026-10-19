@@ -385,6 +385,10 @@ inline constexpr Message kOutputRateSet{
     "timeline is empty."};
 inline constexpr Message kOutputColorUnknown{
     "core.output_color_unknown", "{color} is not an output colour space."};
+inline constexpr Message kIntermediateUnknown{
+    "core.intermediate_unknown",
+    "{format} is not an intermediate format: ProRes 4444 XQ, 4444, 422 HQ, "
+    "422 or HEVC."};
 inline constexpr Message kNoCamera{
     "core.no_camera", "The camera is not on, or not recording."};
 inline constexpr Message kSizeTooLarge{
@@ -450,6 +454,65 @@ inline constexpr Message kCheckFoundInside{
 inline constexpr Message kCheckFoundAbove{
     "core.check_found_above",
     "Found {model} in {path}, the folder the one chosen is part of."};
+// A Draw Things checkpoint offered for a part of a model (models/
+// drawthings.h).
+inline constexpr Message kCheckDrawThingsDit{
+    "core.check_drawthings_dit",
+    "{file} is {model}'s DiT as Draw Things keeps it ({size}, whole): it "
+    "runs in place of the model's own DiT."};
+inline constexpr Message kCheckDrawThingsEncoder{
+    "core.check_drawthings_encoder",
+    "{file} is {model}'s text encoder as Draw Things keeps it ({size}, "
+    "whole): it runs in place of the model's own text encoder."};
+inline constexpr Message kCheckDrawThingsVae{
+    "core.check_drawthings_vae",
+    "{file} is {model}'s VAE as Draw Things keeps it ({size}, whole): it "
+    "runs in place of the model's own VAE."};
+inline constexpr Message kCheckDrawThingsConfigs{
+    "core.check_drawthings_configs",
+    "Draw Things' files hold no configs or tokenizer: those come from "
+    "{model}'s own files."};
+inline constexpr Message kCheckDrawThingsTextureFix{
+    "core.check_drawthings_texture_fix",
+    "Draw Things' Qwen-Image 2.1 VAE is madebyollin's texture-fix "
+    "fine-tune, not Qwen's own: pictures decode a little differently."};
+inline constexpr Message kCheckDrawThingsEightBit{
+    "core.check_drawthings_eight_bit",
+    "Its weights are 8-bit: Tune's int8 tier Per Token, Unrotated runs "
+    "them as they are stored; the other tiers convert them as it loads."};
+inline constexpr Message kCheckDrawThingsNotForModel{
+    "core.check_drawthings_not_for_model",
+    "{model} cannot run from a Draw Things checkpoint yet."};
+inline constexpr Message kCheckDrawThingsOther{
+    "core.check_drawthings_other",
+    "{file} is a Draw Things checkpoint of nothing Valtz runs from one "
+    "(Qwen-Image 2.1's and MiniMax H3's DiTs, text encoders and VAEs)."};
+inline constexpr Message kCheckDrawThingsWrong{
+    "core.check_drawthings_wrong",
+    "{file} is Draw Things' {found}, not {model}'s."};
+inline constexpr Message kCheckDrawThingsRelease{
+    "core.check_drawthings_release",
+    "{file} is named as another release than {model} (\"{word}\")."};
+inline constexpr Message kCheckDrawThingsUnnamed{
+    "core.check_drawthings_unnamed",
+    "{file} is not named as {model}'s (\"{word}\"): its tensors say the "
+    "family, not the release, so its name has to."};
+inline constexpr Message kCheckDrawThingsAmbiguous{
+    "core.check_drawthings_ambiguous",
+    "{paths} are each the same part of {model}: none of them is linked. "
+    "Choose the one to use as a file."};
+inline constexpr Message kCheckDrawThingsRotated{
+    "core.check_drawthings_rotated",
+    "{file} keeps its 8-bit weights rotated, a Draw Things layout the "
+    "engine does not read yet."};
+inline constexpr Message kCheckDrawThingsUnread{
+    "core.check_drawthings_unread",
+    "{file} stores {tensor} in a form the engine does not read."};
+inline constexpr Message kCheckDrawThingsNeedsModel{
+    "core.check_drawthings_needs_model",
+    "{model} is not here yet: download or link it for its configs and "
+    "tokenizer, which Draw Things' files do not hold. Until then it does "
+    "not run."};
 // A download replaced by a smaller copy of itself (DESIGN §8b).
 inline constexpr Message kNotCompressible{
     "core.not_compressible", "{model} cannot be compressed."};

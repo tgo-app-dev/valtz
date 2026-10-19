@@ -35,6 +35,15 @@ ModelStore::ModelStore(std::vector<fs::path> roots, fs::path links_file)
         _links[it.key()] = fs::path(it->get<std::string>());
       }
     }
+    const Json parts = jget(j, "part_links", Json::object());
+    for (auto it = parts.begin(); parts.is_object() && it != parts.end();
+         ++it) {
+      for (auto p = it->begin(); it->is_object() && p != it->end(); ++p) {
+        if (p->is_string()) {
+          _part_links[it.key()][p.key()] = fs::path(p->get<std::string>());
+        }
+      }
+    }
   }
 }
 
@@ -47,6 +56,16 @@ ModelStore::save_links_() const
   Json j = Json::object();
   for (const auto& [id, p] : _links) {
     j[id] = p.string();
+  }
+  // (An object: a reader from before them takes strings alone.)
+  if (!_part_links.empty()) {
+    Json parts = Json::object();
+    for (const auto& [id, ps] : _part_links) {
+      for (const auto& [part, p] : ps) {
+        parts[id][part] = p.string();
+      }
+    }
+    j["part_links"] = std::move(parts);
   }
   std::error_code ec;
   fs::create_directories(_links_file.parent_path(), ec);
@@ -92,6 +111,48 @@ ModelStore::link_of(const std::string& id) const
   std::lock_guard lk(_mu);
   const auto it = _links.find(id);
   return it == _links.end() ? fs::path() : it->second;
+}
+
+Status
+ModelStore::link_part(const ModelEntry& e, const std::string& part,
+                      const fs::path& file)
+{
+  std::error_code ec;
+  if (!fs::is_regular_file(file, ec)) {
+    return make_error(Code::NotFound,
+                      std::format("{} is not there", file.string()));
+  }
+  std::lock_guard lk(_mu);
+  _part_links[e.id][part] = fs::absolute(file, ec);
+  _cache.erase(e.id);
+  save_links_();
+  return ok_status();
+}
+
+void
+ModelStore::unlink_parts(const std::string& id)
+{
+  std::lock_guard lk(_mu);
+  _part_links.erase(id);
+  _cache.erase(id);
+  save_links_();
+}
+
+std::map<std::string, fs::path>
+ModelStore::part_links_of(const std::string& id) const
+{
+  std::lock_guard lk(_mu);
+  const auto it = _part_links.find(id);
+  return it == _part_links.end() ? std::map<std::string, fs::path>()
+                                 : it->second;
+}
+
+fs::path
+InstallInfo::part(const std::string& name) const
+{
+  const auto it = parts.find(name);
+  return it != parts.end() && it->second.present ? it->second.file
+                                                 : fs::path();
 }
 
 // A linked file or folder, as the entry takes it.
@@ -319,6 +380,10 @@ ModelStore::info(const ModelEntry& e) const
     }
   }
   InstallInfo i = scan_(e);
+  for (const auto& [part, file] : part_links_of(e.id)) {
+    std::error_code ec;
+    i.parts[part] = {file, fs::is_regular_file(file, ec)};
+  }
   std::lock_guard lk(_mu);
   _cache[e.id] = i;
   return i;

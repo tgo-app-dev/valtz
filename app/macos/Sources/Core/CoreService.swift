@@ -101,8 +101,9 @@ final class CoreService: @unchecked Sendable {
     func keepCompressed(_ id: String, _ compressed: Bool) -> CoreReply {
         send(core.keep_compressed, ["model": id, "compressed": compressed])
     }
-    func unlinkModel(_ id: String) -> CoreReply {
-        send(core.unlink_model, ["model": id])
+    /// `parts`: its parts' links alone (Draw Things checkpoints).
+    func unlinkModel(_ id: String, parts: Bool = false) -> CoreReply {
+        send(core.unlink_model, ["model": id, "parts": parts])
     }
     /// Settings › Agentic Helper: the helpers, the one chosen and the one
     /// in use; choosing one ("" Auto) is kept for later runs.
@@ -656,11 +657,20 @@ final class CoreService: @unchecked Sendable {
                           tuning: Tuning(values, options), options: options)
     }
 
-    /// Settings › Upscaling: each upscaler and its options.
-    func upscaleSettings() -> [UpscalerSettings] {
+    /// Settings › Upscaling: each upscaler and its options, and which one
+    /// each kind runs.
+    func upscaleSettings() -> (upscalers: [UpscalerSettings],
+                               kinds: [UpscalerKind]) {
         let r = reply(core.upscale_settings())
-        return (r["upscalers"] as? [[String: Any]] ?? [])
-            .compactMap(UpscalerSettings.init)
+        return ((r["upscalers"] as? [[String: Any]] ?? [])
+                    .compactMap(UpscalerSettings.init),
+                (r["kinds"] as? [[String: Any]] ?? [])
+                    .compactMap(UpscalerKind.init))
+    }
+
+    /// The upscaler Render Upscaled runs for `kind` ("" Auto).
+    func useUpscaler(kind: String, _ model: String) -> CoreReply {
+        send(core.use_upscaler, ["kind": kind, "model": model])
     }
 
     /// `values` laid on what an upscaler keeps ("reset": on its defaults).

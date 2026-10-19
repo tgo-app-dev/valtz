@@ -31,6 +31,38 @@
         }
       }
     },
+    "%@ %@ a round" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ %2$@ a round"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ 每轮 %2$@ 词元"
+          }
+        }
+      }
+    },
+    "%@ %@ a round · %lld%% kept" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ %2$@ a round · %3$lld%% kept"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ 每轮 %2$@ 词元 · 保留 %3$lld%% 草稿"
+          }
+        }
+      }
+    },
     "%@ (%@ mm in 35 mm)" : {
       "localizations" : {
         "en" : {
@@ -59,6 +91,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@（%@）"
+          }
+        }
+      }
+    },
+    "%@ (not downloaded)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@（未下载）"
           }
         }
       }
@@ -273,6 +315,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 已锁定：解锁后才能更改。"
+          }
+        }
+      }
+    },
+    "%@ is not downloaded yet: %@ runs until it is." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ is not downloaded yet: %2$@ runs until it is."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ 尚未下载：下载前由 %2$@ 运行。"
           }
         }
       }
@@ -1485,6 +1543,16 @@
         }
       }
     },
+    "A scale a row and a token, rotated: the fastest" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每行、每个 token 一个尺度，先旋转：最快"
+          }
+        }
+      }
+    },
     "A semitone higher" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1675,6 +1743,16 @@
         }
       }
     },
+    "Accurate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "精确"
+          }
+        }
+      }
+    },
     "Action" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1856,11 +1934,22 @@
       }
     },
     "Add a blank layer above the selected one" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在所选图层上方添加一个空白图层"
+          }
+        }
+      }
+    },
+    "Add a blank layer on top" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在最上层添加一个空白图层"
           }
         }
       }
@@ -1886,6 +1975,7 @@
       }
     },
     "Add a layer above the selected one" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -1952,6 +2042,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "添加到提示"
+          }
+        }
+      }
+    },
+    "Added to Assets" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已添加到素材中"
           }
         }
       }
@@ -2258,6 +2358,16 @@
         }
       }
     },
+    "Already in Assets" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已在素材中"
+          }
+        }
+      }
+    },
     "Altitude" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2425,6 +2535,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "排列图层"
+          }
+        }
+      }
+    },
+    "Arrange Texts and Shapes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "排列文字与形状"
           }
         }
       }
@@ -2818,6 +2938,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "自动：每秒读取一帧；内存带宽低于 200 GB/s 的 Mac 上每 2 秒一帧。这台 Mac 的内存带宽为 %@ GB/s。"
+          }
+        }
+      }
+    },
+    "Auto runs the best one downloaded." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“自动”运行已下载中最好的一个。"
+          }
+        }
+      }
+    },
+    "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“自动”运行已下载中最好的一个：先 FlashVSR+ Turbo，再 FlashVSR+ Base，再 FlashVSR 1.1。Turbo 更快，也是其作者为高分辨率推荐的版本；Base 修复质量更高，但更慢、占用内存更多。"
           }
         }
       }
@@ -3591,12 +3731,32 @@
         }
       }
     },
+    "Choose the weights for %@: the folder holding them, or Draw Things' Models folder or one of its checkpoints (.ckpt) — its DiT, text encoder or VAE. Its configs and tokenizer still come from its own files." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "为 %@ 选择权重：存放它们的文件夹，或 Draw Things 的 Models 文件夹或其中的检查点（.ckpt）——它的 DiT、文本编码器或 VAE。它的配置和分词器仍取自它自己的文件。"
+          }
+        }
+      }
+    },
     "Chords" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "和弦"
+          }
+        }
+      }
+    },
+    "Classifier-free guidance: each step runs the model twice, with the prompt and with an empty one, and moves the picture away from the empty one's by this much. MOSS-Image's own setting is 3. Higher follows the words more literally, with harder colours; 1 runs one forward a step, about twice as fast, the prompt followed less." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无分类器引导：每一步运行模型两次，一次带提示词、一次为空提示词，并按此强度让画面远离空提示词的结果。MOSS-Image 默认值为 3。数值越高越贴合文字，色彩也越硬；设为 1 时每步只运行一次前向，速度约快一倍，但更少遵循提示词。"
           }
         }
       }
@@ -3617,6 +3777,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "清除提示"
+          }
+        }
+      }
+    },
+    "Clear the filter" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "清除筛选"
           }
         }
       }
@@ -3657,6 +3827,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "点按画面，将该处颜色取为“色彩”，按住 ⌥ 点按则取为“填充”——所选对象也一并更改。"
+          }
+        }
+      }
+    },
+    "Click to dismiss" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "点击以关闭"
           }
         }
       }
@@ -3717,6 +3897,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "视频片段"
+          }
+        }
+      }
+    },
+    "Clips made here — generated, upscaled, rendered — are kept in the intermediate format." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在此制作的片段（生成、放大、渲染）以中间格式保存。"
           }
         }
       }
@@ -3817,6 +4007,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "色彩空间"
+          }
+        }
+      }
+    },
+    "Colour fix" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "色彩校正"
           }
         }
       }
@@ -4224,6 +4424,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "版权"
+          }
+        }
+      }
+    },
+    "Corrects each restored frame's colour toward its source frame, so the upscaled layer keeps the colours of the clip it replaces. FlashVSR 1.1 moves each channel's mean and spread to the source's (AdaIN); FlashVSR+ takes the source's low frequencies and keeps its own detail (a wavelet fix)." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "把每个修复后的帧的色彩校正到其源帧，使放大后的图层保持它所替换的视频片段的色彩。FlashVSR 1.1 把每个通道的均值和离散度调到源帧的数值（AdaIN）；FlashVSR+ 取源帧的低频部分，保留自身的细节（小波校正）。"
           }
         }
       }
@@ -4867,6 +5077,16 @@
         }
       }
     },
+    "DiT" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "DiT"
+          }
+        }
+      }
+    },
     "Did not fire" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5310,7 +5530,28 @@
         }
       }
     },
+    "Draw with the Brush" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "用画笔绘制"
+          }
+        }
+      }
+    },
+    "Drop LoRA, DiT or VAE weights on this panel: .safetensors files or folders, or a Draw Things .ckpt of a DiT." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将 LoRA、DiT 或 VAE 权重拖放到此面板：.safetensors 文件或文件夹均可，DiT 也可以是 Draw Things 的 .ckpt。"
+          }
+        }
+      }
+    },
     "Drop LoRA, DiT or VAE weights on this panel: .safetensors files or folders." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -5438,6 +5679,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "时间线的每一帧显示片段在那一刻的帧：帧会重复或被跳过。（在两帧之间渲染新帧将在以后提供。）"
+          }
+        }
+      }
+    },
+    "Each frame's colour kept to its source's" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每帧的色彩保持与源一致"
           }
         }
       }
@@ -5674,6 +5925,16 @@
         }
       }
     },
+    "Enhance Prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "优化提示词"
+          }
+        }
+      }
+    },
     "Enhance the prompt with the on-device assistant" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5736,6 +5997,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每 %@ 秒"
+          }
+        }
+      }
+    },
+    "Every 3×3 convolution: faster, less exact" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "全部 3×3 卷积：更快，略欠精确"
           }
         }
       }
@@ -6052,12 +6323,32 @@
         }
       }
     },
+    "Filter by name" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按名称筛选"
+          }
+        }
+      }
+    },
     "Find" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "查找"
+          }
+        }
+      }
+    },
+    "Find a layer by name" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按名称查找图层"
           }
         }
       }
@@ -6429,6 +6720,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "来自"
+          }
+        }
+      }
+    },
+    "From Draw Things (%@): %@. Its configs and tokenizer come from the model's own files." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "From Draw Things (%1$@): %2$@. Its configs and tokenizer come from the model's own files."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "来自 Draw Things（%@）：%@。它的配置和分词器取自模型自己的文件。"
           }
         }
       }
@@ -6890,6 +7197,26 @@
         }
       }
     },
+    "Groups of 64 on both sides: the closest to bf16" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "两侧都按 64 分组：最接近 bf16"
+          }
+        }
+      }
+    },
+    "Guidance" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "引导强度"
+          }
+        }
+      }
+    },
     "Guides" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -7293,11 +7620,22 @@
       }
     },
     "How Render Upscaled restores a layer at the size it is shown — FlashVSR for clips, VOSR for pictures: the arithmetic each runs with." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“渲染放大版本”如何按图层显示的尺寸还原它——视频片段用 FlashVSR，图片用 VOSR：各自运行时采用的运算方式。"
+          }
+        }
+      }
+    },
+    "How Render Upscaled restores a layer at the size it is shown — FlashVSR+ or FlashVSR 1.1 for clips, VOSR for pictures: which one, and the arithmetic each runs with." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“渲染放大版本”如何按图层显示的尺寸修复它——视频片段用 FlashVSR+ 或 FlashVSR 1.1，图片用 VOSR：用哪一个，以及各自运行的算法设置。"
           }
         }
       }
@@ -7308,6 +7646,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "关键帧到下一个关键帧的过渡方式：请将播放头移到关键帧上"
+          }
+        }
+      }
+    },
+    "How closely it follows the prompt (CFG)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "画面贴合提示词的程度（CFG）"
           }
         }
       }
@@ -7328,6 +7676,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "生成方式"
+          }
+        }
+      }
+    },
+    "How the clips made in this project are kept: generated, upscaled, rendered. ProRes keeps the most for editing, its sound uncompressed; HEVC takes the least room. Clips made before keep their own." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此项目中制作的片段（生成、放大、渲染）的保存方式。ProRes 为编辑保留最多细节，声音不压缩；HEVC 占用空间最少。之前制作的片段保持原样。"
           }
         }
       }
@@ -7502,6 +7860,16 @@
         }
       }
     },
+    "In Use" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "使用中"
+          }
+        }
+      }
+    },
     "In Words" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7638,6 +8006,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "意图识别"
+          }
+        }
+      }
+    },
+    "Intermediate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "中间格式"
           }
         }
       }
@@ -8498,6 +8876,16 @@
         }
       }
     },
+    "Listen to a Sound" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "聆听声音"
+          }
+        }
+      }
+    },
     "Listening" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8644,6 +9032,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "查看页面"
+          }
+        }
+      }
+    },
+    "Look at an Asset" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "查看素材"
           }
         }
       }
@@ -9635,11 +10033,22 @@
       }
     },
     "Next event: a key, where a layer begins or ends, the end" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "下一个事件：关键帧、图层的开始或结束、结尾"
+          }
+        }
+      }
+    },
+    "Next event: a key, where a layer begins or ends, the end (⌘→)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "下一个事件：关键帧、图层的开始或结束、结尾（⌘→）"
           }
         }
       }
@@ -9670,6 +10079,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无结果"
+          }
+        }
+      }
+    },
+    "No assets match “%@”" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "没有与“%@”匹配的素材"
           }
         }
       }
@@ -9731,6 +10150,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "尚未保存密钥。"
+          }
+        }
+      }
+    },
+    "No layer matches" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "没有匹配的图层"
           }
         }
       }
@@ -9832,6 +10261,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "不写乐谱：直接生成歌曲"
+          }
+        }
+      }
+    },
+    "No upscaler for clips is downloaded yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尚未下载用于视频片段的放大模型。"
+          }
+        }
+      }
+    },
+    "No upscaler for pictures is downloaded yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尚未下载用于图片的放大模型。"
           }
         }
       }
@@ -9976,6 +10425,16 @@
         }
       }
     },
+    "Not rotated: a little faster, less exact" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不旋转：略快一些，精度更低"
+          }
+        }
+      }
+    },
     "Not run on this Mac" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10012,6 +10471,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "不再作为要编辑的图片"
+          }
+        }
+      }
+    },
+    "Not there any more: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已不在原处：%@"
           }
         }
       }
@@ -10862,6 +11331,26 @@
         }
       }
     },
+    "Per Token" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "逐 token"
+          }
+        }
+      }
+    },
+    "Per Token, Unrotated" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "逐 token，不旋转"
+          }
+        }
+      }
+    },
     "Permissions" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11233,11 +11722,22 @@
       }
     },
     "Previous event: a key, where a layer begins or ends, the start" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "上一个事件：关键帧、图层的开始或结束、开头"
+          }
+        }
+      }
+    },
+    "Previous event: a key, where a layer begins or ends, the start (⌘←)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上一个事件：关键帧、图层的开始或结束、开头（⌘←）"
           }
         }
       }
@@ -11605,6 +12105,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "排队中 · 前面还有 %@ 个"
+          }
+        }
+      }
+    },
+    "Queued · %@, after %@ · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Queued · %1$@, after %2$@ · %3$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "排队中 · %1$@，在 %2$@ 之后 · %3$@"
           }
         }
       }
@@ -12182,6 +12698,16 @@
         }
       }
     },
+    "Render Upscaled runs this one" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“渲染放大版本”运行这一个"
+          }
+        }
+      }
+    },
     "Render it at the size it is shown, with the upscaler: sharper than scaling it up" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12312,12 +12838,32 @@
         }
       }
     },
+    "Restore Clips With" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "修复视频片段使用"
+          }
+        }
+      }
+    },
     "Restore Defaults" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "恢复默认设置"
+          }
+        }
+      }
+    },
+    "Restore Pictures With" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "修复图片使用"
           }
         }
       }
@@ -12515,6 +13061,16 @@
         }
       }
     },
+    "Rotated int8 weights in groups of 512: faster on an M5" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "权重为旋转后的 int8，按 512 分组：在 M5 上更快"
+          }
+        }
+      }
+    },
     "Rotation" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12661,6 +13217,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "只在成员上运行，从不在本机运行；没有成员能接手时会被拒绝。"
+          }
+        }
+      }
+    },
+    "Runs the VAE's 3×3 convolutions and its attention's matrix products in int8 on the M5's matrix cores: the decode that makes the picture, and the encode of an edit's pictures. Each channel of a convolution's input gets a scale of its own. On an M5 Pro, a 1024×1024 picture decodes about 0.15-0.26 s sooner, 50-60 dB from the full-precision decode. Off in every Favor preset: the VAE is the last step before the pixels, with nothing after it to absorb an error." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在 M5 的矩阵核心上以 int8 运行 VAE 的 3×3 卷积及其注意力的矩阵乘法：既用于生成画面的解码，也用于编辑时对图片的编码。卷积输入的每个通道各有自己的缩放。在 M5 Pro 上，一张 1024×1024 的图片解码约快 0.15-0.26 秒，与全精度解码相差 50-60 dB。所有偏好预设中均为关闭：VAE 是像素之前的最后一步，其后没有任何环节能吸收误差。"
           }
         }
       }
@@ -12987,6 +13553,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "分离人声与伴奏"
+          }
+        }
+      }
+    },
+    "Separate a Song" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分离歌曲"
           }
         }
       }
@@ -13323,6 +13899,7 @@
       }
     },
     "Show Speed in the Agent's Output" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -13392,6 +13969,16 @@
         }
       }
     },
+    "Show only the assets whose name, or whose folder's, has these words" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "只显示名称（或所在文件夹的名称）含有这些词的素材"
+          }
+        }
+      }
+    },
     "Show options" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13408,6 +13995,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示或隐藏图层"
+          }
+        }
+      }
+    },
+    "Show the Helper's Speed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示助手的速度"
           }
         }
       }
@@ -15295,6 +15892,16 @@
         }
       }
     },
+    "The residual blocks' convolutions" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "残差块内的卷积"
+          }
+        }
+      }
+    },
     "The row over the prompt: each reference is read alongside the clip" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16067,7 +16674,18 @@
         }
       }
     },
+    "Under each of the agent's turns and each suggested prompt, in small type: the tokens it read (prefill) and wrote (decode), how fast, how many tokens a round of its drafter bought and how many of its drafts were kept, and how much of the conversation it went on from. The Agent is in Settings › Experimental." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在智能体的每一轮和每条建议的提示词下方以小字显示：它读入（预填充）和写出（解码）的词元数、速度，草稿模型每轮换来多少词元、保留了多少草稿，以及沿用了多少已有对话。智能体位于“设置 › 实验性功能”。"
+          }
+        }
+      }
+    },
     "Under each of the agent's turns, in small type: the tokens it read (prefill) and wrote (decode), how fast, and how much of the conversation it went on from. The Agent is in Settings › Experimental." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16153,6 +16771,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "取消链接"
+          }
+        }
+      }
+    },
+    "Unlink the Draw Things Files" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "取消链接 Draw Things 文件"
           }
         }
       }
@@ -16253,6 +16881,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放大"
+          }
+        }
+      }
+    },
+    "Upscale Layer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放大图层"
           }
         }
       }
@@ -16446,6 +17084,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "VAE"
+          }
+        }
+      }
+    },
+    "VAE int8" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "VAE int8"
+          }
+        }
+      }
+    },
+    "VAE int8 %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "VAE int8 %@"
+          }
+        }
+      }
+    },
+    "VAE int8 tier" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "VAE int8 档位"
           }
         }
       }
@@ -17123,6 +17791,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "此图层在时间线上的起点：输入时间"
+          }
+        }
+      }
+    },
+    "Which int8 matrix product runs with int8 GEMM on. Accurate quantizes the weights and the activations in groups of 64 at every call. Fast keeps the block's weights as int8 in groups of 512, each group turned by a Hadamard rotation on both sides so that one large channel does not set its scale. Per Token gives each weight row and each token one scale across the whole product, after a rotation in blocks of 256: the fastest (Qwen-Image 2.1 on an M5: 1.4-1.7× Accurate). Per Token, Unrotated skips the rotation: a little faster again, its pictures further from the bf16 model's. Faster down the list, less exact. A full-precision model's blocks take it only while kept in memory: those it streams, on a smaller Mac, stay Accurate (an 8-bit compressed copy's take it either way). With ANE FFN on, it is Accurate." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "int8 GEMM 开启时使用哪一种 int8 矩阵乘。精确：每次调用时把权重和激活都按 64 分组量化。快速：把块的权重以 int8 按 512 分组保存，每组在两侧都做一次 Hadamard 旋转，使单个较大的通道不会决定整组的尺度。逐 token：每个权重行和每个 token 在整个乘积上只取一个尺度，先按 256 分块旋转：最快（M5 上的 Qwen-Image 2.1：精确档的 1.4-1.7 倍）。逐 token，不旋转：省去旋转，再快一点，画面离 bf16 模型更远。越往下越快，精度越低。全精度模型的块只有留在内存中时才使用它：在内存较小的 Mac 上流式读取的块仍按精确档运行（8 位压缩副本的块两种情况下都使用）。开启 ANE FFN 时按精确档运行。"
+          }
+        }
+      }
+    },
+    "Which of the VAE's convolutions run in int8 with VAE int8 on. Accurate takes those inside its residual blocks, whose inputs are normalized: about 1.15× the decode. Fast takes every 3×3 convolution, the upsampling ones too: about 1.26×, a little further from the full-precision picture." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "开启 VAE int8 时，哪些 VAE 卷积以 int8 运行。精确：残差块内的卷积，其输入已归一化，解码约 1.15×。快速：全部 3×3 卷积，包括上采样的卷积，约 1.26×，与全精度画面略有差距。"
           }
         }
       }
@@ -18006,6 +18694,261 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "{file} 不完整——只有 {have}，应为 {want}：下载或复制未完成。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_ambiguous" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{paths} are each the same part of {model}: none of them is linked. Choose the one to use as a file."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{paths} 都是 {model} 的同一个部件：没有链接其中任何一个。请选择要使用的那个文件。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_configs" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Draw Things' files hold no configs or tokenizer: those come from {model}'s own files."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Draw Things 的文件不包含配置和分词器：这些取自 {model} 自己的文件。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_dit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} is {model}'s DiT as Draw Things keeps it ({size}, whole): it runs in place of the model's own DiT."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 是 Draw Things 保存的 {model} DiT（{size}，完整）：它代替模型自带的 DiT 运行。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_eight_bit" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Its weights are 8-bit: Tune's int8 tier Per Token, Unrotated runs them as they are stored; the other tiers convert them as it loads."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它的权重为 8 位：调校中的 int8 档位选“逐 token，不旋转”时按原样运行；其他档位在加载时转换。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_encoder" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} is {model}'s text encoder as Draw Things keeps it ({size}, whole): it runs in place of the model's own text encoder."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 是 Draw Things 保存的 {model} 文本编码器（{size}，完整）：它代替模型自带的文本编码器运行。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_needs_model" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is not here yet: download or link it for its configs and tokenizer, which Draw Things' files do not hold. Until then it does not run."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 尚未安装：请下载或链接它以获得配置和分词器，Draw Things 的文件不包含这些。在此之前它无法运行。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_not_for_model" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} cannot run from a Draw Things checkpoint yet."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 暂时不能从 Draw Things 检查点运行。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_other" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} is a Draw Things checkpoint of nothing Valtz runs from one (Qwen-Image 2.1's and MiniMax H3's DiTs, text encoders and VAEs)."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 是 Draw Things 检查点，但不是 Valtz 能从中运行的部件（Qwen-Image 2.1 和 MiniMax H3 的 DiT、文本编码器和 VAE）。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_release" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} is named as another release than {model} (\"{word}\")."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 的名称表明它属于 {model} 之外的另一个版本（“{word}”）。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_rotated" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} keeps its 8-bit weights rotated, a Draw Things layout the engine does not read yet."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 以旋转后的形式保存 8 位权重，这是引擎尚不能读取的 Draw Things 格式。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_texture_fix" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Draw Things' Qwen-Image 2.1 VAE is madebyollin's texture-fix fine-tune, not Qwen's own: pictures decode a little differently."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Draw Things 的 Qwen-Image 2.1 VAE 是 madebyollin 的 texture-fix 微调版，而非 Qwen 原版：画面解码会略有不同。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_unnamed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} is not named as {model}'s (\"{word}\"): its tensors say the family, not the release, so its name has to."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 的名称不是 {model} 的（“{word}”）：它的张量只说明模型家族，而不说明是哪个版本，所以名称必须说明。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_unread" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} stores {tensor} in a form the engine does not read."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 以引擎无法读取的形式保存 {tensor}。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_vae" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} is {model}'s VAE as Draw Things keeps it ({size}, whole): it runs in place of the model's own VAE."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 是 Draw Things 保存的 {model} VAE（{size}，完整）：它代替模型自带的 VAE 运行。"
+          }
+        }
+      }
+    },
+    "core.check_drawthings_wrong" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{file} is Draw Things' {found}, not {model}'s."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{file} 是 Draw Things 的 {found}，而不是 {model} 的。"
           }
         }
       }
@@ -18958,6 +19901,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "{total} 个文件中有 {failed} 个无法导入。"
+          }
+        }
+      }
+    },
+    "core.intermediate_unknown" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{format} is not an intermediate format: ProRes 4444 XQ, 4444, 422 HQ, 422 or HEVC."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{format} 不是可用的中间格式：可选 ProRes 4444 XQ、4444、422 HQ、422 或 HEVC。"
           }
         }
       }
@@ -20554,6 +21514,16 @@
         }
       }
     },
+    "int8 %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "int8 %@"
+          }
+        }
+      }
+    },
     "int8 GEMM" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20580,6 +21550,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "块内 int8 矩阵乘法，约 2 倍"
+          }
+        }
+      }
+    },
+    "int8 convolutions in the VAE, its decode 1.15-1.26×" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "VAE 中的 int8 卷积，解码 1.15-1.26×"
+          }
+        }
+      }
+    },
+    "int8 tier" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "int8 档位"
           }
         }
       }
@@ -20695,6 +21685,16 @@
         }
       }
     },
+    "prefill %@ s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "预填充 %@ 秒"
+          }
+        }
+      }
+    },
     "prefill %@ tok" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20797,6 +21797,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "半音"
+          }
+        }
+      }
+    },
+    "text encoder" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "文本编码器"
           }
         }
       }

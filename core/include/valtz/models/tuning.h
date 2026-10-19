@@ -54,13 +54,29 @@
 //   motion_cache   bool    H3: MotionCache, reused forwards
 //   sage_attn      bool    SageAttention's int8 QK (M5 matrix cores)
 //   i8_gemm        bool    int8 block GEMMs (M5 matrix cores)
+//   i8_gemm_tier   choice  which: "accurate" (groups of 64, the default),
+//                          "fast" (rotated int8 weights in groups of
+//                          512), "token" (int8 a row by a token, rotated),
+//                          "token_plain" (unrotated) -- faster down the
+//                          list, further from the dense picture. Only
+//                          where the catalog's `accel` names it (vpipe's
+//                          Qwen-Image 2.1 and MiniMax H3 DiTs)
+//   vae_i8_gemm    bool    the VAE's int8 -- its 3x3 convs and its
+//                          attention's GEMMs -- as vae-decode / vae-encode
+//                          take `i8_gemm` (M5 matrix cores); off in every
+//                          preset. Where the catalog's `accel` names it
+//                          (vpipe's Qwen-Image codec: Qwen-Image 2.1)
+//   vae_i8_gemm_tier choice  which convs: "accurate" (the residual
+//                          blocks', the default), "fast" (every 3x3)
 //   ane_ffn        bool    the block's feed-forward on the Neural Engine,
 //                          rows split with the GPU
 //   ane_qkv        bool    its q|k|v projection there too (needs ane_ffn)
 //   video_shift    int     H3: the video schedule's sigma shift
 //   audio_shift    int     H3: the audio schedule's
 //   shift          real    an image family's scheduler shift (Krea 2's
-//                          is 0.3, so not a whole number)
+//                          is 0.3, so not a whole number) -- or its
+//                          config stage's (`config_shift`: MOSS-Image's
+//                          5)
 //   <declared>             a family's OWN options (catalog
 //                          `engine.vpipe.options`, an extension's
 //                          knobs): bool / int / real, with the text the
@@ -148,10 +164,12 @@ Json missing_loras(const ModelEntry& m, const TuningContext& ctx,
 //    "values": {key: value, ...},      settled (see resolve_tuning)
 //    "turbo": the preset's adapter, {"id", "name", "steps"} or null,
 //    "missing": missing_loras,
-//    "options": [{"key", "type": "bool" | "int" | "real" | "list",
+//    "options": [{"key", "type": "bool" | "int" | "real" | "list" |
+//                   "choice",
 //                 "available": bool, "why": "" | "not-installed" |
 //                   "needs-matrix-cores" | "own-schedule",
 //                 "min", "max", "step" (numbers),
+//                 "choices": [a choice's values, in order],
 //                 "excludes": [keys turned off with it on],
 //                 "fixes": {key: value while it is on},
 //                 "needs": key it refines (sol_tau: sol_attn),
@@ -181,8 +199,9 @@ Json resolve_tuning(const ModelEntry& m, const TuningContext& ctx,
 
 // What a dropped weight file (or folder) is, read from it: "lora" (its
 // tensors are low-rank pairs), "vae" (encoder / decoder tensors, a VAE
-// config, or a Comfy-Org VAE component), "dit" (another model), or ""
-// (not weights this can read). A guess the panel files it by; vpipe
+// config, or a Comfy-Org VAE component), "dit" (another model -- or a
+// Draw Things checkpoint of a DiT vpipe reads, models/drawthings.h), or
+// "" (not weights this can read). A guess the panel files it by; vpipe
 // decides whether it can run it.
 std::string checkpoint_kind(const std::filesystem::path& path);
 
@@ -190,7 +209,8 @@ std::string checkpoint_kind(const std::filesystem::path& path);
 // first (Catalog::recognize_rules: an extension knows its own
 // checkpoints), then by checkpoint_kind:
 //   {"kind": "lora" | "dit" | "vae" | "", "family": the family a rule
-//    names ("" by the heuristics), "origin": the extension whose rule
+//    names ("" by the heuristics; a Draw Things checkpoint's by its
+//    tensors), "origin": the extension whose rule
 //    matched}.
 // A rule: {"kind", "family", "class_name": [a diffusers folder's
 // _class_name, any of], "keys_any": [a tensor name contains one],

@@ -1176,9 +1176,14 @@ build_enhance_prompt(const EnhanceRequest& r)
       sys.remove_suffix(1);
     }
     s += sys;
+    if (!r.skill_note.empty()) {
+      s += "\n\n" + r.skill_note;
+    }
     // The edit instructions end on "The user's edit instruction to
     // rewrite is:"; the others need the request introduced.
-    s += sys.ends_with(':') ? "\n" : "\n\nThe user's request is:\n";
+    s += sys.ends_with(':') && r.skill_note.empty()
+             ? "\n"
+             : "\n\nThe user's request is:\n";
     s += r.prompt;
     if (!r.size.empty()) {
       s += std::format(" (Output size: {}.)", r.size);
@@ -1422,6 +1427,17 @@ clip_sections(const std::map<std::string, std::string>& given)
   return out;
 }
 
+std::map<std::string, std::string>
+clip_parts(std::string_view prompt)
+{
+  std::string head;
+  auto found = split_sections(prompt, head);
+  for (auto& [name, text] : found) {
+    text = std::string(trimmed(text));
+  }
+  return found;
+}
+
 namespace {
 
 // "00:04.000" (or "4.5", "1:02") as seconds; false when it is not one.
@@ -1571,6 +1587,22 @@ shot_prompt(const ShotText& t)
     s["overall_soundscape"] = t.soundscape;
     s["non_diegetic_music"] = music;
     std::string out = clip_sections(s);
+    // The guide's FL2VA alignment line, word for word: its pictures bare,
+    // the last of the description's shots ending on the second.
+    if (!t.first.empty() && !t.last.empty()) {
+      int last = 1;
+      for (auto at = described.find("[Shot "); at != std::string::npos;
+           at = described.find("[Shot ", at + 1)) {
+        last = std::max(last, std::atoi(described.c_str() + at + 6));
+      }
+      return std::format("How the reference pictures align with the "
+                         "target video — {} (from Shot 1) aligns "
+                         "with the 0.00-second mark of the target video; "
+                         "{} (from Shot {}) aligns with the {:.2f}-second "
+                         "mark of the target video.\n\n",
+                         t.first, t.last, last, t.seconds) +
+             out;
+    }
     // The guide's I2VA instruction, word for word.
     if (!t.first.empty()) {
       out = std::format("For the target video, at 0.00 seconds into the "
@@ -1699,6 +1731,10 @@ parse_enhance_reply(std::string_view reply)
   out.prompt = jget<std::string>(j, "prompt", "");
   if (out.prompt.empty()) {
     out.prompt = jget<std::string>(j, "rewritten_prompt", "");
+  }
+  // A caption draft (MOSS-Image's skill): the caption is the prompt.
+  if (out.prompt.empty() && !j.contains("items")) {
+    out.prompt = jget<std::string>(j, "caption", "");
   }
   // A song in parts (the yue2-song skill): the style line, then its
   // lyrics -- each a string, or (a small model's way) a list of tags or
@@ -1986,6 +2022,7 @@ partial_enhance_reply(std::string_view s)
     }
     std::string* into = key == "prompt"             ? &prompt
                         : key == "rewritten_prompt" ? &rewritten
+                        : key == "caption"          ? &rewritten
                         : key == "style"            ? &style
                         : key == "lyrics"           ? &lyrics
                         : is_section(key)           ? &sections[key]

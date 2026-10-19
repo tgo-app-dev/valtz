@@ -3,8 +3,10 @@
 
 #include "testing.h"
 
+#include "engine/vpipe/encoding-cache.h"
 #include "engine/vpipe/graph-builder.h"
 #include "engine/vpipe/job-progress.h"
+#include "valtz/cache/cache-store.h"
 #include "valtz/models/catalog.h"
 #include "valtz-vpipe/exchange.h"
 
@@ -14,6 +16,7 @@
 #include <cstring>
 #include <format>
 #include <fstream>
+#include <set>
 
 using namespace valtz;
 using namespace valtz::engine;
@@ -238,6 +241,30 @@ TEST(graph_builder, results_are_sixteen_bit)
   CHECK(jget(config_of(save), "bit_depth", 0) == 16);
 }
 
+// A picture's models kept BUILT between jobs (DESIGN §4n): the engine's
+// "keep_models" reaches the stages that build them -- the conditioner,
+// generate-image, vae-decode -- as vpipe's `keep_loaded`; without it they
+// are let go with the graph, as before.
+TEST(graph_builder, a_pictures_models_are_kept_warm_as_asked)
+{
+  auto job = job_for("qwen-image-2.1", kOpGenerateImage);
+  job.params["keep_models"] = 600.0;
+  auto g = vp::build_text_to_image(job);
+  REQUIRE_OK(g);
+  for (const char* id : {"diffusion-conditioner", "generate-image",
+                         "vae-decode"}) {
+    const Json* st = find_stage(g->spec, id);
+    REQUIRE(st);
+    CHECK(jget(config_of(st), "keep_loaded", 0.0) == 600.0);
+  }
+  auto cold = vp::build_text_to_image(job_for("qwen-image-2.1",
+                                              kOpGenerateImage));
+  REQUIRE_OK(cold);
+  const Json* gen = find_stage(cold->spec, "generate-image");
+  REQUIRE(gen);
+  CHECK(jget(config_of(gen), "keep_loaded", -1.0) == 0.0);
+}
+
 // export-media: files in, files out. A still is read by load-image
 // (F16, ImageIO; a camera RAW developed in the camera's look, or linear
 // for OpenEXR) and written by save-image, its EXIF wired across -- a
@@ -411,6 +438,151 @@ TEST(graph_builder, an_upscale_streams_its_groups)
   const Json fg = config_of(find_stage(fast->spec, "generate"));
   CHECK(jget(fg, "i8_gemm", false) && jget(fg, "sage_attn", false));
   CHECK(!jget(fg, "sol_attn", true));
+}
+
+// The clips Valtz makes are kept in the project's INTERMEDIATE format
+// (OutputSettings, the job's "intermediate"): each ProRes in a .mov, its
+// sound joined as PCM; HEVC Main10 in an .mp4 at the clip's quality, its
+// sound AAC; one not known -- a newer Valtz's -- ProRes 422 HQ. A
+// generated clip and an upscaled one alike.
+TEST(graph_builder, clips_are_kept_in_the_projects_intermediate_format)
+{
+  JobSpec clip = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  clip.params = {{"prompt", "a fox"}, {"width", 832}, {"height", 480},
+                 {"frames", 39}, {"fps", 24.0}};
+  JobSpec up = job_for("flashvsr", kOpUpscaleVideo);
+  up.params = {{"width", 1920}, {"height", 1088}};
+  JobInput in;
+  in.role = "source";
+  in.path = "/tmp/clip.mov";
+  in.info.type = media::MediaType::Video;
+  in.info.frame.width = 960;
+  in.info.frame.height = 544;
+  in.info.frame_rate = {24, 1};
+  in.info.frame_count = 48;
+  in.info.has_audio = true;
+  up.inputs.push_back(in);
+  struct Case {
+    const char* asked;
+    const char* codec;
+    const char* ext;
+    media::SoundCodec sound;
+  };
+  for (const Case& c : {
+           Case{"prores4444xq", "prores4444xq", ".mov",
+                media::SoundCodec::Pcm},
+           Case{"prores4444", "prores4444", ".mov", media::SoundCodec::Pcm},
+           Case{"prores422", "prores422", ".mov", media::SoundCodec::Pcm},
+           Case{"hevc", "hevc", ".mp4", media::SoundCodec::Aac},
+           Case{"dnxhr", "prores422hq", ".mov", media::SoundCodec::Pcm}}) {
+    clip.params["intermediate"] = c.asked;
+    auto g = vp::build_video(clip, std::nullopt);
+    REQUIRE_OK(g);
+    CHECK(g->output.extension() == c.ext);
+    CHECK(g->video_part.extension() == c.ext);
+    CHECK(g->sound == c.sound);
+    const Json save = config_of(find_stage(g->spec, "save-video"));
+    CHECK(jget<std::string>(save, "codec", "") == c.codec);
+    CHECK(save.contains("quality") == (c.sound == media::SoundCodec::Aac));
+
+    up.params["intermediate"] = c.asked;
+    auto u = vp::build_upscale_video(up);
+    REQUIRE_OK(u);
+    CHECK(u->output.extension() == c.ext);
+    CHECK(u->video_part.extension() == c.ext);
+    CHECK(u->sound == c.sound);
+    CHECK(u->audio_is_source);
+    const Json write = config_of(find_stage(u->spec, "write"));
+    CHECK(jget<std::string>(write, "codec", "") == c.codec);
+    // Opaque: no alpha asked of the writer, so no plane in a 4444.
+    CHECK(jget<std::string>(write, "alpha", "") == "drop");
+    CHECK(jget<std::string>(save, "alpha", "") == "drop");
+  }
+}
+
+// FlashVSR+ (Turbo, Base) restores in its own cadence -- a stream's
+// opening chunk of 17 source frames, then 16 a chunk; clips of 49 -- so
+// the denoiser is planned for a clip of 49 and the feed allows for 48
+// held back; and its tiny decoder reads the source pictures beside each
+// latent, on the encoder's second output wired to the decode's third
+// input. v1.1's decode stays as vpipe's v1.1 graph has it: two inputs.
+TEST(graph_builder, flashvsr_plus_restores_in_its_own_cadence)
+{
+  for (const char* id : {"flashvsr-plus-turbo", "flashvsr-plus-base"}) {
+    JobSpec job = job_for(id, kOpUpscaleVideo);
+    job.model.dir = std::string("/m/ruchangyao/FlashVSR_plus/") +
+                    (std::string_view(id).ends_with("turbo") ? "turbo"
+                                                             : "base");
+    job.params = {{"width", 1280}, {"height", 704}};
+    JobInput in;
+    in.role = "source";
+    in.path = "/tmp/clip.mp4";
+    in.info.type = media::MediaType::Video;
+    in.info.frame.width = 640;
+    in.info.frame.height = 352;
+    in.info.frame_rate = {24, 1};
+    in.info.frame_count = 56;
+    job.inputs.push_back(in);
+    auto g = vp::build_upscale_video(job);
+    REQUIRE_OK(g);
+    const Json* sel = find_stage(g->spec, "model-select");
+    const Json* enc = find_stage(g->spec, "encode");
+    const Json* gen = find_stage(g->spec, "generate");
+    const Json* dec = find_stage(g->spec, "decode");
+    REQUIRE(sel && enc && gen && dec);
+    CHECK(jget<std::string>(config_of(sel), "hf_dir", "") ==
+          job.model.dir.string());
+    CHECK(jget(config_of(enc), "clip_frames", 0) == 49);
+    CHECK(jget(config_of(enc), "blend_frames", 0) == 8);
+    CHECK(jget(config_of(gen), "frames", 0) == 49);
+    CHECK(jget(config_of(gen), "width", 0) == 1280);
+    CHECK(jget(config_of(gen), "height", 0) == 768);   // the 128 grid
+    REQUIRE(g->movie);
+    CHECK(g->movie->gate.group == 24);
+    CHECK(g->movie->gate.lag == 48);
+    REQUIRE((*dec)["iports"].size() == 3);
+    CHECK(src_of(dec, 0) == "generate");
+    CHECK(src_of(dec, 2) == "encode");
+    CHECK(oport_of(dec, 2) == 1);
+    // Nothing settled, nothing laid on: the release's own colour fix.
+    CHECK(!config_of(enc).contains("color_fix"));
+    // Settled (Settings › Upscaling, the recipe's tuning): on the encoder,
+    // the stage the catalog's option names -- not on the denoiser.
+    job.params["tuning"] = {{"color_fix", true}, {"i8_gemm", true}};
+    auto fixed = vp::build_upscale_video(job);
+    REQUIRE_OK(fixed);
+    CHECK(jget(config_of(find_stage(fixed->spec, "encode")), "color_fix",
+               false));
+    CHECK(!config_of(find_stage(fixed->spec, "generate"))
+               .contains("color_fix"));
+    job.params.erase("tuning");
+    // A group of 40: a stream's later beat is its 48 frames (three
+    // chunks of 16), still under a clip.
+    job.params["group"] = 40;
+    auto big = vp::build_upscale_video(job);
+    REQUIRE_OK(big);
+    CHECK(jget(config_of(find_stage(big->spec, "generate")), "frames",
+               0) == 49);
+    job.params["group"] = 64;
+    auto bigger = vp::build_upscale_video(job);
+    REQUIRE_OK(bigger);
+    CHECK(jget(config_of(find_stage(bigger->spec, "generate")), "frames",
+               0) == 64);
+  }
+  JobSpec v11 = job_for("flashvsr", kOpUpscaleVideo);
+  v11.params = {{"width", 1280}, {"height", 704}};
+  JobInput in;
+  in.role = "source";
+  in.path = "/tmp/clip.mp4";
+  in.info.type = media::MediaType::Video;
+  in.info.frame.width = 640;
+  in.info.frame.height = 352;
+  in.info.frame_rate = {24, 1};
+  in.info.frame_count = 56;
+  v11.inputs.push_back(in);
+  auto g = vp::build_upscale_video(v11);
+  REQUIRE_OK(g);
+  CHECK((*find_stage(g->spec, "decode"))["iports"].size() == 2);
 }
 
 // VOSR's restorer takes the same arithmetic, Sol among it, on its
@@ -977,12 +1149,51 @@ TEST(graph_builder, an_adjusted_still_exports_through_a_source)
              Json::array()).size() == 1);
 }
 
+// The int8 GEMMs' tier goes on the generating stage -- generate-image,
+// generate-video -- only with int8 GEMM on and only when it is not the
+// accurate one vpipe runs anyway: an Accurate job's graph is as it was.
+TEST(graph_builder, the_int8_tier_goes_on_its_generating_stage)
+{
+  auto image = [](const Json& tuning) {
+    JobSpec j = job_for("qwen-image-2.1", kOpGenerateImage);
+    j.params["tuning"] = tuning;
+    auto g = vp::build_text_to_image(j);
+    CHECK(g.ok());
+    const Json* gen = g.ok() ? find_stage(g->spec, "generate-image")
+                             : nullptr;
+    CHECK(gen != nullptr);
+    return gen ? config_of(gen) : Json::object();
+  };
+  Json c = image({{"i8_gemm", true}, {"i8_gemm_tier", "token"}});
+  CHECK(jget(c, "i8_gemm", false));
+  CHECK(jget<std::string>(c, "i8_gemm_tier", "") == "token");
+  c = image({{"i8_gemm", true}, {"i8_gemm_tier", "accurate"}});
+  CHECK(jget(c, "i8_gemm", false) && !c.contains("i8_gemm_tier"));
+  c = image({{"i8_gemm", false}, {"i8_gemm_tier", "fast"}});
+  CHECK(!c.contains("i8_gemm_tier"));
+  c = image({{"i8_gemm", true}});
+  CHECK(!c.contains("i8_gemm_tier"));
+
+  JobSpec v = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  v.params = {{"prompt", "a fox in snow"}, {"width", 832}, {"height", 480},
+              {"frames", 39}, {"fps", 24.0}, {"steps", 8}, {"seed", 7},
+              {"tuning", {{"i8_gemm", true},
+                          {"i8_gemm_tier", "token_plain"}}}};
+  auto g = vp::build_video(v, std::nullopt);
+  REQUIRE_OK(g);
+  const Json* gen = find_stage(g->spec, "generate-video");
+  REQUIRE(gen);
+  CHECK(jget<std::string>(config_of(gen), "i8_gemm_tier", "") ==
+        "token_plain");
+}
+
 // MiniMax H3 text-to-video, shaped like vpipe's turbo + preview graphs:
 // one config beat carries the shifts, the Turbo LoRA and the TAE (as
 // FILES: both live in folders that hold others) into generate-video's
-// port 9; video and sound decode apart -- the picture in F16 into HEVC
-// Main10, the sound into a WAV -- and the engine joins them. Edges go UP
-// to the 32-pixel grid, as vpipe takes them.
+// port 9; video and sound decode apart -- the picture in F16 into the
+// project's intermediate format (ProRes 422 HQ unless named), the sound
+// into a WAV -- and the engine joins them. Edges go UP to the 32-pixel
+// grid, as vpipe takes them.
 TEST(graph_builder, minimax_h3_clip_with_turbo_and_preview)
 {
   JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
@@ -993,7 +1204,9 @@ TEST(graph_builder, minimax_h3_clip_with_turbo_and_preview)
   auto g = vp::build_video(j, std::nullopt);
   REQUIRE_OK(g);
   CHECK(g->width == 832 && g->height == 480);
-  CHECK(g->output.extension() == ".mp4");
+  CHECK(g->output.extension() == ".mov");
+  CHECK(g->video_part.extension() == ".mov");
+  CHECK(g->sound == media::SoundCodec::Pcm);
   CHECK(!g->video_part.empty() && !g->audio_part.empty());
   CHECK(g->preview_sink == "preview-sink");
 
@@ -1025,7 +1238,8 @@ TEST(graph_builder, minimax_h3_clip_with_turbo_and_preview)
   const Json* save = find_stage(g->spec, "save-video");
   REQUIRE(save);
   CHECK(jget<std::string>(*save, "type", "") == "avf-save-video");
-  CHECK(jget<std::string>(config_of(save), "codec", "") == "hevc");
+  CHECK(jget<std::string>(config_of(save), "codec", "") == "prores422hq");
+  CHECK(!config_of(save).contains("quality"));  // ProRes has none
   CHECK(jget<std::string>(config_of(save), "path", "") ==
         g->video_part.string());
   const Json* adec = find_stage(g->spec, "audio-vae-decode");
@@ -1901,4 +2115,575 @@ TEST(graph_builder, declared_options_reach_their_stages)
   CHECK(!ic.contains("acme_window") && !ic.contains("acme_unset"));
   const Json cc = config_of(find_stage(g->spec, "krea2-model-config"));
   CHECK(jget(cc, "acme_window", 0) == 6);
+}
+
+// ---- kept encodings (DESIGN §4l) ------------------------------------------
+
+namespace {
+
+// An EncodingCache holding the keys in `held`.
+struct FakeCache {
+  vp::EncodingCache     c;
+  std::set<std::string> held;
+
+  explicit FakeCache(std::string model = "stamp-1")
+  {
+    c.engine = "vpipe test";
+    c.model = std::move(model);
+    c.kept = [this](const std::string& k) { return held.contains(k); };
+  }
+  FakeCache(const FakeCache&) = delete;
+};
+
+const vp::EncodingIo*
+io_of(const vp::BuiltGraph& g, std::string_view what, std::size_t nth = 0)
+{
+  for (const auto& io : g.encodings) {
+    if (io.what == what && nth-- == 0) {
+      return &io;
+    }
+  }
+  return nullptr;
+}
+
+std::string
+type_of(const Json* stage)
+{
+  return stage ? jget<std::string>(*stage, "type", "") : "<none>";
+}
+
+}
+
+// A prompt's conditioning: tapped beside the DiT as it is made, named by
+// the words, the model's files, vpipe's build and the config beat it
+// reads -- not the seed, the steps, the size or the preview -- and, kept,
+// fed in the conditioner's place: no text encoder, no words read.
+TEST(graph_builder, a_prompts_conditioning_is_tapped_then_fed)
+{
+  JobSpec j = job_for("krea2-turbo", kOpGenerateImage);
+  j.model.preview = "/models/tae";
+  FakeCache fc;
+  auto miss = vp::build_text_to_image(j, &fc.c);
+  REQUIRE_OK(miss);
+  const auto* io = io_of(*miss, "conditioning");
+  REQUIRE(io);
+  CHECK(!io->fed);
+  REQUIRE(io->ports.size() == 1);
+  const Json* tap = find_stage(miss->spec, io->ports[0].stage);
+  CHECK(type_of(tap) == ex::kSinkType);
+  CHECK(src_of(tap, 0) == "diffusion-conditioner" && oport_of(tap, 0) == 0);
+  CHECK(src_of(find_stage(miss->spec, "generate-image"), 0) ==
+        "diffusion-conditioner");
+  const std::string key = io->key;
+  CHECK(key.starts_with("enc-conditioning-"));
+  CHECK(cache::CacheStore::valid_key(key));
+
+  JobSpec other = j;
+  other.params["seed"] = 8;
+  other.params["steps"] = 4;
+  other.params["width"] = 768;
+  other.params["preview"] = false;
+  auto same = vp::build_text_to_image(other, &fc.c);
+  REQUIRE_OK(same);
+  CHECK(io_of(*same, "conditioning")->key == key);
+  other = j;
+  other.params["prompt"] = "a hat";
+  auto words = vp::build_text_to_image(other, &fc.c);
+  REQUIRE_OK(words);
+  CHECK(io_of(*words, "conditioning")->key != key);
+  FakeCache moved("stamp-2");
+  auto files = vp::build_text_to_image(j, &moved.c);
+  REQUIRE_OK(files);
+  CHECK(io_of(*files, "conditioning")->key != key);
+
+  fc.held.insert(key);
+  auto hit = vp::build_text_to_image(j, &fc.c);
+  REQUIRE_OK(hit);
+  CHECK(!find_stage(hit->spec, "diffusion-conditioner"));
+  CHECK(!find_stage(hit->spec, "text-prompt"));
+  const auto* fed = io_of(*hit, "conditioning");
+  REQUIRE(fed && fed->fed && fed->key == key);
+  CHECK(type_of(find_stage(hit->spec, fed->ports[0].stage)) ==
+        ex::kSourceType);
+  const Json* gen = find_stage(hit->spec, "generate-image");
+  CHECK(src_of(gen, 0) == fed->ports[0].stage);
+  CHECK(src_of(gen, 7) == "krea2-model-config");
+  // No cache: the graph as ever.
+  auto plain = vp::build_text_to_image(j);
+  REQUIRE_OK(plain);
+  CHECK(plain->encodings.empty());
+  CHECK(!find_stage(plain->spec, vp::kConditioningTap));
+}
+
+// An edit's two encodings are kept apart: the pictures' latents by the
+// pictures alone, the conditioning by the words -- and the pictures, where
+// the text encoder sees them (Qwen-Image 2.1). Each kept is fed; a
+// picture is still read while something encodes it, and not at all once
+// both are kept (the base's EXIF still carried to the result).
+TEST(graph_builder, an_edits_latents_and_conditioning_are_kept_apart)
+{
+  JobSpec j = job_for("qwen-image-2.1", kOpEditImage);
+  std::vector<vp::RefImage> pics = {
+      {"/base.png", {1024, 768}, false, true, ContentHash::of("base")},
+      {"/ref.png", {512, 512}, false, false, ContentHash::of("ref")}};
+  FakeCache fc;
+  auto miss = vp::build_image_edit(j, pics, &fc.c);
+  REQUIRE_OK(miss);
+  const auto* cond = io_of(*miss, "conditioning");
+  const auto* lat = io_of(*miss, "latents");
+  REQUIRE(cond && lat);
+  CHECK(!cond->fed && !lat->fed);
+  REQUIRE(lat->ports.size() == 1);
+  CHECK(lat->ports[0].list);
+  const Json* tap = find_stage(miss->spec, lat->ports[0].stage);
+  CHECK(src_of(tap, 0) == vp::kRefLatents && oport_of(tap, 0) == 1);
+  const std::string cond_key = cond->key;
+  const std::string lat_key = lat->key;
+
+  // Latents kept, other words: the pictures read for the text encoder,
+  // not encoded again.
+  fc.held.insert(lat_key);
+  JobSpec hat = j;
+  hat.params["prompt"] = "a hat";
+  auto lk = vp::build_image_edit(hat, pics, &fc.c);
+  REQUIRE_OK(lk);
+  CHECK(io_of(*lk, "latents")->fed && io_of(*lk, "latents")->key == lat_key);
+  CHECK(io_of(*lk, "conditioning")->key != cond_key);
+  CHECK(!find_stage(lk->spec, vp::kRefLatents));
+  CHECK(lk->references.size() == 2);
+  CHECK(src_of(find_stage(lk->spec, "diffusion-conditioner"), 6) ==
+        vp::kRefList);
+  CHECK(src_of(find_stage(lk->spec, "generate-image"), 8) ==
+        vp::kKeptLatents);
+
+  // Both kept: no picture read, no encoder.
+  fc.held.insert(cond_key);
+  auto both = vp::build_image_edit(j, pics, &fc.c);
+  REQUIRE_OK(both);
+  CHECK(both->references.empty());
+  CHECK(!find_stage(both->spec, "ref-0") && !find_stage(both->spec,
+                                                        vp::kRefList));
+  CHECK(!find_stage(both->spec, "diffusion-conditioner"));
+  CHECK(!find_stage(both->spec, "text-prompt"));
+  CHECK(both->exif_from == "/base.png");
+  const Json* gen = find_stage(both->spec, "generate-image");
+  CHECK(src_of(gen, 0) == vp::kKeptConditioning);
+  CHECK(src_of(gen, 8) == vp::kKeptLatents);
+
+  // Another base: both are another encoding.
+  auto moved = pics;
+  moved[0].hash = ContentHash::of("another base");
+  auto other = vp::build_image_edit(j, moved, &fc.c);
+  REQUIRE_OK(other);
+  CHECK(io_of(*other, "conditioning")->key != cond_key);
+  CHECK(io_of(*other, "latents")->key != lat_key);
+  // The same base with a look laid on: another picture.
+  JobSpec looked = j;
+  looked.params["base_adjust"] = {{"exposure", 0.5}};
+  auto lit = vp::build_image_edit(looked, pics, &fc.c);
+  REQUIRE_OK(lit);
+  CHECK(io_of(*lit, "latents")->key != lat_key);
+  // A picture whose bytes are not known: nothing kept for the edit.
+  moved[0].hash = {};
+  auto unknown = vp::build_image_edit(j, moved, &fc.c);
+  REQUIRE_OK(unknown);
+  CHECK(unknown->encodings.empty());
+  CHECK(find_stage(unknown->spec, "diffusion-conditioner"));
+}
+
+// FLUX.2 klein's text encoder sees no picture: its conditioning is the
+// words' alone, kept across bases, and with it kept the edit reads its
+// pictures for the VAE only.
+TEST(graph_builder, a_word_only_conditioning_is_kept_across_pictures)
+{
+  JobSpec j = job_for("flux2-klein-9b", kOpEditImage);
+  std::vector<vp::RefImage> pics = {
+      {"/base.png", {1024, 1024}, false, true, ContentHash::of("base")}};
+  FakeCache fc;
+  auto a = vp::build_image_edit(j, pics, &fc.c);
+  REQUIRE_OK(a);
+  pics[0].hash = ContentHash::of("another");
+  auto b = vp::build_image_edit(j, pics, &fc.c);
+  REQUIRE_OK(b);
+  CHECK(io_of(*a, "conditioning")->key == io_of(*b, "conditioning")->key);
+  CHECK(io_of(*a, "latents")->key != io_of(*b, "latents")->key);
+  fc.held.insert(io_of(*a, "conditioning")->key);
+  auto kept = vp::build_image_edit(j, pics, &fc.c);
+  REQUIRE_OK(kept);
+  CHECK(!find_stage(kept->spec, "diffusion-conditioner"));
+  CHECK(find_stage(kept->spec, vp::kRefLatents));
+  CHECK(kept->references.size() == 1);
+}
+
+// Draw Things checkpoints of a model's parts (ModelRef::encoder_weights /
+// vae_weights; its DiT is `dit`) go to every stage that reads those
+// WEIGHTS -- the conditioner, the reference encoder, each VAE -- as
+// `encoder_dir` / `vae_dir`, the model's own folder still hf_dir; and an
+// encoding made with them is keyed apart from one made without
+// (EncodingCache::weights).
+TEST(graph_builder, a_draw_things_models_parts_reach_their_stages)
+{
+  const std::string enc = "/dt/qwen_3_vl_8b_instruct_i8x.ckpt";
+  const std::string vae = "/dt/qwen_image_2.1_vae_f16.ckpt";
+  JobSpec e = job_for("qwen-image-2.1", kOpEditImage);
+  e.model.encoder_weights = enc;
+  e.model.vae_weights = vae;
+  std::vector<vp::RefImage> pics = {
+      {"/base.png", {1024, 768}, false, true, ContentHash::of("base")}};
+  FakeCache plain;
+  auto g = vp::build_image_edit(e, pics, &plain.c);
+  REQUIRE_OK(g);
+  CHECK(jget<std::string>(config_of(find_stage(g->spec,
+                                               "diffusion-conditioner")),
+                          "encoder_dir", "") == enc);
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, vp::kRefLatents)),
+                          "vae_dir", "") == vae);
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "vae-decode")),
+                          "vae_dir", "") == vae);
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "model-select")),
+                          "hf_dir", "") == e.model.dir.string());
+  // None linked: none laid on.
+  JobSpec own = job_for("qwen-image-2.1", kOpEditImage);
+  auto o = vp::build_image_edit(own, pics, &plain.c);
+  REQUIRE_OK(o);
+  CHECK(!config_of(find_stage(o->spec, "diffusion-conditioner"))
+             .contains("encoder_dir"));
+  CHECK(!config_of(find_stage(o->spec, "vae-decode")).contains("vae_dir"));
+  // Keyed apart: the same job with Draw Things' encoder and VAE stamped
+  // -- each encoding by the one it reads.
+  FakeCache stamped;
+  stamped.c.weights = {{"encoder", "e-1"}, {"vae", "v-1"}};
+  auto st = vp::build_image_edit(e, pics, &stamped.c);
+  REQUIRE_OK(st);
+  CHECK(io_of(*st, "conditioning")->key != io_of(*g, "conditioning")->key);
+  CHECK(io_of(*st, "latents")->key != io_of(*g, "latents")->key);
+  FakeCache vae_only;
+  vae_only.c.weights = {{"vae", "v-1"}};
+  auto vo = vp::build_image_edit(e, pics, &vae_only.c);
+  REQUIRE_OK(vo);
+  CHECK(io_of(*vo, "conditioning")->key == io_of(*g, "conditioning")->key);
+  CHECK(io_of(*vo, "latents")->key == io_of(*st, "latents")->key);
+
+  // MiniMax H3: the conditioner, the keyframes' encoders, both decoders.
+  const std::string h3e = "/dt/qwen_3_vl_32b_i8x.ckpt";
+  const std::string h3v = "/dt/minimax_h3_vae_f16.ckpt";
+  JobSpec f = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  f.params = {{"prompt", "she opens the umbrella"}, {"width", 832},
+              {"height", 480}, {"frames", 39}, {"steps", 8}};
+  f.model.encoder_weights = h3e;
+  f.model.vae_weights = h3v;
+  vp::RefImage first{"/closed.png", {1536, 1024}, false, true,
+                     ContentHash::of("closed")};
+  auto v = vp::build_video(f, first, {}, std::nullopt, &plain.c);
+  REQUIRE_OK(v);
+  CHECK(jget<std::string>(config_of(find_stage(v->spec,
+                                               "diffusion-conditioner")),
+                          "encoder_dir", "") == h3e);
+  for (const char* id : {"first-latent", "vae-decode", "audio-vae-decode"}) {
+    CHECK(jget<std::string>(config_of(find_stage(v->spec, id)), "vae_dir",
+                            "") == h3v);
+  }
+  // Ref2VA's reference encoder: both.
+  JobSpec r = job_for("minimax-h3-ref2va", kOpGenerateVideo);
+  r.params = {{"prompt", "<Picture 1> waves"}, {"width", 832},
+              {"height", 480}, {"frames", 39}, {"steps", 8}};
+  r.model.encoder_weights = h3e;
+  r.model.vae_weights = h3v;
+  std::vector<vp::RefMedia> refs(1);
+  refs[0].path = "/p/cat.png";
+  refs[0].kind = "image";
+  refs[0].hash = ContentHash::of("cat");
+  auto rv = vp::build_video(r, std::nullopt, refs, std::nullopt, &plain.c);
+  REQUIRE_OK(rv);
+  const Json rc = config_of(find_stage(rv->spec, "video-ref-encoder"));
+  CHECK(jget<std::string>(rc, "encoder_dir", "") == h3e);
+  CHECK(jget<std::string>(rc, "vae_dir", "") == h3v);
+}
+
+// A clip's encoders, kept as a picture's: H3's prompt reader (its 32B
+// conditioner), the pictures it opens and ends on (each a VAE latent),
+// and Ref2VA's reference encoder -- its three outputs -- the clip a
+// continuation is matched to still read for its seam.
+TEST(graph_builder, a_clips_encoders_are_kept)
+{
+  JobSpec f = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  f.params = {{"prompt", "she opens the umbrella"}, {"width", 832},
+              {"height", 480}, {"frames", 124}, {"steps", 8}};
+  vp::RefImage first{"/closed.png", {1536, 1024}, false, true,
+                     ContentHash::of("closed")};
+  vp::RefImage last{"/open.png", {1024, 1536}, false, true,
+                    ContentHash::of("open")};
+  FakeCache fc;
+  auto miss = vp::build_video(f, first, {}, last, &fc.c);
+  REQUIRE_OK(miss);
+  const auto* cond = io_of(*miss, "conditioning");
+  const auto* k0 = io_of(*miss, "keyframe", 0);
+  const auto* k1 = io_of(*miss, "keyframe", 1);
+  REQUIRE(cond && k0 && k1);
+  CHECK(k0->ports[0].stage == "first-latent-tap");
+  CHECK(src_of(find_stage(miss->spec, "first-latent-tap"), 0) ==
+        "first-latent");
+  CHECK(k0->key != k1->key);
+  for (const auto* io : {cond, k0, k1}) {
+    fc.held.insert(io->key);
+  }
+  auto hit = vp::build_video(f, first, {}, last, &fc.c);
+  REQUIRE_OK(hit);
+  CHECK(!find_stage(hit->spec, "diffusion-conditioner"));
+  CHECK(!find_stage(hit->spec, "text-prompt"));
+  CHECK(!find_stage(hit->spec, "first") && !find_stage(hit->spec, "last"));
+  CHECK(hit->references.empty());
+  const Json* gen = find_stage(hit->spec, "generate-video");
+  CHECK(src_of(gen, 0) == vp::kKeptConditioning);
+  CHECK(src_of(gen, 5) == "first-latent-kept");
+  CHECK(src_of(gen, 6) == "last-latent-kept");
+
+  JobSpec r = job_for("minimax-h3-ref2va", kOpGenerateVideo);
+  r.params = {{"prompt", "[video continuation + audio reference] ..."},
+              {"width", 832}, {"height", 480}, {"frames", 124},
+              {"fps", 24.0}, {"steps", 8}, {"seed", 7}};
+  std::vector<vp::RefMedia> refs(2);
+  refs[0].path = "/p/guide.mov";
+  refs[0].kind = "video";
+  refs[0].list = false;
+  refs[0].audio = true;
+  refs[0].continues = true;
+  refs[0].width = 832;
+  refs[0].height = 480;
+  refs[0].count = 56;
+  refs[0].hash = ContentHash::of("guide");
+  refs[1].path = "/p/cat.png";
+  refs[1].kind = "image";
+  refs[1].hash = ContentHash::of("cat");
+  auto rm = vp::build_video(r, std::nullopt, refs, std::nullopt, &fc.c);
+  REQUIRE_OK(rm);
+  const auto* io = io_of(*rm, "references");
+  REQUIRE(io && !io->fed);
+  REQUIRE(io->ports.size() == 3);
+  for (int k = 0; k < 3; ++k) {
+    const Json* t = find_stage(rm->spec, io->ports[k].stage);
+    CHECK(src_of(t, 0) == "video-ref-encoder" && oport_of(t, 0) == k);
+  }
+  // Another seed and steps: the same references; another tail: not.
+  JobSpec r2 = r;
+  r2.params["seed"] = 9;
+  auto same = vp::build_video(r2, std::nullopt, refs, std::nullopt, &fc.c);
+  CHECK(io_of(*same, "references")->key == io->key);
+  auto tail = refs;
+  tail[0].count = 73;
+  auto longer = vp::build_video(r, std::nullopt, tail, std::nullopt, &fc.c);
+  CHECK(io_of(*longer, "references")->key != io->key);
+
+  fc.held.insert(io->key);
+  auto rh = vp::build_video(r, std::nullopt, refs, std::nullopt, &fc.c);
+  REQUIRE_OK(rh);
+  CHECK(!find_stage(rh->spec, "video-ref-encoder"));
+  CHECK(!find_stage(rh->spec, "text-prompt"));
+  const Json* rg = find_stage(rh->spec, "generate-video");
+  CHECK(src_of(rg, 0) == "references-kept-conditioning");
+  CHECK(src_of(rg, 7) == "references-kept-ref_video");
+  CHECK(src_of(rg, 8) == "references-kept-ref_audio");
+  // The seam still has its clip; the clip's sound, for the encoder only,
+  // is not read.
+  CHECK(src_of(find_stage(rh->spec, "seam"), 1) == "ref1");
+  CHECK(find_stage(rh->spec, "ref1-read"));
+  CHECK(!find_stage(rh->spec, "ref2-read"));
+}
+
+// A kept encoding's file: every port's tensors -- bf16, a strided view
+// made contiguous, a list, one of no bytes -- and their sidebands, read
+// back as written; a file cut short or of another kind refused.
+TEST(graph_builder, a_kept_encoding_is_written_and_read)
+{
+  const fs::path dir = test::temp_dir("kept-enc");
+  std::vector<std::uint8_t> six(12);
+  for (std::size_t i = 0; i < six.size(); ++i) {
+    six[i] = static_cast<std::uint8_t>(i + 1);
+  }
+  vp::Kept k;
+  k.ports.push_back({"conditioning", false,
+                     {make_owned_tensor(Tensor::DType::BF16, {2, 3}, six,
+                                        Json::object())},
+                     {std::string("\x01\x02\x00sb", 5)}, {false}, ""});
+  // [2, 2] of a [2, 3] u8: rows 3 apart.
+  auto store = std::make_shared<std::vector<std::uint8_t>>(
+      std::vector<std::uint8_t>{1, 2, 99, 3, 4, 99});
+  auto view = std::make_shared<Tensor>();
+  view->dtype = Tensor::DType::U8;
+  view->shape = {2, 2};
+  view->strides = {3, 1};
+  view->data = store->data();
+  view->byte_size = store->size();
+  view->owner = store;
+  std::vector<std::uint8_t> f8(8, 7);
+  k.ports.push_back({"latents", true,
+                     {view, make_owned_tensor(Tensor::DType::F32, {1, 2}, f8,
+                                              Json::object())},
+                     {"", "item"}, {true, false}, "list"});
+  auto none = std::make_shared<Tensor>();
+  none->dtype = Tensor::DType::F32;
+  none->shape = {0, 96};
+  k.ports.push_back({"ref_video", false, {none}, {""}, {false}, ""});
+  const fs::path file = dir / "k.enc";
+  REQUIRE_OK(vp::write_kept(file, k));
+  auto back = vp::read_kept(file);
+  REQUIRE_OK(back);
+  REQUIRE(back->ports.size() == 3);
+  const auto& c = back->ports[0];
+  CHECK(c.name == "conditioning" && !c.list);
+  REQUIRE(c.tensors.size() == 1);
+  CHECK(c.tensors[0]->dtype == Tensor::DType::BF16);
+  CHECK(c.tensors[0]->shape == (std::vector<std::int64_t>{2, 3}));
+  CHECK(std::memcmp(c.tensors[0]->data, six.data(), 12) == 0);
+  CHECK(c.sidebands[0] == std::string("\x01\x02\x00sb", 5));
+  CHECK(c.shared == (std::vector<bool>{false}));
+  const auto& l = back->ports[1];
+  CHECK(l.list && l.list_sideband == "list");
+  REQUIRE(l.tensors.size() == 2);
+  CHECK(l.tensors[0]->byte_size == 4);
+  CHECK(l.tensors[0]->data[0] == 1 && l.tensors[0]->data[1] == 2 &&
+        l.tensors[0]->data[2] == 3 && l.tensors[0]->data[3] == 4);
+  CHECK(l.sidebands[0].empty() && l.sidebands[1] == "item");
+  CHECK(l.shared == (std::vector<bool>{true, false}));
+  CHECK(l.tensors[1]->shape == (std::vector<std::int64_t>{1, 2}));
+  const auto& z = back->ports[2];
+  CHECK(z.tensors[0]->shape == (std::vector<std::int64_t>{0, 96}));
+  CHECK(z.tensors[0]->byte_size == 0);
+  CHECK(back->bytes() == 12 + 4 + 8);
+
+  // Cut short, or not one at all.
+  const auto size = fs::file_size(file);
+  fs::resize_file(file, size - 3);
+  CHECK(vp::read_kept(file).code() == Code::Corrupt);
+  {
+    std::ofstream o(file, std::ios::binary | std::ios::trunc);
+    o << "not a kept encoding at all";
+  }
+  CHECK(vp::read_kept(file).code() == Code::Corrupt);
+  CHECK(vp::read_kept(dir / "absent").code() == Code::NotFound);
+}
+
+// The model's files as they are: the same stamp until a file's size or
+// time changes; a Finder's .DS_Store is not the model; no folder, none.
+TEST(graph_builder, a_models_stamp_follows_its_files)
+{
+  const fs::path dir = test::temp_dir("stamp");
+  fs::create_directories(dir / "text_encoder");
+  {
+    std::ofstream(dir / "model.safetensors") << "0123456789";
+    std::ofstream(dir / "text_encoder" / "config.json") << "{}";
+  }
+  const std::string a = vp::model_stamp(dir);
+  CHECK(a.size() == 64);
+  std::ofstream(dir / ".DS_Store") << "finder";
+  CHECK(vp::model_stamp(dir) == a);
+  std::ofstream(dir / "model.safetensors", std::ios::app) << "more";
+  CHECK(vp::model_stamp(dir) != a);
+  CHECK(vp::model_stamp(dir / "absent").empty());
+}
+
+// The CODEC's int8 (Favor's `vae_i8_gemm`, `vae_i8_gemm_tier`) goes on
+// the stages that run the codec as their own `i8_gemm` and tier -- the
+// decode, and an edit's pictures' encode -- and not on the DiT's stage;
+// off, the graph is as it was. An int8-made latent is kept apart.
+TEST(graph_builder, the_codecs_int8_goes_on_its_vae_stages)
+{
+  std::vector<vp::RefImage> pics = {
+      {"/base.png", {1024, 768}, false, true, ContentHash::of("base")}};
+  FakeCache cache;
+  auto edit = [&](const Json& tuning) {
+    JobSpec e = job_for("qwen-image-2.1", kOpEditImage);
+    e.params["tuning"] = tuning;
+    return vp::build_image_edit(e, pics, &cache.c);
+  };
+  auto on = edit({{"vae_i8_gemm", true}, {"vae_i8_gemm_tier", "fast"}});
+  REQUIRE_OK(on);
+  for (const char* id : {"vae-decode", vp::kRefLatents}) {
+    const Json c = config_of(find_stage(on->spec, id));
+    CHECK(jget(c, "i8_gemm", false));
+    CHECK(jget<std::string>(c, "i8_gemm_tier", "") == "fast");
+  }
+  const Json gen = config_of(find_stage(on->spec, "generate-image"));
+  CHECK(!gen.contains("i8_gemm") && !gen.contains("i8_gemm_tier"));
+  CHECK(jget<std::string>(config_of(find_stage(on->spec, "vae-decode")),
+                          "dtype", "") == "f16");
+  // Accurate: the switch alone, vpipe's default tier.
+  auto acc = edit({{"vae_i8_gemm", true}, {"vae_i8_gemm_tier", "accurate"}});
+  REQUIRE_OK(acc);
+  const Json ac = config_of(find_stage(acc->spec, "vae-decode"));
+  CHECK(jget(ac, "i8_gemm", false) && !ac.contains("i8_gemm_tier"));
+  // Off: neither key, and the DiT's own int8 stays the DiT's.
+  auto off = edit({{"vae_i8_gemm", false}, {"vae_i8_gemm_tier", "fast"},
+                   {"i8_gemm", true}});
+  REQUIRE_OK(off);
+  for (const char* id : {"vae-decode", vp::kRefLatents}) {
+    const Json c = config_of(find_stage(off->spec, id));
+    CHECK(!c.contains("i8_gemm") && !c.contains("i8_gemm_tier"));
+  }
+  CHECK(jget(config_of(find_stage(off->spec, "generate-image")), "i8_gemm",
+             false));
+  // The latents keyed by it; the conditioning, which the codec never
+  // touches, not.
+  auto plain = edit(Json::object());
+  REQUIRE_OK(plain);
+  CHECK(io_of(*on, "latents")->key != io_of(*plain, "latents")->key);
+  CHECK(io_of(*acc, "latents")->key != io_of(*on, "latents")->key);
+  CHECK(io_of(*off, "latents")->key == io_of(*plain, "latents")->key);
+  CHECK(io_of(*on, "conditioning")->key ==
+        io_of(*plain, "conditioning")->key);
+}
+
+// MOSS-IMAGE (vpipe 3b34e70a): text to image through generate-image, its
+// config stage taking the guidance and the shift Custom sets (it has no
+// scheduler-select), and its CFG run against the NEGATIVE the conditioner
+// emits on its second output -- the empty prompt's; unwired, vpipe runs
+// it without guidance. Kept, the conditioning is both outputs, tapped and
+// fed together.
+TEST(graph_builder, moss_image_runs_its_cfg_against_the_conditioners_negative)
+{
+  auto job = job_for("moss-image-sft", kOpGenerateImage);
+  REQUIRE(job.model.family == "moss-image");
+  job.params["tuning"] = {{"guidance_scale", 4.5}, {"shift", 6.0}};
+  auto g = vp::build_text_to_image(job);
+  REQUIRE_OK(g);
+  CHECK(!find_stage(g->spec, "scheduler-select"));
+  const Json* cfg = find_stage(g->spec, "moss-image-model-config");
+  REQUIRE(cfg);
+  CHECK(jget(config_of(cfg), "guidance_scale", 0.0) == 4.5);
+  CHECK(jget(config_of(cfg), "shift", 0.0) == 6.0);
+  const Json* gen = find_stage(g->spec, "generate-image");
+  REQUIRE(gen);
+  CHECK(src_of(gen, 0) == "diffusion-conditioner" && oport_of(gen, 0) == 0);
+  CHECK(src_of(gen, 1) == "diffusion-conditioner" && oport_of(gen, 1) == 1);
+  CHECK(src_of(gen, 7) == "moss-image-model-config");
+  CHECK(!config_of(gen).contains("guidance_scale"));
+  // Another family's negative stays unwired.
+  auto krea = vp::build_text_to_image(job_for("krea2-turbo",
+                                              kOpGenerateImage));
+  REQUIRE_OK(krea);
+  CHECK(src_of(find_stage(krea->spec, "generate-image"), 1).empty());
+  // Kept: both outputs tapped; then fed, the conditioner left out.
+  FakeCache fc;
+  auto t = vp::build_text_to_image(job, &fc.c);
+  REQUIRE_OK(t);
+  const auto* io = io_of(*t, "conditioning");
+  REQUIRE(io);
+  CHECK(!io->fed);
+  REQUIRE(io->ports.size() == 2);
+  CHECK(io->ports[1].name == "negative");
+  const Json* tap = find_stage(t->spec, vp::kNegativeTap);
+  REQUIRE(tap);
+  CHECK(src_of(tap, 0) == "diffusion-conditioner" && oport_of(tap, 0) == 1);
+  fc.held.insert(io->key);
+  auto f = vp::build_text_to_image(job, &fc.c);
+  REQUIRE_OK(f);
+  CHECK(!find_stage(f->spec, "diffusion-conditioner"));
+  const Json* fgen = find_stage(f->spec, "generate-image");
+  REQUIRE(fgen);
+  CHECK(src_of(fgen, 0) == vp::kKeptConditioning);
+  CHECK(src_of(fgen, 1) == vp::kKeptNegative);
+  const auto* fio = io_of(*f, "conditioning");
+  REQUIRE(fio);
+  CHECK(fio->fed);
+  CHECK(fio->ports.size() == 2);
 }

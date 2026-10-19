@@ -21,6 +21,7 @@
 #include <cctype>
 #include <cmath>
 #include <format>
+#include <set>
 
 namespace valtz {
 
@@ -70,6 +71,13 @@ Json
 one_of(std::vector<std::string> values, const char* doc)
 {
   return {{"type", "string"}, {"enum", values}, {"description", doc}};
+}
+
+Json
+ids(const char* doc)
+{
+  return {{"type", "array"}, {"items", {{"type", "string"}}},
+          {"description", doc}};
 }
 
 const char* kCompDoc =
@@ -330,6 +338,271 @@ shot_size(media::PixelSize frame, int w, int h, int grid)
   const double sh = round_to(std::sqrt(area / aspect), grid);
   const double sw = round_to(sh * aspect, grid);
   return {static_cast<int>(sw), static_cast<int>(sh)};
+}
+
+// A picture at the box's shape with its longer side `side` pixels, on a
+// 32-pixel grid, held to `most` (the model's max_side).
+std::pair<int, int>
+picture_size_long(double w, double h, double side, int most)
+{
+  const double aspect = std::clamp(w / std::max(1.0, h), 0.25, 4.0);
+  const double l = std::clamp(side, 256.0, static_cast<double>(most));
+  const double pw = aspect >= 1 ? l : l * aspect;
+  const double ph = aspect >= 1 ? l / aspect : l;
+  auto down = [most](double v) {
+    return static_cast<int>(std::clamp(
+        std::floor(std::max(32.0, v) / 32) * 32, 32.0,
+        static_cast<double>(most)));
+  };
+  return {down(pw), down(ph)};
+}
+
+// A shot's length as the model makes lengths (17n + 5 frames for H3: 5 s
+// is 124 frames, 5.17 s): its frames and their rate.
+std::pair<int, double>
+shot_frames(const models::ModelEntry& m, double seconds)
+{
+  const Json vp = jget(m.engine, "vpipe", Json::object());
+  const double fps = jget(jget(vp, "defaults", Json::object()), "fps", 24.0);
+  const Json grid = jget(vp, "frame_grid", Json::object());
+  const int gstep = std::max(1, jget(grid, "step", 1));
+  const int goff = std::max(1, jget(grid, "offset", 1));
+  int frames = static_cast<int>(
+      std::lround(std::clamp(seconds, 1.0, 10.0) * fps));
+  frames = std::min(frames, jget(vp, "max_frames", 241));
+  frames = frames <= goff
+               ? goff
+               : goff + (frames - goff + gstep - 1) / gstep * gstep;
+  return {frames, fps};
+}
+
+// "{n}" in a model's name form ("<image{n}>", "Picture {n}") made `n`.
+std::string
+numbered(std::string form, int n)
+{
+  if (const auto at = form.find("{n}"); at != std::string::npos) {
+    form.replace(at, 3, std::to_string(n));
+  }
+  return form;
+}
+
+// A model as the agent names it -- its id, its name as shown, "auto" --
+// as a catalog id ("" for Auto's).
+std::string
+model_id(const models::Catalog& cat, std::string named)
+{
+  std::string low = named;
+  for (auto& ch : low) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  if (low == "auto" || low == "default" || low == "auto's") {
+    return {};
+  }
+  if (!named.empty() && !cat.find(named)) {
+    for (const auto& m : cat.models()) {
+      if (m.name == named) {
+        return m.id;
+      }
+    }
+  }
+  return named;
+}
+
+// A POLYGON's points (canvas pixels) as media/markup.h keeps them: its box
+// their bounds, each point in the box's units. `least`: three closed, two
+// open.
+struct PolygonPoints {
+  std::array<double, 4> box{};
+  Json                  units = Json::array();
+  std::size_t           n = 0;
+};
+
+Result<PolygonPoints>
+polygon_points(const Json& given, std::size_t least)
+{
+  std::vector<std::array<double, 2>> pts;
+  for (const auto& p : given.is_array() ? given : Json::array()) {
+    if (p.is_array() && p.size() == 2 && p[0].is_number() &&
+        p[1].is_number()) {
+      pts.push_back({p[0].get<double>(), p[1].get<double>()});
+    }
+  }
+  if (pts.size() < least) {
+    return make_error(Code::InvalidArgument, std::format(
+        "a polygon is {} points or more: points [[x, y], ...] in canvas "
+        "pixels",
+        least == 2 ? "two" : "three"));
+  }
+  double x0 = pts[0][0], y0 = pts[0][1], x1 = x0, y1 = y0;
+  for (const auto& p : pts) {
+    x0 = std::min(x0, p[0]);
+    x1 = std::max(x1, p[0]);
+    y0 = std::min(y0, p[1]);
+    y1 = std::max(y1, p[1]);
+  }
+  PolygonPoints out;
+  for (const auto& p : pts) {
+    out.units.push_back({x1 > x0 ? (p[0] - x0) / (x1 - x0) : 0.5,
+                         y1 > y0 ? (p[1] - y0) / (y1 - y0) : 0.5});
+  }
+  out.box = {x0, y0, std::max(1.0, x1 - x0), std::max(1.0, y1 - y0)};
+  out.n = pts.size();
+  return out;
+}
+
+// A path's SMOOTH points (media/markup.h's "smooth"): every one with
+// `smooth`, but the `corners` named (from 1) -- or none; null when the
+// arguments say neither.
+Json
+smooth_arg(const Json& args, std::size_t n)
+{
+  if (!args.is_object() ||
+      (!args.contains("smooth") && !args.contains("corners"))) {
+    return Json();
+  }
+  const bool on = flag(args, "smooth", true);
+  Json out = Json::array();
+  for (std::size_t i = 0; i < n; ++i) {
+    out.push_back(on);
+  }
+  for (const auto& c : jget(args, "corners", Json::array())) {
+    if (c.is_number_integer() && c.get<std::int64_t>() >= 1 &&
+        c.get<std::size_t>() <= n) {
+      out[c.get<std::size_t>() - 1] = false;
+    }
+  }
+  return out;
+}
+
+// What `text` puts in double quotes -- straight or curly -- with a letter
+// in it: words an enhancer would have WRITTEN in a picture ("a sign that
+// reads \"OPEN\"").
+std::vector<std::string>
+quoted_spans(std::string_view text)
+{
+  std::vector<std::string> out;
+  std::size_t i = 0;
+  while (i < text.size()) {
+    std::string_view close;
+    std::size_t from = 0;
+    if (text[i] == '"') {
+      close = "\"";
+      from = i + 1;
+    } else if (text.substr(i, 3) == "\u201c") {
+      close = "\u201d";
+      from = i + 3;
+    } else {
+      ++i;
+      continue;
+    }
+    const auto end = text.find(close, from);
+    if (end == std::string_view::npos) {
+      break;
+    }
+    const std::string_view in = text.substr(from, end - from);
+    if (!in.empty() && in.size() <= 120 &&
+        std::ranges::any_of(in, [](char c) {
+          return std::isalpha(static_cast<unsigned char>(c)) != 0 ||
+                 static_cast<unsigned char>(c) >= 0x80;
+        })) {
+      out.emplace_back(in);
+    }
+    i = end + close.size();
+  }
+  return out;
+}
+
+// The words of `text` that carry its meaning (four letters or more), in
+// lower case: whether a style given is still in what was written.
+std::vector<std::string>
+key_words(std::string_view text)
+{
+  std::vector<std::string> out;
+  std::string w;
+  static const std::set<std::string> filler = {
+      "with", "from", "into", "over", "that", "this", "very", "some",
+      "style", "look"};
+  auto flush = [&] {
+    if (w.size() >= 4 && !filler.contains(w) &&
+        std::ranges::find(out, w) == out.end()) {
+      out.push_back(w);
+    }
+    w.clear();
+  };
+  for (const char c : text) {
+    if (std::isalnum(static_cast<unsigned char>(c))) {
+      w += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    } else {
+      flush();
+    }
+  }
+  flush();
+  return out;
+}
+
+// An asset of the project by the id an argument gives, of `kind` (a
+// picture by default).
+Result<AssetId>
+asset_of(project::Project& p, const std::string& t, const char* key,
+         AssetKind kind = AssetKind::Image)
+{
+  const auto id = AssetId::parse(t);
+  if (!id) {
+    return make_error(Code::InvalidArgument,
+                      std::format("{}: '{}' is not an asset id", key, t));
+  }
+  VALTZ_ASSIGN(project::Asset a, p.asset(*id));
+  if (a.kind != kind) {
+    return make_error(Code::InvalidArgument, std::format(
+        "{}: \"{}\" is not a {}", key, a.name,
+        kind == AssetKind::Image ? "picture" : "clip"));
+  }
+  return *id;
+}
+
+// The one an argument names, if it names one.
+Result<std::optional<AssetId>>
+maybe_asset(project::Project& p, const Json& args, const char* key,
+            AssetKind kind = AssetKind::Image)
+{
+  const std::string t = text_arg(args, key);
+  if (t.empty()) {
+    return std::optional<AssetId>();
+  }
+  VALTZ_ASSIGN(AssetId id, asset_of(p, t, key, kind));
+  return std::optional<AssetId>(id);
+}
+
+// The pictures a list argument names (a lone id too), in order.
+Result<std::vector<AssetId>>
+pictures_of(project::Project& p, const Json& args, const char* key)
+{
+  Json given = jget(args, key, Json::array());
+  if (given.is_string()) {
+    given = Json::array({given});
+  }
+  std::vector<AssetId> out;
+  for (const auto& g : given.is_array() ? given : Json::array()) {
+    if (g.is_string()) {
+      VALTZ_ASSIGN(AssetId id, asset_of(p, g.get<std::string>(), key));
+      out.push_back(id);
+    }
+  }
+  return out;
+}
+
+// The agent's names for an edit's pictures -- <Picture 1> the first of
+// `n` -- as the row's tags a request binds (assist::ref_tag).
+std::vector<std::pair<std::string, std::string>>
+picture_tags(std::size_t n)
+{
+  std::vector<std::pair<std::string, std::string>> out;
+  for (std::size_t i = 0; i < n; ++i) {
+    out.emplace_back(std::format("<Picture {}>", i + 1),
+                     assist::ref_tag(assist::RefKind::Image,
+                                     static_cast<int>(i)));
+  }
+  return out;
 }
 
 // A text box's words as they lie in it: whether all show, the height
@@ -610,6 +883,13 @@ Controller::AgentHost::tools()
                  schema({{"composition", str(kCompDoc)},
                          {"page", integer(kPageDoc)}}),
                  &H::t_view_page});
+    t.push_back({"view_asset", "read", "Look at an asset",
+                 "An asset of the project as it looks -- a picture "
+                 "imported or made, a markup, a composition -- shown to "
+                 "you as a picture (when you can see pictures). How to "
+                 "see a picture in Assets before you use it.",
+                 schema({{"asset", str("the asset's id")}}, {"asset"}),
+                 &H::t_view_asset});
     t.push_back(
         {"create_composition", "edit", "Make a composition",
          "A new composition, which the session then works on: a STILL -- "
@@ -695,8 +975,10 @@ Controller::AgentHost::tools()
         {"add_shape", "edit", "Add a shape",
          "A rectangle, an ellipse, a POLYGON (its `points`) or a line on "
          "a page's markup layer -- a panel behind words, an accent, a "
-         "badge, a divider; filled flat or with a `gradient`. A line runs "
-         "from "
+         "badge, a divider; filled flat or with a `gradient`. A polygon "
+         "with `smooth` is a CURVE through its points (a wave, a cloud, a "
+         "leaf, a hill), with `open` a curved or bent LINE (a swoosh, a "
+         "path, an outline stroke). A line runs from "
          "(x, y) to (x + width, y + height): a level rule has height 0, "
          "its thickness `line_width`.",
          schema(with({{"composition", str(kCompDoc)},
@@ -711,9 +993,17 @@ Controller::AgentHost::tools()
                                                          "number"}}}}},
                                   {"description",
                                    "a polygon's corners, [[x, y], ...] in "
-                                   "canvas pixels, three or more (a star, "
-                                   "a badge, an arrow); its box is made "
-                                   "from them"}}},
+                                   "canvas pixels, three or more (two for "
+                                   "an open one) -- a star, a badge, an "
+                                   "arrow; its box is made from them"}}},
+                      {"smooth", boolean("a curve through the points")},
+                      {"corners", {{"type", "array"},
+                                   {"items", {{"type", "integer"}}},
+                                   {"description",
+                                    "with smooth: the points (from 1) kept "
+                                    "sharp"}}},
+                      {"open", boolean("not closed: a line through the "
+                                       "points, its colour stroke")},
                       {"fill", str("its inside, \"#rrggbb[aa]\"; none by "
                                    "default")},
                       {"stroke", str("its outline or line colour")},
@@ -757,6 +1047,22 @@ Controller::AgentHost::tools()
                       {"layer", str(kLayerDoc)},
                       {"object", str("the object's id")},
                       {"text", str("new words")},
+                      {"points", {{"type", "array"},
+                                  {"items", {{"type", "array"},
+                                             {"items", {{"type",
+                                                         "number"}}}}},
+                                  {"description",
+                                   "a polygon's new points, [[x, y], ...] "
+                                   "canvas pixels: its box made from them"}}},
+                      {"smooth", boolean("a polygon's points smooth (a "
+                                         "curve), or not (corners)")},
+                      {"corners", {{"type", "array"},
+                                   {"items", {{"type", "integer"}}},
+                                   {"description",
+                                    "with smooth: the points kept corners, "
+                                    "from 1"}}},
+                      {"open", boolean("a polygon open (a line through its "
+                                       "points) or closed")},
                       {"size", num("font size, pixels")},
                       {"font", str("font family")},
                       {"bold", boolean("bold")},
@@ -896,6 +1202,42 @@ Controller::AgentHost::tools()
                         {"layer", "object"}),
                  &H::t_remove_object});
     t.push_back(
+        {"arrange_objects", "edit", "Arrange texts and shapes",
+         "Texts and shapes of one markup layer moved up or down its order "
+         "(drawn bottom first), lined up by their edges or middles, or "
+         "three or more spaced evenly; one alone aligns to the canvas.",
+         schema({{"composition", str(kCompDoc)},
+                 {"layer", str(kLayerDoc)},
+                 {"objects", ids("the objects' ids")},
+                 {"how", one_of({"to-top", "up", "down", "to-bottom",
+                                 "left", "center", "right", "top",
+                                 "middle", "bottom", "distribute-h",
+                                 "distribute-v"},
+                                "their order; lined up; spaced across / "
+                                "down")}},
+                {"layer", "objects", "how"}),
+         &H::t_arrange_objects});
+    t.push_back(
+        {"draw_strokes", "edit", "Draw with the brush",
+         "BRUSH STROKES on a page -- a sketch's lines, hatching, a "
+         "hand-drawn mark -- round, `size` wide, soft by `softness`; "
+         "`erase` takes paint away. Over what was drawn before them; "
+         "pixels, not objects (never changed after). On a timeline: from "
+         "`start` for `duration` seconds.",
+         schema({{"composition", str(kCompDoc)},
+                 {"page", integer(kPageDoc)},
+                 {"start", num(kStartDoc)},
+                 {"duration", num(kDurationDoc)},
+                 {"strokes",
+                  {{"type", "array"},
+                   {"description",
+                    "at most 64, each {\"points\": [[x, y], ...], "
+                    "\"size\" pixels (8), \"softness\" 0-1, \"color\", "
+                    "\"erase\"}"},
+                   {"items", {{"type", "object"}}}}}},
+                {"strokes"}),
+         &H::t_draw_strokes});
+    t.push_back(
         {"place_asset", "edit", "Place an asset",
          "An asset of the project (a picture, a clip's frame, another "
          "composition) on a page as a new layer, fitted in a box (whole, "
@@ -916,6 +1258,14 @@ Controller::AgentHost::tools()
                              box_props),
                         {"layer", "x", "y", "width", "height"}),
                  &H::t_set_layer_box});
+    t.push_back({"upscale_layer", "generate", "Upscale a layer",
+                 "A picture or clip shown LARGER than it was made (its box "
+                 "bigger than its pixels) rendered sharp at that size, in "
+                 "the background (a picture seconds, a clip minutes).",
+                 schema({{"composition", str(kCompDoc)},
+                         {"layer", str(kLayerDoc)}},
+                        {"layer"}),
+                 &H::t_upscale_layer});
     t.push_back({"set_layer_pages", "edit", "Set a layer's pages",
                  "The pages a layer lies on: `count` from `first`; 0 -- "
                  "on to the last page (a logo on every page).",
@@ -979,19 +1329,56 @@ Controller::AgentHost::tools()
                         {"text"}),
                  &H::t_create_prompt});
     t.push_back(
+        {"enhance_prompt", "read", "Enhance a prompt",
+         "The PROMPT ENHANCER: your idea written out as the model it is "
+         "for reads best (its makers' guide), in the fields of the tool "
+         "that makes it -- generate_image's `prompt`, generate_video's "
+         "`description` / `soundscape` / `music` (`subjects`, `summary`), "
+         "generate_music's `style` / `lyrics`, generate_voiceover's "
+         "`text` / `voice`. It does not check: read and correct it first "
+         "(`notes`: what to look at).",
+         schema({{"for", one_of({"picture", "shot", "music", "voiceover"},
+                                "what it is a prompt for; picture by "
+                                "default")},
+                 {"idea", str("what you want, in your words; pictures "
+                              "named <Picture 1>, ... as the tool does")},
+                 {"style", str("the look it must keep (the deck's)")},
+                 {"model", str("a picture model's id (get_project); "
+                               "omitted: the one generate_image would run")},
+                 {"base", str("a picture: the one an edit changes")},
+                 {"references", ids("pictures it draws on")},
+                 {"first", str("a shot: the picture it opens on")},
+                 {"last", str("a shot: the picture it ends on")},
+                 {"continue_from", str("a shot: the clip it carries on")},
+                 {"seconds", num("a shot's, song's or voice-over's length")},
+                 {"width", num("a picture's box width")},
+                 {"height", num("its height")}},
+                {"idea"}),
+         &H::t_enhance_prompt});
+    t.push_back(
         {"generate_image", "generate", "Generate a picture",
          "A picture made from a prompt by a picture model, in the "
          "background: it LANDS on the page, fitted to the box, as a new "
          "layer, when it is done. Made at the box's shape. Without a "
-         "composition, page or box: only an asset of the project.",
+         "composition, page or box: only an asset of the project. With "
+         "`base` it EDITS that picture, with `references` draws on "
+         "pictures: <Picture 1>, ... in the prompt, the base first.",
          schema(with({{"prompt", str("what the picture shows: subject, "
-                                     "setting, light, style; no words")},
+                                     "setting, light, style; no words. An "
+                                     "edit: the change (\"the same street "
+                                     "at night, wet with rain\")")},
                       {"composition", str(kCompDoc)},
                       {"page", integer(kPageDoc)},
                       {"below_all", boolean("under every layer of the "
                                             "page (a background)")},
                       {"model", str("a picture model's id from "
-                                    "get_project; omitted: Auto's")},
+                                    "get_project; omitted: Auto's (its "
+                                    "edit model for an edit)")},
+                      {"base", str("an EDIT: the picture to change")},
+                      {"references", ids("pictures to draw on")},
+                      {"long_side", integer("its longer side, pixels, up to "
+                                            "the model's max_side; about a "
+                                            "megapixel by default")},
                       {"name", str("the asset's name")}},
                      box_props),
                 {"prompt"}),
@@ -1013,6 +1400,19 @@ Controller::AgentHost::tools()
          "the parts worth keeping.",
          schema({{"asset", str("the clip's id")}}, {"asset"}),
          &H::t_describe_clip});
+    t.push_back(
+        {"transcribe", "read", "Listen to a sound",
+         "What is SAID in a sound or a clip, line by line with each line's "
+         "span in its own seconds, and the sounds heard -- kept in the "
+         "project as its transcript.",
+         schema({{"asset", str("the sound's or the clip's id")}}, {"asset"}),
+         &H::t_transcribe});
+    t.push_back(
+        {"separate_sound", "generate", "Separate a song",
+         "A song split, in the background, into its VOICE and its "
+         "ACCOMPANIMENT, each a new sound of the project.",
+         schema({{"asset", str("the song's id (a sound)")}}, {"asset"}),
+         &H::t_separate_sound});
     t.push_back(
         {"view_frames", "read", "Look at frames",
          "Frames of a clip or a timeline as they are drawn, shown to you "
@@ -1152,6 +1552,10 @@ Controller::AgentHost::tools()
          schema({{"text", str("the words; [pause 1s] pauses")},
                  {"voice", str("how it speaks, e.g. \"a warm, unhurried "
                                "female narrator\"")},
+                 {"quality", str("the recording's quality (enhance_prompt "
+                                 "writes it)")},
+                 {"sound_event", str("a sound in it")},
+                 {"ambient_sound", str("the room or the place around it")},
                  {"language", str("English, Chinese, ...; omitted: the "
                                   "words'")},
                  {"start", num("timeline seconds; 0 by default")},
@@ -1214,6 +1618,7 @@ Controller::AgentHost::tools()
                  {"first", str("a picture's id the shot opens on, its "
                                "first frame (not with continues or "
                                "references)")},
+                 {"last", str("with first: the picture it ENDS on")},
                  {"references", picture_ids},
                  {"start", num("where it lands, timeline seconds; omitted "
                                "(best): after the shots before it. A shot "
@@ -1900,6 +2305,39 @@ Controller::AgentHost::wait_job_(Session& s, JobId job)
   }
 }
 
+void
+Controller::AgentHost::book_(Session& s, Step& step, JobId job)
+{
+  Landing l;
+  l.session = s.id;
+  l.step = step.n;
+  l.project = s.project;
+  {
+    std::lock_guard lk(_mu);
+    _landings[job] = l;
+  }
+  {
+    std::lock_guard lk(s.mu);
+    s.pending.insert(job);
+    s.idle_waits = 0;
+  }
+  step.job = job;
+}
+
+Json
+Controller::AgentHost::take_reply_(JobId job)
+{
+  std::lock_guard lk(_mu);
+  for (auto it = _replies.begin(); it != _replies.end(); ++it) {
+    if (it->first == job) {
+      Json r = std::move(it->second);
+      _replies.erase(it);
+      return r;
+    }
+  }
+  return Json();
+}
+
 // ---- reading --------------------------------------------------------------
 
 Result<Json>
@@ -1988,19 +2426,46 @@ Controller::AgentHost::t_get_project(Session& s, Step&, const Json&,
       assets.push_back(std::move(j));
     }
   }
+  // The picture models: which edit, and how large they make.
   Json models = Json::array();
   for (const auto& m : _c._catalog.models()) {
     if (m.has(models::Capability::TextToImage) &&
         _c.runs(m, "image", "generate")) {
-      models.push_back({{"id", m.id}, {"name", m.name}});
+      Json j = {{"id", m.id}, {"name", m.name},
+                {"max_side", models::max_edge(m) > 0 ? models::max_edge(m)
+                                                     : 2048}};
+      if (m.has(models::Capability::ImageEdit) &&
+          _c.runs(m, "image", "edit")) {
+        j["edits"] = true;
+      }
+      models.push_back(std::move(j));
     }
   }
-  std::string auto_pick;
+  std::string auto_pick, auto_edit;
   for (const auto& pick : _c.auto_models()) {
     if (pick.modality == "image" && pick.op == "generate") {
       auto_pick = pick.chosen;
     }
+    if (pick.modality == "image" && pick.op == "edit") {
+      auto_edit = pick.chosen;
+    }
   }
+  // What the asset operations can do here: listen, separate, upscale.
+  std::map<std::string, bool> ready;
+  for (const auto& op : _c.asset_operations_json()) {
+    for (const auto& tk : jget(op, "takes", Json::array())) {
+      if (jget(tk, "ready", false)) {
+        ready[jget<std::string>(op, "name", "") + "/" +
+              jget<std::string>(tk, "kind", "")] = true;
+      }
+    }
+  }
+  // The prompt enhancer: this Mac's helper, or a fleet member's.
+  const bool enhance =
+      (_c.assistant_model() != nullptr && _c._engine &&
+       _c._engine->supports(engine::kOpChat)) ||
+      !_c.fleet_candidates_(std::string(engine::kOpChat), {}, false)
+           .empty();
   // What makes sound here, and whether a clip can be watched.
   bool music = false, speech = false, watch = false;
   for (const auto& m : _c._catalog.models()) {
@@ -2014,14 +2479,17 @@ Controller::AgentHost::t_get_project(Session& s, Step&, const Json&,
   watch = watch && _c.engine_runs_(models::Capability::VideoSummary);
   // Shots (generate_video): a clip from words or a picture, and one
   // carried on from another.
-  bool video = false, carry = false;
+  bool video = false, carry = false, ends = false;
   for (const auto& pick : _c.auto_models()) {
     if (pick.modality != "video" || pick.chosen.empty()) {
       continue;
     }
     const auto* m = _c._catalog.find(pick.chosen);
-    video = video || (pick.op == "generate" && m &&
-                      _c.runs_soon(*m, "video", "generate"));
+    const bool makes = pick.op == "generate" && m &&
+                       _c.runs_soon(*m, "video", "generate");
+    video = video || makes;
+    ends = ends || (makes && jget(jget(m->engine, "vpipe", Json::object()),
+                                  "last_frame", false));
     carry = carry || (pick.op == "edit" && m &&
                       _c.runs_soon(*m, "video", "edit"));
   }
@@ -2032,10 +2500,18 @@ Controller::AgentHost::t_get_project(Session& s, Step&, const Json&,
               {"assets", std::move(assets)},
               {"picture_models", std::move(models)},
               {"auto_picture_model", auto_pick},
+              {"auto_edit_model", auto_edit},
+              {"can_enhance_prompts", enhance},
               {"can_make_music", music},
               {"can_make_voiceover", speech},
               {"can_describe_clips", watch},
+              {"can_transcribe", ready["transcribe/audio"] ||
+                                     ready["transcribe/video"]},
+              {"can_separate_songs", ready["separate/audio"]},
+              {"can_upscale", ready["upscale/image"] ||
+                                  ready["upscale/video"]},
               {"can_make_shots", video},
+              {"can_end_shots_on_pictures", ends},
               {"can_continue_shots", carry}};
 }
 
@@ -2072,6 +2548,10 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
     }
     Json j = {{"id", model_layer(l.id)}, {"name", l.name},
               {"visible", l.visible}};
+    // The person's lock: nothing of it changes until they unlock it.
+    if (l.locked) {
+      j["locked"] = true;
+    }
     if (!progress.empty() && l.folder == progress) {
       // The page progress bar's: one line each.
       j["pages"] = Json{l.time.offset + 1, l.time.offset + 1};
@@ -2118,6 +2598,10 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
     } else if (auto src = p->asset(*l.source); src.ok()) {
       if (src->cls == AssetClass::Markup) {
         j["shows"] = "markup";
+        // Brush strokes on it: pixels, which no object lists.
+        if (src->markup && !src->markup->raster.empty()) {
+          j["painted"] = true;
+        }
         Json objs = Json::array();
         const Json raw = src->markup ? src->markup->objects : Json();
         for (const auto& o : raw.is_array() ? raw : Json::array()) {
@@ -2164,7 +2648,16 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
                              {"colors", std::move(cs)}};
           }
           if (x["kind"] == "polygon") {
-            x["corners"] = jget(o, "points", Json::array()).size();
+            x["points"] = jget(o, "points", Json::array()).size();
+            const Json sm = jget(o, "smooth", Json::array());
+            if (std::ranges::any_of(sm, [](const Json& b) {
+                  return b.is_boolean() && b.get<bool>();
+                })) {
+              x["smooth"] = true;
+            }
+            if (jget(o, "open", false)) {
+              x["open"] = true;
+            }
           }
           // Its effects: each kind, and its colour.
           for (const auto& e : jget(o, "effects", Json::array())) {
@@ -2237,6 +2730,17 @@ Result<Json>
 Controller::AgentHost::t_view_page(Session& s, Step& step, const Json& args,
                                    std::vector<fs::path>& shown)
 {
+  // A picture named for the page -- an import is where a model looks
+  // first -- is shown as view_asset shows it, rather than refused.
+  if (const auto id = AssetId::parse(text_arg(args, "composition"))) {
+    if (auto* p = _c.project(s.project)) {
+      if (auto a = p->asset(*id);
+          a.ok() && a->cls != AssetClass::Still &&
+          a->cls != AssetClass::Composition) {
+        return t_view_asset(s, step, {{"asset", id->str()}}, shown);
+      }
+    }
+  }
   VALTZ_ASSIGN(AssetId comp, composition_(s, args));
   if (auto a = _c.project(s.project)->asset(comp);
       a.ok() && a->cls == AssetClass::Composition) {
@@ -2272,6 +2776,69 @@ Controller::AgentHost::t_view_page(Session& s, Step& step, const Json& args,
   shown.push_back(small);
   return Json{{"shown", true}, {"page", page + 1},
               {"note", "The page follows, as a picture."}};
+}
+
+// An asset as it looks. The tools that showed anything showed a page or
+// a clip's frames, so a picture in Assets -- an import, the one thing a
+// request like "draw the picture I imported" is about -- could be seen
+// only by placing it on a page first: view_frames refused it as no
+// clip, view_page as no composition, and a model that took either for
+// an answer drew from its name and size alone.
+Result<Json>
+Controller::AgentHost::t_view_asset(Session& s, Step& step, const Json& args,
+                                    std::vector<fs::path>& shown)
+{
+  const auto t = text_arg(args, "asset");
+  const auto id = AssetId::parse(t);
+  if (!id) {
+    return make_error(Code::InvalidArgument,
+                      t.empty() ? std::string("which asset?")
+                                : std::format("'{}' is not an asset id", t));
+  }
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(*id));
+  // A still is its pages, a clip or a timeline its frames: the tools
+  // that take a page or a time, at their first.
+  if (a.cls == AssetClass::Still) {
+    return t_view_page(s, step, {{"composition", id->str()}}, shown);
+  }
+  if (a.kind == AssetKind::Video) {
+    return t_view_frames(s, step, {{"asset", id->str()}, {"count", 1}},
+                         shown);
+  }
+  if (a.kind == AssetKind::Audio) {
+    return make_error(Code::InvalidArgument, std::format(
+        "\"{}\" is a sound: it has no picture", a.name));
+  }
+  if (a.kind == AssetKind::Text) {
+    return make_error(Code::InvalidArgument, std::format(
+        "\"{}\" is a text: it has no picture", a.name));
+  }
+  if (a.head == 0) {
+    return make_error(Code::InvalidArgument, std::format(
+        "\"{}\" is still being made: wait_for_generations first", a.name));
+  }
+  Json told = {{"asset", id->str()}, {"name", a.name}};
+  if (auto v = p->version(*id); v.ok() && v->info.frame.width > 0) {
+    told["width"] = v->info.frame.width;
+    told["height"] = v->info.frame.height;
+  }
+  if (!s.backend->sees()) {
+    told["shown"] = false;
+    told["note"] = "You cannot see pictures: only its name and size.";
+    return told;
+  }
+  VALTZ_ASSIGN(fs::path drawn, _c.rendered_frame_(s.project, *id, 0, 0, 0));
+  const fs::path small = s.dir / std::format("asset-{}.jpg", step.n);
+  VALTZ_TRY(media::write_thumbnail(drawn, media::MediaType::Image, 1024,
+                                   small));
+  shown.push_back(small);
+  told["shown"] = true;
+  told["note"] = "The asset follows, as a picture.";
+  return told;
 }
 
 // ---- compositions and pages -------------------------------------------------
@@ -2463,37 +3030,16 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
     return make_error(Code::InvalidArgument,
                       "a shape is rect, ellipse, polygon or line");
   }
-  // A POLYGON's corners (canvas pixels): its box their bounds, its points
-  // in the box's units (media/markup.h).
-  Json corners = Json::array();
-  std::array<double, 4> pbox{};
+  // A POLYGON's points (canvas pixels): its box their bounds, its points
+  // in the box's units (media/markup.h) -- a PATH, smooth through them,
+  // or open: a line through them.
+  const bool open = shape == "polygon" && flag(args, "open");
+  PolygonPoints poly;
   if (shape == "polygon") {
-    std::vector<std::array<double, 2>> pts;
-    for (const auto& p : jget(args, "points", Json::array())) {
-      if (p.is_array() && p.size() == 2 && p[0].is_number() &&
-          p[1].is_number()) {
-        pts.push_back({p[0].get<double>(), p[1].get<double>()});
-      }
-    }
-    if (pts.size() < 3) {
-      return make_error(Code::InvalidArgument,
-                        "a polygon is three corners or more: points "
-                        "[[x, y], ...] in canvas pixels");
-    }
-    double x0 = pts[0][0], y0 = pts[0][1], x1 = x0, y1 = y0;
-    for (const auto& p : pts) {
-      x0 = std::min(x0, p[0]);
-      x1 = std::max(x1, p[0]);
-      y0 = std::min(y0, p[1]);
-      y1 = std::max(y1, p[1]);
-    }
-    for (const auto& p : pts) {
-      corners.push_back({x1 > x0 ? (p[0] - x0) / (x1 - x0) : 0.5,
-                         y1 > y0 ? (p[1] - y0) / (y1 - y0) : 0.5});
-    }
-    pbox = {x0, y0, std::max(1.0, x1 - x0), std::max(1.0, y1 - y0)};
+    VALTZ_ASSIGN(poly, polygon_points(jget(args, "points", Json()),
+                                      open ? 2 : 3));
   }
-  std::array<double, 4> box = pbox;
+  std::array<double, 4> box = poly.box;
   if (shape != "polygon") {
     VALTZ_ASSIGN(box, box_(args, frame, shape == "line"));
   }
@@ -2504,7 +3050,8 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
                       "a colour is \"#rrggbb\" or \"#rrggbbaa\"");
   }
   double lw = std::clamp(number(args, "line_width",
-                                shape == "line" ? 4.0 : 0.0), 0.0, 500.0);
+                                shape == "line" || open ? 4.0 : 0.0),
+                         0.0, 500.0);
   // A line far longer than it is "high" is a RULE given its thickness as
   // its height (the 9B's "height": 4 -- or 54, a band at a page's foot):
   // laid level through the box's middle, that thick. And so upright.
@@ -2571,9 +3118,15 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
                {"fill", {(*fill)[0], (*fill)[1], (*fill)[2], (*fill)[3]}},
                {"width", lw}};
   if (shape == "polygon") {
-    made["points"] = std::move(corners);
+    made["points"] = std::move(poly.units);
+    if (Json sm = smooth_arg(args, poly.n); !sm.is_null()) {
+      made["smooth"] = std::move(sm);
+    }
+    if (open) {
+      made["open"] = true;
+    }
   }
-  if (shape != "line") {
+  if (shape != "line" && !open) {
     VALTZ_ASSIGN(Json g, gradient_arg(args, Json()));
     if (g.is_object()) {
       made["gradient"] = std::move(g);
@@ -2581,11 +3134,11 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
   }
   {
     // Its effects: a glow in its fill, or its line's colour.
-    const auto& own = shape != "line" && (*fill)[3] > 0 ? *fill : *stroke;
+    const bool line = shape == "line" || open;
+    const auto& own = !line && (*fill)[3] > 0 ? *fill : *stroke;
     VALTZ_ASSIGN(Json fx, effects_arg(args, Json::array(),
-                                      shape == "line"
-                                          ? std::max(16.0, lw * 3)
-                                          : shape_base(box[2], box[3]),
+                                      line ? std::max(16.0, lw * 3)
+                                           : shape_base(box[2], box[3]),
                                       own));
     made["effects"] = std::move(fx);
   }
@@ -2631,6 +3184,38 @@ Controller::AgentHost::t_update_object(Session& s, Step& step,
     o["y0"] = ny;
     o["x1"] = nx + nw;
     o["y1"] = ny + nh;
+  }
+  // A polygon's points, its curve, open or closed: its box made from new
+  // points (the units are the box's).
+  if (args.contains("points") || args.contains("smooth") ||
+      args.contains("corners") || args.contains("open")) {
+    if (jget<std::string>(o, "kind", "") != "polygon") {
+      return make_error(Code::InvalidArgument,
+                        "only a polygon has points, smooth or open");
+    }
+    const bool open = flag(args, "open", jget(o, "open", false));
+    std::size_t n = jget(o, "points", Json::array()).size();
+    if (args.contains("points")) {
+      VALTZ_ASSIGN(PolygonPoints pp, polygon_points(args["points"],
+                                                    open ? 2 : 3));
+      o["x0"] = pp.box[0];
+      o["y0"] = pp.box[1];
+      o["x1"] = pp.box[0] + pp.box[2];
+      o["y1"] = pp.box[1] + pp.box[3];
+      o["points"] = std::move(pp.units);
+      if (pp.n != n) {
+        o.erase("smooth");
+      }
+      n = pp.n;
+    }
+    if (Json sm = smooth_arg(args, n); !sm.is_null()) {
+      o["smooth"] = std::move(sm);
+    }
+    if (open) {
+      o["open"] = true;
+    } else {
+      o.erase("open");
+    }
   }
   if (args.contains("text")) {
     o["text"] = text_arg(args, "text");
@@ -2744,6 +3329,150 @@ Controller::AgentHost::t_remove_object(Session& s, Step& step,
                           {{"tool", step.tool}, {"title", step.title}});
   VALTZ_TRY(_c.set_markup_objects(s.project, comp, layer, objs));
   return Json{{"removed", id}};
+}
+
+Result<Json>
+Controller::AgentHost::t_arrange_objects(Session& s, Step& step,
+                                         const Json& args,
+                                         std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, composition_(s, args));
+  VALTZ_ASSIGN(std::string layer, layer_(args));
+  const std::string how = text_arg(args, "how");
+  std::vector<std::string> which;
+  const Json given = jget(args, "objects", Json::array());
+  for (const auto& o : given.is_string() ? Json::array({given}) : given) {
+    if (o.is_string()) {
+      which.push_back(o.get<std::string>());
+    }
+  }
+  if (which.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "which objects? their ids, as get_composition "
+                      "lists them");
+  }
+  VALTZ_ASSIGN(Json objs, objects_(s.project, comp, layer));
+  for (const auto& id : which) {
+    if (std::ranges::none_of(objs, [&](const Json& o) {
+          return jget<std::string>(o, "id", "") == id;
+        })) {
+      return make_error(Code::NotFound,
+                        std::format("layer {} has no object '{}'",
+                                    model_layer(layer), id));
+    }
+  }
+  auto undo = _c.command_(s.project, "agent", comp, layer,
+                          {{"tool", step.tool}, {"title", step.title}});
+  VALTZ_TRY(_c.arrange_markup(s.project, comp, layer, which, how));
+  // The order now, bottom first, and where each moved one lies.
+  VALTZ_ASSIGN(Json now, objects_(s.project, comp, layer));
+  Json order = Json::array();
+  Json boxes = Json::object();
+  for (const auto& o : now) {
+    const auto id = jget<std::string>(o, "id", "");
+    order.push_back(id);
+    if (std::ranges::find(which, id) != which.end()) {
+      const double x0 = jget(o, "x0", 0.0), y0 = jget(o, "y0", 0.0);
+      const double x1 = jget(o, "x1", 0.0), y1 = jget(o, "y1", 0.0);
+      boxes[id] = {std::lround(std::min(x0, x1)),
+                   std::lround(std::min(y0, y1)),
+                   std::lround(std::abs(x1 - x0)),
+                   std::lround(std::abs(y1 - y0))};
+    }
+  }
+  return Json{{"layer", model_layer(layer)}, {"how", how},
+              {"order", std::move(order)}, {"boxes", std::move(boxes)}};
+}
+
+Result<Json>
+Controller::AgentHost::t_draw_strokes(Session& s, Step& step,
+                                      const Json& args,
+                                      std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, composition_(s, args));
+  Json list = jget(args, "strokes", Json::array());
+  if (list.is_object()) {
+    list = Json::array({list});
+  }
+  std::vector<media::Stroke> strokes;
+  for (const auto& st : list.is_array() ? list : Json::array()) {
+    if (!st.is_object()) {
+      continue;
+    }
+    media::Stroke k;
+    for (const auto& pt : jget(st, "points", Json::array())) {
+      if (pt.is_array() && pt.size() >= 2 && pt[0].is_number() &&
+          pt[1].is_number()) {
+        k.points.push_back({pt[0].get<double>(), pt[1].get<double>()});
+      }
+    }
+    if (k.points.empty() || k.points.size() > 4096) {
+      return make_error(Code::InvalidArgument, std::format(
+          "stroke {} needs points, [[x, y], ...] in canvas pixels (at "
+          "most 4096)",
+          strokes.size() + 1));
+    }
+    k.radius = std::clamp(number(st, "size", 8), 1.0, 800.0) / 2;
+    k.softness = std::clamp(number(st, "softness", 0), 0.0, 1.0);
+    const auto c = colour(text_arg(st, "color", "#000000"));
+    if (!c) {
+      return make_error(Code::InvalidArgument,
+                        "a colour is \"#rrggbb\" or \"#rrggbbaa\"");
+    }
+    k.color = *c;
+    k.erase = flag(st, "erase");
+    strokes.push_back(std::move(k));
+  }
+  if (strokes.empty() || strokes.size() > 64) {
+    return make_error(Code::InvalidArgument,
+                      "strokes: one to 64, each {\"points\": [[x, y], "
+                      "...]}");
+  }
+  auto undo = _c.command_(s.project, "agent", comp, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  VALTZ_ASSIGN(auto on, markup_for_(s.project, comp, args));
+  // A markup's strokes lie UNDER its words and shapes (its raster is
+  // drawn first): painted on one that holds some they would be hidden --
+  // the 27B's waves went under its water. On a markup of their own over
+  // it, then -- the page's (the span's) topmost, so the words and shapes
+  // added after go on it, over them.
+  VALTZ_ASSIGN(Json there, objects_(s.project, comp, on.first));
+  bool apart = false;
+  if (!there.empty()) {
+    auto* p = _c.project(s.project);
+    VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+    const std::string top = a.layers.empty() ? "" : a.layers.back().id;
+    if (a.cls == AssetClass::Composition) {
+      const double fps = rate_(s.project, comp).to_double();
+      project::LayerTime t;
+      t.offset = std::llround(std::max(0.0, number(args, "start", 0)) * fps);
+      t.duration = std::max<std::int64_t>(
+          1, std::llround(std::max(0.1, number(args, "duration", 3)) * fps));
+      VALTZ_ASSIGN(std::string blank, _c.add_layer(s.project, comp, top));
+      VALTZ_ASSIGN(on.first,
+                   _c.markup_layer(s.project, comp, {blank}, t.offset));
+      VALTZ_TRY(_c.set_layer_time(s.project, comp, on.first, t));
+    } else {
+      const std::int64_t page = jget(on.second, "page", 1) - 1;
+      VALTZ_ASSIGN(std::string blank,
+                   _c.add_layer(s.project, comp, top, page));
+      VALTZ_TRY(page_alone_(s.project, comp, blank, page));
+      VALTZ_ASSIGN(on.first,
+                   _c.markup_layer(s.project, comp, {blank}, page));
+    }
+    apart = true;
+  }
+  for (const auto& k : strokes) {
+    VALTZ_TRY(_c.paint_stroke(s.project, comp, on.first, k));
+  }
+  Json out = {{"layer", model_layer(on.first)},
+              {"strokes", strokes.size()}};
+  out.update(on.second);
+  if (apart) {
+    out["note"] = "On a layer of their own over the shapes and words "
+                  "there: what you add next goes over them.";
+  }
+  return out;
 }
 
 // ---- a long text on pages ---------------------------------------------------
@@ -3431,6 +4160,32 @@ Controller::AgentHost::t_set_layer_box(Session& s, Step& step,
 }
 
 Result<Json>
+Controller::AgentHost::t_upscale_layer(Session& s, Step& step,
+                                       const Json& args,
+                                       std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, composition_(s, args));
+  VALTZ_ASSIGN(std::string layer, layer_(args));
+  auto undo = _c.command_(s.project, "agent", comp, layer,
+                          {{"tool", step.tool}, {"title", step.title}});
+  Controller::AssetOpRequest req;
+  req.project = s.project;
+  req.asset = comp;
+  req.operation = "upscale";
+  req.layer = layer;
+  VALTZ_ASSIGN(auto made, _c.run_asset_operation(std::move(req)));
+  book_(s, step, made.job);
+  Json r = {{"job", made.job.str()}, {"queued", true},
+            {"layer", model_layer(layer)}};
+  if (!made.made.empty()) {
+    r["asset"] = made.made.front().str();
+  }
+  r["note"] = "Rendered in the background: the layer shows it once it "
+              "lands (wait_for_generations).";
+  return r;
+}
+
+Result<Json>
 Controller::AgentHost::t_set_layer_pages(Session& s, Step& step,
                                          const Json& args,
                                          std::vector<fs::path>&)
@@ -3558,6 +4313,330 @@ Controller::AgentHost::t_create_prompt(Session& s, Step& step,
 // ---- generating -------------------------------------------------------------
 
 Result<Json>
+Controller::AgentHost::t_enhance_prompt(Session& s, Step&, const Json& args,
+                                        std::vector<fs::path>&)
+{
+  const std::string idea = text_arg(args, "idea");
+  if (one_line(idea).empty()) {
+    return make_error(Code::InvalidArgument, "the idea is empty");
+  }
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  const std::string what = text_arg(args, "for", "picture");
+  const std::string style = one_line(text_arg(args, "style"));
+  EnhancePromptRequest req;
+  req.project = s.project;
+  req.style = style;
+  // The agent's names for the pictures (<Picture 1>, ...) as the
+  // request's row tags -- and back: what the enhancer wrote, in the names
+  // the agent's tools take.
+  std::vector<std::pair<std::string, std::string>> in, back;
+  auto name_back = [&](std::size_t k, const std::string& as) {
+    back.emplace_back(
+        assist::ref_tag(assist::RefKind::Image, static_cast<int>(k)), as);
+  };
+  const models::ModelEntry* m = nullptr;
+  std::string tool;
+  if (what == "picture") {
+    tool = "generate_image";
+    VALTZ_ASSIGN(auto base, maybe_asset(*p, args, "base"));
+    VALTZ_ASSIGN(auto refs, pictures_of(*p, args, "references"));
+    std::vector<AssetId> row;
+    if (base) {
+      row.push_back(*base);
+    }
+    row.insert(row.end(), refs.begin(), refs.end());
+    const bool edit = !row.empty();
+    // The model generate_image would run: the one named, else Auto's.
+    std::string id = model_id(_c._catalog, text_arg(args, "model"));
+    for (const auto& a : _c.auto_models()) {
+      if (id.empty() && a.modality == "image" &&
+          a.op == (edit ? "edit" : "generate")) {
+        id = a.chosen;
+      }
+    }
+    m = _c._catalog.find(id);
+    if (!m) {
+      return make_error(Code::NotFound,
+                        edit ? "no picture model that edits runs here"
+                             : "no picture model runs here");
+    }
+    req.target = "image";
+    req.model = m->id;
+    req.mode = edit ? "edit" : "generate";
+    req.base = base;
+    req.references = refs;
+    req.row = row;
+    in = picture_tags(row.size());
+    // What the model calls them, as its rewriter writes them ("<image2>").
+    const auto form = jget<std::string>(m->prompting, "reference_tag", "");
+    for (std::size_t i = 0; i < row.size(); ++i) {
+      const std::string mine = std::format("<Picture {}>", i + 1);
+      name_back(i, mine);
+      if (!form.empty()) {
+        back.emplace_back(numbered(form, static_cast<int>(i) + 1), mine);
+      }
+    }
+    // Its size: the box's shape, as generate_image makes it.
+    if (args.contains("width") && args.contains("height")) {
+      const auto [w, h] = picture_size(number(args, "width", 1024),
+                                       number(args, "height", 1024));
+      req.size = std::format("{}x{}", w, h);
+    }
+  } else if (what == "shot") {
+    tool = "generate_video";
+    VALTZ_ASSIGN(auto first, maybe_asset(*p, args, "first"));
+    VALTZ_ASSIGN(auto last, maybe_asset(*p, args, "last"));
+    VALTZ_ASSIGN(auto refs, pictures_of(*p, args, "references"));
+    VALTZ_ASSIGN(auto from, maybe_asset(*p, args, "continue_from",
+                                        AssetKind::Video));
+    if (last && !first) {
+      return make_error(Code::InvalidArgument,
+                        "a shot ends on a picture (last) only when it "
+                        "opens on one (first)");
+    }
+    if (first && (from || !refs.empty())) {
+      return make_error(Code::InvalidArgument,
+                        "a shot opens on a picture (first), or draws on "
+                        "references and carries on from a clip -- not both");
+    }
+    const bool drawn = from || !refs.empty();
+    if (drawn) {
+      m = _c.reference_model_("");
+    } else {
+      for (const auto& a : _c.auto_models()) {
+        if (!m && a.modality == "video" && a.op == "generate" &&
+            !a.chosen.empty()) {
+          m = _c._catalog.find(a.chosen);
+        }
+      }
+    }
+    if (!m) {
+      return make_error(Code::Unsupported, "no video model runs here");
+    }
+    req.target = "video";
+    req.model = m->id;
+    req.base = first;
+    req.last = last;
+    req.references = refs;
+    req.continue_from = from;
+    const auto [frames, fps] = shot_frames(*m, number(args, "seconds", 5));
+    req.frames = frames;
+    req.fps = fps;
+    // The pictures in the row's order -- the first, the last, the
+    // references -- each by the name generate_video's description takes.
+    const Json forms = jget(m->prompting, "reference_tags", Json::object());
+    const auto image = jget<std::string>(forms, "image", "<Picture {n}>");
+    auto bare = jget<std::string>(m->prompting, "first_last_tag", "");
+    if (bare.empty()) {
+      bare = image;
+    }
+    std::size_t k = 0;
+    if (first) {
+      in.emplace_back("<Picture 1>", assist::ref_tag(assist::RefKind::Image,
+                                                     0));
+      name_back(k++, last ? numbered(bare, 1) : numbered(image, 1));
+    }
+    if (last) {
+      in.emplace_back("<Picture 2>", assist::ref_tag(assist::RefKind::Image,
+                                                     1));
+      name_back(k++, numbered(bare, 2));
+    }
+    if (drawn) {
+      VALTZ_ASSIGN(Json tags, _c.video_reference_tags(s.project, m->id, refs,
+                                                      from));
+      for (const auto& id : refs) {
+        const auto tag = jget<std::string>(tags, id.str().c_str(), "");
+        if (!tag.empty()) {
+          in.emplace_back(tag, assist::ref_tag(assist::RefKind::Image,
+                                               static_cast<int>(k)));
+          name_back(k, tag);
+        }
+        ++k;
+      }
+    }
+  } else if (what == "music") {
+    tool = "generate_music";
+    req.target = "audio";
+    req.model = "auto";
+    req.seconds = std::max(0.0, number(args, "seconds", 0));
+  } else if (what == "voiceover") {
+    tool = "generate_voiceover";
+    // The speech model generate_voiceover speaks with.
+    for (const auto& e : _c._catalog.models()) {
+      if (e.has(models::Capability::TextToSpeech) &&
+          e.quantize_from.empty() && _c.runs(e, "audio", "generate") &&
+          (!m || e.rank > m->rank)) {
+        m = &e;
+      }
+    }
+    if (!m) {
+      return make_error(Code::Unsupported, "no speech model runs here");
+    }
+    req.target = "audio";
+    req.model = m->id;
+    req.seconds = std::max(0.0, number(args, "seconds", 0));
+  } else {
+    return make_error(Code::InvalidArgument,
+                      "for is picture, shot, music or voiceover");
+  }
+  req.prompt = assist::retag(idea, in);
+  // On the helper -- between the agent's own turns, its conversation kept
+  // apart under its key (vpipe keeps each context by key).
+  VALTZ_ASSIGN(JobId job, _c.enhance_prompt(std::move(req)));
+  if (!wait_job_(s, job)) {
+    return make_error(Code::Cancelled, "stopped");
+  }
+  const Json reply = take_reply_(job);
+  if (!reply.is_object()) {
+    const auto rec = _c._jobs.get(job);
+    return make_error(Code::Engine,
+                      rec && rec->state == JobState::Failed &&
+                              !rec->message.empty()
+                          ? rec->message
+                          : std::string("the enhancer's reply could not be "
+                                        "read: write the prompt yourself"));
+  }
+  const std::string written =
+      assist::retag(jget<std::string>(reply, "prompt", ""), back);
+  Json out = {{"for", what}};
+  if (m) {
+    out["written_for"] = m->name;
+  }
+  // What to look at in it -- found here; the rest is the agent's reading.
+  Json notes = Json::array();
+  auto lower = [](std::string t) {
+    for (auto& ch : t) {
+      ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return t;
+  };
+  if (what == "picture") {
+    out["prompt"] = written;
+    const auto asked = quoted_spans(idea);
+    std::string put;
+    for (const auto& q : quoted_spans(written)) {
+      if (std::ranges::find(asked, q) == asked.end()) {
+        put += (put.empty() ? "\"" : ", \"") + q + "\"";
+      }
+    }
+    if (!put.empty()) {
+      notes.push_back(std::format(
+          "It writes words into the picture: {}. A picture model misspells "
+          "them: take them out, and set the words in a text box over the "
+          "picture.",
+          put));
+    }
+  } else if (what == "shot") {
+    const auto parts = assist::clip_parts(written);
+    auto part = [&](const char* k) {
+      const auto it = parts.find(k);
+      return it == parts.end() ? std::string() : it->second;
+    };
+    std::string d = part("integrated_multimodal_description");
+    if (d.empty()) {
+      d = part("detailed_description");
+    }
+    out["description"] = parts.empty() ? written : d;
+    out["soundscape"] = part("overall_soundscape");
+    out["music"] = part("non_diegetic_music");
+    if (!part("subject_definitions").empty()) {
+      out["subjects"] = part("subject_definitions");
+    }
+    if (!part("summary").empty()) {
+      out["summary"] = part("summary");
+    }
+    // Words spoken that the idea did not give.
+    auto spoken = [](std::string_view t) {
+      std::vector<std::string> lines;
+      for (auto at = t.find("<d>"); at != std::string_view::npos;
+           at = t.find("<d>", at + 3)) {
+        const auto end = t.find("</d>", at);
+        if (end == std::string_view::npos) {
+          break;
+        }
+        lines.emplace_back(t.substr(at + 3, end - at - 3));
+      }
+      return lines;
+    };
+    const auto mine = spoken(idea);
+    std::string added;
+    for (const auto& l : spoken(d)) {
+      if (std::ranges::find(mine, l) == mine.end()) {
+        added += (added.empty() ? "" : " / ") + l;
+      }
+    }
+    if (!added.empty()) {
+      notes.push_back(std::format(
+          "It has someone speak: {}. Keep it only if the shot wants "
+          "those words.",
+          std::string(utf8_prefix(added, 300))));
+    }
+  } else if (what == "music") {
+    const assist::SongText song = assist::split_song(written);
+    out["style"] = song.style;
+    if (!song.lyrics.empty()) {
+      out["lyrics"] = song.lyrics;
+      if (lower(idea).find("instrumental") != std::string::npos) {
+        notes.push_back("You asked for instrumental music and it wrote "
+                        "lyrics: leave `lyrics` out.");
+      }
+    }
+  } else {
+    const assist::SpeechText sp = assist::split_speech(written);
+    out["text"] = sp.text;
+    out["voice"] = sp.instruction;
+    for (const auto& [k, v] :
+         {std::pair{"quality", &sp.quality},
+          std::pair{"sound_event", &sp.sound_event},
+          std::pair{"ambient_sound", &sp.ambient_sound},
+          std::pair{"language", &sp.language}}) {
+      if (!one_line(*v).empty()) {
+        out[k] = *v;
+      }
+    }
+    const std::string a = loosen(idea).text, b = loosen(sp.text).text;
+    if (b.find(a) == std::string::npos && a.find(b) == std::string::npos) {
+      notes.push_back("It wrote words of its own: if yours were the "
+                      "script, keep yours as `text`.");
+    }
+  }
+  // The look kept, in its words -- a word or two of it reworded is
+  // kept (the 9B, told "soft" was missing of seven, dropped the whole
+  // rewrite for its own words).
+  if (!style.empty()) {
+    const std::string low = lower(written);
+    const auto words = key_words(style);
+    std::string missing;
+    std::size_t gone = 0;
+    for (const auto& w : words) {
+      if (low.find(w) == std::string::npos) {
+        missing += (missing.empty() ? "" : ", ") + w;
+        ++gone;
+      }
+    }
+    if (gone * 3 >= words.size() && gone > 0) {
+      notes.push_back(std::format(
+          "It leaves out the look you keep (\"{}\": {} missing): put it "
+          "back in its words.",
+          style, missing));
+    }
+  }
+  if (!notes.empty()) {
+    out["notes"] = std::move(notes);
+  }
+  out["review"] = std::format(
+      "Read it before you use it: keep what you asked for and what it adds "
+      "that fits; take out what does not -- another subject, a look other "
+      "than the one you keep, a mood or a detail you did not ask for{}. "
+      "Then call {} with it as you corrected it.",
+      what == "picture" ? ", words written in the picture" : "", tool);
+  return out;
+}
+
+Result<Json>
 Controller::AgentHost::t_generate_image(Session& s, Step& step,
                                         const Json& args,
                                         std::vector<fs::path>&)
@@ -3574,6 +4653,33 @@ Controller::AgentHost::t_generate_image(Session& s, Step& step,
   // composition, page or box), an asset alone, as its description says
   // (it landed on the open composition's first page: a scene's
   // character picture on the timeline).
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  // An EDIT: the picture it changes, the pictures it draws on.
+  VALTZ_ASSIGN(auto base, maybe_asset(*p, args, "base"));
+  VALTZ_ASSIGN(auto refs, pictures_of(*p, args, "references"));
+  const bool edit = base || !refs.empty();
+  // "Auto" as the person would say it; a model by its name as shown --
+  // and, for a size asked, how large it makes (Auto's: its pick).
+  GenerateImageRequest req;
+  req.model = model_id(_c._catalog, text_arg(args, "model"));
+  int most = 2048;
+  {
+    std::string id = req.model;
+    for (const auto& a : _c.auto_models()) {
+      if (id.empty() && a.modality == "image" &&
+          a.op == (edit ? "edit" : "generate")) {
+        id = a.chosen;
+      }
+    }
+    if (const auto* m = _c._catalog.find(id); m && models::max_edge(*m)) {
+      most = models::max_edge(*m);
+    }
+  }
+  const bool sized = args.contains("long_side");
+  const double side = number(args, "long_side", 1024);
   const bool placed = args.contains("composition") ||
                       args.contains("page") || args.contains("x") ||
                       args.contains("width") || flag(args, "below_all");
@@ -3586,32 +4692,35 @@ Controller::AgentHost::t_generate_image(Session& s, Step& step,
     l.composition = comp;
     l.box = box;
     l.bottom = flag(args, "below_all");
-    size = picture_size(box[2], box[3]);
+    size = sized ? picture_size_long(box[2], box[3], side, most)
+                 : picture_size(box[2], box[3]);
+  } else if (base) {
+    // The base's own shape: the model's own area, or the side asked.
+    size = {0, 0};
+    if (auto v = p->version(*base); sized && v.ok()) {
+      size = picture_size_long(v->info.frame.width, v->info.frame.height,
+                               side, most);
+    }
+  } else if (sized) {
+    size = picture_size_long(1, 1, side, most);
   }
-  GenerateImageRequest req;
   req.project = s.project;
   req.prompt = prompt;
-  // "Auto" as the person would say it; a model by its name as shown.
-  req.model = text_arg(args, "model");
-  {
-    std::string low = req.model;
-    for (auto& ch : low) {
-      ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    }
-    if (low == "auto" || low == "default" || low == "auto's") {
-      req.model.clear();
-    } else if (!req.model.empty() && !_c._catalog.find(req.model)) {
-      for (const auto& m : _c._catalog.models()) {
-        if (m.name == req.model) {
-          req.model = m.id;
-        }
-      }
-    }
-  }
   req.name = one_line(text_arg(args, "name"));
   req.width = size.first;
   req.height = size.second;
-  req.mode = "generate";
+  req.mode = edit ? "edit" : "generate";
+  if (edit) {
+    // The pictures in order, the base first: <Picture n> in the prompt
+    // is the row's n-th, which the model reads by its own name.
+    if (base) {
+      req.row.push_back(*base);
+    }
+    req.row.insert(req.row.end(), refs.begin(), refs.end());
+    req.prompt = assist::retag(prompt, picture_tags(req.row.size()));
+    req.base = base;
+    req.references = refs;
+  }
   auto undo = _c.command_(s.project, "agent",
                           l.composition.value_or(AssetId{}), "",
                           {{"tool", step.tool}, {"title", step.title}});
@@ -3626,9 +4735,17 @@ Controller::AgentHost::t_generate_image(Session& s, Step& step,
     s.idle_waits = 0;
   }
   step.job = job;
-  Json r = {{"job", job.str()},
-            {"queued", true},
-            {"size", {size.first, size.second}}};
+  Json r = {{"job", job.str()}, {"queued", true}};
+  if (size.first > 0) {
+    r["size"] = {size.first, size.second};
+  }
+  if (edit) {
+    r["edits"] = base ? base->str() : std::string("its references");
+  }
+  if (std::max(size.first, size.second) > 2048) {
+    r["note"] = "A picture this large takes long: many minutes -- at "
+                "4096 an hour or more. Go on meanwhile.";
+  }
   if (auto rec = _c._jobs.get(job); rec && !rec->asset.is_nil()) {
     r["asset"] = rec->asset.str();
   }
@@ -3780,6 +4897,133 @@ Controller::AgentHost::t_describe_clip(Session& s, Step&, const Json& args,
 }
 
 Result<Json>
+Controller::AgentHost::t_transcribe(Session& s, Step&, const Json& args,
+                                    std::vector<fs::path>&)
+{
+  const auto asset = AssetId::parse(text_arg(args, "asset"));
+  if (!asset) {
+    return make_error(Code::InvalidArgument, "which sound or clip?");
+  }
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset src, p->asset(*asset));
+  if (src.kind != AssetKind::Audio && src.kind != AssetKind::Video) {
+    return make_error(Code::InvalidArgument, std::format(
+        "\"{}\" is not a sound or a clip", src.name));
+  }
+  // Heard before -- by the person, or an earlier step -- and still about
+  // it as it is: that transcript.
+  std::optional<AssetId> text;
+  if (auto deps = p->dependents(*asset, false); deps.ok()) {
+    for (const auto& d : *deps) {
+      auto a = p->asset(d);
+      auto r = a.ok() && a->head > 0 ? p->recipe(a->recipe)
+                                     : Result<project::Recipe>(make_error(
+                                           Code::NotFound, "none"));
+      auto st = p->staleness(d);
+      if (r.ok() && r->op == engine::kOpTranscribeAudio && st.ok() &&
+          st->fresh()) {
+        text = d;
+      }
+    }
+  }
+  if (!text) {
+    Controller::AssetOpRequest req;
+    req.project = s.project;
+    req.asset = *asset;
+    req.operation = "transcribe";
+    VALTZ_ASSIGN(auto made, _c.run_asset_operation(std::move(req)));
+    text = made.made.front();
+    if (!wait_job_(s, made.job)) {
+      return make_error(Code::Cancelled, "stopped");
+    }
+    const auto rec = _c._jobs.get(made.job);
+    if (rec && rec->state != JobState::Finished) {
+      return make_error(Code::Engine, rec->message.empty()
+                                          ? std::string("it could not be "
+                                                        "heard")
+                                          : rec->message);
+    }
+  }
+  VALTZ_ASSIGN(project::AssetVersion v, p->version(*text));
+  const Json t = jget(v.outputs, "transcript", Json::object());
+  Json out = {{"asset", asset->str()},
+              {"name", src.name},
+              {"transcript", text->str()}};
+  if (!t.is_object() || !t.contains("lines")) {
+    // Its words as they are kept (edited, perhaps).
+    auto words = p->read_text(*text);
+    out["text"] = words.ok() ? std::string(utf8_prefix(*words, 8192))
+                             : std::string();
+    return out;
+  }
+  out["seconds"] = secs(jget(t, "seconds", 0.0));
+  // What was said, line by line in its own seconds -- a long one's first
+  // 300 lines -- and the sounds heard.
+  constexpr std::size_t kMostLines = 300;
+  const Json all = jget(t, "lines", Json::array());
+  Json lines = Json::array();
+  for (const auto& l : all) {
+    if (lines.size() == kMostLines) {
+      out["more_lines"] = all.size() - kMostLines;
+      break;
+    }
+    lines.push_back(
+        {{"start", secs(jget(l, "start", 0.0))},
+         {"end", secs(jget(l, "end", 0.0))},
+         {"text", std::string(utf8_prefix(jget<std::string>(l, "text", ""),
+                                          600))}});
+  }
+  if (lines.empty()) {
+    out["speech"] = false;
+  }
+  out["lines"] = std::move(lines);
+  Json sounds = Json::array();
+  for (const auto& e : jget(t, "events", Json::array())) {
+    if (sounds.size() == 60) {
+      break;
+    }
+    sounds.push_back({{"start", secs(jget(e, "start", 0.0))},
+                      {"end", secs(jget(e, "end", 0.0))},
+                      {"label", jget<std::string>(e, "label", "")}});
+  }
+  if (!sounds.empty()) {
+    out["sounds"] = std::move(sounds);
+  }
+  return out;
+}
+
+Result<Json>
+Controller::AgentHost::t_separate_sound(Session& s, Step& step,
+                                        const Json& args,
+                                        std::vector<fs::path>&)
+{
+  const auto asset = AssetId::parse(text_arg(args, "asset"));
+  if (!asset) {
+    return make_error(Code::InvalidArgument, "which song?");
+  }
+  auto undo = _c.command_(s.project, "agent", AssetId{}, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  Controller::AssetOpRequest req;
+  req.project = s.project;
+  req.asset = *asset;
+  req.operation = "separate";
+  VALTZ_ASSIGN(auto made, _c.run_asset_operation(std::move(req)));
+  book_(s, step, made.job);
+  Json r = {{"job", made.job.str()}, {"queued", true}};
+  // In the operation's order: the voice, then the rest.
+  if (made.made.size() >= 2) {
+    r["vocals"] = made.made[0].str();
+    r["accompaniment"] = made.made[1].str();
+  }
+  r["note"] = "Made in the background: wait_for_generations, then "
+              "add_sound the one you want.";
+  return r;
+}
+
+Result<Json>
 Controller::AgentHost::t_view_frames(Session& s, Step& step, const Json& args,
                                      std::vector<fs::path>& shown)
 {
@@ -3802,10 +5046,14 @@ Controller::AgentHost::t_view_frames(Session& s, Step& step, const Json& args,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(*id));
+  // A picture, a still: shown as view_asset shows it (a still's other
+  // pages are view_page's).
+  if (a.kind == AssetKind::Image) {
+    return t_view_asset(s, step, {{"asset", id->str()}}, shown);
+  }
   if (a.kind != AssetKind::Video) {
     return make_error(Code::InvalidArgument, std::format(
-        "\"{}\" is not a clip or a timeline with a picture: a still's "
-        "pages are view_page's", a.name));
+        "\"{}\" is not a clip or a timeline with a picture", a.name));
   }
   Rational rate{24, 1};
   if (a.cls == AssetClass::Composition) {
@@ -4438,6 +5686,9 @@ Controller::AgentHost::t_generate_voiceover(Session& s, Step& step,
   }
   assist::SpeechText st;
   st.instruction = one_line(text_arg(args, "voice"));
+  st.quality = one_line(text_arg(args, "quality"));
+  st.sound_event = one_line(text_arg(args, "sound_event"));
+  st.ambient_sound = one_line(text_arg(args, "ambient_sound"));
   st.language = one_line(text_arg(args, "language"));
   if (st.language.empty()) {
     st.language = assist::speech_language(words);
@@ -4528,9 +5779,18 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
     }
     return *id;
   };
-  std::optional<AssetId> first;
+  std::optional<AssetId> first, last;
   if (const auto f = text_arg(args, "first"); !f.empty()) {
     VALTZ_ASSIGN(first, asset_arg(f, AssetKind::Image));
+  }
+  // The picture it ENDS on (FL2VA): from one picture to the other.
+  if (const auto f = text_arg(args, "last"); !f.empty()) {
+    if (!first) {
+      return make_error(Code::InvalidArgument,
+                        "a shot ends on a picture (last) only when it "
+                        "opens on one (first)");
+    }
+    VALTZ_ASSIGN(last, asset_arg(f, AssetKind::Image));
   }
   std::vector<AssetId> pictures;
   {
@@ -4590,20 +5850,14 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
                         "a composition of sound shows no shots");
     }
   }
-  // Its length, as the model makes lengths (17n + 5 frames for H3: 5 s
-  // is 124 frames, 5.17 s).
   const Json vp = jget(m->engine, "vpipe", Json::object());
   const Json defaults = jget(vp, "defaults", Json::object());
-  const double fps = jget(defaults, "fps", 24.0);
-  const Json grid = jget(vp, "frame_grid", Json::object());
-  const int gstep = std::max(1, jget(grid, "step", 1));
-  const int goff = std::max(1, jget(grid, "offset", 1));
-  int frames = static_cast<int>(std::lround(
-      std::clamp(number(args, "seconds", 5), 1.0, 10.0) * fps));
-  frames = std::min(frames, jget(vp, "max_frames", 241));
-  frames = frames <= goff
-               ? goff
-               : goff + (frames - goff + gstep - 1) / gstep * gstep;
+  if (last && !jget(vp, "last_frame", false)) {
+    return make_error(Code::Unsupported, std::format(
+        "{} does not end a shot on a picture", m->name));
+  }
+  // Its length, as the model makes lengths.
+  const auto [frames, fps] = shot_frames(*m, number(args, "seconds", 5));
   const double length = frames / fps;
   // Its size: the frame's, at the model's default area at most.
   const int align = std::max(16, jget(vp, "align", 16));
@@ -4631,6 +5885,7 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
     req.seed = std::max<std::int64_t>(0, args["seed"].get<std::int64_t>());
   }
   req.first = first;
+  req.last = last;
   req.references = pictures;
   Json r = {{"queued", true},
             {"seconds", secs(length)},
@@ -4832,6 +6087,16 @@ Controller::AgentHost::submit_shot_(Session& s, const std::string& title,
         text.continued_sound = tag("audio", 1);
       }
     }
+  } else if (req.first && req.last) {
+    // Opening on one picture and ending on another (FL2VA): the two as
+    // that case of its guide names them, bare -- in the description too.
+    const auto both = jget<std::string>(m->prompting, "first_last_tag", "");
+    text.first = both.empty() ? tag("image", 1) : numbered(both, 1);
+    text.last = both.empty() ? tag("image", 2) : numbered(both, 2);
+    text.seconds = req.fps > 0 ? req.frames / req.fps : 0;
+    text.description = assist::retag(text.description,
+                                     {{tag("image", 1), text.first},
+                                      {tag("image", 2), text.last}});
   } else if (req.first) {
     text.first = tag("image", 1);
   }

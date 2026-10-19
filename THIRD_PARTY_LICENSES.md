@@ -85,6 +85,16 @@ into the core.
 `3rd-party/minimax-h3/LICENSE` and `NOTICE`, which also ship in the app
 (`Contents/Resources/Licenses/MiniMax-H3`).
 
+## MOSS-Image prompt-enhancer skill
+
+`3rd-party/moss-image/skills/moss-image-prompt-enhancer/` (SKILL.md, its
+layout reference, and the compiler script Valtz's own code follows),
+unmodified; the two texts are compiled into the core.
+
+**License: Apache License 2.0.** Texts: `3rd-party/moss-image/LICENSE`
+and `NOTICE`, which also ship in the app
+(`Contents/Resources/Licenses/MOSS-Image`).
+
 ---
 
 # Downloaded on request

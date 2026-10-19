@@ -29,8 +29,11 @@ struct FleetServingOverlay: View {
                         .frame(maxWidth: 420)
                 }
                 VStack(spacing: 6) {
-                    if let p = serving.progress, p > 0 {
-                        ProgressView(value: min(1, p))
+                    // What the caption counts -- the phase's -- else the
+                    // job's: the job's alone left the bar going to and
+                    // fro under "Generating · 47%".
+                    if let f = fraction {
+                        ProgressView(value: min(1, f))
                     } else {
                         ProgressView().progressViewStyle(.linear)
                     }
@@ -59,6 +62,13 @@ struct FleetServingOverlay: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    /// How far: the phase's count, as the caption says it; else the
+    /// job's own once it moves; nil while nothing is counted.
+    private var fraction: Double? {
+        serving.phase?.fraction
+            ?? serving.progress.flatMap { $0 > 0 ? $0 : nil }
     }
 
     /// The phase as a generation's progress words it ("Generating ·

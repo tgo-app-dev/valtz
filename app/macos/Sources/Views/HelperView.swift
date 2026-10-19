@@ -70,13 +70,13 @@ struct HelperView: View {
                 }
             }
             Section {
-                Toggle("Show Speed in the Agent's Output", isOn: Binding(
+                Toggle("Show the Helper's Speed", isOn: Binding(
                     get: { model.agentShowsSpeed },
                     set: { model.setAgentShowsSpeed($0) }))
             } header: {
                 Text("Debugging")
             } footer: {
-                Text("Under each of the agent's turns, in small type: the tokens it read (prefill) and wrote (decode), how fast, and how much of the conversation it went on from. The Agent is in Settings › Experimental.")
+                Text("Under each of the agent's turns and each suggested prompt, in small type: the tokens it read (prefill) and wrote (decode), how fast, how many tokens a round of its drafter bought and how many of its drafts were kept, and how much of the conversation it went on from. The Agent is in Settings › Experimental.")
                     .foregroundStyle(.secondary)
             }
         }

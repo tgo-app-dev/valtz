@@ -1147,6 +1147,84 @@ TEST(media, a_sound_is_cut_to_the_sample)
   CHECK(!media::write_sound(src, dir / "x.mp3", "mp3").ok());
 }
 
+namespace {
+
+// The first ProRes frame's alpha_info -- 0 none, 1 8-bit, 2 16-bit --
+// as a decoder reads it, after its 'icpf' (byte 17 of the frame header,
+// FFmpeg's proresdec); -1 with no frame found.
+int
+prores_alpha_info(const std::filesystem::path& path)
+{
+  std::ifstream f(path, std::ios::binary);
+  const std::string d((std::istreambuf_iterator<char>(f)),
+                      std::istreambuf_iterator<char>());
+  const std::size_t i = d.find("icpf");
+  if (i == std::string::npos || i + 4 + 18 > d.size()) {
+    return -1;
+  }
+  return static_cast<unsigned char>(d[i + 4 + 17]) & 0xf;
+}
+
+}
+
+// A ProRes INTERMEDIATE (OutputSettings::intermediate): a stack drawn in
+// the flavour asked -- 422 HQ for one that is not ProRes -- with no
+// alpha plane (drawn over black: a 4444 coded a plane of 1s before), and
+// a sound joined as 24-bit PCM, at ANY rate, as a whole and as a span
+// (AAC's would be moved to one it encodes: 37.8 kHz to 44.1); a
+// rendering with its sound the same.
+TEST(media, a_prores_intermediate_keeps_its_flavour_and_pcm_sound)
+{
+  const auto dir = test::temp_dir("intermediate");
+  const auto png = dir / "grey.png";
+  REQUIRE(write_png_grey(png, 128));
+  media::MovieStack still;
+  still.canvas.frame_w = 64;
+  still.canvas.frame_h = 48;
+  still.frames = 48;
+  media::MovieLayer pic;
+  pic.file = png;
+  still.layers.push_back(pic);
+  const std::pair<std::string_view, std::string_view> flavours[] = {
+      {"prores4444xq", "ap4x"}, {"prores4444", "ap4h"},
+      {"prores422hq", "apch"}, {"prores422", "apcn"}, {"hevc", "apch"}};
+  for (const auto& [f, fourcc] : flavours) {
+    const auto mov = dir / std::format("{}.mov", f);
+    REQUIRE_OK(media::encode_movie_stack(still, {24, 1}, {64, 48}, {}, mov,
+                                         f));
+    auto r = media::probe_file(mov);
+    REQUIRE_OK(r);
+    CHECK(r->codec == fourcc);
+    CHECK(prores_alpha_info(mov) == 0);
+  }
+  const auto wav = dir / "s37800.wav";
+  REQUIRE(write_ramp_wav(wav, 37800, 37800 * 2, 2));
+  const auto mov = dir / "prores4444.mov";
+  const auto whole = dir / "whole.mov";
+  REQUIRE_OK(media::add_soundtrack(mov, wav, whole, 0, 0,
+                                   media::SoundCodec::Pcm));
+  auto w = media::probe_file(whole);
+  REQUIRE_OK(w);
+  CHECK(w->has_audio);
+  CHECK(w->audio_sample_rate == 37800);
+  CHECK(w->audio_channels == 2);
+  CHECK(w->codec == "ap4h");
+  CHECK(std::abs(w->duration.seconds() - 2.0) < 0.1);
+  const auto part = dir / "part.mov";
+  REQUIRE_OK(media::add_soundtrack(mov, wav, part, 0.5, 1.0,
+                                   media::SoundCodec::Pcm));
+  auto p = media::probe_file(part);
+  REQUIRE_OK(p);
+  CHECK(p->audio_sample_rate == 37800);
+  const auto with = dir / "rendered.mov";
+  REQUIRE_OK(media::encode_movie_stack(still, {24, 1}, {64, 48}, wav, with,
+                                       "prores4444"));
+  auto r = media::probe_file(with);
+  REQUIRE_OK(r);
+  CHECK(r->codec == "ap4h");
+  CHECK(r->audio_sample_rate == 37800);
+}
+
 // A sound AAC cannot carry as first asked: 8 kHz mono -- a camcorder's
 // AVI, upscaled -- joined to the movie made of it. 96 kb/s a channel is
 // more than AAC holds at 8 kHz, and the writer refused the whole movie

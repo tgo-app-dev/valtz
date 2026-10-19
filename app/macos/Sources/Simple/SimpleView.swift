@@ -146,64 +146,84 @@ struct SimpleView: View {
                             .transition(.opacity)
                     }
                 }
-                if let f = model.memoryFailure, !model.suggesting {
-                    MemoryFailureCard(model: model, failure: f)
-                        .frame(maxWidth: Self.columnWidth)
-                        .padding(.bottom, 14)
-                        .transition(.move(edge: .bottom)
-                            .combined(with: .opacity))
+            }
+            // The cards over the composer, and the composer: a notice
+            // floats over the topmost of them.
+            VStack(spacing: 0) {
+                if !immersive {
+                    if let f = model.memoryFailure, !model.suggesting {
+                        MemoryFailureCard(model: model, failure: f)
+                            .frame(maxWidth: Self.columnWidth)
+                            .padding(.bottom, 14)
+                            .transition(.move(edge: .bottom)
+                                .combined(with: .opacity))
+                    }
+                    if !immersive, model.activeModality == .agent,
+                       let a = model.agent, !model.suggesting {
+                        AgentCard(model: model, session: a)
+                            .frame(maxWidth: Self.columnWidth)
+                            .padding(.bottom, 14)
+                            .transition(.move(edge: .bottom)
+                                .combined(with: .opacity))
+                    }
+                    if model.suggesting {
+                        SuggestionCard(prompt: model.enhanced?.prompt
+                                           ?? model.enhanceDraft,
+                                       writing: model.suggestionWriting,
+                                       stats: model.agentShowsSpeed
+                                           ? model.enhanced?.stats : nil,
+                                       maxTextHeight: SuggestionCard.textCap(
+                                           window: size.height),
+                                       accept: model.acceptEnhanced,
+                                       dismiss: model.dismissEnhanced,
+                                       review: {
+                                           withAnimation(AppModel.motion) {
+                                               model.enterImmersivePrompt()
+                                           }
+                                       })
+                            .frame(maxWidth: Self.columnWidth)
+                            .padding(.bottom, 14)
+                            .transition(.move(edge: .bottom)
+                                .combined(with: .opacity))
+                    }
                 }
-                if !immersive, model.activeModality == .agent,
-                   let a = model.agent, !model.suggesting {
-                    AgentCard(model: model, session: a)
-                        .frame(maxWidth: Self.columnWidth)
-                        .padding(.bottom, 14)
+                ComposerStack(model: model, maxPromptHeight: size.height / 2,
+                              immersive: immersive, cardWidth: card)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                        model.composerWidth = $0
+                        model.composerColumn = base
+                    }
+                    .frame(width: immersive ? card : nil)
+                    // The timeline is wide: the window's width but the
+                    // margins, where its switch back sits.
+                    .frame(maxWidth: immersive ? nil
+                           : model.timelineOpen ? max(base, size.width - 80)
+                           : Self.columnWidth)
+                    .frame(maxHeight: immersive ? .infinity : nil,
+                           alignment: .top)
+                    // Wider, it grows to the right: its left edge stays.
+                    .offset(x: immersive ? (card - base) / 2 : 0)
+            }
+            // A NOTICE, floating between the stage (or the mark) and the
+            // prompt or the timeline -- over neither's layout: nothing
+            // moves as it comes and goes. It went under the composer in
+            // secondary text, where it was missed. Over the stage's own bar
+            // (a clip's Loop / Grab Frame / Continue, the compare's) and a
+            // generation's status, it stands above them.
+            .overlay(alignment: .top) {
+                if !immersive, let n = model.notice {
+                    // Its foot on the group's top (a frame of no height, the
+                    // capsule standing up out of it), a gap above.
+                    NoticeCapsule(notice: n, dismiss: model.dismissNotice)
+                        .frame(maxWidth: min(Self.columnWidth, base))
+                        .frame(height: 0, alignment: .bottom)
+                        .offset(y: -noticeLift)
                         .transition(.move(edge: .bottom)
                             .combined(with: .opacity))
-                }
-                if model.suggesting {
-                    SuggestionCard(prompt: model.enhanced?.prompt
-                                       ?? model.enhanceDraft,
-                                   writing: model.suggestionWriting,
-                                   maxTextHeight: SuggestionCard.textCap(
-                                       window: size.height),
-                                   accept: model.acceptEnhanced,
-                                   dismiss: model.dismissEnhanced,
-                                   review: {
-                                       withAnimation(AppModel.motion) {
-                                           model.enterImmersivePrompt()
-                                       }
-                                   })
-                        .frame(maxWidth: Self.columnWidth)
-                        .padding(.bottom, 14)
-                        .transition(.move(edge: .bottom)
-                            .combined(with: .opacity))
+                        .id(n.text)
                 }
             }
-            ComposerStack(model: model, maxPromptHeight: size.height / 2,
-                          immersive: immersive, cardWidth: card)
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-                    model.composerWidth = $0
-                    model.composerColumn = base
-                }
-                .frame(width: immersive ? card : nil)
-                // The timeline is wide: the window's width but the
-                // margins, where its switch back sits.
-                .frame(maxWidth: immersive ? nil
-                       : model.timelineOpen ? max(base, size.width - 80)
-                       : Self.columnWidth)
-                .frame(maxHeight: immersive ? .infinity : nil,
-                       alignment: .top)
-                // Wider, it grows to the right: its left edge stays.
-                .offset(x: immersive ? (card - base) / 2 : 0)
             if !immersive {
-                if let banner = model.banner {
-                    Text(banner)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 12)
-                        .transition(.opacity)
-                }
                 if !model.stageVisible {
                     Spacer(minLength: 20)
                         .onGeometryChange(for: CGFloat.self) {
@@ -219,6 +239,15 @@ struct SimpleView: View {
         .padding(.top, immersive ? 0 : 12)
         .padding(.bottom, immersive ? StatusBar.height
                  : model.stageVisible ? 28 : 0)
+    }
+
+    /// How far over the composer a notice floats: clear of the stage's
+    /// bar under the picture and of a generation's status.
+    private var noticeLift: CGFloat {
+        let bar = model.stageVisible
+            && ((model.stage.video != nil && model.stage.clip == nil)
+                || model.compareOn)
+        return 12 + (bar ? 40 : 0) + (model.isGenerating ? 52 : 0)
     }
 
     /// In the editor, the space left of the card and its tabs: the stage
@@ -318,6 +347,67 @@ private struct SmallTransport: View {
         .foregroundStyle(.secondary)
         .help(help)
         .accessibilityLabel(Text(help))
+    }
+}
+
+/// A NOTICE (AppModel.flash) as it floats over the composer: its words
+/// in a Liquid Glass capsule -- an error's tinted a mild red, a warning's
+/// a mild yellow, its sign beside the words. A click lets it go.
+private struct NoticeCapsule: View {
+    let notice: Notice
+    let dismiss: () -> Void
+
+    private var symbol: String {
+        switch notice.level {
+        case .info: "info.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .error: "xmark.octagon.fill"
+        }
+    }
+
+    /// The level's colour; nil for a plain notice.
+    private var accent: Color? {
+        switch notice.level {
+        case .info: nil
+        case .warning: Color(red: 0.95, green: 0.72, blue: 0.10)
+        case .error: Color(red: 0.92, green: 0.26, blue: 0.24)
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol)
+                .foregroundStyle(accent ?? .secondary)
+            Text(notice.text)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.leading)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .font(.callout.weight(.medium))
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        // The glass BEHIND the words, not around them: content inside a
+        // glass effect waits for the glass's own appearance, and a notice
+        // comes and goes in seconds.
+        .background {
+            Capsule()
+                .fill(.clear)
+                .glassEffect(.regular.tint(accent?.opacity(0.22)),
+                             in: Capsule())
+        }
+        // Its rim: the level's colour, or -- a plain notice, whose glass
+        // over a white window all but vanishes -- a hairline.
+        .overlay {
+            Capsule().strokeBorder(accent?.opacity(0.5)
+                                       ?? Color.primary.opacity(0.14),
+                                   lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+        .contentShape(Capsule())
+        .onTapGesture(perform: dismiss)
+        .help("Click to dismiss")
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -444,7 +534,8 @@ private struct ResultStage: View {
                         if marksShown, let c = model.guideCanvas,
                            let g = model.stageGuides,
                            let r = model.stage.video != nil
-                               ? CGRect(origin: .zero, size: size)
+                               ? model.stageVideoRect
+                                   ?? CGRect(origin: .zero, size: size)
                                : model.stageCanvasRect {
                             GuideMarks(model: model, size: size, rect: r,
                                        canvas: c, guides: g)
@@ -547,12 +638,18 @@ private struct ResultStage: View {
                             controls: !model.timelineOpen && !small,
                             core: model.core,
                             onFrame: { model.videoFrameChanged($0) },
-                            onRate: { model.videoRate = $0 })
+                            onRate: { model.videoRate = $0 },
+                            // The title bar's zoom (not the small stage's).
+                            zoom: small ? nil : model.stage.zoomRequests,
+                            onViewport: { model.stage.setViewport($0) },
+                            onShown: { model.stageVideoRect = $0 })
                 // The guides over the clip (View › Show Guides): the clip
-                // fills the card. Not over a sound's waveform.
+                // fills the card, or lies where it is zoomed. Not over a
+                // sound's waveform.
                 .overlay {
                     if model.showsGuides && !small && !model.stageIsAudio {
-                        GuidesGrid(at: model.stageGuideFractions)
+                        GuidesGrid(at: model.stageGuideFractions,
+                                   over: model.stageVideoRect)
                     }
                 }
                 // Markup on the clip (DESIGN §10a Markup): drawn at the
@@ -562,6 +659,7 @@ private struct ResultStage: View {
                         ClipMarkupView(
                             canvas: model.clipMarkupCanvas,
                             origin: model.clipMarkupOrigin,
+                            shown: model.stageVideoRect,
                             overlay: model.markupOverlay,
                             cursor: model.markup.tool.cursor,
                             brushRadius: model.markup.tool == .brush
@@ -1075,6 +1173,9 @@ struct SuggestionCard: View {
     let prompt: String
     /// Still being written: its words as far as they have come.
     var writing = false
+    /// What the helper read and wrote, how fast -- shown while Settings ›
+    /// Agentic Helper › Show the Helper's Speed is on.
+    var stats: AgentTurnStats?
     /// How tall its words stand before they scroll (`textCap`).
     var maxTextHeight: CGFloat = 160
     let accept: () -> Void
@@ -1107,6 +1208,9 @@ struct SuggestionCard: View {
             if !prompt.isEmpty {
                 SuggestionText(text: prompt, writing: writing,
                                maxHeight: maxTextHeight)
+            }
+            if let stats, !stats.isEmpty {
+                AgentSpeedText(stats: stats)
             }
             HStack {
                 if let review {

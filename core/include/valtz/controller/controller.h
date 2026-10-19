@@ -30,7 +30,8 @@
 //   job.cancelled    -
 //   assist.partial   prompt                  (the suggestion so far, as
 //                    it is written: assist::partial_enhance_reply)
-//   assist.enhanced  prompt, negative, title
+//   assist.enhanced  prompt, negative, title, stats (what the helper
+//                    read and wrote, how fast: agent::turn_stats)
 //   assist.intent    intent, confidence, subject, params, from_model
 
 #ifndef VALTZ_CONTROLLER_CONTROLLER_H
@@ -196,7 +197,8 @@ struct GenerateImageRequest {
 
 // A clip -- and its soundtrack, made with it -- from a prompt (MiniMax H3
 // FL2VA), optionally opening on a picture. The result is a derived
-// video asset: HEVC Main10 with AAC sound, in an .mp4.
+// video asset in the project's intermediate format (OutputSettings):
+// ProRes 422 HQ and PCM in a .mov unless it says otherwise.
 struct GenerateVideoRequest {
   ProjectId            project;
   // Pictures inline in it (U+FFFC) are dropped: a clip reads the words.
@@ -464,10 +466,15 @@ public:
   // (models/model-check.h, DESIGN §8b): the model found in or around
   // what was chosen is linked, and a folder that is another model, or
   // not whole, is not. The check (ModelCheck::to_json), with "linked";
-  // an error only for an unknown model or a path that is not there.
+  // an error only for an unknown model or a path that is not there. Draw
+  // Things checkpoints of its parts (the check's "parts": DiT, text
+  // encoder, VAE) are linked as those parts alone, the rest -- configs,
+  // tokenizer -- where the model is (ModelStore::link_part): every job of
+  // it runs them (its DiT and VAE unless Custom names its own). `parts`:
+  // those links undone, not the model's.
   Result<Json> link_model(const std::string& id,
                           const std::filesystem::path& target);
-  Status unlink_model(const std::string& id);
+  Status unlink_model(const std::string& id, bool parts = false);
   // A model's files checked as a link's are, without linking: `target`'s,
   // else where it is installed.
   Result<Json> check_model(const std::string& id,
@@ -1074,8 +1081,15 @@ public:
   // where it takes it), settled from Med's preset (int8 GEMMs where the
   // GPU has matrix cores) with the person's own laid on, kept in
   // <support>/upscale.json: {"upscalers": [{"id", "name", "kind":
-  // "video" | "image", "state", "tuning": models::tuning_options}]}.
+  // "video" | "image", "state", "runs": whether Render Upscaled runs it
+  // now, "tuning": models::tuning_options}], "kinds": [{"kind",
+  // "chosen": the person's pick ("" Auto), "auto": Auto's -- the best
+  // installed by rank -- "runs": what an upscale of that kind runs now}]}.
   Json upscale_settings() const;
+  // The upscaler Render Upscaled runs for a KIND ("video" | "image"):
+  // `model` the person's pick, "" or "auto" Auto's. Kept in upscale.json
+  // ("use"). A pick not installed gives way to Auto's until it is.
+  Status use_upscaler(std::string_view kind, const std::string& model);
   // `model`'s own values ({key: value}, as tuning_options lists them)
   // laid on the ones kept -- `reset`: on its defaults, so {} restores
   // them. A value as the default is not kept.
@@ -1677,6 +1691,9 @@ private:
       const models::ModelEntry* prefer = nullptr,
       const std::function<bool(const models::ModelEntry&)>& fits = {})
       const;
+  // The upscaler Settings › Upscaling picks for `cap` (UpscaleVideo,
+  // UpscaleImage) -- installed or not; null: Auto.
+  const models::ModelEntry* chosen_upscaler_(models::Capability cap) const;
   // What an operation makes from `src`: each a derived asset of its own
   // recipe, beside `src` in the list when `beside`; the first is its
   // job's asset, the rest companions by the output each holds
@@ -1782,6 +1799,10 @@ private:
   struct ReplyForm {
     std::string                                      lead;
     std::vector<std::pair<std::string, std::string>> names;
+    // A MOSS-Image draft's canvas, width and height (assist/moss-
+    // image.h): the reply is compiled for a picture of this size; 0:
+    // not one.
+    std::pair<int, int>                              canvas;
     std::string apply(std::string prompt) const;
   };
   Result<JobId> submit_chat_(JobId id, std::string purpose,
@@ -1804,8 +1825,11 @@ private:
                                       const std::vector<AssetId>& refs);
   void on_build_event_(const engine::JobEvent&);
   void on_export_event_(const engine::JobEvent&);
+  // `stats`: an Output's cost and speed (agent::turn_stats), carried on
+  // assist.enhanced as "stats" for the person debugging the helper.
   void on_chat_event_(const engine::JobEvent&, const std::string& purpose,
-                      const std::string& song, const ReplyForm&);
+                      const std::string& song, const ReplyForm&,
+                      const Json& stats);
   void finish_job_(JobId, JobState, std::string message);
   // Has the engine a graph for capability `c`? (Grows as graphs land.)
   bool engine_runs_(models::Capability c) const;

@@ -5,13 +5,16 @@ import SwiftUI
 /// a timeline's frame fitted in the card -- AVKit's aspect fit -- and
 /// this, over it while the markup toolbar works, takes the pointer there
 /// in the canvas's pixels (as the picture's canvas hands them), draws
-/// what markup draws live, and the brush's outline. The player has no
-/// zoom: its frame is fitted, so markup is too.
+/// what markup draws live, and the brush's outline: over the frame as the
+/// player fits it, or where the clip is zoomed (ClipZoomView).
 struct ClipMarkupView: NSViewRepresentable {
     /// The canvas the player draws, in pixels, and where markup's own
     /// frame lies on it (a canvas of its own size: Canvas Size).
     var canvas: CGSize
     var origin: CGPoint
+    /// Where the zoomed clip's frame lies (points from the top left);
+    /// nil, fitted.
+    var shown: CGRect? = nil
     var overlay: MarkupOverlay
     var cursor: NSCursor
     var brushRadius: Double
@@ -30,6 +33,7 @@ struct ClipMarkupView: NSViewRepresentable {
         v.canKey = canKey
         v.canvas = canvas
         v.origin = origin
+        v.shown = shown
         v.overlay = overlay
         v.cursor = cursor
         v.brushRadius = brushRadius
@@ -44,6 +48,9 @@ final class ClipMarkupNSView: NSView {
     }
     var origin = CGPoint.zero {
         didSet { if origin != oldValue { relayout() } }
+    }
+    var shown: CGRect? {
+        didSet { if shown != oldValue { relayout() } }
     }
     var overlay = MarkupOverlay() {
         didSet { overlayView.overlay = overlay }
@@ -99,8 +106,13 @@ final class ClipMarkupNSView: NSView {
         relayout()
     }
 
-    /// The frame as the player fits it (this view's points, y up).
+    /// The frame as the player fits it -- or where it is zoomed -- in
+    /// this view's points, y up.
     private var fitted: CGRect {
+        if let r = shown {
+            return CGRect(x: r.minX, y: bounds.height - r.maxY,
+                          width: r.width, height: r.height)
+        }
         let w = max(1, canvas.width), h = max(1, canvas.height)
         let s = min(bounds.width / w, bounds.height / h)
         let size = CGSize(width: w * s, height: h * s)

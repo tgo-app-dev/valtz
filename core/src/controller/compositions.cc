@@ -2292,15 +2292,25 @@ Controller::rendered_(ProjectId pid, AssetId id, std::uint32_t version,
     return mix;
   }
   // Named for its 709 (2026-10-12): one cached before, drawn into the
-  // named BT.709 space -- lighter, the shadows most -- is not found.
-  return cached_(pid, cache::CacheStore::key_for(key, "movie-709.mov"),
+  // named BT.709 space -- lighter, the shadows most -- is not found. In
+  // the project's intermediate format when that is ProRes, else ProRes
+  // 422 HQ (OutputSettings): another flavour is a file of its own.
+  VALTZ_ASSIGN(project::OutputSettings o, p->output());
+  const std::string prores =
+      media::is_intermediate_format(o.intermediate) &&
+              media::is_prores(o.intermediate)
+          ? o.intermediate
+          : std::string(media::kDefaultIntermediate);
+  const std::string file = prores == media::kDefaultIntermediate
+      ? "movie-709.mov" : std::format("movie-709-{}.mov", prores);
+  return cached_(pid, cache::CacheStore::key_for(key, file),
                  [&](const fs::path& out) -> Status {
     VALTZ_ASSIGN(media::MovieStack stack,
                  movie_stack_(pid, id, true, std::nullopt, depth + 1));
     VALTZ_ASSIGN(fs::path sound, mixed_(pid, id, depth));
     VALTZ_ASSIGN(media::PixelSize size, shown_size_(*p, id, 0, depth));
     return media::encode_movie_stack(stack, rate_of_(*p, a), size, sound,
-                                     out);
+                                     out, prores);
   });
 }
 
@@ -2996,6 +3006,10 @@ Controller::set_project_output(ProjectId pid,
     return make_error(Code::InvalidArgument, msg::kOutputColorUnknown,
                       {{"color", o.color}});
   }
+  if (!media::is_intermediate_format(o.intermediate)) {
+    return make_error(Code::InvalidArgument, msg::kIntermediateUnknown,
+                      {{"format", o.intermediate}});
+  }
   VALTZ_ASSIGN(project::OutputSettings was, p->output());
   if (!(o.fps == was.fps)) {
     // The project timeline's rate: changed only while it is empty.
@@ -3033,6 +3047,10 @@ Controller::set_up_project(ProjectId pid, AssetClass cls,
   if (!media::output_color(o.color)) {
     return make_error(Code::InvalidArgument, msg::kOutputColorUnknown,
                       {{"color", o.color}});
+  }
+  if (!media::is_intermediate_format(o.intermediate)) {
+    return make_error(Code::InvalidArgument, msg::kIntermediateUnknown,
+                      {{"format", o.intermediate}});
   }
   VALTZ_TRY(p->set_output(o));
   const bool sound = size.width <= 0 || size.height <= 0;
@@ -3785,8 +3803,17 @@ Controller::place_layers(ProjectId pid, AssetId aid,
   if (moved.size() != want.size()) {
     return make_error(Code::InvalidArgument, "no such layer");
   }
+  // Above itself: where it is -- above the nearest layer under it that
+  // stays -- but in `folder`. A folder's topmost layer taken out of it
+  // is placed above that topmost layer, itself: it had kept its folder.
   if (above && want.contains(*above)) {
-    return ok_status();  // above itself: where it is
+    above.reset();
+    for (const auto& l : a.layers) {
+      if (want.contains(l.id)) {
+        break;
+      }
+      above = l.id;
+    }
   }
   // On a frame of its own every layer moves; a stack from before keeps
   // its bottom one -- the frame -- where it is (as move_layer).

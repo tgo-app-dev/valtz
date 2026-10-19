@@ -11,7 +11,7 @@ final class AudioScrubber {
     private let node = AVAudioPlayerNode()
     private let format = AVAudioFormat(standardFormatWithSampleRate: 48_000,
                                        channels: 2)!
-    private var started = false
+    private var attached = false
     private var ticket = 0
     /// The samples the last step played, and their loudest (a snapshot
     /// hook reads them).
@@ -44,19 +44,50 @@ final class AudioScrubber {
 
     func stop() {
         ticket += 1
-        if started { node.stop() }
+        if attached && engine.isRunning { node.stop() }
     }
 
-    private func schedule(_ buf: AVAudioPCMBuffer) {
-        if !started {
+    /// Played on an engine that RUNS and whose output has TURNED. A player
+    /// node played otherwise fails -- on a stopped engine (AVAudioEngine
+    /// stops itself when the sound's output changes: a device unplugged or
+    /// switched), or before the output's first IO cycle ("player did not
+    /// see an IO cycle", -10863: right after a start, or never, with no
+    /// output running) -- and the deprecated play() RAISES then, an
+    /// Objective-C exception Swift cannot catch: a frame's step aborted
+    /// Valtz on macOS 27 (2026-10-18). The engine is started again when
+    /// stopped, the play waits a moment for the output's first cycle (a
+    /// few milliseconds on a Mac whose sound runs) and is skipped without
+    /// one -- the step silent; macOS 27's throwing play reports what is
+    /// left.
+    private func schedule(_ buf: AVAudioPCMBuffer, tries: Int = 0) {
+        if !attached {
             engine.attach(node)
             engine.connect(node, to: engine.mainMixerNode, format: format)
+            attached = true
+        }
+        if !engine.isRunning {
             do { try engine.start() } catch { return }
-            started = true
+            guard engine.isRunning else { return }
+        }
+        guard engine.outputNode.lastRenderTime?.isSampleTimeValid == true
+        else {
+            // About 0.3 s at most, the step's own sound still the latest.
+            guard tries < 10 else { return }
+            let mine = ticket
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(30))
+                guard let self, mine == self.ticket else { return }
+                self.schedule(buf, tries: tries + 1)
+            }
+            return
         }
         node.stop()
         node.scheduleBuffer(buf, completionHandler: nil)
-        node.play()
+        if #available(macOS 27.0, *) {
+            try? node.playAudio()
+        } else {
+            node.play()
+        }
     }
 
     /// The range decoded to 48 kHz stereo float, faded in and out over 3

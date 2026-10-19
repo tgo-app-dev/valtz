@@ -91,7 +91,15 @@ const ConfigKey kNextResults[] = {
   {.key = ex::kDropped, .type = ConfigType::Uint,
    .doc = "beats dropped (policy latest) since the previous reply"},
   {.key = ex::kKind, .type = ConfigType::String,
-   .doc = "\"tensor\" (buffer `data`), \"data\" (`data`) or \"other\""},
+   .doc = "\"tensor\" (buffer `data`), \"data\" (`data`), \"list\" (an "
+          "item of a list beat, as a tensor) or \"other\""},
+  {.key = ex::kItem, .type = ConfigType::Uint,
+   .doc = "a list's item: its place (0-based)"},
+  {.key = ex::kItems, .type = ConfigType::Uint,
+   .doc = "a list's item: how many the list holds (0: an empty list, "
+          "one reply with no tensor)"},
+  {.key = ex::kListSideband, .type = ConfigType::Any,
+   .doc = "a list's item: the list's own sideband"},
   {.key = ex::kType, .type = ConfigType::String, .doc = "element type"},
   {.key = ex::kShape, .type = ConfigType::Array, .doc = "the shape"},
   {.key = ex::kStrides, .type = ConfigType::Array,
@@ -254,20 +262,31 @@ private:
     }
   }
 
+  // A beat queued, and -- a list -- how many of its items are out: it
+  // leaves the queue once the last one is.
   struct Held {
     std::uint64_t                           seq = 0;
     std::shared_ptr<vpipe::BeatPayloadIntf> beat;
+    std::size_t                             parts = 1;
+    std::size_t                             next = 0;
   };
 
   void
   accept_(std::unique_ptr<vpipe::BeatPayloadIntf> beat)
   {
+    // (A list is a result, read from a queue: `latest` -- previews --
+    // never sees one half handed out.)
     if (_latest && _queue.size() >= _depth) {
       _queue.pop_front();
       ++_dropped;
       ++_dropped_since;
     }
-    _queue.push_back({++_received, std::move(beat)});
+    Held h{++_received, std::move(beat)};
+    if (auto* tl = dynamic_cast<const vpipe::TensorListPayload*>(
+            h.beat.get())) {
+      h.parts = std::max<std::size_t>(1, tl->items.size());
+    }
+    _queue.push_back(std::move(h));
   }
 
   // Match queued beats with waiting commands, oldest with oldest.
@@ -283,22 +302,49 @@ private:
       if (_queue.empty()) {
         break;
       }
-      Held h = std::move(_queue.front());
-      _queue.pop_front();
+      Held& h = _queue.front();
       if (answer_(*cmd, h)) {
-        ++_delivered;
         _dropped_since = 0;
-      } else if (cmd->closed()) {
-        _queue.push_front(std::move(h));  // closed as we replied: keep it
-      } else {
+        if (++h.next >= h.parts) {
+          _queue.pop_front();
+          ++_delivered;
+        }
+      } else if (!cmd->closed()) {
         // The host refused our own reply against our own spec: a bug
         // here, and the command is already Failed with the reason.
         session()->warn(vpipe::fmt("{}('{}'): reply to `next` refused; "
                                    "beat {} dropped", kTypeName, id(),
                                    h.seq));
+        _queue.pop_front();
         ++_dropped;
       }
+      // (Closed as we replied: the beat, or its item, stays for the next.)
       _waiting.pop_front();
+    }
+  }
+
+  // A tensor's type, shape, strides, sideband and storage into the
+  // reply, and its bytes as buffer `data` -- owned by `beat`: whoever
+  // holds a copy of the buffer holds the beat, and the sink lets go of it
+  // once it is out. No bytes, no buffer: the type and shape say it all.
+  static void
+  put_tensor_(const vpipe::TensorBeat& tb, FlexData& r,
+              std::vector<vpipe::DataBuffer>& out,
+              const std::shared_ptr<vpipe::BeatPayloadIntf>& beat)
+  {
+    auto ro = r.as_object();
+    ro.insert(ex::kType, FlexData::make_string(tb.dtype_name()));
+    ro.insert(ex::kShape, int_array(tb.shape));
+    std::vector<std::int64_t> strides;
+    for (std::int64_t s : tb.strides) {
+      strides.push_back(s * static_cast<std::int64_t>(
+                                tb.element_byte_size()));
+    }
+    ro.insert(ex::kStrides, int_array(strides));
+    ro.insert(ex::kSideband, tb.sideband);
+    describe_storage(tb, r);
+    if (tb.byte_size() > 0) {
+      out.push_back(tensor_view(tb, ex::kBufData, beat, false));
     }
   }
 
@@ -314,20 +360,15 @@ private:
     if (auto* tb = dynamic_cast<const vpipe::TensorBeatPayload*>(
             h.beat.get())) {
       ro.insert(ex::kKind, FlexData::make_string(ex::kKindTensor));
-      ro.insert(ex::kType, FlexData::make_string(tb->dtype_name()));
-      ro.insert(ex::kShape, int_array(tb->shape));
-      std::vector<std::int64_t> strides;
-      for (std::int64_t s : tb->strides) {
-        strides.push_back(s * static_cast<std::int64_t>(
-                                  tb->element_byte_size()));
-      }
-      ro.insert(ex::kStrides, int_array(strides));
-      ro.insert(ex::kSideband, tb->sideband);
-      describe_storage(*tb, r);
-      // The owner IS the beat: whoever holds a copy of the buffer holds
-      // the beat, and the sink lets go of it right after this reply.
-      if (tb->byte_size() > 0) {
-        out.push_back(tensor_view(*tb, ex::kBufData, h.beat, false));
+      put_tensor_(*tb, r, out, h.beat);
+    } else if (auto* tl = dynamic_cast<const vpipe::TensorListPayload*>(
+                   h.beat.get())) {
+      ro.insert(ex::kKind, FlexData::make_string(ex::kKindList));
+      ro.insert(ex::kItems, FlexData::make_uint(tl->items.size()));
+      ro.insert(ex::kListSideband, tl->sideband);
+      if (h.next < tl->items.size()) {
+        ro.insert(ex::kItem, FlexData::make_uint(h.next));
+        put_tensor_(tl->items[h.next], r, out, h.beat);
       }
     } else if (auto* fd = dynamic_cast<const vpipe::FlexDataPayload*>(
                    h.beat.get())) {

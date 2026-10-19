@@ -21,6 +21,8 @@ extern const char kValtzAgentSkill[];
 extern const char kMinimaxH3Skill[];
 extern const char kMinimaxH3BaseGuide[];
 extern const char kMinimaxH3RefGuide[];
+extern const char kMossImageSkill[];
+extern const char kMossImageLayoutGuide[];
 }
 
 namespace valtz::assist {
@@ -74,6 +76,14 @@ rewrite_prompt(std::string_view name)
   }
   if (name == "minimax-h3-ref") {
     static const std::string s = h3_skill(true);
+    return s;
+  }
+  if (name == "moss-image") {
+    // SKILL.md, then the layout reference it says to read first.
+    static const std::string s =
+        std::string(resources::kMossImageSkill) +
+        "\n\n# File: references/layout.md\n\n" +
+        resources::kMossImageLayoutGuide;
     return s;
   }
   return {};

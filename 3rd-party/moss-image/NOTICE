@@ -1,0 +1,17 @@
+MOSS-Image is developed by the OpenMOSS team and published under the
+Apache License, Version 2.0 (LICENSE, beside this file, as published at
+https://github.com/OpenMOSS/MOSS-Image).
+
+Valtz includes, unmodified, MOSS-Image's prompt-enhancer skill
+(https://github.com/OpenMOSS/MOSS-Image, commit
+20f5592077916ec8d439bed7b34d18e45c20d657):
+
+  skills/moss-image-prompt-enhancer/SKILL.md
+  skills/moss-image-prompt-enhancer/references/layout.md
+  skills/moss-image-prompt-enhancer/scripts/compile_prompt.py
+
+SKILL.md and references/layout.md are used, as the instructions their
+makers publish, by Valtz's prompt enhancer when the target model is
+MOSS-Image. compile_prompt.py is not run: Valtz compiles the drafts it
+describes with code of its own that follows it (the core's
+assist::moss_image_prompt), and keeps it here as that code's reference.

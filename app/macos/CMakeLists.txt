@@ -131,6 +131,7 @@ set(VALTZ_APP_SOURCES
   Sources/Viewer/StackCompositor.swift
   Sources/Viewer/AudioWaveform.swift
   Sources/Viewer/MotionViews.swift
+  Sources/Viewer/ClipZoom.swift
   Sources/Viewer/ClipMarkup.swift
   Sources/Viewer/MarkupOverlay.swift
   Sources/Viewer/ViewerView.swift
@@ -239,6 +240,13 @@ set(VALTZ_H3_LICENSE
 set_source_files_properties(${VALTZ_H3_LICENSE} PROPERTIES
   MACOSX_PACKAGE_LOCATION Resources/Licenses/MiniMax-H3)
 list(APPEND VALTZ_APP_RESOURCES ${VALTZ_H3_LICENSE})
+# MOSS-Image's prompt-enhancer skill (Apache-2.0, 3rd-party/moss-image).
+set(VALTZ_MOSS_IMAGE_LICENSE
+  "${PROJECT_SOURCE_DIR}/3rd-party/moss-image/LICENSE"
+  "${PROJECT_SOURCE_DIR}/3rd-party/moss-image/NOTICE")
+set_source_files_properties(${VALTZ_MOSS_IMAGE_LICENSE} PROPERTIES
+  MACOSX_PACKAGE_LOCATION Resources/Licenses/MOSS-Image)
+list(APPEND VALTZ_APP_RESOURCES ${VALTZ_MOSS_IMAGE_LICENSE})
 
 # ---- Localization (DESIGN §10b) ------------------------------------------
 #

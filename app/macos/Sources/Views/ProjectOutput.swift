@@ -4,16 +4,18 @@ import SwiftUI
 /// exporting the project writes -- its colour space, a timeline's frame
 /// rate, its sound's channels and sample rate. An asset keeps its own; the
 /// project's timeline runs at the frame rate, a clip at another
-/// resampled to it.
+/// resampled to it. And its INTERMEDIATE format: how the clips made in it
+/// are kept (generated, upscaled, rendered), ProRes 422 HQ unless set.
 struct OutputSettingsDTO: Decodable, Equatable, Sendable {
     var color = "rec709"
     var fps: [Int64] = [24, 1]
     var channels = 2
     var sampleRate = 48000
+    var intermediate = "prores422hq"
 
     var json: [String: Any] {
         ["color": color, "fps": fps, "channels": channels,
-         "sample_rate": sampleRate]
+         "sample_rate": sampleRate, "intermediate": intermediate]
     }
 }
 
@@ -51,6 +53,13 @@ struct OutputFields: View {
         ("59.94", [60000, 1001]), ("60", [60, 1]),
     ]
     static let sampleRates = [44100, 48000, 96000]
+    /// The intermediate formats (core media::intermediate_formats), best
+    /// first: product names, not translated.
+    static let intermediates: [(id: String, label: String)] = [
+        ("prores4444xq", "ProRes 4444 XQ"), ("prores4444", "ProRes 4444"),
+        ("prores422hq", "ProRes 422 HQ"), ("prores422", "ProRes 422"),
+        ("hevc", "HEVC 10-bit"),
+    ]
 
     var body: some View {
         Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 6) {
@@ -115,6 +124,23 @@ struct OutputFields: View {
                     .fixedSize()
                 }
             }
+            // Any project can hold clips: a still's, a sound's too.
+            GridRow {
+                label("Intermediate")
+                Picker("Intermediate", selection: $output.intermediate) {
+                    ForEach(Self.intermediates, id: \.id) { f in
+                        Text(verbatim: f.label).tag(f.id)
+                    }
+                    if !Self.intermediates.contains(where: {
+                        $0.id == output.intermediate }) {
+                        Text(verbatim: output.intermediate)
+                            .tag(output.intermediate)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+                .help("How the clips made in this project are kept: generated, upscaled, rendered. ProRes keeps the most for editing, its sound uncompressed; HEVC takes the least room. Clips made before keep their own.")
+            }
         }
     }
 
@@ -141,7 +167,7 @@ extension AppModel {
         guard let core, let projectId, o != projectOutput else { return }
         let r = core.assetOp(project: projectId, "set-output",
                              ["output": o.json])
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         reloadAssets()
     }
 
@@ -157,7 +183,7 @@ extension AppModel {
             "output": output.json,
         ])
         guard r.ok, let id = r["asset"] as? String else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         reloadAssets()

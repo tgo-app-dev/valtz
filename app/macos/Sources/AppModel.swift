@@ -170,6 +170,12 @@ struct ViewerState {
     var zoomInRequest = 0
     var zoomOutRequest = 0
     var unfitRequest = 0
+    /// The requests together, as a clip's player takes them.
+    var zoomRequests: ZoomRequests {
+        ZoomRequests(fit: fitRequest, actual: actualSizeRequest,
+                     zoomIn: zoomInRequest, zoomOut: zoomOutRequest,
+                     unfit: unfitRequest)
+    }
     /// As the canvas reports it: device pixels per image pixel (1 is
     /// 1:1; nil with no image), and whether it is fitting -- fitted again
     /// whenever the view or the image changes.
@@ -181,7 +187,8 @@ struct ViewerState {
         if fitting != v.fitting { fitting = v.fitting }
     }
 
-    /// It shows a clip -- played, not zoomed or compared.
+    /// It shows a clip -- played, not compared (a finished one zooms:
+    /// ClipZoomView).
     var showsMotion: Bool { video != nil || clip != nil }
 
     /// Showing actual pixels (to within rounding of the percentage).
@@ -596,6 +603,9 @@ struct EnhancedPrompt: Sendable {
     var follow: String
     /// The model it was written for (the one Start would run then).
     var model = ""
+    /// What the helper read and wrote, how fast (Settings › Agentic
+    /// Helper › Show the Helper's Speed shows it under the suggestion).
+    var stats: AgentTurnStats?
 }
 
 /// B set aside while the compare is off (AppModel.toggleCompare).
@@ -694,6 +704,15 @@ struct JobInfo {
 /// byte. Between counts the core's ESTIMATE moves on at the recent pace,
 /// at least once a second, never past the next count: a block of a long
 /// clip can take 20 s.
+/// A NOTICE (AppModel.flash): what just happened -- done, a warning, an
+/// error -- shown for a few seconds over the composer, an error's and a
+/// warning's tinted.
+struct Notice: Equatable {
+    enum Level { case info, warning, error }
+    var text: String
+    var level: Level = .info
+}
+
 struct JobPhase: Equatable {
     var phase: String
     var done = 0
@@ -1019,6 +1038,8 @@ final class AppModel {
     var helpers: HelperList?
     /// Settings › Upscaling: each upscaler's arithmetic.
     var upscalers: [UpscalerSettings] = []
+    /// Which one each kind runs (Settings › Upscaling's pick, Auto's).
+    var upscalerKinds: [UpscalerKind] = []
 
     /// The ASSET OPERATIONS (DESIGN §4j) as this Mac runs them -- what is
     /// done to an asset with no prompt -- read with the capabilities.
@@ -1047,7 +1068,7 @@ final class AppModel {
         if !options.isEmpty { req["options"] = options }
         let r = core.runAssetOperation(req)
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return r
         }
         reloadAssets()
@@ -1096,6 +1117,22 @@ final class AppModel {
     var closedFolders: Set<String> = []
     /// The asset whose name is being typed in the asset list.
     var renamingAsset: String?
+    /// The asset list's filter: the words a row's name -- or its
+    /// folder's -- has; "" lists every asset.
+    var assetFilter = ""
+    /// The Layers section's find (its magnifier): open, and the words.
+    var layerFindOpen = false
+    var layerFind = ""
+    /// The match Return goes to (↑ ↓ move it).
+    var layerFindMark = 0
+    /// A layer the Layers section brings into sight, asked for by a count
+    /// (the same layer asked again scrolls to it again).
+    var layerScrollTarget: String?
+    var layerScrollCount = 0
+    /// Where the Layers list and its selected row are on screen (a
+    /// snapshot run reads whether a layer gone to is in sight).
+    @ObservationIgnored var layerListFrame: CGRect = .zero
+    @ObservationIgnored var activeLayerRowFrame: CGRect = .zero
 
     // Prompt
     var prompt = ""
@@ -1541,6 +1578,9 @@ final class AppModel {
     /// Where what the guides measure lies on the stage's card (points
     /// from its top left): the picture's canvas, as zoomed and panned.
     var stageCanvasRect: CGRect?
+    /// Where a ZOOMED clip's frame lies on the card (points from its top
+    /// left); nil while it is fitted -- the card, as the player fits it.
+    var stageVideoRect: CGRect?
     /// A guide whose number is being typed over (GuideMarks) -- its
     /// triangle then dragged, `guideDragging`, meanwhile.
     var guideEditing: GuideRef?
@@ -1696,7 +1736,14 @@ final class AppModel {
     private var startupSweepDone = false
     private var lastStageResult: (image: CGImage, label: String)?
 
-    var banner: String?
+    /// The notice floating over the composer (SimpleView's NoticeCapsule):
+    /// what just happened, a warning, or an error -- for a few seconds.
+    var notice: Notice?
+    /// Its words (the snapshot hooks' `banner=`); set nil, it goes.
+    var banner: String? {
+        get { notice?.text }
+        set { notice = newValue.map { Notice(text: $0) } }
+    }
 
     /// An upscale running (Render Upscaled, the Crop panel): its job.
     var upscaleJob: String?
@@ -1754,7 +1801,7 @@ final class AppModel {
             guard let self else { return }
             withAnimation(Self.motion) { self.flatteningLayer = false }
             if !r.ok {
-                self.flash(r.message)
+                self.flash(r.message, level: .error)
                 return
             }
             self.layersChanged()
@@ -1800,6 +1847,14 @@ final class AppModel {
         }
         return p.phase == "restore" ? p.caption(kind: .video)
             : String(localized: "Restoring detail…")
+    }
+
+    /// How far, as the caption counts it -- the restoring's own; nil
+    /// (the bar going to and fro) only while the caption counts nothing.
+    var upscaleFraction: Double? {
+        guard let job = upscaleJob, let p = jobs[job]?.phase,
+              p.phase == "restore" else { return nil }
+        return p.fraction
     }
 
     /// The last generation refused for lack of memory: what it asked for
@@ -1902,7 +1957,7 @@ final class AppModel {
         do {
             try p.run()
         } catch {
-            flash(String(localized: "Could not restart Valtz: \(error.localizedDescription)"))
+            flash(String(localized: "Could not restart Valtz: \(error.localizedDescription)"), level: .error)
             return
         }
         NSApp.terminate(nil)
@@ -1926,7 +1981,7 @@ final class AppModel {
         capabilityTree = DTO.decode(CapabilityTree.self,
                                     core.capabilityTreeJSON())
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
-        upscalers = core.upscaleSettings()
+        (upscalers, upscalerKinds) = core.upscaleSettings()
         assetOperations = core.assetOperations()
         agentSettings = DTO.decode(AgentSettings.self,
                                    core.agentSettingsJSON())
@@ -2329,7 +2384,7 @@ final class AppModel {
             "name": String(localized: "\(clip.name), last \(len) s"),
         ])
         guard r.ok, let guide = r["asset"] as? String else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         reloadAssets()
@@ -2338,8 +2393,10 @@ final class AppModel {
 
     /// A FRAME of the clip on the stage, where the player is: a still
     /// composition showing it from that frame (core grab_frame), in
-    /// Assets and in the prompt's row -- a picture to open a clip on, to
-    /// edit, to refer to.
+    /// Assets -- and in the prompt's row while the box is shown, a
+    /// picture to open a clip on, to edit, to refer to. With the
+    /// timeline in the box's place it stays in Assets: the frame is
+    /// being worked on there, not prompted with.
     func grabFrame() {
         guard let core, let projectId, let clip = currentClip,
               clip.kind == "video" else { return }
@@ -2350,11 +2407,11 @@ final class AppModel {
             "name": String(localized: "\(clip.name), frame \(String(frame))"),
         ])
         guard r.ok, let still = r["asset"] as? String else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         reloadAssets()
-        if addAssetReferences([still]).isEmpty {
+        if timelineOpen || addAssetReferences([still]).isEmpty {
             flash(String(localized: "Grabbed in Assets"))
         }
     }
@@ -2578,7 +2635,7 @@ final class AppModel {
     func addLyrics(from url: URL) {
         guard var text = (try? String(contentsOf: url, encoding: .utf8))
             ?? (try? String(contentsOf: url, encoding: .isoLatin1)) else {
-            flash(String(localized: "Could not read \(url.lastPathComponent)"))
+            flash(String(localized: "Could not read \(url.lastPathComponent)"), level: .error)
             return
         }
         text = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2817,15 +2874,20 @@ final class AppModel {
         refreshClipValues()
     }
 
-    /// A new, empty layer above the selected one, selected -- the next
-    /// generation is made on it.
-    func addLayer() {
+    /// A new, empty layer, selected -- the next generation is made on
+    /// it, the next mark drawn on it: ON TOP of the stack (the Layers
+    /// section's and the timeline's +), or right above `above` (a row's
+    /// Add Layer Above). The + put it above the selected layer -- layer 0
+    /// unless another was chosen -- and on a timeline of clips and
+    /// pictures a mark drawn on it lay under them all, out of sight.
+    func addLayer(above: String? = nil) {
         guard let core, let projectId, let pic = stageStack else { return }
         persistAdjustments()
         persistCrop()
         if keyedStage { persistClipTracks() }
         let target = composedTarget(pic.id)
-        var extra: [String: Any] = ["above": activeLayer]
+        let under = above ?? pic.layerStack.last?.id ?? activeLayer
+        var extra: [String: Any] = ["above": under]
         // A still with pages: on the page shown, alone.
         if pagedOnStage { extra["page"] = stagePage }
         let r = core.layerOp(project: projectId, asset: target, "add",
@@ -2860,7 +2922,7 @@ final class AppModel {
                              layer: id,
                              extra: ["name": String(localized: "\(title) Copy")])
         guard r.ok, let made = r["layer"] as? String else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         layersChanged()
@@ -2936,7 +2998,7 @@ final class AppModel {
         let r = core.layerOp(project: projectId,
                              asset: composedTarget(pic.id), op,
                              layer: id, extra: extra)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         layersChanged()
     }
 
@@ -2966,7 +3028,7 @@ final class AppModel {
                              asset: composedTarget(stack.id), "group",
                              extra: ["layers": ids,
                                      "name": String(localized: "Folder \(n)")])
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         layersChanged()
     }
 
@@ -2991,6 +3053,43 @@ final class AppModel {
         var extra: [String: Any] = ["layers": ids, "folder": folder]
         if let above { extra["above"] = above }
         layerOp("place", "", extra)
+    }
+
+    // MARK: Finding a layer
+
+    /// The layers the Layers section's find lists, top first: those whose
+    /// name, what they show or their folder's name has every word typed.
+    var layerFindMatches: [LayerDTO] {
+        let words = Self.filterWords(layerFind)
+        return (stageStack?.layerStack ?? []).reversed().filter { l in
+            Self.matches(words, in: [l.title, source(of: l)?.name,
+                                     l.folder.map(layerFolderName)])
+        }
+    }
+
+    /// A layer gone to from the find: its folder opened, it selected, the
+    /// list scrolled to it.
+    func goToLayer(_ id: String) {
+        guard let l = stageStack?.layerStack.first(where: { $0.id == id })
+        else { return }
+        if let f = l.folder, isFolderFolded(f) { toggleFolderFolded(f) }
+        selectLayer(id)
+        layerFindOpen = false
+        layerScrollTarget = id
+        layerScrollCount += 1
+    }
+
+    /// A filter's words: each found, in any case and with any accents, in
+    /// one of a row's texts.
+    nonisolated static func filterWords(_ text: String) -> [String] {
+        text.split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    nonisolated static func matches(_ words: [String],
+                                    in texts: [String?]) -> Bool {
+        words.allSatisfy { w in
+            texts.contains { $0?.localizedStandardContains(w) == true }
+        }
     }
 
     /// A folder folded shut (its layers out of sight), or open.
@@ -3033,7 +3132,7 @@ final class AppModel {
         let r = core.layerOp(project: projectId,
                              asset: composedTarget(stack.id), "source",
                              layer: id, extra: ["source": asset])
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         layersChanged()
     }
 
@@ -3049,7 +3148,7 @@ final class AppModel {
                     let r = core.layerOp(project: projectId, asset: stackId,
                                          "source", layer: id,
                                          extra: ["source": a.id])
-                    if !r.ok { self.flash(r.message) }
+                    if !r.ok { self.flash(r.message, level: .error) }
                     self.layersChanged()
                     return
                 }
@@ -3098,7 +3197,7 @@ final class AppModel {
         let r = core.layerOp(project: projectId, asset: composedTarget(pic.id),
                              "page-add", extra: ["after": stagePage])
         guard r.ok, let made = r["page"] as? Int else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         pagesChanged(to: made, was: was)
@@ -3112,7 +3211,7 @@ final class AppModel {
         let r = core.layerOp(project: projectId, asset: composedTarget(pic.id),
                              "page-remove", extra: ["page": stagePage])
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         pagesChanged(to: min(stagePage, stagePages - 2), was: true)
@@ -3171,7 +3270,7 @@ final class AppModel {
         let r = core.layerOp(project: projectId, asset: composedTarget(pic.id),
                              "pages", layer: id,
                              extra: ["first": first, "count": count])
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         layersChanged()
         if id == activeLayer, let p = stagePicture {
             loadClipTracks(p, layer: activeLayer)
@@ -3494,7 +3593,7 @@ final class AppModel {
                                overrides: kept?.json ?? [:])
         tuningInfo = info
         if let info, customTunings[tuningKey] == nil
-            || kept?.choices.isEmpty == false {
+            || kept?.choices["turbo"] != nil {
             customTunings[tuningKey] = info.tuning
             saveCustomTunings()
         }
@@ -3504,11 +3603,13 @@ final class AppModel {
     /// rest (its rules: HyperFlow takes a LoRA slot, not the Turbo LoRA's,
     /// and its own steps; VDN replaces Sol-Attn), and that is what is
     /// kept. An option that decides the steps lets them follow it.
-    func setTuning(_ key: String, flag: Bool? = nil, number: Double? = nil) {
+    func setTuning(_ key: String, flag: Bool? = nil, number: Double? = nil,
+                   choice: String? = nil) {
         guard let info = tuningInfo else { return }
         var t = info.tuning
         if let flag { t.flags[key] = flag }
         if let number { t.numbers[key] = number }
+        if let choice { t.choices[key] = choice }
         let o = info.options.first { $0.key == key }
         settleTuning(t, stepsFollow: o?.fixedSteps != nil)
     }
@@ -3569,7 +3670,7 @@ final class AppModel {
             settleTuning(t)
         }
         if !added && !urls.isEmpty {
-            flash(String(localized: "Not weights Valtz can use here"))
+            flash(String(localized: "Not weights Valtz can use here"), level: .warning)
         }
         return added
     }
@@ -3750,10 +3851,25 @@ final class AppModel {
             ("sol_attn", String(localized: "Sol")),
             ("sage_attn", String(localized: "Sage")),
             ("i8_gemm", String(localized: "int8")),
+            ("vae_i8_gemm", String(localized: "VAE int8")),
             ("ane_ffn", String(localized: "ANE")),
             ("motion_cache", String(localized: "MotionCache")),
         ]
-        for (k, name) in names where t.flags[k] == true { parts.append(name) }
+        for (k, name) in names where t.flags[k] == true {
+            // int8's tier, past its default: "int8 Per Token".
+            if k == "i8_gemm", let tier = t.choices["i8_gemm_tier"],
+               tier != "accurate" {
+                let shown = TuningPanel.choiceLabel("i8_gemm_tier", tier)
+                parts.append(String(localized: "int8 \(shown)"))
+            } else if k == "vae_i8_gemm",
+                      let tier = t.choices["vae_i8_gemm_tier"],
+                      tier != "accurate" {
+                let shown = TuningPanel.choiceLabel("vae_i8_gemm_tier", tier)
+                parts.append(String(localized: "VAE int8 \(shown)"))
+            } else {
+                parts.append(name)
+            }
+        }
         for l in t.loras where l.on && l.path != info.turboLoRA {
             parts.append(l.name)
         }
@@ -3970,7 +4086,7 @@ final class AppModel {
     func pauseDownload(model: String) {
         guard let core else { return }
         let r = core.stopDownload(model, discard: false)
-        if r.ok { downloadStopping[model] = false } else { flash(r.message) }
+        if r.ok { downloadStopping[model] = false } else { flash(r.message, level: .error) }
     }
 
     /// A download CANCELLED -- running, queued, or paused before: what
@@ -3985,7 +4101,7 @@ final class AppModel {
         }
         let r = core.stopDownload(model, discard: true)
         if !r.ok {
-            flash(r.message)
+            flash(r.message, level: .error)
         } else if downloading {
             downloadStopping[model] = true
         }
@@ -3996,7 +4112,7 @@ final class AppModel {
     func quantize(model: String) {
         guard let core else { return }
         let r = core.quantizeModel(model)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
     }
 
     func rescanModels() {
@@ -4014,15 +4130,17 @@ final class AppModel {
             modelChecks[id] = check
         } else if !r.ok {
             modelChecks[id] = nil
-            flash(r.message)
+            flash(r.message, level: .error)
         }
         refreshMachine()
     }
 
-    func unlinkModel(_ id: String) {
+    /// `parts`: the Draw Things checkpoints its parts run from let go,
+    /// the model's own used again.
+    func unlinkModel(_ id: String, parts: Bool = false) {
         guard let core else { return }
-        let r = core.unlinkModel(id)
-        if !r.ok { flash(r.message) }
+        let r = core.unlinkModel(id, parts: parts)
+        if !r.ok { flash(r.message, level: .error) }
         modelChecks[id] = nil
         refreshMachine()
     }
@@ -4034,7 +4152,7 @@ final class AppModel {
         if let check = ModelCheck(r["check"] as? [String: Any]) {
             modelChecks[id] = check
         } else if !r.ok {
-            flash(r.message)
+            flash(r.message, level: .error)
         }
     }
 
@@ -4088,7 +4206,7 @@ final class AppModel {
     func chooseHelper(_ id: String) {
         guard let core else { return }
         let r = core.chooseAssistant(id)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
     }
 
@@ -4096,7 +4214,7 @@ final class AppModel {
     func setHelperDrafter(_ kind: String, bits: Int) {
         guard let core else { return }
         let r = core.setAssistantDrafter(kind, bits: bits)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
     }
 
@@ -4104,7 +4222,7 @@ final class AppModel {
     func setHelperKeepLoaded(_ seconds: Double) {
         guard let core else { return }
         let r = core.setAssistantKeepLoaded(seconds)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
     }
 
@@ -4113,23 +4231,33 @@ final class AppModel {
     func setUpscaleOption(_ model: String, _ key: String, _ value: Any) {
         guard let core else { return }
         let r = core.setUpscaleTuning(model, [key: value])
-        if !r.ok { flash(r.message) }
-        upscalers = core.upscaleSettings()
+        if !r.ok { flash(r.message, level: .error) }
+        (upscalers, upscalerKinds) = core.upscaleSettings()
     }
 
     /// An upscaler back at its defaults.
     func resetUpscaler(_ model: String) {
         guard let core else { return }
         let r = core.setUpscaleTuning(model, [:], reset: true)
-        if !r.ok { flash(r.message) }
-        upscalers = core.upscaleSettings()
+        if !r.ok { flash(r.message, level: .error) }
+        (upscalers, upscalerKinds) = core.upscaleSettings()
+    }
+
+    /// The upscaler Render Upscaled runs for `kind` ("" Auto), kept by
+    /// the core -- valtzctl's `upscaler use` too.
+    func useUpscaler(kind: String, _ model: String) {
+        guard let core else { return }
+        let r = core.useUpscaler(kind: kind, model)
+        if !r.ok { flash(r.message, level: .error) }
+        (upscalers, upscalerKinds) = core.upscaleSettings()
+        assetOperations = core.assetOperations()
     }
 
     /// A video summary's seconds a frame (DESIGN §4i); 0: Auto.
     func setVideoEvery(_ seconds: Double) {
         guard let core else { return }
         let r = core.setVideoEvery(seconds)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
     }
 
@@ -4159,7 +4287,7 @@ final class AppModel {
         }
         guard r.ok, let id = r["project"] as? String else {
             note("error", String(localized: "Could not open \(path): \(r.message)"))
-            flash(String(localized: "Could not open \(path): \(r.message)"))
+            flash(String(localized: "Could not open \(path): \(r.message)"), level: .error)
             return
         }
         // The project before goes (its changes were saved, or let go, by
@@ -4182,7 +4310,7 @@ final class AppModel {
             let names = missing.map {
                 ($0["name"] as? String) ?? ($0["id"] as? String) ?? ""
             }.joined(separator: ", ")
-            flash(String(localized: "This project uses extensions that aren't installed (\(names)): their parts are skipped, and kept for the next save."))
+            flash(String(localized: "This project uses extensions that aren't installed (\(names)): their parts are skipped, and kept for the next save."), level: .warning)
         }
         projectName = r["name"] as? String
             ?? URL(fileURLWithPath: path).deletingPathExtension()
@@ -4246,7 +4374,7 @@ final class AppModel {
             "as_project": true, "name": projectName ?? "",
         ])
         guard r.ok, let id = r["asset"] as? String else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         reloadAssets()
@@ -4260,7 +4388,7 @@ final class AppModel {
         // places may move, the panels' values written first.
         flushPanels()
         let r = core.assetOp(project: projectId, "project", ["asset": a.id])
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         reloadAssets()
         if let doc = assets.first(where: { $0.id == a.id }) {
             putOnStage(doc)
@@ -4279,7 +4407,7 @@ final class AppModel {
                              ["asset": a.id, "name": name])
             }.value
             guard let self else { return }
-            if !r.ok { self.flash(r.message) }
+            if !r.ok { self.flash(r.message, level: .error) }
             self.reloadAssets()
         }
     }
@@ -4652,7 +4780,7 @@ final class AppModel {
         }
         // A tag that names nothing: the row is filled in first.
         if let tag = unboundRefTags.first {
-            flash(String(localized: "Fill in the reference row first: \(tag) names nothing yet."))
+            flash(String(localized: "Fill in the reference row first: \(tag) names nothing yet."), level: .warning)
             return
         }
         // The preset runs with a LoRA that is not downloaded: asked for.
@@ -4684,7 +4812,7 @@ final class AppModel {
         for att in promptAttachments where att.kind == "image"
             || att.kind == "video" {
             guard let a = assetId(of: att) else {
-                flash(String(localized: "Still importing \(att.url.lastPathComponent)…"))
+                flash(String(localized: "Still importing \(att.url.lastPathComponent)…"), level: .warning)
                 return
             }
             if att.isBase && base == nil { base = a } else { refs.append(a) }
@@ -4754,7 +4882,7 @@ final class AppModel {
             // mentions named as the model names them.
             for att in promptAttachments where assetId(of: att) == nil
                 && ["image", "video", "audio"].contains(att.kind) {
-                flash(String(localized: "Still importing \(att.url.lastPathComponent)…"))
+                flash(String(localized: "Still importing \(att.url.lastPathComponent)…"), level: .warning)
                 return
             }
             let r = referenceRequest
@@ -4769,7 +4897,7 @@ final class AppModel {
             // Picture 1 and Picture 2 (FL2VA).
             for att in [k.first] + (k.last.map { [$0] } ?? [])
             where assetId(of: att) == nil {
-                flash(String(localized: "Still importing \(att.url.lastPathComponent)…"))
+                flash(String(localized: "Still importing \(att.url.lastPathComponent)…"), level: .warning)
                 return
             }
             req["first"] = assetId(of: k.first)
@@ -4781,12 +4909,12 @@ final class AppModel {
             let name = modelName(imageModel)
             flash(unreadVideoMedia.count == 1
                 ? String(localized: "\(name) does not read \(skipped.url.lastPathComponent): it is left out.")
-                : String(localized: "\(name) reads its first and last pictures only: \(String(unreadVideoMedia.count)) items are left out."))
+                : String(localized: "\(name) reads its first and last pictures only: \(String(unreadVideoMedia.count)) items are left out."), level: .warning)
         }
         generationBase = nil
         let r = core.generateVideo(req)
         guard r.ok, let job = r.job else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         began(job: job, kind: .video)
@@ -4823,7 +4951,7 @@ final class AppModel {
         generationBase = nil
         let r = core.generateAudio(req)
         guard r.ok, let job = r.job else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         began(job: job, kind: .audio)
@@ -5043,9 +5171,27 @@ final class AppModel {
         cancel(job: job)
     }
 
-    /// What the generation is doing, for its progress bar and caption.
+    /// What the generation is doing, for its progress bar and caption --
+    /// while it waits in line, the task running AHEAD of it: the bar went
+    /// to and fro under "Queued · T1" for the whole of the clip before it
+    /// (two and a half minutes of H3), though that clip was counting.
     var generationPhase: JobPhase? {
-        generationJob.flatMap { jobs[$0]?.phase }
+        guard let job = generationJob else { return nil }
+        if let p = jobs[job]?.phase { return p }
+        return taskAhead.flatMap { jobs[$0.job]?.phase }
+    }
+
+    /// The task running in the watched task's line while it is queued
+    /// there (not waiting for a download): exports have a line of their
+    /// own, every other task shares the work's.
+    private var taskAhead: TaskDTO? {
+        guard let job = generationJob, jobs[job]?.state == "queued",
+              let t = tasks.first(where: { $0.job == job }), !t.waits,
+              t.position > 0 else { return nil }
+        let exporting = t.kind == "export"
+        return tasks.first {
+            $0.running && $0.job != job && ($0.kind == "export") == exporting
+        }
     }
 
     /// "Generating · 47%"; "Queued · T2" while tasks run before it, or
@@ -5060,6 +5206,10 @@ final class AppModel {
             return Self.waitingCaption(t)
         }
         if let t = tasks.first(where: { $0.job == job }), t.position > 0 {
+            // ...and how far the one before it is, the bar's.
+            if let a = taskAhead, let pct = jobs[a.job]?.phase?.percent {
+                return String(localized: "Queued · \(t.badge), after \(a.badge) · \(pct)")
+            }
             return String(localized: "Queued · \(t.badge)")
         }
         return String(localized: "Waiting…")
@@ -5232,8 +5382,11 @@ final class AppModel {
     /// ranges replayed on these run past the end, NSRangeException --
     /// and Clear's were of another box; both go, unless these are the
     /// words Clear or its undo put there.
+    /// A box just made -- back from the timeline -- may not be in the
+    /// window yet: the window's manager, then.
     func dropStalePromptUndo(_ tv: NSTextView) {
-        guard promptRevision != promptUndoRevision, let um = tv.undoManager,
+        guard promptRevision != promptUndoRevision,
+              let um = tv.undoManager ?? editorWindow?.undoManager,
               let storage = tv.textStorage else { return }
         um.removeAllActions(withTarget: storage)
         um.removeAllActions(withTarget: promptUndoTarget)
@@ -5249,7 +5402,7 @@ final class AppModel {
         // A project is no reference: it opens, dropped outside the prompt.
         let projects = urls.filter(Self.isProjectFile)
         if !projects.isEmpty && projects.count == urls.count {
-            flash(String(localized: "To open a project, drop it outside the prompt."))
+            flash(String(localized: "To open a project, drop it outside the prompt."), level: .warning)
             return []
         }
         var list = promptAttachments
@@ -5377,7 +5530,7 @@ final class AppModel {
         else { return }
         let item = promptAttachments[i]
         guard let src = assetId(of: item) else {
-            flash(String(localized: "Still importing \(item.url.lastPathComponent)…"))
+            flash(String(localized: "Still importing \(item.url.lastPathComponent)…"), level: .warning)
             return
         }
         // Another active one ends; the stage is about to be replaced.
@@ -5394,7 +5547,7 @@ final class AppModel {
                 "asset": src, "name": String(localized: "\(name), edited"),
             ])
             guard r.ok, let made = r["asset"] as? String else {
-                flash(r.message)
+                flash(r.message, level: .error)
                 return
             }
             promptAttachments[i].asset = made
@@ -5795,7 +5948,7 @@ final class AppModel {
         if !refs.isEmpty { req["references"] = refs }
         let r = core.generateImage(req)
         guard r.ok, let job = r.job else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         began(job: job)
@@ -5869,7 +6022,7 @@ final class AppModel {
         }
         let r = core.enhancePrompt(req)
         guard r.ok, let job = r.job else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         withAnimation(Self.motion) {
@@ -6001,7 +6154,7 @@ final class AppModel {
         if let n = promptGivenName { req["prompt_name"] = n }
         let r = core.assetOp(project: projectId, "apply-suggestion", req)
         guard r.ok, let id = r["asset"] as? String else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         promptAssetId = id
@@ -6196,7 +6349,7 @@ final class AppModel {
 
     private func canvasChanged(_ r: CoreReply) {
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         reloadAssets()
@@ -6233,7 +6386,7 @@ final class AppModel {
         let r = core.setTimeline(project: projectId,
                                  asset: composedTarget(a.id),
                                  frames: frames)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         reloadAssets()
         if clipOnStage { refreshStackPlan() }
     }
@@ -6358,7 +6511,7 @@ final class AppModel {
             "compare-\(a.id)-\(a.modified).png")
         let r = core.flatten(project: projectId, asset: a.id, to: out.path)
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return nil
         }
         return Self.loadImage(out)
@@ -7135,8 +7288,10 @@ final class AppModel {
     }
 
     /// ← and → step the clip in the Trim panel (⇧ ten steps; ⌥ a sound's
-    /// millisecond), its sound heard at each: handled -- true -- or left
-    /// to go on (text, a list, another window keep their arrows).
+    /// millisecond), its sound heard at each; with the timeline open, ⌘←
+    /// and ⌘→ go to its previous or next EVENT, as its |< and >| do:
+    /// handled -- true -- or left to go on (text, a list, another window
+    /// keep their arrows).
     func trimKey(_ e: NSEvent) -> Bool {
         // The timeline steps too: a clip's frames, a still's pages.
         let timeline = timelineOpen && (clipOnStage || pagedOnStage)
@@ -7149,8 +7304,15 @@ final class AppModel {
             || fr is NSCollectionView { return false }
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
-        guard mods.subtracting([.shift, .option]).isEmpty,
-              e.keyCode == 123 || e.keyCode == 124 else { return false }
+        guard e.keyCode == 123 || e.keyCode == 124 else { return false }
+        if mods == .command {
+            guard timeline else { return false }
+            timelineEvent(next: e.keyCode == 124)
+            return true
+        }
+        guard mods.subtracting([.shift, .option]).isEmpty else {
+            return false
+        }
         let n = mods.contains(.shift) ? 10 : 1
         timelineStep(e.keyCode == 123 ? -n : n)
         return true
@@ -7328,7 +7490,7 @@ final class AppModel {
             t.offset = trimOffset
             let r = core.setLayerTime(project: projectId, asset: id,
                                       layer: layer, t.json)
-            if !r.ok { flash(r.message) }
+            if !r.ok { flash(r.message, level: .error) }
         }
         // Keyed in the composition's frames, from the layer's start.
         let rate = stageFrameRate
@@ -7336,7 +7498,7 @@ final class AppModel {
             let keys = layerSpeed.json(rate: rate) { ["rate": $0.rate] }
             let r = core.layerOp(project: projectId, asset: id, "speed",
                                  layer: layer, extra: ["keys": keys])
-            if !r.ok { flash(r.message) }
+            if !r.ok { flash(r.message, level: .error) }
         }
         if soundChanged {
             let keys = layerSound.json(rate: rate) {
@@ -7346,7 +7508,7 @@ final class AppModel {
                                  layer: layer,
                                  extra: ["keys": keys,
                                          "follow_speed": pitchFollowsSpeed])
-            if !r.ok { flash(r.message) }
+            if !r.ok { flash(r.message, level: .error) }
         }
         reloadAssets()
         refreshStackPlan()
@@ -7611,14 +7773,14 @@ final class AppModel {
     private func stepHistory(forward: Bool) {
         guard let core, let projectId else { return }
         guard !historyBusy else {
-            flash(String(localized: "Wait for the work in progress to finish."))
+            flash(String(localized: "Wait for the work in progress to finish."), level: .warning)
             return
         }
         flushPanels()
         let r = forward ? core.redo(project: projectId)
                         : core.undo(project: projectId)
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         syncAfterHistory()
@@ -7709,7 +7871,7 @@ final class AppModel {
         noteWindowSize()
         notePlayhead()
         let r = core.saveProject(projectId)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         refreshDocument()
     }
 
@@ -7735,7 +7897,7 @@ final class AppModel {
         notePlayhead()
         let r = core.saveProjectAs(projectId, path: url.path)
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return false
         }
         projectPath = url.path
@@ -7759,14 +7921,14 @@ final class AppModel {
             guard alert.runModal() == .alertFirstButtonReturn else { return }
         }
         guard !isBusy else {
-            flash(String(localized: "Wait for the work in progress to finish."))
+            flash(String(localized: "Wait for the work in progress to finish."), level: .warning)
             return
         }
         persistTask?.cancel()
         cropPersistTask?.cancel()
         let r = core.revertProject(projectId)
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         syncAfterHistory()
@@ -8540,7 +8702,7 @@ final class AppModel {
                 && !taskJobs.contains(id) && j.purpose != "build"
                 && j.purpose != "export"
         }) else {
-            flash(String(localized: "Wait for the work in progress to finish."))
+            flash(String(localized: "Wait for the work in progress to finish."), level: .warning)
             return
         }
         // An anonymous one is asked about as what goes in its place; a
@@ -8586,6 +8748,19 @@ final class AppModel {
         stageBeforeBase = nil
         generationBase = nil
         promptRevision += 1
+        // The window's undo steps were all of the box and the fields of
+        // the project that went -- Clear's would put its words and row
+        // back into this one. The box dropped them only while it was in
+        // the window (dropStalePromptUndo): a project opened into its
+        // timeline kept them, ⌘Z reaching them once its own history ran
+        // out (2026-10-17).
+        (editorWindow ?? promptTextView?.window)?.undoManager?
+            .removeAllActions()
+        promptUndoRevision = -1
+        // The lists' filters were of the project that went.
+        assetFilter = ""
+        layerFind = ""
+        layerFindOpen = false
         negative = ""
         intent = nil
         dropSuggestion()
@@ -8803,11 +8978,17 @@ final class AppModel {
         }
     }
 
-    /// There is an image on screen to zoom.
+    /// There is an image on screen to zoom: a picture, or a finished
+    /// clip's frames (not a sound's, nor a preview's).
     var canZoom: Bool {
         // The Prompt Editor's stage is a small view, fitted.
-        screen == .editor && stageVisible && stage.a != nil
-            && !stage.showsMotion && !promptImmersive
+        guard screen == .editor && stageVisible && !promptImmersive else {
+            return false
+        }
+        if stage.video != nil {
+            return stage.clip == nil && !stageIsAudio && stage.zoom != nil
+        }
+        return stage.a != nil && !stage.showsMotion
     }
 
     /// Zoom the stage.
@@ -9026,7 +9207,7 @@ final class AppModel {
         if choice.video, let video { request["video"] = video }
         let r = core.exportAsset(request)
         guard r.ok, let job = r.job else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         exportJobs[job] = dest
@@ -9051,7 +9232,7 @@ final class AppModel {
         try? fm.removeItem(at: dest)
         let ok = (try? fm.copyItem(at: src, to: dest)) != nil
         if !ok {
-            flash(String(localized: "Could not save \(dest.lastPathComponent)"))
+            flash(String(localized: "Could not save \(dest.lastPathComponent)"), level: .error)
         }
     }
 
@@ -9285,7 +9466,8 @@ final class AppModel {
                     title: p["title"] as? String ?? "",
                     aspect: p["aspect"] as? String ?? "",
                     follow: p["follow"] as? String ?? "",
-                    model: enhanceFor)
+                    model: enhanceFor,
+                    stats: DTO.decode(AgentTurnStats.self, p["stats"]))
                 if enhanceHere {
                     withAnimation(Self.motion) { enhanced = e }
                 } else if let i = promptTabs.firstIndex(where: {
@@ -9392,10 +9574,10 @@ final class AppModel {
                 // A task not watched: whose it was, and why.
                 let title = jobs[job]?.title ?? ""
                 flash(title.isEmpty ? msg
-                      : String(localized: "\(title): \(msg)"))
+                      : String(localized: "\(title): \(msg)"), level: .error)
             } else if job == generationJob || job == enhanceJob
                 || job == upscaleJob || exportJobs[job] != nil {
-                flash(msg)
+                flash(msg, level: .error)
             }
         }
         // An upscale ended: its layer shows the result (the core swapped
@@ -9543,7 +9725,8 @@ final class AppModel {
                     stage = atStart.stage
                     stageVisible = atStart.visible
                 }
-                flash(Self.endLabel(state))
+                flash(Self.endLabel(state), level: state == "cancelled"
+                      ? .info : state == "finished" ? .warning : .error)
                 return
             }
             if stageVisible {
@@ -9883,20 +10066,32 @@ final class AppModel {
     private func reportUnshown() {
         let why = log.last { $0.level == "error" }?.text
             ?? String(localized: "its asset was not found")
-        flash(String(localized: "The image was made and is in the project, but could not be shown: \(why)"))
+        flash(String(localized: "The image was made and is in the project, but could not be shown: \(why)"), level: .error)
     }
 
     // MARK: - Messages
 
-    /// A short-lived message under the simple-mode composer.
-    func flash(_ text: String) {
+    /// A short-lived NOTICE over the composer -- an error's and a
+    /// warning's tinted, and longer: the eye has to find them first.
+    func flash(_ text: String, level: Notice.Level = .info) {
         bannerTask?.cancel()
-        withAnimation(Self.motion) { banner = text }
-        bannerTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(6))
-            guard !Task.isCancelled else { return }
-            withAnimation(AppModel.motion) { self?.banner = nil }
+        withAnimation(Self.motion) { notice = Notice(text: text, level: level) }
+        let seconds: Double = switch level {
+        case .info: 6
+        case .warning: 8
+        case .error: 10
         }
+        bannerTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled else { return }
+            withAnimation(AppModel.motion) { self?.notice = nil }
+        }
+    }
+
+    /// The notice clicked away before its time.
+    func dismissNotice() {
+        bannerTask?.cancel()
+        withAnimation(Self.motion) { notice = nil }
     }
 
     func note(_ level: String, _ text: String) {

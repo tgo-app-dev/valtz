@@ -79,22 +79,25 @@ struct Reply {
   std::string           finish;
   // What it cost, as the backend says: the helper's {"prefilled",
   // "reused", "restored", "ctx_bytes", "ctx_pos", "prefill_ms",
-  // "decode_ms", "decoded"}; a cloud's {"input_tokens", "output_tokens",
+  // "decode_ms", "decoded"; its drafter's "drafter", "rounds",
+  // "drafted", "accepted"}; a cloud's {"input_tokens", "output_tokens",
   // "cache_read_tokens"}.
   Json                  usage = Json::object();
 };
 
 // A turn's cost and speed, for the person debugging it (Settings ›
-// Agentic Helper › Show Speed; valtzctl agent --speed): the backend's
-// counts (Reply::usage) and Valtz's clock -- `first_ms` until its first
-// words came (< 0: none came), `turn_ms` the whole turn, any queue and
-// load included. {"prefill_tokens", "prefill_ms", "prefill_tps",
-// "decode_tokens", "decode_ms", "decode_tps"} -- the helper's by vpipe's
-// own clock; a cloud's prefill timed to its first words (the network
-// in it), its decode from there to the end; a side's _ms and _tps only
-// where it has a time -- and, where the backend
-// says, "cached_tokens", "reused", "restored", "ctx_pos"; "first_ms",
-// "turn_ms".
+// Agentic Helper › Show Speed; valtzctl agent --speed, enhance --speed):
+// the backend's counts (Reply::usage; an enhance's chat, the same keys)
+// and Valtz's clock -- `first_ms` until its first words came (< 0: none
+// came), `turn_ms` the whole turn, any queue and load included.
+// {"prefill_tokens", "prefill_ms", "prefill_tps", "decode_tokens",
+// "decode_ms", "decode_tps"} -- the helper's by vpipe's own clock; a
+// cloud's prefill timed to its first words (the network in it), its
+// decode from there to the end; a side's _ms and _tps only where it has
+// a time, its _tokens only where it is counted -- and, where the backend
+// says, "cached_tokens", "reused", "restored", "ctx_pos"; a drafter's
+// "drafter", "rounds", "per_round" (decoded tokens a verify forward),
+// "accepted_pct" (of its drafts); "first_ms", "turn_ms".
 Json turn_stats(const Json& usage, double first_ms, double turn_ms);
 
 // Where the agent's model thinks.

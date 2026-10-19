@@ -158,14 +158,31 @@ turn_stats(const Json& usage, double first_ms, double turn_ms)
   };
   if (usage.contains("prefill_ms")) {
     // The helper's -- here or on a member: vpipe's own clock. A vpipe
-    // without "decoded" says how long it wrote, not how much.
-    side("prefill", jget(usage, "prefilled", 0.0),
-         jget(usage, "prefill_ms", 0.0));
+    // without "decoded" says how long it wrote, not how much; one
+    // without a plain chat's "prefilled", how long it read.
+    if (usage.contains("prefilled")) {
+      side("prefill", jget(usage, "prefilled", 0.0),
+           jget(usage, "prefill_ms", 0.0));
+    } else {
+      s["prefill_ms"] = jget<std::int64_t>(usage, "prefill_ms", 0);
+    }
     if (usage.contains("decoded")) {
       side("decode", jget(usage, "decoded", 0.0),
            jget(usage, "decode_ms", 0.0));
     } else {
       s["decode_ms"] = jget<std::int64_t>(usage, "decode_ms", 0);
+    }
+    // Its drafter's share: the tokens a verify forward bought, and how
+    // many of its drafts were kept.
+    if (const double rounds = jget(usage, "rounds", 0.0); rounds > 0) {
+      s["drafter"] = jget<std::string>(usage, "drafter", "");
+      s["rounds"] = std::llround(rounds);
+      s["per_round"] =
+          std::round(jget(usage, "decoded", 0.0) * 100.0 / rounds) / 100.0;
+      if (const double d = jget(usage, "drafted", 0.0); d > 0) {
+        s["accepted_pct"] =
+            std::llround(jget(usage, "accepted", 0.0) * 100.0 / d);
+      }
     }
   } else if (usage.contains("input_tokens") ||
              usage.contains("output_tokens")) {
@@ -254,7 +271,8 @@ reply_from_turn(const Json& turn, int turn_number)
     r.calls.push_back(std::move(call));
   }
   for (const char* k : {"prefilled", "reused", "restored", "ctx_bytes",
-                        "ctx_pos", "prefill_ms", "decode_ms", "decoded"}) {
+                        "ctx_pos", "prefill_ms", "decode_ms", "decoded",
+                        "drafter", "rounds", "drafted", "accepted"}) {
     if (turn.contains(k)) {
       r.usage[k] = turn[k];
     }

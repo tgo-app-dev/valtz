@@ -42,6 +42,7 @@
 #include "valtz/base/rational.h"
 #include "valtz/media/crop.h"
 #include "valtz/media/format.h"
+#include "valtz/media/movie.h"
 
 #include <cstdint>
 #include <optional>
@@ -413,6 +414,16 @@ ContentHash fingerprint(const Recipe&,
 // own; where a choice cannot be avoided (a 24 fps clip after a 30 fps one
 // in the project's timeline) the project's wins: its timeline runs at
 // `fps`, and a clip at another rate is resampled to it.
+//
+// And its INTERMEDIATE format: how the clips Valtz makes in it are kept
+// -- generated, upscaled, a composition rendered (flattened, nested, a
+// continuation's guide) -- a codec of vpipe's avf-save-video
+// (media::intermediate_formats). ProRes, in a .mov with its sound as
+// 24-bit PCM, keeps the most for editing and for a model reading it
+// again; HEVC Main10, in an .mp4 with AAC, the least room. A composition
+// is rendered in ProRes whatever is chosen: ProRes 422 HQ for HEVC,
+// which every rendering read again would lose more to. Clips made before
+// keep their own.
 struct OutputSettings {
   // rec709 | srgb | display-p3 | rec2020 | rec2100-pq | rec2100-hlg
   // (media::output_color).
@@ -420,6 +431,7 @@ struct OutputSettings {
   Rational    fps{24, 1};
   int         channels = 2;       // 1 mono, 2 stereo
   int         sample_rate = 48000;
+  std::string intermediate{media::kDefaultIntermediate};
 
   bool operator==(const OutputSettings&) const = default;
 };

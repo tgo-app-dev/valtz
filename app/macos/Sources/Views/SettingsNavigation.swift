@@ -79,12 +79,14 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "Thinking"),
              String(localized: "Video Summary"),
              String(localized: "Enhance"), String(localized: "Debugging"),
-             String(localized: "Show Speed in the Agent's Output")]
+             String(localized: "Show the Helper's Speed")]
         case .page(.upscaling):
             [String(localized: "Upscale"), String(localized: "Render Upscaled"),
-             "FlashVSR", "VOSR", String(localized: "int8 GEMM"),
+             "FlashVSR", "FlashVSR+", "Turbo", "VOSR",
+             String(localized: "int8 GEMM"),
              String(localized: "SageAttention"), String(localized: "Sol-Attn"),
-             String(localized: "Clips"), String(localized: "Pictures")]
+             String(localized: "Clips"), String(localized: "Pictures"),
+             String(localized: "Restore Clips With")]
         case .page(.experimental):
             [String(localized: "Agent"), String(localized: "Thinks On"),
              String(localized: "Cloud"), String(localized: "API Key"),

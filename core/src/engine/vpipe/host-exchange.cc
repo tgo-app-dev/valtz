@@ -14,6 +14,7 @@
 #include <climits>
 #include <cstdlib>
 #include <format>
+#include <optional>
 
 namespace valtz::engine::vp {
 
@@ -138,32 +139,42 @@ backend_refusal(int abi, const std::vector<std::string>& required,
   return {};
 }
 
-Result<SinkBeat>
-sink_beat_from(const vpipe::CommandHandle& cmd, bool* eos)
+namespace {
+
+// A sideband in FlexData's binary form; "" when there is none.
+std::string
+sideband_bin(const FlexData& sb)
 {
-  const FlexData r = reply_of(cmd);
-  *eos = field_bool(r, ex::kEos);
-  SinkBeat b;
-  if (*eos) {
-    return b;
-  }
-  b.seq = field_uint(r, ex::kSeq);
-  b.dropped = field_uint(r, ex::kDropped);
-  const std::string kind = field_str(r, ex::kKind);
-  if (kind == ex::kKindData) {
-    b.meta = from_flex(field(r, ex::kData));
-    return b;
-  }
-  if (kind != ex::kKindTensor) {
-    b.meta = from_flex(r);  // an unknown beat: pass its description along
-    return b;
-  }
-  b.meta = from_flex(field(r, ex::kSideband));
-  vpipe::DataBuffer buf;
+  return sb.is_null() ? std::string() : sb.to_binary();
+}
+
+// The tensor a reply describes, into `b`: its bytes in place (a view of
+// the beat), or -- no buffer -- its type and shape alone.
+Status
+tensor_from(const vpipe::CommandHandle& cmd, const FlexData& r, SinkBeat& b)
+{
+  const FlexData sb = field(r, ex::kSideband);
+  b.meta = from_flex(sb);
+  b.sideband_bin = sideband_bin(sb);
   Tensor::DType dt;
-  if (!cmd.buffer(ex::kBufData, &buf) ||
-      !dtype_from_str(field_str(r, ex::kType), dt)) {
-    return b;  // an empty tensor, or one Tensor cannot describe
+  if (!dtype_from_str(field_str(r, ex::kType), dt)) {
+    return ok_status();  // one Tensor cannot describe (i8)
+  }
+  vpipe::DataBuffer buf;
+  if (!cmd.buffer(ex::kBufData, &buf)) {
+    // No bytes: [0, 96], a clip's reference rows when none carries video.
+    auto t = std::make_shared<Tensor>();
+    t->dtype = dt;
+    const FlexData shape = field(r, ex::kShape);
+    if (shape.is_array()) {
+      const auto a = shape.as_array();
+      for (std::size_t i = 0; i < a.size(); ++i) {
+        t->shape.push_back(a.at(i).as_int(0));
+      }
+    }
+    t->meta = b.meta;
+    b.tensor = std::move(t);
+    return ok_status();
   }
   auto t = std::make_shared<Tensor>();
   t->dtype = dt;
@@ -189,6 +200,47 @@ sink_beat_from(const vpipe::CommandHandle& cmd, bool* eos)
   t->meta = b.meta;
   t->owner = std::move(buf.owner);  // the beat itself
   b.tensor = std::move(t);
+  return ok_status();
+}
+
+}
+
+Result<SinkBeat>
+sink_beat_from(const vpipe::CommandHandle& cmd, bool* eos)
+{
+  const FlexData r = reply_of(cmd);
+  *eos = field_bool(r, ex::kEos);
+  SinkBeat b;
+  if (*eos) {
+    return b;
+  }
+  b.seq = field_uint(r, ex::kSeq);
+  b.dropped = field_uint(r, ex::kDropped);
+  const std::string kind = field_str(r, ex::kKind);
+  if (kind == ex::kKindData) {
+    b.meta = from_flex(field(r, ex::kData));
+    return b;
+  }
+  if (kind == ex::kKindList) {
+    // An item of a list: the item here, the list's own sideband beside.
+    b.is_list = true;
+    b.item = field_uint(r, ex::kItem);
+    b.item_count = field_uint(r, ex::kItems);
+    SinkBeat whole;
+    const FlexData lsb = field(r, ex::kListSideband);
+    whole.meta = from_flex(lsb);
+    whole.sideband_bin = sideband_bin(lsb);
+    b.items.push_back(std::move(whole));
+    if (b.item_count > 0) {
+      VALTZ_TRY(tensor_from(cmd, r, b));
+    }
+    return b;
+  }
+  if (kind != ex::kKindTensor) {
+    b.meta = from_flex(r);  // an unknown beat: pass its description along
+    return b;
+  }
+  VALTZ_TRY(tensor_from(cmd, r, b));
   return b;
 }
 
@@ -226,6 +278,8 @@ SinkReader::run_()
     std::atomic<bool>& flag;
     ~Ended() { flag = true; }
   } ended{_ended};
+  // A list beat being put back together, an item a reply.
+  std::optional<SinkBeat> list;
   for (;;) {
     vpipe::CommandHandle cmd = _stage.command(ex::kCmdNext, FlexData());
     // A stop cancels the command, so this wait always ends.
@@ -250,7 +304,34 @@ SinkReader::run_()
       VALTZ_LOG_WARN("engine", "{} ({})", b.error().message, _stage.id());
       continue;
     }
-    _fn(std::move(*b));
+    if (!b->is_list) {
+      _fn(std::move(*b));
+      continue;
+    }
+    // A list's item: gathered, the list handed on whole after its last.
+    if (!list || b->item == 0) {
+      list.emplace();
+      list->seq = b->seq;
+      list->dropped = b->dropped;
+      list->is_list = true;
+      list->item_count = b->item_count;
+      if (!b->items.empty()) {
+        list->meta = std::move(b->items[0].meta);
+        list->sideband_bin = std::move(b->items[0].sideband_bin);
+      }
+    }
+    if (b->item_count > 0) {
+      SinkBeat item;
+      item.seq = b->seq;
+      item.tensor = std::move(b->tensor);
+      item.meta = std::move(b->meta);
+      item.sideband_bin = std::move(b->sideband_bin);
+      list->items.push_back(std::move(item));
+    }
+    if (list->items.size() >= list->item_count) {
+      _fn(std::move(*list));
+      list.reset();
+    }
   }
 }
 
@@ -308,6 +389,105 @@ SourceWriter::push(const Tensor& t, const Json& sideband)
   vpipe::CommandHandle cmd = _stage.command(ex::kCmdPush, args,
                                             {std::move(b)});
   VALTZ_TRY(answer(cmd, "valtz-source push"));
+  return ok_status();
+}
+
+namespace {
+
+// A push's arguments for a kept tensor: its sideband as vpipe made it,
+// and -- no bytes -- its type and shape (the buffer then absent).
+FlexData
+kept_args(const Tensor& t, std::string_view sideband, bool shared)
+{
+  FlexData args = FlexData::make_object();
+  args.as_object().insert_or_assign(
+      ex::kStorage, flex_str(shared ? ex::kStorageShared : ex::kStorageCpu));
+  if (!sideband.empty()) {
+    FlexData sb = FlexData::from_binary(sideband);
+    if (sb.is_object()) {
+      args.as_object().insert_or_assign(ex::kSideband, std::move(sb));
+    }
+  }
+  if (t.byte_size == 0) {
+    FlexData dims = FlexData::make_array();
+    for (std::int64_t d : t.shape) {
+      dims.as_array().push_back(d);
+    }
+    args.as_object().insert_or_assign(ex::kType, flex_str(dtype_str(t.dtype)));
+    args.as_object().insert_or_assign(ex::kShape, std::move(dims));
+  }
+  return args;
+}
+
+std::vector<vpipe::DataBuffer>
+kept_buffer(const Tensor& t)
+{
+  std::vector<vpipe::DataBuffer> out;
+  if (t.byte_size == 0) {
+    return out;
+  }
+  vpipe::BufferLayout layout;
+  layout.type = element_type(t.dtype);
+  layout.shape = t.shape;
+  for (std::int64_t s : t.strides) {
+    layout.strides.push_back(s * static_cast<std::int64_t>(
+                                     t.element_size()));
+  }
+  out.push_back(vpipe::DataBuffer::view(
+      ex::kBufData, t.data, std::move(layout),
+      std::const_pointer_cast<void>(t.owner)));
+  return out;
+}
+
+}
+
+Status
+SourceWriter::push_kept(const Tensor& t, std::string_view sideband_bin,
+                        bool shared)
+{
+  vpipe::CommandHandle cmd = _stage.command(
+      ex::kCmdPush, kept_args(t, sideband_bin, shared), kept_buffer(t));
+  VALTZ_TRY(answer(cmd, "valtz-source push"));
+  return ok_status();
+}
+
+Status
+SourceWriter::push_kept_list(const std::vector<TensorPtr>& items,
+                             const std::vector<std::string>& sideband_bins,
+                             const std::vector<bool>& shared,
+                             std::string_view list_sideband_bin)
+{
+  FlexData lsb = FlexData::make_null();
+  if (!list_sideband_bin.empty()) {
+    lsb = FlexData::from_binary(list_sideband_bin);
+  }
+  const auto n = static_cast<std::uint64_t>(items.size());
+  auto as_item = [&](FlexData args, std::uint64_t i) {
+    auto o = args.as_object();
+    o.insert_or_assign(ex::kList, FlexData::make_bool(true));
+    o.insert_or_assign(ex::kItems, FlexData::make_uint(n));
+    o.insert_or_assign(ex::kItem, FlexData::make_uint(i));
+    if (lsb.is_object()) {
+      o.insert_or_assign(ex::kListSideband, lsb);
+    }
+    return args;
+  };
+  if (items.empty()) {
+    vpipe::CommandHandle cmd = _stage.command(
+        ex::kCmdPush, as_item(FlexData::make_object(), 0));
+    VALTZ_TRY(answer(cmd, "valtz-source push"));
+    return ok_status();
+  }
+  for (std::uint64_t i = 0; i < n; ++i) {
+    const Tensor& t = *items[i];
+    const std::string_view sb = i < sideband_bins.size()
+                                    ? std::string_view(sideband_bins[i])
+                                    : std::string_view();
+    const bool sh = i < shared.size() && shared[i];
+    vpipe::CommandHandle cmd = _stage.command(
+        ex::kCmdPush, as_item(kept_args(t, sb, sh), i), kept_buffer(t));
+    VALTZ_TRY(answer(cmd, "valtz-source push"));
+  }
   return ok_status();
 }
 

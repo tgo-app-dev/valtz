@@ -1126,6 +1126,28 @@ struct PromptEditor: NSViewRepresentable {
         return scroll
     }
 
+    /// The box out of the window -- the timeline in its place -- and its
+    /// text with it: its typing steps go too. They are on the window's
+    /// undo manager, which does not keep what they act on: ⌘Z in the box
+    /// made again replayed them on the freed text and Valtz crashed
+    /// (2026-10-17). Clear's stay -- the model's, not this text's.
+    static func dismantleNSView(_ scroll: NSScrollView,
+                                coordinator: Coordinator) {
+        Self.dropUndo(of: coordinator.textView,
+                      model: coordinator.parent.model)
+    }
+
+    /// The window's steps on `tv`'s text, as the view goes (it may be out
+    /// of the window already: the editor's window's manager, then).
+    static func dropUndo(of tv: NSTextView?, model: AppModel) {
+        guard let tv, let storage = tv.textStorage,
+              let um = tv.undoManager ?? model.editorWindow?.undoManager
+        else { return }
+        um.removeAllActions(withTarget: storage)
+        // The Edit menu's titles -- after this update, not inside it.
+        DispatchQueue.main.async { model.refreshTextUndo() }
+    }
+
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let tv = context.coordinator.textView else { return }

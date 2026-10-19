@@ -4,6 +4,7 @@
 #import <AudioToolbox/AudioToolbox.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 #include <limits>
@@ -207,11 +208,49 @@ aac_settings(double rate, int channels, double per_channel)
   };
 }
 
+// Linear PCM, 24-bit integer, interleaved: a ProRes movie's sound.
+NSDictionary*
+pcm24_settings(double rate, int channels)
+{
+  return @{
+    AVFormatIDKey : @(kAudioFormatLinearPCM),
+    AVSampleRateKey : @(rate),
+    AVNumberOfChannelsKey : @(channels),
+    AVLinearPCMBitDepthKey : @24,
+    AVLinearPCMIsFloatKey : @NO,
+    AVLinearPCMIsBigEndianKey : @NO,
+    AVLinearPCMIsNonInterleaved : @NO,
+  };
+}
+
+}
+
+std::span<const std::string_view>
+intermediate_formats()
+{
+  static constexpr std::array<std::string_view, 5> kFormats = {
+    "prores4444xq", "prores4444", "prores422hq", "prores422", "hevc",
+  };
+  return kFormats;
+}
+
+bool
+is_intermediate_format(std::string_view f)
+{
+  return std::ranges::find(intermediate_formats(), f) !=
+         intermediate_formats().end();
+}
+
+bool
+is_prores(std::string_view f)
+{
+  return f.starts_with("prores");
 }
 
 Status
 add_soundtrack(const fs::path& video, const fs::path& audio,
-               const fs::path& out, double start, double duration)
+               const fs::path& out, double start, double duration,
+               SoundCodec sound)
 {
   @autoreleasepool {
     AVURLAsset* va = [AVURLAsset URLAssetWithURL:file_url(video) options:nil];
@@ -251,7 +290,7 @@ add_soundtrack(const fs::path& video, const fs::path& audio,
     // A span of it is cut decoded, to the sample: AAC packets would cut
     // to the packet, and carry their priming into the middle.
     const bool span = duration > 0;
-    const bool aac_in = !span && asbd &&
+    const bool aac_in = sound == SoundCodec::Aac && !span && asbd &&
                         asbd->mFormatID == kAudioFormatMPEG4AAC;
     NSDictionary* pcm = aac_in ? nil : @{
       AVFormatIDKey : @(kAudioFormatLinearPCM),
@@ -293,21 +332,22 @@ add_soundtrack(const fs::path& video, const fs::path& audio,
     vin.expectsMediaDataInRealTime = NO;
 
     // AAC at the sound's own rate and channel count -- nothing resampled
-    // -- where AAC encodes that rate (aac_settings).
+    // -- where AAC encodes that rate (aac_settings); or PCM, any rate.
     const double rate = asbd ? asbd->mSampleRate : 48000;
     const int channels = asbd ? static_cast<int>(asbd->mChannelsPerFrame) : 2;
     if (channels < 1 || channels > 2) {
       return make_error(Code::Unsupported, std::format(
           "a soundtrack of {} channels is not supported", channels));
     }
-    NSDictionary* aac =
-        aac_in ? nil : aac_settings(rate, channels, 96000);
+    NSDictionary* enc = aac_in ? nil
+        : sound == SoundCodec::Pcm ? pcm24_settings(rate, channels)
+                                   : aac_settings(rate, channels, 96000);
     // The hint describes what is APPENDED: the stored AAC when it is
     // passed through; for the encoder, the reader's float PCM speaks for
     // itself -- the file's own format (16-bit, say) would be misread.
     AVAssetWriterInput* ain =
         [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeAudio
-                                           outputSettings:aac
+                                           outputSettings:enc
                                          sourceFormatHint:aac_in ? afmt
                                                                  : nullptr];
     ain.expectsMediaDataInRealTime = NO;

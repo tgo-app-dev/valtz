@@ -70,11 +70,14 @@ usage()
       "         SSD -- models, projects, cache -- each sized, with when it\n"
       "         was made; each list in the order asked, largest first by\n"
       "         default)\n"
-      "  link <model-id> <file|folder> | unlink <model-id>\n"
+      "  link <model-id> <file|folder> | unlink <model-id> [--drawthings]\n"
       "         (a model kept somewhere else -- ComfyUI's, Draw Things',\n"
       "         anywhere -- used from there; its files checked first: the\n"
       "         model found in or around the folder linked, a wrong or\n"
-      "         broken one refused)\n"
+      "         broken one refused. Draw Things .ckpts of its DiT, text\n"
+      "         encoder, VAE -- Qwen-Image 2.1, MiniMax H3; a folder of\n"
+      "         them -- link those parts alone, the configs and tokenizer\n"
+      "         where the model is; --drawthings undoes that)\n"
       "  check <model-id> [file|folder]  (its files checked as a link's\n"
       "         are -- that path's, else where it is installed)\n"
       "  compress <model-id> --bits 8|4 [--keep-original]\n"
@@ -202,7 +205,7 @@ usage()
       "  timeline <project.valtz> <comp-id> <frames>  (0: its layers')\n"
       "  generate <project.valtz> <prompt> [--model id] [--steps n]\n"
       "           [--seed n] [--size WxH] [--no-preview]\n"
-      "           [--speed|--quality] [--tune k=v,...]\n"
+      "           [--speed|--quality] [--tune k=v,...] [--repeat n]\n"
       "           [--base <file|asset-id>] [--ref <file|asset-id>]...\n"
       "           [--mode auto|edit|generate] [--adjust k=v,...]\n"
       "           (files are imported first; --base is the picture to\n"
@@ -211,7 +214,10 @@ usage()
       "           composes a new picture from them; --adjust lays the\n"
       "           Adjust panel on the base first: exposure (stops),\n"
       "           contrast, highlights, shadows, vibrance, saturation,\n"
-      "           temperature, tint (-1..1), on a RAW's development)\n"
+      "           temperature, tint (-1..1), on a RAW's development;\n"
+      "           --repeat makes it n times in this process, the seed\n"
+      "           one up each time, each one's phases timed -- the\n"
+      "           later ones as the app makes them, kernels tuned)\n"
       "  video <project.valtz> <prompt> [--model id] [--size WxH]\n"
       "        [--frames n | --seconds s] [--fps n] [--steps n]\n"
       "        [--speed|--quality] [--seed n] [--no-turbo]\n"
@@ -258,8 +264,11 @@ usage()
       "        alone)\n"
       "  output <project.valtz> [color=rec709|srgb|display-p3|rec2020|\n"
       "        rec2100-pq|rec2100-hlg] [fps=24|30000/1001] [channels=1|2]\n"
-      "        [rate=48000]  (the project's output: what exporting it\n"
-      "        writes; fps is its timeline's, set while that is empty)\n"
+      "        [rate=48000]\n"
+      "        [intermediate=prores4444xq|prores4444|prores422hq|prores422|\n"
+      "        hevc]  (the project's output: what exporting it writes; fps\n"
+      "        is its timeline's, set while that is empty; intermediate how\n"
+      "        the clips made in it are kept -- ProRes 422 HQ unless set)\n"
       "  camera --sources | camera <project.valtz> [--seconds s]\n"
       "        [--camera id]  (a still -- or, with --seconds, a clip with\n"
       "        the microphone's sound -- taken with a camera: a flat asset)\n"
@@ -379,9 +388,10 @@ usage()
       "         ranges and what this Mac can have; --continues: as for a\n"
       "         clip continued, its continuation presets. --tune on\n"
       "         generate and video sets them: steps, hyperflow, vdn,\n"
-      "         sol_attn, sol_tau, sage_attn, i8_gemm, motion_cache,\n"
-      "         video_shift, audio_shift, shift -- true/false or a\n"
-      "         number; --turbo the catalog's\n"
+      "         sol_attn, sol_tau, sage_attn, i8_gemm, i8_gemm_tier,\n"
+      "         motion_cache, video_shift, audio_shift, shift --\n"
+      "         true/false, a number or a word (i8_gemm_tier=accurate|\n"
+      "         fast|token|token_plain); --turbo the catalog's\n"
       "         few-step LoRA off (none) or on, or a file in its place;\n"
       "         --lora adds one -- eight run, the first on)\n"
       "  export <project.valtz> <asset-id|file> --format F -o <file>\n"
@@ -397,13 +407,14 @@ usage()
       "  export --formats\n"
       "  enhance <prompt> [--video|--audio] [--model id] [--mode m]\n"
       "          [--size WxH] [--seconds s] [--frames n] [--partial]\n"
-      "          [--no-mtp] [--assistant <id>] [--repeat <n>]\n"
+      "          [--no-mtp] [--assistant <id>] [--repeat <n>] [--speed]\n"
       "          [--project <project.valtz> [--base <file|asset-id>]\n"
       "           [--ref <file|asset-id>]... [--first <file|asset-id>]\n"
       "           [--last <file|asset-id>] [--continue <clip>]\n"
       "           [--song-sound]]\n"
       "          (--no-mtp: the assistant decodes without its MTP\n"
-      "          head, to compare; the same reply, slower.\n"
+      "          head, to compare; the same reply, slower. --speed:\n"
+      "          what it read and wrote, how fast, its drafter's share.\n"
       "          --assistant: that catalog assistant, not the one\n"
       "          chosen, for this run (valtzctl assistant to choose).\n"
       "          --model: the model the prompt is for -- one whose\n"
@@ -421,6 +432,9 @@ usage()
       "  upscaler [<model-id> [k=v,...] [--reset]]   Settings >\n"
       "          Upscaling: each upscaler's int8 GEMM, Sage, Sol (on|off),\n"
       "          kept for every later upscale\n"
+      "  upscaler use <model-id> | auto [video|image]   the upscaler\n"
+      "          Render Upscaled runs for its kind (auto: the best\n"
+      "          installed -- FlashVSR+ Turbo, then Base, then 1.1)\n"
       "  intent <text> [--image name]...\n"
       "  fleet [status] [--json] | fleet browse [--seconds N]\n"
       "        | fleet create|join <name> [--discoverable]\n"
@@ -444,6 +458,7 @@ usage()
       "         two on one Mac)\n"
       "  agent <project> <request> [--auto] [--backend helper|cloud]\n"
       "        [--composition <id>] [--ref <file|asset-id>]... [--speed]\n"
+      "        [--assistant <id>]\n"
       "        | agent tools | agent settings [backend=helper|cloud]\n"
       "            [review=on|off] [lease=<s>] [provider=anthropic|openai|\n"
       "            openai-compatible] [model=<id>] [base_url=<url>]\n"
@@ -492,12 +507,18 @@ tune_spec(const std::string& spec)
       continue;
     }
     const std::string k = kv.substr(0, eq), v = kv.substr(eq + 1);
+    // A number as one; any other word as it is (i8_gemm_tier=token).
+    char* rest = nullptr;
+    const double d = std::strtod(v.c_str(), &rest);
+    const bool number = !v.empty() && rest && *rest == '\0';
     if (v == "true" || v == "on" || v == "yes") {
       out[k] = true;
     } else if (v == "false" || v == "off" || v == "no") {
       out[k] = false;
+    } else if (!number) {
+      out[k] = v;
     } else if (v.find('.') != std::string::npos) {
-      out[k] = std::atof(v.c_str());
+      out[k] = d;
     } else {
       out[k] = std::atoi(v.c_str());
     }
@@ -853,8 +874,9 @@ print_check(const Json& r)
   }
 }
 
+// `made`, if given: the asset the job finished with.
 int
-follow(Controller& c, JobId job)
+follow(Controller& c, JobId job, std::string* made = nullptr)
 {
   int rc = 0;
   std::string phase;
@@ -951,6 +973,9 @@ follow(Controller& c, JobId job)
       if (ev.data.contains("memory")) {
         print_out_of_memory(ev.data);
       }
+    }
+    if (ev.kind == "job.finished" && made != nullptr) {
+      *made = jget<std::string>(ev.data, "asset", "");
     }
     if (ev.kind == "job.finished" || ev.kind == "job.failed" ||
         ev.kind == "job.cancelled") {
@@ -1390,9 +1415,10 @@ fleet_command(Controller& c, std::vector<std::string>& args)
   return usage();
 }
 
-// A turn's speed as `agent --speed` prints it (agent::turn_stats):
-// "prefill 680 tok in 0.21 s = 3238.1 tok/s · decode 71 tok in 1.53 s =
-// 46.5 tok/s · 7700 reused (memory) · ctx 8501 · turn 2.10 s".
+// A turn's speed as `agent --speed` (and `enhance --speed`) prints it
+// (agent::turn_stats): "prefill 680 tok in 0.21 s = 3238.1 tok/s ·
+// decode 71 tok in 1.53 s = 46.5 tok/s · mtp 2.37 a round, 69% kept ·
+// 7700 reused (memory) · ctx 8501 · turn 2.10 s".
 std::string
 turn_speed_line(const Json& s)
 {
@@ -1418,6 +1444,16 @@ turn_speed_line(const Json& s)
       add(std::format("{} {:.2f} s", side,
                       jget(s, ms.c_str(), 0.0) / 1000.0));
     }
+  }
+  if (s.contains("per_round")) {
+    std::string d = std::format("{} {:.2f} a round",
+                                jget<std::string>(s, "drafter", "draft"),
+                                jget(s, "per_round", 0.0));
+    if (s.contains("accepted_pct")) {
+      d += std::format(", {}% kept", jget<std::int64_t>(s, "accepted_pct",
+                                                         0));
+    }
+    add(d);
   }
   if (s.contains("cached_tokens")) {
     add(std::format("{} cached", jget<std::int64_t>(s, "cached_tokens", 0)));
@@ -1531,6 +1567,10 @@ agent_command(Controller& c, std::vector<std::string> args)
       speed = true;
     } else if (a == "--backend") {
       req.backend = next();
+    } else if (a == "--assistant") {
+      // Another catalog helper for this run only (its turns and its
+      // enhancer): a smaller one beside a picture model on a small Mac.
+      c.set_assistant(next());
     } else if (a == "--composition") {
       auto id = AssetId::parse(next());
       if (!id) {
@@ -2066,7 +2106,8 @@ main(int argc, char** argv)
     if (args.empty()) {
       return usage();
     }
-    auto st = c.unlink_model(args[0]);
+    const bool parts = args.size() > 1 && args[1] == "--drawthings";
+    auto st = c.unlink_model(args[0], parts);
     return st.ok() ? 0 : fail(st.error());
   }
   if (cmd == "link" || cmd == "check") {
@@ -2084,6 +2125,11 @@ main(int argc, char** argv)
       const bool linked = jget(*r, "linked", false);
       std::printf("%s %s\n", linked ? "linked" : "not linked:",
                   jget<std::string>(*r, "path", "").c_str());
+      const Json parts = jget(*r, "parts", Json::object());
+      for (auto it = parts.begin(); linked && it != parts.end(); ++it) {
+        std::printf("  its %s: %s\n", it.key().c_str(),
+                    it->get<std::string>().c_str());
+      }
       return linked ? 0 : 1;
     }
     return jget(*r, "usable", false) ? 0 : 1;
@@ -3305,8 +3351,22 @@ main(int argc, char** argv)
   }
   if (cmd == "upscaler") {
     // Settings > Upscaling: an upscaler's values laid on the kept ones
-    // ("k=v,..."), or its defaults again (--reset); then every one's.
-    if (!args.empty()) {
+    // ("k=v,..."), or its defaults again (--reset); or the one a kind
+    // runs ("use <id>", "use auto [video|image]"); then every one's.
+    if (!args.empty() && args[0] == "use") {
+      if (args.size() < 2) {
+        return usage();
+      }
+      std::string kind = args.size() > 2 ? args[2] : "";
+      if (kind.empty()) {
+        const auto* m = c.catalog().find(args[1]);
+        kind = m && m->has(models::Capability::UpscaleImage) ? "image"
+                                                             : "video";
+      }
+      if (auto st = c.use_upscaler(kind, args[1]); !st.ok()) {
+        return fail(st.error());
+      }
+    } else if (!args.empty()) {
       bool reset = false;
       Json values = Json::object();
       for (std::size_t i = 1; i < args.size(); ++i) {
@@ -3322,12 +3382,21 @@ main(int argc, char** argv)
       }
     }
     const Json all = c.upscale_settings();
+    for (const auto& k : all["kinds"]) {
+      const auto chosen = jget<std::string>(k, "chosen", "");
+      const auto runs = jget<std::string>(k, "runs", "");
+      std::printf("%s: %s, runs %s\n",
+                  k["kind"].get<std::string>().c_str(),
+                  chosen.empty() ? "auto" : chosen.c_str(),
+                  runs.empty() ? "none (none installed)" : runs.c_str());
+    }
     for (const auto& u : all["upscalers"]) {
-      std::printf("%-10s %-14s %-6s %s%s\n",
+      std::printf("%-20s %-16s %-6s %s%s%s\n",
                   u["id"].get<std::string>().c_str(),
                   u["name"].get<std::string>().c_str(),
                   u["kind"].get<std::string>().c_str(),
                   u["state"].get<std::string>().c_str(),
+                  jget(u, "runs", false) ? "  (in use)" : "",
                   jget(u, "custom", false) ? "  (changed)" : "");
       const Json& t = u["tuning"];
       for (const auto& o : t["options"]) {
@@ -3949,6 +4018,7 @@ main(int argc, char** argv)
         !st.ok()) {
       return fail(st.error());
     }
+    int repeat = 1;
     for (std::size_t i = 2; i < args.size(); ++i) {
       const std::string& a = args[i];
       auto next = [&]() -> std::string {
@@ -3956,6 +4026,8 @@ main(int argc, char** argv)
       };
       if (a == "--model") {
         req.model = next();
+      } else if (a == "--repeat") {
+        repeat = std::max(1, std::atoi(next().c_str()));
       } else if (a == "--steps") {
         req.steps = std::atoi(next().c_str());
       } else if (a == "--seed") {
@@ -4006,11 +4078,45 @@ main(int argc, char** argv)
         }
       }
     }
-    auto j = c.generate_image(req);
-    if (!j.ok()) {
-      return fail(j.error());
+    if (repeat == 1) {
+      auto j = c.generate_image(req);
+      if (!j.ok()) {
+        return fail(j.error());
+      }
+      return follow(c, *j);
     }
-    return follow(c, *j);
+    // Made again in this process, as the app makes a picture after the
+    // first: what the session keeps (tuned kernels, models kept, the
+    // conditioning) found. Each run's phases from its version's timing.
+    for (int run = 1; run <= repeat; ++run) {
+      auto j = c.generate_image(req);
+      if (!j.ok()) {
+        return fail(j.error());
+      }
+      std::string made;
+      if (const int rc = follow(c, *j, &made); rc != 0) {
+        return rc;
+      }
+      std::string line;
+      if (const auto aid = AssetId::parse(made)) {
+        if (auto v = c.project(*pid)->version(*aid); v.ok()) {
+          line = std::format("{:.2f} s", jget(v->timing, "seconds", 0.0));
+          for (const auto& ph : jget(v->timing, "sequence",
+                                     Json::array())) {
+            if (ph.is_array() && ph.size() == 2) {
+              line += std::format(" · {} {:.2f}", ph[0].get<std::string>(),
+                                  ph[1].get<double>());
+            }
+          }
+        }
+      }
+      std::fprintf(stderr, "  run %d of %d: %s\n", run, repeat,
+                   line.c_str());
+      if (req.seed >= 0) {
+        ++req.seed;
+      }
+    }
+    return 0;
   }
   if (cmd == "video") {
     if (args.size() < 2) {
@@ -4248,6 +4354,7 @@ main(int argc, char** argv)
     // The suggestion each time it grows (assist.partial), as the app
     // shows it while the assistant writes.
     bool partial = false;
+    bool speed = false;   // --speed: its prefill and decode
     int repeat = 1;
     // Pictures need the project they are imported into: find it first.
     for (std::size_t i = 1; i + 1 < args.size(); ++i) {
@@ -4282,6 +4389,8 @@ main(int argc, char** argv)
         req.reference_sound = true;
       } else if (a == "--partial") {
         partial = true;
+      } else if (a == "--speed") {
+        speed = true;
       } else if (a == "--no-mtp") {
         // The plain decode, to compare with the MTP head's.
         c.set_assistant_mtp(false);
@@ -4350,6 +4459,11 @@ main(int argc, char** argv)
           continue;
         }
         std::cout << "\n" << ev.to_json() << "\n";
+        if (speed && ev.kind == "assist.enhanced") {
+          std::fprintf(stderr, "  · speed: %s\n",
+                       turn_speed_line(jget(ev.data, "stats",
+                                            Json::object())).c_str());
+        }
         if (ev.kind == "job.failed") {
           rc = 1;
         }
@@ -4393,7 +4507,8 @@ main(int argc, char** argv)
   }
   if (cmd == "output") {
     // output <proj> [color=rec2020] [fps=30|30000/1001] [channels=1|2]
-    // [rate=44100]: the project's output (DESIGN §6b), shown -- or set.
+    // [rate=44100] [intermediate=prores4444]: the project's output
+    // (DESIGN §6b), shown -- or set.
     if (args.empty()) {
       return usage();
     }
@@ -4425,6 +4540,8 @@ main(int argc, char** argv)
         want.channels = std::atoi(v.c_str());
       } else if (k == "rate") {
         want.sample_rate = std::atoi(v.c_str());
+      } else if (k == "intermediate") {
+        want.intermediate = v;
       } else {
         return usage();
       }

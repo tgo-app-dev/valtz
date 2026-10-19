@@ -65,7 +65,13 @@ inline constexpr char kSinkDrain[] = "drain";
 
 // `next`: the oldest queued beat, waiting for one when the queue is
 // empty. Replied with `eos` once the stream has ended and the queue is
-// drained. Result keys below; the tensor, if any, is buffer `data`.
+// drained. Result keys below; the tensor, if any, is buffer `data`. A
+// LIST beat (vpipe's TensorListPayload: an edit's reference latents, one
+// a picture) is handed out an ITEM a `next`, in order: kind "list",
+// `item` its place, `items` how many, `list_sideband` the list's own,
+// the item's tensor as any tensor's; an empty list is one reply, items
+// 0. A tensor with no bytes ([0, 96]: no reference rows) comes with its
+// type and shape and no buffer.
 inline constexpr char kCmdNext[] = "next";
 // `stats`: counters, for diagnostics and tests.
 inline constexpr char kCmdStats[] = "stats";
@@ -147,7 +153,13 @@ inline constexpr char kText[] = "text";
 // the beat is emitted when the command is closed (dropped if the
 // pipeline stops first).
 inline constexpr char kCmdLease[] = "lease";
-// `push` {sideband?} + buffer `data` -> a copy emitted as one beat.
+// `push` {sideband?, storage?} + buffer `data` -> a copy emitted as one
+// beat, in a Metal shared buffer or -- `storage` "cpu" -- CPU memory (a
+// stage reading a beat's CPU bytes alone: H3's generate-video). With no
+// buffer, {type, shape} of a tensor with no bytes. With `list` true,
+// the tensor is item `item` of a LIST of `items`, pushed in order and
+// emitted as one TensorListPayload (its sideband `list_sideband`) once
+// all are in -- `items` 0: an empty list, at once.
 inline constexpr char kCmdPush[] = "push";
 // `emit` {data} -> the JSON value emitted as one data beat.
 inline constexpr char kCmdEmit[] = "emit";
@@ -181,7 +193,14 @@ inline constexpr char kQueued[] = "queued";
 
 inline constexpr char kKindTensor[] = "tensor";
 inline constexpr char kKindData[] = "data";
+inline constexpr char kKindList[] = "list";
 inline constexpr char kKindOther[] = "other";
+
+// A list beat's item (see `next`, `push`).
+inline constexpr char kList[] = "list";                  // bool: a push's
+inline constexpr char kItem[] = "item";                  // uint: its place
+inline constexpr char kItems[] = "items";                // uint: how many
+inline constexpr char kListSideband[] = "list_sideband"; // the list's own
 
 inline constexpr char kStorageCpu[] = "cpu";
 inline constexpr char kStorageShared[] = "shared";

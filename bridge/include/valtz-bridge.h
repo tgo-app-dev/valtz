@@ -73,8 +73,10 @@ public:
   // models/model-check.h: "path" -- the model found in or around what
   // was chosen -- "moved", "confirmed", "usable", "identity", "bytes",
   // "files", "notes" [{"level": "error" | "warning" | "info", message,
-  // key, args}]); refused, ok false with the first error's message and
-  // the check. {"model"} -> {"ok"}: the link undone.
+  // key, args}], "parts": {part: file} for Draw Things checkpoints of
+  // its DiT, text encoder, VAE, linked apart); refused, ok false with the
+  // first error's message and the check. {"model", "parts"?} -> {"ok"}:
+  // the link undone -- with "parts" true, the parts' alone.
   std::string link_model(const std::string& request_json);
   std::string unlink_model(const std::string& request_json);
   // {"model", "path"?} -> {"ok", "check"}: its files checked as a link's
@@ -330,6 +332,10 @@ public:
   // the ones kept ("reset": on its defaults). Event "upscale.changed".
   std::string upscale_settings() const;
   std::string set_upscale_tuning(const std::string& request_json);
+  // {"kind": "video" | "image", "model": id | "" (Auto)} -> the same as
+  // upscale_settings: the upscaler Render Upscaled runs for that kind
+  // (Controller::use_upscaler). Event "upscale.changed".
+  std::string use_upscaler(const std::string& request_json);
   // {"path"} -> {"ok", "kind": "lora" | "dit" | "vae" | "", "family",
   // "origin"}: what a dropped weight file or folder is -- an extension's
   // recognition rules first (Controller::classify_weights) -- so the

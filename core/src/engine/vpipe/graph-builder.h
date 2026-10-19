@@ -11,14 +11,17 @@
 #ifndef VALTZ_ENGINE_VPIPE_GRAPH_BUILDER_H
 #define VALTZ_ENGINE_VPIPE_GRAPH_BUILDER_H
 
+#include "valtz/base/hash.h"
 #include "valtz/base/json.h"
 #include "valtz/base/result.h"
 #include "valtz/engine/engine.h"
 #include "valtz/media/adjust.h"
 #include "valtz/media/keyframes.h"
 #include "valtz/media/model-input.h"
+#include "valtz/media/movie.h"
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -36,6 +39,9 @@ struct RefImage {
   media::PixelSize      size;
   bool                  has_alpha = false;
   bool                  base = false;
+  // Its bytes' hash (the job input's): what a kept encoding of it is
+  // named by. Zero: not known, nothing made from it is kept.
+  ContentHash           hash = {};
 };
 
 // A clip's REFERENCE (MiniMax H3 Ref2VA; DESIGN §4e), in the order the
@@ -63,6 +69,7 @@ struct RefMedia {
   // frames'; a sound's, its trim.
   double                start_s = 0;
   double                duration_s = 0;
+  ContentHash           hash = {};     // as RefImage's
 };
 
 // A picture the engine must feed after launch: decode `path` into a
@@ -100,6 +107,19 @@ struct RefFeed {
 // DiT through their list ports.
 inline constexpr char kRefList[] = "refs";
 inline constexpr char kRefLatents[] = "refs-latents";
+
+// KEPT ENCODINGS' stages (EncodingIo): a tap beside an encoder's
+// consumer, or a source in the encoder's place. A clip's references
+// (video-ref-encoder) take "references-tap-<port>" / "-kept-<port>", a
+// keyframe "<first|last>-latent-tap" / "-latent-kept".
+inline constexpr char kConditioningTap[] = "conditioning-tap";
+inline constexpr char kKeptConditioning[] = "conditioning-kept";
+// The conditioner's NEGATIVE (catalog `negative`: MOSS-Image's empty
+// prompt, its CFG's), kept beside the conditioning, in one encoding.
+inline constexpr char kNegativeTap[] = "negative-tap";
+inline constexpr char kKeptNegative[] = "negative-kept";
+inline constexpr char kLatentsTap[] = "refs-latents-tap";
+inline constexpr char kKeptLatents[] = "refs-latents-kept";
 
 // The base's EXIF, on its way to the result: a valtz-source whose one
 // beat is {"exif_tiff_b64": ...} (empty when the base has none), read by
@@ -173,6 +193,39 @@ struct SampleFeed {
   media::PixelSize      size;
 };
 
+// ENCODINGS KEPT between jobs (encoding-cache.h, DESIGN §4l): what the
+// builder needs to name an encoder's outputs by what they are made from,
+// and to know which are kept already. The engine makes it -- the stamps
+// read from disk, the cache asked -- so the builder stays free of I/O.
+struct EncodingCache {
+  std::string engine;  // vpipe's version and build
+  std::string model;   // model_stamp(job.model.dir)
+  // The parts' weights linked apart (ModelRef::encoder_weights /
+  // vae_weights: Draw Things checkpoints), each file_stamp'd -- {"encoder",
+  // "vae"}: an encoding made by another encoder or VAE (the one it reads)
+  // is another.
+  Json        weights = Json::object();
+  // An encoding kept and read, ready to feed: the key's.
+  std::function<bool(const std::string& key)> kept;
+};
+
+// An encoder's outputs on their way to the cache or from it: its `key`,
+// what it is ("conditioning", "latents", "references", "keyframe"), and
+// per output the stage that TAPS it -- a valtz-sink beside the encoder's
+// consumer, the job's output kept once it has it -- or, `fed`, FEEDS it:
+// a valtz-source in the encoder's place, given what an earlier job kept.
+struct EncodingIo {
+  std::string key;
+  std::string what;
+  bool        fed = false;
+  struct Port {
+    std::string name;   // "conditioning", "latents", "ref_video", ...
+    std::string stage;
+    bool        list = false;  // a list beat (an edit's latents)
+  };
+  std::vector<Port> ports;
+};
+
 // Sink stage ids; empty when the graph has no such output.
 struct BuiltGraph {
   Json                  spec;
@@ -215,20 +268,33 @@ struct BuiltGraph {
   std::filesystem::path video_part;
   std::filesystem::path audio_part;
   bool                  audio_is_source = false;
+  // How the sound is joined in: PCM in a ProRes intermediate.
+  media::SoundCodec     sound = media::SoundCodec::Aac;
   // A trimmed export's sound: the span of the source to take, seconds
   // (duration 0: all of it).
   double                audio_start = 0;
   double                audio_duration = 0;
   std::optional<MovieFeed> movie;  // a clip fed frame by frame
+  // Encoders' outputs tapped to be kept, or fed from what was (given an
+  // EncodingCache): a generation's.
+  std::vector<EncodingIo> encodings;
 };
 
-Result<BuiltGraph> build_text_to_image(const JobSpec&);
+// Given an EncodingCache, a generation KEEPS what its encoders make: each
+// encoder whose output is kept already is left out -- its inputs too,
+// when nothing else reads them -- and a valtz-source takes its place;
+// each other is tapped (BuiltGraph::encodings). The picture's or clip's
+// own graph is otherwise the same.
+Result<BuiltGraph> build_text_to_image(const JobSpec&,
+                                       const EncodingCache* = nullptr);
 // upscale-video (DESIGN §4f): a clip -- input "source", its span `first`,
-// `count` -- restored at `width` x `height` by FlashVSR, as vpipe's own
-// graph does it (docs/pipelines/flashvsr-upscale-*): resampled to the
-// model's grid, stacked `group` frames at a time (no overlap: the source
-// encoder carries one stream across the groups, or cuts overlapping
-// clips itself), projected, denoised, decoded, fitted to the size. The
+// `count` -- restored at `width` x `height` by FlashVSR 1.1 or FlashVSR+,
+// as vpipe's own graphs do it (docs/pipelines/flashvsr-upscale-*,
+// flashvsr-plus-upscale-*): resampled to the model's grid, stacked
+// `group` frames at a time (no overlap: the source encoder carries one
+// stream across the groups, or cuts overlapping clips itself), projected,
+// denoised, decoded -- FlashVSR+ by its tiny decoder, which reads the
+// source pictures beside each latent -- fitted to the size. The
 // frames go in 8-bit through a valtz-source GATED by a valtz-tap before
 // the writer (MovieFeed::Gate). The sound, the source's own span, is
 // joined after.
@@ -245,7 +311,8 @@ Result<BuiltGraph> build_upscale_image(const JobSpec&);
 // model's default size when there is no base), aligned to `vpipe.align`;
 // see RefFeed for how each picture is fitted.
 Result<BuiltGraph> build_image_edit(const JobSpec&,
-                                    const std::vector<RefImage>&);
+                                    const std::vector<RefImage>&,
+                                    const EncodingCache* = nullptr);
 // generate-video (DESIGN §4c): a prompt -- and, when the family takes
 // one (`vpipe.first_frame`), a picture to open on, cropped to fill the
 // frame; one that takes a second (`vpipe.last_frame`: H3's FL2VA
@@ -266,7 +333,8 @@ Result<BuiltGraph> build_image_edit(const JobSpec&,
 Result<BuiltGraph> build_video(const JobSpec&,
                                const std::optional<RefImage>& first,
                                const std::vector<RefMedia>& refs = {},
-                               const std::optional<RefImage>& last = {});
+                               const std::optional<RefImage>& last = {},
+                               const EncodingCache* = nullptr);
 // generate-audio (DESIGN §4d): a song from words, in the shapes of
 // vpipe's YuE2 graphs (docs/pipelines/yue2-text-to-music,
 // yue2-songs-from-lyrics). The style, the score's plan, the seed and the

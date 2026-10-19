@@ -555,7 +555,7 @@ extension AppModel {
         if let a = live ? promptAssetId : t.assetId { req["prompt_asset"] = a }
         if let n = promptTabName(i) { req["prompt_name"] = n }
         let r = core.capturePrompt(req)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         reloadAssets()
     }
 
@@ -676,7 +676,7 @@ extension AppModel {
         guard a.isPrompt || given != nil else { return }
         let r = core.assetOp(project: projectId, "rename",
                              ["asset": id, "name": name])
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         reloadAssets()
     }
 

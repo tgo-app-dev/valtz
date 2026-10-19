@@ -462,7 +462,11 @@ struct ValtzApp: App {
         // the stage zoomed by as much first. Prints the outline's radius
         // in points against the brush's in pixels.
         case "zoom":
-            CompareCanvas.shown?.zoom(by: CGFloat(Double(arg) ?? 1))
+            if m.markupOnClip {
+                ClipZoomView.shown?.zoom(by: CGFloat(Double(arg) ?? 1))
+            } else {
+                CompareCanvas.shown?.zoom(by: CGFloat(Double(arg) ?? 1))
+            }
         case "hover":
             if let p = points(arg).first, m.markupOnClip,
                let c = ClipMarkupNSView.shown {
@@ -477,6 +481,14 @@ struct ValtzApp: App {
             m.timelineSeek(Int(arg) ?? 0)
             try? await Task.sleep(for: .milliseconds(500))
             print("snapshot: markup-seek frame=\(m.videoFrame) "
+                  + "onClip=\(m.markupOnClip) ready=\(m.markupReady)")
+        // The timeline in the prompt's place, or the prompt back
+        // ("timeline=open|close"): markup drawn with it open.
+        case "timeline":
+            m.showTimeline(arg != "close")
+            try? await Task.sleep(for: .milliseconds(900))
+            print("snapshot: markup-timeline open=\(m.timelineOpen) "
+                  + "view=\(ClipMarkupNSView.shown != nil) "
                   + "onClip=\(m.markupOnClip) ready=\(m.markupReady)")
         // A drag posted to the window over a clip's markup view, from
         // canvas pixels through its own mapping ("vdrag=10,10;200,120").
@@ -958,6 +970,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .write(to: URL(fileURLWithPath: path))
     }
 
+    /// The main window as the screen shows it (ScreenCaptureKit, glass
+    /// and AppKit's own animations included) to a PNG, now: TASKS'
+    /// `shot:<file>`, several in a run -- a bar's look over time.
+    @MainActor
+    static func shootWindow(to path: String) async {
+        do {
+            let number = NSApp.windows.first(where: {
+                $0.isVisible && !$0.className.contains("Popover")
+                    && !($0 is ShortcutHintWindow) })?.windowNumber
+            let content = try await SCShareableContent.currentProcess
+            guard let win = content.windows.first(where: {
+                $0.isOnScreen && $0.windowLayer == 0
+                    && (number == nil || $0.windowID == CGWindowID(number!))
+            }) else { throw CocoaError(.fileNoSuchFile) }
+            let filter = SCContentFilter(desktopIndependentWindow: win)
+            let cfg = SCStreamConfiguration()
+            let scale = CGFloat(filter.pointPixelScale)
+            cfg.width = Int(filter.contentRect.width * scale)
+            cfg.height = Int(filter.contentRect.height * scale)
+            cfg.showsCursor = false
+            let img = try await SCScreenshotManager.captureImage(
+                contentFilter: filter, configuration: cfg)
+            guard let dst = CGImageDestinationCreateWithURL(
+                URL(fileURLWithPath: path) as CFURL,
+                UTType.png.identifier as CFString, 1, nil) else { return }
+            CGImageDestinationAddImage(dst, img, nil)
+            CGImageDestinationFinalize(dst)
+        } catch {
+            print("snapshot: shot \(path) failed: \(error.localizedDescription)")
+        }
+    }
+
     /// Dev aid: VALTZ_SNAPSHOT=<file.png> captures the main window after
     /// VALTZ_SNAPSHOT_DELAY seconds (default 4), prints a one-line summary
     /// of the UI state to stderr, then quits -- for UI checks from a
@@ -1062,8 +1106,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "true", "on": m.setTuning(kv[0], flag: true)
                     case "false", "off": m.setTuning(kv[0], flag: false)
                     default:
+                        // A number, else a choice's value
+                        // ("i8_gemm_tier=token").
                         if let d = Double(kv[1]) {
                             m.setTuning(kv[0], number: d)
+                        } else {
+                            m.setTuning(kv[0], choice: kv[1])
                         }
                     }
                 }
@@ -1790,6 +1838,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 for _ in 0..<Int(delay * 4) where m.enhanced == nil {
                     try? await Task.sleep(for: .milliseconds(250))
                 }
+                // Its speed, the line under it while Show the Helper's
+                // Speed is on (VALTZ_SNAPSHOT_AGENT_SPEED=1).
+                FileHandle.standardError.write(Data(
+                    "snapshot: suggestion-speed shown=\(m.agentShowsSpeed) line=\(m.enhanced?.stats?.line ?? "-")\n".utf8))
                 // The box's card: how tall its words stand, how tall
                 // they are, its scroll bar ("snapshot: suggestion-card
                 // text= doc= bar= cap=").
@@ -1845,6 +1897,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "reject": m.dismissEnhanced()
                     default: break
                     }
+                    // An event through the app: the undo group the
+                    // typing opened ends with it, as with each key.
+                    if let ev = NSEvent.otherEvent(
+                        with: .applicationDefined, location: .zero,
+                        modifierFlags: [], timestamp: 0,
+                        windowNumber: 0, context: nil, subtype: 0,
+                        data1: 0, data2: 0) {
+                        NSApp.postEvent(ev, atStart: false)
+                    }
                     try? await Task.sleep(for: .milliseconds(600))
                 }
             }
@@ -1856,8 +1917,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // "newest-audio".
             // The project set up from the inspector: "still:1024x768",
             // "timeline:832x480", "sound"; its output after a third
-            // field, "timeline:832x480:rec2020,30,1,44100" (colour, fps,
-            // channels, sample rate).
+            // field, "timeline:832x480:rec2020,30,1,44100,prores4444"
+            // (colour, fps, channels, sample rate, intermediate).
             if let spec = env["VALTZ_SNAPSHOT_NEW_PROJECT"] {
                 let p = spec.split(separator: ":").map(String.init)
                 let wh = (p.count > 1 ? p[1] : "").split(separator: "x")
@@ -1869,6 +1930,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if f.count > 1, let n = Int64(f[1]) { o.fps = [n, 1] }
                     if f.count > 2, let c = Int(f[2]) { o.channels = c }
                     if f.count > 3, let r = Int(f[3]) { o.sampleRate = r }
+                    if f.count > 4 { o.intermediate = f[4] }
                 }
                 m.setUpProject(p[0] == "still" ? .still
                                : p[0] == "sound" ? .sound : .timeline,
@@ -1932,8 +1994,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // "clear;undo;redo;type:<text>;set:<text>" -- undo and
             // redo as the Edit menu's ⌘Z / ⇧⌘Z (undoAny), type as
             // keys at the text's end, set the words put in from
-            // outside (as Use in Prompt) -- each printing `snapshot: clear-prompt
-            // <step> prompt= refs= mentions= undo= redo= focus=`.
+            // outside (as Use in Prompt); the project changed under
+            // the box -- "open:<pkg>" another opened (as a drop opens
+            // one), "new" a new anonymous one -- "timeline:open|close"
+            // View › Timeline (the box out of the window, and back),
+            // "focus" the keyboard to the box -- each printing
+            // `snapshot: clear-prompt <step> prompt= refs= mentions=
+            // undo= redo= focus= project=`.
             if let spec = env["VALTZ_SNAPSHOT_CLEAR_PROMPT"] {
                 let steps = spec == "1" ? ["clear"]
                     : spec.split(separator: ";").map(String.init)
@@ -1942,6 +2009,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     switch step {
                     case "undo": m.undoAny()
                     case "redo": m.redoAny()
+                    case "new": m.newAnonymousProject()
+                    // The box's own text (promptTextView may be the
+                    // suggestion's, last focused).
+                    case "focus":
+                        if let root = m.editorWindow?.contentView?
+                            .superview,
+                           let tv = Self.find(PromptTextView.self,
+                                              in: root) {
+                            tv.window?.makeFirstResponder(tv)
+                        }
+                    case let s where s.hasPrefix("open:"):
+                        m.openDropped(URL(fileURLWithPath:
+                            String(s.dropFirst(5))))
+                        try? await Task.sleep(for: .milliseconds(1500))
+                    case let s where s.hasPrefix("timeline:"):
+                        m.showTimeline(s.hasSuffix(":open"))
                     case let s where s.hasPrefix("set:"):
                         m.setPrompt(String(s.dropFirst(4)))
                     case let s where s.hasPrefix("type:"):
@@ -1972,12 +2055,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: .milliseconds(600))
                     m.refreshTextUndo()
                     let w = m.promptTextView?.window
-                    let focus = w?.firstResponder === m.promptTextView
+                    let w2 = w ?? m.editorWindow
+                    let focus = w2?.firstResponder is PromptTextView
                         ? "prompt"
-                        : (w?.firstResponder is NSTextView ? "text"
-                           : "none")
+                        : w2?.firstResponder is SuggestionTextView
+                            ? "suggestion"
+                            : (w2?.firstResponder is NSTextView ? "text"
+                               : "none")
                     FileHandle.standardError.write(Data(
-                        "snapshot: clear-prompt \(step) prompt=\(m.prompt.debugDescription) refs=\(m.promptAttachments.count) mentions=\(m.promptMentions.count) undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_")) redo=\(m.redoMenuTitle.replacingOccurrences(of: " ", with: "_")) focus=\(focus)\n".utf8))
+                        "snapshot: clear-prompt \(step) prompt=\(m.prompt.debugDescription) refs=\(m.promptAttachments.count) mentions=\(m.promptMentions.count) undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_")) redo=\(m.redoMenuTitle.replacingOccurrences(of: " ", with: "_")) focus=\(focus) project=\(m.windowTitle.replacingOccurrences(of: " ", with: "_")):\(m.assets.count)\n".utf8))
                 }
             }
             // The inspector stacked ("1") -- before the asset list's
@@ -2133,6 +2219,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     case "remove": m.removeAsset(arg)
                     case "remove-stale": m.removeStaleAssets()
+                    // "filter:<words>" the list's filter field (none:
+                    // cleared), printing the rows it keeps -- and the
+                    // folders, `+` held open by it.
+                    case "filter":
+                        m.assetFilter = p.count > 1
+                            ? p[1...].joined(separator: ":") : ""
+                        try? await Task.sleep(for: .milliseconds(400))
+                        let w = AppModel.filterWords(m.assetFilter)
+                        let kept = m.listedAssets.filter {
+                            w.isEmpty || m.passesAssetFilter($0, words: w)
+                        }
+                        let folders = m.assetFolders.filter { f in
+                            kept.contains { $0.folder == f.id }
+                        }.map { $0.name + (m.closedFolders.contains($0.id)
+                                           && !w.isEmpty ? "+" : "") }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: assets-filter query=\(m.assetFilter.replacingOccurrences(of: " ", with: "_")) kept=\(kept.count)/\(m.listedAssets.count) rows=\(kept.map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) folders=\(folders.joined(separator: "|").replacingOccurrences(of: " ", with: "_"))\n".utf8))
                     default: break
                     }
                 }
@@ -2217,6 +2320,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Its row's menu's Duplicate Layer.
                     case "dup":
                         m.duplicateLayer(Self.layerId(arg))
+                    // The section's find: "find" its magnifier (opened;
+                    // "find=<words>" those put in), "ftype=<words>" typed
+                    // into it, "fkey=down|up|enter|esc" a key posted to
+                    // it, "fgo=<n>" the n-th match clicked -- each printing
+                    // what it lists, the mark, the layer selected and
+                    // whether its row is in sight in the list.
+                    // "sleep=<s>": held so long (for screencapture -l).
+                    case "sleep":
+                        try? await Task.sleep(
+                            for: .seconds(Double(arg) ?? 1))
+                    // "fold=<folder name>": a layer folder folded or
+                    // opened, as its chevron does.
+                    case "fold":
+                        if let f = m.stageLayerFolders.first(where: {
+                            $0.name == arg }) {
+                            m.toggleFolderFolded(f.id)
+                        }
+                    case "find", "ftype", "fkey", "fgo":
+                        let pop = {
+                            NSApp.windows.first {
+                                $0.isVisible && String(describing: type(of: $0))
+                                    .contains("Popover")
+                            }
+                        }
+                        func post(_ ch: String, _ code: UInt16) {
+                            guard let w = pop(), let e = NSEvent.keyEvent(
+                                with: .keyDown, location: .zero,
+                                modifierFlags: [], timestamp: 0,
+                                windowNumber: w.windowNumber, context: nil,
+                                characters: ch,
+                                charactersIgnoringModifiers: ch,
+                                isARepeat: false, keyCode: code) else {
+                                return
+                            }
+                            w.sendEvent(e)
+                        }
+                        switch kv[0] {
+                        case "find":
+                            m.layerFind = ""
+                            m.layerFindOpen = true
+                            try? await Task.sleep(for: .milliseconds(500))
+                            if !arg.isEmpty { m.layerFind = arg }
+                        case "ftype":
+                            for ch in arg {
+                                post(String(ch), 0)
+                                try? await Task.sleep(for: .milliseconds(40))
+                            }
+                        case "fkey":
+                            let k: (String, UInt16) = switch arg {
+                            case "down": ("\u{F701}", 125)
+                            case "up": ("\u{F700}", 126)
+                            case "esc": ("\u{1b}", 53)
+                            default: ("\r", 36)
+                            }
+                            post(k.0, k.1)
+                        default:
+                            let found = m.layerFindMatches
+                            if let n = Int(arg), found.indices.contains(n) {
+                                m.goToLayer(found[n].id)
+                            }
+                        }
+                        try? await Task.sleep(for: .milliseconds(900))
+                        let list = m.layerListFrame
+                        let row = m.activeLayerRowFrame
+                        func r(_ f: CGRect) -> String {
+                            "\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))"
+                        }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: layer-find \(step) open=\(m.layerFindOpen) popover=\(pop() != nil) query=\(m.layerFind.replacingOccurrences(of: " ", with: "_")) matches=\(m.layerFindMatches.map { ($0.id.isEmpty ? "0" : $0.id) + ":" + $0.title.replacingOccurrences(of: " ", with: "_") }.joined(separator: ",")) mark=\(m.layerFindMark) selected=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) inSight=\(list.insetBy(dx: -1, dy: -1).contains(row)) row=\(r(row)) list=\(r(list))\n".utf8))
                     // A still's pages (DESIGN §6a): one added after
                     // the page shown, that page removed, the stage at
                     // a page ("page=2", from 1), the selected layer's
@@ -2716,11 +2888,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "key" where arg == "space":
                         Self.postSpace(m)
                     case "key":
+                        // "cleft" / "cright": with ⌘ (the previous / next
+                        // event); "sleft" / "sright" with ⇧ (ten).
                         let left = arg.hasSuffix("left")
+                        var mods: NSEvent.ModifierFlags = [.numericPad,
+                                                           .function]
+                        if arg.hasPrefix("c") { mods.insert(.command) }
+                        if arg.hasPrefix("s") { mods.insert(.shift) }
                         if let w = m.editorWindow,
                            let ev = NSEvent.keyEvent(
                                with: .keyDown, location: .zero,
-                               modifierFlags: [.numericPad, .function],
+                               modifierFlags: mods,
                                timestamp: 0,
                                windowNumber: w.windowNumber,
                                context: nil,
@@ -2965,6 +3143,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         } else {
                             m.continueClip()
                         }
+                    // Grab Frame where the player is, the timeline open
+                    // or not: the row's count before and after.
+                    case "grab":
+                        let before = m.promptAttachments.count
+                        m.grabFrame()
+                        print("snapshot: timeline-grab open=\(m.timelineOpen) refs=\(before)>\(m.promptAttachments.count) assets=\(m.assets.count)")
                     case "wait": wait = Double(arg) ?? 1
                     default: break
                     }
@@ -3221,6 +3405,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // "draw:<file.png>".
                     case "draw":
                         Self.drawWindow(to: arg)
+                    // The window as the screen shows it, now.
+                    case "shot":
+                        await Self.shootWindow(to: arg)
                     case "model": m.modelChoice = arg
                     // The generation card's rows, as the env hooks
                     // set them before Start: "size:1920x1088",
@@ -3322,6 +3509,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             FileHandle.standardError.write(Data(
                                 "snapshot: hosts \(out.joined(separator: " "))\n".utf8))
                         }
+                    // Every progress bar in the windows -- `snapshot:
+                    // bars <kind>:<indeterminate|value>@x,y,w ...` and
+                    // the stage's caption: one bouncing while the
+                    // caption counts shows here.
+                    case "bars":
+                        var out: [String] = []
+                        for w in NSApp.windows where w.isVisible {
+                            guard let root = w.contentView else { continue }
+                            var queue: [NSView] = [root]
+                            while !queue.isEmpty {
+                                let v = queue.removeFirst()
+                                if let p = v as? NSProgressIndicator,
+                                   !p.isHiddenOrHasHiddenAncestor {
+                                    let f = p.convert(p.bounds, to: nil)
+                                    let k = p.style == .bar ? "bar" : "spin"
+                                    let s = p.isIndeterminate ? "indeterminate"
+                                        : String(format: "%.3f", p.doubleValue
+                                                 / max(p.maxValue, 1e-9))
+                                    // Seen: the alphas and opacities
+                                    // above it, multiplied.
+                                    var a = 1.0
+                                    var up: NSView? = p
+                                    while let u = up {
+                                        a *= Double(u.alphaValue)
+                                        a *= Double(u.layer?.opacity ?? 1)
+                                        up = u.superview
+                                    }
+                                    out.append("\(k):\(s)@\(Int(f.minX)),\(Int(w.frame.height - f.maxY)),\(Int(f.width))a\(String(format: "%.2f", a))")
+                                }
+                                queue += v.subviews
+                            }
+                        }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: bars \(out.isEmpty ? "-" : out.joined(separator: " ")) fraction=\(m.generationPhase?.fraction.map { String(format: "%.3f", $0) } ?? "-") caption=\(m.generationCaption)\n".utf8))
                     // The stage player's own views, as AVKit has them:
                     // each one's class, frame (points from the window's
                     // top left), alpha and hidden -- `snapshot: avtree`.
@@ -3428,6 +3649,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     // The title bar's compare button.
                     case "compare": m.toggleCompare()
+                    // "zoom:in|out|fit|actual|unfit": the title bar's
+                    // zoom group, mid-script (a clip's too), printed as
+                    // `snapshot: zoom`.
+                    case "zoom":
+                        switch arg {
+                        case "in": m.zoom(.zoomIn)
+                        case "out": m.zoom(.zoomOut)
+                        case "fit": m.zoom(.fit)
+                        case "actual": m.zoom(.actualSize)
+                        case "unfit": m.toggleFit()
+                        default: break
+                        }
+                        try? await Task.sleep(for: .milliseconds(300))
+                        let v = m.currentViewer
+                        let r = m.stageVideoRect.map {
+                            "\(Int($0.minX)),\(Int($0.minY)),"
+                                + "\(Int($0.width))x\(Int($0.height))"
+                        } ?? "-"
+                        FileHandle.standardError.write(Data(
+                            "snapshot: zoom \(arg) zoom=\(v.zoomText) fit=\(v.fitting) canZoom=\(m.canZoom) videoShown=\(r)\n".utf8))
                     // "export:<format>:<file>": what the stage shows,
                     // saved as Save… would.
                     case "export":
@@ -4036,6 +4277,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 FileHandle.standardError.write(Data(
                     "snapshot: shown=\(Int(shown.minX)),\(Int(shown.minY)) \(Int(shown.width))x\(Int(shown.height)) in \(Int(canvas.bounds.width))x\(Int(canvas.bounds.height)), visible \(Int(seen.width))x\(Int(seen.height)) pt\n".utf8))
             }
+        } else if let spec = env["VALTZ_SNAPSHOT_PAN"],
+                  let clip = ClipZoomView.shown, clip.window != nil {
+            // A clip on the stage: its zoom view's pan.
+            let d = spec.split(separator: ",").compactMap { Double($0) }
+            if d.count == 2 {
+                for _ in 0..<20 {
+                    clip.panBy(dx: d[0] / 20, dy: d[1] / 20)
+                }
+                try? await Task.sleep(for: .milliseconds(300))
+                let shown = clip.frameRect
+                let seen = shown.intersection(clip.bounds)
+                FileHandle.standardError.write(Data(
+                    "snapshot: shown=\(Int(shown.minX)),\(Int(shown.minY)) \(Int(shown.width))x\(Int(shown.height)) in \(Int(clip.bounds.width))x\(Int(clip.bounds.height)), visible \(Int(seen.width))x\(Int(seen.height)) pt clip\n".utf8))
+            }
         }
         // A screen ("log"), or Settings on a page ("capabilities",
         // "storage", "general") -- then the snapshot is of that window.
@@ -4453,6 +4708,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return NSApp.windows.first(where: { $0.isVisible })
         }
+        // VALTZ_SNAPSHOT_NOTICE="error:<words>" (info, warning, error): a
+        // notice floated over the composer just before the capture, as
+        // AppModel.flash shows one; its frame printed.
+        if let spec = env["VALTZ_SNAPSHOT_NOTICE"], let m = model {
+            let parts = spec.split(separator: ":", maxSplits: 1)
+                .map(String.init)
+            let level: Notice.Level = switch parts.first {
+            case "error": .error
+            case "warning": .warning
+            default: .info
+            }
+            m.flash(parts.count > 1 ? parts[1] : spec, level: level)
+            try? await Task.sleep(for: .seconds(3))
+            FileHandle.standardError.write(Data(
+                "snapshot: notice level=\(parts.first ?? "-") text=\(m.banner ?? "-")\n".utf8))
+        }
         // VALTZ_SNAPSHOT_DROP_VIEWS=1: every AppKit view registered
         // for drops, its frame in the window (points from the top
         // left), its types -- beside the Assets list's frame: what
@@ -4521,10 +4792,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let parts = (hover ? String(spec.dropFirst(6)) : spec)
                         .split(separator: "@").map(String.init)
                     guard parts.count == 2 else { continue }
-                    let xy = parts[1].split(separator: ",")
+                    // "x,y<x0,y0": the drag comes in at x0,y0 first.
+                    let at = parts[1].split(separator: "<")
+                        .map(String.init)
+                    let xy = at[0].split(separator: ",")
                         .compactMap { Double($0) }
                     guard xy.count == 2 else { continue }
                     let p = NSPoint(x: xy[0], y: h - xy[1])
+                    let from = at.count > 1
+                        ? at[1].split(separator: ",").compactMap {
+                            Double($0) } : []
                     var hit: NSView?
                     func front(_ v: NSView) {
                         if !v.registeredDraggedTypes.isEmpty,
@@ -4549,6 +4826,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     within(root)
                     let before = model?.assets.count ?? 0
+                    // What this drop says, alone: `banner=`.
+                    model?.banner = nil
                     // "row:<asset name>": a row of the list dragged,
                     // as its drag carries it (text, "valtz-asset:id").
                     let row = parts[0].hasPrefix("row:")
@@ -4575,6 +4854,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         at: p, window: w)
                     // Where AppKit itself would hand this drag.
                     let find = NSSelectorFromString("_findDragTargetFrom:")
+                    // Coming in elsewhere first, as a real drag crosses
+                    // the window to where it is let go: entered there,
+                    // moved, and gone on (its exit) -- `crossed=`.
+                    var crossed = "-"
+                    if from.count == 2, w.responds(to: find) {
+                        info.location = NSPoint(x: from[0], y: h - from[1])
+                        if let first = w.perform(find, with: info)?
+                            .takeUnretainedValue() as? NSView {
+                            let d = first as NSDraggingDestination
+                            let e = d.draggingEntered?(info) ?? []
+                            let u = d.draggingUpdated?(info) ?? []
+                            try? await Task.sleep(for: .milliseconds(300))
+                            info.location = p
+                            d.draggingExited?(info)
+                            crossed = "\(type(of: first)):\(e.rawValue)/\(u.rawValue)"
+                        }
+                        info.location = p
+                    }
                     let appkit = w.responds(to: find)
                         ? w.perform(find, with: info)?
                             .takeUnretainedValue() as? NSView
@@ -4610,7 +4907,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 .name ?? fid)
                     }
                     FileHandle.standardError.write(Data(
-                        "snapshot: fake-drop at=\(parts[1]) view=\(hit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") entered=\(entered.rawValue) updated=\(updated.rawValue) performed=\(performed) assets=\(before)>\(model?.assets.count ?? 0) rowFolder=\(rowFolder) inside=\(inside.map { "\(type(of: $0))" } ?? "-") appkit=\(appkit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") mentions=\(model?.promptMentions.count ?? 0)\n".utf8))
+                        "snapshot: fake-drop at=\(parts[1]) crossed=\(crossed) view=\(hit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") entered=\(entered.rawValue) updated=\(updated.rawValue) performed=\(performed) assets=\(before)>\(model?.assets.count ?? 0) rowFolder=\(rowFolder) inside=\(inside.map { "\(type(of: $0))" } ?? "-") appkit=\(appkit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") mentions=\(model?.promptMentions.count ?? 0) banner=\(model?.banner ?? "-")\n".utf8))
                 }
             }
         }
@@ -4682,9 +4979,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let loras: [String] = t.loras.filter(\.on).map {
                     URL(fileURLWithPath: $0.path).lastPathComponent
                 }
-                tuneValues = nums.joined(separator: ",") + ";"
+                let picked: [String] = t.choices.keys.sorted().map {
+                    "\($0):\(t.choices[$0] ?? "")"
+                }
+                tuneValues = (nums + picked).joined(separator: ",") + ";"
                     + loras.joined(separator: "+")
             }
+            // A zoomed clip's frame on the card.
+            let videoShown: String = m.stageVideoRect.map { r in
+                "\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width))x\(Int(r.height))"
+            } ?? "-"
+            // What a stack's frames are drawn at (they follow the zoom).
+            let videoRender: String = (ClipZoomView.shown?.player?
+                .currentItem?.videoComposition?.renderSize).map {
+                    "\(Int($0.width))x\(Int($0.height))"
+                } ?? "-"
             let line = "snapshot: project=\(m.projectName) "
                 + "assets=\(m.assets.count) imageModel=\(m.imageModel) "
                 + "editModel=\(m.editModel) willEdit=\(m.willEdit) "
@@ -4701,7 +5010,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "window=\(NSApp.windows.first { $0.isVisible }.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? "-") "
                 + "screen=\(NSScreen.main.map { "\(Int($0.visibleFrame.width))x\(Int($0.visibleFrame.height))" } ?? "-") "
                 + "installed=\(models) ready=\(ready) "
-                + "zoom=\(m.currentViewer.zoomText) fit=\(m.currentViewer.fitting) actual=\(m.currentViewer.isActualSize) "
+                + "zoom=\(m.currentViewer.zoomText) fit=\(m.currentViewer.fitting) actual=\(m.currentViewer.isActualSize) canZoom=\(m.canZoom) videoShown=\(videoShown) videoRender=\(videoRender) "
                 + "output=\(m.dimensions.width)x\(m.dimensions.height) "
                 + "sizes=\(m.sizeClasses.map { "\($0)" }.joined(separator: ",")) "
                 + "composer=\(Int(m.composerWidth))/\(Int(m.composerColumn)) "
@@ -4718,7 +5027,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "mentions=\(m.promptMentions.count) focus=\(m.promptAttachments.firstIndex { $0.id == m.focusedReference }.map(String.init) ?? "-") "
                 + "stack=\(m.stackPlayback.map { "\($0.width)x\($0.height)/\($0.frames)f/\($0.clips.count)clips" } ?? "-") "
                 + "look=\(m.stageStack?.layerStack.map { l in let k = m.layerLook(l.id); return "\(l.id.isEmpty ? "0" : l.id):\(k.adjust ? "a" : "")\(k.place ? "p" : "")\(k.turn ? "t" : "")\(k.keyed ? "k" : "")" }.joined(separator: ",") ?? "-") "
-                + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(m.inspectorStacked ? "stacked" : "one"):\(InspectorTab.allCases.filter { !m.inspectorFolded.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) pictureRoom=\(Int(m.pictureRoom))/\(Int(m.editorRoom)) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
+                + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(m.inspectorStacked ? "stacked" : "one"):\(InspectorTab.allCases.filter { !m.inspectorFolded.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate),\(m.projectOutput.intermediate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) pictureRoom=\(Int(m.pictureRoom))/\(Int(m.editorRoom)) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
                 + "markup=\(m.markupOpen ? m.markup.tool.rawValue : "off"):sel[\(m.markup.selection.map(\.kind.rawValue).joined(separator: ","))\(m.markup.drawing ? "+drawing" : "")]@\(m.markup.selectionLayer ?? "-") "
                 // The first selected object's style: a text's
                 // alignment and spacing, its effects.
@@ -5383,14 +5692,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 final class FakeDrag: NSObject, @preconcurrency NSDraggingInfo {
     let pasteboard: NSPasteboard
-    let location: NSPoint
+    var location: NSPoint
     let window: NSWindow
 
+    /// A file's drag as the Finder makes it: its FILE REFERENCE URL
+    /// (file:///.file/id=...), as public.file-url and the Finder's own
+    /// node type -- a path URL took drops a real drag did not.
     init(file: URL, at: NSPoint, window: NSWindow) {
         pasteboard = NSPasteboard(name: NSPasteboard.Name(
             "valtz-fake-drag-\(UUID().uuidString)"))
         pasteboard.clearContents()
-        pasteboard.writeObjects([file as NSURL])
+        // Through Core Foundation: Swift's URL makes a reference a path.
+        let s = CFURLCreateFileReferenceURL(nil, file as CFURL, nil)
+            .map { CFURLGetString($0.takeRetainedValue()) as String }
+            ?? file.absoluteString
+        let item = NSPasteboardItem()
+        item.setString(s, forType: .fileURL)
+        item.setString(s, forType: NSPasteboard.PasteboardType(
+            "com.apple.finder.node"))
+        pasteboard.writeObjects([item])
         location = at
         self.window = window
     }

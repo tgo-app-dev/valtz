@@ -44,9 +44,11 @@ set(VALTZ_CORE_SOURCES
   src/models/capabilities.cc
   src/models/hardware.mm
   src/models/model-check.cc
+  src/models/drawthings.cc
   src/models/model-store.cc
   src/models/tuning.cc
   src/assist/assistant.cc
+  src/assist/moss-image.cc
   src/assist/rewrite-prompts.cc
   src/assist/transcript.cc
   src/assist/video-summary.cc
@@ -72,6 +74,7 @@ set(VALTZ_CORE_SOURCES
 if(VALTZ_HAVE_VPIPE)
   list(APPEND VALTZ_CORE_SOURCES
     src/engine/vpipe/vpipe-engine.cc
+    src/engine/vpipe/encoding-cache.cc
     src/engine/vpipe/graph-builder.cc
     src/engine/vpipe/host-exchange.cc
     src/engine/vpipe/flex-json.cc
@@ -132,6 +135,15 @@ valtz_embed("${VALTZ_H3_SKILL}/references/base-en.txt" kMinimaxH3BaseGuide
   minimax-h3-base-guide.cc)
 valtz_embed("${VALTZ_H3_SKILL}/references/ref-en.txt" kMinimaxH3RefGuide
   minimax-h3-ref-guide.cc)
+# MOSS-Image's prompt-enhancer skill, as its makers publish it
+# (Apache-2.0, 3rd-party/moss-image): its caption and layout drafts,
+# compiled by Valtz (assist/moss-image.h) as its script compiles them.
+set(VALTZ_MOSS_IMAGE_SKILL
+  "${PROJECT_SOURCE_DIR}/3rd-party/moss-image/skills/moss-image-prompt-enhancer")
+valtz_embed("${VALTZ_MOSS_IMAGE_SKILL}/SKILL.md" kMossImageSkill
+  moss-image-skill.cc)
+valtz_embed("${VALTZ_MOSS_IMAGE_SKILL}/references/layout.md"
+  kMossImageLayoutGuide moss-image-layout-guide.cc)
 
 add_library(valtz_core STATIC ${VALTZ_CORE_SOURCES}
   $<TARGET_OBJECTS:valtz_lmdb>)
@@ -141,9 +153,11 @@ target_include_directories(valtz_core PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_include_directories(valtz_core PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src")
+# The system's SQLite: a Draw Things checkpoint's table of contents
+# (models/drawthings.h).
 target_link_libraries(valtz_core
   PUBLIC valtz_json Threads::Threads
-  PRIVATE valtz_lmdb)
+  PRIVATE valtz_lmdb sqlite3)
 target_link_libraries(valtz_core PUBLIC
   "-framework Foundation"
   "-framework CoreFoundation"
@@ -154,6 +168,7 @@ target_link_libraries(valtz_core PUBLIC
   "-framework CoreVideo"
   "-framework CoreMedia"
   "-framework AVFoundation"
+  "-framework VideoToolbox"
   "-framework AudioToolbox"
   "-framework ImageIO"
   "-framework UniformTypeIdentifiers"

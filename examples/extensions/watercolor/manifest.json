@@ -30,7 +30,8 @@
         "vpipe": {
           "shape": "diffusion-image",
           "config_stage": "krea2-model-config",
-          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier",
+                    "ane_ffn", "ane_qkv"],
           "defaults": {"steps": 8, "width": 1024, "height": 1024},
           "scheduler": {"steps": 8, "shift": 0.3},
           "options": [

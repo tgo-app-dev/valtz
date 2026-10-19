@@ -194,7 +194,7 @@ built-in models use:
 
 | shape | what it builds | parameters |
 |---|---|---|
-| `diffusion-image` | text to image and image edit: model-select → text-prompt → diffusion-conditioner → generate-image → vae-decode → save-image | `config_stage` (your family's model-config stage), `scheduler`, `defaults` (`width`, `height`, `steps`), `align`, `edit` (`max_references`, `reference_area`, `reference_to_conditioner`, `defaults`, `config`) |
+| `diffusion-image` | text to image and image edit: model-select → text-prompt → diffusion-conditioner → generate-image → vae-decode → save-image | `config_stage` (your family's model-config stage), `scheduler`, `defaults` (`width`, `height`, `steps`), `align`, `edit` (`max_references`, `reference_area`, `reference_to_conditioner`, `defaults`, `config`), `negative` (`"conditioner"`: its conditioner's second output is the CFG's negative, wired to generate-image's), `config_shift` (the schedule's shift is your config stage's `shift`; this its default) |
 | `minimax-h3` | a clip with its soundtrack, optionally from references (MiniMax H3's contract) | `config_stage`, `config`, `generate`, `defaults` (`fps`, `frames`, `steps`), `frame_grid`, `max_frames`, `references` |
 | `yue2` | a song from a style and lyrics | `decoder`, `defaults`, `max_seconds`, `sample_rate` |
 | `chat` | the assistant (text-chat) | |
@@ -212,7 +212,7 @@ Common to every shape:
 
 | key | |
 |---|---|
-| `accel` | The acceleration tiers vpipe applies to it (`sol_attn`, `sage_attn`, `i8_gemm`, `ane_ffn`, `ane_qkv`, `motion_cache`): Favor's Custom offers these. |
+| `accel` | The acceleration tiers vpipe applies to it (`sol_attn`, `sage_attn`, `i8_gemm`, `i8_gemm_tier`, `ane_ffn`, `ane_qkv`, `motion_cache`): Favor's Custom offers these. `i8_gemm_tier` -- which int8 GEMM runs: `accurate`, `fast`, `token`, `token_plain` -- only where the backend's DiT implements vpipe's tiers (its generating stage reads the key). `vae_i8_gemm` and `vae_i8_gemm_tier` (`accurate`, `fast`): the VAE's int8, as the vae-decode / vae-encode stages take `i8_gemm` and `i8_gemm_tier` -- only where the backend's codec implements them (vpipe's Qwen-Image codec does). |
 | `ane_qkv_min_ram_gb` | Optional. Before M5 (no GPU matrix cores, at most 20 GPU cores), Fast and Med turn on `ane_ffn`, and `ane_qkv` for a picture model; with this, `ane_qkv` instead goes on for any role, only on a Mac with at least this much memory (MiniMax H3: 24). |
 | `steps` | Steps per preference: `{"speed": 4, "balanced": 8, "quality": 12}`. |
 | `turbo` | A few-step LoRA it runs with: `{"lora": <model id>, "steps": {...}, "scale", "config"}`. |

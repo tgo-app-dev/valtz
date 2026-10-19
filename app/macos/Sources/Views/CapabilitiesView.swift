@@ -406,6 +406,24 @@ private struct MemberRow: View {
                     .background(tint.opacity(0.12), in: Capsule())
                     .help(compressedHelp(c))
             }
+            // Parts from Draw Things checkpoints, the rest from here.
+            if let parts = m.parts, !parts.isEmpty {
+                let gone = parts.values.filter { !$0.present }
+                let tint = gone.isEmpty ? Color.accentColor : Color.orange
+                // Short: the row has no room for the parts' names, which
+                // the help gives.
+                Text(verbatim: "Draw Things")
+                    .lineLimit(1)
+                    .fixedSize()
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(tint.opacity(0.12), in: Capsule())
+                    .help(gone.isEmpty
+                          ? String(localized: "From Draw Things (\(Self.partNames(parts.keys))): \(Self.partFiles(parts)). Its configs and tokenizer come from the model's own files.")
+                          : String(localized: "Not there any more: \(gone.map(\.path).joined(separator: ", "))"))
+            }
             actions
         }
         .padding(.vertical, 2)
@@ -580,6 +598,12 @@ private struct MemberRow: View {
                     Divider()
                     Button("Unlink") { model.unlinkModel(m.model) }
                 }
+                if !(m.parts ?? [:]).isEmpty {
+                    Divider()
+                    Button("Unlink the Draw Things Files") {
+                        model.unlinkModel(m.model, parts: true)
+                    }
+                }
             } label: {
                 Image(systemName: "link")
             }
@@ -668,6 +692,26 @@ private struct MemberRow: View {
         .help(compressHelp(c))
     }
 
+    /// "DiT, text encoder, VAE": the parts linked, in the model's order.
+    static func partNames<S: Sequence<String>>(_ parts: S) -> String {
+        let have = Set(parts)
+        return ["dit", "encoder", "vae"].filter(have.contains).map { p in
+            switch p {
+            case "dit": String(localized: "DiT")
+            case "encoder": String(localized: "text encoder")
+            default: String(localized: "VAE")
+            }
+        }.joined(separator: ", ")
+    }
+
+    /// Each part's file, by name.
+    static func partFiles(_ parts: [String: CapabilityTree.PartLink])
+        -> String {
+        ["dit", "encoder", "vae"].compactMap { p in
+            parts[p].map { "\(partNames([p])) \(URL(fileURLWithPath: $0.path).lastPathComponent)" }
+        }.joined(separator: "; ")
+    }
+
     private func compressHelp(_ c: CapabilityTree.Compress) -> String {
         if let done = member.compressed, done.besideOriginal {
             return String(localized: "A \(String(done.bits))-bit copy beside the original: choose which one runs, and which one to keep")
@@ -702,6 +746,8 @@ private struct MemberRow: View {
         panel.allowsMultipleSelection = false
         panel.message = member.quantize != nil
             ? String(localized: "Choose a quantized \(member.label) already made: the folder holding it (vpipe's prepare-moss-tts-v1.5 writes local/MOSS-TTS-v1.5-8bit).")
+            : member.takesDrawThings
+            ? String(localized: "Choose the weights for \(member.label): the folder holding them, or Draw Things' Models folder or one of its checkpoints (.ckpt) — its DiT, text encoder or VAE. Its configs and tokenizer still come from its own files.")
             : String(localized: "Choose the weights for \(member.label): a .safetensors file or the folder holding them.")
         if let from { panel.directoryURL = from }
         if panel.runModal() == .OK, let url = panel.url {
@@ -719,7 +765,7 @@ private struct NotesView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(notes.prefix(5).enumerated()), id: \.offset) {
+                ForEach(Array(notes.prefix(6).enumerated()), id: \.offset) {
                     _, n in
                     Label {
                         Text(verbatim: n.text)

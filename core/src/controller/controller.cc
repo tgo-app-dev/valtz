@@ -2,6 +2,7 @@
 
 #include "controller/agent-host.h"
 
+#include "valtz/assist/moss-image.h"
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <format>
 #include <fstream>
@@ -48,7 +50,8 @@ static_assert(models::kLoraSlots == engine::kLoraSlots);
 std::vector<std::string>
 own_file_keys()
 {
-  std::vector<std::string> keys = {"lora_file", "dit_file", "vae_file"};
+  std::vector<std::string> keys = {"lora_file", "dit_file", "vae_file",
+                                   "encoder_weights", "vae_weights"};
   for (int k = 2; k <= engine::kLoraSlots; ++k) {
     keys.push_back(std::format("lora{}_file", k));
   }
@@ -105,6 +108,15 @@ random_seed()
   std::random_device rd;
   // Seeds stay in 31 bits: every family's sampler takes them as int.
   return static_cast<std::int64_t>(rd() & 0x7fffffff);
+}
+
+// How `p` keeps the clips it makes (OutputSettings::intermediate): a
+// clip job's "intermediate", recorded with it.
+std::string
+intermediate_of(project::Project& p)
+{
+  auto o = p.output();
+  return o.ok() ? o->intermediate : project::OutputSettings{}.intermediate;
 }
 
 // The most pictures an edit gives the model (catalog `max_references`).
@@ -167,12 +179,16 @@ set_named(project::Asset& a, bool on)
   }
 }
 
-// What a prompt's words name it: its first line, no Markdown.
+// What a prompt's words name it: its first line, no Markdown -- a
+// MOSS-Image layout's, its description.
 std::string
 words_name(const std::string& text)
 {
+  const std::string laid = assist::moss_layout_caption(text);
   std::string name =
-      one_line(assist::without_markdown(assist::prompt_words(text)));
+      !laid.empty()
+          ? one_line(laid)
+          : one_line(assist::without_markdown(assist::prompt_words(text)));
   return std::string(utf8_prefix(name.empty() ? "Prompt" : name, 64));
 }
 
@@ -384,6 +400,12 @@ Controller::create(ControllerConfig cfg)
         jget(helper, "drafter_bits", 8) == 4 ? 4 : 8;
     c->_video_every = std::max(0.0, jget(helper, "video_every", 0.0));
   }
+  // VALTZ_ASSISTANT: another helper for this run only, chosen nowhere --
+  // valtzctl's --assistant, for the app too (a 24 GB Mac checked on the
+  // 9B whatever the person chose).
+  if (const char* a = std::getenv("VALTZ_ASSISTANT"); a && *a) {
+    c->_assistant = a;
+  }
   c->_upscale_tuning = read_settings(paths.support / "upscale.json");
 
   char host[256] = {};
@@ -428,6 +450,9 @@ Controller::create(ControllerConfig cfg)
                          "vpipe", text);
     };
     ecfg.language = cfg.language;
+    // A generation's encodings kept between jobs (DESIGN §4l): the cache
+    // outlives the engine (declared before it).
+    ecfg.cache = c->_cache.get();
     c->load_extensions_(ecfg);
     c->_engine = cfg.engine_factory ? cfg.engine_factory()
                                     : engine::make_default_engine(ecfg);
@@ -621,9 +646,10 @@ Controller::post_(std::string kind, JobId job, Json data,
                                kind == "job.failed" ||
                                kind == "job.cancelled" ||
                                kind == "models.changed");
-  // An agent's picture landing (on the agent's own thread).
+  // An agent's picture landing (on the agent's own thread); the prompt
+  // enhancer's reply, for the agent's own enhance_prompt.
   if (_agent && (kind == "job.finished" || kind == "job.failed" ||
-                 kind == "job.cancelled")) {
+                 kind == "job.cancelled" || kind == "assist.enhanced")) {
     _agent->on_event(kind, job, data);
   }
   Event ev;
@@ -948,7 +974,22 @@ Controller::capability_tree() const
         {"source", source}, {"license", e->license}, {"notes", e->notes},
         {"gated", e->gated},
         {"origin", e->origin},
+        // The parts that can run from Draw Things checkpoints (catalog
+        // `check.drawthings`), and the ones linked.
+        {"drawthings", [&] {
+           Json parts = Json::array();
+           const Json dt = jget(e->check, "drawthings", Json::object());
+           for (auto it = dt.begin(); dt.is_object() && it != dt.end();
+                ++it) {
+             parts.push_back(it.key());
+           }
+           return parts;
+         }()},
       });
+      for (const auto& [part, l] : info.parts) {
+        members.back()["parts"][part] = {{"path", l.file.string()},
+                                         {"present", l.present}};
+      }
       // A quantized variant: made here from its source (no download),
       // which must be here first; no page of its own on Hugging Face.
       if (!e->quantize_from.empty()) {
@@ -1230,6 +1271,27 @@ Controller::link_model(const std::string& id, const fs::path& target)
                    jget<std::string>(check.error(), "message", ""));
     return out;
   }
+  // Its parts (Draw Things checkpoints): the model brings the rest, and
+  // says so while it is not here.
+  if (!check.parts.empty()) {
+    for (const auto& [part, file] : check.parts) {
+      VALTZ_TRY(_store->link_part(*e, part, file));
+    }
+    out["linked"] = true;
+    if (_store->info(*e).state != models::InstallState::Installed) {
+      Json n = message_fields(msg::kCheckDrawThingsNeedsModel,
+                              {{"model", e->name}});
+      n["level"] = "warning";
+      out["notes"].insert(out["notes"].begin(), std::move(n));
+    }
+    for (const auto& [part, file] : check.parts) {
+      VALTZ_LOG_INFO("models", "{}'s {} linked to {}", id, part,
+                     file.string());
+    }
+    post_("models.changed", JobId{},
+          {{"model", id}, {"reason", "linked"}});
+    return out;
+  }
   VALTZ_TRY(_store->link(*e, check.path));
   out["linked"] = true;
   VALTZ_LOG_INFO("models", "{} linked to {} ({}{})", id,
@@ -1267,12 +1329,16 @@ Controller::check_model(const std::string& id, const fs::path& target) const
 }
 
 Status
-Controller::unlink_model(const std::string& id)
+Controller::unlink_model(const std::string& id, bool parts)
 {
   if (!_catalog.find(id)) {
     return make_error(Code::NotFound, msg::kUnknownModel, {{"model", id}});
   }
-  _store->unlink(id);
+  if (parts) {
+    _store->unlink_parts(id);
+  } else {
+    _store->unlink(id);
+  }
   post_("models.changed", JobId{}, {{"model", id}, {"reason", "unlinked"}});
   return ok_status();
 }
@@ -1807,6 +1873,22 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
       }
     }
   }
+  // The parts the model is linked to apart (Draw Things checkpoints,
+  // Settings > Capabilities), recorded: its DiT and VAE where Custom
+  // names none of its own (its VAE is read as a whole model's, by
+  // model-select), its text encoder always.
+  const auto info = _store->info(m);
+  if (const auto d = info.part("dit");
+      !d.empty() && !r.params.contains("dit_file")) {
+    r.params["dit_file"] = d.string();
+  }
+  if (const auto v = info.part("vae");
+      !v.empty() && !r.params.contains("vae_file")) {
+    r.params["vae_weights"] = v.string();
+  }
+  if (const auto c = info.part("encoder"); !c.empty()) {
+    r.params["encoder_weights"] = c.string();
+  }
   if (jget(t, "vdn", false)) {
     r.params["branch"] = jget<std::string>(jget(vp, "vdn", Json::object()),
                                            "branch", "");
@@ -1866,16 +1948,61 @@ namespace {
 // cores, the rest off -- unless Settings › Upscaling says otherwise.
 constexpr std::string_view kUpscalePreference = "balanced";
 
+// The kinds an upscaler restores, as Settings › Upscaling names them.
+constexpr std::pair<std::string_view, models::Capability> kUpscaleKinds[] = {
+    {"video", models::Capability::UpscaleVideo},
+    {"image", models::Capability::UpscaleImage}};
+
+// upscale.json's key for the pick of each kind: {"video": id, ...} --
+// beside the upscalers' own values, which are keyed by model id.
+constexpr char kUpscaleUse[] = "use";
+
 }
 
 Json
 Controller::upscale_settings() const
 {
-  Json list = Json::array();
-  for (const auto& e : _catalog.models()) {
-    if (e.role != "upscale") {
-      continue;
+  // What an upscale of each kind runs: the pick where it is installed,
+  // else Auto's -- the best installed by rank (operation_model_'s order,
+  // by what is on disk alone: valtzctl lists this without an engine).
+  const auto installed = [&](const models::ModelEntry* e) {
+    return e && _store->info(*e).state == models::InstallState::Installed;
+  };
+  Json kinds = Json::array();
+  std::vector<std::string> running;
+  for (const auto& [kind, cap] : kUpscaleKinds) {
+    const models::ModelEntry* chosen = chosen_upscaler_(cap);
+    const models::ModelEntry* any = nullptr;
+    for (const auto& e : _catalog.models()) {
+      if (e.role == "upscale" && e.has(cap) && installed(&e) &&
+          (!any || e.rank > any->rank)) {
+        any = &e;
+      }
     }
+    const models::ModelEntry* runs = installed(chosen) ? chosen : any;
+    if (runs) {
+      running.push_back(runs->id);
+    }
+    kinds.push_back({{"kind", std::string(kind)},
+                     {"chosen", chosen ? chosen->id : std::string()},
+                     {"auto", any ? any->id : std::string()},
+                     {"runs", runs ? runs->id : std::string()}});
+  }
+  // Listed by kind, then as Auto ranks them (FlashVSR+ Turbo, Base, 1.1).
+  std::vector<const models::ModelEntry*> ups;
+  for (const auto& e : _catalog.models()) {
+    if (e.role == "upscale") {
+      ups.push_back(&e);
+    }
+  }
+  std::ranges::stable_sort(ups, [](const auto* a, const auto* b) {
+    const bool va = a->has(models::Capability::UpscaleVideo);
+    const bool vb = b->has(models::Capability::UpscaleVideo);
+    return va != vb ? va : a->rank > b->rank;
+  });
+  Json list = Json::array();
+  for (const auto* ep : ups) {
+    const auto& e = *ep;
     Json kept;
     {
       std::lock_guard lk(_upscale_tuning_mu);
@@ -1887,12 +2014,82 @@ Controller::upscale_settings() const
          {"kind", e.has(models::Capability::UpscaleVideo) ? "video"
                                                           : "image"},
          {"state", models::to_str(_store->info(e).state)},
+         {"runs", std::ranges::find(running, e.id) != running.end()},
          {"custom", kept.is_object() && !kept.empty()},
          {"tuning", models::tuning_options(e, tuning_context(e),
                                            kUpscalePreference, false,
                                            kept)}});
   }
-  return {{"upscalers", std::move(list)}};
+  return {{"upscalers", std::move(list)}, {"kinds", std::move(kinds)}};
+}
+
+const models::ModelEntry*
+Controller::chosen_upscaler_(models::Capability cap) const
+{
+  const auto kind = std::ranges::find(
+      kUpscaleKinds, cap,
+      &std::pair<std::string_view, models::Capability>::second);
+  if (kind == std::ranges::end(kUpscaleKinds)) {
+    return nullptr;
+  }
+  std::string id;
+  {
+    std::lock_guard lk(_upscale_tuning_mu);
+    id = jget<std::string>(jget(_upscale_tuning, kUpscaleUse, Json()),
+                           std::string(kind->first).c_str(), "");
+  }
+  const auto* e = id.empty() ? nullptr : _catalog.find(id);
+  return e && e->role == "upscale" && e->has(cap) ? e : nullptr;
+}
+
+Status
+Controller::use_upscaler(std::string_view kind, const std::string& model)
+{
+  const auto k = std::ranges::find(
+      kUpscaleKinds, kind,
+      &std::pair<std::string_view, models::Capability>::first);
+  if (k == std::ranges::end(kUpscaleKinds)) {
+    return make_error(Code::InvalidArgument,
+                      std::format("an upscaler restores video or image, "
+                                  "not {}", kind));
+  }
+  const bool any = model.empty() || model == "auto";
+  if (!any) {
+    const auto* m = _catalog.find(model);
+    if (!m) {
+      return make_error(Code::NotFound, msg::kUnknownModel,
+                        {{"model", model}});
+    }
+    if (m->role != "upscale" || !m->has(k->second)) {
+      return make_error(Code::InvalidArgument,
+                        std::format("{} does not upscale {}", m->name,
+                                    kind));
+    }
+  }
+  const fs::path file = _paths.support / "upscale.json";
+  {
+    std::lock_guard lk(_upscale_tuning_mu);
+    Json all = read_settings(file);
+    Json use = jget(all, kUpscaleUse, Json::object());
+    if (!use.is_object()) {
+      use = Json::object();
+    }
+    if (any) {
+      use.erase(std::string(kind));
+    } else {
+      use[std::string(kind)] = model;
+    }
+    if (use.empty()) {
+      all.erase(kUpscaleUse);
+    } else {
+      all[kUpscaleUse] = std::move(use);
+    }
+    VALTZ_TRY(write_settings(file, all));
+    _upscale_tuning = std::move(all);
+  }
+  post_("upscale.changed", JobId{},
+        {{"kind", std::string(kind)}, {"use", any ? "" : model}});
+  return ok_status();
 }
 
 Status
@@ -4073,16 +4270,31 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
                            {"purpose", purpose}});
   // What the assistant has written so far, and the suggestion read out of
   // it each time it grows (assist.partial): the person watches it come
-  // rather than waiting for the whole reply.
+  // rather than waiting for the whole reply. And its speed, as an agent's
+  // turn's (agent::turn_stats): from the request, its first words.
   struct Written {
     std::mutex mu;
     std::string text;
     std::string shown;
+    std::chrono::steady_clock::time_point asked =
+        std::chrono::steady_clock::now();
+    double first_ms = -1;
   };
   auto written = std::make_shared<Written>();
   engine::JobSink sink = [this, purpose, song = std::move(song),
                           form = std::move(form),
                           written](const engine::JobEvent& ev) {
+    const auto ms = [&] {
+      return std::chrono::duration<double, std::milli>(
+                 std::chrono::steady_clock::now() - written->asked)
+          .count();
+    };
+    if (ev.kind == engine::JobEventKind::Text) {
+      std::lock_guard lk(written->mu);
+      if (written->first_ms < 0) {
+        written->first_ms = ms();
+      }
+    }
     if (ev.kind == engine::JobEventKind::Text && purpose == "enhance") {
       std::string now;
       {
@@ -4099,7 +4311,12 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
         post_("assist.partial", ev.job, {{"prompt", std::move(now)}});
       }
     }
-    on_chat_event_(ev, purpose, song, form);
+    Json stats = Json::object();
+    if (ev.kind == engine::JobEventKind::Output) {
+      std::lock_guard lk(written->mu);
+      stats = agent::turn_stats(ev.data, written->first_ms, ms());
+    }
+    on_chat_event_(ev, purpose, song, form, stats);
   };
   if (members.empty()) {
     VALTZ_TRY(_engine->submit(std::move(*spec), std::move(sink)));
@@ -4121,7 +4338,8 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
 void
 Controller::on_chat_event_(const engine::JobEvent& ev,
                            const std::string& purpose,
-                           const std::string& song, const ReplyForm& form)
+                           const std::string& song, const ReplyForm& form,
+                           const Json& stats)
 {
   switch (ev.kind) {
   case engine::JobEventKind::Started:
@@ -4134,12 +4352,34 @@ Controller::on_chat_event_(const engine::JobEvent& ev,
   case engine::JobEventKind::Output:
     if (purpose == "enhance") {
       auto r = assist::parse_enhance_reply(ev.text);
+      if (form.canvas.first > 0) {
+        // A MOSS-Image draft -- a caption, or a layout -- compiled for
+        // the picture's canvas, as its skill's script compiles it; a
+        // reply in another shape (a helper ignoring the skill) read as
+        // any other.
+        if (auto j = assist::extract_json_object(ev.text); j.ok()) {
+          auto p = assist::moss_image_prompt(*j, form.canvas.first,
+                                             form.canvas.second);
+          if (p.ok()) {
+            assist::EnhanceResult e;
+            e.prompt = std::move(*p);
+            e.title = jget<std::string>(*j, "title", "");
+            r = std::move(e);
+          } else if (!r.ok() || r->prompt.empty()) {
+            r = p.error();
+          }
+        }
+      }
       if (r.ok()) {
         if (!song.empty()) {
           r->prompt = assist::keep_song_lyrics(r->prompt, song);
         }
         r->prompt = form.apply(std::move(r->prompt));
-        post_("assist.enhanced", ev.job, Json(*r));
+        Json d = Json(*r);
+        if (!stats.empty()) {
+          d["stats"] = stats;
+        }
+        post_("assist.enhanced", ev.job, std::move(d));
       } else {
         // The detail (why the reply did not parse) is for the log.
         VALTZ_LOG_WARN("assist", "unreadable reply: {}", r.error().message);
@@ -4255,6 +4495,34 @@ Controller::enhance_prompt(EnhancePromptRequest req)
   if (m) {
     er.system = skill_text(skill);
   }
+  // MOSS-Image's skill has an agent write a JSON draft and run a script
+  // on it: here the helper replies with the draft, and Valtz compiles it
+  // (on_chat_event_) for the picture's own canvas -- the size asked for,
+  // else the model's -- since a layout's boxes are that picture's pixels.
+  ReplyForm form;
+  if (skill == "moss-image" && !er.system.empty()) {
+    int w = 0, h = 0;
+    if (std::sscanf(req.size.c_str(), "%dx%d", &w, &h) != 2 || w <= 0 ||
+        h <= 0) {
+      const Json d = jget(jget(m->engine, "vpipe", Json::object()),
+                          "defaults", Json::object());
+      w = jget(d, "width", 1024);
+      h = jget(d, "height", 1024);
+    }
+    auto grid = [](int v) { return std::max(16, (v + 8) / 16 * 16); };
+    form.canvas = {grid(w), grid(h)};
+    er.skill_note = std::format(
+        "Valtz runs this skill for you, and there are no files, no shell "
+        "and no script here: reply with the draft ITSELF and nothing else "
+        "-- one JSON object, no prose, no code fence. A caption: "
+        "{{\"caption\": \"...\"}}. A Layout: the draft as "
+        "references/layout.md describes it, with \"width\": {0}, "
+        "\"height\": {1} -- the picture is made at exactly {0} x {1} "
+        "pixels, so every box is drawn on that canvas. Valtz checks and "
+        "compiles it as scripts/compile_prompt.py does; what it makes is "
+        "MOSS-Image's prompt.",
+        form.canvas.first, form.canvas.second);
+  }
   const int most = m ? max_pictures(*m) : 0;
   er.prompt = assist::tag_pictures(
       req.prompt, inline_numbers(req.inline_pictures, pictures, req.base,
@@ -4281,7 +4549,6 @@ Controller::enhance_prompt(EnhancePromptRequest req)
   // length, the references by the model's names -- a reply a section
   // at a time, and those names put back as the row's tags. Any other
   // skill keeps its own reply (docs/EXTENSIONS.md).
-  ReplyForm form;
   const bool clip_skill = req.target == "video" && m &&
                           !er.system.empty() &&
                           (skill == "minimax-h3-base" ||
@@ -4292,7 +4559,7 @@ Controller::enhance_prompt(EnhancePromptRequest req)
   // Its instructions ask for a long description, reasoned toward first
   // (a full-reference clip's runs to 500 words and more); a song's, for
   // its lyrics.
-  const int tokens = clip_skill             ? 4096
+  const int tokens = clip_skill || form.canvas.first > 0 ? 4096
                      : !er.system.empty()   ? 2048
                      : er.target == "audio" ? 1536
                                             : 512;
@@ -5013,10 +5280,13 @@ Controller::generate_image(GenerateImageRequest req)
                                req.prompt_asset, req.prompt_name));
   r.inputs.push_back(pin);
   // The prompt on one line, cut to 48 bytes and made unique by the
-  // project ("…", " (2)").
-  std::string name = req.name.empty()
-                         ? one_line(assist::without_markdown(words))
-                         : req.name;
+  // project ("…", " (2)") -- a MOSS-Image layout by its description,
+  // not its JSON.
+  const std::string laid = assist::moss_layout_caption(words);
+  std::string name = !req.name.empty() ? req.name
+                     : !laid.empty()   ? one_line(laid)
+                                       : one_line(
+                                             assist::without_markdown(words));
   VALTZ_ASSIGN(project::Asset a,
                p->define_derived(std::move(name), project::AssetKind::Image,
                                  r, 48));
@@ -5152,7 +5422,8 @@ Controller::generate_video(GenerateVideoRequest req)
               {"width", width},
               {"height", height},
               {"frames", frames},
-              {"fps", fps}};
+              {"fps", fps},
+              {"intermediate", intermediate_of(*p)}};
   stamp_origin(r, *m);
   // The adapter or branch is part of what made the clip: a rebuild
   // applies it too.
@@ -5499,9 +5770,13 @@ Controller::asset_operations_json() const
       const auto avail = it != caps.end()
                              ? it->availability
                              : models::Availability::NotOffered;
-      // What Auto runs -- or, none here, what it would once downloaded.
-      const models::ModelEntry* m =
-          operation_model_(t.capability, "auto", helper);
+      // What Auto runs -- or, none here, what it would once downloaded:
+      // an upscale Settings › Upscaling's pick where it is installed.
+      const bool up = t.capability == models::Capability::UpscaleVideo ||
+                      t.capability == models::Capability::UpscaleImage;
+      const models::ModelEntry* m = operation_model_(
+          t.capability, "auto",
+          up ? chosen_upscaler_(t.capability) : helper);
       if (!m && it != caps.end() && !it->chosen.empty()) {
         m = _catalog.find(it->chosen);
       }
@@ -5813,9 +6088,11 @@ Controller::upscale_(const AssetOpRequest& req, project::Project& p,
     return std::max(2, static_cast<int>(std::lround(x / 2)) * 2);
   };
   const media::PixelSize to{even(from.width * sx), even(from.height * sy)};
-  // The upscaler: the one named, else the best installed that runs --
-  // else one downloading (its job waits for it).
-  const models::ModelEntry* m = operation_model_(need, req.model);
+  // The upscaler: the one named, else Settings › Upscaling's pick where
+  // it is installed, else the best installed that runs -- else one
+  // downloading (its job waits for it).
+  const models::ModelEntry* m =
+      operation_model_(need, req.model, chosen_upscaler_(need));
   if (!m) {
     return make_error(Code::NotFound, msg::kNoUpscaler);
   }
@@ -5848,7 +6125,8 @@ Controller::upscale_(const AssetOpRequest& req, project::Project& p,
                 {"count", count},
                 {"seed", seed},
                 {"group", jget(up, "group", 25)},
-                {"overlap", jget(up, "overlap", 4)}};
+                {"overlap", jget(up, "overlap", 4)},
+                {"intermediate", intermediate_of(p)}};
   } else {
     r.op = std::string(engine::kOpUpscaleImage);
     r.params = {{"width", to.width},
@@ -6651,7 +6929,9 @@ Controller::resolve_build_(const std::string& model, const Json& params,
   }
   // Community checkpoints for its DiT and VAE, files or folders.
   for (const auto& [key, slot] :
-       {std::pair{"dit_file", &ref.dit}, std::pair{"vae_file", &ref.vae}}) {
+       {std::pair{"dit_file", &ref.dit}, std::pair{"vae_file", &ref.vae},
+        std::pair{"encoder_weights", &ref.encoder_weights},
+        std::pair{"vae_weights", &ref.vae_weights}}) {
     const auto f = jget<std::string>(rp, key, "");
     if (f.empty()) {
       continue;

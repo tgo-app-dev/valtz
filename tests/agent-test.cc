@@ -260,6 +260,8 @@ TEST(agent, a_turns_speed_is_counted)
   CHECK(h["first_ms"] == 400);
   CHECK(h["turn_ms"] == 2100);
 
+  CHECK(!h.contains("per_round"));   // no drafter decoded
+
   Json old = r.usage;
   old.erase("decoded");
   const Json o = agent::turn_stats(old, -1.0, 2100.0);
@@ -267,6 +269,23 @@ TEST(agent, a_turns_speed_is_counted)
   CHECK(!o.contains("decode_tps"));
   CHECK(o["decode_ms"] == 1500);
   CHECK(!o.contains("first_ms"));
+  // An older vpipe's plain chat: how long it read, not how much.
+  old.erase("prefilled");
+  const Json p = agent::turn_stats(old, -1.0, 2100.0);
+  CHECK(!p.contains("prefill_tokens"));
+  CHECK(p["prefill_ms"] == 200);
+
+  // Its drafter's share: the tokens a verify forward bought, the drafts
+  // kept.
+  Json mtp = turn;
+  mtp.update({{"drafter", "mtp"}, {"rounds", 30}, {"drafted", 90},
+              {"accepted", 37}});
+  const Json d = agent::turn_stats(agent::reply_from_turn(mtp, 1).usage,
+                                   400.0, 2100.0);
+  CHECK(d["drafter"] == "mtp");
+  CHECK(d["rounds"] == 30);
+  CHECK(d["per_round"] == 2.3);
+  CHECK(d["accepted_pct"] == 41);
 
   const Json cloud = {{"input_tokens", 1200}, {"cache_read_tokens", 6000},
                       {"output_tokens", 90}};

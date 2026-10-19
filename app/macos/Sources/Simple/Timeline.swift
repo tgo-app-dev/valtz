@@ -415,7 +415,7 @@ extension AppModel {
                              layer: id, extra: ["frame": frame])
         guard r.ok else {
             NSSound.beep()
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         timelineLayersChanged(select: r["layer"] as? String)
@@ -429,7 +429,7 @@ extension AppModel {
         let r = core.layerOp(project: projectId, asset: a.id, "stretch",
                              layer: id, extra: ["length": max(1, length)])
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         timelineLayersChanged(select: id)
@@ -444,7 +444,7 @@ extension AppModel {
         let r = core.layerOp(project: projectId, asset: a.id, "move-key",
                              layer: id, extra: ["from": from, "to": to])
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         timelineLayersChanged(select: id)
@@ -459,7 +459,7 @@ extension AppModel {
         let r = core.layerOp(project: projectId, asset: a.id, "transition",
                              layer: from, extra: ["to": to, "kind": kind])
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         timelineLayersChanged(select: nil)
@@ -473,7 +473,7 @@ extension AppModel {
         let r = core.layerOp(project: projectId, asset: a.id, "slide",
                              layer: id, extra: ["offset": max(0, offset)])
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return
         }
         timelineLayersChanged(select: id)
@@ -490,7 +490,7 @@ extension AppModel {
             return false
         }
         guard ["image", "video", "audio"].contains(a.kind) else {
-            flash(String(localized: "Text does not go on the timeline: put it in the prompt."))
+            flash(String(localized: "Text does not go on the timeline: put it in the prompt."), level: .warning)
             return false
         }
         var extra: [String: Any] = ["asset": id, "onto": t.id,
@@ -499,7 +499,7 @@ extension AppModel {
         if let layer { extra["at"] = layer }
         let r = core.assetOp(project: projectId, "instantiate", extra)
         guard r.ok else {
-            flash(r.message)
+            flash(r.message, level: .error)
             return false
         }
         timelineLayersChanged(select: r["layer"] as? String)
@@ -651,10 +651,7 @@ struct TimelineCard: View {
                 }
             },
             moveLayer: { model.moveLayer($0, by: $1) },
-            addLayer: { id in
-                if id != model.activeLayer { model.selectLayer(id) }
-                model.addLayer()
-            },
+            addLayer: { model.addLayer(above: $0) },
             duplicateLayer: { model.duplicateLayer($0) },
             removeLayer: { model.removeLayer($0) },
             canRemove: { model.canRemoveLayer($0) },
@@ -739,10 +736,10 @@ struct TimelineCard: View {
         let timed = !m.paged
         return ZStack {
             HStack(spacing: 2) {
-                // A blank layer above the selected one; the selected one
-                // gone -- as the Layers section does.
+                // A blank layer on top; the selected one gone -- as the
+                // Layers section does.
                 TimelineTool(symbol: "rectangle.stack.badge.plus", on: false,
-                             help: "Add a blank layer above the selected one") {
+                             help: "Add a blank layer on top") {
                     model.addLayer()
                 }
                 TimelineTool(symbol: "rectangle.stack.badge.minus", on: false,
@@ -762,10 +759,11 @@ struct TimelineCard: View {
             .padding(.trailing, 18)
             HStack(spacing: 4) {
                 TransportButton(symbol: "backward.end.fill",
-                                help: "Previous event: a key, where a layer begins or ends, the start",
+                                help: "Previous event: a key, where a layer begins or ends, the start (⌘←)",
                                 on: false) {
                     model.timelineEvent(next: false)
                 }
+                .shortcutHint("⌘←")
                 TransportButton(symbol: "backward.fill", help: "Fast rewind",
                                 on: r < -1, action: model.fastRewind)
                     .disabled(!timed)
@@ -803,10 +801,11 @@ struct TimelineCard: View {
                                 on: r > 1, action: model.fastForward)
                     .disabled(!timed)
                 TransportButton(symbol: "forward.end.fill",
-                                help: "Next event: a key, where a layer begins or ends, the end",
+                                help: "Next event: a key, where a layer begins or ends, the end (⌘→)",
                                 on: false) {
                     model.timelineEvent(next: true)
                 }
+                .shortcutHint("⌘→")
             }
         }
         .controlSize(.small)

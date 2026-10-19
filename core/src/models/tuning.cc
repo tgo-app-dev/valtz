@@ -1,5 +1,7 @@
 #include "valtz/models/tuning.h"
 
+#include "valtz/models/drawthings.h"
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -12,7 +14,7 @@ namespace valtz::models {
 
 namespace {
 
-enum class Kind { Bool, Int, Real, List };
+enum class Kind { Bool, Int, Real, List, Choice };
 
 // The most GPU cores a Mac without matrix cores has for Fast and Med to
 // lend the Neural Engine a share: past it, the GPU alone keeps up.
@@ -36,6 +38,7 @@ struct Offer {
   Json        fixes = Json::object();
   std::string needs;
   Json        extra = Json::object();  // per-option detail for the panel
+  Json        choices = Json::array();  // a Choice's values, in order
   // An extension's own option (catalog `engine.vpipe.options`): the text
   // the panel shows for it (the app has none of its own), read in the
   // UI's language when the catalog took it.
@@ -51,6 +54,7 @@ kind_name(Kind k)
   case Kind::Int: return "int";
   case Kind::Real: return "real";
   case Kind::List: return "list";
+  case Kind::Choice: return "choice";
   }
   return "bool";
 }
@@ -268,7 +272,8 @@ declared_offers(const Json& vp, const TuningContext& ctx,
   static const std::set<std::string> kOwn = {
     "steps", "loras", "dits", "vaes", "hyperflow", "taomate", "vdn",
     "sol_attn",
-    "sol_tau", "sage_attn", "i8_gemm", "ane_ffn", "ane_qkv",
+    "sol_tau", "sage_attn", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm",
+    "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
     "motion_cache", "video_shift", "audio_shift", "shift", "turbo"};
   for (const auto& d : jget(vp, "options", Json::array())) {
     const auto key = jget<std::string>(d, "key", "");
@@ -449,6 +454,49 @@ offers(const ModelEntry& m, const TuningContext& ctx,
                      false));
     out.push_back(std::move(o));
   }
+  if (takes(vp, "i8_gemm_tier")) {
+    // ...and which of vpipe's int8 GEMMs runs (vpipe's `i8_gemm_tier`,
+    // which only some families' DiTs implement -- the catalog names
+    // them): ACCURATE, both operands in groups of 64, quantized each
+    // call; FAST, the block weights held as Hadamard-rotated int8 in
+    // groups of 512; TOKEN, int8 a weight row by a token over the whole
+    // contraction, rotated in blocks of 256 first; TOKEN_PLAIN, the same
+    // unrotated. Faster down the list, further from the dense picture
+    // (token_plain visibly). Accurate unless a table says.
+    Offer o{"i8_gemm_tier", Kind::Choice};
+    o.available = ctx.matrix_cores;
+    o.why = o.available ? "" : "needs-matrix-cores";
+    o.choices = Json::array({"accurate", "fast", "token", "token_plain"});
+    o.preset = "accurate";
+    o.needs = "i8_gemm";
+    out.push_back(std::move(o));
+  }
+  if (takes(vp, "vae_i8_gemm")) {
+    // The CODEC's int8 (vpipe's vae-decode / vae-encode `i8_gemm`): its
+    // 3x3 convs on the matrix cores' int8 convolution, an activation
+    // channel at a step of its own, and its mid-block attention's two
+    // GEMMs. OFF in every preset, as vpipe ships it: a codec is the last
+    // step before the pixels, with nothing after it to absorb an
+    // approximation. MEASURED on the M5 Pro, Qwen-Image 2.1 at 1024^2:
+    // the decode 1.15x at Accurate, 1.26x at Fast (~0.15-0.26 s), 50-60
+    // dB from the f16 picture; the encode 1.1x.
+    Offer o{"vae_i8_gemm", Kind::Bool};
+    o.available = ctx.matrix_cores;
+    o.why = o.available ? "" : "needs-matrix-cores";
+    o.preset = false;
+    out.push_back(std::move(o));
+    // ...and how much of it: ACCURATE the resnet convs alone (their
+    // inputs RMS-normed), FAST every 3x3 the residual stream feeds too.
+    // vpipe's token tiers measured as Fast does on a codec (its
+    // attention is ~1% of a decode), so they are not offered.
+    Offer t{"vae_i8_gemm_tier", Kind::Choice};
+    t.available = ctx.matrix_cores;
+    t.why = t.available ? "" : "needs-matrix-cores";
+    t.choices = Json::array({"accurate", "fast"});
+    t.preset = "accurate";
+    t.needs = "vae_i8_gemm";
+    out.push_back(std::move(t));
+  }
   {
     // The Neural Engine beside the GPU: the block's feed-forward, and its
     // q|k|v projection with it (which needs the feed-forward's module:
@@ -467,6 +515,11 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     f.available = takes(vp, "ane_ffn");
     f.why = f.available ? "" : "not-for-model";
     f.preset = f.available && lend;
+    // vpipe runs its int8 tiers off the Neural Engine's route: with it,
+    // the accurate one, whatever is chosen.
+    if (takes(vp, "i8_gemm_tier")) {
+      f.excludes = Json::array({"i8_gemm_tier"});
+    }
     const bool f_on = f.preset.get<bool>();
     out.push_back(std::move(f));
     Offer q{"ane_qkv", Kind::Bool};
@@ -618,13 +671,16 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     out.push_back(std::move(a));
   } else if (!sound && !upscale) {
     // An image family's scheduler shift. One that schedules itself
-    // (no `scheduler` stage: FLUX.2) has none to change.
+    // (no `scheduler` stage: FLUX.2) has none to change -- unless its
+    // config stage takes it (`config_shift`, its default: MOSS-Image).
     const Json sched = jget(vp, "scheduler", Json());
+    const bool in_config = vp.contains("config_shift");
     Offer s{"shift", Kind::Real, 0.05, 20.0, 0.05};
-    s.available = sched.is_object();
+    s.available = sched.is_object() || in_config;
     s.why = s.available ? "" : "own-schedule";
     // vpipe's scheduler-select default, for one that names none.
-    s.preset = jget(sched, "shift", 1.15);
+    s.preset = in_config ? jget(vp, "config_shift", 5.0)
+                         : jget(sched, "shift", 1.15);
     out.push_back(std::move(s));
   }
   declared_offers(vp, ctx, preference, out);
@@ -636,8 +692,13 @@ offers(const ModelEntry& m, const TuningContext& ctx,
         o.key == "taomate_lora" || !table.contains(o.key)) {
       continue;
     }
+    // Unavailable, a switch stays off and a choice at its default.
     if (Json v = coerce(o, table[o.key]); !v.is_null()) {
-      o.preset = o.available || o.kind != Kind::Bool ? v : Json(false);
+      if (o.available || o.kind == Kind::Int || o.kind == Kind::Real) {
+        o.preset = std::move(v);
+      } else if (o.kind == Kind::Bool) {
+        o.preset = false;
+      }
     }
   }
   return out;
@@ -669,6 +730,13 @@ coerce(const Offer& o, const Json& v)
   }
   case Kind::List:
     return Json();  // settled apart (loras_of)
+  case Kind::Choice:
+    for (const auto& c : o.choices) {
+      if (v == c) {
+        return v;
+      }
+    }
+    return Json();
   }
   return Json();
 }
@@ -826,8 +894,15 @@ settle(const std::vector<Offer>& offered, const Json& overrides)
     if (o.kind != Kind::Bool || !jget(values, o.key.c_str(), false)) {
       continue;
     }
+    // (An excluded choice goes back to its first value: the tier to
+    // accurate.)
     for (const auto& x : o.excludes) {
-      values[x.get<std::string>()] = false;
+      const auto& key = x.get_ref<const std::string&>();
+      const auto it = std::ranges::find(offered, key, &Offer::key);
+      values[key] = it != offered.end() && it->kind == Kind::Choice &&
+                            !it->choices.empty()
+                        ? it->choices.front()
+                        : Json(false);
     }
     for (auto it = o.fixes.begin(); it != o.fixes.end(); ++it) {
       values[it.key()] = it.value();
@@ -929,6 +1004,9 @@ tuning_options(const ModelEntry& m, const TuningContext& ctx,
       j["min"] = o.min;
       j["max"] = o.max;
       j["step"] = o.step;
+    }
+    if (o.kind == Kind::Choice) {
+      j["choices"] = o.choices;
     }
     if (!o.excludes.empty()) {
       j["excludes"] = o.excludes;
@@ -1050,6 +1128,12 @@ checkpoint_kind(const std::filesystem::path& path)
   namespace fs = std::filesystem;
   std::error_code ec;
   if (fs::is_regular_file(path, ec)) {
+    // A Draw Things checkpoint of a DiT vpipe reads (models/drawthings.h);
+    // its text encoder or VAE is none of Custom's weights (they replace
+    // a whole model's folder there).
+    if (looks_like_drawthings(path)) {
+      return read_drawthings(path).part == "dit" ? "dit" : "";
+    }
     return path.extension() == ".safetensors" ? kind_of_file(path) : "";
   }
   if (!fs::is_directory(path, ec)) {
@@ -1209,6 +1293,13 @@ classify_checkpoint(const std::filesystem::path& path, const Json& rules)
               {"family", jget<std::string>(r, "family", "")},
               {"origin", jget<std::string>(r, "origin", "")}};
     }
+  }
+  // A Draw Things checkpoint names its family by its tensors.
+  if (fs::is_regular_file(path, ec) && looks_like_drawthings(path)) {
+    const DrawThingsStore s = read_drawthings(path);
+    return {{"kind", s.part == "dit" ? "dit" : ""},
+            {"family", s.part == "dit" ? s.family : std::string()},
+            {"origin", ""}};
   }
   return {{"kind", checkpoint_kind(path)}, {"family", ""},
           {"origin", ""}};

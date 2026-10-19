@@ -43,12 +43,14 @@
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
+#include "valtz/cache/cache-store.h"
 #include "valtz/media/exif.h"
 #include "valtz/media/model-input.h"
 #include "valtz/media/movie.h"
 #include "valtz/media/pdf.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/sound.h"
+#include "engine/vpipe/encoding-cache.h"
 #include "engine/vpipe/flex-json.h"
 #include "engine/vpipe/graph-builder.h"
 #include "engine/vpipe/host-exchange.h"
@@ -72,6 +74,7 @@
 #include <format>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -123,6 +126,21 @@ public:
     std::error_code ec;
     fs::create_directories(cfg.state_dir, ec);
     fs::create_directories(cfg.temp_dir, ec);
+    // Encodings kept between jobs (DESIGN §4l); VALTZ_ENCODING_CACHE=0
+    // turns it off, to time a job without.
+    if (const char* k = std::getenv("VALTZ_ENCODING_CACHE");
+        !k || std::string_view(k) != "0") {
+      _cache = cfg.cache;
+    }
+    // A picture's models kept BUILT between jobs (DESIGN §4n): ten minutes
+    // on a Mac with the memory for them (64 GB or more) -- vpipe keeps
+    // them only where its plan has room, and gives them up when a launch
+    // needs the room -- none on a smaller one, where they would sit beside
+    // other apps' work. VALTZ_KEEP_MODELS=<s> either way.
+    _keep_models = models::probe_hardware().ram_gb() >= 64 ? 600.0 : 0.0;
+    if (const char* k = std::getenv("VALTZ_KEEP_MODELS")) {
+      _keep_models = std::max(0.0, std::atof(k));
+    }
     // vpipe resolves its scratch root from the CWD unless told; a GUI
     // app's CWD is "/", which is not writable.
     setenv("VPIPE_TMPDIR", cfg.temp_dir.c_str(), /*overwrite=*/0);
@@ -542,8 +560,9 @@ private:
   // nothing freed them -- not Start Over, not the system's memory
   // pressure; re-reading them costs a fraction of a second against a
   // model that streams 10 GB and more. The helper kept warm (Settings ›
-  // Agentic Helper › Keep Loaded) is in use and stays. (A Mac with the
-  // memory for several models could keep them: memory-size based, later.)
+  // Agentic Helper › Keep Loaded) is in use and stays, and so do a
+  // picture's models kept BUILT on a Mac with the memory (`_keep_models`,
+  // DESIGN §4n): their hold is vpipe's, not a parked checkpoint.
   void
   release_idle_models_()
   {
@@ -784,12 +803,60 @@ private:
       }
       heard_seconds = *s;
     }
-    if (spec.op == kOpGenerateImage) {
-      built = vp::build_text_to_image(spec);
-    } else if (spec.op == kOpEditImage) {
-      auto refs = reference_images_(spec);
-      built = refs.ok() ? vp::build_image_edit(spec, *refs)
-                        : Result<vp::BuiltGraph>(refs.error());
+    // ENCODINGS KEPT between jobs (encoding-cache.h, DESIGN §4l): the
+    // builder names each encoder's output by what it is made from and
+    // asks whether it is kept; a kept one is read now -- into memory, so
+    // an eviction after cannot touch it -- and fed in the encoder's place
+    // after the launch.
+    std::map<std::string, vp::Kept> kept;
+    std::optional<vp::EncodingCache> encodings;
+    if (_cache && (spec.op == kOpGenerateImage || spec.op == kOpEditImage ||
+                   spec.op == kOpGenerateVideo)) {
+      std::string stamp = vp::model_stamp(spec.model.dir);
+      if (!stamp.empty()) {
+        encodings.emplace();
+        encodings->engine = std::format("{} {}",
+                                        vpipe::vpipe_version_number(),
+                                        vpipe::vpipe_build_hash());
+        encodings->model = std::move(stamp);
+        for (const auto& [part, file] :
+             {std::pair{"encoder", &spec.model.encoder_weights},
+              std::pair{"vae", &spec.model.vae_weights}}) {
+          if (!file->empty()) {
+            encodings->weights[part] = vp::file_stamp(*file);
+          }
+        }
+        encodings->kept = [&](const std::string& key) {
+          if (kept.contains(key)) {
+            return true;
+          }
+          auto at = _cache->find(key);
+          if (!at) {
+            return false;
+          }
+          auto k = vp::read_kept(*at);
+          if (!k.ok()) {
+            VALTZ_LOG_WARN("engine", "kept encoding {} unread: {}", key,
+                           k.error().message);
+            return false;
+          }
+          kept.emplace(key, std::move(*k));
+          return true;
+        };
+      }
+    }
+    const vp::EncodingCache* enc = encodings ? &*encodings : nullptr;
+    if (spec.op == kOpGenerateImage || spec.op == kOpEditImage) {
+      // This Mac's choice, not the job's: what its models are kept for.
+      JobSpec here = spec;
+      here.params["keep_models"] = _keep_models;
+      if (spec.op == kOpGenerateImage) {
+        built = vp::build_text_to_image(here, enc);
+      } else {
+        auto refs = reference_images_(spec);
+        built = refs.ok() ? vp::build_image_edit(here, *refs, enc)
+                          : Result<vp::BuiltGraph>(refs.error());
+      }
     } else if (spec.op == kOpGenerateVideo) {
       auto first = keyframe_(spec, "first");
       auto last = keyframe_(spec, "last");
@@ -797,7 +864,8 @@ private:
       built = !first.ok() ? Result<vp::BuiltGraph>(first.error())
               : !last.ok() ? Result<vp::BuiltGraph>(last.error())
               : !refs.ok() ? Result<vp::BuiltGraph>(refs.error())
-                           : vp::build_video(spec, *first, *refs, *last);
+                           : vp::build_video(spec, *first, *refs, *last,
+                                             enc);
     } else if (spec.op == kOpGenerateAudio) {
       built = vp::build_audio(spec);
     } else if (spec.op == kOpGenerateSpeech) {
@@ -1162,7 +1230,9 @@ private:
       report(/*force=*/true);  // nothing counted yet: preparing
     }
     // A sink's inbox exists from launch to stop, so readers start now;
-    // beats that arrived first are waiting in the sink's queue.
+    // beats that arrived first are waiting in the sink's queue. (The
+    // encoders' taps write `tapped`, which outlives their readers.)
+    std::map<std::string, vp::Kept::Port> tapped;  // by tap stage
     std::vector<std::unique_ptr<vp::SinkReader>> readers;
     auto read = [&](const std::string& id, vp::SinkReader::Fn fn) {
       if (!id.empty()) {
@@ -1183,6 +1253,30 @@ private:
     read(g.residual_sink, [&](vp::SinkBeat&& b) {
       on_stem(stems[1], false, std::move(b));
     });
+    // An encoder's outputs, tapped to be kept: the first beat each (one
+    // conditioning a prompt, one list of latents).
+    for (const auto& io : g.encodings) {
+      for (const auto& p : io.ports) {
+        if (!io.fed) {
+          read(p.stage, [&, id = p.stage, name = p.name](vp::SinkBeat&& b) {
+            // Copied now, as it comes.
+            vp::Kept::Port kp = vp::kept_port(name, b);
+            std::lock_guard lk(result_mu);
+            if (!tapped.try_emplace(id, std::move(kp)).second) {
+              VALTZ_LOG_WARN("engine", "{}: a second beat, not kept", id);
+            }
+          });
+        }
+      }
+    }
+    // What earlier jobs kept, fed in the encoders' places.
+    if (auto st = feed_kept_(h, g, kept); !st.ok()) {
+      _session->stop_pipeline(h);
+      readers.clear();
+      unload_(h, lane);
+      fail_(q, st.code(), st.error().message);
+      return;
+    }
 
     // References go in now, decoded straight into beats the graph leased
     // us: no file is re-read by vpipe and no pixel is copied after the
@@ -1261,6 +1355,10 @@ private:
     // reader's command: the joins are prompt.
     readers.clear();
     unload_(h, lane);
+    // What the encoders made, kept for the jobs after -- whatever became
+    // of this one after them: a refusal for memory, a cancel, a failure
+    // in the denoise leave a conditioning as good as made.
+    keep_tapped_(g, tapped);
 
     if (cancelled) {
       JobEvent ev;
@@ -1443,6 +1541,10 @@ private:
       out.job = spec.id;
       out.kind = JobEventKind::Output;
       out.text = result_text;
+      // What it cost, as a turn's does: the times, the counts, the
+      // drafter's rounds (the person debugging it reads its speed).
+      out.data = result_turn;
+      out.data.erase("text");
       q.sink(out);
     } else if (spec.op == kOpAgentTurn) {
       // A turn may be its tool calls alone, with no words: what decides
@@ -1486,7 +1588,7 @@ private:
         VALTZ_ASSIGN(media::PixelSize sz, media::oriented_size(in.path));
         refs.push_back({in.path, sz,
                         in.info.frame.alpha != media::AlphaMode::None,
-                        in.role == "base"});
+                        in.role == "base", in.hash});
       }
     }
     return refs;
@@ -1508,7 +1610,7 @@ private:
       VALTZ_ASSIGN(media::PixelSize sz, media::oriented_size(in.path));
       return std::optional<vp::RefImage>(vp::RefImage{
           in.path, sz, in.info.frame.alpha != media::AlphaMode::None,
-          true});
+          true, in.hash});
     }
     return std::optional<vp::RefImage>();
   }
@@ -1531,6 +1633,7 @@ private:
       ++k;
       vp::RefMedia r;
       r.path = in.path;
+      r.hash = in.hash;
       r.kind = jget<std::string>(e, "kind", "");
       r.list = jget<std::string>(e, "route", "list") == "list";
       r.audio = jget(e, "audio", false);
@@ -1597,7 +1700,7 @@ private:
     Status st = ok_status();
     if (fs::is_regular_file(g.audio_part, ec)) {
       st = media::add_soundtrack(g.video_part, g.audio_part, g.output,
-                                 g.audio_start, g.audio_duration);
+                                 g.audio_start, g.audio_duration, g.sound);
     } else {
       VALTZ_LOG_WARN("engine", "the clip has no soundtrack");
       fs::rename(g.video_part, g.output, ec);
@@ -1610,6 +1713,85 @@ private:
       fs::remove(g.audio_part, ec);
     }
     return st;
+  }
+
+  // What earlier jobs kept (DESIGN §4l), into the sources standing in
+  // for their encoders: each port's beat as vpipe made it, then the end
+  // of its stream -- a conditioning is one beat for every denoise.
+  Status
+  feed_kept_(vpipe::PipelineHandle& h, const vp::BuiltGraph& g,
+             const std::map<std::string, vp::Kept>& kept)
+  {
+    for (const auto& io : g.encodings) {
+      if (!io.fed) {
+        continue;
+      }
+      const auto it = kept.find(io.key);
+      if (it == kept.end()) {
+        return make_error(Code::Internal, std::format(
+            "kept encoding {} was not read", io.key));
+      }
+      for (const auto& p : io.ports) {
+        const auto kp = std::ranges::find(it->second.ports, p.name,
+                                          &vp::Kept::Port::name);
+        if (kp == it->second.ports.end() || kp->list != p.list ||
+            (!kp->list && kp->tensors.size() != 1)) {
+          return make_error(Code::Corrupt, std::format(
+              "kept encoding {} has no {}", io.key, p.name));
+        }
+        vp::SourceWriter src(h.stage(p.stage));
+        VALTZ_TRY(kp->list
+                      ? src.push_kept_list(kp->tensors, kp->sidebands,
+                                           kp->shared, kp->list_sideband)
+                      : src.push_kept(*kp->tensors[0],
+                                      kp->sidebands.empty()
+                                          ? std::string_view()
+                                          : kp->sidebands[0],
+                                      !kp->shared.empty() &&
+                                          kp->shared[0]));
+        VALTZ_TRY(src.finish());
+      }
+      VALTZ_LOG_INFO("engine", "{}: kept from an earlier job, fed ({}, "
+                     "{} KB)", io.what, io.key,
+                     it->second.bytes() >> 10);
+    }
+    return ok_status();
+  }
+
+  // An encoder whose every output was tapped: kept under its key.
+  void
+  keep_tapped_(const vp::BuiltGraph& g,
+               const std::map<std::string, vp::Kept::Port>& tapped)
+  {
+    for (const auto& io : g.encodings) {
+      if (io.fed || !_cache) {
+        continue;
+      }
+      vp::Kept k;
+      for (const auto& p : io.ports) {
+        const auto it = tapped.find(p.stage);
+        if (it == tapped.end() || it->second.list != p.list ||
+            (!p.list && (it->second.tensors.size() != 1 ||
+                         !it->second.tensors[0]))) {
+          k.ports.clear();
+          break;
+        }
+        k.ports.push_back(it->second);
+      }
+      if (k.ports.size() != io.ports.size()) {
+        continue;  // the encoder never finished: nothing to keep
+      }
+      auto st = vp::write_kept(_cache->staging_path(io.key), k);
+      auto at = st.ok() ? _cache->commit(io.key)
+                        : Result<fs::path>(st.error());
+      if (!at.ok()) {
+        VALTZ_LOG_WARN("engine", "{} not kept: {}", io.what,
+                       at.error().message);
+        continue;
+      }
+      VALTZ_LOG_INFO("engine", "{}: made and kept for later jobs ({}, "
+                     "{} KB)", io.what, io.key, k.bytes() >> 10);
+    }
   }
 
   // Decode each reference into a valtz-source lease and emit it. On a
@@ -1834,6 +2016,8 @@ private:
 
   vpipe::SessionIntf*     _session = nullptr;
   std::string             _desc = "vpipe";
+  cache::CacheStore*      _cache = nullptr;  // kept encodings; may be null
+  double                  _keep_models = 0;   // s a job's models are kept
   Json                    _backends = Json::array();  // backends()
   std::mutex              _mu;
   std::condition_variable _cv;

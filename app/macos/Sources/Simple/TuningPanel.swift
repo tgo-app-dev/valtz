@@ -105,6 +105,16 @@ struct TuningPanel: View {
                         set: { model.setTuning(o.key, flag: $0) }))
                         .labelsHidden()
                         .toggleStyle(.switch)
+                } else if o.type == "choice" {
+                    Picker(Self.title(o), selection: Binding(
+                        get: { t.choices[o.key] ?? o.choices.first ?? "" },
+                        set: { model.setTuning(o.key, choice: $0) })) {
+                        ForEach(o.choices, id: \.self) { c in
+                            Text(Self.choiceLabel(o.key, c)).tag(c)
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
                 } else {
                     TuningNumberField(
                         value: t.numbers[o.key] ?? 0, option: o
@@ -113,7 +123,10 @@ struct TuningPanel: View {
             }
             .disabled(block != nil)
             .gridColumnAlignment(.leading)
-            Text(block ?? o.declaredNote ?? Self.note(o.key))
+            Text(block ?? o.declaredNote
+                 ?? (o.type == "choice"
+                     ? Self.choiceNote(o.key, t.choices[o.key] ?? "")
+                     : Self.note(o.key)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -144,7 +157,7 @@ struct TuningPanel: View {
         }
         GridRow {
             Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
-            Text("Drop LoRA, DiT or VAE weights on this panel: .safetensors files or folders.")
+            Text("Drop LoRA, DiT or VAE weights on this panel: .safetensors files or folders, or a Draw Things .ckpt of a DiT.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -326,8 +339,12 @@ struct TuningPanel: View {
     }
 
     /// What an option goes by: an extension's own text, else Valtz's.
+    /// Valtz's own words where it knows the key -- an option a built-in
+    /// model declares in the catalog too (an upscaler's colour fix) --
+    /// else the declaring manifest's.
     static func title(_ o: TuningOption) -> String {
-        o.declaredLabel ?? label(o.key)
+        let own = label(o.key)
+        return own != o.key ? own : (o.declaredLabel ?? own)
     }
 
     static func label(_ key: String) -> String {
@@ -341,12 +358,17 @@ struct TuningPanel: View {
         case "sol_tau": String(localized: "Sol threshold")
         case "sage_attn": String(localized: "SageAttention")
         case "i8_gemm": String(localized: "int8 GEMM")
+        case "i8_gemm_tier": String(localized: "int8 tier")
+        case "vae_i8_gemm": String(localized: "VAE int8")
+        case "vae_i8_gemm_tier": String(localized: "VAE int8 tier")
         case "ane_ffn": String(localized: "ANE FFN")
         case "ane_qkv": String(localized: "ANE QKV")
         case "motion_cache": String(localized: "MotionCache")
         case "video_shift": String(localized: "Video shift")
         case "audio_shift": String(localized: "Audio shift")
         case "shift": String(localized: "Shift")
+        case "color_fix": String(localized: "Colour fix")
+        case "guidance_scale": String(localized: "Guidance")
         default: key
         }
     }
@@ -363,12 +385,15 @@ struct TuningPanel: View {
         case "sol_tau": String(localized: "Higher keeps fewer blocks: faster, less exact")
         case "sage_attn": String(localized: "int8 QK in attention, about 1.2× (M5)")
         case "i8_gemm": String(localized: "int8 block matrix products, about 2×")
+        case "vae_i8_gemm": String(localized: "int8 convolutions in the VAE, its decode 1.15-1.26×")
         case "ane_ffn": String(localized: "Feed-forward on the Neural Engine, beside the GPU")
         case "ane_qkv": String(localized: "q|k|v projection on the Neural Engine too")
         case "motion_cache": String(localized: "Reuses steps it can predict (16+ steps)")
         case "video_shift": String(localized: "Sigma shift of the video schedule")
         case "audio_shift": String(localized: "Sigma shift of the audio schedule")
         case "shift": String(localized: "Time shift of the noise schedule")
+        case "color_fix": String(localized: "Each frame's colour kept to its source's")
+        case "guidance_scale": String(localized: "How closely it follows the prompt (CFG)")
         default: ""
         }
     }
@@ -383,9 +408,46 @@ struct TuningPanel: View {
         case "sol_tau": String(localized: "In standard deviations of the routing score's spread. 1.0 is the published setting.")
         case "sage_attn": String(localized: "SageAttention computes QK in int8 with exact key smoothing. Needs the M5's matrix cores.")
         case "i8_gemm": String(localized: "Dynamic int8 for the block's large matrix products, at int8 quality. Needs the M5's matrix cores.")
+        case "i8_gemm_tier": String(localized: "Which int8 matrix product runs with int8 GEMM on. Accurate quantizes the weights and the activations in groups of 64 at every call. Fast keeps the block's weights as int8 in groups of 512, each group turned by a Hadamard rotation on both sides so that one large channel does not set its scale. Per Token gives each weight row and each token one scale across the whole product, after a rotation in blocks of 256: the fastest (Qwen-Image 2.1 on an M5: 1.4-1.7× Accurate). Per Token, Unrotated skips the rotation: a little faster again, its pictures further from the bf16 model's. Faster down the list, less exact. A full-precision model's blocks take it only while kept in memory: those it streams, on a smaller Mac, stay Accurate (an 8-bit compressed copy's take it either way). With ANE FFN on, it is Accurate.")
+        case "vae_i8_gemm": String(localized: "Runs the VAE's 3×3 convolutions and its attention's matrix products in int8 on the M5's matrix cores: the decode that makes the picture, and the encode of an edit's pictures. Each channel of a convolution's input gets a scale of its own. On an M5 Pro, a 1024×1024 picture decodes about 0.15-0.26 s sooner, 50-60 dB from the full-precision decode. Off in every Favor preset: the VAE is the last step before the pixels, with nothing after it to absorb an error.")
+        case "vae_i8_gemm_tier": String(localized: "Which of the VAE's convolutions run in int8 with VAE int8 on. Accurate takes those inside its residual blocks, whose inputs are normalized: about 1.15× the decode. Fast takes every 3×3 convolution, the upsampling ones too: about 1.26×, a little further from the full-precision picture.")
         case "ane_ffn": String(localized: "Runs each block's feed-forward on the Apple Neural Engine at the same time as the GPU, its rows split between the two (fp16). Most worthwhile where the GPU has no int8 path (M4); the plan decides whether its module fits.")
         case "ane_qkv": String(localized: "Adds the block's q|k|v projection to the Neural Engine as a second module. Needs ANE FFN: the two are granted together, and the pair costs more memory than the feed-forward alone.")
         case "motion_cache": String(localized: "Before each step, predicts how far the model's answer moved since the last one that ran; when little, reuses it. Little to gain on short schedules.")
+        case "color_fix": String(localized: "Corrects each restored frame's colour toward its source frame, so the upscaled layer keeps the colours of the clip it replaces. FlashVSR 1.1 moves each channel's mean and spread to the source's (AdaIN); FlashVSR+ takes the source's low frequencies and keeps its own detail (a wavelet fix).")
+        case "guidance_scale": String(localized: "Classifier-free guidance: each step runs the model twice, with the prompt and with an empty one, and moves the picture away from the empty one's by this much. MOSS-Image's own setting is 3. Higher follows the words more literally, with harder colours; 1 runs one forward a step, about twice as fast, the prompt followed less.")
+        default: ""
+        }
+    }
+
+    /// What a choice's value goes by, and the note beside it chosen.
+    static func choiceLabel(_ key: String, _ value: String) -> String {
+        switch (key, value) {
+        case ("i8_gemm_tier", "accurate"): String(localized: "Accurate")
+        case ("i8_gemm_tier", "fast"): String(localized: "Fast")
+        case ("i8_gemm_tier", "token"): String(localized: "Per Token")
+        case ("i8_gemm_tier", "token_plain"):
+            String(localized: "Per Token, Unrotated")
+        case ("vae_i8_gemm_tier", "accurate"): String(localized: "Accurate")
+        case ("vae_i8_gemm_tier", "fast"): String(localized: "Fast")
+        default: value
+        }
+    }
+
+    static func choiceNote(_ key: String, _ value: String) -> String {
+        switch (key, value) {
+        case ("i8_gemm_tier", "accurate"):
+            String(localized: "Groups of 64 on both sides: the closest to bf16")
+        case ("i8_gemm_tier", "fast"):
+            String(localized: "Rotated int8 weights in groups of 512: faster on an M5")
+        case ("i8_gemm_tier", "token"):
+            String(localized: "A scale a row and a token, rotated: the fastest")
+        case ("i8_gemm_tier", "token_plain"):
+            String(localized: "Not rotated: a little faster, less exact")
+        case ("vae_i8_gemm_tier", "accurate"):
+            String(localized: "The residual blocks' convolutions")
+        case ("vae_i8_gemm_tier", "fast"):
+            String(localized: "Every 3×3 convolution: faster, less exact")
         default: ""
         }
     }
@@ -433,7 +495,8 @@ private enum TuningGroup: CaseIterable, Identifiable {
         case "steps", "hyperflow", "taomate", "taomate_lora": .steps
         case "loras", "dits", "vaes": .weights
         case "vdn", "sol_attn", "sol_tau", "sage_attn": .attention
-        case "i8_gemm", "ane_ffn", "ane_qkv", "motion_cache": .compute
+        case "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier",
+             "ane_ffn", "ane_qkv", "motion_cache": .compute
         default: .schedule
         }
     }

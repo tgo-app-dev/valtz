@@ -89,6 +89,13 @@ struct VideoPlayerView: NSViewRepresentable {
     var core: CoreService? = nil
     var onFrame: (Int) -> Void = { _ in }
     var onRate: (Float) -> Void = { _ in }
+    /// The title bar's zoom asked so far (ClipZoomView); nil, no zoom:
+    /// the Prompt Editor's small stage.
+    var zoom: ZoomRequests? = nil
+    var onViewport: (CompareCanvas.Viewport) -> Void = { _ in }
+    /// Where the zoomed clip lies (points from the player's top left);
+    /// nil while it is fitted.
+    var onShown: (CGRect?) -> Void = { _ in }
 
     /// What the composition draws with: read on AVFoundation's thread.
     final class LookBox: @unchecked Sendable {
@@ -147,14 +154,20 @@ struct VideoPlayerView: NSViewRepresentable {
         weak var view: AVPlayerView?
         var resized: NSObjectProtocol?
         var resizeTask: Task<Void, Never>?
+        /// The clip zoomed (none on the small stage), and the requests
+        /// it has seen.
+        var zoomView: ClipZoomView?
+        var zoomSeen: ZoomRequests?
 
-        /// The stage's size in pixels; nil before it has one.
+        /// The stage's size in pixels -- zoomed, the clip's on screen;
+        /// nil before it has one.
         var room: CGSize? {
             guard let v = view, v.bounds.width > 0 else { return nil }
             let scale = v.window?.backingScaleFactor
                 ?? NSScreen.main?.backingScaleFactor ?? 2
-            return CGSize(width: v.bounds.width * scale,
-                          height: v.bounds.height * scale)
+            let size = zoomView?.zoomedSize ?? v.bounds.size
+            return CGSize(width: size.width * scale,
+                          height: size.height * scale)
         }
 
         var moveRelay: Any?
@@ -194,15 +207,33 @@ struct VideoPlayerView: NSViewRepresentable {
                 queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.resizeTask?.cancel()
-                    self.resizeTask = Task { @MainActor [weak self] in
-                        try? await Task.sleep(for: .milliseconds(250))
-                        guard !Task.isCancelled else { return }
-                        self?.fitStack()
-                    }
+                    self?.refitStack()
                 }
             }
+        }
+
+        /// The stack's frames drawn again at the size shown, a quarter
+        /// second after the last change (the stage resized, the clip
+        /// zoomed).
+        func refitStack() {
+            resizeTask?.cancel()
+            resizeTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                self?.fitStack()
+            }
+        }
+
+        /// The title bar's requests made since the last: each once.
+        func applyZoom(_ z: ZoomRequests) {
+            guard let zv = zoomView else { return }
+            let seen = zoomSeen ?? z
+            zoomSeen = z
+            if z.fit != seen.fit { zv.fitNow() }
+            if z.actual != seen.actual { zv.actualSize() }
+            if z.zoomIn != seen.zoomIn { zv.zoom(by: 1.5) }
+            if z.zoomOut != seen.zoomOut { zv.zoom(by: 1 / 1.5) }
+            if z.unfit != seen.unfit { zv.stopFitting() }
         }
 
         /// The stack's frames drawn at the stage's pixels: a copy of the
@@ -318,10 +349,16 @@ struct VideoPlayerView: NSViewRepresentable {
             ended = nil
             timeObserver = nil
             player = nil
+            zoomView?.player = nil
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator {
+        let c = Coordinator()
+        // Asked before this player: not for it.
+        c.zoomSeen = zoom
+        return c
+    }
 
     /// AVKit's floating bar keeps its GLASS when the controls are taken
     /// off while it shows -- the pointer over the clip as the timeline
@@ -352,6 +389,13 @@ struct VideoPlayerView: NSViewRepresentable {
         v.videoGravity = .resizeAspect
         v.allowsVideoFrameAnalysis = false
         context.coordinator.relayMoves(v)
+        // Over AVKit's picture, under its controls.
+        if zoom != nil, let overlay = v.contentOverlayView {
+            let zv = ClipZoomView(frame: overlay.bounds)
+            zv.autoresizingMask = [.width, .height]
+            overlay.addSubview(zv)
+            context.coordinator.zoomView = zv
+        }
         return v
     }
 
@@ -373,10 +417,21 @@ struct VideoPlayerView: NSViewRepresentable {
                     // drag to it, in front of the stage's -- a file
                     // dropped on a clip was lost.
                     iv.unregisterDraggedTypes()
-                    overlay.addSubview(iv)
+                    // Under the zoomed clip.
+                    overlay.addSubview(iv, positioned: .below, relativeTo: nil)
                     return iv
                 }()
             iv.image = artwork.map { NSImage(cgImage: $0, size: .zero) }
+        }
+        if let zv = c.zoomView {
+            zv.onViewport = { vp in
+                DispatchQueue.main.async { onViewport(vp) }
+            }
+            zv.onShown = { [weak c] r in
+                c?.refitStack()
+                DispatchQueue.main.async { onShown(r) }
+            }
+            if let zoom { c.applyZoom(zoom) }
         }
         c.loops = loops
         c.onFrame = onFrame
@@ -395,6 +450,8 @@ struct VideoPlayerView: NSViewRepresentable {
         c.watchResize(v)
         c.stack = stack
         if let stack {
+            c.zoomView?.pixels = stack.soundOnly ? nil
+                : CGSize(width: stack.width, height: stack.height)
             if c.stackShape == stack.shape && c.url == url {
                 if c.stackPlan != stack.plan {
                     c.stackPlan = stack.plan
@@ -476,6 +533,7 @@ struct VideoPlayerView: NSViewRepresentable {
         let player = AVPlayer(playerItem: item)
         player.actionAtItemEnd = .pause
         c.player = player
+        c.zoomView?.player = player
         // Where the sound is: a stack's late frames are skipped by it.
         c.stackBox.set(clock: item.timebase)
         let rate = rate
@@ -501,6 +559,18 @@ struct VideoPlayerView: NSViewRepresentable {
             c.lastIndex = max(0, rate.frame(
                 at: range.end.seconds - 0.5 / rate.fps))
             item.forwardPlaybackEndTime = range.end
+            // Its frame upright, in pixels: what 1:1 is. A sound has
+            // none to zoom.
+            var pixels: CGSize?
+            if let picture,
+               let shape = try? await picture.load(.naturalSize,
+                                                   .preferredTransform) {
+                let r = CGRect(origin: .zero, size: shape.0)
+                    .applying(shape.1)
+                pixels = CGSize(width: abs(r.width), height: abs(r.height))
+            }
+            guard c.player?.currentItem === item else { return }
+            c.zoomView?.pixels = pixels
         } }
         // At the end: again from the start while looping; otherwise it
         // rests on the last frame, and play starts it over.
@@ -645,6 +715,7 @@ struct VideoPlayerView: NSViewRepresentable {
 
     static func dismantleNSView(_ v: AVPlayerView, coordinator: Coordinator) {
         coordinator.stop()
+        coordinator.zoomView?.onShown?(nil)
         if let m = coordinator.moveRelay {
             NSEvent.removeMonitor(m)
             coordinator.moveRelay = nil

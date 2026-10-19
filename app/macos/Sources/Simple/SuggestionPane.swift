@@ -42,6 +42,16 @@ struct SuggestionPane: View {
             .frame(height: PaneHeader.height)
             SuggestionEditor(model: model)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // What the helper read and wrote, how fast (Settings ›
+            // Agentic Helper › Show the Helper's Speed).
+            if model.agentShowsSpeed, let st = model.enhanced?.stats,
+               !st.isEmpty {
+                AgentSpeedText(stats: st)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, PromptEditor.inset.width + 5)
+                    .padding(.trailing, 12)
+                    .padding(.vertical, 6)
+            }
         }
     }
 }
@@ -166,6 +176,15 @@ struct SuggestionEditor: NSViewRepresentable {
         return scroll
     }
 
+    /// The suggestion closed: its typing steps go with its text (as the
+    /// prompt's, PromptEditor.dismantleNSView): left, the window's ⌘Z
+    /// replays them on it freed, as it did the prompt's.
+    static func dismantleNSView(_ scroll: NSScrollView,
+                                coordinator: Coordinator) {
+        PromptEditor.dropUndo(of: coordinator.textView,
+                              model: coordinator.parent.model)
+    }
+
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let c = context.coordinator
         c.parent = self
@@ -200,6 +219,12 @@ struct SuggestionEditor: NSViewRepresentable {
                 c.style()
                 tv.scrollRangeToVisible(NSRange(location: 0, length: 0))
             }
+        } else if text == nil, c.shown != nil {
+            // The suggestion gone (applied, rejected): its words stay while
+            // the half closes, its typing steps not -- the box's ⌘Z spent
+            // them on it out of sight (the pane stays, at no width).
+            c.shown = nil
+            PromptEditor.dropUndo(of: tv, model: model)
         } else if c.markdownOn != nil, c.markdownOn != model.promptMarkdown {
             c.style()
         }

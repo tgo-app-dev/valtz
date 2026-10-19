@@ -25,6 +25,7 @@
 #include "valtz/media/format.h"
 #include "valtz/media/keyframes.h"
 #include "valtz/media/layers.h"
+#include "valtz/media/movie.h"
 #include "valtz/media/timing.h"
 
 #include <CoreVideo/CVPixelBuffer.h>
@@ -207,14 +208,16 @@ MovieStack movie_stack_from_json(const Json&);
 // layers, else (a stack from before) the bottom clip's own count.
 Result<std::int64_t> timeline_frames(const MovieStack&, Rational rate);
 
-// The stack written as a MOVIE -- `size`, at `rate`, ProRes 422 HQ in a
-// .mov -- with `sound` (a file; empty: none) as its soundtrack: a nested
-// composition's rendering, a clip-like reference's, a flattened one.
-// Blocking.
+// The stack written as a MOVIE -- `size`, at `rate`, in a .mov as
+// `prores` (an intermediate_formats ProRes; another is ProRes 422 HQ) --
+// with `sound` (a file; empty: none) as its soundtrack, 24-bit PCM: a
+// nested composition's rendering, a clip-like reference's, a flattened
+// one. Blocking.
 Status encode_movie_stack(const MovieStack& stack, Rational rate,
                           PixelSize size,
                           const std::filesystem::path& sound,
-                          const std::filesystem::path& out);
+                          const std::filesystem::path& out,
+                          std::string_view prores = kDefaultIntermediate);
 
 // The frame of `src` (a clip) showing at `seconds`, written as a 16-bit
 // PNG: a still composition's layer showing a frame of a clip.

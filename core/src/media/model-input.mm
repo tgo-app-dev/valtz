@@ -11,6 +11,7 @@
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
 #import <Metal/Metal.h>
+#import <VideoToolbox/VideoToolbox.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <algorithm>
@@ -1888,8 +1889,14 @@ decode_movie_stack(const MovieStack& stack, Rational rate_in,
 
 Status
 encode_movie_stack(const MovieStack& stack, Rational rate_in, PixelSize size,
-                   const fs::path& sound, const fs::path& out)
+                   const fs::path& sound, const fs::path& out,
+                   std::string_view prores)
 {
+  AVVideoCodecType codec = prores == "prores4444xq"
+      ? AVVideoCodecTypeAppleProRes4444XQ
+      : prores == "prores4444" ? AVVideoCodecTypeAppleProRes4444
+      : prores == "prores422" ? AVVideoCodecTypeAppleProRes422
+                              : AVVideoCodecTypeAppleProRes422HQ;
   if (size.width <= 0 || size.height <= 0) {
     return make_error(Code::InvalidArgument, "bad target geometry");
   }
@@ -1911,10 +1918,8 @@ encode_movie_stack(const MovieStack& stack, Rational rate_in, PixelSize size,
       return make_error(Code::Io, std::format("cannot write {}",
                                               video.string()));
     }
-    AVAssetWriterInput* in = [AVAssetWriterInput
-        assetWriterInputWithMediaType:AVMediaTypeVideo
-                       outputSettings:@{
-      AVVideoCodecKey : AVVideoCodecTypeAppleProRes422HQ,
+    NSMutableDictionary* settings = [@{
+      AVVideoCodecKey : codec,
       AVVideoWidthKey : @(size.width),
       AVVideoHeightKey : @(size.height),
       AVVideoColorPropertiesKey : @{
@@ -1922,7 +1927,21 @@ encode_movie_stack(const MovieStack& stack, Rational rate_in, PixelSize size,
         AVVideoTransferFunctionKey : AVVideoTransferFunction_ITU_R_709_2,
         AVVideoYCbCrMatrixKey : AVVideoYCbCrMatrix_ITU_R_709_2,
       },
-    }];
+    } mutableCopy];
+    // Drawn over black, opaque: a 4444 with no alpha plane. Fed RGBA half
+    // floats, the encoder codes their A unless told not to -- a plane of
+    // 1s that decoders reading the frames (FFmpeg, vpipe's) took for
+    // alpha. ProRes 422 has none, and refuses the key.
+    if ([codec isEqualToString:AVVideoCodecTypeAppleProRes4444] ||
+        [codec isEqualToString:AVVideoCodecTypeAppleProRes4444XQ]) {
+      settings[AVVideoCompressionPropertiesKey] = @{
+        (__bridge NSString*)kVTCompressionPropertyKey_PreserveAlphaChannel :
+            @NO,
+      };
+    }
+    AVAssetWriterInput* in = [AVAssetWriterInput
+        assetWriterInputWithMediaType:AVMediaTypeVideo
+                       outputSettings:settings];
     in.expectsMediaDataInRealTime = NO;
     AVAssetWriterInputPixelBufferAdaptor* adaptor =
         [AVAssetWriterInputPixelBufferAdaptor
@@ -2003,7 +2022,7 @@ encode_movie_stack(const MovieStack& stack, Rational rate_in, PixelSize size,
     if (!st.ok() || sound.empty()) {
       return st;
     }
-    st = add_soundtrack(video, sound, out);
+    st = add_soundtrack(video, sound, out, 0, 0, SoundCodec::Pcm);
     fs::remove(video, ec);
     return st;
   }

@@ -101,15 +101,17 @@ final class GuideLayers {
 }
 
 /// The guides over a view that is the picture (a clip on the stage, its
-/// preview).
+/// preview) -- or, `over`, over where the picture lies in it (points from
+/// its top left: a zoomed clip, past the view's edges).
 struct GuidesGrid: View {
     var at: GuideFractions = .thirds
+    var over: CGRect? = nil
     @Environment(\.displayScale) private var scale
 
     var body: some View {
         Canvas { ctx, size in
-            let path = Path(Guides.path(in: CGRect(origin: .zero,
-                                                   size: size),
+            let path = Path(Guides.path(in: over ?? CGRect(origin: .zero,
+                                                           size: size),
                                         at: at, scale: scale))
             ctx.stroke(path, with: .color(Color(cgColor: Guides.dark)),
                        lineWidth: Guides.darkWidth(scale))

@@ -1183,6 +1183,16 @@ void
 Controller::AgentHost::on_event(const std::string& kind, JobId job,
                                 const Json& data)
 {
+  if (kind == "assist.enhanced") {
+    // Kept for enhance_prompt, which takes its own once the job ends; the
+    // newest few only (the person's own Enhance goes to the app).
+    std::lock_guard lk(_mu);
+    _replies.emplace_back(job, data);
+    while (_replies.size() > 32) {
+      _replies.pop_front();
+    }
+    return;
+  }
   if (kind != "job.finished" && kind != "job.failed" &&
       kind != "job.cancelled") {
     return;

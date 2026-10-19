@@ -192,7 +192,7 @@ extension AppModel {
     func configureFleet(_ request: [String: Any]) -> Bool {
         guard let core else { return false }
         let r = core.fleetConfigure(request)
-        if !r.ok { flash(r.message) }
+        if !r.ok { flash(r.message, level: .error) }
         reloadFleet()
         return r.ok
     }
