@@ -314,12 +314,14 @@ TEST(models, auto_order_is_catalog_data)
   CHECK((c->auto_order("video", "edit") ==
          std::vector<std::string>{"minimax-h3-ref2va"}));
   // Songs first; speech when nothing sings -- and, with a voice in the
-  // row (a sound's `edit`), speech alone, the 8-bit pack first.
+  // row (a sound's `edit`), speech alone: Drama 3 (the release, then its
+  // int4), then MOSS-TTS, the 8-bit pack first.
   CHECK((c->auto_order("audio", "generate") ==
-         std::vector<std::string>{"yue2-3b", "moss-tts-v1.5-w8g64",
-                                  "moss-tts-v1.5"}));
+         std::vector<std::string>{"yue2-3b", "drama-3", "drama-3-int4",
+                                  "moss-tts-v1.5-w8g64", "moss-tts-v1.5"}));
   CHECK((c->auto_order("audio", "edit") ==
-         std::vector<std::string>{"moss-tts-v1.5-w8g64", "moss-tts-v1.5"}));
+         std::vector<std::string>{"drama-3", "drama-3-int4",
+                                  "moss-tts-v1.5-w8g64", "moss-tts-v1.5"}));
   Json doc = {{"models", Json::array({{{"id", "a"}, {"hf_path", "o/a"}}})},
               {"auto", {{"image", {{"generate", {"a", "nope"}}}}}}};
   CHECK(!Catalog::parse(doc).ok());
@@ -833,9 +835,11 @@ TEST(models, tuning_settles_presets_and_custom)
 
 // FAVOR's presets as the catalog's tables say (DESIGN §10a): int8 GEMMs on
 // Fast and Med wherever the GPU has matrix cores; Krea 2's attention per
-// preset and Fine's 12 plain steps; MiniMax H3's adapters by preset -- the
-// first installed candidate, else none, NEEDED -- Fine's MotionCache;
-// Qwen-Image 2.1's Turbo LoRA on Fast, 25 and 40 steps without.
+// preset -- Fast's Sol only where there are none -- and Fine's 12 plain
+// steps; MiniMax H3's adapters by preset -- the first installed
+// candidate, else none, NEEDED -- its int8 P*V and tiers, Fine's
+// MotionCache; Qwen-Image 2.1's Turbo LoRA on Fast with Sage and the
+// int8s, 25 and 40 steps without.
 TEST(models, favor_presets_follow_the_catalog)
 {
   auto c = Catalog::builtin();
@@ -860,10 +864,12 @@ TEST(models, favor_presets_follow_the_catalog)
     CHECK(v(id, m5, "balanced")["i8_gemm"] == true);
     CHECK(v(id, m4, "speed")["i8_gemm"] == false);
   }
-  // Krea 2 Turbo.
+  // Krea 2 Turbo: Fast 6 steps, Sage with its int8 P*V, int8 Per Token
+  // -- no Sol on an M5.
   Json k = v("krea2-turbo", m5, "speed");
-  CHECK(k["sol_attn"] == true && k["sol_tau"] == 0.0);
-  CHECK(k["sage_attn"] == true && k["i8_gemm"] == true);
+  CHECK(k["steps"] == 6 && k["sol_attn"] == false);
+  CHECK(k["sage_attn"] == true && k["sage_pv8"] == true);
+  CHECK(k["i8_gemm"] == true && k["i8_gemm_tier"] == "token");
   k = v("krea2-turbo", m5, "balanced");
   CHECK(k["sol_attn"] == false && k["sage_attn"] == true);
   CHECK(k["i8_gemm"] == true);
@@ -871,10 +877,15 @@ TEST(models, favor_presets_follow_the_catalog)
   CHECK(k["steps"] == 12);
   CHECK(k["sol_attn"] == false && k["sage_attn"] == false);
   CHECK(k["i8_gemm"] == false);
-  // ... and on a Mac without matrix cores, Sage and int8 stay off.
+  // ... and on a Mac without matrix cores, Sage and int8 stay off: Fast
+  // its 6 steps with Sol in their place (its `without_matrix_cores`).
   k = v("krea2-turbo", m4, "speed");
-  CHECK(k["sol_attn"] == true && k["sage_attn"] == false);
-  CHECK(k["i8_gemm"] == false);
+  CHECK(k["steps"] == 6);
+  CHECK(k["sol_attn"] == true && k["sol_tau"] == 0.0);
+  CHECK(k["sage_attn"] == false && k["sage_pv8"] == false);
+  CHECK(k["i8_gemm"] == false && k["i8_gemm_tier"] == "accurate");
+  k = v("krea2-turbo", m4, "balanced");
+  CHECK(k["steps"] == 8 && k["sol_attn"] == false);
 
   // MiniMax H3 FL2VA: Fast is its 4-step adapter on every Mac, whatever
   // its memory -- TaoMate's METHOD only when Custom asks for it.
@@ -897,7 +908,21 @@ TEST(models, favor_presets_follow_the_catalog)
     CHECK(f["loras"][0]["on"] == true);
     CHECK(f["sol_attn"] == true && f["sol_tau"] == 1.0);
     CHECK(f["sage_attn"] == true && f["i8_gemm"] == true);
+    // ...Sage's int8 P*V, on the prompt's and soundtrack's rows too, and
+    // int8 Per Token.
+    CHECK(f["sage_pv8"] == true && f["sage_pv8_all_rows"] == true);
+    CHECK(f["i8_gemm_tier"] == "token");
     CHECK(f["ane_ffn"] == false && f["taomate"] == false);
+  }
+  {
+    // Med: the int8 P*V on the clip's rows alone, int8 Accurate.
+    TuningContext h8 = h;
+    h8.loras["minimax-h3-turbo-8step"] = {"8-step",
+                                          file("eight.safetensors")};
+    const Json m = resolve_tuning(fl, h8, "balanced", false);
+    CHECK(m["sage_attn"] == true && m["sage_pv8"] == true);
+    CHECK(m["sage_pv8_all_rows"] == false);
+    CHECK(m["i8_gemm"] == true && m["i8_gemm_tier"] == "accurate");
   }
   // TaoMate when asked, in its own schedule, the Turbo LoRA and what it
   // replaces off...
@@ -950,6 +975,8 @@ TEST(models, favor_presets_follow_the_catalog)
   CHECK(f["loras"][0]["on"] == true);
   CHECK(f["sol_attn"] == true && f["sol_tau"] == 1.0);
   CHECK(f["sage_attn"] == false && f["i8_gemm"] == false);
+  CHECK(f["sage_pv8"] == false && f["sage_pv8_all_rows"] == false);
+  CHECK(f["i8_gemm_tier"] == "accurate");
   CHECK(f["ane_ffn"] == true && f["ane_qkv"] == true);
   const Json med = resolve_tuning(fl, a, "balanced", false);
   CHECK(med["ane_ffn"] == f["ane_ffn"] && med["ane_qkv"] == f["ane_qkv"]);
@@ -969,7 +996,12 @@ TEST(models, favor_presets_follow_the_catalog)
                                               file("r4.safetensors")};
   f = resolve_tuning(rf, r, "speed", false);
   CHECK(f["steps"] == 4 && f["video_shift"] == 12);
+  CHECK(f["sage_pv8"] == true && f["sage_pv8_all_rows"] == true);
+  CHECK(f["i8_gemm_tier"] == "token");
   CHECK(missing_loras(rf, r, "balanced").size() == 1);
+  f = resolve_tuning(rf, r, "balanced", false);
+  CHECK(f["sage_pv8"] == true && f["sage_pv8_all_rows"] == false);
+  CHECK(f["i8_gemm_tier"] == "accurate");
 
   // Qwen-Image 2.1: Fast needs its Turbo LoRA; Med 25, Fine 40, plain.
   const ModelEntry& q = *c->find("qwen-image-2.1");
@@ -982,7 +1014,12 @@ TEST(models, favor_presets_follow_the_catalog)
   qt.loras["qwen-image-21-turbo"] = {"Qwen turbo", file("q.safetensors")};
   qv = resolve_tuning(q, qt, "speed", false);
   CHECK(qv["steps"] == 6 && qv["loras"][0]["on"] == true);
-  CHECK(qv["i8_gemm"] == true);
+  // ...with Sage, int8 Per Token and the VAE's int8 at Fast.
+  CHECK(qv["sage_attn"] == true && qv["sage_pv8"] == false);
+  CHECK(qv["i8_gemm"] == true && qv["i8_gemm_tier"] == "token");
+  CHECK(qv["vae_i8_gemm"] == true && qv["vae_i8_gemm_tier"] == "fast");
+  qv = resolve_tuning(q, qt, "balanced", false);
+  CHECK(qv["sage_attn"] == false && qv["vae_i8_gemm"] == false);
   // What the panel and the app are told.
   const Json opts = tuning_options(q, qt, "speed", false);
   CHECK(opts["turbo"]["name"] == "Qwen turbo");
@@ -999,7 +1036,14 @@ TEST(models, favor_presets_follow_the_catalog)
     CHECK(preset_steps(t8, p, true, false) == 8);
   }
   Json tv = resolve_tuning(t8, m5, "speed", false);
-  CHECK(tv["i8_gemm"] == true);
+  CHECK(tv["i8_gemm"] == true && tv["i8_gemm_tier"] == "token");
+  CHECK(tv["sage_attn"] == true);
+  CHECK(tv["vae_i8_gemm"] == true && tv["vae_i8_gemm_tier"] == "fast");
+  // Before M5 none of them: Sage and the int8s need matrix cores.
+  tv = resolve_tuning(t8, m4, "speed", false);
+  CHECK(tv["sage_attn"] == false && tv["i8_gemm"] == false);
+  CHECK(tv["i8_gemm_tier"] == "accurate" && tv["vae_i8_gemm"] == false);
+  CHECK(tv["vae_i8_gemm_tier"] == "accurate");
   tv = resolve_tuning(t8, m5, "balanced", true);
   CHECK(tv["i8_gemm"] == true);
   tv = resolve_tuning(t8, m5, "quality", false);
@@ -1019,7 +1063,8 @@ TEST(models, favor_presets_follow_the_catalog)
 // asked; a value it does not list is not taken, a Mac without matrix
 // cores keeps it at accurate, and so does the Neural Engine's
 // feed-forward (vpipe runs the tiers off its route). A preset's table
-// may name one: Krea 2's Fast and Med run Per Token.
+// may name one: Fast runs Per Token (Qwen-Image 2.1 and its Turbo,
+// MiniMax H3, Krea 2), Krea 2's Med too.
 TEST(models, the_int8_gemms_tier_is_a_choice)
 {
   auto c = Catalog::builtin();
@@ -1045,11 +1090,17 @@ TEST(models, the_int8_gemms_tier_is_a_choice)
     CHECK(o["needs"] == "i8_gemm");
     CHECK((o["choices"] == Json::array({"accurate", "fast", "token",
                                         "token_plain"})));
-    // Krea 2's Fast and Med run Per Token (its table: 1.48x Accurate on
-    // the M5 Ultra, the picture as close to bf16's); the rest Accurate.
-    const bool token = std::string_view(id) == "krea2-turbo";
+    // Fast runs Per Token on all of them but FLUX.2 klein and Z-Image
+    // (their tables); Krea 2's Med too (1.48x Accurate on the M5 Ultra,
+    // the picture as close to bf16's); the rest Accurate.
+    const std::string_view mid(id);
+    const bool token = mid == "krea2-turbo";
+    const bool fast_token = token || mid.starts_with("qwen-image") ||
+                            mid.starts_with("minimax-h3");
     for (const char* p : {"speed", "balanced", "quality"}) {
-      const bool t = token && std::string_view(p) != "quality";
+      const std::string_view pref(p);
+      const bool t = pref == "speed" ? fast_token
+                                     : token && pref == "balanced";
       CHECK(resolve_tuning(m, m5, p, false)["i8_gemm_tier"] ==
             (t ? "token" : "accurate"));
       CHECK(resolve_tuning(m, m4, p, false)["i8_gemm_tier"] == "accurate");
@@ -1097,9 +1148,94 @@ TEST(models, the_int8_gemms_tier_is_a_choice)
   }
 }
 
+// SageAttention's int8 P*V (vpipe's `sage_pv8`): MiniMax H3's and the
+// picture models', a switch that needs SageAttention and the matrix
+// cores, on where a preset's table says (Krea 2's and MOSS-Image's Fast,
+// H3's Fast and Med); H3's prompt and soundtrack rows on it too
+// (`sage_pv8_all_rows`) a switch of H3's alone, needing it -- on H3's
+// Fast.
+TEST(models, sage_pv8_needs_sage)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  TuningContext m5;
+  m5.matrix_cores = true;
+  TuningContext m4;
+  const auto option_of = [](const Json& opts, const char* key) {
+    for (const auto& o : opts["options"]) {
+      if (o["key"] == key) {
+        return o;
+      }
+    }
+    return Json();
+  };
+  const auto pv8_of = [&](const Json& opts) {
+    return option_of(opts, "sage_pv8");
+  };
+  for (const char* id : {"minimax-h3-fl2va", "minimax-h3-ref2va",
+                         "qwen-image-2.1", "qwen-image-2.1-turbo",
+                         "krea2-turbo", "flux2-klein-9b", "flux3-klein",
+                         "z-image-turbo", "moss-image-sft",
+                         "moss-image-base"}) {
+    const bool h3 = std::string_view(id).starts_with("minimax-h3");
+    const ModelEntry& m = *c->find(id);
+    const Json o = pv8_of(tuning_options(m, m5, "quality", false));
+    REQUIRE(o.is_object());
+    CHECK(o["type"] == "bool" && o["available"] == true);
+    CHECK(o["needs"] == "sage_attn");
+    const std::string_view mid(id);
+    const bool fast = h3 || mid == "krea2-turbo" ||
+                      mid.starts_with("moss-image");
+    for (const char* p : {"speed", "balanced", "quality"}) {
+      const std::string_view pref(p);
+      const Json v = resolve_tuning(m, m5, p, false);
+      CHECK(v["sage_pv8"] == ((pref == "speed" && fast) ||
+                              (pref == "balanced" && h3)));
+      if (h3) {
+        CHECK(v["sage_pv8_all_rows"] == (pref == "speed"));
+      }
+      // Never before M5.
+      CHECK(resolve_tuning(m, m4, p, false)["sage_pv8"] == false);
+    }
+    // With SageAttention on, it is taken.
+    Json v = resolve_tuning(m, m5, "quality", false,
+                            {{"sage_attn", true}, {"sage_pv8", true}});
+    CHECK(v["sage_attn"] == true && v["sage_pv8"] == true);
+    // Without SageAttention it is off, whatever is asked.
+    v = resolve_tuning(m, m5, "quality", false,
+                       {{"sage_pv8", true}, {"sage_attn", false}});
+    CHECK(v["sage_pv8"] == false);
+    // The rows switch: H3's, needing the int8 P*V.
+    const Json rows =
+        option_of(tuning_options(m, m5, "quality", false),
+                  "sage_pv8_all_rows");
+    CHECK(rows.is_object() == h3);
+    if (h3) {
+      CHECK(rows["needs"] == "sage_pv8");
+      v = resolve_tuning(m, m5, "quality", false,
+                         {{"sage_pv8", true}, {"sage_pv8_all_rows", true}});
+      CHECK(v["sage_pv8_all_rows"] == true);
+      v = resolve_tuning(m, m5, "quality", false,
+                         {{"sage_pv8_all_rows", true}});
+      CHECK(v["sage_pv8_all_rows"] == false);
+    }
+    // Before M5: offered, not to be had.
+    const Json o4 = pv8_of(tuning_options(m, m4, "quality", false));
+    CHECK(o4["available"] == false && o4["why"] == "needs-matrix-cores");
+    CHECK(resolve_tuning(m, m4, "quality", false,
+                         {{"sage_pv8", true}})["sage_pv8"] == false);
+  }
+  for (const char* id : {"flashvsr", "vosr", "yue2-3b"}) {
+    const ModelEntry& m = *c->find(id);
+    CHECK(pv8_of(tuning_options(m, m5, "balanced", false)).is_null());
+    CHECK(!resolve_tuning(m, m5, "balanced", false, {{"sage_pv8", true}})
+               .contains("sage_pv8"));
+  }
+}
+
 // The CODEC's int8 (vpipe's vae-decode / vae-encode `i8_gemm` and its
-// tier): offered for the models whose catalog names it, off in every
-// preset, its tier Accurate | Fast and only with it on.
+// tier): offered for the models whose catalog names it, on at Fast in
+// Fast's table alone, its tier Accurate | Fast and only with it on.
 TEST(models, the_codecs_int8_is_a_switch_and_a_tier)
 {
   auto c = Catalog::builtin();
@@ -1125,9 +1261,12 @@ TEST(models, the_codecs_int8_is_a_switch_and_a_tier)
     CHECK(tier["type"] == "choice" && tier["needs"] == "vae_i8_gemm");
     CHECK((tier["choices"] == Json::array({"accurate", "fast"})));
     for (const char* p : {"speed", "balanced", "quality"}) {
+      const bool fast = std::string_view(p) == "speed";
       const Json v = resolve_tuning(m, m5, p, false);
-      CHECK(v["vae_i8_gemm"] == false);
-      CHECK(v["vae_i8_gemm_tier"] == "accurate");
+      CHECK(v["vae_i8_gemm"] == fast);
+      CHECK(v["vae_i8_gemm_tier"] == (fast ? "fast" : "accurate"));
+      const Json w = resolve_tuning(m, m4, p, false);
+      CHECK(w["vae_i8_gemm"] == false && w["vae_i8_gemm_tier"] == "accurate");
     }
     Json v = resolve_tuning(m, m5, "balanced", false,
                             {{"vae_i8_gemm", true},
@@ -1595,6 +1734,57 @@ TEST(models, a_draw_things_model_is_checked)
   }
 }
 
+// FISH AUDIO DRAMA 3: a family of its own, its two checkpoints -- the
+// FP8 release and its int4 -- each a speech model of 16 speakers that
+// takes no length, told apart by how their weights are stored.
+TEST(models, drama3_s_two_checkpoints_are_told_apart)
+{
+  namespace fs = std::filesystem;
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const auto& fams = c->families();
+  const auto fam = std::ranges::find(fams, std::string("drama3"),
+                                     &Family::id);
+  REQUIRE(fam != fams.end());
+  CHECK(fam->features == std::vector<std::string>{"speech-gen"});
+  REQUIRE(fam->members.size() == 2);
+  const auto* fp8 = c->find("drama-3");
+  const auto* int4 = c->find("drama-3-int4");
+  REQUIRE(fp8 && int4);
+  for (const auto* m : {fp8, int4}) {
+    CHECK(m->has(Capability::TextToSpeech));
+    Json j;
+    to_json(j, *m);
+    CHECK(jget(j, "speakers", 0) == 16);
+    CHECK(!jget(j, "speech_length", true));
+  }
+  Json moss;
+  to_json(moss, *c->find("moss-tts-v1.5"));
+  CHECK(jget(moss, "speakers", 0) == 1 && jget(moss, "speech_length", false));
+  // Auto speaks in a voice with Drama 3 first, the release ahead.
+  CHECK(fp8->min_ram_gb > int4->min_ram_gb);
+
+  const auto root = test::temp_dir("models-drama3");
+  auto fake = [&](const fs::path& dir, const char* method) {
+    fs::create_directories(dir);
+    std::ofstream(dir / "config.json")
+        << R"({"model_type": "fish_omni", "quantization_config": )"
+           R"({"quant_method": ")" << method << R"("}})";
+    write_safetensors(dir / "model-00001-of-00001.safetensors",
+                      {{"lm.weight", {4, 4}}});
+  };
+  const fs::path a = root / "fishaudio" / "drama-3-int4";
+  fake(a, "drama3-int4");
+  CHECK(check_model(*int4, a, &*c).usable);
+  const ModelCheck wrong = check_model(*fp8, a, &*c);
+  CHECK(!wrong.usable);
+  CHECK(note_keys(wrong).front() == "core.check_wrong_model");
+  const fs::path b = root / "fishaudio" / "drama-3";
+  fake(b, "bsgemm-moe");
+  CHECK(check_model(*fp8, b, &*c).usable);
+  CHECK(!check_model(*int4, b, &*c).usable);
+}
+
 TEST(models, a_linked_folder_is_checked)
 {
   namespace fs = std::filesystem;
@@ -1822,11 +2012,18 @@ TEST(models, moss_image_offers_its_steps_guidance_and_shift)
     const Json fine = resolve_tuning(*m, m5, "quality", false);
     const Json med = resolve_tuning(*m, m5, "balanced", false);
     const Json fast = resolve_tuning(*m, m5, "speed", false);
-    CHECK(fine["steps"] == 50 && med["steps"] == 30 && fast["steps"] == 20);
+    CHECK(fine["steps"] == 50 && med["steps"] == 30 && fast["steps"] == 18);
     CHECK(fine["shift"] == 5.0);
     CHECK(med["guidance_scale"] == 3.0);
     CHECK(fine["i8_gemm"] == false && med["i8_gemm"] == true);
-    CHECK(fast["sol_attn"] == true);
+    // Fast on an M5: Sage with its int8 P*V, int8 Per Token, no Sol;
+    // without matrix cores its 18 steps with Sol in their place.
+    CHECK(fast["sol_attn"] == false && fast["sage_attn"] == true);
+    CHECK(fast["sage_pv8"] == true && fast["i8_gemm"] == true);
+    CHECK(fast["i8_gemm_tier"] == "token");
+    const Json old = resolve_tuning(*m, TuningContext{}, "speed", false);
+    CHECK(old["steps"] == 18 && old["sol_attn"] == true);
+    CHECK(old["sol_tau"] == 0.0 && old["sage_attn"] == false);
     const Json moved = resolve_tuning(*m, m5, "balanced", false,
                                       {{"guidance_scale", 5.0},
                                        {"shift", 4.0}});
@@ -1837,4 +2034,66 @@ TEST(models, moss_image_offers_its_steps_guidance_and_shift)
     listed = listed || f.id == "moss-image";
   }
   CHECK(listed);
+}
+
+TEST(models, a_helpers_context_is_its_own_as_memory_holds_it)
+{
+  namespace fs = std::filesystem;
+  const auto root = test::temp_dir("models-context");
+  // A model that also sees, a hybrid: its text_config's, its K/V the
+  // full-attention layers' alone (Qwen3.8 27B: 16 of 64, 64 KB a token).
+  const fs::path vl = root / "vl";
+  fs::create_directories(vl);
+  Json types = Json::array();
+  for (int i = 0; i < 64; ++i) {
+    types.push_back(i % 4 == 3 ? "full_attention" : "linear_attention");
+  }
+  std::ofstream(vl / "config.json") << Json{
+      {"model_type", "qwen3_5"},
+      {"text_config", {{"max_position_embeddings", 262144},
+                       {"num_hidden_layers", 64},
+                       {"layer_types", types},
+                       {"num_attention_heads", 24},
+                       {"num_key_value_heads", 4},
+                       {"head_dim", 256}}}}.dump();
+  const LanguageContext big = language_context(vl);
+  CHECK(big.tokens == 262144);
+  CHECK(big.kv_bytes == 65536);
+  // By its interval (Qwen3.5 9B: 8 of 32); a dense one's every layer, its
+  // head the hidden size's share.
+  const fs::path lm = root / "lm";
+  fs::create_directories(lm);
+  std::ofstream(lm / "config.json") << Json{
+      {"max_position_embeddings", 262144}, {"num_hidden_layers", 32},
+      {"full_attention_interval", 4}, {"num_key_value_heads", 4},
+      {"head_dim", 256}}.dump();
+  CHECK(language_context(lm).kv_bytes == 32768);
+  std::ofstream(lm / "config.json") << Json{
+      {"max_position_embeddings", 32768}, {"num_hidden_layers", 28},
+      {"num_attention_heads", 16}, {"num_key_value_heads", 8},
+      {"hidden_size", 2048}}.dump();
+  CHECK(language_context(lm).tokens == 32768);
+  CHECK(language_context(lm).kv_bytes == 28u * 2 * 8 * 128 * 2);
+
+  // All of it on tgo-m5-3's 256 GB; on 24 GB what a quarter of the memory
+  // the weights leave holds at the pool's peak; never under 32,768 (an
+  // agent's head is ~15,000), never over the model's.
+  constexpr std::uint64_t GB = 1ull << 30;
+  const auto w27 = static_cast<std::uint64_t>(16.1e9);
+  CHECK(helper_context(big, 256 * GB, w27) == 262144);
+  CHECK(helper_context(big, 64 * GB, w27) == 100352);
+  CHECK(helper_context(big, 24 * GB, w27) == 32768);
+  CHECK(helper_context(big, 16 * GB, w27) == 32768);
+  CHECK(helper_context(big, 0, w27) == 262144);
+  CHECK(helper_context(language_context(lm), 256 * GB, 0) == 32768);
+
+  // Saying none, unreadable, missing: 0 -- the engine's own then.
+  const fs::path none = root / "none";
+  fs::create_directories(none);
+  std::ofstream(none / "config.json") << Json{{"model_type", "x"}}.dump();
+  CHECK(language_context(none).tokens == 0);
+  CHECK(helper_context(language_context(none), 24 * GB, 0) == 0);
+  std::ofstream(none / "config.json") << "{not json";
+  CHECK(language_context(none).tokens == 0);
+  CHECK(language_context(root / "missing").tokens == 0);
 }

@@ -86,9 +86,11 @@ set(VALTZ_APP_SOURCES
   Sources/Views/StorageView.swift
   Sources/Views/SettingsView.swift
   Sources/Views/SettingsNavigation.swift
+  Sources/Views/SettingsMarks.swift
   Sources/Views/TitleBar.swift
   Sources/Views/VideoEncodingRows.swift
   Sources/Views/AppKitPopover.swift
+  Sources/Views/ColorPanelPlacer.swift
   Sources/Views/ShortcutHints.swift
   Sources/Views/FleetView.swift
   Sources/Views/FleetPolicyViews.swift
@@ -247,6 +249,13 @@ set(VALTZ_MOSS_IMAGE_LICENSE
 set_source_files_properties(${VALTZ_MOSS_IMAGE_LICENSE} PROPERTIES
   MACOSX_PACKAGE_LOCATION Resources/Licenses/MOSS-Image)
 list(APPEND VALTZ_APP_RESOURCES ${VALTZ_MOSS_IMAGE_LICENSE})
+# Fish Audio's Drama 3 guide (CC BY 4.0, 3rd-party/fish-audio-drama3).
+set(VALTZ_DRAMA3_LICENSE
+  "${PROJECT_SOURCE_DIR}/3rd-party/fish-audio-drama3/LICENSE"
+  "${PROJECT_SOURCE_DIR}/3rd-party/fish-audio-drama3/NOTICE")
+set_source_files_properties(${VALTZ_DRAMA3_LICENSE} PROPERTIES
+  MACOSX_PACKAGE_LOCATION Resources/Licenses/Fish-Audio-Drama-3)
+list(APPEND VALTZ_APP_RESOURCES ${VALTZ_DRAMA3_LICENSE})
 
 # ---- Localization (DESIGN §10b) ------------------------------------------
 #

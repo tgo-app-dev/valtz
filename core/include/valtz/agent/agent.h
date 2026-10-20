@@ -27,6 +27,7 @@
 #include "valtz/base/result.h"
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -116,9 +117,83 @@ public:
                              const std::atomic<bool>& cancel) = 0;
   // Does it see pictures (a page shown to it)? Else it is told in words.
   virtual bool sees() const { return false; }
+  // The tokens its model's context holds -- the helper's as this Mac (or
+  // the member that ran the last turn) gives it, a cloud model's window:
+  // a conversation nearing it is COMPACTED. 0: not known (compacted only
+  // once a turn does not fit).
+  virtual std::int64_t context_tokens() const { return 0; }
   // The conversation is over: what is kept for it let go.
   virtual void close() {}
 };
+
+// ---- compaction (DESIGN §9b) ------------------------------------------
+//
+// A conversation outgrowing what its model holds -- the helper's context
+// as this Mac gives it (Controller::helper_context_: Qwen3.8 27B's
+// 262,144 on tgo-m5-3), a cloud model's window -- goes on COMPACTED, as
+// notes stand in for a long meeting. Before a turn that would not fit
+// (with room for a reply and for the notes), the model is asked, the
+// conversation as it is -- its kept K/V all reused, only the question
+// prefilled -- to write what it needs to carry on: the request and what
+// the person said since, what is made and where (ids), what is under
+// way, what is left. The conversation then goes on from its HEAD (the
+// system message, the person's first request: the head every turn is
+// matched by), ONE message of notes -- the model's, the person's words
+// since the request as they were, Valtz's own record of the steps run
+// -- and the latest whole turns as they were. A turn that did not fit
+// (the context full already: the model cannot be asked) is compacted on
+// Valtz's notes alone, and tried again. The document itself is never
+// compacted: the model reads it again with its tools.
+
+// About how many tokens a model reads for these: a token every 3 bytes
+// of words (English runs 4 a token, CJK 3 bytes a character -- over,
+// rather than under), 1,600 a picture, 8 a message. From `from` on.
+std::int64_t estimate_tokens(const Message&);
+std::int64_t estimate_tokens(const std::vector<Message>&,
+                             std::size_t from = 0);
+std::int64_t estimate_tokens(const std::vector<ToolSpec>&);
+
+// The tokens a turn's conversation took, its reply included, as its
+// backend counted them: the helper's `ctx_pos`, a cloud's read (cached
+// or not) and written. 0: not counted.
+std::int64_t context_used(const Json& usage);
+
+// Is `e` a conversation longer than its model's context -- the helper's
+// own (kAgentContextFull), a cloud's refusal ("prompt is too long",
+// "context_length_exceeded", "maximum context length")?
+bool context_overflow(const Error& e);
+
+// The question asking the model for its notes (a user message, put
+// after the conversation as it is): `used` and `limit` in tokens.
+Message compaction_request(std::int64_t used, std::int64_t limit);
+
+// The HEAD kept through every compaction: the system message(s) and the
+// person's first request -- the index after them.
+std::size_t compaction_head(const std::vector<Message>&);
+
+// Where the latest turns kept as they were begin: the earliest message
+// after the head from which the rest is within `budget` tokens -- an
+// assistant's reply or a user's message, never a tool's result apart
+// from the call it answers. messages.size(): none fits.
+std::size_t compaction_tail(const std::vector<Message>&,
+                            std::int64_t budget);
+
+struct CompactionNotes {
+  std::string              summary;  // the model's own; "": not asked
+  std::vector<std::string> said;     // the person's words since
+  // Their bytes at most (each cut at 4,000): a share of the context.
+  std::size_t              said_bytes = 16000;
+  std::string              steps;    // Valtz's record of the steps run
+  int                      steps_run = 0;
+  std::int64_t             used = 0;
+  std::int64_t             limit = 0;
+};
+// The conversation compacted: its head, the notes (a user message named
+// "compaction"), its messages from `tail` on.
+std::vector<Message> compact(const std::vector<Message>&, std::size_t tail,
+                             const CompactionNotes&);
+// Is `m` a compaction's notes?
+bool is_compaction(const Message& m);
 
 // ---- the local helper's wire format (vpipe text-chat's) ---------------
 //
@@ -147,12 +222,20 @@ struct CloudConfig {
   // "" the provider's own.
   std::string base_url;
   int         max_tokens = 4096;
+  // The model's context window, tokens: compacted as a conversation
+  // nears it. 0: the provider's own (cloud_context_tokens).
+  std::int64_t context_tokens = 0;
 };
 
 Json to_json(const CloudConfig&);
 CloudConfig cloud_config_from_json(const Json&);
 // The model a provider's field starts from; "" none.
 std::string default_cloud_model(std::string_view provider);
+// The window a conversation is kept within: the configured one, else
+// the provider's models' (Anthropic's 200,000; OpenAI's 128,000); 0 for
+// a compatible server's, which only it knows -- compacted when it
+// refuses a turn as too long.
+std::int64_t cloud_context_tokens(const CloudConfig&);
 
 // The provider's API key, in the login Keychain (service
 // "com.tgous.valtz.agent", account the provider) -- never in a file, a

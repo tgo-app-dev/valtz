@@ -263,6 +263,11 @@ struct AgentPane: View {
                 } else {
                     out.append(.person(m.content))
                 }
+            case "compaction":
+                // Where the conversation was compacted to go on within
+                // its model's context: what is above, summarized.
+                let n = m.compacted ?? 0
+                out.append(.note(String(localized: "Compacted to stay within the model’s context: the \(n) messages before summarized.")))
             case "assistant":
                 let w = m.content.trimmingCharacters(
                     in: .whitespacesAndNewlines)

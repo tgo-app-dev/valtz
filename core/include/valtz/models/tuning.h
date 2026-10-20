@@ -53,6 +53,12 @@
 //   sol_tau        real    its threshold, in standard deviations
 //   motion_cache   bool    H3: MotionCache, reused forwards
 //   sage_attn      bool    SageAttention's int8 QK (M5 matrix cores)
+//   sage_pv8       bool    ...its P*V in int8 too (needs sage_attn); off
+//                          in every preset. Where the catalog's `accel`
+//                          names it (MiniMax H3 and the picture models
+//                          vpipe gave it)
+//   sage_pv8_all_rows bool H3: ...on the prompt's and the soundtrack's
+//                          rows too (needs sage_pv8)
 //   i8_gemm        bool    int8 block GEMMs (M5 matrix cores)
 //   i8_gemm_tier   choice  which: "accurate" (groups of 64, the default),
 //                          "fast" (rotated int8 weights in groups of
@@ -119,7 +125,9 @@ struct TuningContext {
   bool hyperflow_installed = false;  // `hyperflow.lora`
   bool taomate_installed = false;    // `taomate.lora`
   bool vdn_installed = false;        // `vdn.branch`
-  bool matrix_cores = false;         // HardwareInfo::gpu_matrix_cores
+  // HardwareInfo::gpu_matrix_cores; without them a preset is its table
+  // with `without_matrix_cores.<preference>` laid over it.
+  bool matrix_cores = false;
   // The rest of the machine (HardwareInfo): what decides whether Fast and
   // Med put the Neural Engine to work beside a GPU without matrix cores.
   std::uint32_t gpu_cores = 0;

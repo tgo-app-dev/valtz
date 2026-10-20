@@ -114,6 +114,31 @@ std::string compress_part_folder(const std::filesystem::path& dir,
 // "33.0 GB", "512 MB": a size as the person reads it (decimal units).
 std::string size_text(std::uint64_t bytes);
 
+// A language model's context as its config.json in `dir` says: the
+// tokens it holds (`max_position_embeddings`; its `text_config`'s for a
+// model that also sees -- Qwen3.5's and Qwen3.8's 262,144) and a token's
+// K/V (its full-attention layers' keys and values in f16: 64 KB for
+// Qwen3.8 27B's 16 of 64 layers, 32 KB for Qwen3.5 9B's 8 of 32). 0
+// where it says none.
+struct LanguageContext {
+  int           tokens = 0;
+  std::uint64_t kv_bytes = 0;
+};
+LanguageContext language_context(const std::filesystem::path& dir);
+
+// The tokens of it the helper is given on a Mac of `ram_bytes`, its
+// weights `weight_bytes`: the model's own, as far as its K/V at the
+// growth's peak -- twice its size, the pool doubling as it fills -- stays
+// within a quarter of the memory the weights leave; whole pages of 16,
+// never under 32,768 (an agent's head -- its guide and tools -- is
+// ~15,000; past its context, a conversation is compacted). The 27B: all
+// 262,144 from about 150 GB (tgo-m5-3's 256), 231,000 on 128, 100,000 on
+// 64 and the floor on 24, where its whole context would want 16 GB of K/V
+// beside 16 GB of weights; the 9B about 69,000 there. 0: the model says
+// none.
+int helper_context(const LanguageContext&, std::uint64_t ram_bytes,
+                   std::uint64_t weight_bytes);
+
 }
 
 #endif

@@ -11,6 +11,11 @@ import SwiftUI
 struct CapabilitiesView: View {
     @Bindable var model: AppModel
     @State private var expanded: Set<String> = []
+    /// What Settings' search finds (SettingsMarks): a family holding a
+    /// model it finds is opened, as one a setting picked from its results
+    /// lies in.
+    @Environment(\.settingsQuery) private var query
+    @Environment(\.settingsReveal) private var reveal
 
     var body: some View {
         ScrollViewReader { scroller in
@@ -67,6 +72,24 @@ struct CapabilitiesView: View {
         // A family asked for (a preset's LoRA to download): opened.
         .onChange(of: model.capabilitiesFamily) { _, _ in
             openAsked(scroller)
+        }
+        // What the search finds inside a shut family, shown.
+        .onChange(of: query, initial: true) { _, q in openFound(q) }
+        // A setting picked from the search's results: its family opened
+        // and scrolled to the top, its rows lit under it -- a List scrolls
+        // to a row's own id, not one inside it, and not to a row of a
+        // family just opened, so this page does it itself.
+        // (initial: the page is made by the very pick that sets it.)
+        .onChange(of: reveal, initial: true) { _, r in
+            guard let r else { return }
+            openFound(r.name, exact: true)
+            guard let id = revealedRow(r.name) else { return }
+            // Once the family just opened is laid out, and not animated:
+            // sooner, or animated, the List scrolls nowhere.
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                scroller.scrollTo(id, anchor: .top)
+            }
         }
         // A gated model's Download: its license and the access token.
         .sheet(item: $model.gatedDownload) { m in
@@ -231,6 +254,30 @@ struct CapabilitiesView: View {
         }
     }
 
+    /// The family a setting picked by `name` is in: the one it names, or
+    /// the one holding a model of that label or name.
+    private func revealedRow(_ name: String) -> String? {
+        (model.capabilityTree?.families ?? []).first { f in
+            f.name == name
+                || f.members.contains { $0.label == name || $0.name == name }
+        }?.id
+    }
+
+    /// The families holding a model `q` finds -- or, `exact`, the one
+    /// whose model or own name it is -- opened.
+    private func openFound(_ q: String, exact: Bool = false) {
+        let found = (model.capabilityTree?.families ?? []).filter { f in
+            f.members.contains { m in
+                exact ? m.label == q || m.name == q
+                      : SettingsSearchText.matches(m.label, q)
+                        || SettingsSearchText.matches(m.name, q)
+            }
+        }
+        let shut = found.map(\.id).filter { !expanded.contains($0) }
+        guard !shut.isEmpty else { return }
+        withAnimation(AppModel.motion) { expanded.formUnion(shut) }
+    }
+
     private func toggle(_ id: String) {
         withAnimation(AppModel.motion) {
             if expanded.contains(id) { expanded.remove(id) }
@@ -247,6 +294,7 @@ private struct FamilyRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Text(verbatim: family.name).font(.body.weight(.semibold))
+                .settingsMark(family.name, scope: family.id)
             Spacer()
             HStack(spacing: 6) {
                 ForEach(family.features) { FeatureBadge(feature: $0) }
@@ -376,6 +424,7 @@ private struct MemberRow: View {
                     .foregroundStyle(.secondary)
             }
             .help(m.notes.isEmpty ? m.hfPath : m.notes)
+            .settingsMark(m.label, m.name, scope: m.model)
             roleTag
             Spacer(minLength: 8)
             Text(verbatim: size)

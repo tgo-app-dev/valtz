@@ -803,6 +803,33 @@ private:
       }
       heard_seconds = *s;
     }
+    // Drama 3's VOICES (DESIGN §4g): each cut to the words said in it --
+    // its first seconds, one channel at the codec's rate -- a WAV its
+    // stage clones it from, speaker 0 first.
+    std::vector<fs::path> voices;
+    if (spec.op == kOpGenerateSpeech && spec.params.contains("voices")) {
+      const Json vs = jget(spec.params, "voices", Json::array());
+      const int rate = jget(
+          jget(jget(spec.model.engine, "vpipe", Json::object()), "speech",
+               Json::object()),
+          "sample_rate", 44100);
+      for (const auto& in : spec.inputs) {
+        if (in.role != "voice") {
+          continue;
+        }
+        const std::size_t k = voices.size();
+        const double secs = vs.is_array() && k < vs.size()
+                                ? jget(vs[k], "seconds", 0.0)
+                                : 0.0;
+        voices.push_back(spec.output_dir /
+                         std::format("{}-voice{}.wav", spec.id.str(), k));
+        if (auto st = media::mono_sound(in.path, voices.back(), rate, secs);
+            !st.ok()) {
+          fail_(q, st.code(), st.error().message);
+          return;
+        }
+      }
+    }
     // ENCODINGS KEPT between jobs (encoding-cache.h, DESIGN §4l): the
     // builder names each encoder's output by what it is made from and
     // asks whether it is kept; a kept one is read now -- into memory, so
@@ -869,7 +896,7 @@ private:
     } else if (spec.op == kOpGenerateAudio) {
       built = vp::build_audio(spec);
     } else if (spec.op == kOpGenerateSpeech) {
-      built = vp::build_speech(spec);
+      built = vp::build_speech(spec, voices);
     } else if (spec.op == kOpQuantizeModel) {
       built = vp::build_quantize_model(spec);
     } else if (spec.op == kOpUpscaleVideo) {
@@ -902,12 +929,15 @@ private:
     } else if (spec.op == kOpExportMedia) {
       built = vp::build_export(spec);
     }
+    std::error_code ec;
     if (!built.ok()) {
+      for (const auto& v : voices) {
+        fs::remove(v, ec);
+      }
       fail_(q, built.code(), built.error().message);
       return;
     }
     vp::BuiltGraph& g = *built;
-    std::error_code ec;
     if (!spec.output_dir.empty()) {
       fs::create_directories(spec.output_dir, ec);
     }
@@ -1359,6 +1389,9 @@ private:
     // of this one after them: a refusal for memory, a cancel, a failure
     // in the denoise leave a conditioning as good as made.
     keep_tapped_(g, tapped);
+    for (const auto& v : voices) {
+      fs::remove(v, ec);   // read, and kept nowhere
+    }
 
     if (cancelled) {
       JobEvent ev;

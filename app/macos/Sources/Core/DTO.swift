@@ -151,6 +151,10 @@ struct CatalogModel: Decodable, Sendable, Identifiable {
     /// one -- Favor picks the file (core Controller::weights_variant_).
     var quantizeFrom: String?
     var quantizeBits: Int?
+    /// Speech: how many voices one text may carry (Drama 3's 16 speakers;
+    /// MOSS-TTS one), and whether it is paced to a length asked for.
+    var speakers: Int?
+    var speechLength: Bool?
 }
 
 /// A prompt as a song's words (core assist::split_song): its style, and
@@ -1523,6 +1527,11 @@ struct AgentMessage: Decodable, Sendable, Equatable {
     var name: String?
     /// An assistant's: what its turn cost and how fast it went.
     var stats: AgentTurnStats?
+    /// A compaction's (role "compaction"): the messages it summarized,
+    /// the tokens the conversation took then, its model's context.
+    var compacted: Int?
+    var tokens: Int?
+    var limit: Int?
 }
 
 /// A turn's cost and speed (the core's agent::turn_stats): what it read
@@ -1652,7 +1661,8 @@ struct AgentSession: Decodable, Sendable, Equatable {
 
     /// Working on its own: the person need not answer.
     var busy: Bool {
-        ["starting", "thinking", "acting", "waiting"].contains(state)
+        ["starting", "thinking", "acting", "waiting", "compacting"]
+            .contains(state)
     }
     /// Over: a new request starts another.
     var ended: Bool { state == "stopped" }
@@ -1673,12 +1683,17 @@ struct AgentCloudSettings: Decodable, Sendable, Equatable {
     var model: String
     var baseUrl: String
     var maxTokens: Int?
+    /// The model's context window, tokens; 0: the provider's own.
+    var contextTokens: Int?
 }
 
 struct AgentSettings: Decodable, Sendable, Equatable {
     var backend: String     // helper | cloud
     var review: Bool
     var lease: Double
+    /// A long conversation compacted past its model's context (DESIGN
+    /// §9b); off, a session stops there.
+    var compact: Bool?
     var cloud: AgentCloudSettings
     var keys: [String: Bool]
 }

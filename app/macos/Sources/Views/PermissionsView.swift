@@ -204,6 +204,7 @@ struct PermissionsView: View {
                             refresh()
                         }
                     }
+                    .settingsMark(p.title)
                 }
             } footer: {
                 Text("A permission changed in System Settings takes effect when Valtz is opened again for screen and system audio recording; the others at once.")

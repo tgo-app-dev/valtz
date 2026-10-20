@@ -95,6 +95,19 @@ unmodified; the two texts are compiled into the core.
 and `NOTICE`, which also ship in the app
 (`Contents/Resources/Licenses/MOSS-Image`).
 
+## Fish Audio's Drama 3 guide
+
+`3rd-party/fish-audio-drama3/drama-3.mdx` -- "Drama 3", Fish Audio's
+guide to directing its Drama 3 text-to-speech model, from its
+documentation (<https://github.com/fishaudio/docs>, at a pinned commit)
+-- unmodified, compiled into the core; Valtz's prompt enhancer reads it
+as plain text, its web service's sections left out (the NOTICE says
+how).
+
+**License: Creative Commons Attribution 4.0 International.** Texts:
+`3rd-party/fish-audio-drama3/LICENSE` and `NOTICE`, which also ship in
+the app (`Contents/Resources/Licenses/Fish-Audio-Drama-3`).
+
 ---
 
 # Downloaded on request
@@ -116,5 +129,6 @@ is downloaded with them.
 Valtz ships no model weights. Each model it offers is downloaded by the
 person using it, from its publisher, under the publisher's own license
 -- several of which restrict commercial use (YuE2's are CC BY-NC 4.0, for
-one). The catalog names each model's source, and its license where it
+one; Fish Audio Drama 3's, the Fish Audio Community License, allow it
+only under USD 500,000 of annual revenue). The catalog names each model's source, and its license where it
 records one (`core/resources/model-catalog.json`).

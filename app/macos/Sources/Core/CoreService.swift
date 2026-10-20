@@ -161,6 +161,10 @@ final class CoreService: @unchecked Sendable {
     func setAssistantKeepLoaded(_ seconds: Double) -> CoreReply {
         send(core.choose_assistant, ["keep_loaded": seconds])
     }
+    /// The helper's context at most, tokens; 0: Auto.
+    func setAssistantContext(_ tokens: Int) -> CoreReply {
+        send(core.choose_assistant, ["context": tokens])
+    }
     func setAssistantDrafter(_ kind: String, bits: Int) -> CoreReply {
         send(core.choose_assistant, ["drafter": kind, "drafter_bits": bits])
     }

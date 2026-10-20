@@ -200,6 +200,8 @@ extension AppModel {
         case "review": return String(localized: "Waiting for your word")
         case "acting": return String(localized: "Working…")
         case "waiting": return String(localized: "Waiting for generations…")
+        case "compacting":
+            return String(localized: "Compacting the conversation…")
         case "paused": return String(localized: "Paused")
         case "asking": return String(localized: "It asks you")
         case "done": return String(localized: "Done")

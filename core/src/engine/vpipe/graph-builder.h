@@ -348,8 +348,15 @@ Result<BuiltGraph> build_audio(const JobSpec&);
 // generate-speech: the words spoken by MOSS-TTS (vpipe's text-to-speech,
 // the moss-tts-v1.5-speak graph) -- the prompt's fields its config, the
 // codec job.model.vae, a voice to clone read from its file (input
-// "voice") into its reference port -- written as a WAV.
-Result<BuiltGraph> build_speech(const JobSpec&);
+// "voice") into its reference port -- written as a WAV. Or a script
+// performed by DRAMA 3 (catalog speech.format "drama3", vpipe's
+// drama3-scene graph): its voices -- `voices`, each a file cut to the
+// words said in it (params "voices"[i].text) -- cloned in its config,
+// speaker 0 first, the text spoken in parts as Fish Audio's server cuts
+// a long one.
+Result<BuiltGraph> build_speech(const JobSpec&,
+                                const std::vector<std::filesystem::path>&
+                                    voices = {});
 // quantize-model: vpipe's model-quantize, job.model.dir into params
 // "output" ("bits", "group_size"). With "parts" (a COMPRESSED copy,
 // DESIGN §8b: [{"target", "options"}]) a pass a part, chained -- the

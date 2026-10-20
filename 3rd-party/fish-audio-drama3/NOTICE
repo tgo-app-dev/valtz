@@ -1,0 +1,23 @@
+"Drama 3" -- Fish Audio's guide to directing its Drama 3 text-to-speech
+model -- is by Fish Audio, published in its documentation
+(https://docs.fish.audio/features/text-to-speech/drama-3, source
+https://github.com/fishaudio/docs, commit
+70296af6bcb0fbf3f20cb1c65a0143c565f7e859) under the Creative Commons
+Attribution 4.0 International license (LICENSE, beside this file, as
+published in that repository).
+
+Valtz includes the guide unmodified:
+
+  drama-3.mdx
+
+and uses it, with Valtz's own instructions, in its prompt enhancer when
+the target model is Drama 3. Valtz reads it as plain text, which changes
+what the model is handed: the page's front matter, imports and closing
+component are left out, as are its "What's new", "Voice cast" and "How to
+use" sections and its shell example (they are about Fish Audio's web
+service); each audio example is given as the line it speaks, and each
+warning as a note. The file here is the page as published.
+
+Drama 3's weights are Fish Audio's too, under the Fish Audio Community
+License; Valtz does not ship them (Settings > Capabilities downloads
+them from Hugging Face, with that license, as published).

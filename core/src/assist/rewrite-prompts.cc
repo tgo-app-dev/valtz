@@ -1,4 +1,5 @@
 #include "valtz/assist/assistant.h"
+#include "valtz/assist/drama3.h"
 
 #include <string>
 
@@ -9,7 +10,8 @@
 // download of QwenLM's own rewriters replaces (Controller::skill_text),
 // and FLUX.3 Image Klein's, in Valtz's words after BFL's prompting guide
 // and the system prompts of its prompt upsampler (Apache-2.0), which
-// wrote the captions the model was trained on.
+// wrote the captions the model was trained on -- and Fish Audio's guide
+// to directing Drama 3 (3rd-party/fish-audio-drama3, CC BY 4.0).
 namespace valtz::resources {
 extern const char kQwenImageT2iSkill[];
 extern const char kQwenImageEditSkill[];
@@ -17,6 +19,8 @@ extern const char kFlux3KleinT2iSkill[];
 extern const char kFlux3KleinEditSkill[];
 extern const char kYue2SongSkill[];
 extern const char kMossTtsSkill[];
+extern const char kDrama3Skill[];
+extern const char kDrama3Guide[];
 extern const char kValtzAgentSkill[];
 extern const char kMinimaxH3Skill[];
 extern const char kMinimaxH3BaseGuide[];
@@ -66,6 +70,14 @@ rewrite_prompt(std::string_view name)
   }
   if (name == "moss-tts") {
     return resources::kMossTtsSkill;
+  }
+  if (name == "drama3") {
+    // Valtz's instructions, then the guide they point to.
+    static const std::string s =
+        std::string(resources::kDrama3Skill) +
+        "\n\n# Fish Audio's guide: Drama 3\n\n" +
+        drama3_guide(resources::kDrama3Guide);
+    return s;
   }
   if (name == "valtz-agent") {
     return resources::kValtzAgentSkill;

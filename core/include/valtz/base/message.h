@@ -346,6 +346,10 @@ inline constexpr Message kAgentCloudError{
     "core.agent_cloud_error", "{provider} stopped with an error: {why}"};
 inline constexpr Message kAgentKeychain{
     "core.agent_keychain", "The Keychain did not keep the key ({status})."};
+inline constexpr Message kAgentContextFull{
+    "core.agent_context_full",
+    "The conversation does not fit the helper's context of {tokens} "
+    "tokens."};
 inline constexpr Message kNoAssistantModel{
     "core.no_assistant_model", "No assistant model fits this Mac."};
 inline constexpr Message kNotAnAssistant{
@@ -364,11 +368,23 @@ inline constexpr Message kNoAudioModel{
     "core.no_audio_model", "No audio model is installed."};
 inline constexpr Message kNoSpeechModel{
     "core.no_speech_model",
-    "No speech model is ready: MOSS-TTS and its audio tokenizer are "
-    "needed."};
+    "No speech model is ready: Drama 3, or MOSS-TTS and its audio "
+    "tokenizer, are needed."};
 inline constexpr Message kVoiceKind{
     "core.voice_kind",
     "{name} cannot be a voice: speech clones a sound, or a clip's sound."};
+inline constexpr Message kVoiceNeedsWords{
+    "core.voice_needs_words",
+    "Drama 3 clones {name} from its sound and the words said in it, and "
+    "nothing here can hear them: download Qwen3-ASR (Settings › "
+    "Capabilities › Listening), or transcribe {name} first."};
+inline constexpr Message kVoiceNoSpeech{
+    "core.voice_no_speech",
+    "No speech was heard in {name}: Drama 3 clones a voice from words "
+    "said in it."};
+inline constexpr Message kHeldInputFailed{
+    "core.held_input_failed",
+    "{name} was not made, and this needed it."};
 inline constexpr Message kQuantizeNeedsSource{
     "core.quantize_needs_source",
     "{source} is needed first: {model} is quantized from it."};

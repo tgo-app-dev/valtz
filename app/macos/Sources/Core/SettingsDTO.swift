@@ -212,6 +212,9 @@ struct HelperList: Decodable, Sendable {
     var videoEvery: Double?
     var videoEveryNow: Double?
     var memoryBandwidthGbs: Double?
+    /// Its context at most, in tokens, as set (0: Auto -- each helper's
+    /// own, as far as this Mac's memory holds it).
+    var context: Int?
     var models: [Helper]
 
     struct Helper: Decodable, Sendable, Identifiable {
@@ -229,6 +232,15 @@ struct HelperList: Decodable, Sendable {
         /// A DFlash 2 block drafter it can decode with instead.
         var dflash: Drafter?
         var sampling: Sampling
+        /// Its context: its own, what this Mac's memory holds of it
+        /// (Auto), and what it is given; installed only.
+        var context: Context?
+    }
+
+    struct Context: Decodable, Sendable {
+        var model: Int
+        var auto: Int
+        var here: Int
     }
 
     struct Drafter: Decodable, Sendable {

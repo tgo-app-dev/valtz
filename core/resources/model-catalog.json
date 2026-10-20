@@ -65,8 +65,10 @@
       "edit": ["minimax-h3-ref2va"]
     },
     "audio": {
-      "generate": ["yue2-3b", "moss-tts-v1.5-w8g64", "moss-tts-v1.5"],
-      "edit": ["moss-tts-v1.5-w8g64", "moss-tts-v1.5"]
+      "generate": ["yue2-3b", "drama-3", "drama-3-int4",
+                   "moss-tts-v1.5-w8g64", "moss-tts-v1.5"],
+      "edit": ["drama-3", "drama-3-int4", "moss-tts-v1.5-w8g64",
+               "moss-tts-v1.5"]
     }
   },
   "families": [
@@ -148,6 +150,14 @@
         {"model": "moss-tts-v1.5", "label": "MOSS-TTS v1.5 (bf16)"},
         {"model": "moss-tts-v1.5-w8g64", "label": "MOSS-TTS v1.5 w8g64 (8-bit)"},
         {"model": "moss-audio-tokenizer", "label": "Audio tokenizer"}
+      ]
+    },
+    {
+      "id": "drama3", "name": "Fish Audio Drama 3",
+      "features": ["speech-gen"],
+      "members": [
+        {"model": "drama-3", "label": "Drama 3 (FP8 experts)"},
+        {"model": "drama-3-int4", "label": "Drama 3 int4"}
       ]
     },
     {
@@ -295,7 +305,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "z-image-model-config",
-          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": { "guidance_scale": 0.0 },
           "scheduler": { "steps": 8, "shift": 3.0, "type": "simple", "shift_type": "linear" },
           "defaults": { "steps": 8, "width": 1024, "height": 1024 }
@@ -321,7 +331,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "flux3-model-config",
-          "accel": ["sol_attn", "sage_attn", "i8_gemm", "ane_ffn"],
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "ane_ffn"],
           "config": {},
           "defaults": { "steps": 16, "width": 1024, "height": 1024 },
           "max_edge": 4096,
@@ -373,16 +383,19 @@
           "config_stage": "moss-image-model-config",
           "negative": "conditioner",
           "config_shift": 5.0,
-          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier",
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
                     "ane_ffn", "ane_qkv"],
           "config": {},
           "defaults": { "steps": 50, "width": 1024, "height": 1024 },
           "presets": {
-            "speed": { "steps": 20, "sol_attn": true, "sol_tau": 0.0,
-                       "sage_attn": true, "i8_gemm": true },
+            "speed": { "steps": 18, "sage_attn": true, "sage_pv8": true,
+                       "i8_gemm": true, "i8_gemm_tier": "token" },
             "balanced": { "steps": 30, "sage_attn": true, "i8_gemm": true },
             "quality": { "steps": 50, "sol_attn": false, "sage_attn": false,
                          "i8_gemm": false }
+          },
+          "without_matrix_cores": {
+            "speed": { "sol_attn": true, "sol_tau": 0.0 }
           },
           "options": [
             {"key": "guidance_scale", "type": "real", "min": 1.0,
@@ -396,7 +409,7 @@
       "prompting": {
         "enhance": {"generate": "moss-image"}
       },
-      "notes": "OpenMOSS's 5B single-stream DiT, fine-tuned from MOSS-Image Base for clearer text grouping and layout: text to image, words in the picture in English and Chinese (prompts in natural language, tags, or a JSON layout). 50 steps at CFG 3 against the empty prompt, two forwards a step (its block 22 skipped in the negative): Fine runs them, Med 30, Fast 20. Its text encoder is the full Qwen3.5-9B (16.8 GB, bf16); the model streams, so a 16 GB Mac runs it. Its VAE (FLUX.2's small decoder) and preview are FLUX.2's. Compressing packs its DiT (10.2 GB) at 8 or 4 bits (plain: its SITU feed-forward takes no AWQ); the encoder stays as published."
+      "notes": "OpenMOSS's 5B single-stream DiT, fine-tuned from MOSS-Image Base for clearer text grouping and layout: text to image, words in the picture in English and Chinese (prompts in natural language, tags, or a JSON layout). 50 steps at CFG 3 against the empty prompt, two forwards a step (its block 22 skipped in the negative): Fine runs them, Med 30, Fast 18. Its text encoder is the full Qwen3.5-9B (16.8 GB, bf16); the model streams, so a 16 GB Mac runs it. Its VAE (FLUX.2's small decoder) and preview are FLUX.2's. Compressing packs its DiT (10.2 GB) at 8 or 4 bits (plain: its SITU feed-forward takes no AWQ); the encoder stays as published."
     },
     {
       "id": "moss-image-base",
@@ -421,16 +434,19 @@
           "config_stage": "moss-image-model-config",
           "negative": "conditioner",
           "config_shift": 5.0,
-          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier",
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
                     "ane_ffn", "ane_qkv"],
           "config": {},
           "defaults": { "steps": 50, "width": 1024, "height": 1024 },
           "presets": {
-            "speed": { "steps": 20, "sol_attn": true, "sol_tau": 0.0,
-                       "sage_attn": true, "i8_gemm": true },
+            "speed": { "steps": 18, "sage_attn": true, "sage_pv8": true,
+                       "i8_gemm": true, "i8_gemm_tier": "token" },
             "balanced": { "steps": 30, "sage_attn": true, "i8_gemm": true },
             "quality": { "steps": 50, "sol_attn": false, "sage_attn": false,
                          "i8_gemm": false }
+          },
+          "without_matrix_cores": {
+            "speed": { "sol_attn": true, "sol_tau": 0.0 }
           },
           "options": [
             {"key": "guidance_scale", "type": "real", "min": 1.0,
@@ -444,7 +460,7 @@
       "prompting": {
         "enhance": {"generate": "moss-image"}
       },
-      "notes": "OpenMOSS's 5B single-stream DiT, the pretrained checkpoint SFT is fine-tuned from: the same network, sampler and files but its weights. 50 steps at CFG 3 against the empty prompt, two forwards a step: Fine runs them, Med 30, Fast 20. Its text encoder is the full Qwen3.5-9B (16.8 GB, bf16); the model streams, so a 16 GB Mac runs it. Compressing packs its DiT (10.2 GB); the encoder stays as published."
+      "notes": "OpenMOSS's 5B single-stream DiT, the pretrained checkpoint SFT is fine-tuned from: the same network, sampler and files but its weights. 50 steps at CFG 3 against the empty prompt, two forwards a step: Fine runs them, Med 30, Fast 18. Its text encoder is the full Qwen3.5-9B (16.8 GB, bf16); the model streams, so a 16 GB Mac runs it. Compressing packs its DiT (10.2 GB); the encoder stays as published."
     },
     {
       "id": "flux2-klein-9b",
@@ -467,7 +483,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "flux2-model-config",
-          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "defaults": { "steps": 4, "width": 1024, "height": 1024 },
           "edit": {
@@ -498,17 +514,20 @@
       "engine": {
         "vpipe": {
           "config_stage": "krea2-model-config",
-          "accel": ["sol_attn", "sage_attn", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "scheduler": { "steps": 8, "shift": 0.3 },
           "defaults": { "steps": 8, "width": 1024, "height": 1024 },
           "presets": {
-            "speed": { "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
+            "speed": { "steps": 6, "sage_attn": true, "sage_pv8": true,
                        "i8_gemm": true, "i8_gemm_tier": "token" },
             "balanced": { "sage_attn": true, "i8_gemm": true,
                           "i8_gemm_tier": "token" },
             "quality": { "steps": 12, "sol_attn": false, "sage_attn": false,
                          "i8_gemm": false }
+          },
+          "without_matrix_cores": {
+            "speed": { "sol_attn": true, "sol_tau": 0.0 }
           }
         }
       }
@@ -535,7 +554,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "qwen-image-21-model-config",
-          "accel": ["sage_attn", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "scheduler": { "steps": 20 },
           "defaults": { "steps": 20, "width": 1024, "height": 1024 },
@@ -546,7 +565,9 @@
           },
           "presets": {
             "speed": { "turbo": [{ "lora": "qwen-image-21-turbo", "steps": 6 }],
-                       "i8_gemm": true },
+                       "sage_attn": true, "i8_gemm": true,
+                       "i8_gemm_tier": "token", "vae_i8_gemm": true,
+                       "vae_i8_gemm_tier": "fast" },
             "balanced": { "turbo": [], "steps": 25, "i8_gemm": true },
             "quality": { "turbo": [], "steps": 40, "i8_gemm": true }
           },
@@ -590,13 +611,15 @@
       "engine": {
         "vpipe": {
           "config_stage": "qwen-image-21-model-config",
-          "accel": ["sage_attn", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "steps_fixed": true,
           "defaults": { "steps": 8, "width": 1024, "height": 1024 },
           "align": 32,
           "presets": {
-            "speed": { "i8_gemm": true },
+            "speed": { "sage_attn": true, "i8_gemm": true,
+                       "i8_gemm_tier": "token", "vae_i8_gemm": true,
+                       "vae_i8_gemm_tier": "fast" },
             "balanced": { "i8_gemm": true },
             "quality": { "i8_gemm": false }
           },
@@ -665,7 +688,8 @@
                  "config": {"video_shift": 6.0}}
               ],
               "sol_attn": true, "sol_tau": 1.0, "sage_attn": true,
-              "i8_gemm": true
+              "sage_pv8": true, "sage_pv8_all_rows": true,
+              "i8_gemm": true, "i8_gemm_tier": "token"
             },
             "balanced": {
               "turbo": [
@@ -673,7 +697,7 @@
                  "config": {"video_shift": 6.0}}
               ],
               "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
-              "i8_gemm": true
+              "sage_pv8": true, "i8_gemm": true, "i8_gemm_tier": "accurate"
             },
             "quality": {
               "turbo": [], "sage_attn": true, "i8_gemm": true,
@@ -686,7 +710,7 @@
                       "lora_only": {"steps": 3,
                                     "fixes": {"video_shift": 12, "audio_shift": 3}}},
           "vdn": {"branch": "minimax-h3-vdn"},
-          "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
           "first_frame": true,
           "last_frame": true,
@@ -774,7 +798,8 @@
                 {"lora": "minimax-h3-ref2va-turbo-4step", "steps": 4}
               ],
               "sol_attn": true, "sol_tau": 1.0, "sage_attn": true,
-              "i8_gemm": true
+              "sage_pv8": true, "sage_pv8_all_rows": true,
+              "i8_gemm": true, "i8_gemm_tier": "token"
             },
             "balanced": {
               "turbo": [
@@ -782,7 +807,7 @@
                  "config": {"video_shift": 6.0}}
               ],
               "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
-              "i8_gemm": true
+              "sage_pv8": true, "i8_gemm": true, "i8_gemm_tier": "accurate"
             },
             "quality": {
               "turbo": [], "sage_attn": true, "i8_gemm": true,
@@ -793,7 +818,7 @@
             "speed": {"turbo": [], "hyperflow": true},
             "balanced": {"turbo": [], "hyperflow": true, "sol_attn": false}
           },
-          "accel": ["sol_attn", "motion_cache", "sage_attn", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
           "references": {
             "max_pictures": 9, "max_clips": 3, "max_sounds": 3,
@@ -1012,6 +1037,92 @@
       "disk_gb": 7.1, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "apache-2.0",
       "notes": "MOSS-TTS's codec: speech to codes (a reference voice) and codes to 24 kHz speech."
+    },
+    {
+      "id": "drama-3",
+      "name": "Fish Audio Drama 3",
+      "family": "drama3",
+      "role": "audio",
+      "hf_path": "fishaudio/drama-3",
+      "check": {"is": {"config.json": "bsgemm-moe"}},
+      "capabilities": ["text-to-speech"],
+      "disk_gb": 41.5, "disk_measured": false,
+      "min_ram_gb": 48, "rank": 4,
+      "license": "fish-audio-community",
+      "engine": {
+        "vpipe": {
+          "speech": {
+            "format": "drama3",
+            "sample_rate": 44100, "frames_per_second": 21.5,
+            "max_frames": 600, "voice_seconds": 12, "speakers": 16
+          }
+        }
+      },
+      "prompting": {
+        "enhance": {"generate": "drama3"},
+        "outline": {
+          "en": [
+            "(One voice: the lines as they are spoken, a direction in brackets before a line or where the delivery changes, a sound or a pause where it happens.)",
+            "[how it is performed -- e.g. barely holding it together, forcing a smile] (The words to speak.) [a sound or a pause -- e.g. shaky breath] (More words.) <whisper>(Words changed alone.)</whisper>",
+            "",
+            "(A scene: a line a turn, each starting with its speaker's name -- the row's voices go to the names in the order they first speak.)",
+            "Narrator: [calm, measured storyteller voice] (The narrator's line.)",
+            "Captain: [low, gravelly, tired but in control] (A character's line.)"
+          ],
+          "zh-Hans": [
+            "（单人：照说的样子写台词，方括号里的指示放在一句之前或语气改变之处，声音或停顿放在它发生的地方。）",
+            "[怎么演——例如强忍着，挤出一个笑容] （要说的话。）[一个声音或停顿——例如颤抖的呼吸] （接着说的话。）<whisper>（只改这几个字。）</whisper>",
+            "",
+            "（多人场景：一行一个轮次，以说话人的名字开头——提示行里的声音按名字第一次出现的顺序分给他们。）",
+            "旁白: [平静、从容的讲述者] （旁白的台词。）",
+            "船长: [低沉沙哑，疲惫但镇定] （角色的台词。）"
+          ]
+        }
+      },
+      "notes": "Fish Audio's speech model for scenes and long-form reading: up to 16 speakers in one script, each line directed in plain words -- [barely holding it together] before it, [sighs] or [pause] where it happens, <whisper>...</whisper> round the words it changes -- 83 languages, 44.1 kHz mono. Each sound in the prompt's row is a speaker's voice, cloned from it and the words said in it (Valtz transcribes it first). A 35B mixture of experts, 3B active a token: its routed experts FP8, about 36 GB held -- for a Mac of 64 GB; on a smaller one the experts that do not fit are read from the drive as they are needed. Weights under the Fish Audio Community License: research and non-commercial use; commercial use only while annual revenue is under USD 500,000; no hosted text-to-speech service without Fish Audio's licence."
+    },
+    {
+      "id": "drama-3-int4",
+      "name": "Fish Audio Drama 3 (int4)",
+      "family": "drama3",
+      "role": "audio",
+      "hf_path": "fishaudio/drama-3-int4",
+      "check": {"is": {"config.json": "drama3-int4"}},
+      "capabilities": ["text-to-speech"],
+      "disk_gb": 24.0, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 3,
+      "license": "fish-audio-community",
+      "engine": {
+        "vpipe": {
+          "speech": {
+            "format": "drama3",
+            "sample_rate": 44100, "frames_per_second": 21.5,
+            "max_frames": 600, "voice_seconds": 12, "speakers": 16
+          }
+        }
+      },
+      "prompting": {
+        "enhance": {"generate": "drama3"},
+        "outline": {
+          "en": [
+            "(One voice: the lines as they are spoken, a direction in brackets before a line or where the delivery changes, a sound or a pause where it happens.)",
+            "[how it is performed -- e.g. barely holding it together, forcing a smile] (The words to speak.) [a sound or a pause -- e.g. shaky breath] (More words.) <whisper>(Words changed alone.)</whisper>",
+            "",
+            "(A scene: a line a turn, each starting with its speaker's name -- the row's voices go to the names in the order they first speak.)",
+            "Narrator: [calm, measured storyteller voice] (The narrator's line.)",
+            "Captain: [low, gravelly, tired but in control] (A character's line.)"
+          ],
+          "zh-Hans": [
+            "（单人：照说的样子写台词，方括号里的指示放在一句之前或语气改变之处，声音或停顿放在它发生的地方。）",
+            "[怎么演——例如强忍着，挤出一个笑容] （要说的话。）[一个声音或停顿——例如颤抖的呼吸] （接着说的话。）<whisper>（只改这几个字。）</whisper>",
+            "",
+            "（多人场景：一行一个轮次，以说话人的名字开头——提示行里的声音按名字第一次出现的顺序分给他们。）",
+            "旁白: [平静、从容的讲述者] （旁白的台词。）",
+            "船长: [低沉沙哑，疲惫但镇定] （角色的台词。）"
+          ]
+        }
+      },
+      "notes": "Drama 3 at int4 (GPTQ, published in Fish Audio's own organization): its experts and attention int4, the rest bf16, about 22 GB held -- the one for a 32 GB Mac, and as fast as the release on any; on a 16 or 24 GB Mac the experts that do not fit are read from the drive (a quarter of real time on 16 GB). The same model, voices and scripts as Drama 3, under the same Fish Audio Community License: research and non-commercial use; commercial use only while annual revenue is under USD 500,000; no hosted text-to-speech service without Fish Audio's licence."
     },
     {
       "id": "yue2-vae", "name": "YuE2 VAE", "family": "yue2",

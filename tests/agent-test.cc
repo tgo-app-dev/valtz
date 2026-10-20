@@ -6,12 +6,14 @@
 #include "testing.h"
 
 #include "valtz/agent/agent.h"
+#include "valtz/base/message.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <format>
 #include <fstream>
@@ -449,4 +451,139 @@ TEST(agent, the_cloud_backend_speaks_to_a_server)
     CHECK(r.error().message.find("401") != std::string::npos);
     CHECK(r.error().message.find("invalid x-api-key") != std::string::npos);
   }
+}
+
+// COMPACTION (DESIGN §9b): a conversation outgrowing its model's context
+// goes on from its head, one message of notes and its latest whole
+// turns -- never a tool's result apart from its call, never the notes
+// made before; the counts that say when, the refusals that say it did
+// not fit.
+TEST(agent, a_conversation_is_compacted_to_its_head_notes_and_tail)
+{
+  using agent::Message;
+  // About a token every 3 bytes, a picture 1,600, a message 8.
+  CHECK(agent::estimate_tokens(Message{.role = "user",
+                                       .content = std::string(300, 'a')}) ==
+        8 + 101);
+  Message look{.role = "user", .content = "look"};
+  look.images = {"/tmp/p.png"};
+  CHECK(agent::estimate_tokens(look) == 8 + 2 + 1600);
+
+  auto turn = [](int n) {
+    Message a{.role = "assistant", .content = "Working.",
+              .raw = "Working."};
+    a.calls = {{std::format("c{}", n), "add_text", {{"text", "x"}}}};
+    return a;
+  };
+  auto result = [](int n, std::size_t bytes) {
+    return Message{.role = "tool", .content = std::string(bytes, 'r'),
+                   .call_id = std::format("c{}", n), .name = "add_text"};
+  };
+  std::vector<Message> m;
+  m.push_back({.role = "system", .content = "You edit decks."});
+  m.push_back({.role = "user", .content = "A deck on the water cycle"});
+  for (int i = 0; i < 6; ++i) {
+    m.push_back(turn(i));
+    m.push_back(result(i, 3000));   // ~1,000 tokens each
+  }
+  m.push_back({.role = "user", .content = "Make the title blue"});
+  m.push_back(turn(6));
+  m.push_back(result(6, 300));
+  CHECK(agent::compaction_head(m) == 2);
+  // The latest whole turns within the budget, starting at a reply or
+  // the person's words -- never at a tool's result.
+  const std::size_t tail = agent::compaction_tail(m, 1100);
+  CHECK(tail == 14);
+  CHECK(m[tail].role == "user");
+  CHECK(agent::compaction_tail(m, 100) == m.size());
+  for (std::int64_t b = 0; b < 9000; b += 37) {
+    const std::size_t t = agent::compaction_tail(m, b);
+    CHECK(t >= 2);
+    CHECK((t == m.size() || m[t].role != "tool"));
+  }
+
+  agent::CompactionNotes notes;
+  notes.summary = "Made the deck's three slides: comp 019a.";
+  notes.said = {"Make the title blue"};
+  notes.steps = "- [1] Add Text (add_text) {} -> done\n";
+  notes.steps_run = 7;
+  notes.used = 230000;
+  notes.limit = 262144;
+  const auto c = agent::compact(m, tail, notes);
+  REQUIRE(c.size() == 2 + 1 + (m.size() - tail));
+  CHECK(c[0].role == "system");
+  CHECK(c[1].content == "A deck on the water cycle");
+  CHECK(agent::is_compaction(c[2]));
+  CHECK(!agent::is_compaction(c[1]));
+  CHECK(c[2].content.starts_with("[Valtz]"));
+  CHECK(c[2].content.find("230000 of 262144") != std::string::npos);
+  CHECK(c[2].content.find(notes.summary) != std::string::npos);
+  CHECK(c[2].content.find("- Make the title blue") != std::string::npos);
+  CHECK(c[2].content.find("(7 in all)") != std::string::npos);
+  CHECK(c[3].content == "Make the title blue");
+  CHECK(c.back().call_id == "c6");
+  // Saved and read back, still the notes.
+  CHECK(agent::is_compaction(agent::message_from_json(agent::to_json(c[2]))));
+  // Not asked (the context full): said so.
+  agent::CompactionNotes bare = notes;
+  bare.summary.clear();
+  CHECK(agent::compact(m, tail, bare)[2].content.find("could not be asked")
+        != std::string::npos);
+
+  // Compacted again: the notes made before are not the head, nor kept
+  // as they were -- the new notes stand for them.
+  std::vector<Message> again = c;
+  for (int i = 7; i < 10; ++i) {
+    again.push_back(turn(i));
+    again.push_back(result(i, 300));
+  }
+  CHECK(agent::compaction_head(again) == 2);
+  const std::size_t t2 = agent::compaction_tail(again, 1'000'000);
+  CHECK(t2 == 3);   // all of it fits, but never the old notes
+  const auto c2 = agent::compact(again, t2, notes);
+  CHECK(c2.size() == again.size());
+  CHECK(agent::is_compaction(c2[2]));
+  CHECK(std::ranges::count_if(c2, agent::is_compaction) == 1);
+
+  // What a turn took: the helper's position, a cloud's every count.
+  CHECK(agent::context_used({{"ctx_pos", 41000}, {"prefilled", 9}}) ==
+        41000);
+  CHECK(agent::context_used({{"input_tokens", 1200},
+                             {"cache_read_tokens", 6000},
+                             {"cache_write_tokens", 300},
+                             {"output_tokens", 80}}) == 7580);
+  CHECK(agent::context_used(Json::object()) == 0);
+
+  // Did not fit: the helper's own, a cloud's refusal -- not another.
+  Error full;
+  full.key = std::string(msg::kAgentContextFull.key);
+  CHECK(agent::context_overflow(full));
+  Error claude;
+  claude.message = "anthropic refused the request (HTTP 400): prompt is "
+                   "too long: 210000 tokens > 200000 maximum";
+  CHECK(agent::context_overflow(claude));
+  Error gpt;
+  gpt.key = std::string(msg::kAgentCloudRefused.key);
+  gpt.args = {{"why", "This model's maximum context length is 128000 "
+                      "tokens."}};
+  CHECK(agent::context_overflow(gpt));
+  Error key;
+  key.message = "anthropic refused the request (HTTP 401): invalid x-api-key";
+  CHECK(!agent::context_overflow(key));
+
+  // The question: the conversation's size, no tool.
+  const Message q = agent::compaction_request(230000, 262144);
+  CHECK(q.role == "user");
+  CHECK(q.content.find("about 230000 of 262144") != std::string::npos);
+  CHECK(q.content.find("Call no tool") != std::string::npos);
+
+  // A cloud's window: as configured, else its provider's.
+  agent::CloudConfig cc{"anthropic", "claude-test", "", 1000};
+  CHECK(agent::cloud_context_tokens(cc) == 200000);
+  cc.provider = "openai-compatible";
+  CHECK(agent::cloud_context_tokens(cc) == 0);
+  cc.context_tokens = 32768;
+  CHECK(agent::cloud_context_tokens(cc) == 32768);
+  CHECK(agent::cloud_config_from_json(agent::to_json(cc)).context_tokens ==
+        32768);
 }

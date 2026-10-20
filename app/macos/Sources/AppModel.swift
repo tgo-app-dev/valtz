@@ -2123,9 +2123,57 @@ final class AppModel {
 
     /// What the Voice row says: the row's voice, or a voice of its own.
     var speechVoiceText: String {
+        if speechSpeakers > 1 { return speechVoicesText }
         guard let v = speechVoice else {
             return String(localized: "Its own: put a sound in the prompt to speak in its voice")
         }
+        return Self.voiceName(v)
+    }
+
+    /// The tray's word for a script's voices: "2 voices".
+    var speechVoicesSummary: String {
+        let n = min(speechVoices.count, speechSpeakers)
+        switch n {
+        case 0: return String(localized: "Its own voices")
+        case 1: return String(localized: "1 voice")
+        default: return String(localized: "\(n) voices")
+        }
+    }
+
+    /// How many voices the speech model reads one text in: Drama 3's
+    /// speakers, else one.
+    var speechSpeakers: Int {
+        catalog.first { $0.id == audioModel }?.speakers ?? 1
+    }
+
+    /// Whether the speech model is paced to a length asked for (MOSS-TTS;
+    /// Drama 3 decides its own).
+    var speechTakesLength: Bool {
+        catalog.first { $0.id == audioModel }?.speechLength ?? true
+    }
+
+    /// A script's voices, speaker 0 first, as the core takes them: the
+    /// voice (the row's first sound, else its first clip), then every
+    /// other sound or clip in the row.
+    var speechVoices: [PromptAttachment] {
+        let rest = promptAttachments.filter {
+            ($0.kind == "audio" || $0.kind == "video")
+                && $0.id != speechVoice?.id
+        }
+        return (speechVoice.map { [$0] } ?? []) + rest
+    }
+
+    /// The Voices row of a model of several speakers: each voice, by the
+    /// speaker it is.
+    private var speechVoicesText: String {
+        let voices = speechVoices.prefix(speechSpeakers)
+        guard !voices.isEmpty else {
+            return String(localized: "Its own: put sounds in the prompt -- one a speaker, in order -- to speak in their voices")
+        }
+        return voices.map(Self.voiceName).joined(separator: ", ")
+    }
+
+    private static func voiceName(_ v: PromptAttachment) -> String {
         let name = v.url.deletingPathExtension().lastPathComponent
         return v.kind == "video"
             ? String(localized: "\(name)'s sound") : name
@@ -2716,6 +2764,9 @@ final class AppModel {
     var settingsHistory = SettingsHistory(SettingsPlace.firstShown)
     /// What Settings' sidebar search field holds.
     var settingsSearch = ""
+    /// A setting picked from the search's results: its row scrolled to
+    /// and pulsing (SettingsMarks).
+    var settingsReveal: SettingsReveal?
     var capabilitiesFamily: String?
     /// A gated model whose download sheet is open (Capabilities).
     var gatedDownload: CapabilityTree.Member?
@@ -4218,6 +4269,15 @@ final class AppModel {
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
     }
 
+    /// The helper's context at most, in tokens; 0: Auto (its own, as far
+    /// as this Mac's memory holds it).
+    func setHelperContext(_ tokens: Int) {
+        guard let core else { return }
+        let r = core.setAssistantContext(tokens)
+        if !r.ok { flash(r.message, level: .error) }
+        helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+    }
+
     /// How long the helper stays loaded after a request, in seconds.
     func setHelperKeepLoaded(_ seconds: Double) {
         guard let core else { return }
@@ -4937,7 +4997,7 @@ final class AppModel {
         ]
         if speaks {
             // Speech: about how long, in the row's voice.
-            if let s = speechSeconds { req["seconds"] = s }
+            if speechTakesLength, let s = speechSeconds { req["seconds"] = s }
             if let v = speechVoice, let id = assetId(of: v) {
                 req["voice"] = id
             }
@@ -6017,7 +6077,8 @@ final class AppModel {
         // A song's Length: its lyrics are written to fit (Auto: none);
         // speech's, its words.
         if activeModality == .audio,
-           let s = speaks ? speechSeconds : songSeconds {
+           let s = speaks ? (speechTakesLength ? speechSeconds : nil)
+                          : songSeconds {
             req["seconds"] = s
         }
         let r = core.enhancePrompt(req)

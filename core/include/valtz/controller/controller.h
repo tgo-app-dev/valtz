@@ -295,6 +295,14 @@ struct GenerateAudioRequest {
   // `seconds`: about how long it runs (0: as the words take).
   std::optional<AssetId> voice;
   double               seconds = 0;
+  // DRAMA 3 (a model of several speakers): the voices, speaker 0 first --
+  // none given, `voice` and then every other sound in the row, in order --
+  // and the words each says (`voice_texts`, by place: "" or none, heard
+  // from it). Drama 3 clones a voice from its sound AND its words: a voice
+  // without them is transcribed first (Transcribe's own asset, made and
+  // kept), the speech waiting for it.
+  std::vector<AssetId>     voices;
+  std::vector<std::string> voice_texts;
 };
 
 // A model QUANTIZED from its source (catalog `quantize`; vpipe's
@@ -1130,6 +1138,12 @@ public:
   static constexpr double kDefaultKeepLoaded = 600;
   Status set_assistant_keep_loaded(double seconds);
   double assistant_keep_loaded() const { return _assistant_keep; }
+  // The helper's CONTEXT at most, in tokens (Settings > Agentic Helper):
+  // 0 Auto -- its own, as far as this Mac's memory holds it -- else no
+  // more than that (never more than Auto: past it the K/V would outgrow
+  // what the memory is sized for). Kept in assistant.json ("context").
+  // Past it an agent's conversation is compacted (DESIGN §9b).
+  Status set_assistant_context(std::int64_t tokens);
   // A video summary's FRAME INTERVAL (Settings > Agentic Helper), seconds
   // of the clip a frame stands for: 0 Auto -- one a second where memory
   // moves kFastMemoryGbs or more, one every two below, where a frame's
@@ -1570,9 +1584,14 @@ private:
                                      int max_new_tokens) const;
   // How the helper `m` is loaded and decodes, as its chat and a video
   // summary hand it to vpipe -- alike, so the model one keeps warm is the
-  // other's: {mtp, sampling, keep_loaded, mtp_model?, draft_model?,
-  // draft_bits?}.
+  // other's: {mtp, sampling, keep_loaded, context_tokens?, mtp_model?,
+  // draft_model?, draft_bits?}.
   Json helper_params_(const models::ModelEntry& m) const;
+  // The tokens of its context the helper `m` is given here: its own, as
+  // far as this Mac's memory holds its K/V (models::helper_context) --
+  // and, `chosen`, no more than Settings › Agentic Helper's Context
+  // (set_assistant_context); 0, its files say none.
+  int helper_context_(const models::ModelEntry& m, bool chosen = true) const;
   // ---- downloads (DESIGN §3a)
   // Installed, or downloading: here by the time a job waiting for it
   // runs.
@@ -1667,9 +1686,31 @@ private:
                      const Json& t, int steps) const;
   // `companions`: more assets the job makes, each by the output that
   // holds it (an Output event's data "output"; JobRecord::companions).
+  // An input still being made (a voice's transcript, Drama 3's words):
+  // the build is HELD -- its task listed, nothing sent -- until that job
+  // ends, then submitted as `reuse`, its own id (release_held_).
   Result<JobId> submit_build_(
       ProjectId, AssetId, std::string title,
-      std::vector<std::pair<std::string, AssetId>> companions = {});
+      std::vector<std::pair<std::string, AssetId>> companions = {},
+      std::optional<JobId> reuse = std::nullopt);
+  struct HeldBuild {
+    ProjectId                                    project;
+    AssetId                                      asset;
+    std::string                                  title;
+    std::vector<std::pair<std::string, AssetId>> companions;
+    std::set<JobId>                              after;
+    std::vector<std::string>                     names;  // what it waits for
+  };
+  // A job ended: the builds held for it go on, once nothing else holds
+  // them -- or fail, it not having made what they need.
+  void release_held_(JobId, JobState);
+  // The job making `asset` now, queued or running.
+  std::optional<JobId> building_(ProjectId, AssetId) const;
+  // A speech's voices' WORDS from their transcripts (params "voices",
+  // each {"transcript": <asset id>}), into `params`: each {"text",
+  // "seconds"} -- what is said in its first seconds, and the clip's cut.
+  Status voice_words_(project::Project&, Json& params,
+                      double keep) const;
   // The ASSET OPERATIONS' own work (run_asset_operation, in its command):
   // each checks what it is given, picks its model, and has its assets
   // made (make_from_).
@@ -1716,6 +1757,16 @@ private:
                                  const models::ModelEntry& m,
                                  project::Project&, const std::string& words,
                                  const project::RecipeInput& prompt);
+  // Drama 3's speech (catalog speech.format "drama3"): a script of up to
+  // 16 speakers, each voice cloned from a sound and its words.
+  Result<JobId> drama_speech_(GenerateAudioRequest&,
+                              const models::ModelEntry& m,
+                              project::Project&, const std::string& words,
+                              const project::RecipeInput& prompt);
+  // The transcript `voice`'s words come from: the newest made of it as
+  // it is now, built or being made; none, nullopt.
+  std::optional<AssetId> transcript_of_(project::Project&,
+                                        AssetId voice) const;
   // A sound to clone a voice from: one, or a clip that has one.
   bool voiced_(project::Project&, AssetId) const;
   // `fleet`: here, or a member taking jobs; else here alone.
@@ -1990,6 +2041,9 @@ private:
   mutable std::mutex                 _downloads_mu;
   std::map<std::string, JobId>       _downloads;
   std::map<JobId, Waiting>           _waiting;
+  // Builds held for an input being made (submit_build_), by their own
+  // job's id.
+  std::map<JobId, HeldBuild>         _held;
   // Downloads cancelled whose files go once their job has ended.
   std::set<std::string>              _discards;
   // The models being compressed (compress_model), and what each would
@@ -2014,6 +2068,7 @@ private:
   double                             _assistant_keep = kDefaultKeepLoaded;
   std::string                        _assistant_drafter = "mtp";
   int                                _assistant_drafter_bits = 8;
+  std::int64_t                       _assistant_context = 0;  // 0 Auto
   double                             _video_every = 0;  // 0: Auto
   models::Catalog                    _catalog;
   // Every package found at launch, as taken (fixed for the run).

@@ -286,7 +286,8 @@ Json
 to_json(const CloudConfig& c)
 {
   return {{"provider", c.provider}, {"model", c.model},
-          {"base_url", c.base_url}, {"max_tokens", c.max_tokens}};
+          {"base_url", c.base_url}, {"max_tokens", c.max_tokens},
+          {"context_tokens", c.context_tokens}};
 }
 
 CloudConfig
@@ -297,6 +298,8 @@ cloud_config_from_json(const Json& j)
   c.model = jget<std::string>(j, "model", "");
   c.base_url = jget<std::string>(j, "base_url", "");
   c.max_tokens = std::clamp(jget(j, "max_tokens", 4096), 256, 64000);
+  c.context_tokens = std::max<std::int64_t>(
+      0, jget<std::int64_t>(j, "context_tokens", 0));
   return c;
 }
 
@@ -310,6 +313,21 @@ default_cloud_model(std::string_view provider)
     return "gpt-5";
   }
   return {};
+}
+
+std::int64_t
+cloud_context_tokens(const CloudConfig& c)
+{
+  if (c.context_tokens > 0) {
+    return c.context_tokens;
+  }
+  if (c.provider == "anthropic") {
+    return 200000;
+  }
+  if (c.provider == "openai") {
+    return 128000;
+  }
+  return 0;
 }
 
 Json
@@ -535,6 +553,10 @@ public:
                           Json::object());
       _r.usage["input_tokens"] = jget(u, "input_tokens", 0);
       _r.usage["cache_read_tokens"] = jget(u, "cache_read_input_tokens", 0);
+      // Written to the cache this turn: read too, so counted in the
+      // context it took (context_used).
+      _r.usage["cache_write_tokens"] =
+          jget(u, "cache_creation_input_tokens", 0);
     } else if (type == "content_block_start") {
       const Json b = jget(d, "content_block", Json::object());
       Block blk;
@@ -715,7 +737,9 @@ anthropic_response(const Json& j)
   const Json u = jget(j, "usage", Json::object());
   r.usage = {{"input_tokens", jget(u, "input_tokens", 0)},
              {"output_tokens", jget(u, "output_tokens", 0)},
-             {"cache_read_tokens", jget(u, "cache_read_input_tokens", 0)}};
+             {"cache_read_tokens", jget(u, "cache_read_input_tokens", 0)},
+             {"cache_write_tokens",
+              jget(u, "cache_creation_input_tokens", 0)}};
   return r;
 }
 

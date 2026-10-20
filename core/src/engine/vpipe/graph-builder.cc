@@ -21,11 +21,24 @@ namespace {
 // The helper's K/V pages, as its chat and a video summary both load it:
 // the page sizing is part of vpipe's model cache key, so alike, a model
 // kept warm by one is handed to the other. 16 tokens a page (text-chat's
-// own), up to 65,536 tokens -- a scene of 24 frames is ~4,500, an
-// agent's conversation tens of thousands; Qwen's pool grows as it fills,
-// so the cap costs nothing held.
+// own), as many as the job's "context_tokens" -- the model's own
+// (Qwen3.5's and 3.8's 262,144) as far as the Mac's memory holds its K/V,
+// models::helper_context. The pages ARE its context: 65,536 for every
+// Mac had cut an agent's long session at a quarter of the model's; that
+// many still for a model whose config says none. Qwen's pool grows as it
+// fills, so the cap costs nothing until the tokens come.
 constexpr int kHelperPageTokens = 16;
-constexpr int kHelperMaxPages = 4096;
+constexpr int kHelperDefaultTokens = 65536;
+
+int
+helper_max_pages(const JobSpec& job)
+{
+  const std::int64_t tokens = std::max<std::int64_t>(
+      1, jget<std::int64_t>(job.params, "context_tokens",
+                            kHelperDefaultTokens));
+  return static_cast<int>((tokens + kHelperPageTokens - 1) /
+                          kHelperPageTokens);
+}
 
 // A picture's models kept BUILT between jobs (DESIGN §4n): vpipe hands
 // the text encoder, the DiT and its VAE to its model manager as the
@@ -72,6 +85,16 @@ accel_of(const JobSpec& job)
   const auto tier = jget<std::string>(t, "i8_gemm_tier", "accurate");
   if (jget(t, "i8_gemm", false) && tier != "accurate") {
     out["i8_gemm_tier"] = tier;
+  }
+  // SageAttention's int8 P*V, only on, and only with SageAttention: a job
+  // without it has the graph it always had. (A vpipe from before it
+  // ignores the key -- and runs SageAttention alone.)
+  if (jget(t, "sage_attn", false) && jget(t, "sage_pv8", false)) {
+    out["sage_pv8"] = true;
+    // ...on every row, H3's prompt and soundtrack too.
+    if (jget(t, "sage_pv8_all_rows", false)) {
+      out["sage_pv8_all_rows"] = true;
+    }
   }
   return out;
 }
@@ -1403,14 +1426,103 @@ build_audio(const JobSpec& job)
 // latest reference beat: a voice in chunks would clone its last one),
 // and the stage waits for it before it speaks (wait_for_reference).
 // One-shot (stream_chunk_frames 0): one PCM beat, so one file.
+namespace {
+
+// DRAMA 3 (vpipe's drama3-scene graph): the script in as one beat --
+// read as written, its speaker tags and directions the model's own -- its
+// voices from their files with the words said in them, one a speaker in
+// order (a transcript's leading tag names its speaker; speaker 0 needs
+// none), spoken in parts as Fish Audio's own server cuts a long text, a
+// part's history the first and the latest, written as one WAV:
+//
+//   text-prompt (the script) -0-> text-to-speech -0-> save-audio (WAV)
+//   sampler (the seed; the makers' own sampling) -2-> text-to-speech
+//
+// The model decides each part's length; max_frames caps a part (600:
+// 28 s, the server's), so a take that never ends costs at most that.
 Result<BuiltGraph>
-build_speech(const JobSpec& job)
+build_drama3(const JobSpec& job, const Json& sp,
+             const std::vector<fs::path>& voices)
+{
+  const std::string text = jget<std::string>(job.params, "text", "");
+  if (text.empty()) {
+    return make_error(Code::InvalidArgument, "speech needs its words");
+  }
+  const Json vs = jget(job.params, "voices", Json::array());
+  if (voices.size() != (vs.is_array() ? vs.size() : 0)) {
+    return make_error(Code::InvalidArgument,
+                      "each voice needs its file and its words");
+  }
+  const double rate = jget(sp, "sample_rate", 44100.0);
+  BuiltGraph g;
+  const std::string jid = job.id.str();
+  g.output = job.output_dir / std::format("{}.wav", jid);
+
+  Json refs = Json::array();
+  double longest = jget(sp, "voice_seconds", 12.0);
+  for (std::size_t i = 0; i < voices.size(); ++i) {
+    const std::string words = jget<std::string>(vs[i], "text", "");
+    if (words.empty()) {
+      return make_error(Code::InvalidArgument,
+                        "a voice to clone needs the words said in it");
+    }
+    refs.push_back({{"audio", voices[i].string()},
+                    {"text", i == 0 ? words
+                                    : std::format("<|speaker:{}|> {}", i,
+                                                  words)}});
+    longest = std::max(longest, jget(vs[i], "seconds", 0.0));
+  }
+  Json stages = Json::array();
+  stages.push_back(stage("text", "text-prompt", Json::array(),
+                         {{"text", text}}));
+  // The makers' own sampling (their server's request defaults), seeded.
+  stages.push_back(stage("sampler", "sampler-select", Json::array(),
+                         {{"temperature", 1.0},
+                          {"top_p", 0.9},
+                          {"top_k", 30},
+                          {"seed", jget<std::int64_t>(job.params, "seed",
+                                                      0)}}));
+  Json cfg = {{"hf_dir", job.model.dir.string()},
+              {"chunk_text", true},
+              {"context", "text"},
+              {"max_frames", jget(sp, "max_frames", 600)},
+              // A voice is cut here to the words said in it; the stage
+              // keeps it whole.
+              {"voice_ref_seconds", std::ceil(longest + 0.5)},
+              {"stream_chunk_frames", 0},
+              {"interrupt_on_new_text", false}};
+  if (!refs.empty()) {
+    cfg["references"] = std::move(refs);
+  }
+  cfg = merged(cfg, declared_of(job, "speak"));
+  stages.push_back(stage("speak", "text-to-speech",
+                         Json::array({port("text"), nullptr,
+                                      port("sampler")}),
+                         std::move(cfg)));
+  stages.push_back(stage("save-audio", "save-audio",
+                         Json::array({port("speak")}),
+                         {{"output_path", g.output.string()},
+                          {"format", "wav"},
+                          {"sample_rate", static_cast<int>(rate)}}));
+  g.spec = {{"id", "valtz-" + jid},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+}
+
+Result<BuiltGraph>
+build_speech(const JobSpec& job, const std::vector<fs::path>& voices)
 {
   const Json vp = jget(job.model.engine, "vpipe", Json::object());
   const Json sp = jget(vp, "speech", Json());
   if (!sp.is_object()) {
     return make_error(Code::Unsupported, std::format(
         "{} has no vpipe recipe for {}", job.model.id, job.op));
+  }
+  if (jget<std::string>(sp, "format", "") == "drama3") {
+    return build_drama3(job, sp, voices);
   }
   if (job.model.vae.empty()) {
     return make_error(Code::Unsupported, std::format(
@@ -1613,7 +1725,7 @@ helper_chat_config(const JobSpec& job)
     // Its K/V pages as every use of the helper has them: one model warm
     // for all.
     {"page_tokens", kHelperPageTokens},
-    {"max_pages", kHelperMaxPages},
+    {"max_pages", helper_max_pages(job)},
   };
   // A drafter shipped apart from the model (its conversion dropped the
   // head): vpipe's text-chat loads it beside the model.
@@ -2428,10 +2540,15 @@ build_transcribe(const JobSpec& job, const fs::path& wav)
   Json stages = Json::array();
   stages.push_back(stage("load", "load-audio", Json::array(),
                          {{"input_url", wav.string()}}));
+  // A file decodes far faster than the voice detector reads its 32 ms
+  // chunks: the PCM waits for it, a few seconds ahead at most (on the
+  // default depth it ran 2048 chunks -- 65 s -- ahead, gave up, and the
+  // transcription never ended: §15 0zr).
   stages.push_back(stage("pcm", "audio-to-pcm",
                          Json::array({port("load")}),
                          {{"output_sample_rate", 16000},
                           {"chunk_duration_s", 0.032},
+                          {"oport_capacity", 256},
                           {"channels", 1}}));
   stages.push_back(stage("voice", "audio-segment",
                          Json::array({port("pcm")}),
@@ -2534,7 +2651,7 @@ build_summarize_video(const JobSpec& job, media::PixelSize size)
               {ex::kSummaryKeepLoaded, jget(job.params, "keep_loaded", 0.0)},
               {ex::kSummaryWireWeights, true},
               {ex::kSummaryPageTokens, kHelperPageTokens},
-              {ex::kSummaryMaxPages, kHelperMaxPages}};
+              {ex::kSummaryMaxPages, helper_max_pages(job)}};
   // Loaded as the helper's chat loads it, so either is handed the model
   // the other kept warm.
   if (auto mm = jget<std::string>(job.params, "mtp_model", "");

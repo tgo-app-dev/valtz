@@ -315,6 +315,8 @@ TEST(graph_builder, a_transcription_hears_one_channel)
         "/tmp/x-mono.wav");
   CHECK(jget(config_of(pcm), "channels", 0) == 1);
   CHECK(jget(config_of(pcm), "output_sample_rate", 0) == 16000);
+  // Its 32 ms chunks wait for the detector: a long sound is heard whole.
+  CHECK(jget(config_of(pcm), "oport_capacity", 0) > 0);
   CHECK(src_of(asr, 0) == "pcm");
   CHECK(src_of(asr, 1) == "voice");
   CHECK(jget<std::string>(config_of(asr), "hf_dir", "") ==
@@ -641,6 +643,7 @@ TEST(graph_builder, a_video_summary_reads_sparse)
                 {"mtp_model", "/m/mtp"},
                 {"draft_model", "/m/dflash"},
                 {"draft_bits", 4},
+                {"context_tokens", 262144},
                 {"sampling", {{"temperature", 0.7}, {"top_k", 20}}}};
   auto g = vp::build_summarize_video(job, {544, 320});
   REQUIRE_OK(g);
@@ -673,16 +676,42 @@ TEST(graph_builder, a_video_summary_reads_sparse)
   CHECK(jget<std::string>(cfg, ex::kSummaryOverallPrompt, "")
             .find("{scenes}") != std::string::npos);
   CHECK(jget(config_of(smp), "top_k", 0) == 20);
-  // Its pages as the helper's chat has them: one model warm for both.
+  // Its pages as the helper's chat has them: one model warm for both --
+  // the model's whole context (its config's, the job's), 16 tokens a
+  // page; 65,536 tokens where it says none.
   {
     JobSpec chat = job;
     chat.op = std::string(kOpChat);
-    chat.params = {{"text", "a fox"}};
+    chat.params = {{"text", "a fox"}, {"context_tokens", 262144}};
     auto cg = vp::build_chat(chat);
     REQUIRE_OK(cg);
     const Json cc = config_of(find_stage(cg->spec, "text-chat"));
     CHECK(jget(cfg, ex::kSummaryPageTokens, 0) == jget(cc, "page_tokens", -1));
     CHECK(jget(cfg, ex::kSummaryMaxPages, 0) == jget(cc, "max_pages", -1));
+    CHECK(jget(cc, "page_tokens", 0) * jget(cc, "max_pages", 0) == 262144);
+    chat.params["context_tokens"] = 40001;
+    cg = vp::build_chat(chat);
+    REQUIRE_OK(cg);
+    CHECK(jget(config_of(find_stage(cg->spec, "text-chat")), "max_pages",
+               0) == 2501);
+    chat.params.erase("context_tokens");
+    cg = vp::build_chat(chat);
+    REQUIRE_OK(cg);
+    CHECK(jget(config_of(find_stage(cg->spec, "text-chat")), "max_pages",
+               0) == 4096);
+    // An agent's turn the same: its long session runs to the model's
+    // limit.
+    JobSpec turn = job;
+    turn.op = std::string(kOpAgentTurn);
+    turn.params = {{"context_tokens", 262144},
+                   {"conversation",
+                    {{"messages", Json::array({{{"role", "user"},
+                                                {"content", "a deck"}}})}}}};
+    auto tg = vp::build_agent_turn(turn);
+    REQUIRE_OK(tg);
+    const Json tc = config_of(find_stage(tg->spec, "text-chat"));
+    CHECK(jget(tc, "page_tokens", 0) == jget(cc, "page_tokens", -1));
+    CHECK(jget(tc, "max_pages", 0) == 16384);
   }
   CHECK(g->summary_sink == "summary-sink");
   REQUIRE(find_stage(g->spec, g->summary_sink));
@@ -1187,6 +1216,48 @@ TEST(graph_builder, the_int8_tier_goes_on_its_generating_stage)
         "token_plain");
 }
 
+// SageAttention's int8 P*V reaches its generating stage (generate-video,
+// generate-image) only on and only with SageAttention: any other job's
+// graph is as it always was.
+TEST(graph_builder, sage_pv8_goes_on_generate_video_with_sage)
+{
+  auto gen_cfg = [](const Json& tuning) {
+    JobSpec v = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+    v.params = {{"prompt", "a fox in snow"}, {"width", 832},
+                {"height", 480}, {"frames", 39}, {"fps", 24.0},
+                {"steps", 16}, {"seed", 7}, {"tuning", tuning}};
+    auto g = vp::build_video(v, std::nullopt);
+    CHECK(g.ok());
+    const Json* gen = g.ok() ? find_stage(g->spec, "generate-video")
+                             : nullptr;
+    CHECK(gen != nullptr);
+    return gen ? config_of(gen) : Json::object();
+  };
+  Json c = gen_cfg({{"sage_attn", true}, {"sage_pv8", true}});
+  CHECK(jget(c, "sage_attn", false) && jget(c, "sage_pv8", false));
+  c = gen_cfg({{"sage_attn", false}, {"sage_pv8", true}});
+  CHECK(!c.contains("sage_pv8"));
+  c = gen_cfg({{"sage_attn", true}, {"sage_pv8", false}});
+  CHECK(!c.contains("sage_pv8"));
+  c = gen_cfg({{"sage_attn", true}});
+  CHECK(!c.contains("sage_pv8"));
+  // ...the prompt's and soundtrack's rows too, only with it.
+  c = gen_cfg({{"sage_attn", true}, {"sage_pv8", true},
+               {"sage_pv8_all_rows", true}});
+  CHECK(jget(c, "sage_pv8", false) && jget(c, "sage_pv8_all_rows", false));
+  c = gen_cfg({{"sage_attn", true}, {"sage_pv8_all_rows", true}});
+  CHECK(!c.contains("sage_pv8_all_rows"));
+
+  // A picture's generate-image takes the switch the same way.
+  JobSpec j = job_for("krea2-turbo", kOpGenerateImage);
+  j.params["tuning"] = {{"sage_attn", true}, {"sage_pv8", true}};
+  auto g = vp::build_text_to_image(j);
+  REQUIRE_OK(g);
+  const Json* gen = find_stage(g->spec, "generate-image");
+  REQUIRE(gen);
+  CHECK(jget(config_of(gen), "sage_pv8", false));
+}
+
 // MiniMax H3 text-to-video, shaped like vpipe's turbo + preview graphs:
 // one config beat carries the shifts, the Turbo LoRA and the TAE (as
 // FILES: both live in folders that hold others) into generate-video's
@@ -1447,6 +1518,73 @@ TEST(graph_builder, moss_tts_speaks_a_voice_from_its_file)
   CHECK(!vp::build_speech(j).ok());
   j.params["text"] = "Hi.";
   j.model.vae.clear();
+  CHECK(!vp::build_speech(j).ok());
+}
+
+// DRAMA 3, in the shape of vpipe's drama3-scene graph: the script one
+// beat, its voices the stage's `references` -- each its cut file and its
+// words, a speaker's tag before all but the first's -- spoken in parts,
+// one-shot, at 44.1 kHz; the makers' sampling seeded; no codec of its
+// own (codec.pth is beside the model).
+TEST(graph_builder, drama3_performs_a_script_in_its_voices)
+{
+  JobSpec j = job_for("drama-3-int4", kOpGenerateSpeech);
+  j.params = {{"text", "<|speaker:0|>[calm] The ship was silent.\n"
+                       "<|speaker:1|>[tired] Status report."},
+              {"seed", 7}};
+  auto g = vp::build_speech(j);
+  REQUIRE_OK(g);
+  CHECK(g->output.extension() == ".wav");
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "text")), "text",
+                          "") == jget<std::string>(j.params, "text", ""));
+  const Json* tts = find_stage(g->spec, "speak");
+  REQUIRE(tts);
+  CHECK(jget<std::string>(*tts, "type", "") == "text-to-speech");
+  CHECK(src_of(tts, 0) == "text");
+  CHECK(src_of(tts, 1) == "");
+  CHECK(src_of(tts, 2) == "sampler");
+  Json tc = config_of(tts);
+  CHECK(jget<std::string>(tc, "hf_dir", "") == "/models/drama-3-int4");
+  CHECK(!tc.contains("codec_dir") && !tc.contains("lm_quant") &&
+        !tc.contains("instruction"));
+  CHECK(jget(tc, "chunk_text", false));
+  CHECK(jget<std::string>(tc, "context", "") == "text");
+  CHECK(jget(tc, "max_frames", 0) == 600);
+  CHECK(jget(tc, "stream_chunk_frames", -1) == 0);
+  CHECK(!jget(tc, "interrupt_on_new_text", true));
+  CHECK(!tc.contains("references"));
+  const Json sc = config_of(find_stage(g->spec, "sampler"));
+  CHECK(jget(sc, "seed", 0) == 7 && jget(sc, "top_k", 0) == 30);
+  CHECK(jget(sc, "temperature", 0.0) == 1.0 && jget(sc, "top_p", 0.0) == 0.9);
+  const Json* save = find_stage(g->spec, "save-audio");
+  CHECK(src_of(save, 0) == "speak");
+  CHECK(jget(config_of(save), "sample_rate", 0) == 44100);
+
+  // Two voices: each file with its words, the second's tagged.
+  j.params["voices"] = Json::array({{{"text", "We asked over twenty "
+                                              "different people."},
+                                     {"seconds", 3.9}},
+                                    {{"text", "Nobody saw it."},
+                                     {"seconds", 13.2}}});
+  auto v = vp::build_speech(j, {"/tmp/v0.wav", "/tmp/v1.wav"});
+  REQUIRE_OK(v);
+  tc = config_of(find_stage(v->spec, "speak"));
+  const Json refs = jget(tc, "references", Json::array());
+  REQUIRE(refs.size() == 2);
+  CHECK(jget<std::string>(refs[0], "audio", "") == "/tmp/v0.wav");
+  CHECK(jget<std::string>(refs[0], "text", "") ==
+        "We asked over twenty different people.");
+  CHECK(jget<std::string>(refs[1], "audio", "") == "/tmp/v1.wav");
+  CHECK(jget<std::string>(refs[1], "text", "") ==
+        "<|speaker:1|> Nobody saw it.");
+  // The stage keeps each voice as long as its cut.
+  CHECK(jget(tc, "voice_ref_seconds", 0.0) >= 13.2);
+  // A voice without its file or its words: refused.
+  CHECK(!vp::build_speech(j, {"/tmp/v0.wav"}).ok());
+  j.params["voices"][1]["text"] = "";
+  CHECK(!vp::build_speech(j, {"/tmp/v0.wav", "/tmp/v1.wav"}).ok());
+  j.params["text"] = "";
+  j.params.erase("voices");
   CHECK(!vp::build_speech(j).ok());
 }
 

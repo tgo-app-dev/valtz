@@ -60,43 +60,63 @@ enum SettingsPlace: Hashable, Sendable {
     func keywords(_ model: AppModel) -> [String] {
         switch self {
         case .page(.general):
-            [String(localized: "Language"), String(localized: "Updates"),
-             String(localized: "Version"), String(localized: "This Mac"),
+            [String(localized: "Language"), String(localized: "Generations"),
+             String(localized: "Timeline"), String(localized: "Assets"),
+             String(localized: "Updates"), String(localized: "Version"),
+             String(localized: "Check for updates automatically"),
+             String(localized: "This Mac"),
              String(localized: "Chip"), String(localized: "Memory"),
              String(localized: "GPU"), String(localized: "Neural Engine"),
-             String(localized: "Engine"), String(localized: "Projects"),
+             String(localized: "Engine"), String(localized: "Storage"),
+             String(localized: "Projects"),
              String(localized: "Models"), String(localized: "Cache"),
-             String(localized: "Project"), String(localized: "Generations"),
-             String(localized: "Timeline"), String(localized: "Assets")]
+             String(localized: "Project")]
         case .page(.capabilities):
+            // Its families, and under each its models, as listed there.
             [String(localized: "Models"), String(localized: "Download"),
              String(localized: "Link"), String(localized: "Quantize")]
-                + (model.capabilityTree?.families.map(\.name) ?? [])
+                + (model.capabilityTree?.families.flatMap { f in
+                    [f.name] + f.members.flatMap { [$0.label, $0.name] }
+                } ?? [])
         case .page(.helper):
-            [String(localized: "Helper"), String(localized: "Keep Loaded"),
-             String(localized: "Sampling"),
+            [String(localized: "Helper"), String(localized: "Enhance"),
+             String(localized: "Memory"), String(localized: "Keep Loaded"),
+             String(localized: "Video Summary"), String(localized: "Frames"),
+             String(localized: "Sampling"), String(localized: "Drafter"),
              String(localized: "Multi-token prediction"),
              String(localized: "Thinking"),
-             String(localized: "Video Summary"),
-             String(localized: "Enhance"), String(localized: "Debugging"),
+             String(localized: "Long Conversations"),
+             String(localized: "Context"),
+             String(localized: "This Mac Gives It"),
+             String(localized: "Compact Long Conversations"),
+             String(localized: "Cloud Context"),
+             String(localized: "Debugging"),
              String(localized: "Show the Helper's Speed")]
         case .page(.upscaling):
+            // Its upscalers and their options are the core's: named as
+            // the page names them.
             [String(localized: "Upscale"), String(localized: "Render Upscaled"),
-             "FlashVSR", "FlashVSR+", "Turbo", "VOSR",
-             String(localized: "int8 GEMM"),
-             String(localized: "SageAttention"), String(localized: "Sol-Attn"),
-             String(localized: "Clips"), String(localized: "Pictures"),
-             String(localized: "Restore Clips With")]
+             String(localized: "Restore Clips With"),
+             String(localized: "Restore Pictures With"),
+             String(localized: "Clips"), String(localized: "Pictures")]
+                + model.upscalers.map(\.name)
+                + model.upscalers.flatMap { $0.options.map(TuningPanel.title) }
         case .page(.experimental):
             [String(localized: "Agent"), String(localized: "Thinks On"),
-             String(localized: "Cloud"), String(localized: "API Key"),
-             String(localized: "Ask before each step")]
+             String(localized: "Cloud"),
+             String(localized: "Ask before each step"),
+             String(localized: "A member keeps its context"),
+             String(localized: "Provider"), String(localized: "Model"),
+             String(localized: "Server"), String(localized: "API Key")]
         case .page(.fleet):
-            [String(localized: "Name"), String(localized: "Discoverable"),
-             String(localized: "Secret"), String(localized: "Members"),
+            [String(localized: "This Mac"), String(localized: "Name"),
+             String(localized: "Discoverable"), String(localized: "Fleet"),
+             String(localized: "Secret"), String(localized: "Listening"),
+             String(localized: "Leave Fleet"), String(localized: "Members"),
              String(localized: "Join a Fleet"),
              String(localized: "Create a Fleet"),
-             String(localized: "Leave Fleet"),
+             String(localized: "Fleet name"),
+             String(localized: "Fleet Jobs"),
              String(localized: "Take Fleet Jobs"),
              String(localized: "Only at Set Times")]
         case .page(.storage):
@@ -112,12 +132,19 @@ enum SettingsPlace: Hashable, Sendable {
         case .fleetOffload:
             [String(localized: "Offload"), FleetOffload.never.title,
              FleetOffload.localFirst.title, FleetOffload.fleetFirst.title,
-             FleetOffload.always.title]
+             FleetOffload.always.title, String(localized: "Tasks")]
                 + FleetTaskLabel.all.map(\.title)
+                + [String(localized: "Models")]
+                + (model.fleet.map { FleetOffloadView.listed($0).map(\.name) }
+                   ?? [])
         case .fleetSharing:
             [String(localized: "Share"), String(localized: "Withhold"),
-             String(localized: "Offered Now")]
+             String(localized: "Tasks")]
                 + FleetTaskLabel.all.map(\.title)
+                + [String(localized: "Models")]
+                + (model.fleet.map { FleetOffloadView.listed($0).map(\.name) }
+                   ?? [])
+                + [String(localized: "Offered Now")]
         }
     }
 

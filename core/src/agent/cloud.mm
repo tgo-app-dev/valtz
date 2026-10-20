@@ -163,6 +163,11 @@ public:
   }
 
   bool sees() const override { return true; }
+  std::int64_t
+  context_tokens() const override
+  {
+    return cloud_context_tokens(_cfg);
+  }
 
   Result<Reply>
   turn(const std::vector<Message>& messages,

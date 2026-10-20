@@ -39,6 +39,7 @@ struct FleetOffloadView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                 }
+                .settingsMark(p.title)
             }
         } footer: {
             if f.config?.joined != true {
@@ -64,9 +65,11 @@ struct FleetOffloadView: View {
                 } label: {
                     Label(label.title, systemImage: label.symbol)
                 }
+                .settingsMark(label.title)
             }
         } header: {
             Text("Tasks")
+                .settingsMark(String(localized: "Tasks"))
         } footer: {
             Text("A chat with the helper goes to a member's own helper.")
                 .foregroundStyle(.secondary)
@@ -98,9 +101,11 @@ struct FleetOffloadView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .settingsMark(m.name)
             }
         } header: {
             Text("Models")
+                .settingsMark(String(localized: "Models"))
         } footer: {
             Text("A model's own policy comes before its task's. Listed: the models on this Mac or offered by a member.")
                 .foregroundStyle(.secondary)
@@ -175,9 +180,11 @@ struct FleetSharingView: View {
                     }
                 }
                 .disabled(!t.runs)
+                .settingsMark(label.title)
             }
         } header: {
             Text("Tasks")
+                .settingsMark(String(localized: "Tasks"))
         } footer: {
             Text("A task withheld is not offered: the members run it themselves or send it to another member.")
                 .foregroundStyle(.secondary)
@@ -207,9 +214,11 @@ struct FleetSharingView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+                .settingsMark(m.name)
             }
         } header: {
             Text("Models")
+                .settingsMark(String(localized: "Models"))
         } footer: {
             Text("Only models on this Mac are offered. One downloaded later is offered too, until it is withheld.")
                 .foregroundStyle(.secondary)
@@ -220,7 +229,7 @@ struct FleetSharingView: View {
     @ViewBuilder
     private func offeredSection(_ f: FleetStatus) -> some View {
         if let me = f.me {
-            Section("Offered Now") {
+            Section {
                 let features = me.features ?? []
                 if features.isEmpty {
                     Text("Nothing: this Mac runs no model now.")
@@ -237,6 +246,9 @@ struct FleetSharingView: View {
                     Label("Busy now", systemImage: "hourglass")
                         .foregroundStyle(.secondary)
                 }
+            } header: {
+                Text("Offered Now")
+                    .settingsMark(String(localized: "Offered Now"))
             }
         }
     }

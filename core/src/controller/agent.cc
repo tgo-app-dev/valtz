@@ -20,6 +20,20 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr int kTurnTokens = 2048;
+// Compacted when the next turn, its reply and the notes' question and
+// answer (a turn each) would pass 90% of the model's context -- the
+// rest the estimates' slack -- into half of it at most: the head, the
+// notes, the latest turns.
+constexpr std::int64_t kCompactReserve = 2 * kTurnTokens + 512;
+constexpr std::int64_t kCompactAtPct = 90;
+constexpr std::int64_t kCompactToPct = 50;
+// The steps the notes list, the latest; each line cut so; all of them
+// within a twentieth of the context (3 bytes a token), the person's
+// words within a tenth -- the notes must leave the context room.
+constexpr std::size_t kNotedSteps = 40;
+constexpr std::size_t kStepBytes = 360;
+constexpr std::int64_t kStepsShare = 20;
+constexpr std::int64_t kSaidShare = 10;
 // A session's turns before it stops to ask whether to go on: a model
 // calling tools in a loop is stopped by this, not by the person's budget.
 constexpr int kMaxTurns = 200;
@@ -107,6 +121,25 @@ public:
   {
     const auto* m = _c.assistant_model();
     return m != nullptr && m->has(models::Capability::VideoSummary);
+  }
+
+  // This Mac's helper's, as its memory gives it -- or the member's that
+  // ran the last turn, as it said (its "assistant_context").
+  std::int64_t
+  context_tokens() const override
+  {
+    {
+      std::lock_guard lk(_mu);
+      if (_member_context > 0) {
+        return _member_context;
+      }
+    }
+    std::lock_guard lk(_mu);
+    if (_local_context < 0) {
+      const auto* m = _c.assistant_model();
+      _local_context = m ? _c.helper_context_(*m) : 0;
+    }
+    return _local_context;
   }
 
   Result<agent::Reply>
@@ -210,6 +243,7 @@ public:
       {
         std::lock_guard lk(_mu);
         _where.clear();
+        _member_context = 0;
       }
       VALTZ_TRY(_c._engine->submit(std::move(spec), std::move(sink)));
     } else {
@@ -224,6 +258,9 @@ public:
         std::lock_guard lk(_mu);
         _member = jget<std::string>(members.front(), "id", "");
         _where = jget<std::string>(members.front(), "name", "");
+        _member_context = jget<std::int64_t>(
+            jget(members.front(), "self", Json::object()),
+            "assistant_context", 0);
       }
       std::optional<engine::JobSpec> local;
       if (here && !fleet_only) {
@@ -252,6 +289,21 @@ public:
     }
     if (!w->turn.is_object() || w->turn.empty()) {
       return make_error(Code::Engine, "the helper returned no turn");
+    }
+    // text-chat's beat for a conversation it did not take -- no finish,
+    // no words: its prefill failed, the K/V pool full (vpipe's log says
+    // so) -- or no model, no conversation read. Near its context, the
+    // first: compacted and tried again.
+    if (!w->turn.contains("finish") &&
+        jget<std::string>(w->turn, "text", "").empty()) {
+      const std::int64_t cap = context_tokens();
+      if (cap <= 0 || agent::estimate_tokens(messages) +
+                              agent::estimate_tokens(tools) >= cap / 2) {
+        return make_error(Code::OutOfMemory, msg::kAgentContextFull,
+                          {{"tokens", std::to_string(cap)}});
+      }
+      return make_error(Code::Engine,
+                        "the helper took no turn (the log says why)");
     }
     return agent::reply_from_turn(w->turn, ++_turns);
   }
@@ -289,6 +341,10 @@ private:
   mutable std::mutex _mu;
   std::string        _member;   // the member holding the conversation
   std::string        _where;    // its name; "" this Mac
+  // Its helper's context, as it said; 0: this Mac's (or it said none).
+  std::int64_t       _member_context = 0;
+  // This Mac's, read once (its config); -1 not yet.
+  mutable std::int64_t _local_context = -1;
   int                _turns = 0;
 };
 
@@ -347,7 +403,8 @@ Controller::AgentHost::settings() const
   std::lock_guard lk(_mu);
   Json s = {{"backend", jget<std::string>(_settings, "backend", "helper")},
             {"review", jget(_settings, "review", true)},
-            {"lease", jget(_settings, "lease", kDefaultLease)}};
+            {"lease", jget(_settings, "lease", kDefaultLease)},
+            {"compact", jget(_settings, "compact", true)}};
   agent::CloudConfig cloud =
       agent::cloud_config_from_json(jget(_settings, "cloud", Json::object()));
   if (cloud.provider.empty()) {
@@ -380,6 +437,9 @@ Controller::AgentHost::set_settings(const Json& j)
   }
   if (j.contains("review")) {
     next["review"] = jget(j, "review", true);
+  }
+  if (j.contains("compact")) {
+    next["compact"] = jget(j, "compact", true);
   }
   if (j.contains("lease")) {
     next["lease"] = std::clamp(jget(j, "lease", kDefaultLease), 60.0,
@@ -531,6 +591,10 @@ Controller::AgentHost::start(AgentRequest req)
     kind = jget<std::string>(_settings, "backend", "helper");
   }
   s->backend = backend_(kind, "valtz-agent-" + s->id, s->dir);
+  {
+    std::lock_guard lk(_mu);
+    s->compact = jget(_settings, "compact", true);
+  }
   s->messages.push_back({.role = "system", .content = system_text_(*s)});
   s->messages.push_back({.role = "user", .content = req.prompt});
   {
@@ -605,12 +669,27 @@ Controller::AgentHost::state_json_(const Session& s, bool messages) const
             {"stats", s.stats},
             {"pending", static_cast<int>(s.pending.size())},
             {"created", s.created_ms},
+            {"compactions", s.compactions},
+            {"context", {{"used", s.ctx_used},
+                         {"limit", s.backend ? s.backend->context_tokens()
+                                             : 0}}},
             {"steps", std::move(steps)}};
   if (messages) {
     Json ms = Json::array();
-    for (const auto& m : s.messages) {
+    // Shown whole: what was compacted away in its place, and each
+    // compaction a line of its own where it was made.
+    auto show = [&ms](const agent::Message& m) {
       if (m.role == "system") {
-        continue;
+        return;
+      }
+      if (agent::is_compaction(m)) {
+        ms.push_back({{"role", "compaction"},
+                      {"content", ""},
+                      {"compacted", jget(m.stats, "compacted", 0)},
+                      {"tokens", jget<std::int64_t>(m.stats, "tokens", 0)},
+                      {"limit", jget<std::int64_t>(m.stats, "limit", 0)},
+                      {"asked", jget(m.stats, "asked", false)}});
+        return;
       }
       Json x = {{"role", m.role}, {"content", m.content}};
       if (!m.calls.empty()) {
@@ -627,6 +706,16 @@ Controller::AgentHost::state_json_(const Session& s, bool messages) const
         x["stats"] = m.stats;
       }
       ms.push_back(std::move(x));
+    };
+    const std::size_t head = agent::compaction_head(s.messages);
+    for (std::size_t i = 0; i < head; ++i) {
+      show(s.messages[i]);
+    }
+    for (const auto& m : s.earlier) {
+      show(m);
+    }
+    for (std::size_t i = head; i < s.messages.size(); ++i) {
+      show(s.messages[i]);
     }
     j["messages"] = std::move(ms);
   }
@@ -642,6 +731,14 @@ Controller::AgentHost::save_(Session& s)
     std::lock_guard lk(s.mu);
     for (const auto& m : s.messages) {
       ms.push_back(agent::to_json(m));
+    }
+    // What was compacted away: on record, never sent again.
+    if (!s.earlier.empty()) {
+      Json e = Json::array();
+      for (const auto& m : s.earlier) {
+        e.push_back(agent::to_json(m));
+      }
+      j["earlier"] = std::move(e);
     }
   }
   j["messages"] = std::move(ms);
@@ -729,6 +826,8 @@ Controller::AgentHost::run_(Session& s)
   const auto& table = tools();
   const auto specs = tool_specs();
   bool told_after_done = false;
+  // The last turn did not fit, and the conversation was compacted for it.
+  bool overflowed = false;
   for (;;) {
     if (!gate_(s)) {
       break;
@@ -756,6 +855,10 @@ Controller::AgentHost::run_(Session& s)
         break;
       }
       continue;
+    }
+    // 0. Compacted first, if the turn would outgrow its model's context.
+    if (needs_compaction_(s, specs) && !compact_(s, specs, false)) {
+      break;
     }
     // 1. A turn of the model.
     {
@@ -792,6 +895,18 @@ Controller::AgentHost::run_(Session& s)
       }
     }
     if (!reply.ok()) {
+      // Too long for its model, whatever was estimated: compacted on
+      // Valtz's notes (the model cannot be asked) and tried again, once.
+      if (agent::context_overflow(reply.error()) && !overflowed &&
+          s.compact) {
+        overflowed = true;
+        VALTZ_LOG_INFO("agent", "session {}: the turn did not fit: {}",
+                       s.id, reply.error().message);
+        if (!compact_(s, specs, true)) {
+          break;
+        }
+        continue;
+      }
       VALTZ_LOG_WARN("agent", "session {}: {}", s.id,
                      reply.error().message);
       {
@@ -807,6 +922,7 @@ Controller::AgentHost::run_(Session& s)
         reply->usage, first < 0 ? -1.0 : first / 1e6,
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_turn).count());
+    overflowed = false;
     {
       std::lock_guard lk(s.mu);
       ++s.turns;
@@ -817,6 +933,10 @@ Controller::AgentHost::run_(Session& s)
                             .raw = reply->raw,
                             .calls = calls,
                             .stats = std::move(stats)});
+      // What the conversation took, its reply in it: the next turn's
+      // count starts from here.
+      s.ctx_used = agent::context_used(reply->usage);
+      s.ctx_counted = s.messages.size();
     }
     save_(s);
     if (calls.empty()) {
@@ -988,6 +1108,204 @@ Controller::AgentHost::run_(Session& s)
   s.backend->close();
   save_(s);
   post_(s);
+}
+
+// ---- compaction (agent::compact, DESIGN §9b) -----------------------------
+
+namespace {
+
+// The tokens the conversation takes now: as its last turn was counted,
+// and what came since -- estimated, a quarter over; all estimated when
+// nothing was counted (the first turn, a compaction just made).
+std::int64_t
+conversation_tokens(const std::vector<agent::Message>& msgs,
+                    std::int64_t used, std::size_t counted,
+                    const std::vector<agent::ToolSpec>& specs)
+{
+  if (used > 0 && counted <= msgs.size()) {
+    return used + agent::estimate_tokens(msgs, counted) * 5 / 4;
+  }
+  return agent::estimate_tokens(msgs) + agent::estimate_tokens(specs);
+}
+
+std::string
+trimmed(std::string_view t)
+{
+  const auto* ws = " \t\r\n";
+  const auto a = t.find_first_not_of(ws);
+  if (a == std::string_view::npos) {
+    return {};
+  }
+  return std::string(t.substr(a, t.find_last_not_of(ws) - a + 1));
+}
+
+// The person's own words among these: a user's message not Valtz's.
+void
+person_words(const std::vector<agent::Message>& msgs, std::size_t from,
+             std::size_t to, std::vector<std::string>& out)
+{
+  for (std::size_t i = from; i < to && i < msgs.size(); ++i) {
+    const auto& m = msgs[i];
+    if (m.role == "user" && !agent::is_compaction(m) &&
+        !m.content.starts_with("[Valtz]") && !one_line(m.content).empty()) {
+      out.push_back(m.content);
+    }
+  }
+}
+
+}  // namespace
+
+bool
+Controller::AgentHost::needs_compaction_(
+    Session& s, const std::vector<agent::ToolSpec>& specs) const
+{
+  const std::int64_t limit = s.backend->context_tokens();
+  if (limit <= 0 || !s.compact) {
+    return false;
+  }
+  std::lock_guard lk(s.mu);
+  // Worth it only where what came since the last notes is a tenth of
+  // the context: a context little bigger than the head (the guide and
+  // the tools, ~15,000 tokens) would be compacted again every turn, the
+  // notes into notes.
+  std::size_t from = agent::compaction_head(s.messages);
+  if (from < s.messages.size() && agent::is_compaction(s.messages[from])) {
+    ++from;
+  }
+  if (agent::estimate_tokens(s.messages, from) < limit / 10) {
+    return false;
+  }
+  const std::int64_t need =
+      conversation_tokens(s.messages, s.ctx_used, s.ctx_counted, specs);
+  return need + kCompactReserve > limit * kCompactAtPct / 100;
+}
+
+bool
+Controller::AgentHost::compact_(Session& s,
+                                const std::vector<agent::ToolSpec>& specs,
+                                bool full)
+{
+  std::vector<agent::Message> msgs;
+  std::vector<agent::Message> earlier;
+  std::vector<Step> steps;
+  std::int64_t used = 0;
+  {
+    std::lock_guard lk(s.mu);
+    msgs = s.messages;
+    earlier = s.earlier;
+    steps = s.steps;
+    used = conversation_tokens(msgs, s.ctx_used, s.ctx_counted, specs);
+  }
+  // A backend that does not say: as long as it is now.
+  std::int64_t limit = s.backend->context_tokens();
+  if (limit <= 0) {
+    limit = used;
+  }
+  const std::size_t head = agent::compaction_head(msgs);
+
+  // The notes: Valtz's record of the latest steps, the person's words
+  // compacted away -- before and now -- and the model's.
+  agent::CompactionNotes notes;
+  notes.used = used;
+  notes.limit = limit;
+  notes.steps_run = static_cast<int>(steps.size());
+  notes.said_bytes = static_cast<std::size_t>(std::clamp<std::int64_t>(
+      limit * 3 / kSaidShare, 2000, 16000));
+  const auto steps_bytes = static_cast<std::size_t>(
+      std::max<std::int64_t>(limit * 3 / kStepsShare, 1000));
+  std::size_t listed = 0;
+  for (std::size_t i = steps.size(); i-- > 0 && listed < kNotedSteps;) {
+    const Step& st = steps[i];
+    const std::string outcome =
+        !st.error.empty() ? "failed: " + st.error
+        : st.result.is_null() ? st.state
+                              : st.state + ": " + to_text(st.result);
+    const std::string line = std::format(
+        "[{}] {} ({}) {} -> {}", st.n, st.title, st.tool,
+        to_text(st.args), outcome);
+    const std::string row =
+        "- " + std::string(utf8_prefix(line, kStepBytes)) +
+        (line.size() > kStepBytes ? " ..." : "") + "\n";
+    if (notes.steps.size() + row.size() > steps_bytes) {
+      break;
+    }
+    notes.steps.insert(0, row);
+    ++listed;
+  }
+  if (listed < steps.size()) {
+    notes.steps.insert(0, std::format("- (the {} before these, left out)\n",
+                                      steps.size() - listed));
+  }
+  // The latest turns kept within half the context, once the head and
+  // the notes -- the model's at their longest -- are in.
+  person_words(earlier, 0, earlier.size(), notes.said);
+  person_words(msgs, head, msgs.size(), notes.said);
+  const std::vector<agent::Message> head_msgs(
+      msgs.begin(), msgs.begin() + static_cast<long>(head));
+  const std::int64_t room =
+      limit * kCompactToPct / 100 - agent::estimate_tokens(head_msgs) -
+      agent::estimate_tokens(specs) - kTurnTokens -
+      agent::estimate_tokens(agent::compact(head_msgs, head, notes)
+                                 .back());
+  const std::size_t tail =
+      agent::compaction_tail(msgs, std::max<std::int64_t>(0, room));
+  // Nothing to compact but notes made before: left as it is.
+  if (tail <= head ||
+      (tail == head + 1 && agent::is_compaction(msgs[head]))) {
+    VALTZ_LOG_INFO("agent", "session {}: nothing to compact", s.id);
+    return true;
+  }
+
+  set_state_(s, "compacting");
+  if (!full) {
+    std::vector<agent::Message> ask = msgs;
+    ask.push_back(agent::compaction_request(used, limit));
+    auto r = s.backend->turn(ask, specs, {}, s.cancel);
+    {
+      std::lock_guard lk(s.mu);
+      if (s.stop_asked) {
+        return false;
+      }
+    }
+    if (r.ok()) {
+      notes.summary = trimmed(r->content);
+    } else {
+      VALTZ_LOG_WARN("agent", "session {}: its notes were not written: {}",
+                     s.id, r.error().message);
+    }
+  }
+  notes.said.clear();
+  person_words(earlier, 0, earlier.size(), notes.said);
+  person_words(msgs, head, tail, notes.said);
+  std::vector<agent::Message> next = agent::compact(msgs, tail, notes);
+  next[head].stats = {{"compacted", static_cast<std::int64_t>(tail - head)},
+                      {"tokens", used},
+                      {"limit", limit},
+                      {"asked", !notes.summary.empty()}};
+  {
+    std::lock_guard lk(s.mu);
+    s.earlier.insert(s.earlier.end(),
+                     msgs.begin() + static_cast<long>(head),
+                     msgs.begin() + static_cast<long>(tail));
+    // (Only this thread adds to the conversation; kept whatever came.)
+    next.insert(next.end(),
+                s.messages.begin() +
+                    static_cast<long>(std::min(msgs.size(),
+                                               s.messages.size())),
+                s.messages.end());
+    s.messages = std::move(next);
+    s.ctx_used = 0;
+    s.ctx_counted = 0;
+    ++s.compactions;
+  }
+  VALTZ_LOG_INFO("agent",
+                 "session {}: compacted {} messages (about {} of {} "
+                 "tokens), {} kept as they were, notes {}",
+                 s.id, tail - head, used, limit, msgs.size() - tail,
+                 notes.summary.empty() ? "Valtz's alone" : "its own");
+  save_(s);
+  post_(s);
+  return true;
 }
 
 // ---- the person's word ----------------------------------------------------

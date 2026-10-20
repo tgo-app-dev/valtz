@@ -161,6 +161,17 @@ public:
     Json                                usage = Json::object();
     // The last turn's cost and speed (agent::turn_stats).
     Json                                stats = Json::object();
+    // COMPACTION (agent::compact): the tokens the last turn's
+    // conversation took, as its backend counted them, and the messages
+    // it held then; the messages compacted away -- shown and saved,
+    // never sent again -- and how many times it was.
+    std::int64_t                        ctx_used = 0;
+    std::size_t                         ctx_counted = 0;
+    std::vector<agent::Message>         earlier;
+    int                                 compactions = 0;
+    // Settings › Agentic Helper's Compact Long Conversations, as it
+    // started: off, a session ends where its model's context does.
+    bool                                compact = true;
     std::int64_t                        created_ms = 0;
     std::thread                         thread;
   };
@@ -184,6 +195,15 @@ private:
   class HelperBackend;
 
   void run_(Session& s);
+  // Would the next turn outgrow what its model holds, with room for its
+  // reply and for the notes?
+  bool needs_compaction_(Session& s,
+                         const std::vector<agent::ToolSpec>& specs) const;
+  // The conversation compacted (agent::compact): the model asked for its
+  // notes -- unless `full`, the last turn not fitting -- and the latest
+  // turns kept. False when stopped meanwhile.
+  bool compact_(Session& s, const std::vector<agent::ToolSpec>& specs,
+                bool full);
   // Between steps: paused, it waits; stopped, false.
   bool gate_(Session& s);
   // The person's next words (done, failed): false when stopped.

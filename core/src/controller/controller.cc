@@ -2,6 +2,7 @@
 
 #include "controller/agent-host.h"
 
+#include "valtz/assist/drama3.h"
 #include "valtz/assist/moss-image.h"
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
@@ -399,6 +400,8 @@ Controller::create(ControllerConfig cfg)
     c->_assistant_drafter_bits =
         jget(helper, "drafter_bits", 8) == 4 ? 4 : 8;
     c->_video_every = std::max(0.0, jget(helper, "video_every", 0.0));
+    c->_assistant_context = std::max<std::int64_t>(
+        0, jget<std::int64_t>(helper, "context", 0));
   }
   // VALTZ_ASSISTANT: another helper for this run only, chosen nowhere --
   // valtzctl's --assistant, for the app too (a 24 GB Mac checked on the
@@ -687,8 +690,12 @@ Controller::finish_job_(JobId id, JobState st, std::string message)
     std::lock_guard lk(_job_commands_mu);
     _withdrawn.erase(id);
   }
-  std::lock_guard lk(_timing_mu);
-  _timing.erase(id);
+  {
+    std::lock_guard lk(_timing_mu);
+    _timing.erase(id);
+  }
+  // What was held for it goes on, or fails.
+  release_held_(id, st);
 }
 
 // ---- extensions -------------------------------------------------------
@@ -3663,8 +3670,10 @@ Controller::tasks() const
       live.push_back(std::move(j));
     }
   }
-  // Those waiting for downloads, and the names of what they wait for.
+  // Those waiting for downloads, and the names of what they wait for;
+  // those held for an input being made, and its name.
   std::map<JobId, Json> waits;
+  std::map<JobId, Json> held;
   {
     std::lock_guard lk(_downloads_mu);
     for (const auto& [id, w] : _waiting) {
@@ -3674,6 +3683,9 @@ Controller::tasks() const
         names.push_back(e ? e->name : m);
       }
       waits[id] = std::move(names);
+    }
+    for (const auto& [id, h] : _held) {
+      held[id] = h.names;
     }
   }
   // The order the engine takes them: the running ones, then as asked
@@ -3685,8 +3697,8 @@ Controller::tasks() const
     if (ra != rb) {
       return ra;
     }
-    const bool wa = waits.contains(a.id);
-    const bool wb = waits.contains(b.id);
+    const bool wa = waits.contains(a.id) || held.contains(a.id);
+    const bool wb = waits.contains(b.id) || held.contains(b.id);
     if (wa != wb) {
       return wb;
     }
@@ -3703,6 +3715,7 @@ Controller::tasks() const
   for (const auto& j : live) {
     const std::string runner = j.runner.empty() ? "local" : j.runner_name;
     const auto wait = waits.find(j.id);
+    const auto hold = held.find(j.id);
     const bool upscale = j.op == engine::kOpUpscaleVideo ||
                          j.op == engine::kOpUpscaleImage;
     const bool exp = j.purpose == "export";
@@ -3718,12 +3731,16 @@ Controller::tasks() const
               {"op", j.op},
               {"title", j.title},
               {"state", to_str(j.state)},
-              {"position", wait != waits.end() ? positions[line]
-                                               : positions[line]++},
+              {"position", wait != waits.end() || hold != held.end()
+                               ? positions[line]
+                               : positions[line]++},
               {"runner", runner},
               {"progress", j.progress}};
     if (wait != waits.end()) {
       t["waiting"] = wait->second;
+    }
+    if (hold != held.end()) {
+      t["waiting_for"] = hold->second;
     }
     // Every asset it makes (a separation's sources), its own first.
     if (!exp) {
@@ -4061,6 +4078,22 @@ Controller::set_assistant_keep_loaded(double seconds)
 }
 
 Status
+Controller::set_assistant_context(std::int64_t tokens)
+{
+  tokens = tokens > 0 ? std::max<std::int64_t>(tokens, 16384) : 0;
+  const fs::path file = _paths.support / "assistant.json";
+  Json j = read_settings(file);
+  if (!j.is_object()) {
+    j = Json::object();
+  }
+  j["context"] = tokens;
+  VALTZ_TRY(write_settings(file, j));
+  _assistant_context = tokens;
+  post_("assistant.changed", JobId{}, {{"context", tokens}});
+  return ok_status();
+}
+
+Status
 Controller::set_assistant_drafter(const std::string& kind, int bits)
 {
   if (kind != "mtp" && kind != "dflash") {
@@ -4133,6 +4166,15 @@ Controller::assistants() const
                 {"rank", e->rank},
                 {"mtp", jget(vp, "mtp", true)},
                 {"sampling", jget(vp, "sampling", Json::object())}};
+    // Its context: its own, what this Mac's memory holds (Auto), and
+    // what it is given (no more than Settings' Context); installed only.
+    if (const auto lc = models::language_context(_store->info(*e).path());
+        lc.tokens > 0) {
+      row["context"] = {{"model", lc.tokens},
+                        {"auto", helper_context_(*e, false)},
+                        {"here", helper_context_(*e)},
+                        {"kv_bytes", lc.kv_bytes}};
+    }
     if (const auto* d = _catalog.find(
             jget<std::string>(vp, "mtp_drafter", ""))) {
       row["drafter"] = {{"id", d->id},
@@ -4154,6 +4196,7 @@ Controller::assistants() const
           {"keep_loaded", _assistant_keep},
           {"drafter", _assistant_drafter},
           {"drafter_bits", _assistant_drafter_bits},
+          {"context", _assistant_context},
           {"video_every", _video_every},
           {"video_every_now", video_every()},
           {"memory_bandwidth_gbs", _hw.memory_bandwidth_gbs},
@@ -4213,6 +4256,12 @@ Controller::helper_params_(const models::ModelEntry& m) const
   Json p = {{"mtp", assistant_mtp(m)},
             {"sampling", jget(vp, "sampling", Json::object())},
             {"keep_loaded", _assistant_keep}};
+  // Its whole context where this Mac holds it (Qwen3.5's and 3.8's
+  // 262,144): an agent's long session runs to the model's limit, not
+  // ours. Its K/V grows as it fills.
+  if (const int n = helper_context_(m); n > 0) {
+    p["context_tokens"] = n;
+  }
   // A model whose MTP head ships apart (engine.vpipe.mtp_drafter): the
   // drafter's directory, when it is installed.
   if (assistant_mtp(m)) {
@@ -4233,6 +4282,26 @@ Controller::helper_params_(const models::ModelEntry& m) const
     }
   }
   return p;
+}
+
+int
+Controller::helper_context_(const models::ModelEntry& m, bool chosen) const
+{
+  int n = models::helper_context(
+      models::language_context(_store->info(m).path()), _hw.ram_bytes,
+      static_cast<std::uint64_t>(std::max(0.0, m.disk_gb) * 1e9));
+  // Settings' Context, no more than Auto's.
+  if (chosen && _assistant_context > 0 && n > 0) {
+    n = static_cast<int>(std::min<std::int64_t>(n, _assistant_context));
+  }
+  // VALTZ_HELPER_CONTEXT=<tokens>: less for this run -- an agent's
+  // compaction reached by a short session.
+  if (const char* v = std::getenv("VALTZ_HELPER_CONTEXT"); v && *v) {
+    if (const long long t = std::atoll(v); t > 0 && n > 0) {
+      n = static_cast<int>(std::min<long long>(n, t));
+    }
+  }
+  return n;
 }
 
 Result<JobId>
@@ -4429,10 +4498,13 @@ Controller::enhance_prompt(EnhancePromptRequest req)
   // Sound with a voice in its row to clone: speech (Auto's audio
   // `edit` list), as generate_audio picks.
   bool voice = false;
+  int voices = 0;
   if (req.target == "audio" && req.project) {
     if (project::Project* vp = project(*req.project)) {
       for (const auto& id : req.row.empty() ? req.references : req.row) {
-        voice = voice || voiced_(*vp, id);
+        const bool v = voiced_(*vp, id);
+        voice = voice || v;
+        voices += v;
       }
     }
   }
@@ -4484,6 +4556,13 @@ Controller::enhance_prompt(EnhancePromptRequest req)
   er.seconds = req.seconds;
   er.speech = m && m->has(models::Capability::TextToSpeech);
   er.voice = voice;
+  // A script of several speakers (Drama 3): how many voices it is given.
+  if (er.speech && jget(jget(jget(m->engine, "vpipe", Json::object()),
+                             "speech", Json::object()),
+                        "speakers", 1) > 1) {
+    er.speakers = true;
+    er.voices = voices;
+  }
   // Translated only for a model that reads English alone.
   er.english = m && jget<std::string>(m->prompting, "language", "") ==
                         "english";
@@ -6280,6 +6359,9 @@ Controller::generate_audio(GenerateAudioRequest req)
   const std::string words = assist::prompt_words(pf.positional);
   // The voice to speak in: given, else the row's first sound -- which
   // makes Auto's pick its audio `edit` list's (a model that speaks).
+  if (!req.voice && !req.voices.empty()) {
+    req.voice = req.voices.front();
+  }
   if (!req.voice) {
     for (const auto& id : req.row) {
       if (voiced_(*p, id)) {
@@ -6442,6 +6524,11 @@ Controller::generate_speech_(GenerateAudioRequest& req,
                              project::Project& p, const std::string& words,
                              const project::RecipeInput& prompt)
 {
+  const Json vp = jget(m.engine, "vpipe", Json::object());
+  const Json spc = jget(vp, "speech", Json::object());
+  if (jget<std::string>(spc, "format", "") == "drama3") {
+    return drama_speech_(req, m, p, words, prompt);
+  }
   // Its fields, then its words (DESIGN §4g); the language named when the
   // prompt does not -- the model speaks markedly better told it.
   assist::SpeechText sp = assist::split_speech(words);
@@ -6451,8 +6538,6 @@ Controller::generate_speech_(GenerateAudioRequest& req,
   if (sp.language.empty()) {
     sp.language = assist::speech_language(sp.text);
   }
-  const Json vp = jget(m.engine, "vpipe", Json::object());
-  const Json spc = jget(vp, "speech", Json::object());
   const double tps = jget(spc, "tokens_per_second", 12.5);
   const double most = jget(spc, "max_seconds", 300.0);
   const double seconds = std::clamp(req.seconds, 0.0, most);
@@ -6505,6 +6590,238 @@ Controller::generate_speech_(GenerateAudioRequest& req,
                                     {"asset", a.id},
                                     {"reason", "defined"}});
   return submit_build_(req.project, a.id, a.name);
+}
+
+Result<JobId>
+Controller::drama_speech_(GenerateAudioRequest& req,
+                          const models::ModelEntry& m, project::Project& p,
+                          const std::string& words,
+                          const project::RecipeInput& prompt)
+{
+  const Json spc = jget(jget(m.engine, "vpipe", Json::object()), "speech",
+                        Json::object());
+  const int most = std::clamp(jget(spc, "speakers", 16), 1,
+                              assist::kDrama3Speakers);
+  // The voices, speaker 0 first: those given; else the one asked for,
+  // then every other sound in the row.
+  std::vector<AssetId> voices = req.voices;
+  if (voices.empty()) {
+    if (req.voice) {
+      voices.push_back(*req.voice);
+    }
+    for (const auto& id : req.row) {
+      if (std::ranges::find(voices, id) == voices.end() && voiced_(p, id)) {
+        voices.push_back(id);
+      }
+    }
+  }
+  if (voices.size() > static_cast<std::size_t>(most)) {
+    voices.resize(static_cast<std::size_t>(most));
+  }
+  // The script as the model reads it: MOSS's fields, should the prompt
+  // have them, its words only -- the instruction a direction over them
+  // -- and a scene's names made its speakers' tags.
+  const assist::SpeechText sp = assist::split_speech(words);
+  if (assist::prompt_words(sp.text).empty()) {
+    return make_error(Code::InvalidArgument, msg::kPromptEmpty);
+  }
+  const assist::Drama3Script script = assist::drama3_script(
+      sp.text, static_cast<int>(voices.size()));
+  std::string text = script.text;
+  if (!sp.instruction.empty() && script.names.empty() &&
+      text.find("<|speaker:") == std::string::npos) {
+    text = std::format("[{}] {}", one_line(sp.instruction), text);
+  }
+
+  project::Recipe r;
+  r.op = std::string(engine::kOpGenerateSpeech);
+  r.model = m.id;
+  r.deterministic = false;
+  r.params = {{"prompt", words},
+              {"text", text},
+              {"speakers", script.names},
+              {"seed", req.seed >= 0 ? req.seed : random_seed()}};
+  stamp_origin(r, m);
+  r.inputs.push_back(prompt);
+  // Each voice and its words: given, else heard -- its transcript, made
+  // now when it has none (the speech then waits for it).
+  Json vs = Json::array();
+  for (std::size_t i = 0; i < voices.size(); ++i) {
+    VALTZ_ASSIGN(project::Asset v, p.asset(voices[i]));
+    if (!voiced_(p, voices[i])) {
+      return make_error(Code::InvalidArgument, msg::kVoiceKind,
+                        {{"name", v.name}});
+    }
+    r.inputs.push_back({"voice", voices[i], 0});
+    const std::string given =
+        i < req.voice_texts.size() ? one_line(req.voice_texts[i])
+                                   : std::string();
+    if (!given.empty()) {
+      vs.push_back({{"words", given}});
+      continue;
+    }
+    std::optional<AssetId> t = transcript_of_(p, voices[i]);
+    if (!t) {
+      AssetOpRequest heard;
+      heard.project = req.project;
+      heard.asset = voices[i];
+      heard.operation = "transcribe";
+      auto made = transcribe_(heard, p, v);
+      if (!made.ok()) {
+        if (made.error().key == msg::kNoTranscriber.key) {
+          return make_error(Code::NotFound, msg::kVoiceNeedsWords,
+                            {{"name", v.name}});
+        }
+        return made.error();
+      }
+      t = made->made.front();
+    }
+    r.inputs.push_back({"voice_text", *t, 0});
+    vs.push_back({{"transcript", t->str()}});
+  }
+  r.params["voices"] = std::move(vs);
+  // Named after its words.
+  std::string name = req.name;
+  if (name.empty()) {
+    name = one_line(assist::without_markdown(sp.text));
+    name = std::string(utf8_prefix(name, 80));
+  }
+  VALTZ_ASSIGN(project::Asset a,
+               p.define_derived(std::move(name), project::AssetKind::Audio,
+                                r, 48));
+  post_("assets.changed", JobId{}, {{"project", req.project},
+                                    {"asset", a.id},
+                                    {"reason", "defined"}});
+  return submit_build_(req.project, a.id, a.name);
+}
+
+std::optional<AssetId>
+Controller::transcript_of_(project::Project& p, AssetId voice) const
+{
+  auto deps = p.dependents(voice, false);
+  if (!deps.ok()) {
+    return std::nullopt;
+  }
+  std::optional<AssetId> built;
+  std::optional<AssetId> coming;
+  for (const auto& d : *deps) {
+    auto a = p.asset(d);
+    auto r = a.ok() ? p.recipe(a->recipe)
+                    : Result<project::Recipe>(a.error());
+    if (!r.ok() || r->op != engine::kOpTranscribeAudio) {
+      continue;
+    }
+    if (a->head > 0) {
+      // Heard as it is now -- not of an earlier version.
+      auto st = p.staleness(d);
+      if (st.ok() && st->fresh()) {
+        built = d;
+      }
+    } else if (building_(p.id(), d)) {
+      coming = d;
+    }
+  }
+  return built ? built : coming;
+}
+
+Status
+Controller::voice_words_(project::Project& p, Json& params,
+                         double keep) const
+{
+  Json vs = jget(params, "voices", Json::array());
+  if (!vs.is_array()) {
+    return ok_status();
+  }
+  for (auto& v : vs) {
+    if (const auto w = jget<std::string>(v, "words", ""); !w.empty()) {
+      v["text"] = w;
+      continue;
+    }
+    const auto id = AssetId::parse(jget<std::string>(v, "transcript", ""));
+    if (!id) {
+      return make_error(Code::InvalidArgument,
+                        "a voice to clone needs the words said in it");
+    }
+    VALTZ_ASSIGN(project::Asset t, p.asset(*id));
+    VALTZ_ASSIGN(project::AssetVersion tv, p.version(*id));
+    const assist::Drama3Voice heard = assist::drama3_voice(
+        jget(tv.outputs, "transcript", Json::object()), keep);
+    if (heard.text.empty()) {
+      // Named by what it is of: "Voice transcript" was heard in "Voice".
+      std::string of = t.name;
+      if (of.ends_with(" transcript")) {
+        of.resize(of.size() - std::string_view(" transcript").size());
+      }
+      return make_error(Code::InvalidArgument, msg::kVoiceNoSpeech,
+                        {{"name", of}});
+    }
+    v["text"] = heard.text;
+    v["seconds"] = heard.seconds;
+  }
+  params["voices"] = std::move(vs);
+  return ok_status();
+}
+
+std::optional<JobId>
+Controller::building_(ProjectId pid, AssetId asset) const
+{
+  for (const auto& j : _jobs.list()) {
+    if (j.project == pid && j.asset == asset && j.purpose == "build" &&
+        (j.state == JobState::Queued || j.state == JobState::Running)) {
+      return j.id;
+    }
+  }
+  return std::nullopt;
+}
+
+void
+Controller::release_held_(JobId job, JobState st)
+{
+  std::vector<std::pair<JobId, HeldBuild>> go;
+  std::vector<std::pair<JobId, HeldBuild>> fail;
+  {
+    std::lock_guard lk(_downloads_mu);
+    for (auto it = _held.begin(); it != _held.end();) {
+      if (it->second.after.erase(job) == 0) {
+        ++it;
+        continue;
+      }
+      if (st != JobState::Finished) {
+        fail.emplace_back(it->first, std::move(it->second));
+      } else if (it->second.after.empty()) {
+        go.emplace_back(it->first, std::move(it->second));
+      } else {
+        ++it;
+        continue;
+      }
+      it = _held.erase(it);
+    }
+  }
+  auto failed = [&](JobId id, const Error& e) {
+    engine::JobEvent ev;
+    ev.job = id;
+    ev.kind = engine::JobEventKind::Failed;
+    ev.error = e.code;
+    ev.text = e.message;
+    ev.data = message_fields(e);
+    on_build_event_(ev);
+  };
+  for (auto& [id, h] : fail) {
+    const std::string names = h.names.empty() ? std::string()
+                                              : h.names.front();
+    VALTZ_LOG_INFO("build", "job {}: {} was not made", id.str(), names);
+    failed(id, make_error(Code::NotFound, msg::kHeldInputFailed,
+                          {{"name", names}}));
+  }
+  for (auto& [id, h] : go) {
+    VALTZ_LOG_INFO("build", "job {}: what it waited for is made, queued",
+                   id.str());
+    auto r = submit_build_(h.project, h.asset, h.title,
+                           std::move(h.companions), id);
+    if (!r.ok()) {
+      failed(id, r.error());
+    }
+  }
 }
 
 bool
@@ -6595,7 +6912,8 @@ Controller::build_asset(ProjectId pid, AssetId aid)
 Result<JobId>
 Controller::submit_build_(
     ProjectId pid, AssetId aid, std::string title,
-    std::vector<std::pair<std::string, AssetId>> companions)
+    std::vector<std::pair<std::string, AssetId>> companions,
+    std::optional<JobId> reuse)
 {
   project::Project* p = project(pid);
   if (!p) {
@@ -6606,10 +6924,67 @@ Controller::submit_build_(
     return make_error(Code::InvalidArgument, msg::kSourceNotBuilt);
   }
   VALTZ_ASSIGN(project::Recipe r, p->recipe(a.recipe));
+  const JobId id = reuse ? *reuse : JobId::make();
+  // What its commit joins: the command it is submitted in -- now, for a
+  // build held to be submitted later.
+  if (project::Workspace* w = workspace_(pid); w && !reuse) {
+    if (const auto seq = w->undo().recording()) {
+      std::lock_guard lk(_job_commands_mu);
+      _job_commands[id] = seq;
+    }
+  }
+  // An input still being made (a voice's transcript): held until it is.
+  if (!reuse) {
+    HeldBuild h{pid, aid, title, companions, {}, {}};
+    for (const auto& in : r.inputs) {
+      auto ia = p->asset(in.asset);
+      if (!ia.ok() || ia->origin != project::Origin::Derived ||
+          ia->head > 0 || in.version > 0) {
+        continue;
+      }
+      if (const auto j = building_(pid, in.asset)) {
+        h.after.insert(*j);
+        h.names.push_back(ia->name);
+      }
+    }
+    if (!h.after.empty()) {
+      JobRecord rec;
+      rec.id = id;
+      rec.op = r.op;
+      rec.purpose = "build";
+      rec.title = std::move(title);
+      rec.project = pid;
+      rec.asset = aid;
+      rec.companions = std::move(companions);
+      rec.recipe = r;
+      rec.created_ms = project::now_ms();
+      _jobs.add(rec);
+      VALTZ_LOG_INFO("build", "job {}: waits for {} to be made", id.str(),
+                     h.names.front());
+      {
+        std::lock_guard lk(_downloads_mu);
+        _held.emplace(id, std::move(h));
+      }
+      post_("job.queued", rec.id, {{"title", rec.title}, {"op", rec.op},
+                                   {"purpose", rec.purpose},
+                                   {"project", pid}, {"asset", aid}});
+      return id;
+    }
+  }
   VALTZ_ASSIGN(auto inputs, p->resolve_inputs(r));
   if (!_catalog.find(r.model)) {
     return make_error(Code::NotFound, msg::kRecipeModelUnknown,
                       {{"model", r.model}});
+  }
+  // Speech in voices cloned by their words (Drama 3): what each says, as
+  // its transcript heard it -- in what is sent, here or to a member.
+  if (r.op == engine::kOpGenerateSpeech && r.params.contains("voices")) {
+    const auto* sm = _catalog.find(r.model);
+    const double keep = jget(
+        jget(jget(sm->engine, "vpipe", Json::object()), "speech",
+             Json::object()),
+        "voice_seconds", 12.0);
+    VALTZ_TRY(voice_words_(*p, r.params, keep));
   }
   // Where it runs (DESIGN §11): here, when this Mac has what it needs
   // and is free; else, in a fleet, a member that has it and is idle. A
@@ -6655,19 +7030,12 @@ Controller::submit_build_(
   }
 
   engine::JobSpec spec;
-  spec.id = JobId::make();
+  spec.id = id;
   spec.op = r.op;
   spec.model = ref;
   spec.params = r.params;
   spec.params.update(helpers);
   spec.output_dir = p->blobs().tmp_dir();
-  // What its commit joins: the command it is submitted in.
-  if (project::Workspace* w = workspace_(pid)) {
-    if (const auto seq = w->undo().recording()) {
-      std::lock_guard lk(_job_commands_mu);
-      _job_commands[spec.id] = seq;
-    }
-  }
   project::BlobRef rendered_base;
   for (const auto& in : inputs) {
     VALTZ_ASSIGN(project::Asset ia, p->asset(in.asset));
@@ -6756,10 +7124,19 @@ Controller::submit_build_(
   rec.inputs = inputs;
   rec.rendered_base = rendered_base;
   rec.created_ms = project::now_ms();
-  _jobs.add(rec);
-  post_("job.queued", rec.id, {{"title", rec.title}, {"op", rec.op},
-                               {"purpose", rec.purpose},
-                               {"project", pid}, {"asset", aid}});
+  if (reuse) {
+    // Held until now: listed since it was asked for.
+    _jobs.update(id, [&](JobRecord& j) {
+      j.recipe = rec.recipe;
+      j.inputs = rec.inputs;
+      j.rendered_base = rec.rendered_base;
+    });
+  } else {
+    _jobs.add(rec);
+    post_("job.queued", rec.id, {{"title", rec.title}, {"op", rec.op},
+                                 {"purpose", rec.purpose},
+                                 {"project", pid}, {"asset", aid}});
+  }
 
   engine::JobSink sink = [this](const engine::JobEvent& ev) {
     on_build_event_(ev);
@@ -7656,12 +8033,22 @@ Controller::cancel(JobId id)
 {
   // Waiting for a download: it waits no more.
   std::optional<Waiting> w;
+  bool held = false;
   {
     std::lock_guard lk(_downloads_mu);
     if (auto it = _waiting.find(id); it != _waiting.end()) {
       w = std::move(it->second);
       _waiting.erase(it);
     }
+    held = _held.erase(id) > 0;
+  }
+  // Held for an input being made: nothing was sent.
+  if (held) {
+    engine::JobEvent ev;
+    ev.job = id;
+    ev.kind = engine::JobEventKind::Cancelled;
+    on_build_event_(ev);
+    return ok_status();
   }
   if (w) {
     engine::JobEvent ev;
@@ -7949,6 +8336,9 @@ Controller::fleet_self_() const
           {"runs", runs},
           {"features", features},
           {"assistant", chat ? a->id : std::string()},
+          // Its context as this Mac's memory gives it: a sender's agent
+          // compacts its conversations to it (DESIGN §9b).
+          {"assistant_context", chat ? helper_context_(*a) : 0},
           {"busy", busy_here_()},
           {"machine", {{"chip", _hw.chip},
                        {"ram_gb", _hw.ram_gb()},

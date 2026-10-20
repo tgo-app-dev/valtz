@@ -24,6 +24,7 @@ struct StorageView: View {
                         Task { await load() }
                     }
                     .disabled(loading)
+                    .settingsMark(String(localized: "Internal SSD"))
                 }
                 Section {
                     ForEach(modelSort.order(r.models.items,
@@ -40,6 +41,8 @@ struct StorageView: View {
                 } header: {
                     header("Models", r.models.bytes, r.models.root,
                            .purple, sort: $modelSort, list: "models")
+                        .settingsMark(String(localized: "Models"),
+                                      String(localized: "Size"))
                 }
                 Section {
                     ForEach(projectSort.order(r.projects.items,
@@ -51,6 +54,7 @@ struct StorageView: View {
                 } header: {
                     header("Projects", r.projects.bytes, r.projects.root,
                            .blue, sort: $projectSort, list: "projects")
+                        .settingsMark(String(localized: "Projects"))
                 }
                 Section {
                     let budget = r.cache.budget.formatted(
@@ -60,6 +64,7 @@ struct StorageView: View {
                             bytes: r.cache.bytes, created: nil)
                 } header: {
                     header("Cache", r.cache.bytes, r.cache.root, .orange)
+                        .settingsMark(String(localized: "Cache"))
                 }
             } else {
                 ProgressView().frame(maxWidth: .infinity)

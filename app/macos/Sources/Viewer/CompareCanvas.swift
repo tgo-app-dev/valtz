@@ -615,6 +615,18 @@ final class CompareCanvas: NSView {
                                  ty: bounds.height - r.maxY - e.minY * ppp)
     }
 
+    /// Markup's canvas rect (pixels, y down) on the screen: where a window
+    /// beside it goes (the text's edit window).
+    func screenRect(canvas r: CGRect) -> CGRect? {
+        guard let win = window else { return nil }
+        let v = r.applying(CGAffineTransform(translationX: markupOrigin.x,
+                                             y: markupOrigin.y)
+                               .concatenating(canvasToView))
+        let local = CGRect(x: v.minX, y: bounds.height - v.maxY,
+                           width: v.width, height: v.height)
+        return win.convertToScreen(convert(local, to: nil))
+    }
+
     /// A view point (this view's, y up) on A's canvas, in pixels.
     private func canvasPoint(_ p: CGPoint) -> CGPoint {
         let c = CGPoint(x: p.x, y: bounds.height - p.y)

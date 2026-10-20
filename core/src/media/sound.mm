@@ -660,7 +660,7 @@ mix_sound(const SoundPlan& plan, const fs::path& out)
 
 
 Result<double>
-mono_sound(const fs::path& in, const fs::path& out, int rate)
+mono_sound(const fs::path& in, const fs::path& out, int rate, double seconds)
 {
   if (rate < 8000) {
     return make_error(Code::InvalidArgument, std::format(
@@ -708,6 +708,10 @@ mono_sound(const fs::path& in, const fs::path& out, int rate)
         AVLinearPCMIsBigEndianKey : @NO,
       }];
       [r addOutput:o];
+      if (seconds > 0) {
+        r.timeRange = CMTimeRangeMake(
+            kCMTimeZero, CMTimeMakeWithSeconds(seconds, 48000));
+      }
       if (![r startReading]) {
         return make_error(Code::Io, std::format("cannot read {}",
                                                 in.string()));
@@ -753,6 +757,10 @@ mono_sound(const fs::path& in, const fs::path& out, int rate)
       if (heard[i] > 1) {
         sum[i] /= static_cast<float>(heard[i]);
       }
+    }
+    if (seconds > 0) {
+      sum.resize(std::min(sum.size(), static_cast<std::size_t>(
+                                          std::llround(seconds * rate))));
     }
     std::error_code ec;
     fs::create_directories(out.parent_path(), ec);

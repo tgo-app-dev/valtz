@@ -87,18 +87,28 @@ preset_table(const Json& vp, std::string_view preference)
 }
 
 // ...and for a request that CONTINUES a clip, its `continuation` table's
-// keys laid over it.
+// keys laid over it; on a Mac whose GPU has no matrix cores, its
+// `without_matrix_cores` table's. A preset table says what an M5 runs:
+// its Sage and int8 stay off before it whatever the table says, and what
+// a model runs INSTEAD there -- Sol, which Krea 2's Fast gives up on an
+// M5 for the int8 P*V -- is that table's.
 Json
 preset_table(const Json& vp, std::string_view preference,
              const TuningContext& ctx)
 {
   Json t = preset_table(vp, preference);
-  if (ctx.continuation) {
-    const Json c = jget(jget(vp, "continuation", Json::object()),
+  const auto lay = [&](const char* key) {
+    const Json c = jget(jget(vp, key, Json::object()),
                         std::string(preference).c_str(), Json::object());
     for (auto it = c.begin(); c.is_object() && it != c.end(); ++it) {
       t[it.key()] = it.value();
     }
+  };
+  if (ctx.continuation) {
+    lay("continuation");
+  }
+  if (!ctx.matrix_cores) {
+    lay("without_matrix_cores");
   }
   return t;
 }
@@ -272,7 +282,8 @@ declared_offers(const Json& vp, const TuningContext& ctx,
   static const std::set<std::string> kOwn = {
     "steps", "loras", "dits", "vaes", "hyperflow", "taomate", "vdn",
     "sol_attn",
-    "sol_tau", "sage_attn", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm",
+    "sol_tau", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm",
+    "i8_gemm_tier", "vae_i8_gemm",
     "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
     "motion_cache", "video_shift", "audio_shift", "shift", "turbo"};
   for (const auto& d : jget(vp, "options", Json::array())) {
@@ -440,6 +451,32 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     o.preset = false;
     out.push_back(std::move(o));
   }
+  if (takes(vp, "sage_pv8")) {
+    // ...and its P*V in int8 too (vpipe's `sage_pv8`): the flash kernel
+    // holds the product in int32 across key blocks, P on a uint8 grid.
+    // Off unless a table says (Krea 2's and MOSS-Image's Fast, MiniMax
+    // H3's Fast and Med). MEASURED on the M5 Ultra, MiniMax H3 at 1344 x
+    // 768 x 362 frames, Fine: the denoise 1942 s against 2110 (the
+    // attention 1.18x), vpipe keeping its first quarter of the steps on
+    // SageAttention alone; a picture model runs it on every step.
+    Offer o{"sage_pv8", Kind::Bool};
+    o.available = ctx.matrix_cores;
+    o.why = o.available ? "" : "needs-matrix-cores";
+    o.preset = false;
+    o.needs = "sage_attn";
+    out.push_back(std::move(o));
+  }
+  if (takes(vp, "sage_pv8_all_rows")) {
+    // ...on the prompt's and the soundtrack's rows as well as the video's
+    // (vpipe's `sage_pv8_all_rows`, MiniMax H3's): off, those rows -- under
+    // 1% of a clip's -- keep SageAttention alone.
+    Offer o{"sage_pv8_all_rows", Kind::Bool};
+    o.available = ctx.matrix_cores;
+    o.why = o.available ? "" : "needs-matrix-cores";
+    o.preset = false;
+    o.needs = "sage_pv8";
+    out.push_back(std::move(o));
+  }
   {
     Offer o{"i8_gemm", Kind::Bool};
     o.available = takes(vp, "i8_gemm") && ctx.matrix_cores;
@@ -475,9 +512,10 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     // The CODEC's int8 (vpipe's vae-decode / vae-encode `i8_gemm`): its
     // 3x3 convs on the matrix cores' int8 convolution, an activation
     // channel at a step of its own, and its mid-block attention's two
-    // GEMMs. OFF in every preset, as vpipe ships it: a codec is the last
-    // step before the pixels, with nothing after it to absorb an
-    // approximation. MEASURED on the M5 Pro, Qwen-Image 2.1 at 1024^2:
+    // GEMMs. Off unless a table says (Qwen-Image 2.1's Fast, its Turbo's:
+    // Fast every 3x3), as vpipe ships it: a codec is the last step before
+    // the pixels, with nothing after it to absorb an approximation.
+    // MEASURED on the M5 Pro, Qwen-Image 2.1 at 1024^2:
     // the decode 1.15x at Accurate, 1.26x at Fast (~0.15-0.26 s), 50-60
     // dB from the f16 picture; the encode 1.1x.
     Offer o{"vae_i8_gemm", Kind::Bool};

@@ -75,11 +75,14 @@ struct FleetView: View {
                         model.configureFleet(["member_name": name])
                     }
                 }
+                .settingsMark(String(localized: "Name"))
             Toggle("Discoverable", isOn: Binding(
                 get: { c.discoverable },
                 set: { model.configureFleet(["discoverable": $0]) }))
+                .settingsMark(String(localized: "Discoverable"))
         } header: {
             Text("This Mac")
+                .settingsMark(String(localized: "This Mac"))
         } footer: {
             Text("Discoverable, this Mac can be seen on the network by its fleet's members, who send it jobs, and by Macs looking for a fleet to join. Not discoverable, it can still send its own jobs to the members it finds.")
                 .foregroundStyle(.secondary)
@@ -91,20 +94,24 @@ struct FleetView: View {
     private func fleetSection(_ f: FleetStatus, _ c: FleetConfig) -> some View {
         Section("Fleet") {
             LabeledContent("Fleet") { Text(verbatim: c.fleet) }
+                .settingsMark(String(localized: "Fleet"))
             LabeledContent("Secret") {
                 HStack {
                     Text("Set").foregroundStyle(.secondary)
                     Button("Change…") { changingSecret = true }
                 }
             }
+            .settingsMark(String(localized: "Secret"))
             if let port = f.port, port > 0 {
                 LabeledContent("Listening") {
                     Text("Port \(String(port))").foregroundStyle(.secondary)
                 }
+                .settingsMark(String(localized: "Listening"))
             }
             Button("Leave Fleet", role: .destructive) {
                 model.configureFleet(["fleet": ""])
             }
+            .settingsMark(String(localized: "Leave Fleet"))
         }
     }
 
@@ -120,6 +127,7 @@ struct FleetView: View {
             }
         } header: {
             Text("Members")
+                .settingsMark(String(localized: "Members"))
         } footer: {
             Text("By default a job this Mac cannot run, or cannot run now because it is busy, goes to a member that can and is free — generations and the helper's prompts alike. Offload Policies set it task by task.")
                 .foregroundStyle(.secondary)
@@ -156,6 +164,7 @@ struct FleetView: View {
             }
         } header: {
             Text("Join a Fleet")
+                .settingsMark(String(localized: "Join a Fleet"))
         } footer: {
             Text("The fleets whose members are discoverable on this network. Joining takes the fleet's secret.")
                 .foregroundStyle(.secondary)
@@ -165,7 +174,9 @@ struct FleetView: View {
     private var createSection: some View {
         Section {
             TextField("Fleet name", text: $newFleet)
+                .settingsMark(String(localized: "Fleet name"))
             SecureField("Secret", text: $newSecret)
+                .settingsMark(String(localized: "Secret"))
             Button("Create Fleet") {
                 if model.configureFleet(["fleet": newFleet,
                                          "secret": newSecret,
@@ -178,6 +189,7 @@ struct FleetView: View {
                       || newSecret.count < 8)
         } header: {
             Text("Create a Fleet")
+                .settingsMark(String(localized: "Create a Fleet"))
         } footer: {
             Text("Every member shares the fleet's secret, at least 8 characters: it opens every connection between them. Valtz keeps a key made from it, never the secret itself.")
                 .foregroundStyle(.secondary)
@@ -195,6 +207,7 @@ struct FleetView: View {
                 Text("Ask Each Time").tag("ask")
                 Text("Never").tag("never")
             }
+            .settingsMark(String(localized: "Take Fleet Jobs"))
             Toggle("Only at Set Times", isOn: Binding(
                 get: { c.schedule.on },
                 set: {
@@ -203,6 +216,7 @@ struct FleetView: View {
                     model.configureFleet(["schedule": s.json])
                 }))
             .disabled(c.accept == "never")
+            .settingsMark(String(localized: "Only at Set Times"))
             if c.schedule.on && c.accept != "never" {
                 ScheduleRows(schedule: c.schedule) {
                     model.configureFleet(["schedule": $0.json])
@@ -210,6 +224,7 @@ struct FleetView: View {
             }
         } header: {
             Text("Fleet Jobs")
+                .settingsMark(String(localized: "Fleet Jobs"))
         } footer: {
             Text(c.accepting
                  ? String(localized: "Taking jobs now. While this Mac runs one for a member, its window is given over to it until the job ends.")
@@ -232,6 +247,7 @@ struct FleetView: View {
                 symbol: "arrow.triangle.branch", color: .orange) {
                 open(.fleetOffload)
             }
+            .settingsMark(SettingsPlace.fleetOffload.title)
             SettingsLinkRow(
                 title: SettingsPlace.fleetSharing.title,
                 detail: held == 0 ? String(localized: "Everything")
@@ -239,6 +255,7 @@ struct FleetView: View {
                 symbol: "square.and.arrow.up", color: .green) {
                 open(.fleetSharing)
             }
+            .settingsMark(SettingsPlace.fleetSharing.title)
         } footer: {
             Text("Where this Mac's own jobs run, task by task and model by model; and what it offers the other members.")
                 .foregroundStyle(.secondary)

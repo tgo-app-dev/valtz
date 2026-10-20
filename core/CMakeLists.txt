@@ -48,11 +48,13 @@ set(VALTZ_CORE_SOURCES
   src/models/model-store.cc
   src/models/tuning.cc
   src/assist/assistant.cc
+  src/assist/drama3.cc
   src/assist/moss-image.cc
   src/assist/rewrite-prompts.cc
   src/assist/transcript.cc
   src/assist/video-summary.cc
   src/agent/agent.cc
+  src/agent/compaction.cc
   src/agent/cloud.mm
   src/ext/extension.cc
   src/fleet/fleet-config.cc
@@ -112,6 +114,13 @@ valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/valtz-agent.md"
 # (TTS-Audio-Suite's MOSS_TTS_PROMPT_FIELDS_GUIDE; DESIGN §4g).
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/moss-tts.md"
   kMossTtsSkill moss-tts-skill.cc)
+# Drama 3's script writer: Valtz's own instructions, then Fish Audio's
+# guide to directing the model as its makers publish it (CC BY 4.0,
+# 3rd-party/fish-audio-drama3), read as plain text (assist/drama3.h).
+valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/drama3.md"
+  kDrama3Skill drama3-skill.cc)
+valtz_embed("${PROJECT_SOURCE_DIR}/3rd-party/fish-audio-drama3/drama-3.mdx"
+  kDrama3Guide drama3-guide.cc)
 # Qwen-Image's prompt writer, generate and edit: Valtz's own (DESIGN §9),
 # what Enhance uses unless QwenLM's rewriters have been downloaded.
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/qwen-image-t2i.md"

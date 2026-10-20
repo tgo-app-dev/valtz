@@ -519,6 +519,61 @@ struct ValtzApp: App {
         // drawn to <snapshot>-text.png.
         case "edit":
             m.editMarkupText()
+            // Where it opened: beside the text's box, both on the screen.
+            try? await Task.sleep(for: .milliseconds(300))
+            let pf = mk.textPanel.window?.frame
+            let bf = mk.selectedText.flatMap(MarkupTextPanel.screenBox)
+            func box(_ r: CGRect?) -> String {
+                guard let r else { return "-" }
+                return "\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width))x\(Int(r.height))"
+            }
+            var side = "-"
+            if let p = pf, let b = bf {
+                side = p.minX >= b.maxX ? "right" : p.maxX <= b.minX ? "left"
+                    : p.maxY <= b.minY ? "below" : "over"
+            }
+            print("snapshot: text-panel edit open=\(mk.textPanel.isOpen) "
+                  + "panel=\(box(pf)) box=\(box(bf)) side=\(side)")
+        // A colour well clicked through the app's event queue -- the
+        // toolbar's Color or Fill, by place ("colorwell=0") -- and where
+        // the colour panel then is beside it.
+        case "colorwell":
+            guard let w = m.editorWindow, let root = w.contentView else { break }
+            func wells(_ v: NSView) -> [NSColorWell] {
+                (v as? NSColorWell).map { [$0] } ?? v.subviews.flatMap(wells)
+            }
+            let all = wells(root).filter { !$0.isHiddenOrHasHiddenAncestor }
+                .sorted { $0.convert($0.bounds, to: nil).minX
+                          < $1.convert($1.bounds, to: nil).minX }
+            guard let i = Int(arg), all.indices.contains(i) else {
+                print("snapshot: colorwell \(arg) wells=\(all.count) none")
+                break
+            }
+            let well = all[i]
+            let at = well.convert(NSPoint(x: well.bounds.midX,
+                                          y: well.bounds.midY), to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                if let e = NSEvent.mouseEvent(
+                    with: type, location: at, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: w.windowNumber, context: nil,
+                    eventNumber: 0, clickCount: 1, pressure: 1) {
+                    NSApp.postEvent(e, atStart: false)
+                }
+            }
+            try? await Task.sleep(for: .milliseconds(600))
+            let panel = NSColorPanel.shared
+            let wf = w.convertToScreen(well.convert(well.bounds, to: nil))
+            let pf = panel.frame
+            let gap = pf.maxY <= wf.minY ? wf.minY - pf.maxY
+                : pf.minY >= wf.maxY ? pf.minY - wf.maxY : -1
+            func box(_ r: CGRect) -> String {
+                "\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width))x\(Int(r.height))"
+            }
+            print("snapshot: colorwell \(i) class=\(type(of: well)) "
+                  + "active=\(well.isActive) visible=\(panel.isVisible) "
+                  + "well=\(box(wf)) panel=\(box(pf)) gap=\(Int(gap)) "
+                  + "placed=\(ColorPanelPlacer.last != nil)")
         case "type", "sel", "cut", "copy", "paste", "undo", "redo",
              "selall", "panel":
             let tp = mk.textPanel
@@ -919,6 +974,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // as a background process; make it a regular foreground app.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+        ColorPanelPlacer.install()
         scheduleSnapshotIfRequested()
     }
 
@@ -4537,10 +4593,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 $0.isVisible && $0.identifier?.rawValue
                     .contains("Settings") == true
             })
-            @MainActor func rows() -> [SettingsPlace] {
+            @MainActor func rows() -> [SettingsResult] {
                 m.settingsSearch.isEmpty
-                    ? SettingsPage.allCases.map { .page($0) }
-                    : SettingsPlace.found(m.settingsSearch, m)
+                    ? SettingsPage.allCases.map { SettingsResult(.page($0)) }
+                    : SettingsPlace.results(m.settingsSearch, m)
             }
             for step in spec.split(separator: ";").map(String.init) {
                 let kv = step.split(separator: ":", maxSplits: 1)
@@ -4575,10 +4631,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 case "search": m.settingsSearch = arg
                 case "clear": m.settingsSearch = ""
+                // Escape posted to Settings (it closes it); the window
+                // left elsewhere ("move:x,y", the screen's points); the
+                // app menu's Settings… again (centred on the editor).
+                case "esc":
+                    if let w = NSApp.windows.first(where: {
+                           $0.identifier?.rawValue.contains("Settings")
+                               == true }),
+                       let ev = NSEvent.keyEvent(
+                        with: .keyDown, location: .zero, modifierFlags: [],
+                        timestamp: 0, windowNumber: w.windowNumber,
+                        context: nil, characters: "\u{1b}",
+                        charactersIgnoringModifiers: "\u{1b}",
+                        isARepeat: false, keyCode: 53) {
+                        NSApp.postEvent(ev, atStart: false)
+                    }
+                case "move":
+                    let xy = arg.split(separator: ",").compactMap {
+                        Double($0)
+                    }
+                    if xy.count == 2, let w = NSApp.windows.first(where: {
+                        $0.isVisible && $0.identifier?.rawValue
+                            .contains("Settings") == true }) {
+                        w.setFrameOrigin(NSPoint(x: xy[0], y: xy[1]))
+                    }
+                case "reopen":
+                    if let app = NSApp.mainMenu?.items.first?.submenu,
+                       let i = app.items.firstIndex(where: {
+                           $0.keyEquivalent == "," }) {
+                        app.performActionForItem(at: i)
+                    }
+                // A listed row clicked: its place -- a setting found on
+                // it scrolled to and pulsing.
                 case "pick":
                     let r = rows()
                     if let i = Int(arg), r.indices.contains(i) {
-                        m.settingsHistory.go(r[i])
+                        m.settingsHistory.go(r[i].place)
+                        m.settingsReveal = r[i].setting.map {
+                            SettingsReveal(name: $0, serial:
+                                (m.settingsReveal?.serial ?? 0) + 1)
+                        }
                     }
                 case "offload", "share":
                     let kv2 = arg.split(separator: "=").map(String.init)
@@ -4626,7 +4718,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 line += " at=\(h.current.raw) history=\(hist)"
                 line += " back=\(h.canGoBack) forward=\(h.canGoForward)"
                 line += " search=\(m.settingsSearch) rows=\(listed)"
+                // The page's settings the search lights, and the one
+                // picked from its results.
+                let lit = SettingsMarksShown.shared.lit(m.settingsSearch)
+                line += " lit=\(lit.isEmpty ? "-" : lit.joined(separator: "|"))"
+                line += " picked=\(m.settingsReveal?.name ?? "-")"
+                // Where the page's scroll views stand (y of the visible
+                // top, of the whole height): a pick's scroll.
+                if let content = win?.contentView {
+                    var ys: [String] = []
+                    func walk(_ v: NSView) {
+                        if let sv = v as? NSScrollView,
+                           let doc = sv.documentView,
+                           doc.frame.height > sv.contentSize.height + 1 {
+                            ys.append("\(Int(sv.documentVisibleRect.minY))/\(Int(doc.frame.height))")
+                        }
+                        v.subviews.forEach(walk)
+                    }
+                    walk(content)
+                    line += " scroll=\(ys.isEmpty ? "-" : ys.joined(separator: ","))"
+                }
                 line += " title=\(title) policies=\(pol) withheld=\(held)"
+                // Where it is: open, its frame and the editor's (the
+                // screen's points), and whether it is centred on it.
+                let sw = NSApp.windows.first(where: {
+                    $0.identifier?.rawValue.contains("Settings") == true
+                })
+                func box(_ r: CGRect?) -> String {
+                    guard let r else { return "-" }
+                    return "\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width))x\(Int(r.height))"
+                }
+                let ef = m.editorWindow?.frame
+                let open = sw?.isVisible == true
+                let centred = open && ef.map { e in
+                    let f = sw!.frame
+                    return abs(f.midX - e.midX) < 2 && abs(f.midY - e.midY) < 2
+                } == true
+                line += " open=\(open) frame=\(box(open ? sw?.frame : nil))"
+                line += " editor=\(box(ef)) centred=\(centred)"
                 FileHandle.standardError.write(Data((line + "\n").utf8))
             }
         }

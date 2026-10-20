@@ -92,8 +92,11 @@ Result<bool> mix_sound(const SoundPlan& plan,
 // clip's too) read at its own channel count, each sample's channels
 // AVERAGED -- every channel heard, none dropped or weighted -- then the
 // tracks averaged where they overlap. Its length, in seconds. Blocking.
+// `seconds` > 0: its first that many alone (a voice cut to the words it
+// says).
 Result<double> mono_sound(const std::filesystem::path& in,
-                          const std::filesystem::path& out, int rate);
+                          const std::filesystem::path& out, int rate,
+                          double seconds = 0);
 
 // A file's SOUND as TWO channels at `rate` Hz, written as a 32-bit float
 // WAV -- what a source separator hears (DESIGN §4j): every sound track of

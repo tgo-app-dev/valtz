@@ -1188,7 +1188,19 @@ build_enhance_prompt(const EnhanceRequest& r)
     if (!r.size.empty()) {
       s += std::format(" (Output size: {}.)", r.size);
     }
-    if (r.speech) {
+    if (r.speech && r.speakers) {
+      s += "\n\n" + speech_length(r.seconds);
+      s += r.voices > 0
+          ? std::format("\n{} reference voice{} given, in the order the "
+                        "script's speakers first speak{}: direct the "
+                        "delivery, not the voice.",
+                        r.voices, r.voices == 1 ? " is" : "s are",
+                        r.voices == 1 ? " (one voice reads it all, unless "
+                                        "the request is a scene)"
+                                      : "")
+          : "\nNo reference voice is given: the model chooses each "
+            "voice.";
+    } else if (r.speech) {
       s += "\n\n" + speech_length(r.seconds);
       s += r.voice
           ? "\nA reference voice is given: the speech is in its voice, "

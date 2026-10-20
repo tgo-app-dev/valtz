@@ -22,6 +22,7 @@ struct ExperimentalView: View {
                         Image(systemName: Modality.agent.symbol)
                     }
                 }
+                .settingsMark(String(localized: "Agent"))
             } footer: {
                 Text("The Agent tab over the prompt: ask for a deck, a poster or a video of your clips with music, and a model builds it in your document with the editor's tools, a step at a time. Switched off, the tab goes, and a session at work stops.")
                     .foregroundStyle(.secondary)

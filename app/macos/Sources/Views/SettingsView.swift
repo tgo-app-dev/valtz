@@ -31,11 +31,12 @@ struct SettingsView: View {
     private var place: SettingsPlace { model.settingsHistory.current }
 
     /// The sidebar's rows: every page -- or, while a search is typed, the
-    /// pages it finds and the pages under them it finds.
-    private var rows: [SettingsPlace] {
+    /// pages it finds, the pages under them it finds, and under each the
+    /// settings it finds there (SettingsMarks).
+    private var rows: [SettingsResult] {
         model.settingsSearch.isEmpty
-            ? SettingsPage.allCases.map { .page($0) }
-            : SettingsPlace.found(model.settingsSearch, model)
+            ? SettingsPage.allCases.map { SettingsResult(.page($0)) }
+            : SettingsPlace.results(model.settingsSearch, model)
     }
 
     var body: some View {
@@ -43,8 +44,9 @@ struct SettingsView: View {
             ScrollView {
                 VStack(spacing: 0) {
                     ForEach(rows, id: \.self) { r in
-                        SidebarRow(place: r, selected: selected(r)) {
-                            go(r)
+                        SidebarRow(result: r, query: model.settingsSearch,
+                                   selected: selected(r)) {
+                            pick(r)
                         }
                     }
                     if rows.isEmpty {
@@ -67,6 +69,7 @@ struct SettingsView: View {
             .background(UnifiedToolbar())
             .toolbar(removing: .sidebarToggle)
         } detail: {
+            ScrollViewReader { scroller in
             Group {
                 switch place {
                 case .page(.general): GeneralSettings(model: model)
@@ -80,6 +83,23 @@ struct SettingsView: View {
                 case .fleetOffload: FleetOffloadView(model: model)
                 case .fleetSharing: FleetSharingView(model: model)
                 }
+            }
+            // What the search finds, highlighted on the page; a setting
+            // picked from its results scrolled to once the page is laid
+            // out -- one just opened is not at once -- and not animated:
+            // either way, a page's list scrolls nowhere. The pulse draws
+            // the eye.
+            .environment(\.settingsQuery, model.settingsSearch)
+            .environment(\.settingsReveal, model.settingsReveal)
+            .onChange(of: model.settingsReveal) { _, r in
+                guard let r else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(500))
+                    if let at = SettingsMarksShown.shared.anchor(r.name) {
+                        scroller.scrollTo(at, anchor: .center)
+                    }
+                }
+            }
             }
             // Named beside the arrows, as System Settings names a pane
             // (and for the Window menu).
@@ -118,6 +138,7 @@ struct SettingsView: View {
                idealHeight: 680)
         // Controls take Valtz's accent, not the system's.
         .tint(Color.valtzAccent)
+        .background(SettingsWindowKeeper(model: model))
         .onAppear {
             sidebarFocused = true
             takeRequest()
@@ -131,11 +152,35 @@ struct SettingsView: View {
         model.settingsHistory.go(p)
     }
 
-    /// The row of where Settings is -- or of the page it is under, unless
-    /// a search lists that page itself.
-    private func selected(_ r: SettingsPlace) -> Bool {
-        if r == place { return true }
-        return r == .page(place.page) && !rows.contains(place)
+    /// A row picked: its place shown -- and a setting found there
+    /// scrolled to and pulsing.
+    private func pick(_ r: SettingsResult) {
+        go(r.place)
+        if let s = r.setting {
+            model.settingsReveal = SettingsReveal(
+                name: s, serial: (model.settingsReveal?.serial ?? 0) + 1)
+        } else {
+            model.settingsReveal = nil
+        }
+    }
+
+    /// The setting picked from the results, while Settings is still where
+    /// it was picked.
+    private var revealed: SettingsResult? {
+        guard let r = model.settingsReveal else { return nil }
+        let res = SettingsResult(place, r.name)
+        return rows.contains(res) ? res : nil
+    }
+
+    /// The row of where Settings is -- the setting picked there, when one
+    /// was -- or of the page it is under, unless a search lists that page
+    /// itself.
+    private func selected(_ r: SettingsResult) -> Bool {
+        if let v = revealed { return r == v }
+        guard r.setting == nil else { return false }
+        if r.place == place { return true }
+        return r.place == .page(place.page)
+            && !rows.contains(SettingsResult(place))
     }
 
     private func takeRequest() {
@@ -151,9 +196,8 @@ struct SettingsView: View {
     private func step(_ by: Int) -> KeyPress.Result {
         let all = rows
         guard !all.isEmpty else { return .ignored }
-        let i = all.firstIndex(of: place)
-            ?? all.firstIndex(of: .page(place.page)) ?? 0
-        go(all[min(all.count - 1, max(0, i + by))])
+        let i = all.firstIndex { selected($0) } ?? 0
+        pick(all[min(all.count - 1, max(0, i + by))])
         return .handled
     }
 }
@@ -281,6 +325,108 @@ private struct UnifiedToolbar: NSViewRepresentable {
     }
 }
 
+/// The Settings window CENTRED on the editor's each time it opens -- it
+/// came back where it was last left, on a large screen far from the
+/// window it serves -- inside the editor's screen; and CLOSED BY ESCAPE,
+/// but where Escape is something else's: an input method composing, the
+/// search field's words (cleared first), a sheet over it.
+private struct SettingsWindowKeeper: NSViewRepresentable {
+    let model: AppModel
+
+    func makeNSView(context: Context) -> NSView { Probe(model: model) }
+    func updateNSView(_ v: NSView, context: Context) {}
+
+    final class Probe: NSView {
+        private weak var model: AppModel?
+        /// Placed since it was last shown.
+        private var placed = false
+        private var observers: [NSObjectProtocol] = []
+        private var monitor: Any?
+
+        init(model: AppModel) {
+            self.model = model
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) is unused") }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            for o in observers { NotificationCenter.default.removeObserver(o) }
+            observers = []
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            guard let w = window else { return }
+            placed = false
+            let nc = NotificationCenter.default
+            // Placed as it comes on screen (or is made key: an app in the
+            // background opens it unseen), once until it closes -- not
+            // again when uncovered, or clicked after being moved.
+            observers = [
+                nc.addObserver(forName: NSWindow.didBecomeKeyNotification,
+                               object: w, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.place() }
+                },
+                nc.addObserver(
+                    forName: NSWindow.didChangeOcclusionStateNotification,
+                    object: w, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        if self?.window?.occlusionState.contains(.visible)
+                            == true {
+                            self?.place()
+                        }
+                    }
+                },
+                nc.addObserver(forName: NSWindow.willCloseNotification,
+                               object: w, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.placed = false }
+                },
+            ]
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+                [weak self] e in
+                let taken = MainActor.assumeIsolated {
+                    self?.escape(e) ?? false
+                }
+                return taken ? nil : e
+            }
+            if w.isKeyWindow || w.occlusionState.contains(.visible) {
+                place()
+            }
+        }
+
+        /// Over the editor's middle, kept on its screen.
+        func place() {
+            guard !placed, let w = window else { return }
+            placed = true
+            guard let ed = model?.editorWindow, ed.isVisible, ed !== w
+            else { return }
+            let e = ed.frame, f = w.frame
+            var o = NSPoint(x: (e.midX - f.width / 2).rounded(),
+                            y: (e.midY - f.height / 2).rounded())
+            if let vis = (ed.screen ?? w.screen)?.visibleFrame {
+                o.x = min(max(o.x, vis.minX), max(vis.minX, vis.maxX - f.width))
+                o.y = min(max(o.y, vis.minY), max(vis.minY, vis.maxY - f.height))
+            }
+            w.setFrameOrigin(o)
+        }
+
+        /// Escape with no modifier, to this window: closed -- true, taken.
+        private func escape(_ e: NSEvent) -> Bool {
+            let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                .subtracting([.capsLock, .numericPad, .function])
+            guard e.keyCode == 53, mods.isEmpty, let w = window,
+                  e.window === w, w.attachedSheet == nil else { return false }
+            if let tv = w.firstResponder as? NSTextView {
+                if tv.hasMarkedText() { return false }
+                if tv.isFieldEditor, let f = tv.delegate as? NSSearchField,
+                   !f.stringValue.isEmpty { return false }
+            }
+            w.performClose(nil)
+            return true
+        }
+    }
+}
+
 /// Valtz's accent, as its asset catalog has it: what the system's own
 /// accent colour, a person's choice in System Settings, does not replace.
 extension Color {
@@ -289,38 +435,54 @@ extension Color {
 
 /// A row of the sidebar: a page, its icon and name -- the selected one
 /// on the accent, its name bold; selected too while a page under it is
-/// shown -- or, found by a search, a page under one, set in under it.
+/// shown -- or, found by a search, a page under one, set in under it, or
+/// a setting found on a page, set in further, what was found in it bold.
 private struct SidebarRow: View {
-    let place: SettingsPlace
+    let result: SettingsResult
+    let query: String
     let selected: Bool
     let action: () -> Void
     @Environment(\.colorScheme) private var scheme
+
+    private var place: SettingsPlace { result.place }
 
     private var below: Bool {
         if case .page = place { return false }
         return true
     }
 
+    private var ink: Color {
+        selected ? (scheme == .dark ? Color.black : Color.white)
+                 : Color.primary
+    }
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 7) {
-                if below {
-                    Spacer().frame(width: 20)
+                if let s = result.setting {
+                    Spacer().frame(width: below ? 34 : 20)
+                    Text(SettingsSearchText.emphasized(s, query))
+                        .font(.system(size: 12))
+                        .foregroundStyle(selected ? ink : Color.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 } else {
-                    SettingsIcon(symbol: place.page.symbol,
-                                 color: place.page.color)
+                    if below {
+                        Spacer().frame(width: 20)
+                    } else {
+                        SettingsIcon(symbol: place.page.symbol,
+                                     color: place.page.color)
+                    }
+                    Text(verbatim: place.title)
+                        .font(.system(size: 13,
+                                      weight: selected ? .semibold
+                                                       : .regular))
+                        .foregroundStyle(ink)
                 }
-                Text(verbatim: place.title)
-                    .font(.system(size: 13,
-                                  weight: selected ? .semibold : .regular))
-                    .foregroundStyle(selected
-                                     ? (scheme == .dark ? Color.black
-                                                        : Color.white)
-                                     : Color.primary)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 9)
-            .frame(height: below ? 28 : 32)
+            .frame(height: result.setting != nil ? 24 : below ? 28 : 32)
             .background {
                 if selected {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -400,7 +562,7 @@ private struct GeneralSettings: View {
     var body: some View {
         Form {
             Section { SettingsHeader(page: .general) }
-            Section("Language") {
+            Section {
                 Picker("Language", selection: $language) {
                     Text("System Default (\(L10n.name(L10n.systemDefault)))")
                         .tag("")
@@ -412,6 +574,7 @@ private struct GeneralSettings: View {
                 .onChange(of: language) { _, v in
                     L10n.choose(v.isEmpty ? nil : v)
                 }
+                .settingsMark(String(localized: "Language"))
                 if nextLanguage != L10n.uiLanguage {
                     LabeledContent {
                         Button("Restart Now") {
@@ -426,6 +589,8 @@ private struct GeneralSettings: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+            } header: {
+                Text("Language")
             }
             .confirmationDialog("Restart Valtz?",
                                 isPresented: $confirmRestart) {
@@ -440,18 +605,25 @@ private struct GeneralSettings: View {
                     Text("Switch to the Timeline").tag(true)
                     Text("Do Nothing").tag(false)
                 }
+                .settingsMark(String(localized: "Timeline"),
+                              String(localized: "When a generation finishes on a composition that has content"))
                 Group {
                     Toggle("Highlight the timeline and prompt switch when it switches by itself",
                            isOn: $model.landingFlashesSwitch)
                         .disabled(!model.landingOpensTimeline)
+                        .settingsMark(String(localized: "Highlight the timeline and prompt switch when it switches by itself"))
                     Toggle("Show Assets when several tasks are queued",
                            isOn: $model.revealsTasks)
+                        .settingsMark(String(localized: "Assets"),
+                                      String(localized: "Show Assets when several tasks are queued"))
                     Toggle("Show Assets once more than one result has been generated",
                            isOn: $model.revealsResults)
+                        .settingsMark(String(localized: "Show Assets once more than one result has been generated"))
                 }
                 .toggleStyle(.checkbox)
             } header: {
                 Text("Generations")
+                    .settingsMark(String(localized: "Generations"))
             } footer: {
                 Text("The timeline shows a clip's or a sound's composition, or a still with pages.")
                     .font(.caption)
@@ -462,11 +634,13 @@ private struct GeneralSettings: View {
                     Text(verbatim: model.updater.version)
                         .monospacedDigit()
                 }
+                .settingsMark(String(localized: "Version"))
                 if model.updater.canCheck {
                     Toggle("Check for updates automatically",
                            isOn: Binding(
                                get: { model.updater.checksAutomatically },
                                set: { model.updater.setChecksAutomatically($0) }))
+                        .settingsMark(String(localized: "Check for updates automatically"))
                     LabeledContent {
                         Button("Check Now") {
                             model.updater.checkForUpdates()
@@ -478,28 +652,39 @@ private struct GeneralSettings: View {
                 }
             } header: {
                 Text("Updates")
+                    .settingsMark(String(localized: "Updates"))
             }
             if let hw = model.hardware {
-                Section("This Mac") {
+                Section {
                     LabeledContent("Chip", value: hw.chip)
+                        .settingsMark(String(localized: "Chip"))
                     LabeledContent("Memory", value: "\(hw.ramGb) GB")
+                        .settingsMark(String(localized: "Memory"))
                     LabeledContent("GPU") {
                         Text(hw.gpuMatrixCores
                              ? "\(hw.gpuCores) cores · matrix cores"
                              : "\(hw.gpuCores) cores")
                     }
+                    .settingsMark(String(localized: "GPU"))
                     if let ane = hw.aneCores, ane > 0 {
                         LabeledContent("Neural Engine") {
                             Text("\(ane) cores")
                         }
+                        .settingsMark(String(localized: "Neural Engine"))
                     }
                     LabeledContent("Engine", value: model.engine)
+                        .settingsMark(String(localized: "Engine"))
+                } header: {
+                    Text("This Mac")
+                        .settingsMark(String(localized: "This Mac"))
                 }
             }
             if let p = model.paths {
-                Section("Storage") {
+                Section {
                     location("Projects", p.projects)
+                        .settingsMark(String(localized: "Projects"))
                     location("Models", p.models)
+                        .settingsMark(String(localized: "Models"))
                     location("Cache", p.cache,
                              detail: ByteCountFormatter.string(
                                 fromByteCount: p.cacheBytes, countStyle: .file)
@@ -508,10 +693,18 @@ private struct GeneralSettings: View {
                                     fromByteCount: p.cacheBudgetBytes,
                                     countStyle: .file)
                                 + (p.cacheInternal ? "" : " — not on the internal SSD"))
+                        .settingsMark(String(localized: "Cache"))
+                } header: {
+                    Text("Storage")
+                        .settingsMark(String(localized: "Storage"))
                 }
             }
-            Section("Project") {
+            Section {
                 LabeledContent("Open", value: model.projectName)
+                    .settingsMark(String(localized: "Open"))
+            } header: {
+                Text("Project")
+                    .settingsMark(String(localized: "Project"))
             }
         }
         .formStyle(.grouped)

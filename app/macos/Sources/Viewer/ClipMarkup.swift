@@ -146,6 +146,17 @@ final class ClipMarkupNSView: NSView {
                        y: (f.maxY - p.y) / ppp - origin.y)
     }
 
+    /// Markup's canvas rect (pixels, y down) on the screen: where a window
+    /// beside it goes (the text's edit window).
+    func screenRect(canvas r: CGRect) -> CGRect? {
+        guard let win = window else { return nil }
+        let f = fitted, ppp = pointsPerPixel
+        let local = CGRect(x: f.minX + (r.minX + origin.x) * ppp,
+                           y: f.maxY - (r.maxY + origin.y) * ppp,
+                           width: r.width * ppp, height: r.height * ppp)
+        return win.convertToScreen(convert(local, to: nil))
+    }
+
     /// Markup's pixel `c` as a point of the window, from its top left
     /// (the snapshot hooks post events there).
     func windowPoint(canvas c: CGPoint) -> CGPoint? {

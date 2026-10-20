@@ -87,7 +87,7 @@ public:
   // {"ok"}: that one chosen ("" Auto), kept for later runs;
   // {"keep_loaded": seconds}: how long it stays loaded after a request;
   // {"drafter": "mtp" | "dflash", "drafter_bits": 8 | 4}: what it
-  // drafts with.
+  // drafts with; {"context": tokens}: its context at most (0 Auto).
   std::string assistants_json() const;
   // The FLEET (Controller::fleet_status, DESIGN §11): this Mac's place in
   // one, its members, the fleets on the network, the job it serves.

@@ -92,6 +92,10 @@ struct EnhanceRequest {
   // the instruction then describes the delivery, not the voice.
   bool                    speech = false;
   bool                    voice = false;
+  // A model of several speakers (Drama 3's script): `voices` given in the
+  // row, which its speakers take in the order they first speak.
+  bool                    speakers = false;
+  int                     voices = 0;
   // A clip written to the prompt-writing guide its makers publish
   // (`system`: MiniMax H3's skill; set, the reply comes a section per
   // key -- clip_sections). The guide names the modes; Valtz says which
@@ -305,7 +309,8 @@ std::string tag_inline(std::string_view prompt,
 // and "minimax-h3-ref" (with the full-reference guide too) -- and
 // Valtz's own skills from core/resources/skills -- "yue2-song" (a style
 // line and sectioned lyrics, replied as {"style", "lyrics", "title"}),
-// "moss-tts", "qwen-image-2.1-t2i" / "qwen-image-2.1-edit"
+// "moss-tts", "drama3" (with Fish Audio's guide to Drama 3, from
+// 3rd-party/fish-audio-drama3), "qwen-image-2.1-t2i" / "qwen-image-2.1-edit"
 // (Qwen-Image's, which QwenLM's own rewriters replace once downloaded:
 // Controller::skill_text) and "flux3-klein-t2i" / "flux3-klein-edit"
 // (FLUX.3's full scene captions; an edit the picture wanted, not an

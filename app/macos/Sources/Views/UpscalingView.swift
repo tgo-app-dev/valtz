@@ -59,6 +59,9 @@ struct UpscalingView: View {
                             .controlSize(.small)
                             .disabled(!u.custom)
                     }
+                    .settingsMark(u.name, u.kind == "video"
+                                  ? String(localized: "Clips")
+                                  : String(localized: "Pictures"))
                 } footer: {
                     Text(u.kind == "video"
                          ? "Restores a clip a group of frames at a time, in one step each. Its attention is already sparse by its own weights, so it takes no Sol-Attn."
@@ -106,6 +109,11 @@ struct UpscalingView: View {
                 Text(k.kind == "video" ? "Restore Clips With"
                                        : "Restore Pictures With")
             }
+            .settingsMark(k.kind == "video"
+                          ? String(localized: "Restore Clips With")
+                          : String(localized: "Restore Pictures With"),
+                          String(localized: "Render Upscaled"),
+                          String(localized: "Upscale"))
             if k.runs.isEmpty {
                 LabeledContent {
                     Button("Open Capabilities") {
@@ -167,6 +175,7 @@ struct UpscalingView: View {
         }
         .disabled(block != nil)
         .help(TuningPanel.help(o.key))
+        .settingsMark(TuningPanel.title(o), scope: u.id)
     }
 
     /// Why `o` cannot be changed now: this Mac cannot have it, or it

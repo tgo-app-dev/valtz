@@ -355,7 +355,18 @@ Core::choose_assistant(const std::string& request_json)
     }
     // {"model"}: the helper chosen; {"keep_loaded"}: how long it stays;
     // {"drafter", "drafter_bits"}: what it drafts with; {"video_every"}:
-    // a video summary's seconds a frame (0 Auto).
+    // a video summary's seconds a frame (0 Auto); {"context"}: its
+    // context at most, tokens (0 Auto).
+    if (j->contains("context")) {
+      auto st = _impl->ctl->set_assistant_context(
+          jget<std::int64_t>(*j, "context", 0));
+      if (!st.ok() || (!j->contains("model") &&
+                       !j->contains("keep_loaded") &&
+                       !j->contains("drafter") &&
+                       !j->contains("video_every"))) {
+        return st.ok() ? ok() : err(st.error());
+      }
+    }
     if (j->contains("video_every")) {
       auto st = _impl->ctl->set_video_every(jget(*j, "video_every", 0.0));
       if (!st.ok() || (!j->contains("model") &&
@@ -1484,6 +1495,19 @@ Core::generate_audio(const std::string& request_json)
         return err(vid.error());
       }
       req.voice = *vid;
+    }
+    // Drama 3's voices, speaker 0 first, and the words each says.
+    for (const auto& v : jget(*j, "voices", Json::array())) {
+      auto vid = parse_id<AssetId>(v.is_string() ? v.get<std::string>()
+                                                 : std::string());
+      if (!vid.ok()) {
+        return err(vid.error());
+      }
+      req.voices.push_back(*vid);
+    }
+    for (const auto& t : jget(*j, "voice_texts", Json::array())) {
+      req.voice_texts.push_back(t.is_string() ? t.get<std::string>()
+                                              : std::string());
     }
     req.seconds = jget(*j, "seconds", 0.0);
     auto r = _impl->ctl->generate_audio(std::move(req));

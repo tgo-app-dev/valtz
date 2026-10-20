@@ -711,6 +711,12 @@ to_json(Json& j, const ModelEntry& e)
   // A clip's lengths: frames = offset + n * step (17n + 5 for H3), at the
   // model's own rate -- the app offers what will be made.
   const Json vp = jget(e.engine, "vpipe", Json::object());
+  // Speech: how many voices a text may carry (Drama 3's speakers; one,
+  // MOSS-TTS), and whether it is paced to a length asked for.
+  if (const Json sp = jget(vp, "speech", Json()); sp.is_object()) {
+    j["speakers"] = jget(sp, "speakers", 1);
+    j["speech_length"] = sp.contains("tokens_per_second");
+  }
   if (const Json g = jget(vp, "frame_grid", Json()); g.is_object()) {
     const Json d = jget(vp, "defaults", Json::object());
     j["frame_grid"] = {{"step", jget(g, "step", 1)},

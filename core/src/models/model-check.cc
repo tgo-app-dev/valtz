@@ -7,6 +7,7 @@
 #include <cctype>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 
@@ -168,6 +169,14 @@ names_in(const fs::path& f)
     if (a.is_string()) {
       out.push_back(a.get<std::string>());
     }
+  }
+  // How its weights are stored, last: the one name two checkpoints of a
+  // model differ by (Drama 3's FP8 release and its int4).
+  if (const auto q = jget<std::string>(
+          jget(j, "quantization_config", Json::object()), "quant_method",
+          "");
+      !q.empty()) {
+    out.push_back(q);
   }
   return out;
 }
@@ -738,6 +747,66 @@ size_text(std::uint64_t b)
     return std::format("{:.0f} KB", d / 1e3);
   }
   return std::format("{} bytes", b);
+}
+
+LanguageContext
+language_context(const fs::path& dir)
+{
+  std::ifstream in(dir / "config.json");
+  const Json root = in ? Json::parse(in, nullptr, false) : Json();
+  if (!root.is_object()) {
+    return {};
+  }
+  const Json t = jget(root, "text_config", root);
+  const auto get = [&](const char* k) {
+    return std::max<std::int64_t>(
+        0, jget<std::int64_t>(t, k, jget<std::int64_t>(root, k, 0)));
+  };
+  LanguageContext c;
+  c.tokens = static_cast<int>(std::min<std::int64_t>(
+      get("max_position_embeddings"), std::numeric_limits<int>::max()));
+  // The layers that keep K/V: every one but a hybrid's linear ones
+  // (Qwen3.5's Gated DeltaNet), by `layer_types`, else one in every
+  // `full_attention_interval`.
+  const std::int64_t layers = get("num_hidden_layers");
+  std::int64_t full = layers;
+  if (const Json lt = jget(t, "layer_types", Json::array());
+      lt.is_array() && !lt.empty()) {
+    full = std::ranges::count_if(lt, [](const Json& x) {
+      return x.is_string() && x.get<std::string>() == "full_attention";
+    });
+  } else if (const auto every = get("full_attention_interval");
+             every > 0) {
+    full = layers / every;
+  }
+  const std::int64_t heads = get("num_attention_heads");
+  const std::int64_t kv = get("num_key_value_heads") > 0
+                              ? get("num_key_value_heads") : heads;
+  const std::int64_t dim =
+      get("head_dim") > 0 ? get("head_dim")
+                          : (heads > 0 ? get("hidden_size") / heads : 0);
+  c.kv_bytes = static_cast<std::uint64_t>(full * 2 * kv * dim * 2);
+  return c;
+}
+
+int
+helper_context(const LanguageContext& c, std::uint64_t ram_bytes,
+               std::uint64_t weight_bytes)
+{
+  constexpr int kPage = 16;
+  constexpr int kLeast = 32768;
+  if (c.tokens <= 0) {
+    return 0;
+  }
+  if (c.kv_bytes == 0 || ram_bytes == 0) {
+    return c.tokens;
+  }
+  const std::uint64_t left =
+      ram_bytes > weight_bytes ? ram_bytes - weight_bytes : 0;
+  const std::uint64_t fits = left / 4 / (2 * c.kv_bytes) / kPage * kPage;
+  return static_cast<int>(std::min<std::uint64_t>(
+      static_cast<std::uint64_t>(c.tokens),
+      std::max<std::uint64_t>(fits, kLeast)));
 }
 
 Json

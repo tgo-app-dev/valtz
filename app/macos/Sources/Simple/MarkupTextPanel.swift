@@ -1,7 +1,7 @@
 import AppKit
 
-/// The markup text's EDIT WINDOW (DESIGN §10a Markup): a small panel over
-/// the stage, moved and sized as any window, holding the selected text's
+/// The markup text's EDIT WINDOW (DESIGN §10a Markup): a small panel
+/// beside the text's box, moved and sized as any window, holding its
 /// words -- as many lines as it takes, with the Edit menu's cut, copy,
 /// paste, undo and redo as in any editor (⌘Z is the typing's while the
 /// panel has the keyboard: AppModel.undoAny asks the key window's text
@@ -39,7 +39,7 @@ final class MarkupTextPanel: NSObject, NSWindowDelegate,
         self.model = model
         let p = panel ?? make()
         load(t)
-        if !p.isVisible { place(p) }
+        if !p.isVisible { place(p, by: t) }
         p.makeKeyAndOrderFront(nil)
         p.makeFirstResponder(textView)
         textView?.selectAll(nil)
@@ -57,6 +57,8 @@ final class MarkupTextPanel: NSObject, NSWindowDelegate,
         }
         if t.id != objectId {
             load(t)
+            // Beside the text now edited.
+            if let p = panel, p.isVisible { place(p, by: t) }
         } else if let tv = textView, tv.string != t.text {
             tv.string = t.text
             undo.removeAllActions()
@@ -102,18 +104,53 @@ final class MarkupTextPanel: NSObject, NSWindowDelegate,
         return p
     }
 
-    /// Where it was last left; the first time, at the stage's top right.
-    private func place(_ p: NSPanel) {
+    /// BESIDE THE TEXT it edits, as a popover would be -- right of its box,
+    /// its tops level; else left of it; else under it -- on the box's
+    /// screen, at the size it was last left at. Where the stage does not
+    /// say where the box is: the stage's top right.
+    private func place(_ p: NSPanel, by t: MarkupObject) {
         let name = "MarkupTextPanel"
-        if !p.setFrameUsingName(name),
-           let main = NSApp.windows.first(where: {
+        _ = p.setFrameUsingName(name)
+        p.setFrameAutosaveName(name)
+        let size = p.frame.size
+        if let box = Self.screenBox(t),
+           let vis = (NSScreen.screens.first { $0.frame.intersects(box) }
+                          ?? NSScreen.main)?.visibleFrame {
+            let gap: CGFloat = 12
+            var o = NSPoint(x: box.maxX + gap, y: box.maxY - size.height)
+            if o.x + size.width > vis.maxX {
+                o.x = box.minX - gap - size.width
+            }
+            if o.x < vis.minX {
+                o = NSPoint(x: box.minX, y: box.minY - gap - size.height)
+            }
+            o.x = min(max(o.x, vis.minX), max(vis.minX, vis.maxX - size.width))
+            o.y = min(max(o.y, vis.minY), max(vis.minY, vis.maxY - size.height))
+            p.setFrameOrigin(o)
+            return
+        }
+        if let main = model?.editorWindow ?? NSApp.windows.first(where: {
                $0.isVisible && $0.canBecomeMain && !($0 is NSPanel)
            }) {
             let f = main.frame
             p.setFrameTopLeftPoint(NSPoint(
                 x: f.maxX - p.frame.width - 24, y: f.maxY - 110))
         }
-        p.setFrameAutosaveName(name)
+    }
+
+    /// `t`'s box on the screen, from the stage that shows it: a clip's
+    /// markup view, else the picture's canvas.
+    static func screenBox(_ t: MarkupObject) -> CGRect? {
+        let r = MarkupRender.bounds(t)
+        if let v = ClipMarkupNSView.shown, v.window != nil,
+           !v.isHiddenOrHasHiddenAncestor, let s = v.screenRect(canvas: r) {
+            return s
+        }
+        if let v = CompareCanvas.shown, v.window != nil,
+           !v.isHiddenOrHasHiddenAncestor {
+            return v.screenRect(canvas: r)
+        }
+        return nil
     }
 
     /// `t`'s words in the editor, in its typeface.

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 
+#include "valtz/assist/transcript.h"
 #include "valtz/controller/controller.h"
 #include "valtz/media/camera.h"
 #include "valtz/media/markup.h"
@@ -1077,9 +1078,10 @@ public:
     it->sink(ev);
   }
 
-  // Its result, `file`, then the end.
+  // Its result, `file` -- and what it made beside it, `data` (a
+  // transcript's lines) -- then the end.
   void
-  finish(JobId id, const fs::path& file)
+  finish(JobId id, const fs::path& file, Json data = Json())
   {
     auto it = find(id);
     auto sink = it->sink;
@@ -1094,6 +1096,11 @@ public:
     if (auto info = media::probe_file(out); info.ok()) {
       ev.output_info = *info;
     }
+    if (out.extension() == ".txt") {
+      ev.output_info.type = media::MediaType::Text;
+      ev.output_info.uti = "public.utf8-plain-text";
+    }
+    ev.data = std::move(data);
     sink(ev);
     engine::JobEvent end;
     end.job = id;
@@ -3093,6 +3100,168 @@ TEST(controller, favor_picks_a_models_quantized_variant)
   fs::remove_all(root / "models" / "OpenMOSS-Team" / "MOSS-TTS-v1.5");
   ctl.rescan_models();
   CHECK(run("quality") == "moss-tts-v1.5-w8g64");
+}
+
+// DRAMA 3's voices: each cloned from its sound AND its words. A voice
+// with no transcript is transcribed first -- Transcribe's own asset, in
+// the same command -- and the speech HELD, listed but not sent, until it
+// lands; then sent with what the voice says and where its clip is cut. A
+// transcript made already is used; words given need none. A held speech
+// is cancelled alone, and fails when what it waits for does.
+TEST(controller, drama3_speaks_in_voices_it_has_heard)
+{
+  auto root = test::temp_dir("ctl-drama3");
+  auto install = [&](const fs::path& dir, const char* file) {
+    fs::create_directories(root / "models" / dir);
+    std::ofstream(root / "models" / dir / file) << "w";
+  };
+  install("fishaudio/drama-3-int4", "model.safetensors");
+  install("mlx-community/Qwen3-ASR-0.6B-8bit", "model.safetensors");
+  install("tgo-app-dev/vpipe-supplement", "silero-vad-unified-v6.tar");
+  fs::create_directories(root / "models" / "tgo-app-dev" /
+                         "vpipe-supplement" / "silero_vad_unified_v6" /
+                         "silero.mlpackage");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "D.valtz", "drama");
+  REQUIRE_OK(pid);
+  REQUIRE(write_tone(root / "anna.wav", 6, 220, 0.3));
+  REQUIRE(write_tone(root / "ben.wav", 6, 330, 0.3));
+  auto anna = import_and_wait(ctl, *pid, root / "anna.wav");
+  auto ben = import_and_wait(ctl, *pid, root / "ben.wav");
+  REQUIRE(anna && ben);
+
+  // A scene in two voices, neither heard yet: both transcribed first.
+  GenerateAudioRequest req;
+  req.project = *pid;
+  req.model = "drama-3-int4";
+  req.prompt = "Anna: [warm] Good morning.\nBen: [sleepy] Is it?";
+  req.row = {*anna, *ben};
+  req.seed = 5;
+  auto job = ctl.generate_audio(req);
+  REQUIRE_OK(job);
+  const auto heard = engine->held_of(engine::kOpTranscribeAudio);
+  REQUIRE(heard.size() == 2);
+  CHECK(engine->held_of(engine::kOpGenerateSpeech).empty());
+  auto rec = ctl.jobs().get(*job);
+  REQUIRE(rec);
+  CHECK(rec->state == JobState::Queued);
+  CHECK(jget<std::string>(rec->recipe.params, "text", "") ==
+        "<|speaker:0|>[warm] Good morning.\n<|speaker:1|>[sleepy] Is it?");
+  CHECK(rec->recipe.params["speakers"] == Json::array({"Anna", "Ben"}));
+  Json task;
+  for (const auto& t : ctl.tasks()) {
+    if (jget<std::string>(t, "job", "") == job->str()) {
+      task = t;
+    }
+  }
+  REQUIRE(task.is_object());
+  CHECK(task["waiting_for"] ==
+        Json::array({"anna.wav transcript", "ben.wav transcript"}));
+
+  // Each heard: the speech goes once both have landed.
+  auto transcript = [&](const char* words, double end) {
+    assist::Transcript t;
+    t.seconds = 6;
+    t.lines = {{0.3, end, words, "English"}};
+    return Json{{"transcript", assist::to_json(t)}};
+  };
+  std::ofstream(root / "t.txt") << "# transcript\n";
+  engine->finish(heard[0], root / "t.txt",
+                 transcript("We asked over twenty people.", 3.9));
+  CHECK(engine->held_of(engine::kOpGenerateSpeech).empty());
+  engine->finish(heard[1], root / "t.txt",
+                 transcript("Nobody saw it.", 2.5));
+  const auto spoken = engine->held_of(engine::kOpGenerateSpeech);
+  REQUIRE(spoken.size() == 1);
+  CHECK(spoken[0] == *job);
+  const engine::JobSpec* spec = engine->spec(*job);
+  REQUIRE(spec);
+  const Json vs = jget(spec->params, "voices", Json::array());
+  REQUIRE(vs.size() == 2);
+  CHECK(jget<std::string>(vs[0], "text", "") ==
+        "We asked over twenty people.");
+  CHECK(std::abs(jget(vs[0], "seconds", 0.0) - 4.2) < 1e-6);
+  CHECK(jget<std::string>(vs[1], "text", "") == "Nobody saw it.");
+  int voices = 0;
+  for (const auto& in : spec->inputs) {
+    voices += in.role == "voice";
+  }
+  CHECK(voices == 2);
+
+  // Heard already: sent at once, nothing transcribed again.
+  req.prompt = "A single line, in Anna's voice.";
+  req.row = {*anna};
+  auto again = ctl.generate_audio(req);
+  REQUIRE_OK(again);
+  CHECK(engine->held_of(engine::kOpTranscribeAudio).empty());
+  CHECK(engine->held_of(engine::kOpGenerateSpeech).size() == 2);
+  CHECK(jget<std::string>(
+            jget(engine->spec(*again)->params, "voices", Json::array())[0],
+            "text", "") == "We asked over twenty people.");
+
+  // Words given: no transcript.
+  REQUIRE(write_tone(root / "cara.wav", 4, 440, 0.3));
+  auto cara = import_and_wait(ctl, *pid, root / "cara.wav");
+  REQUIRE(cara);
+  req.row = {*cara};
+  req.voice_texts = {"Hello there."};
+  auto given = ctl.generate_audio(req);
+  REQUIRE_OK(given);
+  CHECK(engine->held_of(engine::kOpTranscribeAudio).empty());
+  CHECK(jget<std::string>(
+            jget(engine->spec(*given)->params, "voices", Json::array())[0],
+            "text", "") == "Hello there.");
+  req.voice_texts.clear();
+
+  // Held, then cancelled: it alone goes; its voice is still heard.
+  auto held = ctl.generate_audio(req);
+  REQUIRE_OK(held);
+  const auto cara_heard = engine->held_of(engine::kOpTranscribeAudio);
+  REQUIRE(cara_heard.size() == 1);
+  REQUIRE_OK(ctl.cancel(*held));
+  CHECK(ctl.jobs().get(*held)->state == JobState::Cancelled);
+  CHECK(engine->held_of(engine::kOpTranscribeAudio).size() == 1);
+  // ...and another held for it fails when its transcription does.
+  auto failing = ctl.generate_audio(req);
+  REQUIRE_OK(failing);
+  CHECK(engine->held_of(engine::kOpTranscribeAudio).size() == 1);
+  engine->fail(cara_heard[0], "could not hear it");
+  const auto f = ctl.jobs().get(*failing);
+  REQUIRE(f);
+  CHECK(f->state == JobState::Failed);
+  CHECK(f->message.find("was not made") != std::string::npos);
+
+  // Nothing said in a voice: refused when it lands.
+  REQUIRE(write_tone(root / "dee.wav", 4, 550, 0.3));
+  auto dee = import_and_wait(ctl, *pid, root / "dee.wav");
+  REQUIRE(dee);
+  req.row = {*dee};
+  auto silent = ctl.generate_audio(req);
+  REQUIRE_OK(silent);
+  const auto dee_heard = engine->held_of(engine::kOpTranscribeAudio);
+  REQUIRE(dee_heard.size() == 1);
+  assist::Transcript none;
+  none.seconds = 4;
+  engine->finish(dee_heard[0], root / "t.txt",
+                 {{"transcript", assist::to_json(none)}});
+  const auto s = ctl.jobs().get(*silent);
+  REQUIRE(s);
+  CHECK(s->state == JobState::Failed);
+  CHECK(s->message.find("No speech was heard in dee.wav") != std::string::npos);
 }
 
 // INSTANTIATION puts an asset on a NEW LAYER that shows it -- not its
@@ -7501,15 +7670,28 @@ public:
     std::vector<std::vector<agent::Message>>      seen;
     // A model that sees pictures (the view tools then show them).
     bool                                          sees = false;
+    // COMPACTION: its context (0: not said) -- set at turn `shrink_at`
+    // so that turn's conversation is 88% of it; the notes it writes when
+    // asked for them; turn `overflow_at` refused as too long, once.
+    std::int64_t                                  context = 0;
+    int                                           shrink_at = -1;
+    int                                           overflow_at = -1;
+    std::string                                   notes = "Notes.";
   };
   explicit ScriptedBackend(std::shared_ptr<Shared> s) : _s(std::move(s)) {}
 
   Json describe() const override { return {{"kind", "test"}}; }
   bool sees() const override { return _s->sees; }
+  std::int64_t
+  context_tokens() const override
+  {
+    std::lock_guard lk(_s->mu);
+    return _s->context;
+  }
 
   Result<agent::Reply>
   turn(const std::vector<agent::Message>& messages,
-       const std::vector<agent::ToolSpec>&,
+       const std::vector<agent::ToolSpec>& tools,
        const std::function<void(std::string_view)>& on_text,
        const std::atomic<bool>&) override
   {
@@ -7517,6 +7699,18 @@ public:
     _s->seen.push_back(messages);
     agent::Reply r;
     const std::size_t n = _s->seen.size() - 1;
+    if (static_cast<int>(n) == _s->overflow_at) {
+      _s->overflow_at = -1;
+      return make_error(Code::OutOfMemory, msg::kAgentContextFull,
+                        {{"tokens", std::to_string(_s->context)}});
+    }
+    if (!messages.empty() &&
+        messages.back().content.starts_with(
+            "[Valtz] Your context is nearly full")) {
+      r.content = r.raw = _s->notes;
+      r.finish = "stop";
+      return r;
+    }
     if (!_s->replies.empty()) {
       r.calls = _s->replies.front();
       _s->replies.pop_front();
@@ -7532,6 +7726,18 @@ public:
     r.raw = r.content;
     if (on_text) {
       on_text(r.content);
+    }
+    // Counted as a helper counts it: the conversation and its reply.
+    if (_s->context > 0 || _s->shrink_at >= 0) {
+      agent::Message mine{.role = "assistant", .content = r.content,
+                          .raw = r.raw, .calls = r.calls};
+      const std::int64_t pos = agent::estimate_tokens(messages) +
+                               agent::estimate_tokens(tools) +
+                               agent::estimate_tokens(mine);
+      r.usage["ctx_pos"] = pos;
+      if (static_cast<int>(n) == _s->shrink_at) {
+        _s->context = pos * 100 / 88;
+      }
     }
     return r;
   }
@@ -7665,6 +7871,177 @@ TEST(agent, the_tools_build_a_deck)
   }
   CHECK(tools == 6);
   CHECK(last.back().content.find("no tool") != std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// A CONVERSATION COMPACTED (DESIGN §9b): one nearing its model's context
+// is compacted before the turn that would not fit -- the model asked for
+// its notes on the conversation as it is, then handed its head and those
+// notes with Valtz's record of the steps -- and goes on; a turn that
+// does not fit at all is compacted on Valtz's notes alone and tried
+// again. The app still shows the session whole, each compaction a line.
+TEST(agent, a_long_conversation_is_compacted_and_goes_on)
+{
+  auto root = test::temp_dir("agent-compact");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "C.valtz", "compact");
+  REQUIRE_OK(pid);
+
+  const std::string long_words(6000, 'w');
+  auto text = [&](int page, const std::string& t) {
+    return call("add_text", {{"page", page}, {"text", t}, {"x", 10},
+                             {"y", 10}, {"width", 300}, {"height", 160},
+                             {"size", 12}});
+  };
+  script->notes = "Notes: a deck Deck of two pages, three texts on page 1.";
+  script->shrink_at = 3;
+  script->overflow_at = 7;
+  script->replies = {
+      {call("create_composition", {{"name", "Deck"}, {"width", 320},
+                                   {"height", 180}, {"pages", 2}})},
+      {text(1, long_words)},
+      {text(1, long_words)},
+      {text(1, long_words)},
+      // (turn 4: its notes asked for)
+      {call("add_shape", {{"page", 2}, {"shape", "rect"}, {"x", 0},
+                          {"y", 0}, {"width", 160}, {"height", 180},
+                          {"fill", "#00ff00"}})},
+      {text(2, "Page two")},
+      // (turn 7: too long -- compacted on Valtz's notes, tried again)
+      {text(2, "The end")}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A two-page deck";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  const Json st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  CHECK(jget(st, "compactions", 0) == 2);
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 7);
+  for (const auto& x : steps) {
+    CHECK(jget<std::string>(x, "state", "") == "done");
+  }
+  {
+    std::lock_guard lk(script->mu);
+    const auto& seen = script->seen;
+    REQUIRE(seen.size() == 10);
+    // Turn 4: the conversation as it was, then the question.
+    CHECK(seen[4].size() == seen[3].size() + 3);
+    CHECK(seen[4].back().content.starts_with(
+        "[Valtz] Your context is nearly full"));
+    CHECK(seen[4][seen[4].size() - 2].role == "tool");
+    // Turn 5: its head, its notes with Valtz's record of the four steps.
+    REQUIRE(seen[5].size() >= 3);
+    CHECK(seen[5][0].role == "system");
+    CHECK(seen[5][1].content == "A two-page deck");
+    CHECK(agent::is_compaction(seen[5][2]));
+    CHECK(seen[5][2].content.find(script->notes) != std::string::npos);
+    CHECK(seen[5][2].content.find("(4 in all)") != std::string::npos);
+    CHECK(seen[5][2].content.find("create_composition") !=
+          std::string::npos);
+    if (seen[5].size() > 3) {
+      CHECK(seen[5][3].role != "tool");
+    }
+    CHECK(agent::estimate_tokens(seen[5]) <
+          agent::estimate_tokens(seen[3]));
+    // Turn 8, after the refusal: not asked, Valtz's notes alone, the
+    // earlier notes not kept as they were.
+    for (const auto& m : seen[8]) {
+      CHECK(!m.content.starts_with("[Valtz] Your context is nearly full"));
+    }
+    CHECK(agent::is_compaction(seen[8][2]));
+    CHECK(seen[8][2].content.find("could not be asked") !=
+          std::string::npos);
+    CHECK(std::ranges::count_if(seen[8], agent::is_compaction) == 1);
+    CHECK(seen[8][2].content.find("(6 in all)") != std::string::npos);
+  }
+  // Its work went on: the shape on page 2, the last words on it.
+  const AssetId comp =
+      *AssetId::parse(jget<std::string>(st, "composition", ""));
+  auto a = ctl.project(*pid)->asset(comp);
+  REQUIRE_OK(a);
+  CHECK(a->pages == 2);
+  // Shown whole: every message, each compaction a line, every step
+  // under the reply that called it.
+  int calls = 0, lines = 0, people = 0;
+  for (const auto& m : jget(st, "messages", Json::array())) {
+    const std::string role = jget<std::string>(m, "role", "");
+    calls += static_cast<int>(jget(m, "calls", Json::array()).size());
+    lines += role == "compaction";
+    people += role == "user" &&
+              !jget<std::string>(m, "content", "").starts_with("[Valtz]");
+  }
+  CHECK(calls == 7);
+  CHECK(lines == 2);
+  CHECK(people == 1);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// Settings › Agentic Helper's LONG CONVERSATIONS: the helper's context
+// at most kept (Auto 0; never under 16,384), and compaction switched off
+// -- a turn that does not fit then ends the session, said so.
+TEST(agent, compaction_switched_off_stops_at_the_context)
+{
+  auto root = test::temp_dir("agent-nocompact");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  CHECK(jget(ctl.assistants(), "context", -1) == 0);
+  REQUIRE_OK(ctl.set_assistant_context(100000));
+  CHECK(jget(ctl.assistants(), "context", -1) == 100000);
+  REQUIRE_OK(ctl.set_assistant_context(1000));
+  CHECK(jget(ctl.assistants(), "context", -1) == 16384);
+  REQUIRE_OK(ctl.set_assistant_context(0));
+  CHECK(jget(ctl.assistants(), "context", -1) == 0);
+
+  CHECK(jget(ctl.agent_settings(), "compact", false));
+  REQUIRE_OK(ctl.set_agent_settings({{"compact", false}}));
+  CHECK(!jget(ctl.agent_settings(), "compact", true));
+  auto pid = ctl.create_project(root / "N.valtz", "no-compact");
+  REQUIRE_OK(pid);
+  script->overflow_at = 1;
+  script->replies = {{call("create_composition",
+                           {{"name", "Deck"}, {"width", 320},
+                            {"height", 180}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A deck";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  const Json st = agent_wait(ctl, *id, "failed");
+  CHECK(jget<std::string>(st, "state", "") == "failed");
+  CHECK(jget<std::string>(jget(st, "error_fields", Json::object()), "key",
+                          "") == "core.agent_context_full");
+  CHECK(jget(st, "compactions", -1) == 0);
+  {
+    std::lock_guard lk(script->mu);
+    CHECK(script->seen.size() == 2);   // no notes asked, no retry
+  }
   REQUIRE_OK(ctl.agent_stop(*id));
 }
 

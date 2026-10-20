@@ -908,8 +908,12 @@ struct ComposerStack: View {
                 ? String(localized: "Ask First")
                 : String(localized: "Run on Their Own"))
         }
-        // Speech: " · about 10 s · Med".
+        // Speech: " · about 10 s · Med"; a script of voices (Drama 3),
+        // " · 2 voices".
         if model.speaks {
+            if model.speechSpeakers > 1 {
+                return " · " + model.speechVoicesSummary
+            }
             return " · " + model.speechLengthText + " · "
                 + model.preference.label
         }
@@ -1642,7 +1646,7 @@ private struct DrawerSettings: View {
                 GridRow {
                     Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
                     Text(model.activeModality == .audio
-                         ? "Audio generation needs YuE2 (songs) or MOSS-TTS (speech): download one in Settings › Capabilities."
+                         ? "Audio generation needs YuE2 (songs), or Drama 3 or MOSS-TTS (speech): download one in Settings › Capabilities."
                          : "Video generation is not available yet.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -1657,44 +1661,48 @@ private struct DrawerSettings: View {
             } else {
                 pictureRows
             }
-            GridRow {
-                label("Favor", row: SettingsRow.favor)
-                selector("Favor", Preference.allCases.map { ($0, $0.label) },
-                         tips: Preference.allCases.map(\.hint),
-                         selection: optional(preference))
-                // Custom's options, from the Custom segment itself (the
-                // segments are equal: the middle of its share) -- not in
-                // the Prompt Editor, whose popover shows them inside. AppKit's
-                // popover, semi-transient: it stays open while Valtz is
-                // left, for weights dragged in from the Finder.
-                .appKitPopover(isPresented: Binding(
-                                   get: {
-                                       !tuneInline && model.showsTuning
-                                           && !model.promptImmersive
-                                   },
-                                   set: {
-                                       if !tuneInline { model.showsTuning = $0 }
-                                   }),
-                               anchor: customAnchor, arrowEdge: .top) {
-                    TuningPanel(model: model)
-                }
-                .onAppear { model.watchTuningPresses() }
-                if model.preference == .custom {
-                    // What Custom is set to; a click opens it again (or
-                    // shuts it, open).
-                    Button {
-                        model.toggleTuning()
-                    } label: {
+            // A script of voices (Drama 3) has nothing to favor: no steps,
+            // no weights to choose.
+            if !(model.speaks && model.speechSpeakers > 1) {
+                GridRow {
+                    label("Favor", row: SettingsRow.favor)
+                    selector("Favor", Preference.allCases.map { ($0, $0.label) },
+                             tips: Preference.allCases.map(\.hint),
+                             selection: optional(preference))
+                    // Custom's options, from the Custom segment itself (the
+                    // segments are equal: the middle of its share) -- not in
+                    // the Prompt Editor, whose popover shows them inside. AppKit's
+                    // popover, semi-transient: it stays open while Valtz is
+                    // left, for weights dragged in from the Finder.
+                    .appKitPopover(isPresented: Binding(
+                                       get: {
+                                           !tuneInline && model.showsTuning
+                                               && !model.promptImmersive
+                                       },
+                                       set: {
+                                           if !tuneInline { model.showsTuning = $0 }
+                                       }),
+                                   anchor: customAnchor, arrowEdge: .top) {
+                        TuningPanel(model: model)
+                    }
+                    .onAppear { model.watchTuningPresses() }
+                    if model.preference == .custom {
+                        // What Custom is set to; a click opens it again (or
+                        // shuts it, open).
+                        Button {
+                            model.toggleTuning()
+                        } label: {
+                            Text(model.preferenceHint)
+                                .font(.callout)
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.link)
+                        .help("Change the custom settings")
+                    } else {
                         Text(model.preferenceHint)
                             .font(.callout)
-                            .lineLimit(1)
+                            .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.link)
-                    .help("Change the custom settings")
-                } else {
-                    Text(model.preferenceHint)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -1797,9 +1805,39 @@ private struct DrawerSettings: View {
     }
 
     /// Speech's rows (MOSS-TTS, DESIGN §4g): whose voice it speaks in --
-    /// the prompt's sound -- and about how long it runs.
+    /// the prompt's sound -- and about how long it runs. A script of
+    /// several speakers (Drama 3): its voices, one a speaker; it decides
+    /// its own length.
     @ViewBuilder
     private var speechRows: some View {
+        if model.speechSpeakers > 1 {
+            GridRow {
+                label("Voices", row: SettingsRow.voice)
+                Text(verbatim: model.speechVoiceText)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: 320, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help("Each sound (or clip) in the prompt is a speaker's voice, in order -- the first is the first name to speak. It is cloned from its first seconds and the words said in them, which Valtz hears first when it has no transcript")
+                    .gridCellColumns(2)
+            }
+            GridRow {
+                Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                Text("Directions in brackets steer each line -- [sighs], [whispering], <emphasis>…</emphasis> -- and a scene's names are its speakers. The model decides the length")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 320, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .gridCellColumns(2)
+            }
+        } else {
+            mossSpeechRows
+        }
+    }
+
+    @ViewBuilder
+    private var mossSpeechRows: some View {
         GridRow {
             label("Voice", row: SettingsRow.voice)
             Text(verbatim: model.speechVoiceText)

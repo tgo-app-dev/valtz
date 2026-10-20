@@ -1085,6 +1085,22 @@
         }
       }
     },
+    "%lld of its %lld tokens" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld of its %2$lld tokens"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型 %2$lld 个词元中的 %1$lld 个"
+          }
+        }
+      }
+    },
     "%lld s" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1149,6 +1165,26 @@
         }
       }
     },
+    "%lld tokens" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%lld 个词元"
+          }
+        }
+      }
+    },
+    "%lld voices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%lld 个嗓音"
+          }
+        }
+      }
+    },
     "%lld-bit" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1206,6 +1242,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "1 个关键帧 · 第 %@ 页"
+          }
+        }
+      }
+    },
+    "1 voice" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "1 个嗓音"
           }
         }
       }
@@ -2832,11 +2878,22 @@
       }
     },
     "Audio generation needs YuE2 (songs) or MOSS-TTS (speech): download one in Settings › Capabilities." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "音频生成需要 YuE2（歌曲）或 MOSS-TTS（语音）：请在“设置 › 功能”中下载其一。"
+          }
+        }
+      }
+    },
+    "Audio generation needs YuE2 (songs), or Drama 3 or MOSS-TTS (speech): download one in Settings › Capabilities." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成音频需要 YuE2（歌曲），或 Drama 3、MOSS-TTS（语音）：请在“设置 › 能力”中下载其一。"
           }
         }
       }
@@ -3991,6 +4048,16 @@
         }
       }
     },
+    "Cloud Context" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "云端上下文"
+          }
+        }
+      }
+    },
     "Color" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4028,6 +4095,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "即将推出"
+          }
+        }
+      }
+    },
+    "Compact Long Conversations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "压缩过长的对话"
+          }
+        }
+      }
+    },
+    "Compacted to stay within the model’s context: the %lld messages before summarized." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "为不超出模型的上下文已压缩：之前的 %lld 条消息已归纳为摘要。"
+          }
+        }
+      }
+    },
+    "Compacting the conversation…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在压缩对话…"
           }
         }
       }
@@ -4323,6 +4420,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已连接 · 正在处理舰队任务"
+          }
+        }
+      }
+    },
+    "Context" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上下文"
           }
         }
       }
@@ -5147,6 +5254,16 @@
         }
       }
     },
+    "Directions in brackets steer each line -- [sighs], [whispering], <emphasis>…</emphasis> -- and a scene's names are its speakers. The model decides the length" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "方括号里的指示引导每一句——[sighs]、[whispering]、<emphasis>…</emphasis>——场景中的名字就是说话人。时长由模型决定"
+          }
+        }
+      }
+    },
     "Discoverable" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5699,6 +5816,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每一页显示其上的图层；新图层或拖到舞台上的素材放在当前显示的页面上——图层的菜单设置它所在的页面。调整、裁剪和旋转按页设置关键帧，如同视频按帧。导出时每页写成一个文件。"
+          }
+        }
+      }
+    },
+    "Each sound (or clip) in the prompt is a speaker's voice, in order -- the first is the first name to speak. It is cloned from its first seconds and the words said in them, which Valtz hears first when it has no transcript" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "提示中的每段声音（或视频）依次是一位说话人的嗓音——第一段属于最先说话的名字。它由开头几秒及其中所说的话克隆而来；没有转写时，Valtz 会先听写。"
           }
         }
       }
@@ -6630,6 +6757,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "前进"
+          }
+        }
+      }
+    },
+    "Found when the server refuses" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "服务器拒绝时得知"
           }
         }
       }
@@ -8116,6 +8253,16 @@
         }
       }
     },
+    "Its P·V in int8 too: attention about 1.18×" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "P·V 也用 int8：注意力约 1.18 倍"
+          }
+        }
+      }
+    },
     "Its adapter for 3 steps; no streaming, no cache" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8176,12 +8323,32 @@
         }
       }
     },
+    "Its own voices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型自己的嗓音"
+          }
+        }
+      }
+    },
     "Its own: put a sound in the prompt to speak in its voice" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "模型自带的嗓音：在提示中放入一段声音，即以该嗓音说话"
+          }
+        }
+      }
+    },
+    "Its own: put sounds in the prompt -- one a speaker, in order -- to speak in their voices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型自己的：在提示中放入声音——每位说话人一段，依次排列——即以它们的嗓音说话"
           }
         }
       }
@@ -9002,6 +9169,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "日志"
+          }
+        }
+      }
+    },
+    "Long Conversations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "长对话"
           }
         }
       }
@@ -11873,6 +12050,16 @@
         }
       }
     },
+    "Prompt and sound rows too" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "提示词和声音的行也用"
+          }
+        }
+      }
+    },
     "Prompt enhancement" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13157,6 +13344,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "时长"
+          }
+        }
+      }
+    },
+    "Runs attention's second product, P·V, in int8 as well: the product is kept in 32-bit integers across the key blocks, the probabilities on an 8-bit grid. For a clip, the first quarter of the steps keep SageAttention alone; a picture runs it on every step. On an M5 Ultra, a 1344×768 clip of 362 frames denoised about 8% sooner than with SageAttention alone (its attention 1.18×). Needs SageAttention; off in every Favor preset." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "注意力的第二个乘积 P·V 也以 int8 计算：乘积在各键块之间以 32 位整数累加，概率落在 8 位网格上。片段的前四分之一步骤仍只用 SageAttention；图片则每一步都用。在 M5 Ultra 上，1344×768、362 帧的片段去噪比只用 SageAttention 快约 8%（注意力约 1.18 倍）。需要 SageAttention；所有偏好预设中均为关闭。"
           }
         }
       }
@@ -15620,6 +15817,16 @@
         }
       }
     },
+    "The helper reads a conversation up to its context. Auto gives it as much of the model’s own as this Mac’s memory holds, its words kept beside the model; less leaves more memory for the pictures. Past it, the agent compacts the conversation: the model writes notes on the work so far, and goes on from them and its latest turns. Switched off, a session stops there. For sessions started after a change; the Agent is in Settings › Experimental." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "助手读取的对话以其上下文为限。“自动”会在这台 Mac 的内存容得下的范围内给它尽量多的模型自身上下文，词元保存在模型旁；设得更小，则为图片留出更多内存。超过上下文时，智能体会压缩对话：模型为迄今的工作写下笔记，再从这些笔记和最近几轮继续。关闭后，会话会在那里停止。更改只对之后开始的会话生效；智能体位于“设置 › 实验性功能”。"
+          }
+        }
+      }
+    },
     "The image was made and is in the project, but could not be shown: %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15892,6 +16099,16 @@
         }
       }
     },
+    "The provider’s (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "服务商的（%@）"
+          }
+        }
+      }
+    },
     "The residual blocks' convolutions" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16108,6 +16325,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "本机"
+          }
+        }
+      }
+    },
+    "This Mac Gives It" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这台 Mac 给它"
           }
         }
       }
@@ -17440,6 +17667,16 @@
         }
       }
     },
+    "Voices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "嗓音"
+          }
+        }
+      }
+    },
     "Volume" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17881,6 +18118,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "需开启 %@"
+          }
+        }
+      }
+    },
+    "With int8 P·V on, a clip's prompt and soundtrack rows, under 1% of its rows, keep SageAttention alone unless this is on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "开启 int8 P·V 时，片段中提示词和配乐的行（不到全部行的 1%）仍只用 SageAttention，除非打开此项。"
           }
         }
       }
@@ -18337,6 +18584,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无法连接 {url}：{why}"
+          }
+        }
+      }
+    },
+    "core.agent_context_full" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The conversation does not fit the helper's context of {tokens} tokens."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "对话超出了助手 {tokens} 个词元的上下文。"
           }
         }
       }
@@ -19888,6 +20152,23 @@
         }
       }
     },
+    "core.held_input_failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{name} was not made, and this needed it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{name} 没有生成，而这一项需要它。"
+          }
+        }
+      }
+    },
     "core.import_failed_some" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -20353,13 +20634,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "No speech model is ready: MOSS-TTS and its audio tokenizer are needed."
+            "value" : "No speech model is ready: Drama 3, or MOSS-TTS and its audio tokenizer, are needed."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "没有可用的语音模型：需要 MOSS-TTS 及其音频分词器。"
+            "value" : "没有可用的语音模型：需要 Drama 3，或 MOSS-TTS 及其音频分词器。"
           }
         }
       }
@@ -21384,6 +21665,40 @@
         }
       }
     },
+    "core.voice_needs_words" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Drama 3 clones {name} from its sound and the words said in it, and nothing here can hear them: download Qwen3-ASR (Settings › Capabilities › Listening), or transcribe {name} first."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Drama 3 根据声音和其中所说的话来克隆 {name}，而这里没有能听写的模型：请在“设置 › 能力 › 监听”中下载 Qwen3-ASR，或先转写 {name}。"
+          }
+        }
+      }
+    },
+    "core.voice_no_speech" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No speech was heard in {name}: Drama 3 clones a voice from words said in it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{name} 中没有听到说话：Drama 3 需要从其中所说的话来克隆嗓音。"
+          }
+        }
+      }
+    },
     "core.weights_busy" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -21530,6 +21845,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "int8 GEMM"
+          }
+        }
+      }
+    },
+    "int8 P·V" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "int8 P·V"
+          }
+        }
+      }
+    },
+    "int8 P·V on the prompt's and soundtrack's rows as well" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "提示词和配乐的行也用 int8 P·V"
           }
         }
       }

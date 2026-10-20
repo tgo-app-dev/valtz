@@ -1,6 +1,9 @@
 #include "testing.h"
 
+#include <cmath>
+
 #include "valtz/assist/assistant.h"
+#include "valtz/assist/drama3.h"
 #include "valtz/assist/moss-image.h"
 #include "valtz/assist/transcript.h"
 #include "valtz/assist/video-summary.h"
@@ -594,6 +597,139 @@ TEST(assist, speech_s_fields_and_words)
             R"({"instruction": "Soft and slow.", "language": "English",)"
             R"( "text": "Good ni)") ==
         "Instruction: Soft and slow.\nLanguage: English\n\nGood ni");
+}
+
+// DRAMA 3: a scene written as Fish Audio's guide writes it -- "Name:
+// line" -- made speaker tags in the order the names first speak, a line
+// without a name going on with the one before; taken for a scene only
+// when it surely is one; a tagged text or any other as written.
+TEST(assist, drama3_s_names_are_its_speakers)
+{
+  const Drama3Script s = drama3_script(
+      "Narrator: [calm, measured storyteller voice] The ship had been "
+      "silent for three days.\n"
+      "Captain: [low, gravelly] Status report.\n"
+      "Engineer: [fast, nervous] Uh, sir, the reactor is not great.\n"
+      "It is going to <emphasis>blow</emphasis>.\n"
+      "Captain\xef\xbc\x9a [slow, dangerously quiet] Define \"not great.\"");
+  REQUIRE(s.names.size() == 3);
+  CHECK(s.names[0] == "Narrator" && s.names[2] == "Engineer");
+  CHECK(s.text ==
+        "<|speaker:0|>[calm, measured storyteller voice] The ship had been "
+        "silent for three days.\n"
+        "<|speaker:1|>[low, gravelly] Status report.\n"
+        "<|speaker:2|>[fast, nervous] Uh, sir, the reactor is not great.\n"
+        "It is going to <emphasis>blow</emphasis>.\n"
+        "<|speaker:1|>[slow, dangerously quiet] Define \"not great.\"");
+  // Two names each once: a scene only with a voice for each.
+  const std::string two = "Anna: Hi.\nBen: Hello there.";
+  CHECK(drama3_script(two).names.empty());
+  CHECK(drama3_script(two).text == two);
+  CHECK(drama3_script(two, 2).text ==
+        "<|speaker:0|>Hi.\n<|speaker:1|>Hello there.");
+  // Steps, a heading, prose, a tagged text: spoken as written.
+  const std::string steps = "Step one: mix the flour.\nStep two: add water.";
+  CHECK(drama3_script(steps).text == steps);
+  CHECK(drama3_script("Note: this is spoken.").names.empty());
+  CHECK(drama3_script("Chapter 1: The Storm\nIt was a dark night.")
+            .names.empty());
+  CHECK(drama3_script("[sighs] Fine. If we miss it, it's on you.").text ==
+        "[sighs] Fine. If we miss it, it's on you.");
+  CHECK(drama3_script("Well, he said: go home.\nAnd so: we went.")
+            .names.empty());
+  const std::string tagged =
+      "<|speaker:0|> The door opened. <|speaker:1|> Is anyone there?";
+  CHECK(drama3_script(tagged, 2).text == tagged);
+}
+
+// A voice's WORDS for Drama 3: its transcript's lines from its start,
+// whole, as long as they end within the seconds kept; the clip cut a
+// little past the last, before the next; a first line longer than that
+// alone.
+TEST(assist, drama3_s_voice_is_cut_to_its_words)
+{
+  Transcript t;
+  t.seconds = 30;
+  t.lines = {{6.1, 11.0, "And then the tide came in.", "English"},
+             {0.4, 5.6, "We asked over twenty different people.", "English"},
+             {11.1, 14.0, "Nobody saw it.", "English"}};
+  const Drama3Voice v = drama3_voice(t);
+  CHECK(v.text ==
+        "We asked over twenty different people. And then the tide came "
+        "in.");
+  CHECK(std::abs(v.seconds - 11.08) < 1e-6);   // up to the next line
+  const Drama3Voice all = drama3_voice(t, 20);
+  CHECK(all.text.ends_with("Nobody saw it."));
+  CHECK(std::abs(all.seconds - 14.3) < 1e-6);
+  t.lines = {{0.2, 15.5, "A very long first sentence.", "English"}};
+  CHECK(drama3_voice(t).text == "A very long first sentence.");
+  CHECK(std::abs(drama3_voice(t).seconds - 15.8) < 1e-6);
+  // Nothing said.
+  t.lines.clear();
+  CHECK(drama3_voice(t).text.empty());
+  // From a transcript asset's data.
+  t.lines = {{0.0, 3.9, "Hello.", "English"}};
+  t.seconds = 4.0;
+  CHECK(drama3_voice(to_json(t)).text == "Hello.");
+  CHECK(std::abs(drama3_voice(to_json(t)).seconds - 4.0) < 1e-6);
+}
+
+// Drama 3's script writer: Valtz's instructions, then Fish Audio's guide
+// as plain text -- its directing sections, examples as lines, no web
+// service (no API, voice IDs, curl, components) -- and the enhancer
+// told the voices; its reply the script.
+TEST(assist, drama3_is_written_a_script_by_its_makers_guide)
+{
+  const std::string_view skill = rewrite_prompt("drama3");
+  REQUIRE(!skill.empty());
+  CHECK(skill.find("Fish Audio's guide: Drama 3") != std::string_view::npos);
+  CHECK(skill.find("## Direct the performance") != std::string_view::npos);
+  CHECK(skill.find("Example (Sheila): [barely holding it together, forcing "
+                   "a smile] I'm fine.") != std::string_view::npos);
+  CHECK(skill.find("Captain: [low, gravelly, tired but in control] Status "
+                   "report.") != std::string_view::npos);
+  CHECK(skill.find("Note: Language tags are experimental.") !=
+        std::string_view::npos);
+  CHECK(skill.find("<|phoneme_start|>") != std::string_view::npos);
+  for (const char* gone : {"curl", "import ", "<AudioClip", "Voice cast",
+                           "bf322df2096a46f18c579d0baa36f41d", "---\ntitle",
+                           "<Support", "/developer-guide/"}) {
+    CHECK(skill.find(gone) == std::string_view::npos);
+  }
+  auto cat = models::Catalog::builtin();
+  REQUIRE_OK(cat);
+  for (const char* id : {"drama-3", "drama-3-int4"}) {
+    const auto* m = cat->find(id);
+    REQUIRE(m);
+    CHECK(m->has(models::Capability::TextToSpeech));
+    CHECK(jget<std::string>(jget(m->prompting, "enhance", Json::object()),
+                            "generate", "") == "drama3");
+  }
+  EnhanceRequest r;
+  r.target = "audio";
+  r.system = std::string(skill);
+  r.speech = true;
+  r.speakers = true;
+  r.voice = true;
+  r.voices = 2;
+  r.prompt = "a captain and an engineer argue as the reactor fails";
+  std::string q = build_enhance_prompt(r);
+  CHECK(q.find("2 reference voices are given, in the order the script's "
+               "speakers first speak") != std::string::npos);
+  CHECK(q.find("instruction describes") == std::string::npos);
+  r.voices = 0;
+  r.voice = false;
+  q = build_enhance_prompt(r);
+  CHECK(q.find("the model chooses each voice") != std::string::npos);
+
+  auto e = parse_enhance_reply(
+      R"({"prompt": "Captain: [tired] Status report.\nEngineer: [nervous])"
+      R"( Not great.", "title": "Reactor"})");
+  REQUIRE_OK(e);
+  CHECK(e->prompt ==
+        "Captain: [tired] Status report.\nEngineer: [nervous] Not great.");
+  CHECK(partial_enhance_reply(R"({"prompt": "Captain: [tired] Sta)") ==
+        "Captain: [tired] Sta");
 }
 
 TEST(assist, names_leave_markdown_out)

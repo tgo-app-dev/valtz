@@ -357,6 +357,8 @@ struct TuningPanel: View {
         case "sol_attn": String(localized: "Sol-Attn")
         case "sol_tau": String(localized: "Sol threshold")
         case "sage_attn": String(localized: "SageAttention")
+        case "sage_pv8": String(localized: "int8 P·V")
+        case "sage_pv8_all_rows": String(localized: "Prompt and sound rows too")
         case "i8_gemm": String(localized: "int8 GEMM")
         case "i8_gemm_tier": String(localized: "int8 tier")
         case "vae_i8_gemm": String(localized: "VAE int8")
@@ -384,6 +386,8 @@ struct TuningPanel: View {
         case "sol_attn": String(localized: "Attends only the key blocks that matter")
         case "sol_tau": String(localized: "Higher keeps fewer blocks: faster, less exact")
         case "sage_attn": String(localized: "int8 QK in attention, about 1.2× (M5)")
+        case "sage_pv8": String(localized: "Its P·V in int8 too: attention about 1.18×")
+        case "sage_pv8_all_rows": String(localized: "int8 P·V on the prompt's and soundtrack's rows as well")
         case "i8_gemm": String(localized: "int8 block matrix products, about 2×")
         case "vae_i8_gemm": String(localized: "int8 convolutions in the VAE, its decode 1.15-1.26×")
         case "ane_ffn": String(localized: "Feed-forward on the Neural Engine, beside the GPU")
@@ -407,6 +411,8 @@ struct TuningPanel: View {
         case "sol_attn": String(localized: "Training-free sparse attention: key blocks a cheap proxy scores low are folded in as their centroid. Saves about a quarter to a third of the denoise on a long clip.")
         case "sol_tau": String(localized: "In standard deviations of the routing score's spread. 1.0 is the published setting.")
         case "sage_attn": String(localized: "SageAttention computes QK in int8 with exact key smoothing. Needs the M5's matrix cores.")
+        case "sage_pv8": String(localized: "Runs attention's second product, P·V, in int8 as well: the product is kept in 32-bit integers across the key blocks, the probabilities on an 8-bit grid. For a clip, the first quarter of the steps keep SageAttention alone; a picture runs it on every step. On an M5 Ultra, a 1344×768 clip of 362 frames denoised about 8% sooner than with SageAttention alone (its attention 1.18×). Needs SageAttention; off in every Favor preset.")
+        case "sage_pv8_all_rows": String(localized: "With int8 P·V on, a clip's prompt and soundtrack rows, under 1% of its rows, keep SageAttention alone unless this is on.")
         case "i8_gemm": String(localized: "Dynamic int8 for the block's large matrix products, at int8 quality. Needs the M5's matrix cores.")
         case "i8_gemm_tier": String(localized: "Which int8 matrix product runs with int8 GEMM on. Accurate quantizes the weights and the activations in groups of 64 at every call. Fast keeps the block's weights as int8 in groups of 512, each group turned by a Hadamard rotation on both sides so that one large channel does not set its scale. Per Token gives each weight row and each token one scale across the whole product, after a rotation in blocks of 256: the fastest (Qwen-Image 2.1 on an M5: 1.4-1.7× Accurate). Per Token, Unrotated skips the rotation: a little faster again, its pictures further from the bf16 model's. Faster down the list, less exact. A full-precision model's blocks take it only while kept in memory: those it streams, on a smaller Mac, stay Accurate (an 8-bit compressed copy's take it either way). With ANE FFN on, it is Accurate.")
         case "vae_i8_gemm": String(localized: "Runs the VAE's 3×3 convolutions and its attention's matrix products in int8 on the M5's matrix cores: the decode that makes the picture, and the encode of an edit's pictures. Each channel of a convolution's input gets a scale of its own. On an M5 Pro, a 1024×1024 picture decodes about 0.15-0.26 s sooner, 50-60 dB from the full-precision decode. Off in every Favor preset: the VAE is the last step before the pixels, with nothing after it to absorb an error.")
@@ -494,7 +500,9 @@ private enum TuningGroup: CaseIterable, Identifiable {
         switch key {
         case "steps", "hyperflow", "taomate", "taomate_lora": .steps
         case "loras", "dits", "vaes": .weights
-        case "vdn", "sol_attn", "sol_tau", "sage_attn": .attention
+        case "vdn", "sol_attn", "sol_tau", "sage_attn", "sage_pv8",
+             "sage_pv8_all_rows":
+            .attention
         case "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier",
              "ane_ffn", "ane_qkv", "motion_cache": .compute
         default: .schedule

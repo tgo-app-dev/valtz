@@ -92,7 +92,7 @@ usage()
       "         deleted)\n"
       "  assistant [<model-id>|auto] [--keep <seconds>]\n"
       "            [--drafter mtp|dflash] [--bits 8|4]\n"
-      "            [--video-every <seconds>|auto]\n"
+      "            [--video-every <seconds>|auto] [--context <tokens>|auto]\n"
       "         (Settings > Agentic Helper: the helpers, which is chosen\n"
       "         and which runs, each one's sampler; with an id, that one\n"
       "         chosen -- kept for the app and every later run; --keep:\n"
@@ -100,7 +100,8 @@ usage()
       "         --drafter: what it drafts with -- its MTP head, or a\n"
       "         DFlash 2 drafter held at --bits; --video-every: a video\n"
       "         summary's seconds a frame, auto: 1, or 2 where memory\n"
-      "         moves under 200 GB/s)\n"
+      "         moves under 200 GB/s; --context: its context at most --\n"
+      "         auto, its own as this Mac's memory holds it)\n"
       "  status [--thermal]   (the machine's load, as the app's status bar\n"
       "         shows it: ANE, GPU, memory; --thermal adds whether the GPU\n"
       "         is held back, from a 600 ms sample)\n"
@@ -256,6 +257,15 @@ usage()
       "        sound (or a clip) whose voice it speaks in, cloned from up\n"
       "        to 12 s of it -- with one, Auto picks a speech model.\n"
       "        --seconds: about how long. A 24 kHz mono WAV)\n"
+      "  audio <project.valtz> <script> --model drama-3[-int4]\n"
+      "        [--voice <file|asset> [--voice-text <words>]]... [--seed n]\n"
+      "        (a SCRIPT performed, Fish Audio Drama 3: directions in\n"
+      "        brackets where they act -- \"[sighs]\", \"<whisper>\" round\n"
+      "        words; a scene a line a turn, \"Name: [direction] line\",\n"
+      "        the names its speakers in the order they first speak. Each\n"
+      "        --voice is the next speaker's, cloned from its sound and the\n"
+      "        words said in it: --voice-text, else its transcript -- Valtz\n"
+      "        transcribes it first when it has none. A 44.1 kHz mono WAV)\n"
       "  record --sources | record <project.valtz> [<sound-comp-id>]\n"
       "        [--source id] [--seconds s]  (a microphone -- the default\n"
       "        one without --source -- or the system's audio, \"system\",\n"
@@ -388,7 +398,8 @@ usage()
       "         ranges and what this Mac can have; --continues: as for a\n"
       "         clip continued, its continuation presets. --tune on\n"
       "         generate and video sets them: steps, hyperflow, vdn,\n"
-      "         sol_attn, sol_tau, sage_attn, i8_gemm, i8_gemm_tier,\n"
+      "         sol_attn, sol_tau, sage_attn, sage_pv8,\n"
+      "         sage_pv8_all_rows, i8_gemm, i8_gemm_tier,\n"
       "         motion_cache, video_shift, audio_shift, shift --\n"
       "         true/false, a number or a word (i8_gemm_tier=accurate|\n"
       "         fast|token|token_plain); --turbo the catalog's\n"
@@ -462,6 +473,7 @@ usage()
       "        | agent tools | agent settings [backend=helper|cloud]\n"
       "            [review=on|off] [lease=<s>] [provider=anthropic|openai|\n"
       "            openai-compatible] [model=<id>] [base_url=<url>]\n"
+      "            [max_tokens=<n>] [context=<tokens>] [compact=on|off]\n"
       "        | agent key <provider> [--remove]\n"
       "         (the AGENT: the request worked on in the project by the\n"
       "         helper -- or a fleet member's, or a cloud model -- calling\n"
@@ -1501,12 +1513,16 @@ agent_command(Controller& c, std::vector<std::string> args)
         set["backend"] = v;
       } else if (k == "review") {
         set["review"] = v == "on" || v == "true";
+      } else if (k == "compact") {
+        set["compact"] = v == "on" || v == "true";
       } else if (k == "lease") {
         set["lease"] = std::atof(v.c_str());
       } else if (k == "provider" || k == "model" || k == "base_url") {
         cloud[k] = v;
       } else if (k == "max_tokens") {
         cloud[k] = std::atoi(v.c_str());
+      } else if (k == "context") {
+        cloud["context_tokens"] = std::atoll(v.c_str());
       } else {
         return usage();
       }
@@ -1609,6 +1625,7 @@ agent_command(Controller& c, std::vector<std::string> args)
   };
   std::map<int, std::string> printed;   // each step's state, as shown
   int speed_shown = 0;                  // --speed: the turns printed
+  int compacted = 0;                    // the compactions said
   bool writing = false;
   const auto t0 = std::chrono::steady_clock::now();
   for (;;) {
@@ -1640,6 +1657,15 @@ agent_command(Controller& c, std::vector<std::string> args)
     if (writing && state != "thinking") {
       std::cout << "\n";
       writing = false;
+    }
+    if (const int n = jget(st, "compactions", 0); n > compacted) {
+      compacted = n;
+      std::fprintf(stderr,
+                   "  · compacted (%d): the conversation kept within its "
+                   "model's %lld tokens\n",
+                   n,
+                   static_cast<long long>(jget<std::int64_t>(
+                       jget(st, "context", Json::object()), "limit", 0)));
     }
     if (speed && jget(st, "turns", 0) > speed_shown) {
       speed_shown = jget(st, "turns", 0);
@@ -2048,6 +2074,10 @@ main(int argc, char** argv)
             c.assistants().value("drafter", std::string("mtp")), bits);
       } else if (args[i] == "--drafter" && i + 1 < args.size()) {
         st = c.set_assistant_drafter(args[++i], bits);
+      } else if (args[i] == "--context" && i + 1 < args.size()) {
+        ++i;
+        st = c.set_assistant_context(
+            args[i] == "auto" ? 0 : std::atoll(args[i].c_str()));
       } else {
         st = c.choose_assistant(args[i] == "auto" ? "" : args[i]);
       }
@@ -2057,6 +2087,12 @@ main(int argc, char** argv)
     }
     const Json a = c.assistants();
     const auto choice = a["choice"].get<std::string>();
+    if (const auto ctx = jget<std::int64_t>(a, "context", 0); ctx > 0) {
+      std::printf("context  at most %lld tokens\n",
+                  static_cast<long long>(ctx));
+    } else {
+      std::printf("context  auto: each helper's own, as memory holds it\n");
+    }
     std::printf("chosen   %s\nauto     %s\nusing    %s\nkept     %g s "
                 "after a request\ndrafter  %s%s\nvideo    a frame every "
                 "%g s%s (memory %g GB/s)\n",
@@ -2083,6 +2119,12 @@ main(int argc, char** argv)
         drafter += std::format("  dflash {} ({})",
                                m["dflash"]["id"].get<std::string>(),
                                m["dflash"]["state"].get<std::string>());
+      }
+      if (m.contains("context")) {
+        drafter += std::format("  context {} of {} (memory {})",
+                               jget(m["context"], "here", 0),
+                               jget(m["context"], "model", 0),
+                               jget(m["context"], "auto", 0));
       }
       const Json& sm = m["sampling"];
       const std::string sampler =
@@ -4257,14 +4299,25 @@ main(int argc, char** argv)
         lora_arg(req.tuning, a, next());
       } else if (a == "--voice" || a == "--ref") {
         // A voice to speak in (MOSS-TTS clones it): a sound, or a clip.
+        // Drama 3's speakers, each --voice the next.
         auto r = reference_asset(c, *pid, next(), project::Placement::Auto);
         if (!r.ok()) {
           return fail(r.error());
         }
         req.row.push_back(*r);
         if (a == "--voice") {
-          req.voice = *r;
+          if (!req.voice) {
+            req.voice = *r;
+          }
+          req.voices.push_back(*r);
         }
+      } else if (a == "--voice-text") {
+        // The words the latest --voice says (Drama 3): none, heard.
+        if (req.voices.empty()) {
+          return usage();
+        }
+        req.voice_texts.resize(req.voices.size());
+        req.voice_texts.back() = next();
       } else if (a == "--seconds") {
         req.seconds = std::atof(next().c_str());
       } else {
