@@ -483,6 +483,39 @@ add_outlines(CGMutablePathRef glyphs, CGMutablePathRef bars, CTLineRef line,
   }
 }
 
+// A stroke's DASHES (markup.h "dash"), set on `ctx` for the outline or
+// line about to be stroked: in its own widths, so they scale with it.
+void
+set_dash(CGContextRef ctx, const Json& o, double width)
+{
+  const auto d = jget<std::string>(o, "dash", "");
+  const CGFloat w = static_cast<CGFloat>(std::max(1.0, width));
+  if (d == "dashed") {
+    const CGFloat lengths[2] = {3 * w, 2 * w};
+    CGContextSetLineDash(ctx, 0, lengths, 2);
+    CGContextSetLineCap(ctx, kCGLineCapButt);
+  } else if (d == "dotted") {
+    // A dash of no length with a round cap is a dot.
+    const CGFloat lengths[2] = {0, 2 * w};
+    CGContextSetLineDash(ctx, 0, lengths, 2);
+    CGContextSetLineCap(ctx, kCGLineCapRound);
+  }
+}
+
+// A line's arrowhead (markup.h "arrows") with its tip at `tip`, pointing
+// along (ux, uy), `len` long and `half` either side.
+void
+fill_arrowhead(CGContextRef ctx, double tx, double ty, double ux, double uy,
+               double len, double half)
+{
+  const double bx = tx - ux * len, by = ty - uy * len;
+  CGContextMoveToPoint(ctx, tx, ty);
+  CGContextAddLineToPoint(ctx, bx - uy * half, by + ux * half);
+  CGContextAddLineToPoint(ctx, bx + uy * half, by - ux * half);
+  CGContextClosePath(ctx);
+  CGContextFillPath(ctx);
+}
+
 // One object, on a context whose CTM is canvas pixels, y down: itself,
 // without its effects. For a VECTOR context (`vectors`: a PDF's), a
 // gradient in a text box's words is laid through their glyphs' outlines
@@ -499,6 +532,9 @@ draw_body(CGContextRef ctx, const Json& o, bool vectors)
   const auto fill = rgba_of(jget(o, "fill", Json()), {0, 0, 0, 0});
   const double width = std::max(0.0, finite_or(o, "width", 0));
   CGContextSaveGState(ctx);
+  // Its turn and flips about its box's centre: all of it below is drawn
+  // in its own pixels.
+  CGContextConcatCTM(ctx, object_transform(o));
   if (kind == "drawing") {
     // Its pixels in its box, upright on a y-down canvas.
     if (CGImageRef img = read_image(jget<std::string>(o, "file", ""))) {
@@ -512,12 +548,39 @@ draw_body(CGContextRef ctx, const Json& o, bool vectors)
     }
   } else if (kind == "line") {
     if (width > 0) {
+      // Its arrowheads, at either end or both: the line stopped inside
+      // each, so neither its round cap nor a dash shows past the tip.
+      const auto arrows = jget<std::string>(o, "arrows", "");
+      const bool at0 = arrows == "start" || arrows == "both";
+      const bool at1 = arrows == "end" || arrows == "both";
+      const double dx = x1 - x0, dy = y1 - y0;
+      const double run = std::hypot(dx, dy);
+      const double ux = run > 0 ? dx / run : 1, uy = run > 0 ? dy / run : 0;
+      const int heads = (at0 ? 1 : 0) + (at1 ? 1 : 0);
+      double len = std::max(10.0, 4 * width);
+      if (heads > 0 && run > 0) {
+        len = std::min(len, run / heads);
+      }
+      const double half = std::max(5.0, 2 * width);
+      const double in = len * 0.8;
       CGContextSetLineCap(ctx, kCGLineCapRound);
       CGContextSetLineWidth(ctx, width);
+      set_dash(ctx, o, width);
       set_stroke(ctx, stroke);
-      CGContextMoveToPoint(ctx, x0, y0);
-      CGContextAddLineToPoint(ctx, x1, y1);
+      CGContextMoveToPoint(ctx, x0 + (at0 ? ux * in : 0),
+                           y0 + (at0 ? uy * in : 0));
+      CGContextAddLineToPoint(ctx, x1 - (at1 ? ux * in : 0),
+                              y1 - (at1 ? uy * in : 0));
       CGContextStrokePath(ctx);
+      if (heads > 0 && run > 0) {
+        set_fill(ctx, stroke);
+        if (at1) {
+          fill_arrowhead(ctx, x1, y1, ux, uy, len, half);
+        }
+        if (at0) {
+          fill_arrowhead(ctx, x0, y0, -ux, -uy, len, half);
+        }
+      }
     }
   } else if (kind == "rect" || kind == "ellipse" || kind == "polygon") {
     // Its inside: a gradient through its outline as a clip, else its
@@ -544,6 +607,7 @@ draw_body(CGContextRef ctx, const Json& o, bool vectors)
         CGContextSetLineCap(ctx, kCGLineCapRound);
       }
       CGContextSetLineWidth(ctx, width);
+      set_dash(ctx, o, width);
       set_stroke(ctx, stroke);
       CGContextAddPath(ctx, path);
       CGContextStrokePath(ctx);
@@ -763,7 +827,8 @@ object_rect(const Json& o)
   const double x1 = finite_or(o, "x1", 0), y1 = finite_or(o, "y1", 0);
   const double w = kind == "text" ? 0 : std::max(0.0, finite_or(o, "width",
                                                                 0));
-  return CGRectInset(shape_box(o, x0, y0, x1, y1), -w, -w);
+  return CGRectApplyAffineTransform(
+      CGRectInset(shape_box(o, x0, y0, x1, y1), -w, -w), object_transform(o));
 }
 
 void draw_object(CGContextRef ctx, const Json& o, bool vectors);
@@ -1021,8 +1086,11 @@ text_fit(const Json& o, bool all_lines)
   return fit;
 }
 
+namespace {
+
+// What an object covers in its OWN pixels, before its turn and flips.
 std::array<double, 4>
-object_bounds(const Json& o)
+own_bounds(const Json& o)
 {
   const auto kind = jget<std::string>(o, "kind", "");
   const double x0 = finite_or(o, "x0", 0), y0 = finite_or(o, "y0", 0);
@@ -1070,6 +1138,40 @@ object_bounds(const Json& o)
   const CGRect r = shape_box(o, x0, y0, x1, y1);
   return {r.origin.x - half, r.origin.y - half, r.size.width + 2 * half,
           r.size.height + 2 * half};
+}
+
+}  // namespace
+
+CGAffineTransform
+object_transform(const Json& o)
+{
+  const double turn = finite_or(o, "rotate", 0);
+  const bool fx = jget(o, "flip_x", false), fy = jget(o, "flip_y", false);
+  if (turn == 0 && !fx && !fy) {
+    return CGAffineTransformIdentity;
+  }
+  // The centre of its box -- a line's ends', a polygon's points' (not the
+  // curve's bulge) -- or a text without one, of its lines as set.
+  double cx = (finite_or(o, "x0", 0) + finite_or(o, "x1", 0)) / 2;
+  double cy = (finite_or(o, "y0", 0) + finite_or(o, "y1", 0)) / 2;
+  if (jget<std::string>(o, "kind", "") == "text" && !jget(o, "box", false)) {
+    const auto b = own_bounds(o);
+    cx = b[0] + b[2] / 2;
+    cy = b[1] + b[3] / 2;
+  }
+  CGAffineTransform t = CGAffineTransformMakeTranslation(cx, cy);
+  t = CGAffineTransformRotate(t, turn * std::numbers::pi / 180);
+  t = CGAffineTransformScale(t, fx ? -1 : 1, fy ? -1 : 1);
+  return CGAffineTransformTranslate(t, -cx, -cy);
+}
+
+std::array<double, 4>
+object_bounds(const Json& o)
+{
+  const auto b = own_bounds(o);
+  const CGRect r = CGRectApplyAffineTransform(
+      CGRectMake(b[0], b[1], b[2], b[3]), object_transform(o));
+  return {r.origin.x, r.origin.y, r.size.width, r.size.height};
 }
 
 namespace {
@@ -1256,6 +1358,24 @@ normalize_objects(const Json& in)
       id = std::format("o{}", next++);
     }
     ids.insert(id);
+    // Its turn, within half a turn either way, and its flips (absent:
+    // none).
+    auto turned = [&o](Json& n) {
+      double turn = std::fmod(finite_or(o, "rotate", 0), 360.0);
+      if (turn > 180) {
+        turn -= 360;
+      } else if (turn <= -180) {
+        turn += 360;
+      }
+      if (std::abs(turn) > 1e-9) {
+        n["rotate"] = turn;
+      }
+      for (const char* k : {"flip_x", "flip_y"}) {
+        if (jget(o, k, false)) {
+          n[k] = true;
+        }
+      }
+    };
     if (kind == "drawing") {
       out.push_back({{"id", id},
                      {"kind", kind},
@@ -1267,6 +1387,7 @@ normalize_objects(const Json& in)
                                 {"size", jget<std::uint64_t>(image, "size", 0)},
                                 {"ext", jget<std::string>(image, "ext",
                                                           "png")}}}});
+      turned(out.back());
       continue;
     }
     auto rgba = [](const std::array<double, 4>& c) {
@@ -1283,6 +1404,21 @@ normalize_objects(const Json& in)
       {"fill", rgba(rgba_of(jget(o, "fill", Json()), {0, 0, 0, 0}))},
       {"width", std::clamp(finite_or(o, "width", 4), 0.0, 1000.0)},
     };
+    turned(n);
+    // A line's or an outline's dashes; a line's arrowheads (absent:
+    // solid, none).
+    if (kind != "text") {
+      const auto d = jget<std::string>(o, "dash", "");
+      if (d == "dashed" || d == "dotted") {
+        n["dash"] = d;
+      }
+    }
+    if (kind == "line") {
+      const auto a = jget<std::string>(o, "arrows", "");
+      if (a == "start" || a == "end" || a == "both") {
+        n["arrows"] = a;
+      }
+    }
     if (kind == "text") {
       const Json f = jget(o, "font", Json::object());
       n["text"] = jget<std::string>(o, "text", "");

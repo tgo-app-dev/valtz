@@ -2053,27 +2053,112 @@ private struct SelectionFrameSection: View {
                         .foregroundStyle(.secondary)
                         .gridColumnAlignment(.trailing)
                         .frame(minWidth: 72, alignment: .trailing)
+                    // Signed: a negative one flipped that way.
+                    let flipped = model.selectionFlipped
                     HStack(spacing: 8) {
-                        PixelField(axis: "W", value: frame.width,
-                                   least: 1) { v in
-                            var f = frame
-                            f.size.width = v
-                            set(f)
+                        PixelField(axis: "W",
+                                   value: frame.width * (flipped.x ? -1 : 1))
+                        { v in
+                            model.setSelectionSize(width: v)
                         }
-                        PixelField(axis: "H", value: frame.height,
-                                   least: 1) { v in
-                            var f = frame
-                            f.size.height = v
-                            set(f)
+                        PixelField(axis: "H",
+                                   value: frame.height * (flipped.y ? -1 : 1))
+                        { v in
+                            model.setSelectionSize(height: v)
                         }
                     }
                 }
+                GridRow {
+                    Text("Rotation")
+                        .foregroundStyle(.secondary)
+                        .gridColumnAlignment(.trailing)
+                        .frame(minWidth: 72, alignment: .trailing)
+                    HStack(spacing: 3) {
+                        PixelField(axis: "", value: model.selectionRotation,
+                                   accessibility: "Rotation") { v in
+                            model.setSelectionRotation(v)
+                        }
+                        Text(verbatim: "°")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
-            Text("In pixels. The Crop panel places the whole layer; these change the selected objects.")
+            Text("In pixels. A negative width or height flips; the rotation turns each object about its centre. The Crop panel places the whole layer; these change the selected objects.")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            strokeStyle
         }
+    }
+
+    /// Their LINE: solid, dashed or dotted (lines and outlines), and a
+    /// line's arrowheads at either end or both -- shown "mixed" while the
+    /// selected differ.
+    @ViewBuilder
+    private var strokeStyle: some View {
+        let sel = model.markup.selection
+        let dashed = sel.filter(\.dashable)
+        let lines = sel.filter { $0.kind == .line }
+        if !dashed.isEmpty {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8,
+                 verticalSpacing: 6) {
+                GridRow {
+                    Text("Line Style")
+                        .foregroundStyle(.secondary)
+                        .gridColumnAlignment(.trailing)
+                        .frame(minWidth: 72, alignment: .trailing)
+                    Picker("Line Style", selection: Binding(
+                        get: { Self.common(dashed.map { $0.dash ?? "solid" }) },
+                        set: { model.setSelectionDash($0 == "solid" ? nil : $0) }
+                    )) {
+                        Text("Solid").tag("solid")
+                        Text("Dashed").tag("dashed")
+                        Text("Dotted").tag("dotted")
+                        if Self.common(dashed.map { $0.dash ?? "solid" })
+                            == "" {
+                            Text("Mixed").tag("")
+                        }
+                    }
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(width: 130)
+                }
+                if !lines.isEmpty {
+                    GridRow {
+                        Text("Arrows")
+                            .foregroundStyle(.secondary)
+                            .gridColumnAlignment(.trailing)
+                            .frame(minWidth: 72, alignment: .trailing)
+                        Picker("Arrows", selection: Binding(
+                            get: {
+                                Self.common(lines.map { $0.arrows ?? "none" })
+                            },
+                            set: {
+                                model.setSelectionArrows($0 == "none" ? nil : $0)
+                            }
+                        )) {
+                            Text("None").tag("none")
+                            Text("At the Start").tag("start")
+                            Text("At the End").tag("end")
+                            Text("At Both Ends").tag("both")
+                            if Self.common(lines.map { $0.arrows ?? "none" })
+                                == "" {
+                                Text("Mixed").tag("")
+                            }
+                        }
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .frame(width: 130)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The value they all have; "" while they differ.
+    private static func common(_ values: [String]) -> String {
+        Set(values).count == 1 ? values[0] : ""
     }
 
     private func set(_ f: CGRect) {
@@ -2085,18 +2170,22 @@ private struct SelectionFrameSection: View {
 /// the value as it is otherwise ("213", "213.5").
 private struct PixelField: View {
     let axis: String
-    let value: Double
+    /// nil: the selected differ -- shown empty, "Mixed" in grey.
+    let value: Double?
     var least: Double = -.infinity
+    var accessibility: LocalizedStringKey?
     let set: (Double) -> Void
     @State private var text = ""
     @FocusState private var focused: Bool
 
     var body: some View {
         HStack(spacing: 3) {
-            Text(verbatim: axis)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-            TextField("", text: $text)
+            if !axis.isEmpty {
+                Text(verbatim: axis)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+            TextField(value == nil ? "Mixed" : "", text: $text)
                 .textFieldStyle(.roundedBorder)
                 .controlSize(.small)
                 .multilineTextAlignment(.trailing)
@@ -2105,7 +2194,8 @@ private struct PixelField: View {
                 .focused($focused)
                 .onSubmit(take)
                 .onChange(of: focused) { _, now in if !now { take() } }
-                .accessibilityLabel(Text(verbatim: axis))
+                .accessibilityLabel(accessibility.map { Text($0) }
+                                    ?? Text(verbatim: axis))
         }
         .onAppear { text = Self.label(value) }
         .onChange(of: value) { _, v in
@@ -2116,13 +2206,16 @@ private struct PixelField: View {
     private func take() {
         let typed = text.trimmingCharacters(in: .whitespaces)
             .replacingOccurrences(of: ",", with: ".")
-        if let v = Double(typed), abs(v - value) > 1e-3 {
+            .replacingOccurrences(of: "\u{2212}", with: "-")
+        if let v = Double(typed), v.isFinite,
+           value.map({ abs(v - $0) > 1e-3 }) ?? true {
             set(max(least, v))
         }
         text = Self.label(value)
     }
 
-    static func label(_ v: Double) -> String {
+    static func label(_ v: Double?) -> String {
+        guard let v else { return "" }
         let t = (v * 10).rounded() / 10
         return t == t.rounded() ? String(Int(t)) : String(format: "%.1f", t)
     }

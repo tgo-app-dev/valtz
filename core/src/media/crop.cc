@@ -6,6 +6,13 @@
 
 namespace valtz::media {
 
+double
+held_zoom(double s)
+{
+  const double m = std::clamp(std::abs(s), 0.01, 100.0);
+  return s < 0 ? -m : m;
+}
+
 bool
 Crop::identity() const
 {
@@ -45,8 +52,8 @@ crop_from_json(const Json& j)
   c.content = size("content_w", "content_h");
   c.canvas = size("canvas_w", "canvas_h");
   const double both = jget(j, "scale", 1.0);
-  c.scale_x = std::clamp(jget(j, "scale_x", both), 0.01, 100.0);
-  c.scale_y = std::clamp(jget(j, "scale_y", both), 0.01, 100.0);
+  c.scale_x = held_zoom(jget(j, "scale_x", both));
+  c.scale_y = held_zoom(jget(j, "scale_y", both));
   c.offset_x = std::clamp(jget(j, "offset_x", 0.0), -10.0, 10.0);
   c.offset_y = std::clamp(jget(j, "offset_y", 0.0), -10.0, 10.0);
   // Held to a whole turn either way -- not folded into one: a clip's
@@ -80,11 +87,14 @@ crop_placement(const Crop& c, double w, double h)
   const double t = c.rotate * std::numbers::pi / 180;
   const double co = std::cos(t);
   const double si = std::sin(t);
+  // A keyed zoom passing from one side to the other (a flip) is held
+  // off nothing on its way.
+  const double sx = held_zoom(c.scale_x), sy = held_zoom(c.scale_y);
   Affine& m = p.transform;
-  m.a = co * c.scale_x;
-  m.b = -si * c.scale_x;
-  m.c = si * c.scale_y;
-  m.d = co * c.scale_y;
+  m.a = co * sx;
+  m.b = -si * sx;
+  m.c = si * sy;
+  m.d = co * sy;
   const double cx = p.canvas_w / 2 + c.offset_x * p.canvas_w;
   const double cy = p.canvas_h / 2 - c.offset_y * p.canvas_h;
   m.tx = cx - (m.a * w / 2 + m.c * h / 2);

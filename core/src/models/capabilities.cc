@@ -77,22 +77,29 @@ resolve_capabilities(const Catalog& cat, const ModelStore& store,
   return out;
 }
 
-const ModelEntry*
-pick_assistant(const Catalog& cat, const ModelStore& store,
-               const HardwareInfo& hw)
+bool
+fits_as_assistant(const ModelEntry& e, const HardwareInfo& hw)
 {
   // An assistant decodes a token through every weight: they must all stay
   // RESIDENT -- within what the GPU keeps (Metal's recommended working
   // set), not just the RAM. Qwen3.8 27B's 20.7 GB on a 24 GB Mac (17.8 GB
-  // of it) was paged in and out every token: a few words in minutes.
-  const auto resident = [&](const ModelEntry& e) {
-    return hw.gpu_working_set_bytes == 0 ||
-           e.disk_gb * 1e9 <= static_cast<double>(hw.gpu_working_set_bytes);
-  };
+  // of it) was paged in and out every token: a few words in minutes. A
+  // Mixture of Experts reads only its `resident_gb` every token, its
+  // experts from a cache that takes what is left.
+  const double held = e.resident_gb > 0 ? e.resident_gb : e.disk_gb;
+  return hw.ram_gb() >= e.min_ram_gb &&
+         (hw.gpu_working_set_bytes == 0 ||
+          held * 1e9 <= static_cast<double>(hw.gpu_working_set_bytes));
+}
+
+const ModelEntry*
+pick_assistant(const Catalog& cat, const ModelStore& store,
+               const HardwareInfo& hw)
+{
   const ModelEntry* best_fit = nullptr;
   for (const ModelEntry* e : cat.serving(Capability::PromptEnhance)) {
-    if (e->role != "assistant" || hw.ram_gb() < e->min_ram_gb ||
-        !resident(*e)) {
+    // One chosen by name alone (an abliterated helper) is never Auto's.
+    if (e->role != "assistant" || e->by_name || !fits_as_assistant(*e, hw)) {
       continue;
     }
     // The best-ranked fitting model is the target; but an installed

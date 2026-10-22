@@ -2976,11 +2976,11 @@ TEST(controller, a_gated_download_takes_a_token_kept_nowhere)
       if (jget(m, "gated", false)) {
         ++gated;
         CHECK(id == "krea2-turbo" || id == "flux2-klein-9b" ||
-              id == "flux3-klein");
+              id == "flux3-klein" || id == "fibo2-edit-turbo");
       }
     }
   }
-  CHECK(gated == 3);
+  CHECK(gated == 4);
 
   // What everything the controller says carries: never the token.
   auto drain = [&] {
@@ -3673,6 +3673,100 @@ TEST(media, a_text_is_measured_line_by_line)
 // as blurred as asked; a glow around a shape; the object drawn ONCE (a
 // translucent fill not darkened by its passes). Kept by normalizing, a
 // kind not known kept as it is.
+TEST(media, an_object_turns_and_flips_about_its_centre)
+{
+  const auto root = test::temp_dir("markup-turn");
+  // A bar 200 x 40 round (200, 150), turned a quarter: 40 x 200 round
+  // the same centre.
+  const Json bar = {{"id", "b"}, {"kind", "rect"}, {"x0", 100}, {"y0", 130},
+                    {"x1", 300}, {"y1", 170}, {"fill", {1, 0, 0, 1}},
+                    {"width", 0}, {"rotate", 90}};
+  // A triangle pointing right at x 560, flipped across: pointing left,
+  // its tip at x 400, in the same box.
+  const Json tri = {{"id", "t"}, {"kind", "polygon"}, {"x0", 400},
+                    {"y0", 100}, {"x1", 560}, {"y1", 200},
+                    {"points", Json::array({Json::array({0, 0}),
+                                            Json::array({1, 0.5}),
+                                            Json::array({0, 1})})},
+                    {"fill", {0, 0, 1, 1}}, {"width", 0}, {"flip_x", true}};
+  const auto out = root / "turn.png";
+  REQUIRE_OK(media::render_markup({}, {640, 300}, Json::array({bar, tri}),
+                                  {}, out));
+  CHECK(pixel_at(out, 200, 60)[3] > 200);   // turned: up ...
+  CHECK(pixel_at(out, 200, 240)[3] > 200);  // ... and down
+  CHECK(pixel_at(out, 120, 150)[3] < 20);   // no longer across
+  CHECK(pixel_at(out, 405, 150)[3] > 200);  // its tip, on the left
+  CHECK(pixel_at(out, 405, 110)[3] < 20);
+  CHECK(pixel_at(out, 555, 110)[3] > 200);  // its base, on the right
+  // Bounded as shown.
+  const auto b = media::object_bounds(bar);
+  CHECK(std::abs(b[0] - 180) < 1e-6 && std::abs(b[1] - 50) < 1e-6);
+  CHECK(std::abs(b[2] - 40) < 1e-6 && std::abs(b[3] - 200) < 1e-6);
+  // Kept within half a turn either way; none, and false flips, dropped.
+  Json more = tri;
+  more["rotate"] = 270;
+  more["flip_y"] = false;
+  Json plain = bar;
+  plain["rotate"] = 360;
+  const Json n = media::normalize_objects(Json::array({more, plain}));
+  CHECK(std::abs(jget(n[0], "rotate", 0.0) + 90) < 1e-9);
+  CHECK(jget(n[0], "flip_x", false) && !n[0].contains("flip_y"));
+  CHECK(!n[1].contains("rotate"));
+}
+
+TEST(media, a_line_is_dashed_dotted_and_arrowed)
+{
+  const auto root = test::temp_dir("markup-dash");
+  // Lines 8 wide along y 40, 100, 160: dashed (24 on, 16 off), dotted
+  // (dots 16 apart), and solid with arrowheads at both ends; a dashed
+  // rectangle's top edge at y 220.
+  const Json dashed = {{"id", "d"}, {"kind", "line"}, {"x0", 20}, {"y0", 40},
+                       {"x1", 380}, {"y1", 40}, {"stroke", {1, 0, 0, 1}},
+                       {"width", 8}, {"dash", "dashed"}};
+  const Json dotted = {{"id", "t"}, {"kind", "line"}, {"x0", 20},
+                       {"y0", 100}, {"x1", 380}, {"y1", 100},
+                       {"stroke", {0, 1, 0, 1}}, {"width", 8},
+                       {"dash", "dotted"}};
+  const Json arrowed = {{"id", "a"}, {"kind", "line"}, {"x0", 40},
+                        {"y0", 160}, {"x1", 360}, {"y1", 160},
+                        {"stroke", {0, 0, 1, 1}}, {"width", 4},
+                        {"arrows", "both"}};
+  const Json box = {{"id", "b"}, {"kind", "rect"}, {"x0", 20}, {"y0", 220},
+                    {"x1", 380}, {"y1", 280}, {"stroke", {1, 0, 1, 1}},
+                    {"width", 6}, {"dash", "dashed"}};
+  const auto out = root / "dash.png";
+  REQUIRE_OK(media::render_markup({}, {400, 300},
+                                  Json::array({dashed, dotted, arrowed, box}),
+                                  {}, out));
+  // Dashed: on, then off a dash later (24 on from 20, off 44-60).
+  CHECK(pixel_at(out, 30, 40)[3] > 200);
+  CHECK(pixel_at(out, 52, 40)[3] < 20);
+  CHECK(pixel_at(out, 70, 40)[3] > 200);
+  // Dotted: a dot at the start, nothing between two dots.
+  CHECK(pixel_at(out, 20, 100)[3] > 200);
+  CHECK(pixel_at(out, 28, 100)[3] < 20);
+  CHECK(pixel_at(out, 36, 100)[3] > 200);
+  // Arrowed: its heads (16 long, 8 either side at the base) wider than
+  // the line near either end, the line as thin as itself in the middle.
+  CHECK(pixel_at(out, 346, 165)[3] > 200);
+  CHECK(pixel_at(out, 54, 154)[3] > 200);
+  CHECK(pixel_at(out, 200, 166)[3] < 20);
+  CHECK(pixel_at(out, 200, 160)[3] > 200);
+  // The rectangle's outline dashed too.
+  CHECK(pixel_at(out, 30, 220)[3] > 200);
+  CHECK(pixel_at(out, 46, 220)[3] < 20);
+  // Kept as written; an unknown style or a text's dash dropped; a
+  // rectangle has no arrows.
+  Json odd = box;
+  odd["dash"] = "wavy";
+  odd["arrows"] = "both";
+  const Json n = media::normalize_objects(
+      Json::array({dashed, arrowed, odd}));
+  CHECK(jget<std::string>(n[0], "dash", "") == "dashed");
+  CHECK(jget<std::string>(n[1], "arrows", "") == "both");
+  CHECK(!n[2].contains("dash") && !n[2].contains("arrows"));
+}
+
 TEST(media, a_markup_object_casts_a_shadow_and_glows)
 {
   const auto root = test::temp_dir("markup-fx");
@@ -5558,6 +5652,27 @@ TEST(composition, a_clip_is_cut_in_two_parts)
   CHECK(std::abs(m->layers[1].timing.end() - 54.0 / 24) < 1e-6);
   CHECK(std::abs(m->layers[1].adjust.at(0).exposure - 0.5) < 1e-9);
   CHECK(m->layers[1].id == r->layer);
+  // Played as the clip itself, between the parts' marks -- no part drawn
+  // into a movie of its own (a long clip's cut waited for that): its
+  // frames 6-23, then from 24.
+  auto clip_file = b.p().media_path(*clip, 0);
+  REQUIRE_OK(clip_file);
+  CHECK(m->layers[0].file == *clip_file && m->layers[1].file == *clip_file);
+  CHECK(m->layers[0].video && m->layers[1].video);
+  CHECK(std::abs(m->layers[0].timing.in - 6.0 / 24) < 1e-6);
+  CHECK(std::abs(m->layers[0].timing.out - 24.0 / 24) < 1e-6);
+  CHECK(std::abs(m->layers[1].timing.in - 24.0 / 24) < 1e-6);
+  // A part's own marks count from its span: in at its frame 4, the
+  // clip's 28 -- the layer then starts there, 4 frames shorter.
+  project::LayerTime from4;
+  from4.in = 4;
+  from4.offset = 30;
+  REQUIRE_OK(ctl.set_layer_time(pid, *tl, r->layer, from4));
+  auto m4 = ctl.movie_stack(pid, *tl, true);
+  REQUIRE_OK(m4);
+  CHECK(std::abs(m4->layers[1].timing.in - 28.0 / 24) < 1e-6);
+  CHECK(std::abs(m4->layers[1].timing.end() - 50.0 / 24) < 1e-6);
+  REQUIRE_OK(ctl.undo(pid));
   len = ctl.composition_length(pid, *tl);
   REQUIRE_OK(len);
   CHECK(*len == 54);
@@ -7151,14 +7266,22 @@ TEST(controller, the_chosen_helper_is_kept_and_falls_back_to_auto)
         Code::InvalidArgument);
   // Bound first: a range-for over a temporary's member dangles.
   const Json helpers = ctl.assistants();
-  int dflash_27b = 0;
+  int dflash_27b = 0, dflash_next = 0;
   for (const auto& m : helpers["models"]) {
     if (m["id"] == "qwen3.8-27b-4bit" || m["id"] == "qwen3.8-27b") {
       CHECK(m["dflash"]["id"] == "qwen3.8-27b-dflash2");
+      CHECK(m["dflash"]["held_gb"]["8"] == 2.2);
       ++dflash_27b;
+    }
+    // Flash-Next drafts with its own (vpipe 8d005eca), smaller.
+    if (m["id"] == "qwen3.8-flash-next") {
+      CHECK(m["dflash"]["id"] == "qwen3.8-flash-next-dflash2");
+      CHECK(m["dflash"]["held_gb"]["4"] == 0.35);
+      ++dflash_next;
     }
   }
   CHECK(dflash_27b == 2);
+  CHECK(dflash_next == 1);
   // A later run over the same support folder.
   ControllerConfig cfg;
   cfg.support_root = b.root / "support";
@@ -8259,6 +8382,381 @@ TEST(agent, the_tools_draw_curves_strokes_and_arrange)
   CHECK(jget<std::string>(steps[1], "state", "") == "failed");
   REQUIRE_OK(ctl.agent_stop(*locked));
   (void)ctl.agent_stop(*id);
+}
+
+// MOVING (DESIGN §9b): texts and shapes moved by move_objects -- several
+// together by an amount, to a place, onto another page -- are the same
+// objects, their ids and words kept, not removed and added again; and a
+// line moved by update_object runs the way it ran.
+TEST(agent, texts_and_shapes_move_as_themselves)
+{
+  auto root = test::temp_dir("agent-move");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "M.valtz", "move");
+  REQUIRE_OK(pid);
+  using J = Json;
+  script->replies = {
+      {call("create_composition", {{"name", "Deck"}, {"width", 400},
+                                   {"height", 300}, {"pages", 2}})},
+      {call("add_shape", {{"page", 1}, {"shape", "rect"}, {"x", 20},
+                          {"y", 20}, {"width", 200}, {"height", 60},
+                          {"fill", "#0000ff"}}),
+       call("add_text", {{"page", 1}, {"text", "Mercury"}, {"x", 30},
+                         {"y", 30}, {"width", 180}, {"height", 40},
+                         {"size", 24}})},
+      {call("get_composition", {{"page", 1}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A title on a panel";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  Json steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 4);
+  const AssetId comp =
+      *AssetId::parse(jget<std::string>(st, "composition", ""));
+  const std::string rect =
+      jget<std::string>(jget(steps[1], "result", J()), "object", "");
+  const std::string text =
+      jget<std::string>(jget(steps[2], "result", J()), "object", "");
+  const std::string layer =
+      jget<std::string>(jget(steps[2], "result", J()), "layer", "");
+  REQUIRE(!rect.empty() && !text.empty() && !layer.empty());
+  REQUIRE_OK(ctl.agent_stop(*id));
+
+  // The panel and its title down and right together; then the title to
+  // the page's top left; then onto page 2, where it lies.
+  script->replies = {
+      {call("move_objects", {{"composition", comp.str()}, {"layer", layer},
+                             {"objects", J::array({rect, text})},
+                             {"dx", 50}, {"dy", 100}})},
+      {call("move_objects", {{"composition", comp.str()}, {"layer", layer},
+                             {"objects", J::array({text})},
+                             {"x", 0}, {"y", 0}})},
+      {call("move_objects", {{"composition", comp.str()}, {"layer", layer},
+                             {"objects", J::array({text})}, {"page", 2}})},
+      {call("move_objects", {{"composition", comp.str()}, {"layer", layer},
+                             {"objects", J::array({rect})}})},
+      {call("get_composition", {{"composition", comp.str()},
+                                {"page", 1}}),
+       call("get_composition", {{"composition", comp.str()},
+                                {"page", 2}})}};
+  auto moves = ctl.agent_start(req);
+  REQUIRE_OK(moves);
+  st = agent_wait(ctl, *moves, "done");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 6);
+  const auto box = [](const Json& r, const std::string& o) {
+    return jget(jget(r, "moved", J::object()), o.c_str(), J());
+  };
+  const Json m0 = jget(steps[0], "result", J());
+  CHECK((box(m0, rect) == J::array({70, 120, 200, 60})));
+  CHECK((box(m0, text) == J::array({80, 130, 180, 40})));
+  CHECK((box(jget(steps[1], "result", J()), text) ==
+         J::array({0, 0, 180, 40})));
+  const Json m2 = jget(steps[2], "result", J());
+  CHECK(jget(m2, "page", 0) == 2);
+  CHECK((box(m2, text) == J::array({0, 0, 180, 40})));
+  // Where to? said, nothing moved.
+  CHECK(jget<std::string>(steps[3], "state", "") == "failed");
+  // Page 1 has the panel alone; page 2 the title, the same object.
+  const auto objects = [](const Json& r) {
+    Json out = J::array();
+    for (const auto& l : jget(r, "layers", J::array())) {
+      for (const auto& o : jget(l, "objects", J::array())) {
+        out.push_back(o);
+      }
+    }
+    return out;
+  };
+  const Json p1 = objects(jget(steps[4], "result", J()));
+  const Json p2 = objects(jget(steps[5], "result", J()));
+  REQUIRE(p1.size() == 1 && p2.size() == 1);
+  CHECK(jget<std::string>(p1[0], "id", "") == rect);
+  CHECK(jget<std::string>(p2[0], "id", "") == text);
+  CHECK(jget<std::string>(p2[0], "text", "") == "Mercury");
+  CHECK(jget(p2[0], "x", -1) == 0 && jget(p2[0], "y", -1) == 0);
+  REQUIRE_OK(ctl.agent_stop(*moves));
+
+  // A line drawn up and to the right (as a hand draws one) moved by
+  // update_object: still up and to the right.
+  {
+    Json objs = J::array(
+        {{{"id", "ln"}, {"kind", "line"}, {"x0", 10}, {"y0", 290},
+          {"x1", 110}, {"y1", 190}, {"stroke", {1, 1, 1, 1}},
+          {"fill", {0, 0, 0, 0}}, {"width", 4}}});
+    REQUIRE_OK(ctl.set_markup_objects(*pid, comp,
+                                      layer == "0" ? "" : layer, objs));
+  }
+  script->replies = {
+      {call("update_object", {{"composition", comp.str()},
+                              {"layer", layer}, {"object", "ln"},
+                              {"x", 200}, {"y", 100}})},
+      {call("get_composition", {{"composition", comp.str()},
+                                {"page", 1}})}};
+  auto line = ctl.agent_start(req);
+  REQUIRE_OK(line);
+  st = agent_wait(ctl, *line, "done");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 2);
+  const Json lo = objects(jget(steps[1], "result", J()));
+  REQUIRE(lo.size() == 1);
+  CHECK((jget(lo[0], "from", J()) == J::array({200, 200})));
+  CHECK((jget(lo[0], "to", J()) == J::array({300, 100})));
+  REQUIRE_OK(ctl.agent_stop(*line));
+}
+
+TEST(agent, a_picture_is_moved_by_its_box)
+{
+  auto root = test::temp_dir("agent-box");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "B.valtz", "box");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 160, 90, {0xff, 0, 0, 0xff}));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  REQUIRE(red.has_value());
+  using J = Json;
+  script->replies = {
+      {call("create_composition", {{"name", "Grid"}, {"width", 480},
+                                   {"height", 270}})},
+      {call("place_asset", {{"asset", red->str()}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "The picture on a page";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "done");
+  Json steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 2);
+  const std::string comp = jget<std::string>(st, "composition", "");
+  const std::string layer =
+      jget<std::string>(jget(steps[1], "result", J()), "layer", "");
+  REQUIRE(!layer.empty());
+  REQUIRE_OK(ctl.agent_stop(*id));
+
+  // Moved as a markup's objects: refused, the way to move it said; by
+  // its box, into the grid's top left cell; past the canvas, said.
+  script->replies = {
+      {call("move_objects", {{"composition", comp}, {"layer", layer},
+                             {"objects", J::array({layer})},
+                             {"dx", 10}})},
+      {call("set_layer_box", {{"composition", comp}, {"layer", layer},
+                              {"x", 0}, {"y", 0}, {"width", 160},
+                              {"height", 90}})},
+      {call("set_layer_box", {{"composition", comp}, {"layer", layer},
+                              {"x", 400}, {"y", 0}, {"width", 160},
+                              {"height", 90}})}};
+  auto moves = ctl.agent_start(req);
+  REQUIRE_OK(moves);
+  st = agent_wait(ctl, *moves, "done");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 3);
+  CHECK(jget<std::string>(steps[0], "state", "") == "failed");
+  CHECK(to_text(steps[0]).find("set_layer_box") != std::string::npos);
+  const Json r1 = jget(steps[1], "result", J());
+  CHECK((jget(r1, "box", J()) ==
+         J{{"x", 0}, {"y", 0}, {"width", 160}, {"height", 90}}));
+  CHECK(!r1.contains("note"));
+  const std::string note =
+      jget<std::string>(jget(steps[2], "result", J()), "note", "");
+  CHECK(note.find("80 px past the right") != std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*moves));
+
+  // Turned and flipped by the person (the Crop panel's), then moved and
+  // sized by the agent: its turn, flips and padding kept, and said.
+  const auto cid = AssetId::parse(comp);
+  REQUIRE(cid.has_value());
+  const std::string inner = layer == "0" ? "" : layer;
+  auto was = ctl.project(*pid)->asset(*cid);
+  REQUIRE_OK(was);
+  media::Crop turned = Controller::crop_of(*was, inner);
+  turned.rotate = 30;
+  turned.scale_x = -turned.scale_x;
+  turned.pad = {0, 0, 1, 1};
+  REQUIRE_OK(ctl.set_crop(*pid, *cid, turned, inner));
+  script->replies = {
+      {call("set_layer_box", {{"composition", comp}, {"layer", layer},
+                              {"x", 80}, {"y", 45}, {"width", 320},
+                              {"height", 180}})}};
+  auto again = ctl.agent_start(req);
+  REQUIRE_OK(again);
+  st = agent_wait(ctl, *again, "done");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 1);
+  const Json r3 = jget(jget(steps[0], "result", J()), "box", J());
+  CHECK(jget(r3, "width", 0) == 320 && jget(r3, "x", 0) == 80);
+  CHECK(jget(r3, "rotate", 0.0) == 30);
+  CHECK(jget(r3, "flip_x", false) && !r3.contains("flip_y"));
+  auto now = ctl.project(*pid)->asset(*cid);
+  REQUIRE_OK(now);
+  const media::Crop kept = Controller::crop_of(*now, inner);
+  CHECK(kept.rotate == 30);
+  CHECK(std::abs(kept.scale_x + 2) < 1e-9 && kept.scale_y == 2);
+  CHECK((kept.pad == std::array<double, 4>{0, 0, 1, 1}));
+}
+
+TEST(agent, a_composition_is_resized_and_a_guessed_tool_named)
+{
+  auto root = test::temp_dir("agent-canvas");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "C.valtz", "canvas");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 160, 90, {0xff, 0, 0, 0xff}));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  REQUIRE(red.has_value());
+  using J = Json;
+  // A canvas made twice as big about its centre: the picture stays in
+  // the middle; renamed; a tool guessed, the ones named alike said.
+  script->replies = {
+      {call("create_composition", {{"name", "Grid"}, {"width", 480},
+                                   {"height", 270}})},
+      {call("place_asset", {{"asset", red->str()}})},
+      {call("update_composition", {{"width", 960}, {"height", 540},
+                                   {"name", "Big grid"}})},
+      {call("resize_composition", {{"width", 100}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "The picture on a page twice the size";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "done");
+  Json steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 4);
+  const Json r = jget(steps[2], "result", J());
+  CHECK(jget(r, "width", 0) == 960);
+  CHECK(jget(r, "height", 0) == 540);
+  CHECK(jget<std::string>(r, "name", "") == "Big grid");
+  const Json layers = jget(r, "layers", J::array());
+  REQUIRE(layers.size() == 1);
+  CHECK((jget(layers[0], "box", J()) ==
+         J{{"x", 400}, {"y", 225}, {"width", 160}, {"height", 90}}));
+  const auto comp =
+      AssetId::parse(jget<std::string>(st, "composition", ""));
+  REQUIRE(comp.has_value());
+  auto size = ctl.canvas_size(*pid, *comp);
+  REQUIRE_OK(size);
+  CHECK(size->width == 960);
+  CHECK(jget<std::string>(steps[3], "state", "") == "failed");
+  const std::string err = jget<std::string>(steps[3], "error", "");
+  CHECK(err.find("named alike") != std::string::npos);
+  CHECK(err.find("update_composition") != std::string::npos);
+  CHECK(err.find("create_composition") != std::string::npos);
+}
+
+TEST(agent, it_is_told_where_the_person_is)
+{
+  auto root = test::temp_dir("agent-where");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "W.valtz", "where");
+  REQUIRE_OK(pid);
+  using J = Json;
+  script->replies = {{call("create_composition", {{"name", "Deck"},
+                                                  {"width", 400},
+                                                  {"height", 300},
+                                                  {"pages", 3}})},
+                     {call("add_text", {{"page", 2}, {"text", "Title"},
+                                        {"x", 20}, {"y", 20},
+                                        {"width", 200}, {"height", 40}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A deck";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "done");
+  const std::string comp = jget<std::string>(st, "composition", "");
+  REQUIRE(!comp.empty());
+  Json steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 2);
+  const std::string layer =
+      jget<std::string>(jget(steps[1], "result", J()), "layer", "");
+  REQUIRE(!layer.empty());
+  REQUIRE_OK(ctl.agent_stop(*id));
+
+  // "This page": the stage on page 2, layer 0 selected -- said after the
+  // words; and again with words said once it is done.
+  script->seen.clear();
+  script->replies = {{}, {}};
+  req.prompt = "Make the title on this page red";
+  req.stage = {{"composition", comp}, {"page", 2}, {"layer", layer}};
+  auto again = ctl.agent_start(req);
+  REQUIRE_OK(again);
+  agent_wait(ctl, *again, "done");
+  REQUIRE(!script->seen.empty());
+  const auto last_user = [](const std::vector<agent::Message>& ms) {
+    for (auto it = ms.rbegin(); it != ms.rend(); ++it) {
+      if (it->role == "user") { return it->content; }
+    }
+    return std::string();
+  };
+  const std::string first = last_user(script->seen.front());
+  CHECK(first.find("Make the title on this page red") == 0);
+  CHECK(first.find("\"Deck\" (composition " + comp) != std::string::npos);
+  CHECK(first.find("a still of 3 pages), on page 2") != std::string::npos);
+  CHECK(first.find("; layer " + layer) != std::string::npos);
+  CHECK(first.find("selected") != std::string::npos);
+  REQUIRE_OK(ctl.agent_say(*again, "and this one",
+                           J{{"composition", comp}, {"page", 3}}));
+  for (int i = 0; i < 200 && script->seen.size() < 2; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  REQUIRE(script->seen.size() >= 2);
+  const std::string said = last_user(script->seen.back());
+  CHECK(said.find("and this one") == 0);
+  CHECK(said.find("on page 3") != std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*again));
 }
 
 // THE PROMPT ENHANCER for the agent (enhance_prompt, DESIGN §9b): the

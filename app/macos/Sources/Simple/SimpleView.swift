@@ -418,7 +418,7 @@ private struct CompactStatus: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ProgressView(value: model.generationPhase?.fraction)
+            PhaseBar(fraction: model.generationPhase?.fraction)
                 .progressViewStyle(.linear)
             Text(model.generationCaption)
                 .font(.caption)
@@ -626,6 +626,7 @@ private struct ResultStage: View {
             VideoPlayerView(url: url, loops: model.loopClips,
                             // Not as a project opens: still, where saved.
                             autoplay: model.stageAutoplay,
+                            muted: model.stageMuted,
                             rate: model.stageFrameRate,
                             command: model.videoCommand,
                             look: model.stackPlayback == nil
@@ -638,6 +639,7 @@ private struct ResultStage: View {
                             controls: !model.timelineOpen && !small,
                             core: model.core,
                             onFrame: { model.videoFrameChanged($0) },
+                            onLastFrame: { model.videoLastFrame = $0 },
                             onRate: { model.videoRate = $0 },
                             // The title bar's zoom (not the small stage's).
                             zoom: small ? nil : model.stage.zoomRequests,
@@ -725,6 +727,14 @@ private struct ResultStage: View {
                         .transition(.opacity)
                 }
             }
+            // An asset VIEWED from the list: ⓧ takes it off, the active
+            // composition back (as Escape and a click elsewhere do).
+            .overlay(alignment: .topTrailing) {
+                if !small, model.viewingOnStage {
+                    CloseViewingButton { model.endViewing() }
+                        .transition(.opacity)
+                }
+            }
             // A clip's export, over the stage while it runs.
             .overlay {
                 if model.exportShow != nil {
@@ -743,7 +753,7 @@ private struct ResultStage: View {
             // is over the card, not in it (body).
             .overlay(alignment: .bottom) {
                 if model.isGenerating && small {
-                    ProgressView(value: model.generationPhase?.fraction)
+                    PhaseBar(fraction: model.generationPhase?.fraction)
                         .progressViewStyle(.linear)
                         .padding(8)
                         .help(model.generationCaption)
@@ -957,6 +967,25 @@ private struct StageLabel: View {
                 .padding(.top, 8)
                 .allowsHitTesting(false)
         }
+    }
+}
+
+/// ⓧ over the stage's top right while an asset from the list is viewed:
+/// back to the composition being edited.
+private struct CloseViewingButton: View {
+    let close: () -> Void
+
+    var body: some View {
+        Button(action: close) {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 20))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(.white, .black.opacity(0.55))
+        }
+        .buttonStyle(.plain)
+        .padding(8)
+        .help(String(localized: "Close the preview: back to the composition being edited"))
+        .accessibilityLabel(Text("Close the Preview"))
     }
 }
 

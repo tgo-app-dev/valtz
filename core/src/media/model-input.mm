@@ -18,6 +18,7 @@
 #include <cmath>
 #include <format>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace valtz::media {
@@ -505,7 +506,7 @@ decode_planar(const fs::path& src, PixelSize size, int channels, Fit fit,
     // zooms in shows less of it, bigger.
     double zoom = 1;
     if (!crop.identity()) {
-      zoom = std::max(crop.scale_x, crop.scale_y);
+      zoom = std::max(std::abs(crop.scale_x), std::abs(crop.scale_y));
       if (crop.content.width > 0 && crop.canvas.width > 0) {
         zoom *= static_cast<double>(crop.content.width) / crop.canvas.width;
       }
@@ -1211,16 +1212,102 @@ compose_images(const std::vector<ComposeLayer>& layers,
                                             -seen.origin.x, -seen.origin.y)];
 }
 
+// A file's picture DECODED once, for the stage's draws: a jog wheel's
+// every tick read the layers' PNGs from their files again -- nine 1024^2
+// 16-bit ones, 220 ms a draw of a 3072^2 still on the M5 Pro, nearly all
+// of it decoding. Kept by path, size and time on disk (a blob is never
+// rewritten; a linked file may be), the least recently drawn let go past
+// 1.5 GB; nil for a camera RAW (its engine develops it) or what ImageIO
+// cannot read -- read as ever. Upright, as `source_image` makes it.
+CIImage*
+decoded_image(const fs::path& file)
+{
+  struct Kept {
+    CIImage* image = nil;
+    std::uintmax_t size = 0;
+    std::int64_t written = 0;
+    std::size_t bytes = 0;
+    std::uint64_t used = 0;
+  };
+  static std::mutex mu;
+  static std::unordered_map<std::string, Kept> kept;
+  static std::uint64_t clock = 0;
+  static std::size_t held = 0;
+  constexpr std::size_t kBudget = std::size_t{1536} << 20;
+
+  std::error_code ec;
+  const auto size = fs::file_size(file, ec);
+  if (ec) { return nil; }
+  const auto written = static_cast<std::int64_t>(
+      fs::last_write_time(file, ec).time_since_epoch().count());
+  if (ec) { return nil; }
+  const std::string key = file.string();
+  {
+    std::lock_guard lk(mu);
+    if (auto it = kept.find(key); it != kept.end() &&
+        it->second.size == size && it->second.written == written) {
+      it->second.used = ++clock;
+      return it->second.image;
+    }
+  }
+  CGImageSourceRef src = open_source(file);
+  if (!src) { return nil; }
+  CFStringRef type = CGImageSourceGetType(src);
+  UTType* t = type ? [UTType typeWithIdentifier:(__bridge NSString*)type]
+                   : nil;
+  if (!t || [t conformsToType:UTTypeRAWImage]) {
+    CFRelease(src);
+    return nil;
+  }
+  NSDictionary* props = CFBridgingRelease(
+      CGImageSourceCopyPropertiesAtIndex(src, 0, nullptr));
+  CGImageRef cg = CGImageSourceCreateImageAtIndex(
+      src, 0, (__bridge CFDictionaryRef)@{
+        (id)kCGImageSourceShouldCacheImmediately : @YES,
+      });
+  CFRelease(src);
+  if (!cg) { return nil; }
+  const std::size_t bytes = CGImageGetBytesPerRow(cg) * CGImageGetHeight(cg);
+  CIImage* img = [CIImage imageWithCGImage:cg];
+  CGImageRelease(cg);
+  if (NSNumber* o = props[(id)kCGImagePropertyOrientation];
+      o && o.intValue > 1 && o.intValue <= 8) {
+    img = [img imageByApplyingCGOrientation:
+                   (CGImagePropertyOrientation)o.intValue];
+  }
+  std::lock_guard lk(mu);
+  if (auto it = kept.find(key); it != kept.end()) {
+    held -= it->second.bytes;
+    kept.erase(it);
+  }
+  while (held + bytes > kBudget && !kept.empty()) {
+    auto oldest = std::ranges::min_element(
+        kept, {}, [](const auto& e) { return e.second.used; });
+    held -= oldest->second.bytes;
+    kept.erase(oldest);
+  }
+  kept[key] = Kept{img, size, written, bytes, ++clock};
+  held += bytes;
+  return img;
+}
+
 // A still layer's picture, as Core Image reads it: drawn in memory, or a
-// file read (a RAW developed, upright); nil with nothing on it.
+// file read (a RAW developed, upright) -- for the screen, decoded once
+// and kept (`decoded_image`); nil with nothing on it.
 Result<CIImage*>
-layer_image(const fs::path& file, const DrawnPicture& drawn)
+layer_image(const fs::path& file, const DrawnPicture& drawn,
+            bool screen = false)
 {
   if (drawn) {
     return [CIImage imageWithCGImage:drawn.get()];
   }
   if (file.empty()) {
     return static_cast<CIImage*>(nil);
+  }
+  if (screen) {
+    if (CIImage* kept = decoded_image(file)) {
+      return kept;
+    }
   }
   CIImage* img = source_image(file, {1, 1}, /*linear=*/false, 1);
   if (!img || CGRectIsEmpty(img.extent) || CGRectIsInfinite(img.extent)) {
@@ -1230,15 +1317,16 @@ layer_image(const fs::path& file, const DrawnPicture& drawn)
   return img;
 }
 
-// The stack as one Core Image picture, on its canvas from (0, 0).
+// The stack as one Core Image picture, on its canvas from (0, 0);
+// `screen`: its files' pictures kept decoded between draws.
 Result<CIImage*>
 compose_layers(const std::vector<LayerPicture>& layers,
-               const StackCanvas& canvas)
+               const StackCanvas& canvas, bool screen = false)
 {
   std::vector<ComposeLayer> in;
   in.reserve(layers.size());
   for (const auto& l : layers) {
-    VALTZ_ASSIGN(CIImage* img, layer_image(l.file, l.drawn));
+    VALTZ_ASSIGN(CIImage* img, layer_image(l.file, l.drawn, screen));
     in.push_back({img, l.adjust, l.crop, l.visible, l.mask});
   }
   return compose_images(in, canvas);
@@ -1341,7 +1429,7 @@ flatten_layers_surface(const std::vector<LayerPicture>& layers,
                        const StackCanvas& canvas)
 {
   @autoreleasepool {
-    VALTZ_ASSIGN(CIImage* base, compose_layers(layers, canvas));
+    VALTZ_ASSIGN(CIImage* base, compose_layers(layers, canvas, true));
     const CGRect canvas = base.extent;
     const auto w = static_cast<int>(canvas.size.width);
     const auto h = static_cast<int>(canvas.size.height);

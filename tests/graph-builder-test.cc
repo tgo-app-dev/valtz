@@ -1032,6 +1032,58 @@ TEST(graph_builder, flux3_klein_makes_4k_and_fits_as_bfl)
   CHECK(s1->references[0].fitted.height == s1->height);
 }
 
+// FIBO 2.0 EDIT TURBO (vpipe 17c53d63): an edit only, through its config
+// stage, in its own 4 steps; the pictures to the conditioner as well as
+// the VAE (Qwen3-VL reads them), and each cropped to the size the model
+// was trained at for its shape -- the result at the first's, as Bria's
+// pipeline makes it (16:9 -> 1424 x 800, 4:3 -> 1152 x 864).
+TEST(graph_builder, fibo2_edits_at_its_trained_sizes)
+{
+  auto job = job_for("fibo2-edit-turbo", kOpEditImage);
+  REQUIRE(job.model.id == "fibo2-edit-turbo");
+  job.params.erase("steps");
+  job.params["width"] = 1920;
+  job.params["height"] = 1080;
+  auto e = vp::build_image_edit(job, {{"/a.jpg", {1920, 1080}, false, true},
+                                      {"/b.png", {1600, 1200}, false, false},
+                                      {"/c.png", {900, 900}, false, false}});
+  REQUIRE_OK(e);
+  CHECK(e->width == 1424 && e->height == 800);
+  REQUIRE(e->references.size() == 3);
+  CHECK(e->references[0].fitted.width == 1424);
+  CHECK(e->references[0].fitted.height == 800);
+  CHECK(e->references[1].fitted.width == 1152);
+  CHECK(e->references[1].fitted.height == 864);
+  CHECK(e->references[2].fitted.width == 1024);
+  CHECK(e->references[2].fitted.height == 1024);
+  for (int i = 0; i < 3; ++i) {
+    const Json f = config_of(find_stage(e->spec, std::format("ref-{}-fit",
+                                                             i)));
+    CHECK(jget<std::string>(f, "fit", "") == "crop");
+    CHECK(jget(f, "width", 0) == e->references[i].fitted.width);
+    CHECK(jget(f, "height", 0) == e->references[i].fitted.height);
+  }
+  check_lists(e->spec, /*to_cond=*/true);
+  const Json* cfg = find_stage(e->spec, "fibo2-model-config");
+  REQUIRE(cfg);
+  CHECK(!find_stage(e->spec, "scheduler-select"));
+  const Json* gen = find_stage(e->spec, "generate-image");
+  REQUIRE(gen);
+  CHECK(src_of(gen, 7) == "fibo2-model-config");
+  CHECK(src_of(find_stage(e->spec, "diffusion-conditioner"), 5) ==
+        "fibo2-model-config");
+  const Json gc = config_of(gen);
+  CHECK(jget(gc, "steps", 0) == 4);
+  CHECK(jget(gc, "width", 0) == 1424 && jget(gc, "height", 0) == 800);
+  // A square base at the card's own size stays the model's 1024^2.
+  auto sq = job_for("fibo2-edit-turbo", kOpEditImage);
+  sq.params["width"] = 768;
+  sq.params["height"] = 768;
+  auto s1 = vp::build_image_edit(sq, {{"/a.jpg", {768, 768}, false, true}});
+  REQUIRE_OK(s1);
+  CHECK(s1->width == 1024 && s1->height == 1024);
+}
+
 // Qwen-Image 2.1 Turbo: the base model's graph -- its config stage, the
 // conditioner reading the pictures -- with NO scheduler (its schedule is
 // in its files) and its own 8 steps whatever was asked; vpipe would run
@@ -1728,6 +1780,25 @@ TEST(graph_builder, chat_decodes_with_the_mtp_head)
              0) == 4);
   j.params.erase("draft_model");
   j.params.erase("draft_bits");
+  // A long prefill's GEMMs in int8 only where the model asks (the
+  // catalog's engine.vpipe.i8_prefill: Flash-Next's alone).
+  CHECK(!config_of(find_stage(g->spec, "text-chat")).contains("i8_prefill"));
+  j.params["i8_prefill"] = true;
+  g = vp::build_chat(j);
+  REQUIRE_OK(g);
+  CHECK(jget(config_of(find_stage(g->spec, "text-chat")), "i8_prefill",
+             false));
+  j.params.erase("i8_prefill");
+  {
+    const auto* fn = cat->find("qwen3.8-flash-next");
+    REQUIRE(fn != nullptr);
+    CHECK(jget(jget(fn->engine, "vpipe", Json::object()), "i8_prefill",
+               false));
+    const auto* q27 = cat->find("qwen3.8-27b-4bit");
+    REQUIRE(q27 != nullptr);
+    CHECK(!jget(jget(q27->engine, "vpipe", Json::object()), "i8_prefill",
+                false));
+  }
   j.params["mtp"] = false;
   g = vp::build_chat(j);
   REQUIRE_OK(g);
@@ -2769,6 +2840,36 @@ TEST(graph_builder, the_codecs_int8_goes_on_its_vae_stages)
   CHECK(io_of(*off, "latents")->key == io_of(*plain, "latents")->key);
   CHECK(io_of(*on, "conditioning")->key ==
         io_of(*plain, "conditioning")->key);
+}
+
+// ...and the 2D AutoencoderKL FLUX.2 shares with FLUX.3, Z-Image,
+// MOSS-Image and Fibo 2.0 (vpipe eeec3c5c): each takes the switch and its
+// tier on its decode (an edit's encode too), and Fast runs it at Fast on
+// a Mac with matrix cores.
+TEST(graph_builder, the_flux2_vaes_take_the_codecs_int8)
+{
+  const Json on = {{"vae_i8_gemm", true}, {"vae_i8_gemm_tier", "fast"}};
+  for (const char* id : {"flux2-klein-9b", "flux3-klein", "z-image-turbo",
+                         "moss-image-sft", "moss-image-base"}) {
+    JobSpec j = job_for(id, kOpGenerateImage);
+    j.params["tuning"] = on;
+    auto g = vp::build_text_to_image(j);
+    REQUIRE_OK(g);
+    const Json c = config_of(find_stage(g->spec, "vae-decode"));
+    CHECK(jget(c, "i8_gemm", false));
+    CHECK(jget<std::string>(c, "i8_gemm_tier", "") == "fast");
+  }
+  std::vector<vp::RefImage> pics = {{"/base.png", {1024, 768}, false, true}};
+  for (const char* id : {"flux2-klein-9b", "flux3-klein",
+                         "fibo2-edit-turbo"}) {
+    JobSpec j = job_for(id, kOpEditImage);
+    j.params["tuning"] = on;
+    auto e = vp::build_image_edit(j, pics);
+    REQUIRE_OK(e);
+    for (const char* st : {"vae-decode", vp::kRefLatents}) {
+      CHECK(jget(config_of(find_stage(e->spec, st)), "i8_gemm", false));
+    }
+  }
 }
 
 // MOSS-IMAGE (vpipe 3b34e70a): text to image through generate-image, its

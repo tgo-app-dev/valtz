@@ -172,6 +172,8 @@ read_entry(const Json& m, const Contributor& who, ModelEntry& e,
   e.disk_gb = jget(m, "disk_gb", 0.0);
   e.disk_measured = jget(m, "disk_measured", false);
   e.min_ram_gb = jget<std::uint32_t>(m, "min_ram_gb", 16);
+  e.resident_gb = std::max(0.0, jget(m, "resident_gb", 0.0));
+  e.by_name = jget(m, "by_name", false);
   e.rank = jget(m, "rank", 0);
   const Json rf = jget(m, "rank_for", Json::object());
   for (auto it = rf.begin(); it != rf.end(); ++it) {

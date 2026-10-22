@@ -1330,6 +1330,59 @@ final class AppModel {
     var revealsResults = AppModel.storedLanding("results", default: false) {
         didSet { Self.keep(revealsResults, as: "landing.results") }
     }
+    /// A generated CLIP landing on the stage plays at once (on, as ever)
+    /// -- muted at first if asked (`mutesNewClips`, off; only while it
+    /// plays by itself). What is put on the stage by hand plays as before.
+    var autoplaysNewClips = AppModel.storedLanding("autoplay",
+                                                   default: true) {
+        didSet { Self.keep(autoplaysNewClips, as: "landing.autoplay") }
+    }
+    var mutesNewClips = AppModel.storedLanding("muted", default: false) {
+        didSet { Self.keep(mutesNewClips, as: "landing.muted") }
+    }
+    /// The PROMPT BOX's words by target (Settings › General › Prompt
+    /// Box): each target -- Video, Image, Audio, Agent -- keeps its own
+    /// (the default), the Agent apart from the three that generate, or
+    /// one box for all (as before). Switching target puts the words left
+    /// there back, nothing when there are none yet; the row's media stay
+    /// (a clip opens on the picture in it). Kept between launches -- a
+    /// snapshot run takes VALTZ_SNAPSHOT_PROMPT_HISTORY's, saving nothing.
+    enum PromptHistory: String, CaseIterable {
+        case perTarget = "target", agentApart = "agent", shared = "shared"
+
+        /// The words a target shares a box with.
+        func group(_ m: Modality) -> String {
+            switch self {
+            case .perTarget: m.rawValue
+            case .agentApart: m == .agent ? "agent" : "generate"
+            case .shared: "all"
+            }
+        }
+    }
+    var promptHistory = AppModel.storedPromptHistory() {
+        didSet { Self.keep(promptHistory.rawValue, as: "prompt.history") }
+    }
+    private static func storedPromptHistory() -> PromptHistory {
+        let env = ProcessInfo.processInfo.environment
+        if !keepsViewState {
+            return PromptHistory(
+                rawValue: env["VALTZ_SNAPSHOT_PROMPT_HISTORY"] ?? "")
+                ?? .perTarget
+        }
+        return PromptHistory(rawValue: UserDefaults.standard
+            .string(forKey: "prompt.history") ?? "") ?? .perTarget
+    }
+    /// The words each box group was left with; the agent's last sent,
+    /// for when its box was emptied by Start.
+    struct PromptWords {
+        var prompt = ""
+        var marked = ""
+        var mentions: [UUID] = []
+        var assetId: String?
+        var name: String?
+    }
+    @ObservationIgnored var promptWordsBy: [String: PromptWords] = [:]
+    @ObservationIgnored var agentWordsSent: PromptWords?
     /// The switch back to the prompt asked to flash, once it is shown
     /// (TimelineSwitch takes it): the timeline came by itself.
     var switchFlash: Date?
@@ -1628,6 +1681,12 @@ final class AppModel {
     var videoCommand: VideoCommand?
     /// The stage's player's rate, as it reports it (0 is paused).
     var videoRate: Float = 0
+    /// The layers the Trim panel's values and the keyed tracks were read
+    /// from (loadTrim, loadClipTracks): written back onto that layer only.
+    @ObservationIgnored var trimLayer: String?
+    @ObservationIgnored var clipTracksLayer: String?
+    /// The last frame of the clip on the stage, as its player knows it.
+    var videoLastFrame: Int?
     /// The latest result as generated, before adjustments.
     private var stageOriginal: CGImage?
     /// The picture to edit as read, before adjustments (on the stage while
@@ -1644,8 +1703,16 @@ final class AppModel {
     /// open shows the work still, where its playhead was saved. What is
     /// put on the stage after plays as before.
     var stillOnOpen: String?
+    /// What a generated clip's landing put on the stage (the clip, or
+    /// the composition it went into): played or not, muted or not, as
+    /// Settings › General › Generations say.
+    var landedClip: String?
     var stageAutoplay: Bool {
-        stillOnOpen == nil || stillOnOpen != stageAssetId
+        (stillOnOpen == nil || stillOnOpen != stageAssetId)
+            && (landedClip != stageAssetId || autoplaysNewClips)
+    }
+    var stageMuted: Bool {
+        landedClip == stageAssetId && autoplaysNewClips && mutesNewClips
     }
     /// Where the CURRENT STATE shows -- the result as it is now (adjusted,
     /// its stack composed), or the picture to edit: A, B after a swap,
@@ -1765,7 +1832,7 @@ final class AppModel {
               operation("upscale")?.take(src.kind)?.ready == true
         else { return false }
         if keyedStage && clipCropKeys.place.keys.count > 1 { return false }
-        return crop.scaleX > 1.001 || crop.scaleY > 1.001
+        return abs(crop.scaleX) > 1.001 || abs(crop.scaleY) > 1.001
     }
 
     /// Scaled up at one size, but what the layer shows is a COMPOSITION:
@@ -1776,7 +1843,7 @@ final class AppModel {
               operation("upscale")?.take(src.kind)?.ready == true
         else { return false }
         if keyedStage && clipCropKeys.place.keys.count > 1 { return false }
-        return crop.scaleX > 1.001 || crop.scaleY > 1.001
+        return abs(crop.scaleX) > 1.001 || abs(crop.scaleY) > 1.001
     }
     /// The layer's composition being made flat (Flatten First).
     var flatteningLayer = false
@@ -1815,8 +1882,8 @@ final class AppModel {
         guard let src = activeLayerSource, let w = src.info?.frame.w,
               let h = src.info?.frame.h, w > 0, h > 0 else { return nil }
         func even(_ v: Double) -> Int { max(2, Int((v / 2).rounded()) * 2) }
-        return (even(Double(w) * max(1, crop.scaleX)),
-                even(Double(h) * max(1, crop.scaleY)))
+        return (even(Double(w) * max(1, abs(crop.scaleX))),
+                even(Double(h) * max(1, abs(crop.scaleY))))
     }
 
     /// Render Upscaled: the layer's clip at its scale, by the upscaler; the
@@ -2449,7 +2516,9 @@ final class AppModel {
         guard let core, let projectId, let clip = currentClip,
               clip.kind == "video" else { return }
         flushPanels()
-        let frame = videoFrame
+        // No further than the clip on the stage shows: at its end the
+        // playhead could stand a frame past its last picture.
+        let frame = min(videoFrame, videoLastFrame ?? videoFrame)
         let r = core.assetOp(project: projectId, "grab", [
             "asset": clip.id, "frame": frame,
             "name": String(localized: "\(clip.name), frame \(String(frame))"),
@@ -2513,6 +2582,7 @@ final class AppModel {
     /// to Auto.
     func setModality(_ m: Modality) {
         guard m != modality, m != .agent || agentEnabled else { return }
+        swapPromptWords(from: modality, to: m)
         otherShapes[modality] = outputShape
         outputShape = otherShapes[m] ?? OutputShape.defaults(for: m)
         modality = m
@@ -2523,6 +2593,39 @@ final class AppModel {
         if m == .video, let b = baseAttachment, b.kind == "image" {
             adoptBaseSize(b.url)
         }
+    }
+
+    /// The box's words left with the target it leaves, and the ones
+    /// left with the target it comes to put back (none yet: empty) --
+    /// when the two keep boxes apart (promptHistory).
+    private func swapPromptWords(from: Modality, to: Modality) {
+        let a = promptHistory.group(from), b = promptHistory.group(to)
+        guard a != b else { return }
+        var left = PromptWords(prompt: prompt, marked: promptMarked,
+                               mentions: promptMentions,
+                               assetId: promptAssetId, name: promptName)
+        // An agent's box emptied by its Start: its last request is what
+        // it was left with.
+        if from == .agent, prompt.isEmpty, let sent = agentWordsSent {
+            left = sent
+        }
+        promptWordsBy[a] = left
+        setPromptWords(promptWordsBy[b] ?? PromptWords())
+    }
+
+    /// Words into the box, the row as it is: a mention of media no longer
+    /// in the row goes with it.
+    private func setPromptWords(_ w: PromptWords) {
+        let ids = Set(promptAttachments.map(\.id))
+        promptAssetId = w.assetId
+        promptName = w.name
+        promptMentions = w.mentions.filter { ids.contains($0) }
+        promptMarked = promptMentions.count == w.mentions.count
+            ? w.marked : w.prompt
+        prompt = w.prompt
+        dropSuggestion()
+        promptRevision += 1
+        promptChanged()
     }
 
     /// The size settings as one value, to keep per modality.
@@ -2916,6 +3019,7 @@ final class AppModel {
     /// A clip layer's tracks into the panels: as recorded, or one key at
     /// the first frame.
     func loadClipTracks(_ clip: AssetDTO, layer: String) {
+        clipTracksLayer = layer
         let a = clip.adjustKeys(layer: layer)
         clipAdjustKeys = a.isEmpty ? Keyframes(start: ImageAdjustments()) : a
         var cc = clip.cropKeys(layer: layer)
@@ -3492,10 +3596,12 @@ final class AppModel {
         let hidden = markupOpen && markup.live ? markup.selectedIds : []
         let page = pic.isPaged ? stagePage : 0
         let painted = markup.painted
+        let began = CACurrentMediaTime()
         Task { @MainActor [weak self] in
             // Drawn by the core on the GPU into a surface the canvas shows
             // as it is; read in place where pixels are wanted.
-            let made: GPUPicture? = await Task.detached {
+            let made: (GPUPicture, Double)? = await Task.detached {
+                let t0 = CACurrentMediaTime()
                 guard let s = core.flattenSurface(
                           project: projectId, asset: id, look: look,
                           hidden: hidden, page: page),
@@ -3503,13 +3609,22 @@ final class AppModel {
                           over: s,
                           colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
                 else { return nil }
-                return GPUPicture(image: img, surface: s)
+                return (GPUPicture(image: img, surface: s),
+                        CACurrentMediaTime() - t0)
             }.value
             guard let self else { return }
             self.compositing = false
-            if let made, self.stagePicture?.id == id, self.stageComposed {
+            if let (made, drew) = made, self.stagePicture?.id == id,
+               self.stageComposed {
                 self.showCurrent(made.image, surface: made.surface)
                 self.markupComposited(painted: painted)
+                // A snapshot run: each draw's time -- the core's, and
+                // from the change until it is on the stage.
+                if TimelineNSView.tracing {
+                    print("snapshot: composite core=\(Int(drew * 1000))ms "
+                          + "shown=\(Int((CACurrentMediaTime() - began) * 1000))ms "
+                          + "size=\(made.image.width)x\(made.image.height)")
+                }
             }
             if self.compositeAgain {
                 self.compositeAgain = false
@@ -5033,7 +5148,17 @@ final class AppModel {
                 ctx.at = activeLayer
                 if clipOnStage { ctx.offset = videoFrame }
                 if pagedOnStage { ctx.offset = stagePage }
+            } else if let w = watchedTask, w.onto == onto.id {
+                // Asked while the stage watches a task bound there -- the
+                // stage shows that task, not the page: on that one's page
+                // (or frame), on top -- over it, as one Start after
+                // another lands. Queued after a Start on page 2, they
+                // landed on page 1.
+                ctx.offset = w.offset
             }
+        } else {
+            ctx.intoProject = projectViews.isEmpty
+                || watchedTask?.intoProject == true
         }
         taskContexts[job] = ctx
         generationBase = nil
@@ -5829,6 +5954,13 @@ final class AppModel {
         var onto: String?
         var at: String?
         var offset = 0
+        /// Asked with nothing active while the project had no
+        /// composition -- or while the stage watched a task asked so: it
+        /// lands in the project's, made by the first result to land.
+        /// Nine Starts queued at once made eight compositions of one
+        /// picture each beside the project's (17 in Assets), where one
+        /// after another made the project's nine layers.
+        var intoProject = false
         var stageAtStart: StageAtStart?
         /// When it began to run (nil while queued).
         var started: Date?
@@ -6853,6 +6985,11 @@ final class AppModel {
                   : clipOnStage ? currentClip : nil else { return }
         let rate = stageFrameRate
         let layer = activeLayer
+        // Only onto the layer they were read from (persistTrim's reason).
+        guard clipTracksLayer == layer else {
+            loadClipTracks(clip, layer: layer)
+            return
+        }
         func same<T: Equatable>(_ a: Keyframes<T>, _ b: Keyframes<T>,
                                 _ none: T) -> Bool {
             a == b || (a.isEmpty && b == Keyframes(start: none))
@@ -7038,9 +7175,8 @@ final class AppModel {
                 c.contentHeight = h
             }
             change(&c)
-            let r = CropSpec.scaleRange
-            c.scaleX = min(r.upperBound, max(r.lowerBound, c.scaleX))
-            c.scaleY = min(r.upperBound, max(r.lowerBound, c.scaleY))
+            c.scaleX = CropSpec.held(c.scaleX)
+            c.scaleY = CropSpec.held(c.scaleY)
         }
         if keyedStage {
             guard layerOffStage == nil else { return }
@@ -7060,11 +7196,17 @@ final class AppModel {
             switch field {
             case .offsetX: c.offsetX = v
             case .offsetY: c.offsetY = v
+            // Locked, the other keeps its ratio to it -- by size: a flip
+            // typed (its sign) flips that axis alone.
             case .scaleX:
-                if cropZoomLocked, c.scaleX > 0 { c.scaleY *= v / c.scaleX }
+                if cropZoomLocked, c.scaleX != 0 {
+                    c.scaleY *= abs(v / c.scaleX)
+                }
                 c.scaleX = v
             case .scaleY:
-                if cropZoomLocked, c.scaleY > 0 { c.scaleX *= v / c.scaleY }
+                if cropZoomLocked, c.scaleY != 0 {
+                    c.scaleX *= abs(v / c.scaleY)
+                }
                 c.scaleY = v
             }
         }
@@ -7234,6 +7376,7 @@ final class AppModel {
     /// speed and sound.
     func loadTrim(_ clip: AssetDTO) {
         let layer = activeLayer
+        trimLayer = layer
         let t = clip.isComposition ? clip.time(of: layer) : LayerTimeDTO()
         trim = t.marks
         trimOffset = t.offset
@@ -7524,6 +7667,14 @@ final class AppModel {
         trimPersistTask = nil
         guard let core, let projectId, let clip = currentClip else { return }
         let layer = activeLayer
+        // Only onto the layer they were read from: the selection on a
+        // layer the stage's stack did not list yet reads layer 0's (the
+        // stack's fallback), and a markup stretched on a timeline took the
+        // clip's start -- 0 -- while the clip took the markup's.
+        guard trimLayer == layer else {
+            loadTrim(clip)
+            return
+        }
         let comp = clip.isComposition
         let was = comp ? clip.time(of: layer) : LayerTimeDTO()
         let timeChanged = was.marks != trim || was.offset != trimOffset
@@ -9707,6 +9858,10 @@ final class AppModel {
                 req["onto"] = onto
                 if let at = ctx.at { req["at"] = at }
                 req["offset"] = ctx.offset
+            } else if ctx.intoProject, let project = projectViews.first {
+                // On top of what an earlier result of the queue made the
+                // project's (a kind it cannot show: one of its own).
+                req["onto"] = project.id
             }
             let r = core.assetOp(project: projectId, "place-result", req)
             if r.ok, let view = r["asset"] as? String {
@@ -9738,6 +9893,10 @@ final class AppModel {
                 landed(on: placed.doc, layer: placed.layer)
             }
             return
+        }
+        // A clip made: what it lands on plays as Settings say.
+        if state == "finished", asset?.kind == "video" {
+            landedClip = placed?.doc.id ?? asset?.id
         }
         if let placed {
             finishStage(state: "finished", asset: placed.doc, result: asset,
@@ -9989,6 +10148,7 @@ final class AppModel {
 
     func putOnStage(_ asset: AssetDTO) {
         stillOnOpen = nil
+        landedClip = nil
         // Picked: the stage leaves the task it watched, which runs on.
         unwatchTask()
         if asset.kind == "video" || asset.kind == "audio",

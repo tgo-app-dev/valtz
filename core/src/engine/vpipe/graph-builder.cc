@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <limits>
 
@@ -343,6 +344,43 @@ fit_area(media::PixelSize sz, double area, int align)
   return {axis(sz.width), axis(sz.height)};
 }
 
+// The size a model was trained at for an aspect (catalog `reference_fit`
+// "trained_size", `trained_area`): Bria's get_image_size for Fibo 2.0, as
+// its pipeline crops each picture -- of the sides divisible by `multiple`,
+// at least four of it, within 10% of `area`, the one cropping least from
+// a picture of that aspect, then the one nearest `area`, then the wider.
+media::PixelSize
+trained_size(double aspect, double area, int multiple)
+{
+  const long long a0 = static_cast<long long>(area);
+  const long long m = multiple, lo = 4 * m;
+  media::PixelSize best{0, 0};
+  double best_crop = 0;
+  long long best_dist = 0;
+  bool have = false;
+  for (long long w = lo; w < 2 * a0 / lo; w += m) {
+    for (long long h = lo; h < 2 * a0 / w; h += m) {
+      const long long a = w * h;
+      if (a < 0.9 * area || a > 1.1 * area) { continue; }
+      const double r = static_cast<double>(w) / static_cast<double>(h);
+      // Compared at nine decimals, as the reference rounds them.
+      const double crop =
+          std::nearbyint((1.0 - std::min(r / aspect, aspect / r)) * 1e9) /
+          1e9;
+      const long long dist = std::llabs(a - a0);
+      if (!have || crop < best_crop ||
+          (crop == best_crop &&
+           (dist < best_dist || (dist == best_dist && w > best.width)))) {
+        best = {static_cast<int>(w), static_cast<int>(h)};
+        best_crop = crop;
+        best_dist = dist;
+        have = true;
+      }
+    }
+  }
+  return best;
+}
+
 // Text-to-image and edit share one graph. An edit adds, per picture, a
 // valtz-source the engine fills at the picture's own size, an
 // `image-resample` that fits it (Lanczos), a vae-encode of the fitted
@@ -442,6 +480,20 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs,
       height = dh;
     }
   }
+  // A model trained at a few sizes (catalog `reference_fit`
+  // "trained_size": Fibo 2.0) makes the one for the shape asked, as its
+  // own pipeline makes the first picture's.
+  const bool trained = edit && jget<std::string>(ed, "reference_fit", "") ==
+                                   "trained_size";
+  const double trained_area = jget(ed, "trained_area", 1024.0 * 1024.0);
+  if (trained) {
+    const auto t = trained_size(static_cast<double>(width) / height,
+                                trained_area, align);
+    if (t.width > 0) {
+      width = t.width;
+      height = t.height;
+    }
+  }
   width = round_to(width, align);
   height = round_to(height, align);
   int steps = jget(job.params, "steps", jget(defaults, "steps", 8));
@@ -515,6 +567,13 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs,
             static_cast<double>(width) * height > base_area) {
           f.fitted = fit_area(f.fitted, base_area, align);
         }
+        fit = {{"width", f.fitted.width}, {"height", f.fitted.height},
+               {"fit", "crop"}, {"algorithm", "lanczos"}};
+      } else if (trained) {
+        // Covered and centre-cropped to the size trained for its aspect.
+        f.fitted = trained_size(static_cast<double>(f.size.width) /
+                                    f.size.height,
+                                trained_area, align);
         fit = {{"width", f.fitted.width}, {"height", f.fitted.height},
                {"fit", "crop"}, {"algorithm", "lanczos"}};
       } else if (crop_grid) {
@@ -1727,6 +1786,11 @@ helper_chat_config(const JobSpec& job)
     {"page_tokens", kHelperPageTokens},
     {"max_pages", helper_max_pages(job)},
   };
+  // A long prefill's GEMMs in int8 (vpipe's i8_prefill), where the model
+  // asks: Flash-Next's 7k-token prompt 2,900 -> 3,000 tok/s on an M5 Ultra.
+  if (jget(job.params, "i8_prefill", false)) {
+    chat_cfg["i8_prefill"] = true;
+  }
   // A drafter shipped apart from the model (its conversion dropped the
   // head): vpipe's text-chat loads it beside the model.
   if (auto mm = jget<std::string>(job.params, "mtp_model", "");

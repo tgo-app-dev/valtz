@@ -392,6 +392,11 @@ struct AgentRequest {
   std::optional<AssetId> composition;
   // The prompt row's media: assets it may place or look at.
   std::vector<AssetId>   row;
+  // Where the person is as they ask -- "this page", "the current frame",
+  // "the selected layer" -- the app's stage: {"composition", "page"
+  // (from 1), "frame", "layer", "objects"}; told the model with the
+  // words (AgentHost::stage_note_). The core cannot ask the app.
+  Json                   stage = Json::object();
   // Each step that changes the document waits for the person's word
   // (agent_review); false: it runs on its own (Auto).
   bool                   review = true;
@@ -1335,7 +1340,8 @@ public:
   // as they are written.
   Result<std::string> agent_start(AgentRequest);
   // The person's next words: an answer to its question, more to do.
-  Status agent_say(const std::string& agent, const std::string& text);
+  Status agent_say(const std::string& agent, const std::string& text,
+                   const Json& stage = Json::object());
   // The person's word on a step waiting for it: "approve" (with `args`
   // in place of the model's, when not null), "skip" (`note` told to the
   // model), "approve_all" (this one and every one after: Auto).
@@ -1999,7 +2005,17 @@ private:
     bool                  audio_only = false;
     double                seconds = 0;           // 0: untimed
     Rational              mark_rate{24, 1};      // its marks' rate
+    // A PART the scissors made, shown as its clip: the span of the
+    // clip it is, in `mark_rate` frames (-1: from its start, to its
+    // end) -- the layer's own marks counted from there.
+    std::int64_t          span_in = -1;
+    std::int64_t          span_out = -1;
   };
+  // A layer's place in time over what it shows, at the composition's
+  // `rate`: its marks -- a part's counted from its span.
+  static media::LayerTiming timing_over_(const project::LayerTime&,
+                                         const TimedSource&, Rational rate,
+                                         media::KeyedSpeed speed);
   // `sound_only`: for a composition of sound -- a clip gives its sound
   // alone (a composition its mix), its marks in milliseconds. `hidden`:
   // a markup's objects left out (drawn in memory only).

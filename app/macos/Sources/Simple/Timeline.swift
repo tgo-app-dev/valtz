@@ -2165,27 +2165,97 @@ final class TimelineNSView: NSView {
             needsDisplay = true
         case .reorder(let i, let downY, _, let moving)?:
             guard moving || abs(p.y - downY) > 3 else { return }
-            // Over a folder's header's middle, a layer goes into it; else
-            // into the gap between rows nearest the pointer.
-            let at = (p.y - Self.rulerHeight + scrollY) / Self.rowHeight
-            let r = Int(at.rounded(.down))
-            let frac = at - at.rounded(.down)
-            let spot: Spot
-            if model.rows.indices.contains(r), model.rows[r].isFolder,
-               !model.rows[i].isFolder, frac > 0.3, frac < 0.7 {
-                spot = .into(r)
-            } else {
-                spot = .gap(min(max(0, Int(at.rounded())), model.rows.count))
-            }
-            drag = .reorder(row: i, downY: downY, spot: spot, moving: true)
+            reorderY = p.y
+            reorder(i, downY: downY)
             NSCursor.closedHand.set()
-            needsDisplay = true
+            // At the rows' top or bottom, or past it: they scroll.
+            if reorderScroll(p.y) != 0, reorderTimer == nil {
+                startReorderScroll()
+            }
         case nil:
             break
         }
     }
 
+    /// Where a header being dragged would go, the pointer at
+    /// `reorderY`: over a folder's header's middle, a layer goes into it;
+    /// else into the gap between rows nearest the pointer -- held to the
+    /// rows shown, so past the top or bottom it is the edge's gap while
+    /// the rows scroll under it.
+    private func reorder(_ i: Int, downY: CGFloat) {
+        let y = min(max(reorderY, Self.rulerHeight),
+                    max(Self.rulerHeight, bounds.height - 1))
+        let at = (y - Self.rulerHeight + scrollY) / Self.rowHeight
+        let r = Int(at.rounded(.down))
+        let frac = at - at.rounded(.down)
+        let spot: Spot
+        if model.rows.indices.contains(r), model.rows[r].isFolder,
+           !model.rows[i].isFolder, frac > 0.3, frac < 0.7 {
+            spot = .into(r)
+        } else {
+            spot = .gap(min(max(0, Int(at.rounded())), model.rows.count))
+        }
+        drag = .reorder(row: i, downY: downY, spot: spot, moving: true)
+        needsDisplay = true
+    }
+
+    /// The pointer's last height in a header's drag.
+    private var reorderY: CGFloat = 0
+    private var reorderTimer: Timer?
+
+    /// Points a tick the rows scroll for a header dragged to `y`: within
+    /// a band at the top or bottom of the rows shown, or past it, faster
+    /// the further out; 0 elsewhere, or with nothing more that way.
+    private func reorderScroll(_ y: CGFloat) -> CGFloat {
+        let band = Self.rowHeight * 0.75
+        let top = Self.rulerHeight + band
+        let bottom = bounds.height - band
+        let speed = { (out: CGFloat) in min(32, 2 + out / 3) }
+        if y < top, scrollY > 0 { return -speed(top - y) }
+        if y > bottom, scrollY < maxScrollY { return speed(y - bottom) }
+        return 0
+    }
+
+    /// The rows scrolled while a header is held at their edge: AppKit
+    /// sends no drag while the pointer stands still, so a timer moves
+    /// them -- and the gap it would go into with them -- until the
+    /// pointer comes back in, the end is reached or it is let go.
+    private func startReorderScroll() {
+        let t = Timer(timeInterval: 1.0 / 60, repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.reorderTick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        reorderTimer = t
+    }
+
+    private func reorderTick() {
+        guard case .reorder(let i, let downY, _, true)? = drag else {
+            stopReorderScroll()
+            return
+        }
+        let d = reorderScroll(reorderY)
+        guard d != 0 else {
+            stopReorderScroll()
+            return
+        }
+        scrollY += d
+        clampScroll()
+        reorder(i, downY: downY)
+    }
+
+    private func stopReorderScroll() {
+        reorderTimer?.invalidate()
+        reorderTimer = nil
+    }
+
+    /// Where the rows are scrolled, of how far they go (the hooks').
+    var scrollSummary: String {
+        "\(Int(scrollY))/\(Int(maxScrollY))"
+    }
+
     override func mouseUp(with e: NSEvent) {
+        stopReorderScroll()
         defer {
             drag = nil
             needsDisplay = true
@@ -2567,6 +2637,15 @@ final class TimelineNSView: NSView {
         let x: CGFloat = eye ? 11 : fold ? Self.iconX + 6
             : lock ? Self.lockRect(top: 0).midX : 100
         let w = convert(CGPoint(x: x, y: y), to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// A point `by` points past the rows' top or bottom edge, over the
+    /// headers -- where a header is held for the rows to scroll.
+    func windowPoint(past bottom: Bool, by: CGFloat) -> CGPoint? {
+        guard let win = window else { return nil }
+        let y = bottom ? bounds.height + by : Self.rulerHeight - by
+        let w = convert(CGPoint(x: 100, y: y), to: nil)
         return CGPoint(x: w.x, y: win.frame.height - w.y)
     }
 

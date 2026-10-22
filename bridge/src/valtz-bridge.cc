@@ -419,6 +419,7 @@ Core::agent_start(const std::string& request_json)
     req.row = row_of(*j);
     req.review = jget(*j, "review", true);
     req.backend = jget<std::string>(*j, "backend", "");
+    req.stage = jget(*j, "stage", Json::object());
     auto id = _impl->ctl->agent_start(std::move(req));
     if (!id.ok()) {
       return err(id.error());
@@ -436,7 +437,8 @@ Core::agent_say(const std::string& request_json)
       return err(j.error());
     }
     auto st = _impl->ctl->agent_say(jget<std::string>(*j, "agent", ""),
-                                    jget<std::string>(*j, "text", ""));
+                                    jget<std::string>(*j, "text", ""),
+                                    jget(*j, "stage", Json::object()));
     return st.ok() ? ok() : err(st.error());
   });
 }

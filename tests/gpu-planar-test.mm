@@ -6,7 +6,9 @@
 #include "valtz/media/layers.h"
 #include "valtz/media/markup.h"
 #include "valtz/media/model-input.h"
+#include "valtz/media/probe.h"
 
+#import <AVFoundation/AVFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <ImageIO/ImageIO.h>
 #import <Metal/Metal.h>
@@ -214,4 +216,214 @@ TEST(model_input, stack_surface_bench)
     std::fprintf(stderr, "[stack] 4000x3000, 2 layers: PNG written and "
                  "read %.1f ms, surface %.1f ms\n", tf, ts);
   }
+}
+
+namespace {
+
+// An asymmetric picture with a clear and a half-clear part, `turn`
+// shifting its pattern: a flip, a turn or alpha mishandled shows.
+void
+write_pattern(const std::filesystem::path& path, int w, int h, int turn)
+{
+  std::vector<std::uint8_t> px(static_cast<std::size_t>(w) * h * 4);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      std::uint8_t* p = &px[(static_cast<std::size_t>(y) * w + x) * 4];
+      const unsigned a = x < w / 6 ? 0 : y < h / 3 ? 128 : 255;
+      p[0] = static_cast<std::uint8_t>((x * 255 / w + turn) % 256 * a / 255);
+      p[1] = static_cast<std::uint8_t>(y * 255 / h * a / 255);
+      p[2] = static_cast<std::uint8_t>(((x ^ y) + turn) % 256 * a / 255);
+      p[3] = static_cast<std::uint8_t>(a);
+    }
+  }
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(
+      px.data(), w, h, 8, static_cast<size_t>(w) * 4, cs,
+      static_cast<std::uint32_t>(kCGImageAlphaPremultipliedLast));
+  CGImageRef img = CGBitmapContextCreateImage(ctx);
+  NSURL* url = [NSURL fileURLWithPath:@(path.c_str())];
+  CGImageDestinationRef d = CGImageDestinationCreateWithURL(
+      (__bridge CFURLRef)url, CFSTR("public.png"), 1, nullptr);
+  CGImageDestinationAddImage(d, img, nullptr);
+  CGImageDestinationFinalize(d);
+  CFRelease(d);
+  CGImageRelease(img);
+  CGContextRelease(ctx);
+  CGColorSpaceRelease(cs);
+}
+
+// A file's pixels as 8-bit sRGB, premultiplied RGBA, row 0 at the top.
+std::vector<std::uint8_t>
+file_pixels(const std::filesystem::path& path, int& w, int& h)
+{
+  NSURL* url = [NSURL fileURLWithPath:@(path.c_str())];
+  CGImageSourceRef s =
+      CGImageSourceCreateWithURL((__bridge CFURLRef)url, nullptr);
+  CGImageRef img = CGImageSourceCreateImageAtIndex(s, 0, nullptr);
+  CFRelease(s);
+  w = static_cast<int>(CGImageGetWidth(img));
+  h = static_cast<int>(CGImageGetHeight(img));
+  std::vector<std::uint8_t> px(static_cast<std::size_t>(w) * h * 4);
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(
+      px.data(), w, h, 8, static_cast<size_t>(w) * 4, cs,
+      static_cast<std::uint32_t>(kCGImageAlphaPremultipliedLast));
+  CGContextSetBlendMode(ctx, kCGBlendModeCopy);
+  CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), img);
+  CGContextRelease(ctx);
+  CGColorSpaceRelease(cs);
+  CGImageRelease(img);
+  return px;
+}
+
+// The largest difference between a surface (BGRA) and `want` (RGBA).
+int
+surface_off(IOSurfaceRef surf, const std::vector<std::uint8_t>& want,
+            int w, int h)
+{
+  if (static_cast<int>(IOSurfaceGetWidth(surf)) != w ||
+      static_cast<int>(IOSurfaceGetHeight(surf)) != h) {
+    return 256;
+  }
+  IOSurfaceLock(surf, kIOSurfaceLockReadOnly, nullptr);
+  const auto* base = static_cast<const std::uint8_t*>(
+      IOSurfaceGetBaseAddress(surf));
+  const std::size_t bpr = IOSurfaceGetBytesPerRow(surf);
+  int off = 0;
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const std::uint8_t* s = base + y * bpr + x * 4;
+      const std::uint8_t* p = &want[(static_cast<std::size_t>(y) * w + x) * 4];
+      const int d[4] = {s[2] - p[0], s[1] - p[1], s[0] - p[2], s[3] - p[3]};
+      for (int k : d) { off = std::max(off, std::abs(k)); }
+    }
+  }
+  IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, nullptr);
+  return off;
+}
+
+}  // namespace
+
+// The stage's draws keep a file's picture decoded between them (a jog
+// wheel's tick decoded every layer's PNG again): drawn as the file path
+// draws it, placed, turned, half clear; the same again; a file
+// rewritten drawn anew.
+TEST(model_input, a_kept_picture_draws_as_its_file)
+{
+  const auto dir = test::temp_dir("kept");
+  const auto a = dir / "a.png", b = dir / "b.png";
+  write_pattern(a, 240, 160, 0);
+  write_pattern(b, 120, 90, 77);
+  media::LayerPicture bottom;
+  bottom.file = a;
+  media::LayerPicture top;
+  top.file = b;
+  top.crop.scale_x = top.crop.scale_y = 0.8;
+  top.crop.offset_x = 0.2;
+  top.crop.offset_y = -0.1;
+  top.crop.rotate = 12;
+  const std::vector<media::LayerPicture> stack{bottom, top};
+  const auto check = [&](const char* when) {
+    const auto png = dir / "want.png";
+    REQUIRE_OK(media::flatten_layers(stack, png));
+    int w = 0, h = 0;
+    const auto want = file_pixels(png, w, h);
+    auto surf = media::flatten_layers_surface(stack);
+    REQUIRE_OK(surf);
+    const int off = surface_off(*surf, want, w, h);
+    CFRelease(*surf);
+    std::fprintf(stderr, "[kept] %s: %dx%d, off by %d\n", when, w, h, off);
+    CHECK(off <= 2);
+  };
+  check("first draw");
+  check("kept");
+  // Rewritten (a linked file may be): read again.
+  write_pattern(b, 120, 90, 160);
+  check("rewritten");
+}
+
+// A movie whose picture track runs past its last frame (its session ended
+// a frame late, the last frame lasting two): counted by the last frame's
+// own time, 48 frames -- the track's length made 49, one that does not
+// exist, where a playhead at the end stood and a grab drew nothing.
+TEST(model_input, a_movie_is_counted_by_its_last_frame)
+{
+  const auto path = test::temp_dir("last-frame") / "long-last.mov";
+  NSURL* url = [NSURL fileURLWithPath:@(path.c_str())];
+  NSError* err = nil;
+  AVAssetWriter* w = [AVAssetWriter assetWriterWithURL:url
+                                              fileType:AVFileTypeQuickTimeMovie
+                                                 error:&err];
+  REQUIRE(w != nil);
+  AVAssetWriterInput* in = [AVAssetWriterInput
+      assetWriterInputWithMediaType:AVMediaTypeVideo
+                     outputSettings:@{
+                       AVVideoCodecKey : AVVideoCodecTypeH264,
+                       AVVideoWidthKey : @64,
+                       AVVideoHeightKey : @64,
+                     }];
+  in.expectsMediaDataInRealTime = NO;
+  AVAssetWriterInputPixelBufferAdaptor* ad =
+      [AVAssetWriterInputPixelBufferAdaptor
+          assetWriterInputPixelBufferAdaptorWithAssetWriterInput:in
+                                     sourcePixelBufferAttributes:@{
+            (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferWidthKey : @64,
+            (id)kCVPixelBufferHeightKey : @64,
+          }];
+  [w addInput:in];
+  REQUIRE([w startWriting]);
+  [w startSessionAtSourceTime:kCMTimeZero];
+  for (int i = 0; i < 48; ++i) {
+    while (!in.readyForMoreMediaData) {
+      [NSThread sleepForTimeInterval:0.002];
+    }
+    CVPixelBufferRef pb = nullptr;
+    CVPixelBufferPoolCreatePixelBuffer(nullptr, ad.pixelBufferPool, &pb);
+    REQUIRE(pb != nullptr);
+    CVPixelBufferLockBaseAddress(pb, 0);
+    std::memset(CVPixelBufferGetBaseAddress(pb), i * 5,
+                CVPixelBufferGetDataSize(pb));
+    CVPixelBufferUnlockBaseAddress(pb, 0);
+    [ad appendPixelBuffer:pb withPresentationTime:CMTimeMake(i, 24)];
+    CVPixelBufferRelease(pb);
+  }
+  [in markAsFinished];
+  [w endSessionAtSourceTime:CMTimeMake(49, 24)];
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  [w finishWritingWithCompletionHandler:^{
+    dispatch_semaphore_signal(done);
+  }];
+  dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+  REQUIRE(w.status == AVAssetWriterStatusCompleted);
+
+  // The file is as meant: its picture track over 48.5 frames long, so
+  // counted by its length it rounds to 49.
+  AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url options:@{
+    AVURLAssetPreferPreciseDurationAndTimingKey : @YES
+  }];
+  __block CMTime length = kCMTimeInvalid;
+  dispatch_semaphore_t loaded = dispatch_semaphore_create(0);
+  [asset loadTracksWithMediaType:AVMediaTypeVideo
+               completionHandler:^(NSArray<AVAssetTrack*>* tracks,
+                                   NSError*) {
+    AVAssetTrack* track = tracks.firstObject;
+    if (!track) {
+      dispatch_semaphore_signal(loaded);
+      return;
+    }
+    [track loadValuesAsynchronouslyForKeys:@[ @"timeRange" ]
+                         completionHandler:^{
+      length = track.timeRange.duration;
+      dispatch_semaphore_signal(loaded);
+    }];
+  }];
+  dispatch_semaphore_wait(loaded, DISPATCH_TIME_FOREVER);
+  REQUIRE(CMTIME_IS_NUMERIC(length));
+  CHECK(CMTimeGetSeconds(length) * 24 > 48.5);
+  auto info = media::probe_file(path);
+  REQUIRE_OK(info);
+  CHECK(info->frame_count == 48);
+  CHECK(media::last_picture_frame(path, {24, 1}) == 47);
+  CHECK(media::last_picture_frame(path) == 47);
 }

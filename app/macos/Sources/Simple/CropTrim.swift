@@ -40,7 +40,16 @@ struct CropSpec: Equatable, Sendable {
     /// A whole turn either way (core kMaxTurn): a clip keyed 0 and 360
     /// turns all the way round.
     static let rotateRange = -360.0...360.0
+    /// A zoom's size either way: a negative one FLIPS the picture that
+    /// way, about its centre (core media/crop.h).
     static let scaleRange = 0.05...20.0
+
+    /// A zoom held to `scaleRange`, its sign kept (none at all: the
+    /// least).
+    static func held(_ v: Double) -> Double {
+        let m = min(scaleRange.upperBound, max(scaleRange.lowerBound, abs(v)))
+        return v < 0 ? -m : m
+    }
 
     var isIdentity: Bool {
         scaleX == 1 && scaleY == 1 && offsetX == 0 && offsetY == 0
@@ -299,8 +308,8 @@ enum CropField: CaseIterable, Identifiable, Sendable {
         switch self {
         case .offsetX: "Where the picture's centre is, across, in frame widths (+ right)"
         case .offsetY: "Where the picture's centre is, down, in frame heights (+ down)"
-        case .scaleX: "The picture's width, as a share of the frame's"
-        case .scaleY: "The picture's height, as a share of the frame's"
+        case .scaleX: "The picture's width, as a share of the frame's -- negative, flipped left to right"
+        case .scaleY: "The picture's height, as a share of the frame's -- negative, flipped upside down"
         }
     }
 
@@ -323,8 +332,7 @@ enum CropField: CaseIterable, Identifiable, Sendable {
         switch self {
         case .offsetX, .offsetY: return min(10, max(-10, v))
         case .scaleX, .scaleY:
-            return min(CropSpec.scaleRange.upperBound,
-                       max(CropSpec.scaleRange.lowerBound, v))
+            return CropSpec.held(v)
         }
     }
 
@@ -489,7 +497,7 @@ struct CropPanel: View {
     private var upscaleRow: some View {
         HStack(spacing: 8) {
             if model.upscaleJob != nil {
-                ProgressView(value: model.upscaleFraction)
+                PhaseBar(fraction: model.upscaleFraction)
                     .frame(width: 120)
                 Text(model.upscaleCaption)
                     .font(.callout)

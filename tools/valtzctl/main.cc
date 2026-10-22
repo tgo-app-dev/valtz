@@ -344,7 +344,10 @@ usage()
       "                 |none],shadow_blur=,shadow_x=,shadow_y=, glow[=#..\n"
       "                 |none],glow_radius=; a gradient -- gradient=linear|\n"
       "                 radial|none,stops=#..@0/#..@1,from=u:v,to=u:v;\n"
-      "                 text and shape take them too)\n"
+      "                 a line's or outline's dash=dashed|dotted|solid, a\n"
+      "                 line's arrows=start|end|both|none; any one's\n"
+      "                 rotate=<degrees> and flip=h|v|hv|none, about its\n"
+      "                 middle; text and shape take them too)\n"
       "         | shape <layer> polygon <x,y;x,y;x,y...> [options]\n"
       "                 (a polygon through its corners; a PATH -- the\n"
       "                 curvature pen's: smooth=all, or smooth=1+3 the\n"
@@ -608,6 +611,45 @@ style_opts(Json& obj, const Json& o)
   }
   if (o.contains("width")) {
     obj["width"] = jget(o, "width", 4.0);
+  }
+  // A line's or outline's dashes (dash=dashed|dotted|solid), a line's
+  // arrowheads (arrows=start|end|both|none).
+  if (!text && o.contains("dash")) {
+    const auto d = jget<std::string>(o, "dash", "solid");
+    if (d == "dashed" || d == "dotted") {
+      obj["dash"] = d;
+    } else {
+      obj.erase("dash");
+    }
+  }
+  if (jget<std::string>(obj, "kind", "") == "line" && o.contains("arrows")) {
+    const auto a = jget<std::string>(o, "arrows", "none");
+    if (a == "start" || a == "end" || a == "both") {
+      obj["arrows"] = a;
+    } else {
+      obj.erase("arrows");
+    }
+  }
+  // Its turn (rotate=<degrees>, + clockwise) and flips (flip=h|v|hv|
+  // none), about its middle.
+  if (o.contains("rotate")) {
+    const double r = jget(o, "rotate", 0.0);
+    if (r != 0) {
+      obj["rotate"] = r;
+    } else {
+      obj.erase("rotate");
+    }
+  }
+  if (o.contains("flip")) {
+    const auto f = jget<std::string>(o, "flip", "none");
+    obj.erase("flip_x");
+    obj.erase("flip_y");
+    if (f.find('h') != std::string::npos) {
+      obj["flip_x"] = true;
+    }
+    if (f.find('v') != std::string::npos) {
+      obj["flip_y"] = true;
+    }
   }
   if (text) {
     Json font = jget(obj, "font", Json::object());
@@ -1593,6 +1635,14 @@ agent_command(Controller& c, std::vector<std::string> args)
         return fail(make_error(Code::InvalidArgument, "not an asset id"));
       }
       req.composition = *id;
+    } else if (a == "--page" || a == "--frame" || a == "--layer") {
+      // Where the person is, as the app's stage tells it: "this page".
+      const std::string v = next();
+      if (a == "--layer") {
+        req.stage["layer"] = v == "0" ? std::string() : v;
+      } else {
+        req.stage[a.substr(2)] = std::atoll(v.c_str());
+      }
     } else if (a == "--ref") {
       auto r = reference_asset(c, *pid, next());
       if (!r.ok()) {
@@ -1601,6 +1651,13 @@ agent_command(Controller& c, std::vector<std::string> args)
       req.row.push_back(*r);
     } else {
       prompt += (prompt.empty() ? "" : " ") + a;
+    }
+  }
+  if (!req.stage.empty()) {
+    const auto on = req.composition ? req.composition
+                                    : c.project_composition(*pid);
+    if (on) {
+      req.stage["composition"] = on->str();
     }
   }
   const bool tty = ::isatty(STDIN_FILENO) != 0;
@@ -2125,6 +2182,10 @@ main(int argc, char** argv)
                                jget(m["context"], "here", 0),
                                jget(m["context"], "model", 0),
                                jget(m["context"], "auto", 0));
+      }
+      // Never Auto's: chosen by name alone (an abliterated helper).
+      if (jget(m, "by_name", false)) {
+        drafter += "  by name only";
       }
       const Json& sm = m["sampling"];
       const std::string sampler =
@@ -3296,6 +3357,14 @@ main(int argc, char** argv)
                                 smooth.empty() ? "corners" : "points",
                                 smooth.empty() ? "" : " smooth" + smooth,
                                 jget(o, "open", false) ? " open" : "");
+          }
+          if (const double t = jget(o, "rotate", 0.0); t != 0) {
+            more += std::format(" turned {:.4g}", t);
+          }
+          if (jget(o, "flip_x", false) || jget(o, "flip_y", false)) {
+            more += std::format(" flipped {}{}",
+                                jget(o, "flip_x", false) ? "h" : "",
+                                jget(o, "flip_y", false) ? "v" : "");
           }
           const auto r = media::object_bounds(o);
           more += std::format(" at {:.4g},{:.4g} {:.4g}x{:.4g}", r[0], r[1],

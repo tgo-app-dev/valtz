@@ -188,9 +188,39 @@ enum MarkupRender {
     /// as one is selected (AppModel.loadDrawingImages), drawn from here.
     static let drawingImages = DrawingImageCache()
 
+    /// A line's or outline's dashes, in its own widths (the core's
+    /// set_dash): dashes three long and two apart, square-ended; round
+    /// dots two apart.
+    private static func setDash(_ o: MarkupObject, in ctx: CGContext) {
+        let w = max(1, o.width)
+        switch o.dash {
+        case "dashed":
+            ctx.setLineDash(phase: 0, lengths: [3 * w, 2 * w])
+            ctx.setLineCap(.butt)
+        case "dotted":
+            ctx.setLineDash(phase: 0, lengths: [0, 2 * w])
+            ctx.setLineCap(.round)
+        default: break
+        }
+    }
+
+    /// An arrowhead with its tip at `tip`, pointing along (ux, uy).
+    private static func arrowhead(at tip: CGPoint, _ ux: Double,
+                                  _ uy: Double, _ len: Double,
+                                  _ half: Double, in ctx: CGContext) {
+        let b = CGPoint(x: tip.x - ux * len, y: tip.y - uy * len)
+        ctx.move(to: tip)
+        ctx.addLine(to: CGPoint(x: b.x - uy * half, y: b.y + ux * half))
+        ctx.addLine(to: CGPoint(x: b.x + uy * half, y: b.y - ux * half))
+        ctx.closePath()
+        ctx.fillPath()
+    }
+
     private static func drawBody(_ o: MarkupObject, in ctx: CGContext) {
         ctx.saveGState()
         defer { ctx.restoreGState() }
+        // Its turn and flips: all of it below in its own pixels.
+        ctx.concatenate(transform(o))
         switch o.kind {
         case .drawing:
             // Its pixels in its box, upright on the y-down canvas.
@@ -202,12 +232,38 @@ enum MarkupRender {
             ctx.draw(img, in: CGRect(origin: .zero, size: b.size))
         case .line:
             guard o.width > 0 else { return }
+            // Its arrowheads, the line stopped inside each (the core's
+            // draw_body: four widths long and wide, 10 at least).
+            let at0 = o.arrows == "start" || o.arrows == "both"
+            let at1 = o.arrows == "end" || o.arrows == "both"
+            let dx = o.x1 - o.x0, dy = o.y1 - o.y0
+            let run = (dx * dx + dy * dy).squareRoot()
+            let ux = run > 0 ? dx / run : 1, uy = run > 0 ? dy / run : 0
+            let heads = (at0 ? 1 : 0) + (at1 ? 1 : 0)
+            var len = max(10, 4 * o.width)
+            if heads > 0 && run > 0 { len = min(len, run / Double(heads)) }
+            let half = max(5, 2 * o.width)
+            let inset = len * 0.8
             ctx.setLineCap(.round)
             ctx.setLineWidth(o.width)
+            setDash(o, in: ctx)
             ctx.setStrokeColor(o.stroke.cgColor)
-            ctx.move(to: CGPoint(x: o.x0, y: o.y0))
-            ctx.addLine(to: CGPoint(x: o.x1, y: o.y1))
+            ctx.move(to: CGPoint(x: o.x0 + (at0 ? ux * inset : 0),
+                                 y: o.y0 + (at0 ? uy * inset : 0)))
+            ctx.addLine(to: CGPoint(x: o.x1 - (at1 ? ux * inset : 0),
+                                    y: o.y1 - (at1 ? uy * inset : 0)))
             ctx.strokePath()
+            if heads > 0 && run > 0 {
+                ctx.setFillColor(o.stroke.cgColor)
+                if at1 {
+                    arrowhead(at: CGPoint(x: o.x1, y: o.y1), ux, uy, len,
+                              half, in: ctx)
+                }
+                if at0 {
+                    arrowhead(at: CGPoint(x: o.x0, y: o.y0), -ux, -uy, len,
+                              half, in: ctx)
+                }
+            }
         case .rect, .ellipse, .polygon:
             // Its inside -- a gradient through its outline as a clip, else
             // its flat fill -- then its outline (the core's draw_body). An
@@ -229,6 +285,7 @@ enum MarkupRender {
                 ctx.setLineJoin(open ? .round : .miter)
                 if open { ctx.setLineCap(.round) }
                 ctx.setLineWidth(o.width)
+                setDash(o, in: ctx)
                 ctx.setStrokeColor(o.stroke.cgColor)
                 ctx.addPath(path)
                 ctx.strokePath()
@@ -317,6 +374,55 @@ enum MarkupRender {
             .standardized
     }
 
+    // MARK: Its turn and flips
+
+    // An object is kept in its OWN pixels -- corners, ends, points,
+    // gradient, words -- and drawn flipped, then turned, about its box's
+    // centre (the core's object_transform). What the pointer touches and
+    // the stage outlines is on the canvas: hits, handles, points and
+    // bounds below take and give canvas pixels, the edits made in its
+    // own and put back where they were (keepingPlace).
+
+    /// Its own pixels to the canvas; the identity unturned, unflipped.
+    static func transform(_ o: MarkupObject) -> CGAffineTransform {
+        guard o.rotate != 0 || o.flipX || o.flipY else { return .identity }
+        let c = centre(o)
+        return CGAffineTransform(translationX: c.x, y: c.y)
+            .rotated(by: o.rotate * .pi / 180)
+            .scaledBy(x: o.flipX ? -1 : 1, y: o.flipY ? -1 : 1)
+            .translatedBy(x: -c.x, y: -c.y)
+    }
+
+    /// What it turns about: its box's centre -- a line's ends', a
+    /// polygon's points' (not its curve's bulge) -- a text without a box,
+    /// of its lines.
+    static func centre(_ o: MarkupObject) -> CGPoint {
+        if o.kind == .text && !o.box {
+            let b = ownBounds(o)
+            return CGPoint(x: b.midX, y: b.midY)
+        }
+        return CGPoint(x: (o.x0 + o.x1) / 2, y: (o.y0 + o.y1) / 2)
+    }
+
+    /// A canvas point in `o`'s own pixels.
+    static func own(_ p: CGPoint, of o: MarkupObject) -> CGPoint {
+        p.applying(transform(o).inverted())
+    }
+
+    /// `after` -- `before` changed in its own pixels (a corner, a point,
+    /// its box) -- moved so that what the change left alone stays where
+    /// it was on the canvas: its centre, and so its turn's, moved with
+    /// the change; the rest lies (R - 1)(c' - c) off unless put back.
+    static func keepingPlace(_ before: MarkupObject,
+                             _ after: MarkupObject) -> MarkupObject {
+        let t = transform(before)
+        guard !t.isIdentity else { return after }
+        let (c, c2) = (centre(before), centre(after))
+        let d = CGPoint(x: c2.x - c.x, y: c2.y - c.y)
+        return offset(after, dx: t.a * d.x + t.c * d.y - d.x,
+                      dy: t.b * d.x + t.d * d.y - d.y)
+    }
+
     /// A point in `o`'s box's units, on the canvas: 0 at (x0, y0), 1 at
     /// (x1, y1) -- as a polygon's corners and a gradient's ends are kept.
     static func onCanvas(_ u: CGPoint, of o: MarkupObject) -> CGPoint {
@@ -331,9 +437,15 @@ enum MarkupRender {
                        y: abs(h) > 1e-6 ? (p.y - o.y0) / h : 0.5)
     }
 
-    /// A polygon's corners on the canvas.
+    /// A polygon's corners in its own pixels (its box's units laid out).
     static func polygonPoints(_ o: MarkupObject) -> [CGPoint] {
         o.points.map { onCanvas($0, of: o) }
+    }
+
+    /// Its corners where they are shown, turned and flipped.
+    static func shownPoints(_ o: MarkupObject) -> [CGPoint] {
+        let t = transform(o)
+        return polygonPoints(o).map { $0.applying(t) }
     }
 
     /// `o` made a polygon through `pts` (canvas pixels): its box their
@@ -470,6 +582,12 @@ enum MarkupRender {
     /// A gradient's two handles on the canvas: a linear one's ends, a
     /// radial one's centre and a point on its edge.
     static func gradientHandles(_ o: MarkupObject) -> [CGPoint] {
+        let t = transform(o)
+        return ownGradientHandles(o).map { $0.applying(t) }
+    }
+
+    /// The same in its own pixels.
+    private static func ownGradientHandles(_ o: MarkupObject) -> [CGPoint] {
         guard let g = o.gradient else { return [] }
         return [onCanvas(g.from, of: o), onCanvas(g.to, of: o)]
     }
@@ -479,7 +597,7 @@ enum MarkupRender {
                                to p: CGPoint) -> MarkupObject {
         var o = o
         guard var g = o.gradient else { return o }
-        let u = inBox(p, of: o)
+        let u = inBox(own(p, of: o), of: o)
         if i == 0 { g.from = u } else { g.to = u }
         o.gradient = g
         return o
@@ -492,15 +610,23 @@ enum MarkupRender {
             + CTFontGetLeading(ft)
     }
 
-    /// Where `o` lies, as Information gives it and the guides take it:
-    /// its box -- a line's ends', a text's lines' -- its stroke left out.
+    /// Where `o` lies, as Information gives it: its own box -- a line's
+    /// ends', a text's lines' -- its stroke left out, before its turn
+    /// and flips (Information's rotation and signs).
     static func frame(_ o: MarkupObject) -> CGRect {
-        o.kind == .text && !o.box ? bounds(o) : box(o)
+        o.kind == .text && !o.box ? ownBounds(o) : box(o)
     }
 
     /// The frame round all of `objects`; nil for none.
     static func frame(_ objects: [MarkupObject]) -> CGRect? {
         objects.map(frame).reduce(nil) { $0?.union($1) ?? $1 }
+    }
+
+    /// The frame round all of `objects` as they are shown -- turned and
+    /// flipped: what the guides' magnet lines up; nil for none.
+    static func shownFrame(_ objects: [MarkupObject]) -> CGRect? {
+        objects.map { frame($0).applying(transform($0)) }
+            .reduce(nil) { $0?.union($1) ?? $1 }
     }
 
     /// `o` moved by (dx, dy).
@@ -522,7 +648,7 @@ enum MarkupRender {
                          to: CGRect) -> MarkupObject {
         var o = o
         if o.kind == .text && !o.box {
-            let b = bounds(o)
+            let b = ownBounds(o)
             (o.x0, o.y0, o.x1, o.y1) = (b.minX, b.minY, b.maxX, b.maxY)
             o.box = true
         }
@@ -541,8 +667,14 @@ enum MarkupRender {
         return o
     }
 
-    /// What `o` covers, its stroke included.
+    /// What `o` covers on the canvas, its stroke included: its own
+    /// bounds turned and flipped, the box round them.
     static func bounds(_ o: MarkupObject) -> CGRect {
+        ownBounds(o).applying(transform(o))
+    }
+
+    /// What `o` covers in its own pixels, its stroke included.
+    static func ownBounds(_ o: MarkupObject) -> CGRect {
         switch o.kind {
         case .drawing:
             return box(o)
@@ -571,6 +703,7 @@ enum MarkupRender {
     /// text in its box.
     static func hits(_ o: MarkupObject, _ p: CGPoint,
                      tolerance: Double) -> Bool {
+        let p = own(p, of: o)
         let reach = o.width / 2 + tolerance
         switch o.kind {
         case .drawing:
@@ -599,9 +732,9 @@ enum MarkupRender {
                shapePath(o).contains(p) {
                 return true
             }
-            return (nearest(o, to: p)?.distance ?? .infinity) <= reach
+            return (nearestOwn(o, to: p)?.distance ?? .infinity) <= reach
         case .text:
-            return bounds(o).insetBy(dx: -tolerance, dy: -tolerance)
+            return ownBounds(o).insetBy(dx: -tolerance, dy: -tolerance)
                 .contains(p)
         }
     }
@@ -611,6 +744,12 @@ enum MarkupRender {
     /// from before: around what it shows); a polygon's corners first (one
     /// on its box's corner is the polygon's), then its box's.
     static func handles(_ o: MarkupObject) -> [CGPoint] {
+        let t = transform(o)
+        return ownHandles(o).map { $0.applying(t) }
+    }
+
+    /// The same in its own pixels.
+    private static func ownHandles(_ o: MarkupObject) -> [CGPoint] {
         switch o.kind {
         case .drawing:
             return []  // moved whole, not reshaped
@@ -624,7 +763,7 @@ enum MarkupRender {
             return [CGPoint(x: o.x0, y: o.y0), CGPoint(x: o.x1, y: o.y0),
                     CGPoint(x: o.x1, y: o.y1), CGPoint(x: o.x0, y: o.y1)]
         case .text:
-            let b = bounds(o)
+            let b = ownBounds(o)
             return [CGPoint(x: b.minX, y: b.minY),
                     CGPoint(x: b.maxX, y: b.minY),
                     CGPoint(x: b.maxX, y: b.maxY),
@@ -637,9 +776,15 @@ enum MarkupRender {
     /// wide and a line tall -- a shorter one would show nothing.
     static func moving(_ o: MarkupObject, handle i: Int,
                        to p: CGPoint) -> MarkupObject {
+        keepingPlace(o, movingOwn(o, handle: i, to: own(p, of: o)))
+    }
+
+    /// The same, `p` in its own pixels.
+    private static func movingOwn(_ o: MarkupObject, handle i: Int,
+                                  to p: CGPoint) -> MarkupObject {
         var o = o
         if o.kind == .text {
-            let b = bounds(o)
+            let b = ownBounds(o)
             (o.x0, o.y0, o.x1, o.y1) = (b.minX, b.minY, b.maxX, b.maxY)
             o.box = true
             let minW = CGFloat(o.font.size) * 0.6
@@ -663,7 +808,7 @@ enum MarkupRender {
             if i < n {
                 var pts = polygonPoints(o)
                 pts[i] = p
-                let ends = gradientHandles(o)
+                let ends = ownGradientHandles(o)
                 setPolygon(&o, pts)
                 keepGradient(&o, ends)
                 return o
@@ -712,6 +857,14 @@ enum MarkupRender {
     static func nearest(_ o: MarkupObject, to p: CGPoint)
         -> (piece: Int, at: CGPoint, distance: Double)?
     {
+        guard let n = nearestOwn(o, to: own(p, of: o)) else { return nil }
+        return (n.piece, n.at.applying(transform(o)), n.distance)
+    }
+
+    /// The same in its own pixels.
+    private static func nearestOwn(_ o: MarkupObject, to p: CGPoint)
+        -> (piece: Int, at: CGPoint, distance: Double)?
+    {
         let ps = pieces(polygonPoints(o), smooth: o.smooth, closed: !o.open)
         var best: (piece: Int, at: CGPoint, distance: Double)?
         for (k, c) in ps.enumerated() {
@@ -734,17 +887,18 @@ enum MarkupRender {
     /// through it; its gradient's ends kept where they were.
     static func addingPoint(_ o: MarkupObject, after k: Int,
                             at p: CGPoint) -> MarkupObject {
+        let before = o
         var o = o
         var pts = polygonPoints(o)
         var flags = pts.indices.map { o.isSmooth($0) }
         let at = min(k + 1, pts.count)
-        pts.insert(p, at: at)
+        pts.insert(own(p, of: o), at: at)
         flags.insert(true, at: at)
-        let ends = gradientHandles(o)
+        let ends = ownGradientHandles(o)
         setPolygon(&o, pts)
         o.smooth = flags
         keepGradient(&o, ends)
-        return o
+        return keepingPlace(before, o)
     }
 
     /// The path `o` with its point `i` a corner if it was smooth, smooth

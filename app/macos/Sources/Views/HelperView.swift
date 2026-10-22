@@ -213,8 +213,10 @@ struct HelperView: View {
                                                          : 8)
             })) {
             Text("MTP head").tag("mtp")
-            Text("DFlash 2 · 8-bit (about 2.2 GB more)").tag("dflash:8")
-            Text("DFlash 2 · 4-bit (about 1.3 GB more)").tag("dflash:4")
+            Text("DFlash 2 · 8-bit (about \(held(d, 8)) more)")
+                .tag("dflash:8")
+            Text("DFlash 2 · 4-bit (about \(held(d, 4)) more)")
+                .tag("dflash:4")
         }
         .settingsMark(String(localized: "Drafter"),
                       String(localized: "Multi-token prediction"))
@@ -231,6 +233,15 @@ struct HelperView: View {
             Text("It drafts a block of words at a time, which the model checks in one pass. It holds more memory beside the model; on a Mac without much to spare, the MTP head is as fast.")
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// What the drafter holds beside the model at `bits`, as the catalog
+    /// has it -- the 27B's 2.2 GB at 8, Flash-Next's 0.6 -- "1.3 GB".
+    private func held(_ d: HelperList.Drafter, _ bits: Int) -> String {
+        let gb = d.heldGb?[String(bits)]
+            ?? (d.diskGb ?? 0) * (bits == 8 ? 0.58 : 0.34)
+        return gb.formatted(.number.precision(.fractionLength(0...2)))
+            + " GB"
     }
 
     /// How often a video summary looks at the clip: Auto -- one frame a

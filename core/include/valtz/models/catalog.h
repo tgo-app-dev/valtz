@@ -88,6 +88,14 @@ struct ModelEntry {
   double                   disk_gb = 0;
   bool                     disk_measured = false;
   std::uint32_t            min_ram_gb = 16;
+  // What of it must stay RESIDENT for a token (catalog `resident_gb`; 0:
+  // all of `disk_gb`): a Mixture of Experts whose routed experts run from
+  // a cache and whose n-gram table is read from disk -- Qwen3.8
+  // Flash-Next's 128.6 GB, of which 6.8 must stay.
+  double                   resident_gb = 0;
+  // Never Auto's pick (catalog `by_name`): chosen by name alone -- an
+  // abliterated helper, its makers' alignment taken out.
+  bool                     by_name = false;
   int                      rank = 0;
   // Per-capability overrides of `rank` (catalog `rank_for`): one model
   // can be the pick for one job and not another -- FLUX.2-klein is the

@@ -170,6 +170,11 @@ names_in(const fs::path& f)
       out.push_back(a.get<std::string>());
     }
   }
+  // A block drafter's width -- its target's: DFlash 2's for Qwen3.8 27B
+  // and for Flash-Next are one class, "dflash-5120" and "dflash-2560".
+  if (j.contains("dflash_config")) {
+    out.push_back(std::format("dflash-{}", jget(j, "hidden_size", 0)));
+  }
   // How its weights are stored, last: the one name two checkpoints of a
   // model differ by (Drama 3's FP8 release and its int4).
   if (const auto q = jget<std::string>(

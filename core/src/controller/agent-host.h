@@ -36,7 +36,8 @@ public:
   ~AgentHost();
 
   Result<std::string> start(AgentRequest);
-  Status say(const std::string& id, const std::string& text);
+  Status say(const std::string& id, const std::string& text,
+             const Json& stage = Json::object());
   Status review(const std::string& id, int step, const std::string& what,
                 const Json& args, const std::string& note);
   Status set_review(const std::string& id, bool review);
@@ -215,6 +216,11 @@ private:
   std::shared_ptr<Session> find_(const std::string& id) const;
   // The system message: the guide, the project as it is, the request.
   std::string system_text_(const Session& s);
+  // Where the person is as they say `words` (AgentRequest::stage), told
+  // after them: the composition, its page or frame, the selected layer
+  // and objects; the words alone with nothing to say.
+  std::string with_stage_(ProjectId pid, const std::string& words,
+                          const Json& stage);
   std::unique_ptr<agent::Backend> backend_(const std::string& kind,
                                            const std::string& key,
                                            const std::filesystem::path& dir);
@@ -247,6 +253,8 @@ private:
                            std::vector<std::filesystem::path>&);
   Result<Json> t_update_object(Session&, Step&, const Json&,
                                std::vector<std::filesystem::path>&);
+  Result<Json> t_move_objects(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
   Result<Json> t_remove_object(Session&, Step&, const Json&,
                                std::vector<std::filesystem::path>&);
   Result<Json> t_arrange_objects(Session&, Step&, const Json&,
@@ -260,6 +268,8 @@ private:
                                    std::vector<std::filesystem::path>&);
   Result<Json> t_place_asset(Session&, Step&, const Json&,
                              std::vector<std::filesystem::path>&);
+  Result<Json> t_update_composition(Session&, Step&, const Json&,
+                                    std::vector<std::filesystem::path>&);
   Result<Json> t_set_layer_box(Session&, Step&, const Json&,
                                std::vector<std::filesystem::path>&);
   Result<Json> t_upscale_layer(Session&, Step&, const Json&,
@@ -333,6 +343,9 @@ private:
   static media::Crop box_crop_(media::PixelSize content,
                                media::PixelSize frame,
                                const std::array<double, 4>& box);
+  // `to` -- a layer's new box -- with the turn, flips and padding `was`
+  // had: the person's, kept when the agent moves the layer.
+  static media::Crop kept_turn_(const media::Crop& was, media::Crop to);
   Result<std::array<double, 4>> box_(const Json& args,
                                      media::PixelSize frame,
                                      bool line = false);

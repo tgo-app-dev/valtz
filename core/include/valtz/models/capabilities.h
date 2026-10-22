@@ -52,8 +52,13 @@ std::vector<CapabilityStatus>
 resolve_capabilities(const Catalog&, const ModelStore&, const HardwareInfo&,
                      const EngineSupport& engine_runs);
 
+// Whether `e` runs as the assistant here: the RAM it is offered from, and
+// what it reads every token resident in what the GPU keeps.
+bool fits_as_assistant(const ModelEntry& e, const HardwareInfo& hw);
+
 // The assistant LLM for this tier: the best-ranked fitting model, with
-// installed ones preferred (9B on 16 GB, 27B from 24 GB).
+// installed ones preferred (9B on 16 GB, 27B from 24 GB); never one
+// chosen by name alone (catalog `by_name`).
 const ModelEntry* pick_assistant(const Catalog&, const ModelStore&,
                                  const HardwareInfo&);
 

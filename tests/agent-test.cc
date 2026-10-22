@@ -239,6 +239,58 @@ TEST(agent, the_helper_is_handed_the_conversation_as_written)
   CHECK(r.usage["restored"] == "memory");
 }
 
+// A tool call the helper WROTE that its parser read none of -- the 27B's,
+// a JSON object inside a list and a string, its quotes escaped or not;
+// the XML form Qwen's template teaches -- read leniently; one that holds
+// no call at all, none.
+TEST(agent, a_call_written_askew_is_read)
+{
+  const auto turn = [](std::string text) {
+    return Json{{"text", std::move(text)}, {"content", "x"},
+                {"finish", "stop"}, {"tool_calls", Json::array()}};
+  };
+  auto r = agent::reply_from_turn(
+      turn("I'll make it.\n\n<tool_call>\n[\"{\"name\": "
+           "\"create_composition\", \"arguments\": {\"name\": \"Solar\", "
+           "\"pages\": 14}}\"]\n</tool_call>"),
+      2);
+  REQUIRE(r.calls.size() == 1);
+  CHECK(r.calls[0].id == "t2-0");
+  CHECK(r.calls[0].name == "create_composition");
+  CHECK(r.calls[0].arguments["pages"] == 14);
+  CHECK(r.finish == "tool_calls");
+  r = agent::reply_from_turn(
+      turn("<tool_call>\n[\"{\\\"name\\\": \\\"get_project\"}]\n"
+           "</tool_call>"),
+      1);
+  REQUIRE(r.calls.size() == 1);
+  CHECK(r.calls[0].name == "get_project");
+  CHECK(r.calls[0].arguments.empty());
+  r = agent::reply_from_turn(
+      turn("<tool_call>\n<function=add_text>\n<parameter=text>\nMercury\n"
+           "</parameter>\n<parameter=size>\n48\n</parameter>\n</function>\n"
+           "</tool_call>"),
+      1);
+  REQUIRE(r.calls.size() == 1);
+  CHECK(r.calls[0].name == "add_text");
+  CHECK(r.calls[0].arguments["text"] == "Mercury");
+  CHECK(r.calls[0].arguments["size"] == 48);
+  r = agent::reply_from_turn(
+      turn("<tool_call>\n[\"create_composition\", {\"name\": \"Solar\"}]"
+           "\n</tool_call>"),
+      1);
+  REQUIRE(r.calls.size() == 1);
+  CHECK(r.calls[0].name == "create_composition");
+  CHECK(r.calls[0].arguments["name"] == "Solar");
+  r = agent::reply_from_turn(turn("<tool_call>\n[\"name\"]\n</tool_call>"),
+                             1);
+  CHECK(r.calls.empty());
+  r = agent::reply_from_turn(turn("<tool_call>\nI will look.\n</tool_call>"),
+                             1);
+  CHECK(r.calls.empty());
+  CHECK(r.finish == "stop");
+}
+
 // A turn's speed for the person debugging it: the helper's by vpipe's
 // clock, a cloud's counts on Valtz's -- its first words the prefill --
 // and an older vpipe's, which says how long it wrote but not how much.

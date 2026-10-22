@@ -58,7 +58,7 @@
                    "z-image-turbo", "flux3-klein", "flux2-klein-9b",
                    "moss-image-sft", "moss-image-base"],
       "edit": ["qwen-image-2.1", "qwen-image-2.1-turbo", "flux3-klein",
-               "flux2-klein-9b"]
+               "flux2-klein-9b", "fibo2-edit-turbo"]
     },
     "video": {
       "generate": ["minimax-h3-fl2va"],
@@ -135,6 +135,13 @@
       ]
     },
     {
+      "id": "fibo2", "name": "Fibo 2.0",
+      "features": ["image-edit"],
+      "members": [
+        {"model": "fibo2-edit-turbo", "label": "Fibo 2.0 Edit Turbo (8B)"}
+      ]
+    },
+    {
       "id": "yue2", "name": "YuE2",
       "features": ["audio-gen"],
       "members": [
@@ -167,8 +174,10 @@
         {"model": "qwen3.5-9b", "label": "Qwen3.5 9B"},
         {"model": "qwen3.8-27b", "label": "Qwen3.8 27B"},
         {"model": "qwen3.8-27b-4bit", "label": "Qwen3.8 27B (4-bit)"},
+        {"model": "qwen3.8-flash-next", "label": "Qwen3.8 Flash-Next (uncensored)"},
         {"model": "qwen3.8-27b-mtp-4bit", "label": "Qwen3.8 27B MTP drafter"},
-        {"model": "qwen3.8-27b-dflash2", "label": "Qwen3.8 27B DFlash 2 drafter"}
+        {"model": "qwen3.8-27b-dflash2", "label": "Qwen3.8 27B DFlash 2 drafter"},
+        {"model": "qwen3.8-flash-next-dflash2", "label": "Qwen3.8 Flash-Next DFlash 2 drafter"}
       ]
     },
     {
@@ -281,12 +290,46 @@
       "family": "qwen3.5",
       "role": "drafter",
       "hf_path": "incoai/Qwen3.8-27B-DFlash2",
-      "check": {"is": {"config.json": "DFlash2DraftModel"}},
+      "check": {"is": {"config.json": "dflash-5120"}},
       "capabilities": [],
       "disk_gb": 3.8,
       "min_ram_gb": 24,
+      "engine": {"vpipe": {"held_gb": {"8": 2.2, "4": 1.3}}},
       "license": "apache-2.0",
       "notes": "Inco AI's DFlash 2 block drafter for Qwen3.8 27B (five layers, 2B parameters, bf16 on disk): it drafts a block from the model's hidden states, which the model verifies in one forward (vpipe's text-chat draft_model). Held at 8 bits (~2.2 GB) or 4 bits (~1.3 GB) in memory, beside the model's 17 GB (the OptiQ pack's 20.7): an option, not the default (Settings > Agentic Helper > Drafter). Either 27B -- the 4-bit, the OptiQ pack -- drafts with it."
+    },
+    {
+      "id": "qwen3.8-flash-next",
+      "name": "Qwen3.8 Flash-Next (uncensored)",
+      "family": "qwen3.8-flash",
+      "role": "assistant",
+      "hf_path": "mlx-community/Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp",
+      "check": {"is": {"config.json": "qwen4_exp"}},
+      "capabilities": ["prompt-enhance", "intent", "caption", "video-summary"],
+      "disk_gb": 128.6, "disk_measured": true,
+      "min_ram_gb": 64, "resident_gb": 6.8, "rank": 0, "by_name": true,
+      "license": "qwen-community-1.0",
+      "engine": {"vpipe": {"mtp": true,
+                           "dflash_drafter": "qwen3.8-flash-next-dflash2",
+                           "i8_prefill": true,
+                           "sampling": {"temperature": 0.7, "top_p": 0.8, "top_k": 20,
+                                       "min_p": 0.0, "presence_penalty": 1.5,
+                                       "repetition_penalty": 1.0}}},
+      "notes": "Qwen3.8-Flash-Next, a sparse Mixture of Experts that sees (~180B parameters stored: 512 experts a layer, ten read a token, and a 51B-parameter n-gram table), in mlx-community's oQ5e pack of orcarouter's ABLITERATED build -- its safety alignment taken out, so it does what Qwen's own refuses: chosen by name only, never Auto's. 128.6 GB on disk; at least 6.8 GB resident (vpipe's plan with every expert streamed), the routed experts (83 GB) in a cache the size of what is left and the n-gram table (38 GB) read from disk a row at a time -- the drive's speed is the decode's on a Mac that cannot hold them; on 256 GB all but the table load (87 GB wired, 92 GB peak). Its own Lightning MTP head drafts ahead, or -- chosen in Settings > Agentic Helper > Drafter -- the DFlash 2 drafter (vpipe 8d005eca). vpipe 79f954ad. Qwen Community License 1.0."
+    },
+    {
+      "id": "qwen3.8-flash-next-dflash2",
+      "name": "Qwen3.8 Flash-Next DFlash 2 drafter",
+      "family": "qwen3.8-flash",
+      "role": "drafter",
+      "hf_path": "incoai/Qwen3.8-Flash-Next-DFlash2",
+      "check": {"is": {"config.json": "dflash-2560"}},
+      "capabilities": [],
+      "disk_gb": 1.2,
+      "min_ram_gb": 64,
+      "engine": {"vpipe": {"held_gb": {"8": 0.6, "4": 0.35}}},
+      "license": "apache-2.0",
+      "notes": "Inco AI's DFlash 2 block drafter for Qwen3.8-Flash-Next (five layers at its 2560 width, every layer a 2048-token window, bf16 on disk): it reads five of the model's layers -- 5, 15, 25, 35, 45, each averaged over its four residual streams -- drafts a block, and the model checks the block in one pass, keeping the tokens it agrees with: the model's own tokens, faster (vpipe 8d005eca, text-chat draft_model). Held at 8 bits (~0.55 GB and its window caches) or 4 in memory. On vpipe's M4 Pro, the experts cached: 20 tok/s plain, ~31 with it (3.2 tokens a round); a fresh conversation 9.4 against the MTP head's 7.3. On the M5 Ultra (2026-10-21, every expert loaded): 45 tok/s warm, 2.8 a round, against the MTP head's 38-40 (2.5). An option, not the default (Settings > Agentic Helper > Drafter). Apache-2.0."
     },
     {
       "id": "z-image-turbo",
@@ -305,10 +348,14 @@
       "engine": {
         "vpipe": {
           "config_stage": "z-image-model-config",
-          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": { "guidance_scale": 0.0 },
           "scheduler": { "steps": 8, "shift": 3.0, "type": "simple", "shift_type": "linear" },
-          "defaults": { "steps": 8, "width": 1024, "height": 1024 }
+          "defaults": { "steps": 8, "width": 1024, "height": 1024 },
+          "presets": {
+            "speed": { "vae_i8_gemm": true, "vae_i8_gemm_tier": "fast" }
+          }
         }
       },
       "notes": "6B DiT, 8 steps. Streams its F32 checkpoint on 16 GB (46 s at 1024^2 on an M5)."
@@ -331,13 +378,15 @@
       "engine": {
         "vpipe": {
           "config_stage": "flux3-model-config",
-          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "ane_ffn"],
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm",
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn"],
           "config": {},
           "defaults": { "steps": 16, "width": 1024, "height": 1024 },
           "max_edge": 4096,
           "presets": {
             "speed": { "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
-                       "i8_gemm": true },
+                       "i8_gemm": true, "vae_i8_gemm": true,
+                       "vae_i8_gemm_tier": "fast" },
             "balanced": { "sage_attn": true, "i8_gemm": true },
             "quality": { "sol_attn": false, "sage_attn": false,
                          "i8_gemm": false }
@@ -384,12 +433,13 @@
           "negative": "conditioner",
           "config_shift": 5.0,
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
-                    "ane_ffn", "ane_qkv"],
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "defaults": { "steps": 50, "width": 1024, "height": 1024 },
           "presets": {
             "speed": { "steps": 18, "sage_attn": true, "sage_pv8": true,
-                       "i8_gemm": true, "i8_gemm_tier": "token" },
+                       "i8_gemm": true, "i8_gemm_tier": "token",
+                       "vae_i8_gemm": true, "vae_i8_gemm_tier": "fast" },
             "balanced": { "steps": 30, "sage_attn": true, "i8_gemm": true },
             "quality": { "steps": 50, "sol_attn": false, "sage_attn": false,
                          "i8_gemm": false }
@@ -435,12 +485,13 @@
           "negative": "conditioner",
           "config_shift": 5.0,
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
-                    "ane_ffn", "ane_qkv"],
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "defaults": { "steps": 50, "width": 1024, "height": 1024 },
           "presets": {
             "speed": { "steps": 18, "sage_attn": true, "sage_pv8": true,
-                       "i8_gemm": true, "i8_gemm_tier": "token" },
+                       "i8_gemm": true, "i8_gemm_tier": "token",
+                       "vae_i8_gemm": true, "vae_i8_gemm_tier": "fast" },
             "balanced": { "steps": 30, "sage_attn": true, "i8_gemm": true },
             "quality": { "steps": 50, "sol_attn": false, "sage_attn": false,
                          "i8_gemm": false }
@@ -483,9 +534,13 @@
       "engine": {
         "vpipe": {
           "config_stage": "flux2-model-config",
-          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "config": {},
           "defaults": { "steps": 4, "width": 1024, "height": 1024 },
+          "presets": {
+            "speed": { "vae_i8_gemm": true, "vae_i8_gemm_tier": "fast" }
+          },
           "edit": {
             "reference_to_conditioner": false,
             "reference_area": 1048576,
@@ -495,6 +550,47 @@
       },
       "prompting": {"language": "english"},
       "notes": "Multi-reference edit. vpipe's prepare-klein-9b-4bit graph quantizes it to 4-bit (12 GB) after download. Prompted in English: the assistant translates for it."
+    },
+    {
+      "id": "fibo2-edit-turbo",
+      "name": "Fibo 2.0 Edit Turbo",
+      "family": "fibo2",
+      "role": "image",
+      "hf_path": "briaai/Fibo-2.0-edit-turbo",
+      "check": {"is": {"transformer/config.json": "BriaFibo2Transformer2DModel"}},
+      "compress": {"parts": [{"target": "dit"}]},
+      "capabilities": ["image-edit"],
+      "disk_gb": 26, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 2,
+      "preview_with": "taef2",
+      "license": "cc-by-nc-4.0",
+      "gated": true,
+      "engine": {
+        "vpipe": {
+          "config_stage": "fibo2-model-config",
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "config": {},
+          "defaults": { "steps": 4, "width": 1024, "height": 1024 },
+          "steps": { "speed": 4, "balanced": 4, "quality": 4 },
+          "presets": {
+            "speed": { "sage_attn": true, "sage_pv8": true, "i8_gemm": true,
+                       "i8_gemm_tier": "token", "vae_i8_gemm": true,
+                       "vae_i8_gemm_tier": "fast" },
+            "balanced": { "sage_attn": true, "i8_gemm": true },
+            "quality": { "sol_attn": false, "sage_attn": false,
+                         "i8_gemm": false }
+          },
+          "edit": {
+            "reference_to_conditioner": true,
+            "reference_fit": "trained_size",
+            "trained_area": 1048576,
+            "max_references": 5
+          }
+        }
+      },
+      "prompting": {"language": "english", "reference_tag": "image_{n}"},
+      "notes": "Bria's 8B DiT (Z-Image's block, a Perceiver squeezing the words into 256-512 gist tokens, five blocks cross-attending their own text bundle), distilled to edit in 4 steps with no guidance: an instruction, or a JSON object with an edit_instruction and a structured_caption of the result; up to five pictures, named image_1, image_2, ... Editing only (Bria's text-to-image model is Fibo 2.0 Dev, not run). Its text encoder Qwen3-VL-4B reads the words and the pictures (thumbnailed to 768 a side); fifteen of its layers condition the DiT. Trained at about one megapixel: each picture is cropped to the trained size of its shape (1024 x 1024, 1152 x 864, 1248 x 832, 1424 x 800, 1568 x 672, ...), the result at the first's. Its VAE is FLUX.2's (its int8 in Custom and Fast); its live preview FLUX.2's TAE (FLUX klein's). Streams on 16 GB: a 1024^2 edit 101 s at int8 Per Token on a base M5, 100 s dense on an M4 Pro (vpipe 17c53d63). Gated on Hugging Face; CC BY-NC 4.0, non-commercial."
     },
     {
       "id": "krea2-turbo",

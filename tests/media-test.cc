@@ -592,6 +592,39 @@ TEST(media, exif_block_is_upright_at_the_result_size)
 // A crop is data: the identity writes nothing, values survive a round
 // trip (held to sane ranges), and the placement puts the content where
 // the definition says -- in Core Image's frame (y up).
+TEST(media, a_negative_zoom_flips_the_picture)
+{
+  // Kept as written, held to its range either way; none at all is the
+  // least, not nothing.
+  CHECK(media::crop_from_json({{"scale_x", -1.0}}).scale_x == -1);
+  CHECK(media::crop_from_json({{"scale_y", -1e9}}).scale_y == -100);
+  CHECK(media::crop_from_json({{"scale_x", 0.0}}).scale_x == 0.01);
+  CHECK(media::held_zoom(-0.001) == -0.01);
+  // Flipped across: the content's left edge lands on the canvas's right,
+  // its centre where it was.
+  media::Crop c;
+  c.content = {800, 600};
+  c.scale_x = -1;
+  auto p = media::crop_placement(c, 800, 600);
+  auto at = [&](double x, double y) {
+    const auto& m = p.transform;
+    return std::pair{m.a * x + m.c * y + m.tx, m.b * x + m.d * y + m.ty};
+  };
+  CHECK(std::abs(at(0, 300).first - 800) < 1e-9);
+  CHECK(std::abs(at(400, 300).first - 400) < 1e-9);
+  CHECK(std::abs(at(400, 0).second - 0) < 1e-9);  // not upside down
+  // Keyed from 1 to -1, it turns over -- held off nothing on its way.
+  const auto k = media::keyed_crop_from_json(
+      {{"keys", Json::array({{{"frame", 0}, {"scale_x", 1.0}},
+                             {{"frame", 48}, {"scale_x", -1.0}}})},
+       {"rate_num", 24}, {"rate_den", 1}});
+  CHECK(std::abs(k.at(12).scale_x - 0.5) < 1e-9);
+  CHECK(k.at(48).scale_x == -1);
+  c.scale_x = k.at(24).scale_x;
+  p = media::crop_placement(c, 800, 600);
+  CHECK(std::abs(p.transform.a) >= 0.01 - 1e-12);
+}
+
 TEST(media, crop_is_data_and_places_the_content)
 {
   media::Crop id;

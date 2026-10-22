@@ -248,6 +248,9 @@ struct HelperList: Decodable, Sendable {
         var name: String
         var state: String
         var diskGb: Double?
+        /// A DFlash 2 drafter's memory beside the model, GB, by the bits
+        /// it is held at ("8", "4").
+        var heldGb: [String: Double]?
     }
 
     /// The sampler its chat decodes with (catalog engine.vpipe.sampling,

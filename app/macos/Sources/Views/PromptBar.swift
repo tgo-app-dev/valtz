@@ -143,7 +143,7 @@ struct PromptBar: View {
         if model.isGenerating {
             Button(action: model.stop) {
                 HStack(spacing: 6) {
-                    ProgressView(value: model.generationPhase?.fraction)
+                    PhaseBar(fraction: model.generationPhase?.fraction)
                         .progressViewStyle(.circular)
                         .controlSize(.mini)
                     Text("Stop")

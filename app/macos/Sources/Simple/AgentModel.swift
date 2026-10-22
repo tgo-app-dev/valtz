@@ -15,7 +15,7 @@ extension AppModel {
         let words = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !words.isEmpty else { return }
         if let a = agent, a.project == projectId, !a.ended {
-            let r = core.agentSay(a.agent, words)
+            let r = core.agentSay(a.agent, words, stage: agentStage)
             guard r.ok else { flash(r.message, level: .error); return }
             clearAgentPrompt()
             return
@@ -27,6 +27,7 @@ extension AppModel {
             "review": agentSettings?.review ?? true,
         ]
         if let c = activeComposition { req["composition"] = c.id }
+        req["stage"] = agentStage
         let r = core.agentStart(req)
         guard r.ok, let id = r["agent"] as? String else {
             flash(r.message, level: .error)
@@ -43,11 +44,36 @@ extension AppModel {
         reloadAgent()
     }
 
+    /// Where the person is as they speak -- "this page", "the current
+    /// frame", "the selected layer": the active composition, and when the
+    /// stage shows it (no task watched, nothing viewed), its page or the
+    /// player's frame, the selected layer and its selected objects. The
+    /// core tells the model with the words; it cannot ask the app.
+    var agentStage: [String: Any] {
+        guard let c = activeComposition else { return [:] }
+        var s: [String: Any] = ["composition": c.id]
+        guard generationJob == nil, viewedAsset == nil,
+              stageStack?.id == c.id else { return s }
+        if pagedOnStage { s["page"] = stagePage + 1 }
+        if clipOnStage { s["frame"] = videoFrame }
+        s["layer"] = activeLayer
+        if markupOpen, !markup.selectedIds.isEmpty {
+            s["objects"] = Array(markup.selectedIds).sorted()
+        }
+        return s
+    }
+
     /// The box emptied of the words just sent (its media stay: the row is
     /// the agent's to use) -- the text view too, by the revision: the
     /// model's words alone emptied left them in the view, under the empty
     /// box's grey hint.
     private func clearAgentPrompt() {
+        // What it was asked: the agent's box comes back with it after
+        // another target's (AppModel.promptHistory).
+        agentWordsSent = PromptWords(prompt: prompt, marked: promptMarked,
+                                     mentions: promptMentions,
+                                     assetId: promptAssetId,
+                                     name: promptName)
         promptMarked = ""
         promptMentions = []
         setPrompt("")
@@ -240,6 +266,7 @@ extension AppModel {
         case "add_text": String(localized: "Add Text")
         case "add_shape": String(localized: "Add Shape")
         case "update_object": String(localized: "Change Text or Shape")
+        case "move_objects": String(localized: "Move Texts and Shapes")
         case "remove_object": String(localized: "Remove Text or Shape")
         case "arrange_objects": String(localized: "Arrange Texts and Shapes")
         case "draw_strokes": String(localized: "Draw with the Brush")

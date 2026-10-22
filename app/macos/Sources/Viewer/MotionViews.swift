@@ -75,6 +75,11 @@ struct VideoPlayerView: NSViewRepresentable {
     let url: URL
     var loops = false
     var autoplay = true
+    /// Its sound off as it starts (a generated clip played by itself,
+    /// Settings say so); the player's own volume turns it on.
+    var muted = false
+    /// The player last attached (the snapshot summary's `videoMuted=`).
+    @MainActor static weak var shownPlayer: AVPlayer?
     var rate = FrameRate.fallback
     var command: VideoCommand? = nil
     /// Drawn on every frame; a change draws the frame on screen again.
@@ -88,6 +93,8 @@ struct VideoPlayerView: NSViewRepresentable {
     var controls = true
     var core: CoreService? = nil
     var onFrame: (Int) -> Void = { _ in }
+    /// Its last frame, once known: what Grab Frame goes no further than.
+    var onLastFrame: (Int) -> Void = { _ in }
     var onRate: (Float) -> Void = { _ in }
     /// The title bar's zoom asked so far (ClipZoomView); nil, no zoom:
     /// the Prompt Editor's small stage.
@@ -129,6 +136,7 @@ struct VideoPlayerView: NSViewRepresentable {
         var ended: NSObjectProtocol?
         var timeObserver: Any?
         var onFrame: (Int) -> Void = { _ in }
+        var onLastFrame: (Int) -> Void = { _ in }
         var lastFrame = -1
         /// The clip's last frame, from its PICTURE's length (a soundtrack
         /// may run longer); nil until the track has been read. The
@@ -435,6 +443,7 @@ struct VideoPlayerView: NSViewRepresentable {
         }
         c.loops = loops
         c.onFrame = onFrame
+        c.onLastFrame = onLastFrame
         c.onRate = onRate
         defer { applyCommand(c) }
         let lookChanged = !c.lookKnown || c.look != look
@@ -465,6 +474,8 @@ struct VideoPlayerView: NSViewRepresentable {
             // where it was, playing or paused.
             let resume = c.url == url ? c.player?.currentTime() : nil
             let playing = (c.player?.rate ?? 0) != 0
+            // Muted it stays so (a generated clip started muted).
+            let wasMuted = c.player?.isMuted ?? false
             c.stop()
             c.url = url
             c.stackShape = stack.shape
@@ -482,6 +493,7 @@ struct VideoPlayerView: NSViewRepresentable {
                                                             room: room),
                       let c, c.stackShape == stack.shape else { return }
                 attach(item, to: v, c, rate: stack.rate, autoplay: autoplay,
+                       muted: resume == nil ? muted : wasMuted,
                        lastIndex: max(0, stack.frames - 1), at: resume)
                 // A request that came with the new stack -- the player
                 // was being made: it goes to the new one, not lost.
@@ -491,6 +503,7 @@ struct VideoPlayerView: NSViewRepresentable {
         }
         var resume: CMTime?
         var playing = false
+        let wasMuted = c.player?.isMuted ?? false
         // The same file counted at another rate -- a sound's milliseconds,
         // known only once its asset is: its frames reported again at
         // that rate, from where it is.
@@ -517,7 +530,8 @@ struct VideoPlayerView: NSViewRepresentable {
         let item = AVPlayerItem(asset: AVURLAsset(url: url))
         c.lastIndex = nil
         attach(item, to: v, c, rate: rate,
-               autoplay: resume == nil ? autoplay : playing, lastIndex: nil,
+               autoplay: resume == nil ? autoplay : playing,
+               muted: resume == nil ? muted : wasMuted, lastIndex: nil,
                at: resume)
         // Every frame through the look (Core Image).
         c.recompose()
@@ -528,6 +542,7 @@ struct VideoPlayerView: NSViewRepresentable {
     /// is known (else read from the item's picture).
     private func attach(_ item: AVPlayerItem, to v: AVPlayerView,
                         _ c: Coordinator, rate: FrameRate, autoplay: Bool,
+                        muted: Bool = false,
                         lastIndex: Int?, at resume: CMTime? = nil) {
         let asset = item.asset
         let player = AVPlayer(playerItem: item)
@@ -544,6 +559,7 @@ struct VideoPlayerView: NSViewRepresentable {
         if let known = lastIndex {
             // A stack's timeline: as long as it was made.
             c.lastIndex = known
+            c.onLastFrame(known)
             item.forwardPlaybackEndTime = c.start(of: known + 1)
         } else { Task { @MainActor [weak c] in
             // A sound has no picture: its own track ends it.
@@ -556,8 +572,24 @@ struct VideoPlayerView: NSViewRepresentable {
                   let range = try? await track.load(.timeRange),
                   range.end.isNumeric,
                   let c, c.player?.currentItem === item else { return }
-            c.lastIndex = max(0, rate.frame(
+            var last = max(0, rate.frame(
                 at: range.end.seconds - 0.5 / rate.fps))
+            // A picture's last frame by its own time, where the file
+            // says it: a track a little longer than its frames held the
+            // playhead on one that does not exist -- shown as the last,
+            // grabbed as nothing.
+            if let picture,
+               (try? await picture.load(.canProvideSampleCursors)) == true,
+               let cursor = picture.makeSampleCursor(
+                   presentationTimeStamp: range.end) {
+                let at = CMTimeSubtract(cursor.presentationTimeStamp,
+                                        range.start).seconds
+                if at.isFinite {
+                    last = min(last, max(0, Int((at * rate.fps).rounded())))
+                }
+            }
+            c.lastIndex = last
+            c.onLastFrame(last)
             item.forwardPlaybackEndTime = range.end
             // Its frame upright, in pixels: what 1:1 is. A sound has
             // none to zoom.
@@ -633,7 +665,13 @@ struct VideoPlayerView: NSViewRepresentable {
             player.seek(to: resume, toleranceBefore: .zero,
                         toleranceAfter: .zero)
         }
+        player.isMuted = muted
+        Self.shownPlayer = player
         if autoplay { player.play() }
+        if TimelineNSView.tracing {
+            print("snapshot: player-attach autoplay=\(autoplay) "
+                  + "muted=\(muted) resume=\(resume != nil)")
+        }
     }
 
     /// Every frame of `asset` through `box`'s look.

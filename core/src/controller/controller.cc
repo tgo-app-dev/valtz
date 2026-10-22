@@ -4151,12 +4151,8 @@ Controller::assistants() const
       continue;
     }
     const Json vp = jget(e->engine, "vpipe", Json::object());
-    // pick_assistant's measure: the RAM it is offered from, and every
-    // weight resident in what the GPU keeps.
-    const bool fits =
-        _hw.ram_gb() >= e->min_ram_gb &&
-        (_hw.gpu_working_set_bytes == 0 ||
-         e->disk_gb * 1e9 <= static_cast<double>(_hw.gpu_working_set_bytes));
+    // pick_assistant's measure.
+    const bool fits = models::fits_as_assistant(*e, _hw);
     Json row = {{"id", e->id},
                 {"name", e->name},
                 {"state", models::to_str(_store->info(*e).state)},
@@ -4164,6 +4160,7 @@ Controller::assistants() const
                 {"disk_gb", e->disk_gb},
                 {"min_ram_gb", e->min_ram_gb},
                 {"rank", e->rank},
+                {"by_name", e->by_name},
                 {"mtp", jget(vp, "mtp", true)},
                 {"sampling", jget(vp, "sampling", Json::object())}};
     // Its context: its own, what this Mac's memory holds (Auto), and
@@ -4183,10 +4180,15 @@ Controller::assistants() const
     }
     if (const auto* d = _catalog.find(
             jget<std::string>(vp, "dflash_drafter", ""))) {
+      // What it holds beside the model at 8 and 4 bits (catalog
+      // engine.vpipe.held_gb): the Drafter pop-up's sizes.
       row["dflash"] = {{"id", d->id},
                        {"name", d->name},
                        {"state", models::to_str(_store->info(*d).state)},
-                       {"disk_gb", d->disk_gb}};
+                       {"disk_gb", d->disk_gb},
+                       {"held_gb", jget(jget(d->engine, "vpipe",
+                                             Json::object()),
+                                        "held_gb", Json::object())}};
     }
     list.push_back(std::move(row));
   }
@@ -4256,6 +4258,10 @@ Controller::helper_params_(const models::ModelEntry& m) const
   Json p = {{"mtp", assistant_mtp(m)},
             {"sampling", jget(vp, "sampling", Json::object())},
             {"keep_loaded", _assistant_keep}};
+  // A long prompt's GEMMs in int8 where the catalog asks (engine.vpipe.
+  // i8_prefill: Flash-Next's): a prefill of 1,024 rows or more, lossy as
+  // a prefill may be; a decode step and a verify untouched.
+  if (jget(vp, "i8_prefill", false)) { p["i8_prefill"] = true; }
   // Its whole context where this Mac holds it (Qwen3.5's and 3.8's
   // 262,144): an agent's long session runs to the model's limit, not
   // ours. Its K/V grows as it fills.
@@ -6156,8 +6162,9 @@ Controller::upscale_(const AssetOpRequest& req, project::Project& p,
   }
   const media::Crop c = keys.place.at(0);
   const media::PixelSize from{v.info.frame.width, v.info.frame.height};
-  const double sx = std::max(1.0, c.scale_x);
-  const double sy = std::max(1.0, c.scale_y);
+  // Its size either way: a flip is not a scale.
+  const double sx = std::max(1.0, std::abs(c.scale_x));
+  const double sy = std::max(1.0, std::abs(c.scale_y));
   if ((sx <= 1.0 && sy <= 1.0) || from.width <= 0 || from.height <= 0) {
     return make_error(Code::InvalidArgument, msg::kUpscaleNotScaled,
                       {{"name", src.name}});

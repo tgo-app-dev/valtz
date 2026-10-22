@@ -236,6 +236,33 @@ TEST(models, assistant_follows_memory_tier)
   CHECK(pick_assistant(*c, both, pro)->id == "qwen3.5-9b");
 }
 
+TEST(models, an_abliterated_helper_is_chosen_by_name_alone)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const ModelEntry* fn = c->find("qwen3.8-flash-next");
+  REQUIRE(fn);
+  CHECK(fn->by_name);
+  // 128.6 GB on disk, 6.8 held at least: a 64 GB Mac whose GPU keeps 48
+  // runs it -- its experts from a cache -- a 32 GB one does not.
+  HardwareInfo m64 = box(64);
+  m64.gpu_working_set_bytes = std::uint64_t{48} << 30;
+  CHECK(fits_as_assistant(*fn, m64));
+  HardwareInfo m32 = box(32);
+  m32.gpu_working_set_bytes = std::uint64_t{24} << 30;
+  CHECK(!fits_as_assistant(*fn, m32));
+  // The only helper installed, on tgo-m5-3's 256 GB: still never Auto's.
+  auto root = test::temp_dir("models-by-name");
+  fake_install(root, *fn);
+  ModelStore store({root});
+  HardwareInfo ultra = box(256);
+  ultra.gpu_working_set_bytes = std::uint64_t{192} << 30;
+  const ModelEntry* a = pick_assistant(*c, store, ultra);
+  REQUIRE(a);
+  CHECK(a->id != fn->id);
+  CHECK(a->id == "qwen3.8-27b");
+}
+
 TEST(models, capability_resolution)
 {
   auto c = Catalog::builtin();
@@ -308,7 +335,8 @@ TEST(models, auto_order_is_catalog_data)
                                   "moss-image-sft", "moss-image-base"}));
   CHECK((c->auto_order("image", "edit") ==
          std::vector<std::string>{"qwen-image-2.1", "qwen-image-2.1-turbo",
-                                  "flux3-klein", "flux2-klein-9b"}));
+                                  "flux3-klein", "flux2-klein-9b",
+                                  "fibo2-edit-turbo"}));
   CHECK((c->auto_order("video", "generate") ==
          std::vector<std::string>{"minimax-h3-fl2va"}));
   CHECK((c->auto_order("video", "edit") ==
@@ -1285,15 +1313,73 @@ TEST(models, the_codecs_int8_is_a_switch_and_a_tier)
     v = resolve_tuning(m, m4, "speed", false, {{"vae_i8_gemm", true}});
     CHECK(v["vae_i8_gemm"] == false);
   }
+  // FLUX.2's 2D VAE -- FLUX.2 klein's, FLUX.3's, Z-Image's, MOSS-Image's,
+  // Fibo 2.0's -- takes it too (vpipe eeec3c5c): offered, Fast at Fast on
+  // an M5, nothing before one.
+  for (const char* id : {"flux2-klein-9b", "flux3-klein", "z-image-turbo",
+                         "moss-image-sft", "moss-image-base",
+                         "fibo2-edit-turbo"}) {
+    const ModelEntry& m = *c->find(id);
+    const bool edit = std::string_view(id) == "fibo2-edit-turbo";
+    const Json listed = tuning_options(m, m5, "speed", edit);
+    CHECK(opt(listed, "vae_i8_gemm")["available"] == true);
+    CHECK(opt(listed, "vae_i8_gemm_tier")["needs"] == "vae_i8_gemm");
+    for (const char* p : {"speed", "balanced", "quality"}) {
+      const bool fast = std::string_view(p) == "speed";
+      const Json v = resolve_tuning(m, m5, p, edit);
+      CHECK(v["vae_i8_gemm"] == fast);
+      CHECK(v["vae_i8_gemm_tier"] == (fast ? "fast" : "accurate"));
+      CHECK(resolve_tuning(m, m4, p, edit)["vae_i8_gemm"] == false);
+    }
+  }
   // A codec without vpipe's int8 is offered none.
-  for (const char* id : {"krea2-turbo", "flux2-klein-9b", "z-image-turbo",
-                         "minimax-h3-fl2va", "flux3-klein"}) {
+  for (const char* id : {"krea2-turbo", "minimax-h3-fl2va"}) {
     const ModelEntry& m = *c->find(id);
     CHECK(opt(tuning_options(m, m5, "balanced", false),
               "vae_i8_gemm").is_null());
     CHECK(!resolve_tuning(m, m5, "balanced", false, {{"vae_i8_gemm", true}})
                .contains("vae_i8_gemm"));
   }
+}
+
+// Fibo 2.0 Edit Turbo (vpipe 17c53d63): an edit model alone -- gated,
+// non-commercial, a family of its own -- in its own 4 steps at every
+// preference, the int8 tiers on Fast and Med on an M5, nothing of the
+// matrix cores before one (the ANE lent there, as to every picture DiT).
+TEST(models, fibo2_edits_in_four_steps)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const ModelEntry* m = c->find("fibo2-edit-turbo");
+  REQUIRE(m);
+  CHECK(m->family == "fibo2");
+  CHECK(m->has(Capability::ImageEdit));
+  CHECK(!m->has(Capability::TextToImage));
+  CHECK(m->hf_path == "briaai/Fibo-2.0-edit-turbo");
+  CHECK(m->gated);
+  CHECK(m->license == "cc-by-nc-4.0");
+  CHECK(m->min_ram_gb == 16);
+  TuningContext m5;
+  m5.matrix_cores = true;
+  TuningContext m4;
+  for (const char* p : {"speed", "balanced", "quality"}) {
+    const Json v = resolve_tuning(*m, m5, p, true);
+    CHECK(v["steps"] == 4);
+    CHECK(v["i8_gemm"] == (std::string_view(p) != "quality"));
+    CHECK(v["sage_attn"] == (std::string_view(p) != "quality"));
+  }
+  const Json fast = resolve_tuning(*m, m5, "speed", true);
+  CHECK(fast["i8_gemm_tier"] == "token" && fast["sage_pv8"] == true);
+  const Json before = resolve_tuning(*m, m4, "speed", true);
+  CHECK(before["i8_gemm"] == false && before["sage_attn"] == false);
+  bool found = false;
+  for (const auto& f : c->families()) {
+    if (f.id == "fibo2") {
+      found = f.members.size() == 1 &&
+              f.members[0].model == "fibo2-edit-turbo";
+    }
+  }
+  CHECK(found);
 }
 
 // The LoRA list: eight on at most, the first in list order (vpipe's
@@ -1737,6 +1823,45 @@ TEST(models, a_draw_things_model_is_checked)
 // FISH AUDIO DRAMA 3: a family of its own, its two checkpoints -- the
 // FP8 release and its int4 -- each a speech model of 16 speakers that
 // takes no length, told apart by how their weights are stored.
+// DFlash 2's drafters for Qwen3.8 27B and for Flash-Next are one class,
+// told apart by their width -- each model names its own, and a link of
+// one for the other is refused.
+TEST(models, the_dflash_drafters_are_told_apart_by_their_width)
+{
+  namespace fs = std::filesystem;
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const auto* d27 = c->find("qwen3.8-27b-dflash2");
+  const auto* dfn = c->find("qwen3.8-flash-next-dflash2");
+  const auto* next = c->find("qwen3.8-flash-next");
+  REQUIRE(d27 && dfn && next);
+  CHECK(dfn->role == "drafter" && dfn->hf_path ==
+                                      "incoai/Qwen3.8-Flash-Next-DFlash2");
+  CHECK(jget<std::string>(jget(next->engine, "vpipe", Json::object()),
+                          "dflash_drafter", "") == dfn->id);
+  CHECK(jget(jget(jget(dfn->engine, "vpipe", Json::object()), "held_gb",
+                  Json::object()), "8", 0.0) == 0.6);
+  const auto root = test::temp_dir("models-dflash");
+  auto fake = [&](const fs::path& dir, int width) {
+    fs::create_directories(dir);
+    std::ofstream(dir / "config.json")
+        << R"({"architectures": ["DFlash2DraftModel"], "model_type": )"
+           R"("qwen3", "dflash_config": {"block_size": 8}, )"
+           R"("hidden_size": )" << width << "}";
+    write_safetensors(dir / "model.safetensors", {{"fc.weight", {4, 4}}});
+  };
+  const fs::path a = root / "incoai" / "Qwen3.8-Flash-Next-DFlash2";
+  const fs::path b = root / "incoai" / "Qwen3.8-27B-DFlash2";
+  fake(a, 2560);
+  fake(b, 5120);
+  CHECK(check_model(*dfn, a, &*c).confirmed);
+  CHECK(check_model(*d27, b, &*c).confirmed);
+  const ModelCheck wrong = check_model(*d27, a, &*c);
+  CHECK(!wrong.usable);
+  CHECK(note_keys(wrong).front() == "core.check_wrong_model");
+  CHECK(!check_model(*dfn, b, &*c).usable);
+}
+
 TEST(models, drama3_s_two_checkpoints_are_told_apart)
 {
   namespace fs = std::filesystem;
@@ -2008,7 +2133,8 @@ TEST(models, moss_image_offers_its_steps_guidance_and_shift)
     CHECK(g["type"] == "real");
     CHECK(jget(g, "declared", false));
     CHECK(opt(listed, "i8_gemm_tier").is_object());
-    CHECK(!opt(listed, "vae_i8_gemm").is_object());
+    // Its VAE is FLUX.2's small decoder: the codec's int8 too (eeec3c5c).
+    CHECK(opt(listed, "vae_i8_gemm").is_object());
     const Json fine = resolve_tuning(*m, m5, "quality", false);
     const Json med = resolve_tuning(*m, m5, "balanced", false);
     const Json fast = resolve_tuning(*m, m5, "speed", false);

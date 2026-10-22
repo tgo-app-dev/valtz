@@ -40,6 +40,34 @@ is_timeline(const project::Asset& a)
   return a.cls == AssetClass::Composition;
 }
 
+// A flat or generated clip or sound with content: what the scissors cut.
+bool
+raw_timed(const project::Asset& a)
+{
+  return (a.cls == AssetClass::Flat || a.cls == AssetClass::Generated) &&
+         (a.kind == AssetKind::Video || a.kind == AssetKind::Audio) &&
+         a.head != 0;
+}
+
+// A PART the scissors made: a timeline of one plain layer showing a raw
+// clip or sound from its start -- no look, no canvas of its own, no
+// length set -- so a cut in it is a cut in that source.
+const project::Layer*
+part_layer(project::Project& p, const project::Asset& a)
+{
+  if (!is_timeline(a) || a.layers.size() != 1 || !a.modifiers.empty() ||
+      a.canvas.set() || a.timeline_frames > 0 || !a.transitions.empty()) {
+    return nullptr;
+  }
+  const project::Layer& l = a.layers.front();
+  if (!l.source || !l.visible || l.mask || l.time.offset != 0 ||
+      l.time.duration != 0) {
+    return nullptr;
+  }
+  auto s = p.asset(*l.source);
+  return s.ok() && raw_timed(*s) ? &l : nullptr;
+}
+
 // What it is when shown: a clip (a clip, a composition with a frame), a
 // sound (a sound, a composition of sound alone) -- else a picture.
 bool
@@ -270,21 +298,24 @@ then(const media::Affine& first, const media::Affine& second)
 }
 
 // The crop that places `content` on `frame` by `m` -- none when `m`
-// skews or flips (a stretch under a turn): a crop scales its own axes,
-// then turns.
+// skews (a stretch under a turn): a crop scales its own axes, then
+// turns. A flip is a zoom down of -1 (one across is that turned half
+// round).
 std::optional<media::Crop>
 crop_for(const media::Affine& m, media::PixelSize content,
          media::PixelSize frame)
 {
   const double sx = std::hypot(m.a, m.b);
-  const double sy = std::hypot(m.c, m.d);
-  if (sx <= 0 || sy <= 0) {
+  if (sx <= 0) {
     return std::nullopt;
   }
-  // Columns (a, b) = sx (cos, -sin) and (c, d) = sy (sin, cos).
+  // Columns (a, b) = sx (cos, -sin) and (c, d) = sy (sin, cos), sy
+  // negative for a flip.
   const double co = m.a / sx;
   const double si = -m.b / sx;
-  if (std::abs(m.c / sy - si) > 1e-6 || std::abs(m.d / sy - co) > 1e-6) {
+  const double sy = m.c * si + m.d * co;
+  if (std::abs(sy) <= 0 || std::abs(m.c - sy * si) > 1e-6 * std::abs(sy) ||
+      std::abs(m.d - sy * co) > 1e-6 * std::abs(sy)) {
     return std::nullopt;
   }
   media::Crop c;
@@ -2764,6 +2795,40 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
   // A clip in a composition of sound gives its sound alone, marked in
   // milliseconds as any sound there is.
   const bool clip_sound = sound_only && s.kind == AssetKind::Video;
+  // A PART the scissors made is its clip itself, between the part's
+  // marks -- never drawn into a movie of its own: a cut of a long clip
+  // had each part encoded whole before the timeline played (the
+  // scissors' wait was the clip's length, the app's beachball).
+  if (const project::Layer* in = part_layer(p, s)) {
+    VALTZ_ASSIGN(project::Asset raw, p.asset(*in->source));
+    VALTZ_ASSIGN(t.file, p.media_path(raw.id, in->source_version));
+    VALTZ_ASSIGN(project::AssetVersion v,
+                 p.version(raw.id, in->source_version));
+    // A part of sound (a composition of sound alone) is a sound,
+    // whatever it shows; marked in milliseconds, as any sound there is.
+    const bool heard = clip_sound || s.kind == AssetKind::Audio;
+    t.video = raw.kind == AssetKind::Video && !heard;
+    t.audio_only = raw.kind == AssetKind::Audio || heard;
+    t.seconds = seconds_of(v, t.video);
+    t.mark_rate = t.video && v.info.frame_rate.num > 0
+                      ? v.info.frame_rate : Rational{1000, 1};
+    // The part's own marks: the clip's frames, a sound's milliseconds.
+    const bool fps = raw.kind == AssetKind::Video &&
+                     s.kind != AssetKind::Audio &&
+                     v.info.frame_rate.num > 0;
+    const Rational ir = in->time.rate.num > 0
+                            ? in->time.rate
+                            : fps ? v.info.frame_rate : Rational{1000, 1};
+    const double k = t.mark_rate.to_double() / ir.to_double();
+    if (in->time.in >= 0) {
+      t.span_in = std::llround(static_cast<double>(in->time.in) * k);
+    }
+    if (in->time.out >= 0) {
+      t.span_out = std::llround(
+                       static_cast<double>(in->time.out + 1) * k) - 1;
+    }
+    return t;
+  }
   if (s.cls == AssetClass::Composition) {
     const Rational r = rate_of_(p, s);
     VALTZ_ASSIGN(std::int64_t n, length_of_(pid, s.id, depth + 1));
@@ -2828,6 +2893,31 @@ Controller::length_of_(ProjectId pid, AssetId aid, int depth)
   return media::timeline_frames(m, rate_of_(*p, a));
 }
 
+media::LayerTiming
+Controller::timing_over_(const project::LayerTime& t, const TimedSource& src,
+                         Rational rate, media::KeyedSpeed speed)
+{
+  const Rational marks = t.rate.num > 0 ? t.rate : src.mark_rate;
+  if (src.span_in < 0 && src.span_out < 0) {
+    return media::resolve_timing(t.offset, t.duration, t.in, t.out, marks,
+                                 rate, src.seconds, std::move(speed));
+  }
+  // A part shown as its clip: the layer's marks -- the part's own frames
+  // -- counted from its span's start, cut at its end.
+  const double k = src.mark_rate.to_double() / marks.to_double();
+  const std::int64_t from = std::max<std::int64_t>(0, src.span_in);
+  const auto at = [&](std::int64_t f) {
+    return std::llround(static_cast<double>(f) * k);
+  };
+  const std::int64_t in = from + (t.in >= 0 ? at(t.in) : 0);
+  std::int64_t out = t.out >= 0 ? from + at(t.out + 1) - 1 : src.span_out;
+  if (src.span_out >= 0) {
+    out = std::min(out, src.span_out);
+  }
+  return media::resolve_timing(t.offset, t.duration, in, out, src.mark_rate,
+                               rate, src.seconds, std::move(speed));
+}
+
 Result<media::MovieStack>
 Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
                          const std::optional<LiveTracks>& live, int depth,
@@ -2874,11 +2964,7 @@ Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
     ml.drawn = src.drawn;
     ml.video = src.video;
     ml.audio_only = src.audio_only;
-    const project::LayerTime& t = l.time;
-    ml.timing = media::resolve_timing(
-        t.offset, t.duration, t.in, t.out,
-        t.rate.num > 0 ? t.rate : src.mark_rate, rate, src.seconds,
-        speed_keys_of(a, l.id));
+    ml.timing = timing_over_(l.time, src, rate, speed_keys_of(a, l.id));
     index[l.id] = m.layers.size();
     m.layers.push_back(std::move(ml));
   }
@@ -3416,34 +3502,6 @@ Controller::instantiate(ProjectId pid, AssetId asset,
 }
 
 namespace {
-
-// A flat or generated clip or sound with content: what the scissors cut.
-bool
-raw_timed(const project::Asset& a)
-{
-  return (a.cls == AssetClass::Flat || a.cls == AssetClass::Generated) &&
-         (a.kind == AssetKind::Video || a.kind == AssetKind::Audio) &&
-         a.head != 0;
-}
-
-// A PART the scissors made: a timeline of one plain layer showing a raw
-// clip or sound from its start -- no look, no canvas of its own, no
-// length set -- so a cut in it is a cut in that source.
-const project::Layer*
-part_layer(project::Project& p, const project::Asset& a)
-{
-  if (!is_timeline(a) || a.layers.size() != 1 || !a.modifiers.empty() ||
-      a.canvas.set() || a.timeline_frames > 0 || !a.transitions.empty()) {
-    return nullptr;
-  }
-  const project::Layer& l = a.layers.front();
-  if (!l.source || !l.visible || l.mask || l.time.offset != 0 ||
-      l.time.duration != 0) {
-    return nullptr;
-  }
-  auto s = p.asset(*l.source);
-  return s.ok() && raw_timed(*s) ? &l : nullptr;
-}
 
 // A layer's modifier for a layer that starts where it is cut: its one
 // key, if any, at its own first frame (a track keyed once holds its
@@ -4064,9 +4122,20 @@ Controller::grab_frame(ProjectId pid, AssetId asset, std::int64_t frame,
                new_composition_(pid, *p, AssetClass::Still, size, {0, 1},
                                 name.empty() ? a.name : name, a.folder));
   VALTZ_ASSIGN(auto placed, instantiate(pid, asset, still));
+  // No further than its last picture: by its own time for a clip as it
+  // is -- a count made from its track's length (one probed before) may
+  // hold a frame more than it shows, and a grab there drew nothing.
+  std::int64_t last = std::max<std::int64_t>(0, have.first - 1);
+  if (!is_comp(a)) {
+    if (auto file = p->media_path(a.id, 0); file.ok()) {
+      if (const auto shown = media::last_picture_frame(*file, have.second);
+          shown >= 0) {
+        last = std::min(last, shown);
+      }
+    }
+  }
   project::LayerTime t;
-  t.in = std::clamp<std::int64_t>(frame, 0,
-                                  std::max<std::int64_t>(0, have.first - 1));
+  t.in = std::clamp<std::int64_t>(frame, 0, last);
   t.rate = have.second;
   VALTZ_TRY(set_layer_time(pid, still, placed.second, t));
   return still;
@@ -4215,10 +4284,10 @@ Controller::decompose(ProjectId pid, AssetId aid, const std::string& layer)
           if (n.time.duration == 0 || n.time.duration > room) {
             VALTZ_ASSIGN(TimedSource ts, timed_source_(pid, *p, k, true,
                                                        inner_own, 0));
-            const auto lt = media::resolve_timing(
-                0, n.time.duration, n.time.in, n.time.out,
-                n.time.rate.num > 0 ? n.time.rate : ts.mark_rate, rate,
-                ts.seconds, speed_keys_of(src, k.id));
+            project::LayerTime at = n.time;
+            at.offset = 0;
+            const auto lt = timing_over_(at, ts, rate,
+                                         speed_keys_of(src, k.id));
             const double len = lt.length * rate.to_double();
             if (!std::isfinite(len) ||
                 len > static_cast<double>(room)) {

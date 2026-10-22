@@ -180,15 +180,32 @@ final class MarkupOverlayView: NSView {
         }
         // Outlines and handles at screen size.
         for o in overlay.objects where overlay.selected.contains(o.id) {
-            let b = MarkupRender.bounds(o).applying(toView)
-            let outline = NSBezierPath(rect: b.insetBy(dx: -3, dy: -3))
+            // Round it as it is shown: a turned one's own box turned.
+            let t = MarkupRender.transform(o)
+            let outline: NSBezierPath
+            if t.isIdentity {
+                let b = MarkupRender.bounds(o).applying(toView)
+                outline = NSBezierPath(rect: b.insetBy(dx: -3, dy: -3))
+            } else {
+                let k = 3 / max(1e-6, hypot(toView.a, toView.b))
+                let b = MarkupRender.ownBounds(o).insetBy(dx: -k, dy: -k)
+                let corners = [CGPoint(x: b.minX, y: b.minY),
+                               CGPoint(x: b.maxX, y: b.minY),
+                               CGPoint(x: b.maxX, y: b.maxY),
+                               CGPoint(x: b.minX, y: b.maxY)]
+                    .map { $0.applying(t).applying(toView) }
+                outline = NSBezierPath()
+                outline.move(to: corners[0])
+                for c in corners.dropFirst() { outline.line(to: c) }
+                outline.close()
+            }
             outline.lineWidth = 1
             outline.setLineDash([4, 3], count: 2, phase: 0)
             NSColor.controlAccentColor.setStroke()
             outline.stroke()
             // A path the pen edits: its points by their kind.
             if overlay.editsPath && o.kind == .polygon {
-                for (i, h) in MarkupRender.polygonPoints(o).enumerated() {
+                for (i, h) in MarkupRender.shownPoints(o).enumerated() {
                     drawPoint(h.applying(toView), radius: 4,
                               smooth: o.isSmooth(i))
                 }

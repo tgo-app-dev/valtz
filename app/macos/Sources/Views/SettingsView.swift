@@ -619,6 +619,15 @@ private struct GeneralSettings: View {
                     Toggle("Show Assets once more than one result has been generated",
                            isOn: $model.revealsResults)
                         .settingsMark(String(localized: "Show Assets once more than one result has been generated"))
+                    Toggle("Play a generated clip as soon as it lands",
+                           isOn: $model.autoplaysNewClips)
+                        .settingsMark(String(localized: "Play"),
+                                      String(localized: "Play a generated clip as soon as it lands"))
+                    Toggle("Start it muted",
+                           isOn: $model.mutesNewClips)
+                        .disabled(!model.autoplaysNewClips)
+                        .settingsMark(String(localized: "Muted"),
+                                      String(localized: "Start it muted"))
                 }
                 .toggleStyle(.checkbox)
             } header: {
@@ -626,6 +635,25 @@ private struct GeneralSettings: View {
                     .settingsMark(String(localized: "Generations"))
             } footer: {
                 Text("The timeline shows a clip's or a sound's composition, or a still with pages.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            // Whose words the prompt box shows (AppModel.promptHistory).
+            Section {
+                Picker("Prompt history", selection: $model.promptHistory) {
+                    Text("Each target keeps its own")
+                        .tag(AppModel.PromptHistory.perTarget)
+                    Text("The agent apart from generations")
+                        .tag(AppModel.PromptHistory.agentApart)
+                    Text("One for all targets")
+                        .tag(AppModel.PromptHistory.shared)
+                }
+                .settingsMark(String(localized: "Prompt history"))
+            } header: {
+                Text("Prompt Box")
+                    .settingsMark(String(localized: "Prompt Box"))
+            } footer: {
+                Text("Switching between Video, Image, Audio and Agent puts back the words last left there -- or an empty box. The media in the prompt's row stay.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

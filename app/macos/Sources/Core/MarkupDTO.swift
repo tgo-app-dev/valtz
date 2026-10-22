@@ -248,6 +248,18 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
     /// is OPEN, a curve with no inside.
     var smooth: [Bool] = []
     var open = false
+    /// A line's or outline's DASHES, "dashed" or "dotted" (nil: solid),
+    /// and a line's ARROWHEADS, "start", "end" or "both" (nil: none) --
+    /// core media/markup.h.
+    var dash: String?
+    var arrows: String?
+    /// Its TURN, degrees (+ clockwise), and FLIPS, about its box's centre
+    /// -- drawn in its own pixels, flipped, then turned (core
+    /// media/markup.h "rotate", "flip_x", "flip_y"; Information's
+    /// rotation and its negative width and height).
+    var rotate = 0.0
+    var flipX = false
+    var flipY = false
     /// A gradient in place of a shape's fill or a text's colour.
     var gradient: MarkupGradient?
     /// A lifted drawing's picture: its blob, as the core keeps it.
@@ -257,6 +269,12 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
     /// path has none).
     var fillable: Bool {
         kind == .rect || kind == .ellipse || (kind == .polygon && !open)
+    }
+
+    /// A line or an outline: it takes dashes (a text, a drawing none).
+    var dashable: Bool {
+        kind == .line || kind == .rect || kind == .ellipse
+            || kind == .polygon
     }
 
     /// Point `i` of a path is smooth.
@@ -269,7 +287,8 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, kind, x0, y0, x1, y1, stroke, fill, width, text, font, box
         case align, effects, lineSpacing, paragraphSpacing, justifyLast
-        case points, smooth, open, gradient, image
+        case points, smooth, open, gradient, image, dash, arrows
+        case rotate, flipX, flipY
     }
 
     init(id: String, kind: Kind, x0: Double, y0: Double, x1: Double,
@@ -320,6 +339,18 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
                                            forKey: .gradient)) ?? nil
         image = (try? c.decodeIfPresent(DrawingImage.self, forKey: .image))
             ?? nil
+        dash = ((try? c.decodeIfPresent(String.self, forKey: .dash)) ?? nil)
+            .flatMap { $0 == "dashed" || $0 == "dotted" ? $0 : nil }
+        arrows = ((try? c.decodeIfPresent(String.self, forKey: .arrows))
+            ?? nil).flatMap {
+                ["start", "end", "both"].contains($0) ? $0 : nil
+            }
+        rotate = num(.rotate)
+        if !rotate.isFinite { rotate = 0 }
+        flipX = ((try? c.decodeIfPresent(Bool.self, forKey: .flipX)) ?? nil)
+            ?? false
+        flipY = ((try? c.decodeIfPresent(Bool.self, forKey: .flipY)) ?? nil)
+            ?? false
         if gradient.map({ $0.stops.count < 2 }) ?? false { gradient = nil }
         if var arr = try? c.nestedUnkeyedContainer(forKey: .effects) {
             while !arr.isAtEnd {
@@ -364,6 +395,11 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
             j["gradient"] = gradient.json
         }
         if kind == .drawing, let image { j["image"] = image.json }
+        if let dash, kind != .text && kind != .drawing { j["dash"] = dash }
+        if let arrows, kind == .line { j["arrows"] = arrows }
+        if rotate != 0 { j["rotate"] = rotate }
+        if flipX { j["flip_x"] = true }
+        if flipY { j["flip_y"] = true }
         return j
     }
 }

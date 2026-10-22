@@ -194,6 +194,55 @@ model_layer(const std::string& id)
   return id.empty() ? "0" : id;
 }
 
+// A line's or outline's `dash` and a line's `arrows` from a tool's
+// arguments onto `obj` (media/markup.h): "solid" / "none" take them off.
+void
+stroke_style(Json& obj, const Json& args)
+{
+  const auto kind = jget<std::string>(obj, "kind", "");
+  if (kind != "text" && args.contains("dash")) {
+    const auto d = jget<std::string>(args, "dash", "solid");
+    if (d == "dashed" || d == "dotted") {
+      obj["dash"] = d;
+    } else {
+      obj.erase("dash");
+    }
+  }
+  if (kind == "line" && args.contains("arrows")) {
+    const auto a = jget<std::string>(args, "arrows", "none");
+    if (a == "start" || a == "end" || a == "both") {
+      obj["arrows"] = a;
+    } else {
+      obj.erase("arrows");
+    }
+  }
+}
+
+// An object's `rotate` (degrees) and `flip_x` / `flip_y` from a tool's
+// arguments onto `obj`, about its middle (media/markup.h): 0 and false
+// take them off.
+void
+turn_style(Json& obj, const Json& args)
+{
+  if (args.contains("rotate")) {
+    const double r = jget(args, "rotate", 0.0);
+    if (std::isfinite(r) && r != 0) {
+      obj["rotate"] = r;
+    } else {
+      obj.erase("rotate");
+    }
+  }
+  for (const char* k : {"flip_x", "flip_y"}) {
+    if (args.contains(k)) {
+      if (jget(args, k, false)) {
+        obj[k] = true;
+      } else {
+        obj.erase(k);
+      }
+    }
+  }
+}
+
 bool
 on_page(const project::LayerTime& t, std::int64_t page)
 {
@@ -913,6 +962,23 @@ Controller::AgentHost::tools()
                          {"after", integer("after this page (from 1); "
                                            "omitted: at the end")}}),
                  &H::t_add_pages});
+    t.push_back(
+        {"update_composition", "edit", "Change a composition",
+         "A composition's CANVAS SIZE (Information's Canvas Size): "
+         "`width` x `height` pixels, what it shows kept where it lies "
+         "against `anchor` (the centre by default) -- room made for "
+         "pictures to be moved into with set_layer_box; or its `name`. "
+         "Says where each picture layer lies after.",
+         schema({{"composition", str(kCompDoc)},
+                 {"width", integer("its new width, pixels")},
+                 {"height", integer("its new height, pixels")},
+                 {"anchor", one_of({"center", "top-left", "top",
+                                    "top-right", "left", "right",
+                                    "bottom-left", "bottom",
+                                    "bottom-right"},
+                                   "what stays put; center by default")},
+                 {"name", str("its new name")}}),
+         &H::t_update_composition});
     t.push_back({"remove_page", "edit", "Remove a page",
                  "A page removed, with the layers only it had.",
                  schema({{"composition", str(kCompDoc)},
@@ -944,6 +1010,10 @@ Controller::AgentHost::tools()
                                        "default")},
                       {"line_spacing", num("its lines this many lines "
                                            "apart, 1-3; 1 by default")},
+                      {"rotate", num("degrees, + clockwise, about its "
+                                     "middle; 0 by default")},
+                      {"flip_x", boolean("mirrored left to right")},
+                      {"flip_y", boolean("mirrored top to bottom")},
                       {"every_page", boolean("on every page of a still "
                                              "(a header, a footer), made "
                                              "once")},
@@ -1009,6 +1079,17 @@ Controller::AgentHost::tools()
                       {"stroke", str("its outline or line colour")},
                       {"line_width", num("the outline's width, pixels; 0 "
                                          "none")},
+                      {"dash", one_of({"solid", "dashed", "dotted"},
+                                      "its line or outline; solid by "
+                                      "default")},
+                      {"arrows", one_of({"none", "start", "end", "both"},
+                                        "a line's arrowheads: at its end "
+                                        "(x1, y1), start, both; none by "
+                                        "default")},
+                      {"rotate", num("degrees, + clockwise, about its "
+                                     "middle; 0 by default")},
+                      {"flip_x", boolean("mirrored left to right")},
+                      {"flip_y", boolean("mirrored top to bottom")},
                       {"every_page", boolean("on every page of a still (a "
                                              "rule, a band, a frame), made "
                                              "once")},
@@ -1042,7 +1123,9 @@ Controller::AgentHost::tools()
          &H::t_add_shape});
     t.push_back(
         {"update_object", "edit", "Change a text or shape",
-         "A text box or shape changed: only the fields given.",
+         "A text box or shape changed: only the fields given -- x, y its "
+         "place (moved, the rest kept), width, height its size. To move "
+         "it, or several together, or onto another page: move_objects.",
          schema(with({{"composition", str(kCompDoc)},
                       {"layer", str(kLayerDoc)},
                       {"object", str("the object's id")},
@@ -1074,6 +1157,10 @@ Controller::AgentHost::tools()
                       {"fill", str("a shape's inside")},
                       {"stroke", str("a shape's outline")},
                       {"line_width", num("outline width")},
+                      {"dash", one_of({"solid", "dashed", "dotted"},
+                                      "a line's or outline's")},
+                      {"arrows", one_of({"none", "start", "end", "both"},
+                                        "a line's arrowheads")},
                       {"gradient", {{"type", "array"},
                                     {"items", {{"type", "string"}}},
                                     {"description",
@@ -1083,6 +1170,10 @@ Controller::AgentHost::tools()
                                      "off"}}},
                       {"gradient_type", one_of({"linear", "radial"},
                                                "linear by default")},
+                      {"rotate", num("degrees, + clockwise, about its "
+                                     "middle; 0 by default")},
+                      {"flip_x", boolean("mirrored left to right")},
+                      {"flip_y", boolean("mirrored top to bottom")},
                       {"gradient_angle", num("a linear one's direction, "
                                              "degrees: 0 left to right, "
                                              "90 top to bottom (by "
@@ -1098,6 +1189,28 @@ Controller::AgentHost::tools()
                      box_props),
                 {"layer", "object"}),
          &H::t_update_object});
+    t.push_back(
+        {"move_objects", "edit", "Move texts and shapes",
+         "Texts and shapes MOVED -- never removed and added again: each "
+         "keeps its id, size, words and look. By `dx`, `dy`, or to `x`, "
+         "`y` (where the top left of them all goes); several move as one "
+         "(a title and the shape behind it). With `page`: onto that page "
+         "of a still, where they lie unless moved too. Strokes from "
+         "draw_strokes are pixels of the layer it named: move that layer "
+         "with set_layer_box.",
+         schema({{"composition", str(kCompDoc)},
+                 {"layer", str(kLayerDoc)},
+                 {"objects", ids("the objects' ids, as get_composition "
+                                 "lists them")},
+                 {"dx", num("pixels right (negative: left)")},
+                 {"dy", num("pixels down (negative: up)")},
+                 {"x", num("else where their left edge goes, canvas "
+                           "pixels")},
+                 {"y", num("where their top edge goes")},
+                 {"page", integer("a still's page to move them onto, "
+                                  "from 1")}},
+                {"layer", "objects"}),
+         &H::t_move_objects});
     t.push_back(
         {"flow_text", "edit", "Lay out a long text",
          "A LONG TEXT laid out on a still's pages -- the WHOLE text in ONE "
@@ -1240,8 +1353,10 @@ Controller::AgentHost::tools()
     t.push_back(
         {"place_asset", "edit", "Place an asset",
          "An asset of the project (a picture, a clip's frame, another "
-         "composition) on a page as a new layer, fitted in a box (whole, "
-         "centred); omitted, at its own size in the middle.",
+         "composition) on a page as a NEW layer, fitted in a box (whole, "
+         "centred); omitted, at its own size in the middle. One a layer "
+         "shows already is MOVED there with set_layer_box, never placed "
+         "again.",
          schema(with({{"composition", str(kCompDoc)},
                       {"asset", str("the asset's id")},
                       {"page", integer(kPageDoc)},
@@ -1251,8 +1366,12 @@ Controller::AgentHost::tools()
                 {"asset"}),
          &H::t_place_asset});
     t.push_back({"set_layer_box", "edit", "Move a layer",
-                 "A picture layer moved and sized to a box (whole, "
-                 "centred in it).",
+                 "A layer showing a picture (a clip, a composition) MOVED "
+                 "and SIZED to a box on the canvas, whole, centred in it "
+                 "-- the Crop panel's placement: how pictures are put in "
+                 "a grid, a row, a corner. Its turn and flips, as the "
+                 "person set them, are kept. (move_objects is a markup's "
+                 "texts and shapes.)",
                  schema(with({{"composition", str(kCompDoc)},
                               {"layer", str(kLayerDoc)}},
                              box_props),
@@ -1748,6 +1867,20 @@ Controller::AgentHost::box_crop_(media::PixelSize content,
   return c;
 }
 
+media::Crop
+Controller::AgentHost::kept_turn_(const media::Crop& was, media::Crop to)
+{
+  to.rotate = was.rotate;
+  if (was.scale_x < 0) {
+    to.scale_x = -to.scale_x;
+  }
+  if (was.scale_y < 0) {
+    to.scale_y = -to.scale_y;
+  }
+  to.pad = was.pad;
+  return to;
+}
+
 Result<std::array<double, 4>>
 Controller::AgentHost::box_(const Json& args, media::PixelSize frame,
                             bool line)
@@ -1781,12 +1914,25 @@ Controller::AgentHost::layer_box_(ProjectId pid, const project::Asset& comp,
     return Json();
   }
   const media::Crop c = crop_of(comp, l.id);
-  const double w = content->width * (c.identity() ? 1.0 : c.scale_x);
-  const double h = content->height * (c.identity() ? 1.0 : c.scale_y);
+  const double w = content->width * (c.identity() ? 1.0
+                                                  : std::abs(c.scale_x));
+  const double h = content->height * (c.identity() ? 1.0
+                                                   : std::abs(c.scale_y));
   const double cx = frame->width / 2.0 + c.offset_x * frame->width;
   const double cy = frame->height / 2.0 + c.offset_y * frame->height;
-  return {{"x", std::lround(cx - w / 2)}, {"y", std::lround(cy - h / 2)},
-          {"width", std::lround(w)}, {"height", std::lround(h)}};
+  Json box = {{"x", std::lround(cx - w / 2)}, {"y", std::lround(cy - h / 2)},
+              {"width", std::lround(w)}, {"height", std::lround(h)}};
+  // Its turn and flips, about the box's middle, where it has them.
+  if (c.rotate != 0) {
+    box["rotate"] = c.rotate;
+  }
+  if (c.scale_x < 0) {
+    box["flip_x"] = true;
+  }
+  if (c.scale_y < 0) {
+    box["flip_y"] = true;
+  }
+  return box;
 }
 
 Result<std::string>
@@ -2613,6 +2759,11 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
           x["y"] = std::lround(std::min(y0, y1));
           x["width"] = std::lround(std::abs(x1 - x0));
           x["height"] = std::lround(std::abs(y1 - y0));
+          // A line's ends: its box says nothing of which way it runs.
+          if (x["kind"] == "line") {
+            x["from"] = {std::lround(x0), std::lround(y0)};
+            x["to"] = {std::lround(x1), std::lround(y1)};
+          }
           if (x["kind"] == "text") {
             // A long text's head only: a flowed page would tell the whole
             // text back.
@@ -2673,6 +2824,17 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
             if (jget(o, "width", 0.0) > 0) {
               x["stroke"] = hex(jget(o, "stroke", Json()));
               x["line_width"] = jget(o, "width", 0.0);
+            }
+            for (const char* k : {"dash", "arrows"}) {
+              if (o.contains(k)) {
+                x[k] = o[k];
+              }
+            }
+          }
+          // Its turn and flips, where it has them.
+          for (const char* k : {"rotate", "flip_x", "flip_y"}) {
+            if (o.contains(k)) {
+              x[k] = o[k];
             }
           }
           objs.push_back(std::move(x));
@@ -3005,6 +3167,7 @@ Controller::AgentHost::t_add_text(Session& s, Step& step, const Json& args,
          {"bold", flag(args, "bold")},
          {"italic", flag(args, "italic")},
          {"underline", false}}}});
+  turn_style(objs.back(), args);
   VALTZ_TRY(_c.set_markup_objects(s.project, comp, layer, objs));
   Json out = {{"layer", model_layer(layer)}, {"object", id}};
   out.update(on.second);
@@ -3126,6 +3289,8 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
       made["open"] = true;
     }
   }
+  stroke_style(made, args);
+  turn_style(made, args);
   if (shape != "line" && !open) {
     VALTZ_ASSIGN(Json g, gradient_arg(args, Json()));
     if (g.is_object()) {
@@ -3180,10 +3345,16 @@ Controller::AgentHost::t_update_object(Session& s, Step& step,
       args.contains("height")) {
     const double nx = number(args, "x", x0), ny = number(args, "y", y0);
     const double nw = number(args, "width", w), nh = number(args, "height", h);
-    o["x0"] = nx;
-    o["y0"] = ny;
-    o["x1"] = nx + nw;
-    o["y1"] = ny + nh;
+    // Each end where it lay in the old box: a line from bottom left to
+    // top right stays so (made x0 < x1, y0 < y1, it turned over).
+    const auto place = [](double v, double lo, double old, double now,
+                          double to) {
+      return to + (old > 0 ? (v - lo) / old * now : (v > lo ? now : 0));
+    };
+    o["x0"] = place(jget(o, "x0", 0.0), x0, w, nw, nx);
+    o["x1"] = place(jget(o, "x1", 0.0), x0, w, nw, nx);
+    o["y0"] = place(jget(o, "y0", 0.0), y0, h, nh, ny);
+    o["y1"] = place(jget(o, "y1", 0.0), y0, h, nh, ny);
   }
   // A polygon's points, its curve, open or closed: its box made from new
   // points (the units are the box's).
@@ -3261,6 +3432,8 @@ Controller::AgentHost::t_update_object(Session& s, Step& step,
     o[std::string(k) == "fill" ? "fill" : "stroke"] = {(*c)[0], (*c)[1],
                                                        (*c)[2], (*c)[3]};
   }
+  stroke_style(o, args);
+  turn_style(o, args);
   if (args.contains("line_width")) {
     o["width"] = std::clamp(number(args, "line_width", 0), 0.0, 500.0);
   }
@@ -3302,6 +3475,149 @@ Controller::AgentHost::t_update_object(Session& s, Step& step,
   if (jget<std::string>(changed, "kind", "") == "text") {
     tell_fit(out, changed);
   }
+  return out;
+}
+
+Result<Json>
+Controller::AgentHost::t_move_objects(Session& s, Step& step,
+                                      const Json& args,
+                                      std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, composition_(s, args));
+  VALTZ_ASSIGN(std::string layer, layer_(args));
+  // A layer showing a picture (a clip, a composition) holds no objects:
+  // it is moved by its box -- the Crop panel's placement. Asked to lay
+  // nine pictures in a grid, a helper moved them here, and failed.
+  if (auto* p = _c.project(s.project)) {
+    VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+    const auto it = std::ranges::find_if(
+        a.layers, [&](const project::Layer& l) { return l.id == layer; });
+    if (it != a.layers.end() && it->source) {
+      auto shown = p->asset(*it->source);
+      if (shown.ok() && shown->cls != AssetClass::Markup) {
+        return make_error(
+            Code::InvalidArgument,
+            std::format("layer {} shows a picture, not texts and shapes: "
+                        "move and size it with set_layer_box (its box "
+                        "now {})",
+                        model_layer(layer),
+                        to_text(layer_box_(s.project, a, *it))));
+      }
+    }
+  }
+  std::vector<std::string> which;
+  const Json given = jget(args, "objects", jget(args, "object", Json()));
+  for (const auto& o : given.is_string() ? Json::array({given})
+                       : given.is_array() ? given
+                                          : Json::array()) {
+    if (o.is_string() && std::ranges::find(which, o.get<std::string>()) ==
+                             which.end()) {
+      which.push_back(o.get<std::string>());
+    }
+  }
+  if (which.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "which objects? their ids, as get_composition "
+                      "lists them");
+  }
+  const bool by_ = args.contains("dx") || args.contains("dy");
+  const bool to_ = args.contains("x") || args.contains("y");
+  if (!by_ && !to_ && !args.contains("page")) {
+    return make_error(Code::InvalidArgument,
+                      "where to? dx, dy (by so much), x, y (to there) or "
+                      "page");
+  }
+  if (by_ && to_) {
+    return make_error(Code::InvalidArgument,
+                      "dx, dy or x, y: one or the other");
+  }
+  VALTZ_ASSIGN(Json objs, objects_(s.project, comp, layer));
+  // Their box together, as their outlines lie.
+  double left = 0, top = 0;
+  bool first = true;
+  for (const auto& id : which) {
+    auto it = std::ranges::find_if(objs, [&](const Json& o) {
+      return jget<std::string>(o, "id", "") == id;
+    });
+    if (it == objs.end()) {
+      return make_error(Code::NotFound,
+                        std::format("layer {} has no object '{}'",
+                                    model_layer(layer), id));
+    }
+    const double ox = std::min(jget(*it, "x0", 0.0), jget(*it, "x1", 0.0));
+    const double oy = std::min(jget(*it, "y0", 0.0), jget(*it, "y1", 0.0));
+    left = first ? ox : std::min(left, ox);
+    top = first ? oy : std::min(top, oy);
+    first = false;
+  }
+  const double dx =
+      to_ ? number(args, "x", left) - left : number(args, "dx", 0);
+  const double dy = to_ ? number(args, "y", top) - top : number(args, "dy", 0);
+  // A polygon's points and a gradient's ends are in its box's units: they
+  // go with it.
+  Json moved = Json::array();
+  for (auto& o : objs) {
+    if (std::ranges::find(which, jget<std::string>(o, "id", "")) ==
+        which.end()) {
+      continue;
+    }
+    o["x0"] = jget(o, "x0", 0.0) + dx;
+    o["x1"] = jget(o, "x1", 0.0) + dx;
+    o["y0"] = jget(o, "y0", 0.0) + dy;
+    o["y1"] = jget(o, "y1", 0.0) + dy;
+    moved.push_back(o);
+  }
+  auto undo = _c.command_(s.project, "agent", comp, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  std::string onto = layer;
+  Json where = Json::object();
+  if (args.contains("page")) {
+    VALTZ_ASSIGN(auto on, markup_for_(s.project, comp, args));
+    if (!on.second.contains("page")) {
+      return make_error(Code::InvalidArgument,
+                        "page is a still's: on a timeline a title moves in "
+                        "time with set_layer_time");
+    }
+    onto = on.first;
+    where = on.second;
+  }
+  if (onto == layer) {
+    VALTZ_TRY(_c.set_markup_objects(s.project, comp, layer, objs));
+  } else {
+    // Out of one markup, into the other: the ids kept unless the other
+    // holds one already.
+    VALTZ_ASSIGN(Json there, objects_(s.project, comp, onto));
+    objs.erase(std::remove_if(objs.begin(), objs.end(),
+                              [&](const Json& o) {
+                                return std::ranges::find(
+                                           which,
+                                           jget<std::string>(o, "id", "")) !=
+                                       which.end();
+                              }),
+               objs.end());
+    for (auto& o : moved) {
+      const auto id = jget<std::string>(o, "id", "");
+      if (std::ranges::any_of(there, [&](const Json& t) {
+            return jget<std::string>(t, "id", "") == id;
+          })) {
+        o["id"] = object_id();
+      }
+      there.push_back(o);
+    }
+    VALTZ_TRY(_c.set_markup_objects(s.project, comp, layer, objs));
+    VALTZ_TRY(_c.set_markup_objects(s.project, comp, onto, there));
+  }
+  // Where each lies now.
+  Json boxes = Json::object();
+  for (const auto& o : moved) {
+    const double x0 = jget(o, "x0", 0.0), y0 = jget(o, "y0", 0.0);
+    const double x1 = jget(o, "x1", 0.0), y1 = jget(o, "y1", 0.0);
+    boxes[jget<std::string>(o, "id", "")] = {
+        std::lround(std::min(x0, x1)), std::lround(std::min(y0, y1)),
+        std::lround(std::abs(x1 - x0)), std::lround(std::abs(y1 - y0))};
+  }
+  Json out = {{"layer", model_layer(onto)}, {"moved", std::move(boxes)}};
+  out.update(where);
   return out;
 }
 
@@ -4133,6 +4449,56 @@ Controller::AgentHost::t_place_asset(Session& s, Step& step,
 }
 
 Result<Json>
+Controller::AgentHost::t_update_composition(Session& s, Step& step,
+                                            const Json& args,
+                                            std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, composition_(s, args));
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  const bool sized = args.contains("width") || args.contains("height");
+  const std::string name = jget<std::string>(args, "name", "");
+  if (!sized && name.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "what to change? width and height (its canvas) or "
+                      "name");
+  }
+  auto undo = _c.command_(s.project, "agent", comp, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  if (sized) {
+    VALTZ_ASSIGN(media::PixelSize now, _c.own_frame(s.project, comp));
+    const media::PixelSize size{
+        static_cast<int>(number(args, "width", now.width)),
+        static_cast<int>(number(args, "height", now.height))};
+    // Canvas Size's anchor grid: across and down, 0 .. 1.
+    const std::string at = jget<std::string>(args, "anchor", "center");
+    const double ax = at.ends_with("left")    ? 0
+                      : at.ends_with("right") ? 1
+                                              : 0.5;
+    const double ay = at.starts_with("top")      ? 0
+                      : at.starts_with("bottom") ? 1
+                                                 : 0.5;
+    VALTZ_TRY(_c.set_canvas(s.project, comp, size, ax, ay));
+  }
+  if (!name.empty()) {
+    VALTZ_TRY(_c.rename_asset(s.project, comp, name));
+  }
+  VALTZ_ASSIGN(media::PixelSize frame, _c.own_frame(s.project, comp));
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  Json layers = Json::array();
+  for (const auto& l : a.layers) {
+    if (Json b = layer_box_(s.project, a, l); b.is_object()) {
+      layers.push_back({{"layer", model_layer(l.id)}, {"box", b}});
+    }
+  }
+  return Json{{"composition", comp.str()}, {"name", a.name},
+              {"width", frame.width}, {"height", frame.height},
+              {"layers", std::move(layers)}};
+}
+
+Result<Json>
 Controller::AgentHost::t_set_layer_box(Session& s, Step& step,
                                        const Json& args,
                                        std::vector<fs::path>&)
@@ -4153,10 +4519,38 @@ Controller::AgentHost::t_set_layer_box(Session& s, Step& step,
                _c.shown_size_(*p, *it->source, it->source_version, 0));
   auto undo = _c.command_(s.project, "agent", comp, layer,
                           {{"tool", step.tool}, {"title", step.title}});
-  VALTZ_TRY(_c.set_crop(s.project, comp, box_crop_(content, frame, box),
+  VALTZ_TRY(_c.set_crop(s.project, comp,
+                        kept_turn_(crop_of(a, layer),
+                                   box_crop_(content, frame, box)),
                         layer));
-  return Json{{"layer", model_layer(layer)},
-              {"box", layer_box_(s.project, *p->asset(comp), *it)}};
+  Json placed = layer_box_(s.project, *p->asset(comp), *it);
+  Json r = {{"layer", model_layer(layer)}, {"box", placed}};
+  // Past the canvas, it is cut there: said, so a grid laid with margins
+  // that do not add up is put right (the 9B's ran 64 px off two sides).
+  const double x = jget(placed, "x", 0.0), y = jget(placed, "y", 0.0);
+  const double w = jget(placed, "width", 0.0);
+  const double h = jget(placed, "height", 0.0);
+  std::vector<std::string> past;
+  const auto off = [&](double by, const char* side) {
+    if (by >= 1) {
+      past.push_back(std::format("{} px past the {}", std::lround(by),
+                                 side));
+    }
+  };
+  off(-x, "left");
+  off(-y, "top");
+  off(x + w - frame.width, "right");
+  off(y + h - frame.height, "bottom");
+  if (!past.empty()) {
+    std::string said;
+    for (const auto& p_ : past) {
+      said += (said.empty() ? "" : ", ") + p_;
+    }
+    r["note"] = std::format("It runs off the {} x {} canvas ({}): what lies "
+                            "past the edge is cut.",
+                            frame.width, frame.height, said);
+  }
+  return r;
 }
 
 Result<Json>

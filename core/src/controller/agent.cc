@@ -38,6 +38,16 @@ constexpr std::int64_t kSaidShare = 10;
 // calling tools in a loop is stopped by this, not by the person's budget.
 constexpr int kMaxTurns = 200;
 constexpr double kDefaultLease = 600;
+// A turn that wrote a tool call nothing could read is taken again, told
+// so, at most this many times running: it is not the session's end. The
+// form shown is the one the helper's own template teaches (Qwen3.5 /
+// 3.8's, as vpipe writes its tools turn: DESIGN §15 0zs).
+constexpr int kUnreadCalls = 2;
+constexpr const char* kUnreadCall =
+    "[Valtz] Your tool call could not be read, so nothing ran. Write each "
+    "call again in the format the system message gives:\n<tool_call>\n"
+    "<function=TOOL>\n<parameter=NAME>\nvalue\n</parameter>\n</function>\n"
+    "</tool_call>";
 
 Json
 read_json(const fs::path& file)
@@ -560,6 +570,79 @@ Controller::AgentHost::system_text_(const Session& s)
   return t;
 }
 
+std::string
+Controller::AgentHost::with_stage_(ProjectId pid, const std::string& words,
+                                  const Json& stage)
+{
+  auto* p = _c.project(pid);
+  const auto cid =
+      AssetId::parse(jget<std::string>(stage, "composition", ""));
+  if (!p || !cid) {
+    return words;
+  }
+  auto a = p->asset(*cid);
+  if (!a.ok() || (a->cls != project::AssetClass::Still &&
+                   a->cls != project::AssetClass::Composition)) {
+    return words;
+  }
+  // The composition, as the model's tools name it.
+  std::string where = std::format("\"{}\" (composition {}", a->name,
+                                  cid->str());
+  const auto page = jget<std::int64_t>(stage, "page", 0);
+  const auto frame = jget<std::int64_t>(stage, "frame", -1);
+  if (a->cls == project::AssetClass::Still) {
+    where += std::format(", a still of {} page{})", a->pages,
+                         a->pages == 1 ? "" : "s");
+    if (page > 0) {
+      where += std::format(", on page {}", page);
+    }
+  } else {
+    const double fps = rate_(pid, *cid).to_double();
+    auto length = _c.composition_length(pid, *cid);
+    where += std::format(", a timeline at {:.3g} fps)", fps);
+    if (frame >= 0) {
+      where += std::format(", at frame {} ({:.2f} s{})", frame,
+                           fps > 0 ? static_cast<double>(frame) / fps : 0.0,
+                           length.ok() && *length > 0
+                               ? std::format(" of {:.2f}",
+                                             static_cast<double>(*length) /
+                                                 std::max(1e-9, fps))
+                               : std::string());
+    }
+  }
+  if (stage.contains("layer") && stage["layer"].is_string()) {
+    // Its id, or "0" for layer 0's "" (as the tools take it).
+    std::string l = stage["layer"].get<std::string>();
+    if (l == "0") { l.clear(); }
+    const auto it = std::ranges::find_if(
+        a->layers, [&](const project::Layer& x) { return x.id == l; });
+    if (it != a->layers.end()) {
+      std::string named = it->name;
+      if (named.empty() && it->source) {
+        if (auto src = p->asset(*it->source); src.ok()) {
+          named = src->name;
+        }
+      }
+      // Layer 0's id is "", as the tools name it "0".
+      where += std::format("; layer {}{} selected", l.empty() ? "0" : l,
+                           named.empty() ? std::string()
+                                         : " (\"" + named + "\")");
+      std::string objs;
+      for (const auto& o : jget(stage, "objects", Json::array())) {
+        if (o.is_string()) {
+          objs += (objs.empty() ? "" : ", ") + o.get<std::string>();
+        }
+      }
+      if (!objs.empty()) {
+        where += ", with its objects " + objs;
+      }
+    }
+  }
+  return words + "\n\n[Where the person is as they say this: " + where +
+         ". \"This page\", \"here\", \"the current frame\" and \"the "
+         "selected layer\" mean these.]";
+}
+
 Result<std::string>
 Controller::AgentHost::start(AgentRequest req)
 {
@@ -596,7 +679,9 @@ Controller::AgentHost::start(AgentRequest req)
     s->compact = jget(_settings, "compact", true);
   }
   s->messages.push_back({.role = "system", .content = system_text_(*s)});
-  s->messages.push_back({.role = "user", .content = req.prompt});
+  s->messages.push_back(
+      {.role = "user",
+       .content = with_stage_(req.project, req.prompt, req.stage)});
   {
     std::lock_guard lk(_mu);
     if (_stop) {
@@ -637,6 +722,10 @@ Controller::AgentHost::post_(Session& s, std::optional<int> step)
 Json
 Controller::AgentHost::state_json_(const Session& s, bool messages) const
 {
+  // The backend asked before the session's lock: a turn holds the
+  // backend's own while it streams, and its words take the session's.
+  const Json backend = s.backend ? s.backend->describe() : Json::object();
+  const std::int64_t limit = s.backend ? s.backend->context_tokens() : 0;
   std::lock_guard lk(s.mu);
   Json steps = Json::array();
   for (const auto& st : s.steps) {
@@ -657,7 +746,7 @@ Controller::AgentHost::state_json_(const Session& s, bool messages) const
             {"project", s.project.str()},
             {"state", s.state},
             {"review", s.review},
-            {"backend", s.backend ? s.backend->describe() : Json::object()},
+            {"backend", backend},
             {"prompt", s.prompt},
             {"composition", s.target ? s.target->str() : std::string()},
             {"error", s.error},
@@ -670,9 +759,7 @@ Controller::AgentHost::state_json_(const Session& s, bool messages) const
             {"pending", static_cast<int>(s.pending.size())},
             {"created", s.created_ms},
             {"compactions", s.compactions},
-            {"context", {{"used", s.ctx_used},
-                         {"limit", s.backend ? s.backend->context_tokens()
-                                             : 0}}},
+            {"context", {{"used", s.ctx_used}, {"limit", limit}}},
             {"steps", std::move(steps)}};
   if (messages) {
     Json ms = Json::array();
@@ -828,6 +915,8 @@ Controller::AgentHost::run_(Session& s)
   bool told_after_done = false;
   // The last turn did not fit, and the conversation was compacted for it.
   bool overflowed = false;
+  // Turns running that wrote a call nothing could read.
+  int unread = 0;
   for (;;) {
     if (!gate_(s)) {
       break;
@@ -939,6 +1028,22 @@ Controller::AgentHost::run_(Session& s)
       s.ctx_counted = s.messages.size();
     }
     save_(s);
+    // A call written that neither the helper's parser nor Valtz's
+    // lenient reading could make out (the 27B's, 2026-10-20: the session
+    // ended "done" on its first turn): said, and the turn taken again.
+    if (calls.empty() &&
+        reply->raw.find("<tool_call>") != std::string::npos &&
+        unread < kUnreadCalls) {
+      ++unread;
+      VALTZ_LOG_WARN("agent", "session {}: a tool call it wrote could "
+                     "not be read; asked again", s.id);
+      std::lock_guard lk(s.mu);
+      s.messages.push_back({.role = "user", .content = kUnreadCall});
+      continue;
+    }
+    if (!calls.empty()) {
+      unread = 0;
+    }
     if (calls.empty()) {
       // Its pictures still out: waited for, and it is told how they
       // landed -- once -- so it can look and finish.
@@ -989,8 +1094,38 @@ Controller::AgentHost::run_(Session& s)
       };
       Json result;
       if (t == table.end()) {
-        result = {{"error", std::format("there is no tool '{}'",
-                                        call.name)}};
+        // A tool it guessed (`update_composition`, before there was
+        // one): those named alike said, for its next turn to call one.
+        const auto words = [](const std::string& n) {
+          std::vector<std::string> w;
+          std::size_t from = 0;
+          while (from <= n.size()) {
+            const std::size_t to = std::min(n.find('_', from), n.size());
+            if (to - from > 3) {
+              w.push_back(n.substr(from, to - from));
+            }
+            from = to + 1;
+          }
+          return w;
+        };
+        std::string alike;
+        int listed = 0;
+        for (const auto& x : table) {
+          const auto theirs = words(x.name);
+          bool shares = false;
+          for (const auto& w : words(call.name)) {
+            shares = shares || std::ranges::find(theirs, w) != theirs.end();
+          }
+          if (shares && listed++ < 8) {
+            alike += (alike.empty() ? "" : ", ") + x.name;
+          }
+        }
+        result = {{"error",
+                   alike.empty()
+                       ? std::format("there is no tool '{}'", call.name)
+                       : std::format("there is no tool '{}'; named alike: "
+                                     "{}",
+                                     call.name, alike)}};
         update([&](Step& x) {
           x.state = "failed";
           x.error = jget<std::string>(result, "error", "");
@@ -1311,15 +1446,17 @@ Controller::AgentHost::compact_(Session& s,
 // ---- the person's word ----------------------------------------------------
 
 Status
-Controller::AgentHost::say(const std::string& id, const std::string& text)
+Controller::AgentHost::say(const std::string& id, const std::string& words,
+                           const Json& stage)
 {
   auto s = find_(id);
   if (!s) {
     return make_error(Code::NotFound, msg::kAgentNoSession);
   }
-  if (one_line(text).empty()) {
+  if (one_line(words).empty()) {
     return make_error(Code::InvalidArgument, msg::kAgentEmptyRequest);
   }
+  const std::string text = with_stage_(s->project, words, stage);
   {
     std::lock_guard lk(s->mu);
     if (s->state == "stopped") {
@@ -1770,9 +1907,10 @@ Controller::agent_start(AgentRequest req)
 }
 
 Status
-Controller::agent_say(const std::string& agent, const std::string& text)
+Controller::agent_say(const std::string& agent, const std::string& text,
+                      const Json& stage)
 {
-  return _agent->say(agent, text);
+  return _agent->say(agent, text, stage);
 }
 
 Status

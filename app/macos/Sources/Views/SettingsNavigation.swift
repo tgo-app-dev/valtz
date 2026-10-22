@@ -62,6 +62,9 @@ enum SettingsPlace: Hashable, Sendable {
         case .page(.general):
             [String(localized: "Language"), String(localized: "Generations"),
              String(localized: "Timeline"), String(localized: "Assets"),
+             String(localized: "Play"), String(localized: "Muted"),
+             String(localized: "Prompt Box"),
+             String(localized: "Prompt history"),
              String(localized: "Updates"), String(localized: "Version"),
              String(localized: "Check for updates automatically"),
              String(localized: "This Mac"),

@@ -367,6 +367,30 @@ load_keys(id<AVAsynchronousKeyValueLoading> obj, NSArray<NSString*>* keys)
   dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
 }
 
+// The picture track's last frame, in its own frames from its first: the
+// sample shown last -- presented at or before the track's end -- by its
+// own time (a sample cursor reads the file's tables, nothing decoded);
+// -1 where it has none or no rate.
+std::int64_t
+last_frame_of(AVAssetTrack* t, double fps)
+{
+  if (!t || fps <= 0 || !t.canProvideSampleCursors) {
+    return -1;
+  }
+  const CMTimeRange r = t.timeRange;
+  if (!CMTIME_IS_NUMERIC(r.duration) || r.duration.value <= 0) {
+    return -1;
+  }
+  AVSampleCursor* c =
+      [t makeSampleCursorWithPresentationTimeStamp:CMTimeRangeGetEnd(r)];
+  if (!c || !CMTIME_IS_NUMERIC(c.presentationTimeStamp)) {
+    return -1;
+  }
+  const double at = CMTimeGetSeconds(
+      CMTimeSubtract(c.presentationTimeStamp, r.start));
+  return std::max<std::int64_t>(0, std::llround(at * fps));
+}
+
 Result<MediaInfo>
 probe_movie(NSURL* url)
 {
@@ -420,6 +444,12 @@ probe_movie(NSURL* url)
                                               : 0;
     if (mi.frame_rate.num > 0 && secs > 0) {
       mi.frame_count = std::llround(secs * mi.frame_rate.to_double());
+      // Its last frame by its own time, where the file says: a track a
+      // little longer than its frames rounded up to one more.
+      const auto last = last_frame_of(t, mi.frame_rate.to_double());
+      if (last >= 0 && last + 1 < mi.frame_count) {
+        mi.frame_count = last + 1;
+      }
     }
 
     auto fd = (__bridge CMFormatDescriptionRef)
@@ -592,6 +622,31 @@ probe_file(const std::filesystem::path& path)
                                     path.filename().string()));
     }
     return r;
+  }
+}
+
+std::int64_t
+last_picture_frame(const std::filesystem::path& file, Rational rate)
+{
+  @autoreleasepool {
+    NSURL* url = [NSURL fileURLWithPath:@(file.c_str())];
+    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url options:@{
+      AVURLAssetPreferPreciseDurationAndTimingKey : @YES
+    }];
+    AVAssetTrack* t = load_tracks(asset, AVMediaTypeVideo).tracks.firstObject;
+    if (!t) {
+      return -1;
+    }
+    load_keys(t, @[ @"minFrameDuration", @"nominalFrameRate", @"timeRange" ]);
+    double fps = rate.to_double();
+    if (fps <= 0) {
+      const CMTime mfd = t.minFrameDuration;
+      fps = CMTIME_IS_NUMERIC(mfd) && mfd.value > 0
+                ? static_cast<double>(mfd.timescale) /
+                      static_cast<double>(mfd.value)
+                : t.nominalFrameRate;
+    }
+    return last_frame_of(t, fps);
   }
 }
 

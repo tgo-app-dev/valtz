@@ -148,7 +148,7 @@ struct ExportOverlay: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             if small {
-                ProgressView(value: model.exportPhase?.fraction)
+                PhaseBar(fraction: model.exportPhase?.fraction)
                     .progressViewStyle(.linear)
                     .padding(8)
                     .help(model.exportCaption)
@@ -169,7 +169,7 @@ struct ExportStatus: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ProgressView(value: model.exportPhase?.fraction)
+            PhaseBar(fraction: model.exportPhase?.fraction)
                 .progressViewStyle(.linear)
                 .frame(width: 140)
             Text(model.exportCaption)
@@ -197,6 +197,25 @@ struct ExportStatus: View {
     }
 }
 
+/// A bar for what may count nothing yet: counted, or going to and fro --
+/// TWO views, never one switched between them. An NSProgressIndicator
+/// turned determinate keeps the to-and-fro it ran before: a generation's
+/// bar, made in "Preparing…", went to and fro under "Generating · 47%"
+/// until another bar took its place (the status moved over a preview),
+/// and a second generation's ran on the first one's. The hooks' `bars`
+/// lists each bar's animations: `0.107~overallIndeterminateAnimation`.
+struct PhaseBar: View {
+    let fraction: Double?
+
+    var body: some View {
+        if let f = fraction {
+            ProgressView(value: f)
+        } else {
+            ProgressView(value: nil as Double?)
+        }
+    }
+}
+
 struct GenerationStatus: View {
     @Bindable var model: AppModel
     var cancel: (() -> Void)? = nil
@@ -213,7 +232,7 @@ struct GenerationStatus: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            ProgressView(value: model.generationPhase?.fraction)
+            PhaseBar(fraction: model.generationPhase?.fraction)
                 .progressViewStyle(.linear)
                 .frame(minWidth: width == nil ? 140 : 40,
                        maxWidth: width == nil ? 140 : .infinity)

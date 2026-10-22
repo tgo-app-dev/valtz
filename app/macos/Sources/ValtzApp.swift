@@ -106,7 +106,7 @@ struct ValtzApp: App {
         // step: "path".
         case "path":
             let o = mk.selection.first { $0.kind == .polygon }
-            let pts = o.map(MarkupRender.polygonPoints) ?? mk.pen
+            let pts = o.map(MarkupRender.shownPoints) ?? mk.pen
             let pointsText = pts.enumerated().map { i, p in
                 let smooth = o.map { $0.isSmooth(i) }
                     ?? (i < mk.penSmooth.count && mk.penSmooth[i])
@@ -150,17 +150,39 @@ struct ValtzApp: App {
             print("snapshot: dsel \(arg) " + drawingSummary(m, arg))
         // Information's position and size typed: "frame=x,y,w,h" (the
         // stage's pixels); "where" prints the selection's frame.
-        case "frame", "where":
+        // Information's frame typed ("frame=x,y,w,h"), its signed size
+        // ("wh=-600," flips across, ",-300" down) and its rotation
+        // ("turn=30"); each printing the frame as Information shows it,
+        // signed, with the turn, and the outline's corners on the canvas.
+        case "frame", "where", "wh", "turn":
             let n = arg.split(separator: ",").compactMap { Double($0) }
             if kv[0] == "frame", n.count == 4 {
                 m.setSelectionFrame(CGRect(x: n[0], y: n[1], width: n[2],
                                            height: n[3]))
             }
+            if kv[0] == "wh" {
+                let p = arg.split(separator: ",", omittingEmptySubsequences:
+                                    false).map { Double($0) }
+                m.setSelectionSize(width: p.first ?? nil,
+                                   height: p.count > 1 ? p[1] : nil)
+            }
+            if kv[0] == "turn", let d = Double(arg) {
+                m.setSelectionRotation(d)
+            }
+            let fl = m.selectionFlipped
             let f = m.selectionFrame.map {
                 String(format: "%.1f,%.1f,%.1fx%.1f", $0.minX, $0.minY,
-                       $0.width, $0.height)
+                       $0.width * (fl.x ? -1 : 1),
+                       $0.height * (fl.y ? -1 : 1))
             } ?? "-"
-            print("snapshot: \(kv[0]) \(arg) selection=\(f) objects=\(mk.selection.count) undo=\(m.document.undo ?? "-")")
+            let turn = m.selectionRotation.map { String(format: "%.1f", $0) }
+                ?? "mixed"
+            let shown = mk.selection.map { o in
+                MarkupRender.handles(o).map {
+                    String(format: "%.0f,%.0f", $0.x, $0.y)
+                }.joined(separator: ";")
+            }.joined(separator: "|")
+            print("snapshot: \(kv[0]) \(arg) selection=\(f) turn=\(turn) handles=\(shown) objects=\(mk.selection.count) undo=\(m.document.undo ?? "-")")
         case "tool":
             if let t = MarkupTool(rawValue: arg) {
                 mk.tool = t
@@ -208,6 +230,13 @@ struct ValtzApp: App {
             m.editSelection {
                 if $0.kind == .text { $0.lineSpacing = v == 1 ? nil : v }
             }
+        // The selection's line style and arrowheads, as Information's
+        // pop-ups set them: "dash=dashed|dotted|solid",
+        // "arrows=start|end|both|none".
+        case "dash":
+            m.setSelectionDash(arg == "solid" ? nil : arg)
+        case "arrows":
+            m.setSelectionArrows(arg == "none" ? nil : arg)
         // Effects, as the Effects panel sets them: "shadow=off",
         // "shadow=#rrggbbaa,blur,dx,dy", "glow=off", "glow=#rrggbbaa,radius".
         // The Effects panel opened, as its button opens it.
@@ -2083,6 +2112,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         m.showTimeline(s.hasSuffix(":open"))
                     case let s where s.hasPrefix("set:"):
                         m.setPrompt(String(s.dropFirst(4)))
+                    // The box's target: "target:agent" (its words by
+                    // Settings' Prompt history).
+                    case let s where s.hasPrefix("target:"):
+                        if let t = Modality(rawValue: String(s.dropFirst(7))) {
+                            m.setModality(t)
+                        }
                     case let s where s.hasPrefix("type:"):
                         if let tv = m.promptTextView {
                             tv.window?.makeFirstResponder(tv)
@@ -3022,6 +3057,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "type", "enter", "esc":
                         Self.sendKeys(m, key == "enter" ? "\r"
                                       : key == "esc" ? "\u{1b}" : arg)
+                    // A header dragged past the rows' edge and held
+                    // there: "hdragpast=0:bottom:2" -- row 0's, 20
+                    // points below the rows, 2 s, then let go.
+                    case "hdragpast":
+                        let q = arg.split(separator: ":").map(String.init)
+                        if q.count == 3, let i = Int(q[0]),
+                           let hold = Double(q[2]),
+                           let v = TimelineNSView.shown,
+                           let a = v.windowPoint(header: i),
+                           let b = v.windowPoint(past: q[1] == "bottom",
+                                                 by: 20) {
+                            await Self.postDrag(from: (a.x, a.y),
+                                                to: (b.x, b.y),
+                                                release: false)
+                            try? await Task.sleep(for: .seconds(hold))
+                            FileHandle.standardError.write(Data(
+                                "snapshot: timeline-held scroll=\(v.scrollSummary)\n".utf8))
+                            await Self.postDrag(from: (b.x, b.y),
+                                                to: (b.x, b.y), up: true)
+                        }
+                        wait = 1.5
                     case "eye", "hdrag", "fold", "lock":
                         let v = TimelineNSView.shown
                         let p = arg.split(separator: ">")
@@ -3170,6 +3226,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                    length: n)
                         }
                         wait = 1.5
+                    // A layer selected with the panels left as they were
+                    // ("stale=1"): what a selection the stage's stack did
+                    // not list yet left them.
+                    case "stale":
+                        m.selectedLayer = arg == "0" ? "" : arg
+                        m.selectedLayers = [m.selectedLayer]
                     case "undo": m.undoProject()
                     case "redo": m.redoProject()
                     // File › Save, where the player is: "save", then
@@ -3592,7 +3654,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         a *= Double(u.layer?.opacity ?? 1)
                                         up = u.superview
                                     }
-                                    out.append("\(k):\(s)@\(Int(f.minX)),\(Int(w.frame.height - f.maxY)),\(Int(f.width))a\(String(format: "%.2f", a))")
+                                    // The animations its layers run:
+                                    // a bar counting under a running
+                                    // to-and-fro draws the to-and-fro.
+                                    var keys: [String] = []
+                                    var layers = p.layer.map { [$0] } ?? []
+                                    while let l = layers.popLast() {
+                                        keys += l.animationKeys() ?? []
+                                        layers += l.sublayers ?? []
+                                    }
+                                    out.append("\(k):\(s)@\(Int(f.minX)),\(Int(w.frame.height - f.maxY)),\(Int(f.width))a\(String(format: "%.2f", a))\(keys.isEmpty ? "" : "~" + keys.joined(separator: "+"))")
                                 }
                                 queue += v.subviews
                             }
@@ -5160,7 +5231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "markup=\(m.markupOpen ? m.markup.tool.rawValue : "off"):sel[\(m.markup.selection.map(\.kind.rawValue).joined(separator: ","))\(m.markup.drawing ? "+drawing" : "")]@\(m.markup.selectionLayer ?? "-") "
                 // The first selected object's style: a text's
                 // alignment and spacing, its effects.
-                + "markupStyle=\(m.markup.selection.first.map { o in [o.kind == .text ? (o.align ?? "left") : nil, o.lineSpacing.map { String(format: "x%.1f", $0) }, o.effects.isEmpty ? nil : o.effects.map(\.kind.rawValue).joined(separator: "+"), o.gradient.map { "\($0.kind.rawValue)\($0.stops.count)" }, o.kind == .polygon ? "corners\(o.points.count)" : nil].compactMap { $0 }.joined(separator: ":") } ?? "-") "
+                + "markupStyle=\(m.markup.selection.first.map { o in [o.kind == .text ? (o.align ?? "left") : nil, o.lineSpacing.map { String(format: "x%.1f", $0) }, o.effects.isEmpty ? nil : o.effects.map(\.kind.rawValue).joined(separator: "+"), o.gradient.map { "\($0.kind.rawValue)\($0.stops.count)" }, o.kind == .polygon ? "corners\(o.points.count)" : nil, o.dash, o.arrows.map { "arrows-\($0)" }, o.rotate == 0 ? nil : String(format: "r%.0f", o.rotate), o.flipX ? "fx" : nil, o.flipY ? "fy" : nil].compactMap { $0 }.joined(separator: ":") } ?? "-") "
                 + "favor=\(m.preference.rawValue) tuning=\(m.preference == .custom ? m.customSummary : "-") tunePanel=\(m.showsTuning) "
                 + "tuneValues=\(tuneValues) "
                 + "upscale=\(m.upscaleJob != nil ? "running" : m.canUpscaleLayer ? "offered" : m.upscaleNeedsFlatten ? "flatten-first" : "-") "
@@ -5220,7 +5291,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "videoFrame=\(m.videoFrame) showsCrop=\(m.showsCrop) "
                 + "showsTrim=\(m.showsTrim) showsAdjust=\(m.showsAdjust) "
                 + "adjustKeys=\(m.keyFrames(.adjust)) placeKeys=\(m.keyFrames(.place)) turnKeys=\(m.keyFrames(.turn)) "
-                + "cropHere=\(CropField.allCases.map { CropField.display($0.value(m.crop)) }.joined(separator: ",")) videoRate=\(m.videoRate) "
+                + "cropHere=\(CropField.allCases.map { CropField.display($0.value(m.crop)) }.joined(separator: ",")) videoRate=\(m.videoRate) videoMuted=\(VideoPlayerView.shownPlayer.map { $0.isMuted ? "true" : "false" } ?? "-") "
                 + "exposureHere=\(m.adjustments.exposure) rotateHere=\(m.crop.rotate) "
                 + "\n"
             FileHandle.standardError.write(Data(line.utf8))
@@ -5246,7 +5317,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static func postDrag(from a: (Double, Double),
                                  to b: (Double, Double),
                                  flags: NSEvent.ModifierFlags = [],
-                                 release: Bool = true) async {
+                                 release: Bool = true,
+                                 up: Bool = false) async {
         guard let win = NSApp.windows.first(where: { $0.isVisible }) else {
             return
         }
@@ -5259,6 +5331,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 eventNumber: 0, clickCount: 1, pressure: 1) {
                 win.sendEvent(ev)
             }
+        }
+        // Only the button let go (a drag held, then released).
+        if up {
+            post(.leftMouseUp, b.0, b.1)
+            return
         }
         // The pointer arrives first, as a person's would: SwiftUI places
         // its views' AppKit hit areas on the first event it sees.
@@ -5386,7 +5463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let layers = rows.isEmpty ? "-" : rows
         let panel = m.openPanel.map { "\($0)" } ?? "-"
         let a = "open=\(m.timelineOpen) available=\(m.timelineAvailable)"
-        let b = "rows=\(m.timelineRows) zoom=\(zoom)"
+        let b = "rows=\(m.timelineRows) zoom=\(zoom) scroll=\(TimelineNSView.shown?.scrollSummary ?? "-")"
         let c = "frame=\(t.playhead)/\(t.frames) cutting=\(t.cutting)"
         let d = "selected=\(sel) layers=\(layers) events=\(events)"
         let e = "panel=\(panel) assets=\(m.assets.count)"

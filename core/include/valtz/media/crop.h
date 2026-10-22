@@ -44,7 +44,10 @@ struct Crop {
   // when 0.
   PixelSize canvas;
   // Canvas pixels per content pixel, across and down: with the canvas
-  // the picture's own size, the share of the frame it covers.
+  // the picture's own size, the share of the frame it covers. NEGATIVE:
+  // the picture FLIPPED that way, about its centre (2026-10-21) -- a key
+  // of 1 then one of -1 turns it over. 0.01 .. 100 either way
+  // (held_zoom).
   double    scale_x = 1;
   double    scale_y = 1;
   double    offset_x = 0;  // the content's centre from the canvas's, in
@@ -57,6 +60,9 @@ struct Crop {
   bool identity() const;
   bool operator==(const Crop&) const = default;
 };
+
+// A zoom held to its range, its sign kept (none at all: the least).
+double held_zoom(double s);
 
 // {"content_w", "content_h", "canvas_w", "canvas_h", "scale_x",
 //  "scale_y", "offset_x", "offset_y", "rotate", "pad_r", "pad_g", "pad_b",

@@ -855,7 +855,7 @@ extension AppModel {
         }
         if m.selection.count == 1, let o = m.selection.first,
            o.kind == .polygon {
-            if let i = pointNear(p, in: MarkupRender.polygonPoints(o),
+            if let i = pointNear(p, in: MarkupRender.shownPoints(o),
                                  reach: reach) {
                 if e.clickCount >= 2 {
                     editSelection { $0 = MarkupRender.togglingPoint($0, i) }
@@ -1637,6 +1637,25 @@ extension AppModel {
         if commit { commitSelection(keep: true) }
     }
 
+    /// The selected lines' and outlines' DASHES (Information): "dashed",
+    /// "dotted", nil for solid -- a text or a lifted drawing has none.
+    /// One command.
+    func setSelectionDash(_ dash: String?) {
+        guard markup.selection.contains(where: \.dashable) else { return }
+        liveSelection()
+        editSelection { if $0.dashable { $0.dash = dash } }
+    }
+
+    /// The selected lines' ARROWHEADS (Information): "start", "end",
+    /// "both", nil for none. One command.
+    func setSelectionArrows(_ arrows: String?) {
+        guard markup.selection.contains(where: { $0.kind == .line }) else {
+            return
+        }
+        liveSelection()
+        editSelection { if $0.kind == .line { $0.arrows = arrows } }
+    }
+
     /// Where markup's pixels start on the stage's (its canvas's origin):
     /// Information's and the guides' places are the stage's.
     var markupStageOrigin: CGPoint {
@@ -1665,6 +1684,66 @@ extension AppModel {
         // it again where it now is.
         liveSelection()
         editSelection { $0 = MarkupRender.reframed($0, from: f, to: to) }
+    }
+
+    /// The selection's FLIPS as Information signs its width and height:
+    /// across (down) while every selected object is flipped so.
+    var selectionFlipped: (x: Bool, y: Bool) {
+        let s = markup.selection
+        return (!s.isEmpty && s.allSatisfy(\.flipX),
+                !s.isEmpty && s.allSatisfy(\.flipY))
+    }
+
+    /// Their TURN, degrees: the one they all have; nil while they differ.
+    var selectionRotation: Double? {
+        let turns = Set(markup.selection.map(\.rotate))
+        return turns.count == 1 ? turns.first : nil
+    }
+
+    /// Information's width or height typed: its size, and its SIGN the
+    /// flip -- one other than shown MIRRORS the selection that way, each
+    /// object flipped about its own centre (its turn kept), theirs laid
+    /// mirrored in their frame; then scaled from the frame's top left.
+    /// One command.
+    func setSelectionSize(width: Double? = nil, height: Double? = nil) {
+        guard let f = MarkupRender.frame(markup.selection) else { return }
+        let shown = selectionFlipped
+        let flipX = width.map { ($0 < 0) != shown.x } ?? false
+        let flipY = height.map { ($0 < 0) != shown.y } ?? false
+        var to = f
+        if let width { to.size.width = max(1, abs(width)) }
+        if let height { to.size.height = max(1, abs(height)) }
+        guard flipX || flipY || to != f else { return }
+        liveSelection()
+        editSelection { o in
+            let c = MarkupRender.centre(o)
+            if flipX {
+                o = MarkupRender.offset(o, dx: f.minX + f.maxX - 2 * c.x,
+                                        dy: 0)
+                o.flipX.toggle()
+            }
+            if flipY {
+                o = MarkupRender.offset(o, dx: 0,
+                                        dy: f.minY + f.maxY - 2 * c.y)
+                o.flipY.toggle()
+            }
+            o = MarkupRender.reframed(o, from: f, to: to)
+        }
+    }
+
+    /// Information's rotation typed: each selected object turned to it
+    /// (+ clockwise), about its own centre -- its box, and so its place
+    /// and size, as they were. One command.
+    func setSelectionRotation(_ degrees: Double) {
+        guard degrees.isFinite, !markup.selection.isEmpty else { return }
+        var d = fmod(degrees, 360)
+        if d > 180 { d -= 360 } else if d <= -180 { d += 360 }
+        if abs(d) < 1e-9 { d = 0 }
+        guard markup.selection.contains(where: { $0.rotate != d }) else {
+            return
+        }
+        liveSelection()
+        editSelection { $0.rotate = d }
     }
 
     /// The layer the next mark goes on, as the core will choose it (an
@@ -1926,7 +2005,7 @@ extension AppModel {
             // The magnet: the selection's left, middle or right -- top,
             // middle, bottom -- onto the nearest guide within 6 points.
             if let lines = markupSnapLines,
-               let b = MarkupRender.frame(m.moveStart) {
+               let b = MarkupRender.shownFrame(m.moveStart) {
                 let reach = 6 * e.pixelsPerPoint
                 dx += Self.snap([b.minX, b.midX, b.maxX].map { $0 + dx },
                                 to: lines.xs, within: reach)

@@ -555,7 +555,7 @@ private struct MemberRow: View {
             if let job = fetching {
                 let stopping = job.purpose == "download"
                     ? model.downloadStopping[m.model] : nil
-                ProgressView(value: job.phase?.fraction)
+                PhaseBar(fraction: job.phase?.fraction)
                     .controlSize(.small)
                     .frame(width: 70)
                 Text(verbatim: stopping.map {

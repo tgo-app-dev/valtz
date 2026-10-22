@@ -130,8 +130,9 @@ final class CoreService: @unchecked Sendable {
     func agentStart(_ request: [String: Any]) -> CoreReply {
         send(core.agent_start, request)
     }
-    func agentSay(_ agent: String, _ text: String) -> CoreReply {
-        send(core.agent_say, ["agent": agent, "text": text])
+    func agentSay(_ agent: String, _ text: String,
+                  stage: [String: Any] = [:]) -> CoreReply {
+        send(core.agent_say, ["agent": agent, "text": text, "stage": stage])
     }
     func agentReview(_ agent: String, step: Int, decision: String,
                      note: String = "") -> CoreReply {

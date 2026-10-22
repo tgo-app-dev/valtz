@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <optional>
 
 namespace valtz::agent {
 
@@ -35,6 +36,114 @@ std::string
 call_id_for(int turn, std::size_t n)
 {
   return std::format("t{}-{}", turn, n);
+}
+
+// `t` with each `from` made `to`.
+std::string
+replaced(std::string t, std::string_view from, std::string_view to)
+{
+  for (std::size_t at = t.find(from); at != std::string::npos;
+       at = t.find(from, at + to.size())) {
+    t.replace(at, from.size(), to);
+  }
+  return t;
+}
+
+// One <tool_call> block its parser could not read, read leniently: the
+// JSON object in it -- the 27B wrote one inside a list and a string,
+// `["{"name": ..., "arguments": {...}}"]`, its quotes escaped or not --
+// or its name and arguments in a list, or the XML form Qwen's own
+// template teaches (`<function=NAME>`, a `<parameter=KEY>` each). Null
+// when it is none of them.
+std::optional<ToolCall>
+read_written_call(std::string_view block)
+{
+  // A list of the tool's name and its arguments: ["add_text", {...}].
+  if (const auto lo = block.find('['), hi = block.rfind(']');
+      lo != std::string_view::npos && hi != std::string_view::npos &&
+      hi > lo) {
+    const Json j = Json::parse(block.substr(lo, hi - lo + 1), nullptr,
+                               false);
+    if (j.is_array() && j.size() == 2 && j[0].is_string() &&
+        j[1].is_object()) {
+      return ToolCall{"", j[0].get<std::string>(), j[1]};
+    }
+  }
+  const auto open = block.find('{'), close = block.rfind('}');
+  if (open != std::string_view::npos && close != std::string_view::npos &&
+      close > open) {
+    const std::string body(block.substr(open, close - open + 1));
+    for (const std::string& t : {body, replaced(body, "\\\"", "\"")}) {
+      const Json j = Json::parse(t, nullptr, false);
+      if (j.is_object() && j.contains("name") && j["name"].is_string()) {
+        ToolCall c;
+        c.name = j["name"].get<std::string>();
+        const Json a = jget(j, "arguments", jget(j, "parameters", Json()));
+        c.arguments = a.is_object()   ? a
+                      : a.is_string() ? arguments_of(a.get<std::string>())
+                                      : Json::object();
+        return c;
+      }
+    }
+  }
+  constexpr std::string_view kFn = "<function=";
+  const auto fn = block.find(kFn);
+  if (fn == std::string_view::npos) {
+    return std::nullopt;
+  }
+  const auto fn_end = block.find('>', fn);
+  if (fn_end == std::string_view::npos) {
+    return std::nullopt;
+  }
+  ToolCall c;
+  c.name = std::string(block.substr(fn + kFn.size(),
+                                    fn_end - fn - kFn.size()));
+  constexpr std::string_view kParam = "<parameter=";
+  for (auto at = block.find(kParam, fn_end); at != std::string_view::npos;
+       at = block.find(kParam, at + 1)) {
+    const auto key_end = block.find('>', at);
+    const auto val_end = block.find("</parameter>", at);
+    if (key_end == std::string_view::npos ||
+        val_end == std::string_view::npos || val_end < key_end) {
+      break;
+    }
+    const std::string key(block.substr(at + kParam.size(),
+                                       key_end - at - kParam.size()));
+    std::string_view v = block.substr(key_end + 1, val_end - key_end - 1);
+    while (!v.empty() && (v.front() == '\n' || v.front() == ' ')) {
+      v.remove_prefix(1);
+    }
+    while (!v.empty() && (v.back() == '\n' || v.back() == ' ')) {
+      v.remove_suffix(1);
+    }
+    const Json j = Json::parse(v, nullptr, false);
+    c.arguments[key] = j.is_discarded() ? Json(std::string(v)) : j;
+  }
+  return c;
+}
+
+// The calls a turn WROTE that its parser gave none of: each <tool_call>
+// block read leniently (read_written_call).
+std::vector<ToolCall>
+written_calls(std::string_view text)
+{
+  constexpr std::string_view kOpen = "<tool_call>", kClose = "</tool_call>";
+  std::vector<ToolCall> out;
+  for (auto at = text.find(kOpen); at != std::string_view::npos;) {
+    const auto from = at + kOpen.size();
+    const auto end = text.find(kClose, from);
+    const auto block = text.substr(from, end == std::string_view::npos
+                                             ? std::string_view::npos
+                                             : end - from);
+    if (auto c = read_written_call(block)) {
+      out.push_back(std::move(*c));
+    }
+    if (end == std::string_view::npos) {
+      break;
+    }
+    at = text.find(kOpen, end + kClose.size());
+  }
+  return out;
 }
 
 // A picture's media type, by its name: what the APIs take.
@@ -269,6 +378,16 @@ reply_from_turn(const Json& turn, int turn_number)
     call.name = jget<std::string>(c, "name", "");
     call.arguments = arguments_of(jget<std::string>(c, "arguments", ""));
     r.calls.push_back(std::move(call));
+  }
+  // Calls written that its parser could not read: read leniently.
+  if (r.calls.empty() && r.raw.find("<tool_call>") != std::string::npos) {
+    for (auto& call : written_calls(r.raw)) {
+      call.id = call_id_for(turn_number, n++);
+      r.calls.push_back(std::move(call));
+    }
+    if (!r.calls.empty()) {
+      r.finish = "tool_calls";
+    }
   }
   for (const char* k : {"prefilled", "reused", "restored", "ctx_bytes",
                         "ctx_pos", "prefill_ms", "decode_ms", "decoded",

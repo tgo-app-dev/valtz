@@ -160,6 +160,11 @@ extension AppModel {
         }
     }
 
+    /// An asset from the list on the stage, viewed (its ⓧ shown).
+    var viewingOnStage: Bool {
+        viewedAsset != nil && viewedAsset == stageAssetId && !isGenerating
+    }
+
     /// The viewed asset off the stage, the active one back on it. Not
     /// when the stage has moved on meanwhile -- the viewed one edited
     /// (its copy made), set active, a result landed: that stays.

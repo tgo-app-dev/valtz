@@ -34,6 +34,15 @@
 //                             outline's, a text's colour,
 //    "fill": [r, g, b, a]     a rectangle's or ellipse's inside,
 //    "width"                  a line's or outline's, in pixels (0: none),
+//    "dash": "dashed" | "dotted"  a line's or outline's DASHES (2026-10-21;
+//                             absent: solid), in its own widths -- dashes
+//                             three long and two apart, square-ended; round
+//                             dots two apart -- so they scale with it,
+//    "arrows": "start" | "end" | "both"  a LINE's ARROWHEADS: filled in its
+//                             colour at that end, its line stopped inside
+//                             the head (its cap and dashes do not show past
+//                             it), four widths long and four wide (at
+//                             least 10 and 10 pixels),
 //    "text", "font": {"family", "size" (pixels), "bold", "italic",
 //                     "underline"},
 //    "box"                    a text's: true -- a TEXT BOX, (x0, y0) to
@@ -46,6 +55,16 @@
 //    "justify_last"           justified, its LAST line stretched too: a
 //                             paragraph running on in another box (a
 //                             page's), cut mid-way,
+//    "rotate"                 degrees, + clockwise, within half a turn
+//                             either way (2026-10-21; absent: 0), and
+//    "flip_x", "flip_y"       true: MIRRORED across / down -- both about
+//                             its box's CENTRE (a line's ends', a
+//                             polygon's points', a text without a box its
+//                             lines'): it is drawn in its own pixels --
+//                             corners, points, gradient, words -- flipped,
+//                             then turned (Information's rotation and its
+//                             negative width and height). Any kind,
+//                             a drawing lifted too,
 //    "effects": [...]         what is drawn with it (2026-10-11), in
 //                             order: {"kind": "shadow", "color", "blur",
 //                             "dx", "dy"} -- a drop shadow blurred `blur`
@@ -208,8 +227,13 @@ TextFit text_fit(const Json& object, bool all_lines = false);
 
 // What an object covers as the stage outlines it, canvas pixels {x, y,
 // width, height}: a line's or a shape's box with half its outline round
-// it, a text box's box, a text without one its lines as set.
+// it, a text box's box, a text without one its lines as set -- turned
+// and flipped as it is, the box round that.
 std::array<double, 4> object_bounds(const Json& object);
+
+// An object's own pixels to the canvas: its turn and flips about its
+// box's centre ("rotate", "flip_x", "flip_y"); the identity without.
+CGAffineTransform object_transform(const Json& object);
 
 // Objects ARRANGED (the markup toolbar's Arrange, 2026-10-11): `ids`
 // among `objects` -- a layer's, in drawing order, the last on top -- the

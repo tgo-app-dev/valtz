@@ -18,6 +18,14 @@ namespace valtz::media {
 
 Result<MediaInfo> probe_file(const std::filesystem::path&);
 
+// A movie's LAST PICTURE, counted from its first at `rate` (its own, for
+// 0/1): its last frame's own time, not its picture track's length -- a
+// track a little longer than its frames (more than half a frame) counted
+// one that does not exist, and a grab there drew nothing. -1 where the
+// file says neither (no picture, no sample timing).
+std::int64_t last_picture_frame(const std::filesystem::path&,
+                                Rational rate = {0, 1});
+
 // Guess the media type from the extension / UTI alone (no I/O).
 MediaType media_type_for_path(const std::filesystem::path&);
 
