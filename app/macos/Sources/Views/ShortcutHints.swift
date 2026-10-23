@@ -146,6 +146,20 @@ final class ShortcutHints {
         layers = []
     }
 
+    /// Where the button showing `text` lies in its window, top-left
+    /// origin -- seen, shown or not (the snapshot hooks click it).
+    func place(of text: String) -> CGRect? {
+        for p in probes.allObjects {
+            guard p.active, p.text == text, let w = p.window, w.isVisible,
+                  !p.isHiddenOrHasHiddenAncestor else { continue }
+            let r = p.convert(p.bounds, to: nil)
+            guard r.width > 0, r.height > 0 else { continue }
+            return CGRect(x: r.minX, y: w.frame.height - r.maxY,
+                          width: r.width, height: r.height)
+        }
+        return nil
+    }
+
     /// What is shown, for the snapshot hooks: "⇧⌘E@612,410" each, by
     /// window (its number).
     var summary: String {

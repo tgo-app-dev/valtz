@@ -14,6 +14,9 @@ import UniformTypeIdentifiers
 ///                            stage stays as it is); the row's order as
 ///                            it was once the pointer leaves the row
 ///   pencil badge             the picture to edit, or no longer
+///   scissors badge           a clip or a sound a clip draws on (Ref2VA)
+///                            cut to the clip's length -- on, as the
+///                            model's makers cut them -- or used whole
 ///   ×                        out of the prompt, its mentions with it
 struct ReferenceRow: View {
     @Bindable var model: AppModel
@@ -185,6 +188,13 @@ private struct ReferenceThumb: View {
             .overlay(alignment: .topLeading) {
                 if hovering { remove }
             }
+            // A clip or a sound drawn on: cut to the clip's length, or
+            // whole.
+            .overlay(alignment: .topTrailing) {
+                if let cut = model.cutsToLength(item) {
+                    scissors(cut)
+                }
+            }
             // The clip carried on from: its tail is what the new one
             // continues.
             .overlay(alignment: .topTrailing) {
@@ -232,6 +242,11 @@ private struct ReferenceThumb: View {
                     Button(item.isBase ? "Not the Picture to Edit"
                                        : "Picture to Edit") {
                         model.toggleBase(item.id)
+                    }
+                }
+                if let cut = model.cutsToLength(item) {
+                    Button(cut ? "Use Whole" : "Cut to the Clip's Length") {
+                        model.toggleWhole(item.id)
                     }
                 }
                 Button("Remove from Prompt") {
@@ -288,6 +303,30 @@ private struct ReferenceThumb: View {
         .padding(3)
         .help(item.isBase ? "The picture to edit — click to edit none"
                           : "Make this the picture to edit")
+    }
+
+    /// The cut toggle: accent while the reference is cut to the clip's
+    /// length, faint while it is used whole.
+    private func scissors(_ cut: Bool) -> some View {
+        let s = String(format: "%.1f", model.referenceCutSeconds)
+        return Button {
+            model.toggleWhole(item.id)
+        } label: {
+            Image(systemName: "scissors")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.white.opacity(cut ? 1 : 0.85))
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(cut
+                    ? Color.accentColor : .black.opacity(0.4)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .padding(3)
+        .help(cut
+            ? "Cut to the clip's length: its first \(s) s are read — click to use it whole"
+            : "Used whole — click to cut it to the clip's length, \(s) s")
+        .accessibilityLabel(cut ? Text("Cut to the Clip's Length")
+                                : Text("Used Whole"))
     }
 
     private var remove: some View {

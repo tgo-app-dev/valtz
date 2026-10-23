@@ -242,6 +242,12 @@ struct GenerateVideoRequest {
   // trim (a clip, a sound). Read by a model that takes references
   // (Auto's video `edit` pick); never with `first`.
   std::vector<AssetId> references;
+  // Clips and sounds of `references` kept WHOLE. The others are CUT to
+  // the clip's length -- its frames at its rate, by the model's
+  // reference encoder (vpipe's `whole_references` says which not), as
+  // its makers' code cuts every reference. Cut when the graph is built,
+  // so it is the length the clip is made at.
+  std::vector<AssetId> whole;
   // A clip CONTINUED: its tail -- up to its mark-out -- picture and
   // sound, the clip the new one carries on from.
   std::optional<AssetId> continue_from;

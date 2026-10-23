@@ -244,10 +244,12 @@ struct SimpleView: View {
     /// How far over the composer a notice floats: clear of the stage's
     /// bar under the picture and of a generation's status.
     private var noticeLift: CGFloat {
-        let bar = model.stageVisible
-            && ((model.stage.video != nil && model.stage.clip == nil)
-                || model.compareOn)
-        return 12 + (bar ? 40 : 0) + (model.isGenerating ? 52 : 0)
+        let clip = model.stage.video != nil && model.stage.clip == nil
+        let bar = model.stageVisible && (clip || model.compareOn)
+        // A clip's scrubber over its bar, but while the timeline is open.
+        let scrubber = model.stageVisible && clip && !model.timelineOpen
+        return 12 + (bar ? 40 : 0) + (scrubber ? 28 : 0)
+            + (model.isGenerating ? 52 : 0)
     }
 
     /// In the editor, the space left of the card and its tabs: the stage
@@ -461,6 +463,8 @@ private struct ResultStage: View {
     /// The compare (or clip) bar under the card, in the window: the ring
     /// leaves it out.
     @State private var barFrame: CGRect = .null
+    /// The card's width: the scrubber over the clip bar is as wide.
+    @State private var cardWidth: CGFloat = 0
 
     /// How far outside the image the drag ring reaches.
     private let ringWidth: CGFloat = 28
@@ -479,13 +483,18 @@ private struct ResultStage: View {
             GeometryReader { geo in
                 // The guides' marks beside the card: room for them.
                 let gutter = marksShown ? GuideMarks.gutter : .zero
-                let size = fitted(aspect: model.stage.layoutAspect,
-                                  in: CGSize(
-                                      width: geo.size.width - 2 * gutter.width,
-                                      height: geo.size.height
-                                          - 2 * gutter.height))
+                let room = CGSize(width: geo.size.width - 2 * gutter.width,
+                                  height: geo.size.height - 2 * gutter.height)
+                // Zoomed, the card grows with the picture (DESIGN §10)
+                // -- not the small stage's, which is fitted.
+                let fit = fitted(aspect: model.stage.layoutAspect, in: room)
+                let growth = small ? nil
+                    : StageGrowth(room: CGSize(width: max(0, room.width),
+                                               height: max(0, room.height)),
+                                  fit: fit)
+                let size = growth.map { model.stage.card(in: $0) } ?? fit
                 let lift = model.stageLift
-                card
+                card(growth)
                     // Ready to drag: lifted -- a deeper, wider shadow --
                     // and a little faded.
                     .opacity((ready ? 0.82 : 1) * (1 - lift))
@@ -497,7 +506,10 @@ private struct ResultStage: View {
                     .scaleEffect(1 + 0.12 * lift)
                     .onGeometryChange(for: CGRect.self) {
                         $0.frame(in: .global)
-                    } action: { model.stageCardFrame = $0 }
+                    } action: {
+                        model.stageCardFrame = $0
+                        cardWidth = $0.width
+                    }
                     // Media dropped on the stage are INSTANTIATED in its
                     // work: in the selected layer when it is blank, else
                     // in a new one right above it (a file imported first).
@@ -567,16 +579,34 @@ private struct ResultStage: View {
                     .transition(.opacity)
             }
             if !small {
-            Group {
+            // One view whatever it holds, the one bar fading into the
+            // other in place: its frame and its going are the bar's. (A
+            // Group's modifiers are each branch's: the compare bar going as
+            // a clip's came could clear the frame the clip's had just set.)
+            ZStack(alignment: .bottom) {
             if model.stage.video != nil && model.stage.clip == nil {
-                ClipBar(loops: model.loopClips,
-                        toggle: { model.loopClips.toggle() },
-                        canContinue: model.canContinueClip,
-                        guides: model.guideLengths,
-                        continueClip: { model.continueClip(seconds: $0) },
-                        menuRequest: model.continueMenuRequest,
-                        canGrab: model.clipOnStage && !model.isGenerating,
-                        grabFrame: model.grabFrame)
+                VStack(spacing: 6) {
+                    // Where the player is, over its transport -- as wide as
+                    // the clip, the transport's width at least; the
+                    // timeline's ruler scrubs while it is open.
+                    if !model.timelineOpen {
+                        StageScrubber(model: model)
+                            .frame(maxWidth: max(360, cardWidth))
+                            .transition(.opacity)
+                    }
+                    ClipBar(loops: model.loopClips,
+                            toggle: { model.loopClips.toggle() },
+                            // The timeline's transport is the fuller one.
+                            transport: model.timelineOpen
+                                ? nil : StageTransport(model: model),
+                            canContinue: model.canContinueClip,
+                            guides: model.guideLengths,
+                            continueClip: { model.continueClip(seconds: $0) },
+                            menuRequest: model.continueMenuRequest,
+                            canGrab: model.clipOnStage && !model.isGenerating,
+                            grabFrame: model.grabFrame)
+                }
+                .transition(.opacity)
             } else {
                 CompareBar(
                     mode: model.stage.mode,
@@ -591,11 +621,18 @@ private struct ResultStage: View {
                     swap: model.swapStage,
                     returnToCurrent: model.returnToCurrent,
                     drop: { model.dropOnCompare($1, in: $0) })
+                    .transition(.opacity)
             }
             }
             .onGeometryChange(for: CGRect.self) {
                 $0.frame(in: .global)
-            } action: { barFrame = $0 }
+            } action: {
+                barFrame = $0
+                model.stageBarFrame = $0
+            }
+            // Gone (the Prompt Editor's small stage has none): no click
+            // kept by where it was.
+            .onDisappear { model.stageBarFrame = .null }
             .transition(.opacity)
             }
         }
@@ -611,7 +648,7 @@ private struct ResultStage: View {
     /// A clip's live preview loops; a finished clip plays; a picture is
     /// on the canvas (zoom, compare).
     @ViewBuilder
-    private var media: some View {
+    private func media(_ growth: StageGrowth?) -> some View {
         if let clip = model.stage.clip {
             ClipView(clip: clip)
                 .overlay {
@@ -633,16 +670,18 @@ private struct ResultStage: View {
                                 ? model.stageClipLook : nil,
                             stack: model.stackPlayback,
                             artwork: model.stageIsAudio ? model.stage.a : nil,
-                            // The timeline's transport is the fuller one:
-                            // no controls over the picture while it is
-                            // open; the small stage has its own under it.
-                            controls: !model.timelineOpen && !small,
+                            // None over the picture: the stage's transport
+                            // is in the row under it (StageTransport), the
+                            // small stage's under it too.
+                            controls: false,
                             core: model.core,
                             onFrame: { model.videoFrameChanged($0) },
                             onLastFrame: { model.videoLastFrame = $0 },
                             onRate: { model.videoRate = $0 },
+                            onMuted: { model.videoMuted = $0 },
                             // The title bar's zoom (not the small stage's).
                             zoom: small ? nil : model.stage.zoomRequests,
+                            growth: growth,
                             onViewport: { model.stage.setViewport($0) },
                             onShown: { model.stageVideoRect = $0 })
                 // The guides over the clip (View › Show Guides): the clip
@@ -695,7 +734,7 @@ private struct ResultStage: View {
                 zoomInRequest: model.stage.zoomInRequest,
                 zoomOutRequest: model.stage.zoomOutRequest,
                 unfitRequest: model.stage.unfitRequest,
-                fitMargin: 1, background: nil,
+                fitMargin: 1, growth: growth, background: nil,
                 crop: model.stageCropPlacement,
                 guides: model.showsGuides && !small,
                 guidesAt: model.stageGuideFractions,
@@ -717,8 +756,8 @@ private struct ResultStage: View {
         }
     }
 
-    private var card: some View {
-        media
+    private func card(_ growth: StageGrowth?) -> some View {
+        media(growth)
             // What the stage shows when it is not the project's
             // composition (DESIGN §6a), named over its top left.
             .overlay(alignment: .topLeading) {
@@ -875,13 +914,15 @@ enum ClipBarMenu {
 }
 
 /// What a finished clip offers under the stage, in the compare bar's
-/// style: whether it plays once or loops, a still of the frame shown, and
-/// -- where a model reads clips (Ref2VA) -- carrying it on from its last
-/// seconds, the guide's length chosen from a menu. (Play, the scrubber,
-/// volume and full screen float over the clip itself.)
+/// style: whether it plays once or loops, its TRANSPORT (StageTransport;
+/// none while the timeline, whose own is the fuller one, is open), a
+/// still of the frame shown, and -- where a model reads clips (Ref2VA)
+/// -- carrying it on from its last seconds, the guide's length chosen
+/// from a menu.
 private struct ClipBar: View {
     let loops: Bool
     let toggle: () -> Void
+    var transport: StageTransport?
     var canContinue = false
     var guides: [AppModel.GuideLength] = []
     var continueClip: (Int) -> Void = { _ in }
@@ -898,6 +939,10 @@ private struct ClipBar: View {
                                        : "Play the clip again and again",
                            on: loops, action: toggle)
                 .titleBarCapsule()
+            if let transport {
+                transport
+                    .transition(.opacity)
+            }
             if canGrab {
                 TitleBarButton(symbol: "camera.viewfinder",
                                title: "Grab Frame",
@@ -945,6 +990,97 @@ private struct ClipBar: View {
                        at: NSPoint(x: 0, y: v.isFlipped ? v.bounds.maxY + 6
                                                         : -6),
                        in: v)
+        }
+    }
+}
+
+/// The stage's transport, in the row under a finished clip (or a sound,
+/// a timeline) -- in place of AVKit's floating controls, which came and
+/// went over the picture unsteadily and lay in the way:
+///
+///   🔈    |<   <<   ◁|   ▶ / ‖   |▷   >>   >|
+///
+/// the timeline's nine (Timeline.transport) less its backward play, play
+/// and pause one button in the middle, the player's sound off or on at
+/// its left. |< and >| go from event to event of the composition worked
+/// on, else to the clip's start and end; a sound steps 10 ms (⌥ 1 ms).
+/// Their keys are Valtz's (AppModel.trimKey, playerKey): ⌘← ← Space → ⌘→,
+/// Home and End the start and the end.
+struct StageTransport: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        let r = model.videoRate
+        let sound = model.stageIsAudio
+        let events = model.timelineAsset != nil
+        let muted = model.videoMuted
+        HStack(spacing: 10) {
+            // The player's sound, off or on: what plays on the stage
+            // heard or not, its layers' own volumes as they are.
+            TitleBarButton(
+                symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                title: muted ? "Unmute" : "Mute",
+                help: muted ? "Turn the sound on" : "Turn the sound off",
+                on: muted, action: act(muted ? "unmute" : "mute",
+                                       model.toggleMute))
+                .titleBarCapsule()
+            buttons(rate: r, sound: sound, events: events)
+                .titleBarCapsule()
+        }
+    }
+
+    /// A button's action, said in the system log as it runs (stage-bar).
+    private func act(_ name: String,
+                     _ f: @escaping () -> Void) -> () -> Void {
+        { [model] in
+            model.noteBar("transport: \(name)")
+            f()
+        }
+    }
+
+    private func buttons(rate r: Float, sound: Bool,
+                         events: Bool) -> some View {
+        HStack(spacing: 0) {
+            TitleBarButton(
+                symbol: "backward.end.fill", title: "Previous Event",
+                help: events
+                    ? "Previous event: a key, where a layer begins or ends, the start"
+                    : "Go to the start",
+                action: act("previous event") {
+                    model.stageEvent(next: false)
+                })
+                .shortcutHint("⌘←")
+            TitleBarButton(symbol: "backward.fill", title: "Fast Rewind",
+                           help: "Fast rewind", on: r < -1,
+                           action: act("fast rewind", model.fastRewind))
+            TitleBarButton(
+                symbol: "backward.frame.fill", title: "Step Back",
+                help: sound ? "Back 10 ms (with ⌥, 1 ms)" : "Back one frame",
+                action: act("step back") { model.stepVideo(-1) })
+                .shortcutHint("←")
+            TitleBarButton(
+                symbol: r != 0 ? "pause.fill" : "play.fill",
+                title: r != 0 ? "Pause" : "Play",
+                help: r != 0 ? "Pause (Space)" : "Play (Space)",
+                action: act(r != 0 ? "pause" : "play") {
+                    model.playVideo(rate: r != 0 ? 0 : 1)
+                })
+                .shortcutHint(String(localized: "Space"))
+            TitleBarButton(
+                symbol: "forward.frame.fill", title: "Step Forward",
+                help: sound ? "On 10 ms (with ⌥, 1 ms)" : "On one frame",
+                action: act("step forward") { model.stepVideo(1) })
+                .shortcutHint("→")
+            TitleBarButton(symbol: "forward.fill", title: "Fast Forward",
+                           help: "Fast forward", on: r > 1,
+                           action: act("fast forward", model.fastForward))
+            TitleBarButton(
+                symbol: "forward.end.fill", title: "Next Event",
+                help: events
+                    ? "Next event: a key, where a layer begins or ends, the end"
+                    : "Go to the end",
+                action: act("next event") { model.stageEvent(next: true) })
+                .shortcutHint("⌘→")
         }
     }
 }

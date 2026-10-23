@@ -27,6 +27,9 @@ struct ZoomRequests: Equatable {
 /// scroll pans and a double-click fits again; fitted or not, a pinch, a
 /// mouse wheel or a scroll with ⌘ zooms around the pointer -- over markup's
 /// view on the clip too (ClipMarkupNSView), whose drags are the tool's.
+/// On the stage the card GROWS with the zoom as a picture's does
+/// (`growth`): along an axis where the zoomed clip fits the room it lies
+/// centred, the card as large.
 @MainActor
 final class ClipZoomView: NSView {
     /// The clip's frame in its pixels (a stack's canvas); nil, nothing to
@@ -48,6 +51,11 @@ final class ClipZoomView: NSView {
     }
 
     var onViewport: ((CompareCanvas.Viewport) -> Void)?
+    /// The stage's card, grown with the zoom (CompareCanvas.growth); nil
+    /// on a player that is not the stage's.
+    var growth: StageGrowth? {
+        didSet { if growth != oldValue { refit() } }
+    }
     /// Where the clip's frame lies while zoomed, in points from the
     /// player's top left (the overlays over it follow); nil while fitted.
     var onShown: ((CGRect?) -> Void)?
@@ -128,8 +136,14 @@ final class ClipZoomView: NSView {
             relayout()
             return
         }
-        zoom = max(0.01, min(bounds.width / p.width,
-                             bounds.height / p.height) * backing)
+        // To the card's fitted size: grown by the zoom, the view is that
+        // size again by the next layout.
+        let box = growth.map {
+            CGSize(width: min(bounds.width, $0.fit.width),
+                   height: min(bounds.height, $0.fit.height))
+        } ?? bounds.size
+        zoom = max(0.01, min(box.width / p.width,
+                             box.height / p.height) * backing)
         center = CGPoint(x: p.width / 2, y: p.height / 2)
         fitting = true
         relayout()
@@ -195,19 +209,29 @@ final class ClipZoomView: NSView {
     }
 
     /// `center` held where the clip keeps CompareCanvas.keepInSight
-    /// points in the view on each axis -- all of it, when it is shorter.
+    /// points in the view on each axis -- all of it, when it is shorter
+    /// -- and centred where all of it fits the stage's room (`growth`).
     private func keepInView() {
         guard let p = pixels, p.width > 0, p.height > 0 else { return }
         let ppp = pointsPerPixel
         guard ppp > 0 else { return }
-        func held(_ c: CGFloat, _ e1: CGFloat, view v: CGFloat) -> CGFloat {
+        let slack = CompareCanvas.growSlack
+        let fits = growth.map {
+            (x: p.width * ppp <= $0.room.width + slack,
+             y: p.height * ppp <= $0.room.height + slack)
+        } ?? (x: false, y: false)
+        func held(_ c: CGFloat, _ e1: CGFloat, view v: CGFloat,
+                  centred: Bool) -> CGFloat {
+            if centred { return e1 / 2 }
             let m = min(CompareCanvas.keepInSight, e1 * ppp, v)
             let slack = (v / 2 - m) / ppp
             let lo = -slack, hi = e1 + slack
             return lo <= hi ? min(hi, max(lo, c)) : e1 / 2
         }
-        center = CGPoint(x: held(center.x, p.width, view: bounds.width),
-                         y: held(center.y, p.height, view: bounds.height))
+        center = CGPoint(
+            x: held(center.x, p.width, view: bounds.width, centred: fits.x),
+            y: held(center.y, p.height, view: bounds.height,
+                    centred: fits.y))
     }
 
     private func relayout() {
@@ -234,8 +258,12 @@ final class ClipZoomView: NSView {
             lastShown = .some(shown)
             onShown?(shown)
         }
-        let v = CompareCanvas.Viewport(zoom: pixels == nil ? nil : zoom,
-                                       fitting: fitting)
+        let v = CompareCanvas.Viewport(
+            zoom: pixels == nil ? nil : zoom, fitting: fitting,
+            content: pixels.map {
+                CGSize(width: $0.width * pointsPerPixel,
+                       height: $0.height * pointsPerPixel)
+            })
         if v != lastViewport {
             lastViewport = v
             onViewport?(v)

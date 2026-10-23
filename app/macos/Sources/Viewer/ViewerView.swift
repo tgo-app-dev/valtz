@@ -20,6 +20,8 @@ struct CompareCanvasView: NSViewRepresentable {
     var zoomOutRequest = 0
     var unfitRequest = 0
     var fitMargin: CGFloat = 0.98
+    /// The stage's card, grown with the zoom (CompareCanvas.growth).
+    var growth: StageGrowth? = nil
     var background: NSColor? = NSColor(white: 0.11, alpha: 1)
     /// A's crop (CompareCanvas.cropA), and the guides.
     var crop: CropPlacement? = nil
@@ -98,6 +100,7 @@ struct CompareCanvasView: NSViewRepresentable {
         v.surfaceB = surfaceB
         v.surfaceA = surfaceA
         v.cropA = crop
+        v.growth = growth
         if context.coordinator.fit != fitRequest {
             context.coordinator.fit = fitRequest
             v.fitNow()

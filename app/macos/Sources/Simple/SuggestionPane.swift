@@ -241,15 +241,20 @@ final class SuggestionTextView: NSTextView {
         let took = super.becomeFirstResponder()
         if took {
             onFocus?()
-            onFocusChange?()
+            afterFocusChange(onFocusChange)
         }
         return took
     }
 
     override func resignFirstResponder() -> Bool {
         let gave = super.resignFirstResponder()
-        if gave { onFocusChange?() }
+        if gave { afterFocusChange(onFocusChange) }
         return gave
+    }
+
+    /// The caret only while the pane has the keyboard (as the prompt's).
+    override var shouldDrawInsertionPoint: Bool {
+        super.shouldDrawInsertionPoint && window?.firstResponder === self
     }
 
     override func paste(_ sender: Any?) {

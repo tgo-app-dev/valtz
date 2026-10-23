@@ -59,9 +59,10 @@ struct ClipView: NSViewRepresentable {
     }
 }
 
-/// A finished clip on the stage: AVKit's player, its controls floating
+/// A finished clip on the stage: AVKit's player -- its controls floating
 /// over the picture as in QuickTime Player (play, the scrubber, volume,
-/// full screen). It plays once when it lands -- with its sound: the
+/// full screen) where `controls` asks for them; the stage's transport is
+/// its own, under the picture (StageTransport). It plays once when it lands -- with its sound: the
 /// soundtrack was made with the picture -- and stops on the last frame;
 /// `loops` plays it again and again. It says which frame it shows
 /// (`onFrame`, by `rate`) as it plays and as it is scrubbed, and goes to a
@@ -88,17 +89,23 @@ struct VideoPlayerView: NSViewRepresentable {
     var stack: StackPlayback? = nil
     /// A sound's picture (its waveform), over the player's empty frame.
     var artwork: CGImage? = nil
-    /// AVKit's own controls over the picture -- none while the timeline,
-    /// whose transport is the fuller one, is open.
+    /// AVKit's own controls over the picture. The stage asks for none: its
+    /// floating bar came and went unsteadily and lay over the picture, so
+    /// the stage's transport is a row under it (StageTransport).
     var controls = true
     var core: CoreService? = nil
     var onFrame: (Int) -> Void = { _ in }
     /// Its last frame, once known: what Grab Frame goes no further than.
     var onLastFrame: (Int) -> Void = { _ in }
     var onRate: (Float) -> Void = { _ in }
+    /// Its sound off or on, as the player has it (a clip started muted,
+    /// the transport's mute).
+    var onMuted: (Bool) -> Void = { _ in }
     /// The title bar's zoom asked so far (ClipZoomView); nil, no zoom:
     /// the Prompt Editor's small stage.
     var zoom: ZoomRequests? = nil
+    /// The stage's card, grown with the zoom (ClipZoomView.growth).
+    var growth: StageGrowth? = nil
     var onViewport: (CompareCanvas.Viewport) -> Void = { _ in }
     /// Where the zoomed clip lies (points from the player's top left);
     /// nil while it is fitted.
@@ -133,6 +140,8 @@ struct VideoPlayerView: NSViewRepresentable {
         var player: AVPlayer?
         var rateObservation: NSKeyValueObservation?
         var onRate: (Float) -> Void = { _ in }
+        var muteObservation: NSKeyValueObservation?
+        var onMuted: (Bool) -> Void = { _ in }
         var ended: NSObjectProtocol?
         var timeObserver: Any?
         var onFrame: (Int) -> Void = { _ in }
@@ -354,6 +363,8 @@ struct VideoPlayerView: NSViewRepresentable {
             if let timeObserver { player?.removeTimeObserver(timeObserver) }
             rateObservation?.invalidate()
             rateObservation = nil
+            muteObservation?.invalidate()
+            muteObservation = nil
             ended = nil
             timeObserver = nil
             player = nil
@@ -392,7 +403,9 @@ struct VideoPlayerView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> AVPlayerView {
         let v = AVPlayerView()
-        v.controlsStyle = .floating
+        // Never shown, when not asked for: no bar, nor its glass, for a
+        // moment.
+        v.controlsStyle = controls ? .floating : .none
         v.showsFullScreenToggleButton = true
         v.videoGravity = .resizeAspect
         v.allowsVideoFrameAnalysis = false
@@ -439,12 +452,14 @@ struct VideoPlayerView: NSViewRepresentable {
                 c?.refitStack()
                 DispatchQueue.main.async { onShown(r) }
             }
+            zv.growth = growth
             if let zoom { c.applyZoom(zoom) }
         }
         c.loops = loops
         c.onFrame = onFrame
         c.onLastFrame = onLastFrame
         c.onRate = onRate
+        c.onMuted = onMuted
         defer { applyCommand(c) }
         let lookChanged = !c.lookKnown || c.look != look
         if lookChanged {
@@ -666,6 +681,14 @@ struct VideoPlayerView: NSViewRepresentable {
                         toleranceAfter: .zero)
         }
         player.isMuted = muted
+        // Its sound off or on, for the transport's mute button.
+        c.muteObservation = player.observe(\.isMuted, options: [.initial]) {
+            [weak c] p, _ in
+            let muted = p.isMuted
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { c?.onMuted(muted) }
+            }
+        }
         Self.shownPlayer = player
         if autoplay { player.play() }
         if TimelineNSView.tracing {
@@ -719,6 +742,8 @@ struct VideoPlayerView: NSViewRepresentable {
             c.seek(to: c.clamp(n))
         case .place(let n):
             c.seek(to: c.clamp(n))
+        case .mute(let on):
+            p.isMuted = on
         case .step(let n):
             // From the frame on screen, to one that exists: a step past
             // either end stays on it -- and its sound heard, a frame's (at
@@ -729,14 +754,18 @@ struct VideoPlayerView: NSViewRepresentable {
             c.seek(to: to)
             c.scrubber.play(item, at: c.start(of: to),
                             seconds: max(1 / rate.fps, 0.06))
-        case .play(var r):
-            if r < -1 && !item.canPlayFastReverse {
-                r = item.canPlayReverse ? -1 : 0
-            } else if r < 0 && !item.canPlayReverse {
-                r = 0
-            } else if r > 1 && !item.canPlayFastForward {
-                r = 1
+        case .scrubbed(let n, let resume):
+            p.pause()
+            let to = c.clamp(n)
+            c.seek(to: to)
+            // On from there -- not from an end it would play past: let go
+            // there, it rests on it (playing on would start it over).
+            let r = Self.playable(resume, item)
+            if (r > 0 && to < (c.lastIndex ?? .max)) || (r < 0 && to > 0) {
+                p.rate = r
             }
+        case .play(let asked):
+            let r = Self.playable(asked, item)
             // At an end, playing on starts from the other.
             if let last = c.lastIndex {
                 let now = rate.frame(at: p.currentTime().seconds)
@@ -749,6 +778,19 @@ struct VideoPlayerView: NSViewRepresentable {
             }
             p.rate = r
         }
+    }
+
+    /// A rate as far as the clip can play it: backward or fast ones only
+    /// where its item can.
+    private static func playable(_ r: Float, _ item: AVPlayerItem) -> Float {
+        if r < -1 && !item.canPlayFastReverse {
+            return item.canPlayReverse ? -1 : 0
+        } else if r < 0 && !item.canPlayReverse {
+            return 0
+        } else if r > 1 && !item.canPlayFastForward {
+            return 1
+        }
+        return r
     }
 
     static func dismantleNSView(_ v: AVPlayerView, coordinator: Coordinator) {

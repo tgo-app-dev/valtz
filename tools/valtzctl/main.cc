@@ -224,7 +224,7 @@ usage()
       "        [--speed|--quality] [--seed n] [--no-turbo]\n"
       "        [--first <file|asset-id> [--last <file|asset-id>]]\n"
       "        [--tune k=v,...]\n"
-      "        [--ref <file|asset-id>]... [--continue <clip>]\n"
+      "        [--ref <file|asset-id> [--whole]]... [--continue <clip>]\n"
       "        [--tail-seconds s] [--song-sound]\n"
       "        (a clip with its soundtrack, MiniMax H3; the length goes\n"
       "        up to one the model makes -- 17n+5 frames -- and the Turbo\n"
@@ -233,7 +233,8 @@ usage()
       "        ends on (FL2VA: Picture 1 and Picture 2). --ref: a\n"
       "        picture, clip or sound to draw on (Ref2VA: a subject, a\n"
       "        motion, a voice, a song; name them <Picture 1>, <Video 1>,\n"
-      "        <Audio 1> in the prompt, numbered as the job lists them);\n"
+      "        <Audio 1> in the prompt, numbered as the job lists them --\n"
+      "        a clip or a sound cut to the clip's length, or --whole);\n"
       "        --continue: a clip carried on from its tail (3.75 s, or\n"
       "        --tail-seconds); --song-sound: the first sound reference is\n"
       "        the clip's soundtrack, as it is -- a music video)\n"
@@ -4293,6 +4294,12 @@ main(int argc, char** argv)
         } else {
           req.continue_from = *r;
         }
+      } else if (a == "--whole") {
+        // The --ref before it kept whole: not cut to the clip's length.
+        if (req.references.empty()) {
+          return usage();
+        }
+        req.whole.push_back(req.references.back());
       } else if (a == "--tail-seconds") {
         req.tail_seconds = std::atof(next().c_str());
       } else if (a == "--song-sound") {

@@ -178,13 +178,22 @@ struct ViewerState {
     }
     /// As the canvas reports it: device pixels per image pixel (1 is
     /// 1:1; nil with no image), and whether it is fitting -- fitted again
-    /// whenever the view or the image changes.
+    /// whenever the view or the image changes -- and what its zoom lays
+    /// out, in points: the stage's card grows to it (StageGrowth).
     private(set) var zoom: CGFloat?
     private(set) var fitting = true
+    private(set) var content: CGSize?
 
     mutating func setViewport(_ v: CompareCanvas.Viewport) {
         if zoom != v.zoom { zoom = v.zoom }
         if fitting != v.fitting { fitting = v.fitting }
+        if content != v.content { content = v.content }
+    }
+
+    /// The stage's card in `growth`: fitted while fitting, else as large
+    /// as what the zoom lays out, from the fit to the room.
+    func card(in growth: StageGrowth) -> CGSize {
+        growth.card(fitting ? nil : content)
     }
 
     /// It shows a clip -- played, not compared (a finished one zooms:
@@ -499,8 +508,14 @@ struct VideoCommand: Equatable, Sendable {
         case seek(Int)
         /// Frame n, playing on if it played (a mark just set).
         case place(Int)
+        /// A scrub let go (StageScrubber): frame n, then on at the rate
+        /// the press found -- one command, so the seek is not lost to
+        /// the play sent after it.
+        case scrubbed(Int, resume: Float)
         case play(Float)
         case step(Int)
+        /// Its sound off, or on again.
+        case mute(Bool)
     }
     var kind: Kind
     var token: Int
@@ -667,6 +682,9 @@ struct PromptAttachment: Identifiable, Hashable, Sendable {
     /// on from -- picture and sound -- rather than a reference to draw
     /// on. At most one.
     var continues = false
+    /// A clip or a sound referenced WHOLE (Ref2VA): not cut to the clip's
+    /// length, as every other one is -- its scissors badge off.
+    var whole = false
     /// What its copy was made from.
     var original: String?
 }
@@ -1275,6 +1293,10 @@ final class AppModel {
     /// origin): a click outside both ends a viewing (endViewingIfOutside).
     @ObservationIgnored var assetListFrame: CGRect = .zero
     @ObservationIgnored var stageCardFrame: CGRect = .zero
+    /// The bar under the card -- the compare bar, or a clip's scrubber,
+    /// transport, Grab Frame and Continue: the stage's own, so a click on
+    /// it leaves a viewing as it is.
+    @ObservationIgnored var stageBarFrame: CGRect = .null
     /// The stage card off the desk: 0 on it, 1 lifted -- larger, faded
     /// out. A viewed asset is put down with it, and taken off.
     var stageLift = 0.0
@@ -1681,10 +1703,15 @@ final class AppModel {
     var videoCommand: VideoCommand?
     /// The stage's player's rate, as it reports it (0 is paused).
     var videoRate: Float = 0
+    /// Its sound off, as it reports it (the transport's mute button).
+    var videoMuted = false
     /// The layers the Trim panel's values and the keyed tracks were read
     /// from (loadTrim, loadClipTracks): written back onto that layer only.
     @ObservationIgnored var trimLayer: String?
     @ObservationIgnored var clipTracksLayer: String?
+    /// The Trim panel's values as loaded: only what has changed in the
+    /// panel since is written back (persistTrim).
+    @ObservationIgnored private var trimLoaded = TrimValues()
     /// The last frame of the clip on the stage, as its player knows it.
     var videoLastFrame: Int?
     /// The latest result as generated, before adjustments.
@@ -1775,6 +1802,15 @@ final class AppModel {
     /// while the stage shows anything else (the task runs on: Assets
     /// lists it, T0, T1, ...; a click there watches it again).
     var generationJob: String?
+    /// The stage FOLLOWS THE QUEUE (DESIGN §3a): from a Start on it
+    /// watches the generation running now -- the one ahead of those queued
+    /// after it, then each as it starts -- until something else is put on
+    /// the stage (`putOnStage`: an asset set active or viewed, a project
+    /// opened), which it then keeps. Watching the newest, queued, it
+    /// showed no preview until the queue had drained to it.
+    @ObservationIgnored private var followsQueue = false
+    /// The task Start began last: its prompt, captured, is the box's.
+    @ObservationIgnored private var lastBegun: String?
     /// The TASK QUEUE (DESIGN §3a): this project's generations, upscales
     /// and exports, in the order they run -- the core's list.
     var tasks: [TaskDTO] = []
@@ -2430,6 +2466,31 @@ final class AppModel {
         guard usesReferences, let id = assetId(of: item),
               let tag = referenceTags[id] else { return nil }
         return tag.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+    }
+
+    /// A row item the clip reads as a reference, cut to the clip's length
+    /// (true) or whole (false) -- a clip's or a sound's scissors badge;
+    /// nil for one it is not (a picture, the clip continued, no
+    /// references read).
+    func cutsToLength(_ item: PromptAttachment) -> Bool? {
+        guard usesReferences, !item.continues,
+              item.kind == "video" || item.kind == "audio" else { return nil }
+        return !item.whole
+    }
+
+    /// The scissors badge: the clip or sound cut to the clip's length, or
+    /// used whole.
+    func toggleWhole(_ id: UUID) {
+        guard let i = promptAttachments.firstIndex(where: { $0.id == id })
+        else { return }
+        withAnimation(Self.motion) { promptAttachments[i].whole.toggle() }
+    }
+
+    /// The clip's length as the model makes it, in seconds: what a
+    /// reference is cut to.
+    var referenceCutSeconds: Double {
+        let fps = catalog.first { $0.id == videoReferenceModel }?.fps ?? 24
+        return Double(clipFrames) / max(1, fps)
     }
 
     func referenceBadge(_ item: PromptAttachment) -> String? {
@@ -3159,6 +3220,9 @@ final class AppModel {
 
     func layersChanged() {
         reloadAssets()
+        // A source given to a blank can move it (a clip after what is
+        // there, a still a second long).
+        refreshTrim()
         deselectHiddenLayer()
         if clipOnStage { refreshStackPlan() } else { recomposite() }
     }
@@ -5063,6 +5127,9 @@ final class AppModel {
             let r = referenceRequest
             req["model"] = videoReferenceModel
             req["references"] = r.refs.compactMap { $0 }
+            req["whole"] = promptAttachments
+                .filter { cutsToLength($0) == false }
+                .compactMap { assetId(of: $0) }
             if let c = r.cont { req["continue"] = c }
             req["reference_sound"] = hasSongReference && keepSongSound
             req["inline"] = inlineAssets
@@ -5169,6 +5236,29 @@ final class AppModel {
             // The stage shows the work.
             focusedReference = nil
         }
+        lastBegun = job
+        // The work: the generation running ahead of it, while one does.
+        followsQueue = true
+        if let run = runningGeneration, run != job {
+            if run != generationJob { watchTask(run) }
+        } else {
+            watchTask(job)
+        }
+    }
+
+    /// The generation Start began that is running now.
+    private var runningGeneration: String? {
+        tasks.first {
+            taskContexts[$0.job] != nil
+                && (jobs[$0.job]?.state ?? $0.state) == "running"
+        }?.job
+    }
+
+    /// A task's row clicked (Show on Stage): the stage watches it -- a
+    /// generation running, and the queue after it; one queued, it alone.
+    func showTask(_ job: String) {
+        followsQueue = taskContexts[job] != nil
+            && jobs[job]?.state == "running"
         watchTask(job)
     }
 
@@ -7377,17 +7467,46 @@ final class AppModel {
     func loadTrim(_ clip: AssetDTO) {
         let layer = activeLayer
         trimLayer = layer
-        let t = clip.isComposition ? clip.time(of: layer) : LayerTimeDTO()
-        trim = t.marks
-        trimOffset = t.offset
-        let speed = clip.isComposition ? clip.speedKeys(layer: layer)
-                                       : Keyframes()
-        layerSpeed = speed.isEmpty ? Keyframes(start: LayerSpeed()) : speed
-        let sound = clip.isComposition ? clip.soundKeys(layer: layer)
-                                       : Keyframes()
-        layerSound = sound.isEmpty ? Keyframes(start: LayerSound()) : sound
-        pitchFollowsSpeed = clip.isComposition
-            && clip.pitchFollowsSpeed(layer: layer)
+        let v = trimValues(of: clip, layer: layer)
+        trim = v.marks
+        trimOffset = v.offset
+        layerSpeed = v.speed
+        layerSound = v.sound
+        pitchFollowsSpeed = v.followsSpeed
+        trimLoaded = v
+    }
+
+    /// A layer's time, speed and sound as the Trim panel holds them.
+    private func trimValues(of clip: AssetDTO, layer: String) -> TrimValues {
+        var v = TrimValues()
+        guard clip.isComposition else { return v }
+        let t = clip.time(of: layer)
+        v.marks = t.marks
+        v.offset = t.offset
+        let speed = clip.speedKeys(layer: layer)
+        if !speed.isEmpty { v.speed = speed }
+        let sound = clip.soundKeys(layer: layer)
+        if !sound.isEmpty { v.sound = sound }
+        v.followsSpeed = clip.pitchFollowsSpeed(layer: layer)
+        return v
+    }
+
+    /// What the Trim panel holds now.
+    private var trimShown: TrimValues {
+        TrimValues(marks: trim, offset: trimOffset, speed: layerSpeed,
+                   sound: layerSound, followsSpeed: pitchFollowsSpeed)
+    }
+
+    /// The Trim panel follows the selected layer as the core has it now
+    /// -- one the core moved itself (a blank given a markup starts where
+    /// the player is) -- unless something is being changed in the panel,
+    /// which its write then carries.
+    func refreshTrim() {
+        guard clipOnStage, let clip = currentClip,
+              trimLayer == activeLayer, trimShown == trimLoaded,
+              trimValues(of: clip, layer: activeLayer) != trimLoaded
+        else { return }
+        loadTrim(clip)
     }
 
     /// A sound plays on the stage (no picture to adjust or crop).
@@ -7467,6 +7586,18 @@ final class AppModel {
         seekVideo(to: end ? max(0, (stageClipLength ?? 1) - 1) : 0)
     }
 
+    /// The stage transport's |< and >| (StageTransport): the previous or
+    /// next EVENT of the composition worked on, as the timeline's go --
+    /// a key, where a layer begins or ends -- else the clip's start or
+    /// its last frame.
+    func stageEvent(next: Bool) {
+        if timelineAsset != nil {
+            timelineEvent(next: next)
+        } else {
+            seekStage(end: next)
+        }
+    }
+
     /// The small stage has its own transport under it: something that
     /// plays, or a still's pages to turn.
     var stageHasTransport: Bool {
@@ -7491,27 +7622,39 @@ final class AppModel {
         }
     }
 
-    /// ← and → step the clip in the Trim panel (⇧ ten steps; ⌥ a sound's
-    /// millisecond), its sound heard at each; with the timeline open, ⌘←
-    /// and ⌘→ go to its previous or next EVENT, as its |< and >| do:
-    /// handled -- true -- or left to go on (text, a list, another window
-    /// keep their arrows).
+    /// ← and → step what plays on the stage -- a clip, a timeline, a
+    /// sound (⇧ ten steps; ⌥ a sound's millisecond) -- its sound heard at
+    /// each; ⌘← and ⌘→ go to its previous or next EVENT, as the
+    /// transport's |< and >| do (the timeline's, open); Home and End to
+    /// its start and its last frame. With the timeline open a still's
+    /// pages step too. Handled -- true -- or left to go on (text, a list,
+    /// a control, another window keep their keys). Valtz's own, not the
+    /// player's: AVKit's took them only while its view had the keyboard,
+    /// which a click on the transport gives the window.
     func trimKey(_ e: NSEvent) -> Bool {
         // The timeline steps too: a clip's frames, a still's pages.
         let timeline = timelineOpen && (clipOnStage || pagedOnStage)
-        guard (openPanel == .trim && clipOnStage) || timeline,
-              let w = e.window,
+        guard clipOnStage || timeline, let w = e.window,
               !(w is NSPanel), editorWindow == nil || w === editorWindow
         else { return false }
         let fr = w.firstResponder
         if fr is NSText || fr is NSTableView || fr is NSOutlineView
-            || fr is NSCollectionView { return false }
+            || fr is NSCollectionView || fr is NSControl { return false }
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
+        // Home, End.
+        if e.keyCode == 115 || e.keyCode == 119 {
+            guard clipOnStage, mods.isEmpty else { return false }
+            seekStage(end: e.keyCode == 119)
+            return true
+        }
         guard e.keyCode == 123 || e.keyCode == 124 else { return false }
         if mods == .command {
-            guard timeline else { return false }
-            timelineEvent(next: e.keyCode == 124)
+            if timeline {
+                timelineEvent(next: e.keyCode == 124)
+            } else {
+                stageEvent(next: e.keyCode == 124)
+            }
             return true
         }
         guard mods.subtracting([.shift, .option]).isEmpty else {
@@ -7552,10 +7695,17 @@ final class AppModel {
         sendVideo(.seek(max(0, min(n, last ?? n))))
     }
 
+    /// The scrubber let go at frame `n`: there, playing on at `resume`
+    /// (the rate it had when pressed; 0, paused).
+    func scrubbed(to n: Int, resume: Float) {
+        let last = stageClipLength.map { $0 - 1 }
+        sendVideo(.scrubbed(max(0, min(n, last ?? n)), resume: resume))
+    }
+
     /// The frames the clip on the stage runs: its timeline's (Information
     /// › Canvas › Length), else its own. (Its own alone held the player
     /// off the frames a longer timeline adds.)
-    private var stageClipLength: Int? {
+    var stageClipLength: Int? {
         guard let c = currentClip else { return nil }
         // A composition's: its timeline's, in its frames.
         if c.isComposition, let n = c.length { return c.timeline ?? n }
@@ -7623,6 +7773,12 @@ final class AppModel {
         playVideo(rate: videoRate >= 2 ? min(videoRate * 2, 8) : 2)
     }
 
+    /// The transport's mute button: the stage's player silent, or heard
+    /// again -- as it plays, whatever the layers' own volumes say.
+    func toggleMute() {
+        sendVideo(.mute(!videoMuted))
+    }
+
     func fastRewind() {
         playVideo(rate: videoRate <= -2 ? max(videoRate * 2, -8) : -2)
     }
@@ -7675,31 +7831,35 @@ final class AppModel {
             loadTrim(clip)
             return
         }
-        let comp = clip.isComposition
-        let was = comp ? clip.time(of: layer) : LayerTimeDTO()
-        let timeChanged = was.marks != trim || was.offset != trimOffset
-        func same<T: Equatable>(_ a: Keyframes<T>, _ b: Keyframes<T>,
-                                _ none: T) -> Bool {
-            a == b || (a.isEmpty && b == Keyframes(start: none))
+        // Only what has changed in the panel since it was loaded: what it
+        // left alone is the layer as it WAS, and the core may have moved
+        // it since -- a blank given a markup starts where the player is,
+        // and its start, read as the blank's 0, went back over the
+        // markup's at the next stretch or selection.
+        let now = trimShown, base = trimLoaded
+        let marksChanged = now.marks != base.marks
+        let offsetChanged = now.offset != base.offset
+        let speedChanged = now.speed != base.speed
+        let soundChanged = now.sound != base.sound
+            || now.followsSpeed != base.followsSpeed
+        guard marksChanged || offsetChanged || speedChanged || soundChanged
+        else {
+            refreshTrim()
+            return
         }
-        let speedChanged = !same(comp ? clip.speedKeys(layer: layer)
-                                      : Keyframes(),
-                                 layerSpeed, LayerSpeed())
-        let soundChanged = !same(comp ? clip.soundKeys(layer: layer)
-                                      : Keyframes(),
-                                 layerSound, LayerSound())
-            || (comp && clip.pitchFollowsSpeed(layer: layer))
-                != pitchFollowsSpeed
-        guard timeChanged || speedChanged || soundChanged else { return }
+        let was = clip.isComposition ? clip.time(of: layer) : LayerTimeDTO()
         let id = composedTarget(clip.id)
-        if timeChanged {
+        if (marksChanged && was.marks != trim)
+            || (offsetChanged && was.offset != trimOffset) {
             let rate = trimRate
             var t = was
-            t.in = trim.markIn ?? -1
-            t.out = trim.markOut ?? -1
-            t.rateNum = trim.isIdentity ? 0 : rate.num
-            t.rateDen = trim.isIdentity ? 1 : rate.den
-            t.offset = trimOffset
+            if marksChanged {
+                t.in = trim.markIn ?? -1
+                t.out = trim.markOut ?? -1
+                t.rateNum = trim.isIdentity ? 0 : rate.num
+                t.rateDen = trim.isIdentity ? 1 : rate.den
+            }
+            if offsetChanged { t.offset = trimOffset }
             let r = core.setLayerTime(project: projectId, asset: id,
                                       layer: layer, t.json)
             if !r.ok { flash(r.message, level: .error) }
@@ -7722,6 +7882,9 @@ final class AppModel {
                                          "follow_speed": pitchFollowsSpeed])
             if !r.ok { flash(r.message, level: .error) }
         }
+        // Written: the next write starts from here (one refused, the
+        // panel goes back to the layer at its next refresh).
+        trimLoaded = now
         reloadAssets()
         refreshStackPlan()
     }
@@ -8658,6 +8821,7 @@ final class AppModel {
             matching: .leftMouseDown, handler: { [weak self] event in
                 MainActor.assumeIsolated {
                     _ = ShortcutHints.shared.handle(event)
+                    self?.notePressOnBar(event)
                     Self.endTextEditing(for: event)
                     self?.endViewingIfOutside(event)
                 }
@@ -9593,7 +9757,7 @@ final class AppModel {
             }
             // A generation's prompt, captured: the box's words are it now
             // (the next Start keeps it for the same words).
-            if ev.job == generationJob, let id = p["asset"] as? String {
+            if ev.job == lastBegun, let id = p["asset"] as? String {
                 reloadAssets()
                 if let pa = assets.first(where: { $0.id == id })?
                     .promptInput {
@@ -9609,6 +9773,14 @@ final class AppModel {
                     if job == generationJob { generationStarted = .now }
                 }
                 if !tasks.isEmpty { reloadTasks() }
+                // Following the queue: the next generation as it begins,
+                // the one before it done.
+                if followsQueue, taskContexts[job] != nil,
+                   job != generationJob,
+                   generationJob.map({ jobs[$0]?.state != "running" })
+                       ?? true {
+                    watchTask(job)
+                }
             }
         case "job.progress":
             guard let job = ev.job else { break }
@@ -9903,9 +10075,13 @@ final class AppModel {
                         layer: placed.layer, task: ctx)
             selectLayer(placed.layer)
             landed(on: placed.doc, layer: placed.layer)
-            return
+        } else {
+            finishStage(state: state, asset: asset, task: ctx)
         }
-        finishStage(state: state, asset: asset, task: ctx)
+        // Following the queue: the next generation, if it began before
+        // this one's end was heard. (Its preview follows as it comes; the
+        // result just landed shows till then.)
+        if followsQueue, let next = runningGeneration { watchTask(next) }
     }
 
     /// What is on the stage now, as it is: `asset`, showing `result` --
@@ -10149,7 +10325,9 @@ final class AppModel {
     func putOnStage(_ asset: AssetDTO) {
         stillOnOpen = nil
         landedClip = nil
-        // Picked: the stage leaves the task it watched, which runs on.
+        // Picked: the stage leaves the task it watched, which runs on --
+        // and stays with this as the queue goes on.
+        followsQueue = false
         unwatchTask()
         if asset.kind == "video" || asset.kind == "audio",
            let url = clipURL(asset) {

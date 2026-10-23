@@ -5673,11 +5673,20 @@ Controller::video_references_(project::Project& p,
   // numbers them in, so it is the order recorded.
   Json listed = Json::array(), ported = Json::array();
   int pictures = 0, clips = 0, sounds = 0, ports = 0;
+  // A clip or a sound is CUT to the clip's length by the model's encoder
+  // unless the request keeps it whole ("whole": the encoder told so).
+  const auto kept_whole = [&](AssetId id, const std::string& role) {
+    return role == "reference" &&
+           std::ranges::find(req.whole, id) != req.whole.end();
+  };
   // A reference is WHOLE: a span of something is a composition whose
   // layer marks it, drawn as it is when the job starts (DESIGN §6a).
   auto add = [&](AssetId id, const std::string& role) -> Status {
     VALTZ_ASSIGN(project::Asset a, p.asset(id));
     Json e = {{"asset", id.str()}, {"role", role}};
+    if (a.kind != project::AssetKind::Image && kept_whole(id, role)) {
+      e["whole"] = true;
+    }
     switch (a.kind) {
     case project::AssetKind::Image:
       e["kind"] = "image";

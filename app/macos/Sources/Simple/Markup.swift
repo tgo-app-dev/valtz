@@ -453,6 +453,10 @@ extension AppModel {
         reloadAssets()
         if activeLayer != layer || (stageStack?.layers ?? []).isEmpty {
             selectLayer(layer)
+        } else {
+            // A blank given its markup here starts where the player is:
+            // the Trim panel read it as the blank.
+            refreshTrim()
         }
         return layer
     }

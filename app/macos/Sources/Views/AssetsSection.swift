@@ -186,7 +186,10 @@ extension AppModel {
 
     /// A click away from the viewing -- anywhere in the editor's window
     /// but the asset list and the stage itself (where the viewed asset is
-    /// looked at, zoomed, panned) -- ends it.
+    /// looked at, zoomed, panned) -- ends it. The bar under the stage is
+    /// the stage's: a click on its Grab Frame ended the viewing first, the
+    /// active composition back by the time the button acted -- a frame
+    /// grabbed from it, or none, never from the clip viewed.
     func endViewingIfOutside(_ event: NSEvent) {
         guard viewedAsset != nil, let w = event.window, !(w is NSPanel),
               let content = w.contentView else {
@@ -194,10 +197,42 @@ extension AppModel {
         }
         let p = event.locationInWindow
         let at = CGPoint(x: p.x, y: content.bounds.height - p.y)
-        if assetListFrame.contains(at) || stageCardFrame.contains(at) {
+        if assetListFrame.contains(at) || stageCardFrame.contains(at)
+            || stageBarFrame.contains(at) {
             return
         }
         endViewing()
+    }
+
+    /// The stage's bar said in the system log (category stage-bar): each
+    /// press over it -- where the keyboard was, the drag band, a viewing
+    /// -- and each transport button's and the scrubber's action as it
+    /// runs: a press with no action after it was taken before it reached
+    /// the button (`/usr/bin/log show --predicate 'subsystem ==
+    /// "com.tgous.valtz" && category == "stage-bar"'`; zsh's own `log` is
+    /// another command). A clip's transport that took no click after a
+    /// generation was never seen to in a scripted run.
+    static let barLog = Logger(subsystem: "com.tgous.valtz",
+                               category: "stage-bar")
+
+    /// A press over the stage's bar (the window's mouse-down monitor).
+    func notePressOnBar(_ event: NSEvent) {
+        guard !stageBarFrame.isNull, let w = event.window, !(w is NSPanel),
+              let content = w.contentView else { return }
+        let p = event.locationInWindow
+        let at = CGPoint(x: p.x, y: content.bounds.height - p.y)
+        guard stageBarFrame.contains(at) else { return }
+        let fr = w.firstResponder.map { String(describing: type(of: $0)) }
+            ?? "-"
+        noteBar("press at \(Int(at.x)),\(Int(at.y)) key=\(w.isKeyWindow)"
+                + " active=\(NSApp.isActive) responder=\(fr)"
+                + " band=\(stageDragReady) viewing=\(viewedAsset != nil)"
+                + " rate=\(videoRate)")
+    }
+
+    /// A transport button's or the scrubber's action, as it runs.
+    func noteBar(_ what: String) {
+        Self.barLog.notice("\(what, privacy: .public)")
     }
 
     /// The stage card taken off (lifted, larger, fading out), `change`,
@@ -1093,7 +1128,7 @@ private struct AssetRow: View {
         }
         .contextMenu {
             if let t = task {
-                Button("Show on Stage") { model.watchTask(t.job) }
+                Button("Show on Stage") { model.showTask(t.job) }
                 Button(t.running ? "Stop" : "Remove from Queue") {
                     model.cancel(job: t.job)
                 }
@@ -1302,7 +1337,7 @@ private struct AssetRow: View {
             model.retreatFromEditor()
         }
         if let t = task {
-            model.watchTask(t.job)
+            model.showTask(t.job)
         } else {
             model.viewAsset(a)
         }
@@ -1317,7 +1352,7 @@ private struct AssetRow: View {
         // Another kind than text: the Prompt Editor goes.
         if a.kind != "text" { model.retreatFromEditor() }
         if let t = task {
-            model.watchTask(t.job)
+            model.showTask(t.job)
         } else if a.isPrompt {
             model.usePrompt(a)
         } else if a.isComposition {
@@ -1472,9 +1507,9 @@ private struct ExportTaskRow: View {
                   : Color.primary.opacity(hovering ? 0.06 : 0)))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture { model.watchTask(task.job) }
+        .onTapGesture { model.showTask(task.job) }
         .contextMenu {
-            Button("Show on Stage") { model.watchTask(task.job) }
+            Button("Show on Stage") { model.showTask(task.job) }
             Button(task.running ? "Stop" : "Remove from Queue") {
                 model.cancel(job: task.job)
             }

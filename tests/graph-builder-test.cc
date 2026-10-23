@@ -1888,6 +1888,19 @@ TEST(graph_builder, minimax_h3_ref2va_references)
   CHECK(g->audio_start == 12.5);
   CHECK(std::abs(g->audio_duration - 56 / 24.0) < 1e-9);
 
+  // Every clip and sound cut to the clip's length by the encoder unless
+  // kept WHOLE: those by their number in the order it reads them (the
+  // list, then the ports), the key kept apart.
+  CHECK(!ec.contains("whole_references"));
+  refs[1].whole = true;
+  refs[2].whole = true;
+  auto kept = vp::build_video(j, std::nullopt, refs);
+  REQUIRE_OK(kept);
+  CHECK((config_of(find_stage(kept->spec, "video-ref-encoder"))
+             ["whole_references"] == Json::array({2, 3})));
+  refs[1].whole = false;
+  refs[2].whole = false;
+
   // Its own soundtrack otherwise; references and a first frame never.
   j.params.erase("reference_sound");
   auto own = vp::build_video(j, std::nullopt, refs);

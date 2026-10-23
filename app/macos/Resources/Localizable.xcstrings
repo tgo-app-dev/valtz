@@ -3130,6 +3130,16 @@
         }
       }
     },
+    "Back 10 ms (with ⌥, 1 ms)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "后退 10 毫秒（按住 ⌥：1 毫秒）"
+          }
+        }
+      }
+    },
     "Back 10 ms (⌥: 1 ms)" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3152,7 +3162,6 @@
       }
     },
     "Back one frame" : {
-      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -4871,6 +4880,26 @@
         }
       }
     },
+    "Cut to the Clip's Length" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "截至片段长度"
+          }
+        }
+      }
+    },
+    "Cut to the clip's length: its first %@ s are read — click to use it whole" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "截至片段长度：只读取前 %@ 秒——点按以完整使用"
+          }
+        }
+      }
+    },
     "DFlash 2 · 4-bit (about %@ more)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6448,6 +6477,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "快速"
+          }
+        }
+      }
+    },
+    "Fast Forward" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "快进"
+          }
+        }
+      }
+    },
+    "Fast Rewind" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "快退"
           }
         }
       }
@@ -10372,8 +10421,17 @@
         }
       }
     },
+    "Next Event" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "下一个事件"
+          }
+        }
+      }
+    },
     "Next event: a key, where a layer begins or ends, the end" : {
-      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -11016,6 +11074,16 @@
         }
       }
     },
+    "On 10 ms (with ⌥, 1 ms)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "前进 10 毫秒（按住 ⌥：1 毫秒）"
+          }
+        }
+      }
+    },
     "On 10 ms (⌥: 1 ms)" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -11068,7 +11136,6 @@
       }
     },
     "On one frame" : {
-      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -12081,8 +12148,17 @@
         }
       }
     },
+    "Previous Event" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上一个事件"
+          }
+        }
+      }
+    },
     "Previous event: a key, where a layer begins or ends, the start" : {
-      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -15193,6 +15269,26 @@
         }
       }
     },
+    "Step Back" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "后退一步"
+          }
+        }
+      }
+    },
+    "Step Forward" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "前进一步"
+          }
+        }
+      }
+    },
     "Steps" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17085,6 +17181,26 @@
         }
       }
     },
+    "Turn the sound off" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关闭声音"
+          }
+        }
+      }
+    },
+    "Turn the sound on" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "打开声音"
+          }
+        }
+      }
+    },
     "Two LoRAs run at a time" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -17447,6 +17563,16 @@
         }
       }
     },
+    "Use Whole" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "完整使用"
+          }
+        }
+      }
+    },
     "Use as Mask" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17566,6 +17692,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "使用此提示词"
+          }
+        }
+      }
+    },
+    "Used Whole" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已完整使用"
+          }
+        }
+      }
+    },
+    "Used whole — click to cut it to the clip's length, %@ s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已完整使用——点按以截至片段长度，%@ 秒"
           }
         }
       }
@@ -18262,6 +18408,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "播放器在片段本身中的位置：片段自己的时间，而非时间线的"
+          }
+        }
+      }
+    },
+    "Where the player is: click or drag to go there" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "播放位置：点按或拖移以前往"
           }
         }
       }

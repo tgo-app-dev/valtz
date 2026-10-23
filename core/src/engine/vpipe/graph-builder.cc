@@ -1026,6 +1026,16 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
     Json made = Json::array();  // what each reference is, for its key
     bool hashed = true;
     int ref = 0;  // reference ports used, 1..6
+    // The references the encoder keeps WHOLE, by their number in the
+    // order it reads them -- the list, then the ports, a clip's sound
+    // with it: the order they come in. It cuts every other one to the
+    // clip's length (`frames`), as the model's makers' code does.
+    Json whole = Json::array();
+    for (std::size_t k = 0; k < refs.size(); ++k) {
+      if (refs[k].whole) {
+        whole.push_back(static_cast<int>(k) + 1);
+      }
+    }
     for (const auto& r : refs) {
       if (r.kind == "audio" && !song) {
         song = &r;
@@ -1035,7 +1045,7 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                       {"list", r.list}, {"audio", r.audio},
                       {"first", r.first}, {"count", r.count},
                       {"fps", r.fps}, {"start_s", r.start_s},
-                      {"duration_s", r.duration_s}});
+                      {"duration_s", r.duration_s}, {"whole", r.whole}});
       if (r.list) {
         files.push_back(r.path.string());
         continue;
@@ -1115,6 +1125,9 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                       jget(rv, "encoder", Json::object()));
     if (!attach.empty()) {
       enc["attach_audio"] = attach;
+    }
+    if (!whole.empty()) {
+      enc["whole_references"] = whole;
     }
     // Its key: the words, its config, every reference as content (the
     // files' paths left out: their bytes say what they are).

@@ -81,16 +81,24 @@ final class PromptTextView: NSTextView {
         let took = super.becomeFirstResponder()
         if took {
             onFocus?()
-            onFocusChange?()
+            afterFocusChange(onFocusChange)
         }
         return took
     }
 
     override func resignFirstResponder() -> Bool {
         let gave = super.resignFirstResponder()
-        if gave { onFocusChange?() }
+        if gave { afterFocusChange(onFocusChange) }
         return gave
     }
+
+    /// The caret only while the box has the keyboard -- or while media
+    /// dragged over it show where they will be mentioned.
+    override var shouldDrawInsertionPoint: Bool {
+        super.shouldDrawInsertionPoint
+            && (window?.firstResponder === self || showsDropCaret)
+    }
+    private var showsDropCaret = false
 
     /// ⌘B, ⌘I, ⌘U: Markdown's bold, italic and underline (PromptMarkdown)
     /// -- the text stays plain.
@@ -147,6 +155,7 @@ final class PromptTextView: NSTextView {
         if Self.draggedReference(sender.draggingPasteboard) == nil {
             onDropTargeted?(true)
         }
+        showsDropCaret = true
         return .copy
     }
 
@@ -163,12 +172,14 @@ final class PromptTextView: NSTextView {
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
         onDropTargeted?(false)
+        dropCaretGone()
         super.draggingExited(sender)
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let pb = sender.draggingPasteboard
         onDropTargeted?(false)
+        dropCaretGone()
         let p = convert(sender.draggingLocation, from: nil)
         let at = characterIndexForInsertion(at: p)
         // A thumbnail from the row: mentioned here -- the one way a
@@ -196,6 +207,15 @@ final class PromptTextView: NSTextView {
         }
         _ = onFilesDropped?(urls)
         return true
+    }
+
+    /// The drag over the words gone: the caret shows again only where
+    /// the box has the keyboard.
+    private func dropCaretGone() {
+        guard showsDropCaret else { return }
+        showsDropCaret = false
+        updateInsertionPointStateAndRestartTimer(
+            window?.firstResponder === self)
     }
 
     override func paste(_ sender: Any?) {
@@ -1378,5 +1398,23 @@ final class RefTagEditor: NSViewController, NSTextFieldDelegate {
         guard let n = Int(field.stringValue), n >= 1 else { return }
         stepper.integerValue = n
         onChange?(kind, n - 1)
+    }
+}
+
+extension NSTextView {
+    /// What follows the keyboard coming or going -- Markdown's markers
+    /// shown or hidden -- run once the window has moved it, and the caret
+    /// put right after. Inside resignFirstResponder the window still names
+    /// this view its first responder: the restyle's edits restarted the
+    /// caret's blinking there, and nothing stopped it -- the caret blinked
+    /// on in a box that no longer had the keyboard, the keys going to the
+    /// stage's player.
+    func afterFocusChange(_ change: (() -> Void)?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            change?()
+            self.updateInsertionPointStateAndRestartTimer(
+                self.window?.firstResponder === self)
+        }
     }
 }

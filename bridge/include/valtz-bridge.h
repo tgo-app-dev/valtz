@@ -217,7 +217,8 @@ public:
   //  "first"?: asset id (a picture the clip opens on), "first_adjust"?,
   //  "first_crop"?, "last"?: asset id (with "first", a picture it ends
   //  on: FL2VA), "references"?: [asset ids: pictures, clips, sounds,
-  //  in order], "continue"?: a clip to carry on from (its tail),
+  //  in order], "whole"?: [those clips and sounds kept whole, not cut
+  //  to the clip's length], "continue"?: a clip to carry on from (its tail),
   //  "tail_seconds"?, "reference_sound"?: bool (the first sound's own as
   //  the soundtrack), "inline"?: [asset ids mentioned in the prompt]}:
   // a clip with its soundtrack (Controller::generate_video). Its

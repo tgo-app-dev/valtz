@@ -1402,6 +1402,11 @@ Core::generate_video(const std::string& request_json)
         req.references.push_back(*a);
       }
     }
+    for (const auto& id : jget(*j, "whole", std::vector<std::string>{})) {
+      if (auto a = AssetId::parse(id)) {
+        req.whole.push_back(*a);
+      }
+    }
     if (auto c = AssetId::parse(jget<std::string>(*j, "continue", ""))) {
       req.continue_from = *c;
     }

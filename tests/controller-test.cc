@@ -7663,6 +7663,37 @@ TEST(controller, a_clip_opens_and_ends_on_pictures)
   CHECK(jget<std::string>(ref2va->params, "prompt", "") ==
         "[video continuation + audio reference] The video continues "
         "from the end of <Video 1>.");
+
+  // A song kept WHOLE: so marked for the engine, which tells the
+  // encoder; a picture is never cut, so never marked.
+  REQUIRE(write_tone(root / "song.wav", 1, 440, 0.5));
+  auto song = import_and_wait(ctl, *pid, root / "song.wav");
+  REQUIRE(song);
+  GenerateVideoRequest sung;
+  sung.project = *pid;
+  sung.model = "minimax-h3-ref2va";
+  sung.row = {*closed, *song};
+  sung.references = {*closed, *song};
+  sung.whole = {*closed, *song};
+  sung.prompt = "<valtz_ref_img_0> sings <valtz_ref_aud_0>.";
+  sung.frames = 56;
+  REQUIRE_OK(ctl.generate_video(sung));
+  REQUIRE(eventually([&] {
+    return engine->held_of(engine::kOpGenerateVideo).size() == 4;
+  }, 20));
+  const auto* kept =
+      engine->spec(engine->held_of(engine::kOpGenerateVideo).back());
+  REQUIRE(kept != nullptr);
+  int whole = 0, marked = 0;
+  for (const auto& e : jget(kept->params, "reference_media", Json())) {
+    ++marked;
+    if (jget(e, "whole", false)) {
+      ++whole;
+      CHECK(jget<std::string>(e, "asset", "") == song->str());
+      CHECK(jget<std::string>(e, "kind", "") == "audio");
+    }
+  }
+  CHECK(marked == 2 && whole == 1);
 }
 
 // A continuation's GUIDE (continuation_guide): the clip's last seconds,

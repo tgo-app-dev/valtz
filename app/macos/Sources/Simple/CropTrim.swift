@@ -175,6 +175,16 @@ struct TrimSpec: Equatable, Sendable {
     }
 }
 
+/// The Trim panel's values for a layer -- its marks, its start, its speed
+/// and sound -- as the panel holds them (an untouched track one key).
+struct TrimValues: Equatable, Sendable {
+    var marks = TrimSpec()
+    var offset = 0
+    var speed = Keyframes(start: LayerSpeed())
+    var sound = Keyframes(start: LayerSound())
+    var followsSpeed = false
+}
+
 /// A clip's frame rate, exactly (24000/1001 is not 23.976).
 struct FrameRate: Equatable, Sendable {
     var num: Int

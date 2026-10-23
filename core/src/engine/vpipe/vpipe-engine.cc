@@ -1671,6 +1671,7 @@ private:
       r.list = jget<std::string>(e, "route", "list") == "list";
       r.audio = jget(e, "audio", false);
       r.continues = in.role == "continue";
+      r.whole = jget(e, "whole", false);
       const media::Trim t = media::trim_from_json(
           jget(e, "trim", Json::object()));
       if (r.kind == "video") {

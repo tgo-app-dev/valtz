@@ -140,6 +140,7 @@ set(VALTZ_APP_SOURCES
   Sources/Viewer/AudioScrubber.swift
   Sources/Viewer/Guides.swift
   Sources/Viewer/GuideMarks.swift
+  Sources/Viewer/StageScrubber.swift
 )
 
 # valtz-icon: renders the Valtz mark with the app's own Metal renderer

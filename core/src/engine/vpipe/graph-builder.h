@@ -59,6 +59,9 @@ struct RefMedia {
   // The clip continued (input role "continue"): what the new clip's
   // seam is matched to.
   bool                  continues = false;
+  // Kept whole: not cut to the clip's length by the encoder, which cuts
+  // every other clip and sound (its `whole_references`).
+  bool                  whole = false;
   int                   width = 0;     // a clip's frame
   int                   height = 0;
   double                fps = 24;

@@ -2,6 +2,22 @@ import AppKit
 import CoreImage
 import QuartzCore
 
+/// Where the stage's card may grow as it is zoomed (DESIGN §10): `room`,
+/// the most it takes -- the stage's space -- and `fit`, its fitted size,
+/// the least.
+struct StageGrowth: Equatable {
+    var room: CGSize
+    var fit: CGSize
+
+    /// The card for what a zoom lays out (`content`, nil fitted): as
+    /// large, between its fitted size and the room.
+    func card(_ content: CGSize?) -> CGSize {
+        guard let c = content else { return fit }
+        return CGSize(width: min(room.width, max(fit.width, c.width)),
+                      height: min(room.height, max(fit.height, c.height)))
+    }
+}
+
 /// A pixel-accurate image viewer with A/B comparison, built on Core
 /// Animation layers so the images are color-managed by the system and
 /// HDR content keeps its headroom (`preferredDynamicRange = .high`).
@@ -46,13 +62,27 @@ import QuartzCore
 /// is the tool's -- reported in canvas pixels, top-left origin, with no
 /// pan -- and its overlay (MarkupOverlay: the stroke being drawn, the
 /// objects being edited, their handles) is drawn over the picture.
+///
+/// On the stage the view GROWS with its zoom (`growth`, DESIGN §10):
+/// the card is as large as what the zoom lays out, between its fitted
+/// size and the stage's room. Along an axis where all of it fits
+/// the room it lies centred -- the card hugs it, so a pan or a zoom about
+/// the pointer does not move it there -- and past the room it pans as
+/// before.
 @MainActor
 final class CompareCanvas: NSView {
+    /// The ½ point a laid-out size may run past the room and still be
+    /// taken to fit it (the card's sizes are fractional).
+    static let growSlack: CGFloat = 0.5
+
     /// What the title bar shows: the zoom (1.0 = 1:1; nil with no image)
-    /// and whether the canvas is fitting.
+    /// and whether the canvas is fitting -- and, for the stage's card,
+    /// what the zoom lays out: the size in points a view would need to
+    /// show all of it (nil with no image).
     struct Viewport: Equatable {
         var zoom: CGFloat?
         var fitting: Bool
+        var content: CGSize? = nil
     }
     var onViewportChange: ((Viewport) -> Void)?
     private var lastViewport: Viewport?
@@ -201,6 +231,20 @@ final class CompareCanvas: NSView {
     /// for a card that already has the image's aspect ratio).
     var fitMargin: CGFloat = 0.98
 
+    /// The stage's card, grown with the zoom; nil, the view's size is
+    /// all there is.
+    var growth: StageGrowth? {
+        didSet {
+            guard growth != oldValue else { return }
+            if fitting {
+                fitNow()
+            } else {
+                keepInView()
+                relayout()
+            }
+        }
+    }
+
     var canvasBackground: NSColor? = NSColor(white: 0.11, alpha: 1) {
         didSet { layer?.backgroundColor = canvasBackground?.cgColor }
     }
@@ -335,7 +379,13 @@ final class CompareCanvas: NSView {
             relayout()
             return
         }
-        let r = regions().first ?? bounds
+        // Fitted to the card's fitted size: grown by the zoom, the view
+        // is that size again by the next layout.
+        let box = growth.map {
+            CGRect(x: 0, y: 0, width: min(bounds.width, $0.fit.width),
+                   height: min(bounds.height, $0.fit.height))
+        } ?? bounds
+        let r = regions(in: box).first ?? box
         let e = extentA
         let fx = r.width / e.width
         let fy = r.height / e.height
@@ -373,19 +423,36 @@ final class CompareCanvas: NSView {
 
     /// The view regions the viewport is drawn into (two for side by side
     /// and stacked; A is left / top).
-    private func regions() -> [CGRect] {
-        guard imageB != nil else { return [bounds] }
+    private func regions() -> [CGRect] { regions(in: bounds) }
+
+    private func regions(in box: CGRect) -> [CGRect] {
+        guard imageB != nil else { return [box] }
         switch mode {
         case .sideBySide:
-            let (l, r) = bounds.divided(atDistance: bounds.width / 2,
-                                        from: .minXEdge)
+            let (l, r) = box.divided(atDistance: box.width / 2,
+                                     from: .minXEdge)
             return [l.insetBy(dx: 1, dy: 0), r.insetBy(dx: 1, dy: 0)]
         case .stacked:
-            let (t, b) = bounds.divided(atDistance: bounds.height / 2,
-                                        from: .maxYEdge)
+            let (t, b) = box.divided(atDistance: box.height / 2,
+                                     from: .maxYEdge)
             return [t.insetBy(dx: 0, dy: 1), b.insetBy(dx: 0, dy: 1)]
         default:
-            return [bounds]
+            return [box]
+        }
+    }
+
+    /// What the zoom lays out, in points: the size of a view that shows
+    /// all of A's extent -- twice it, and the regions' gaps, side by side
+    /// or stacked.
+    private var laidOut: CGSize {
+        let ppp = pointsPerPixel
+        let e = extentA
+        let w = e.width * ppp, h = e.height * ppp
+        guard imageB != nil else { return CGSize(width: w, height: h) }
+        switch mode {
+        case .sideBySide: return CGSize(width: 2 * (w + 2), height: h)
+        case .stacked: return CGSize(width: w, height: 2 * (h + 2))
+        default: return CGSize(width: w, height: h)
         }
     }
 
@@ -565,7 +632,8 @@ final class CompareCanvas: NSView {
         // split, and comes and goes with the mode.
         window?.invalidateCursorRects(for: self)
         let v = Viewport(zoom: imageA == nil ? nil : zoom * fa.scale,
-                         fitting: fitting)
+                         fitting: fitting,
+                         content: imageA == nil ? nil : laidOut)
         if v != lastViewport {
             lastViewport = v
             onViewportChange?(v)
@@ -760,22 +828,32 @@ final class CompareCanvas: NSView {
     /// spans [e0, e1] canvas pixels and the view `v` points: its near
     /// edge may come to `m` points from the view's far side, and no
     /// further, so the centre stays within (v / 2 - m) / ppp of the
-    /// picture.
+    /// picture. On the stage (`growth`), along an axis where it all fits
+    /// the room, it is centred: the card grows to it.
     private func keepInView() {
         guard imageA != nil else { return }
         let r = regions().first ?? bounds
         let e = extentA
         let ppp = pointsPerPixel
         guard ppp > 0, e.width > 0, e.height > 0 else { return }
+        let size = laidOut
+        let fits = growth.map {
+            (x: size.width <= $0.room.width + Self.growSlack,
+             y: size.height <= $0.room.height + Self.growSlack)
+        } ?? (x: false, y: false)
         func held(_ c: CGFloat, _ e0: CGFloat, _ e1: CGFloat,
-                  view v: CGFloat) -> CGFloat {
+                  view v: CGFloat, centred: Bool) -> CGFloat {
+            if centred { return (e0 + e1) / 2 }
             let m = min(Self.keepInSight, (e1 - e0) * ppp, v)
             let slack = (v / 2 - m) / ppp
             let lo = e0 - slack, hi = e1 + slack
             return lo <= hi ? min(hi, max(lo, c)) : (e0 + e1) / 2
         }
-        center = CGPoint(x: held(center.x, e.minX, e.maxX, view: r.width),
-                         y: held(center.y, e.minY, e.maxY, view: r.height))
+        center = CGPoint(
+            x: held(center.x, e.minX, e.maxX, view: r.width,
+                    centred: fits.x),
+            y: held(center.y, e.minY, e.maxY, view: r.height,
+                    centred: fits.y))
     }
 
     // MARK: - Events

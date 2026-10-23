@@ -1351,7 +1351,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The prompt row's media, by place (0 first): "focus=1"
             // (a click on it), "mention=0" (dragged into the text, at
             // its end), "move=2:0" (along the row), "remove=1",
-            // "base=1" (its pencil badge).
+            // "base=1" (its pencil badge), "whole=1" (a clip's or a
+            // sound's scissors badge).
             if let spec = env["VALTZ_SNAPSHOT_REFS"] {
                 // A thumbnail's drag, its pointer scripted: `drag=n`
                 // begun on the n-th, `over=n` onto another, `out` off
@@ -1393,6 +1394,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "focus": m.toggleReferenceFocus(id)
                     case "remove": m.removeReference(id)
                     case "base": m.toggleBase(id)
+                    case "whole": m.toggleWhole(id)
                     case "move" where args.count > 1:
                         m.moveReference(id, to: args[1])
                     case "mention":
@@ -2564,7 +2566,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let fr = NSApp.windows.first { $0.isVisible }?
                         .firstResponder
                     FileHandle.standardError.write(Data(
-                        "snapshot: click \(Int(xy[0])),\(Int(xy[1])) focus=\(fr.map { String(describing: type(of: $0)) } ?? "-") undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_"))\n".utf8))
+                        "snapshot: click \(Int(xy[0])),\(Int(xy[1])) focus=\(fr.map { String(describing: type(of: $0)) } ?? "-") undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_")) frame=\(m.videoFrame) rate=\(m.videoRate)\n".utf8))
                 }
             }
             // Drags posted to the window ("x,y>x2,y2" in points from
@@ -2593,7 +2595,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         to: (ends[1][0], ends[1][1]))
                     try? await Task.sleep(for: .milliseconds(500))
                     FileHandle.standardError.write(Data(
-                        "snapshot: drag \(d) panels=\(Self.panelSummary(m))\n".utf8))
+                        "snapshot: drag \(d) panels=\(Self.panelSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate)\n".utf8))
                 }
             }
             // The project as a document (DESIGN §5b), in turn: "undo",
@@ -3548,7 +3550,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "watch":
                         if let t = m.tasks.first(where: {
                             $0.position == Int(arg) }) {
-                            m.watchTask(t.job)
+                            m.showTask(t.job)
                         }
                     case "view":
                         let a = arg == "newest-image"
@@ -3566,13 +3568,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     case "undo": m.undoProject()
                     // "click:x,y": a click posted to the window, points
-                    // from its top left (a card's button, say).
+                    // from its top left (a card's button, say);
+                    // "click:x,y@150" held 150 ms, as a hand's is --
+                    // what the press starts has run by the release.
                     case "click":
-                        let xy = arg.split(separator: ",").compactMap {
-                            Double($0)
-                        }
-                        if xy.count == 2 {
+                        let held = arg.split(separator: "@")
+                        let xy = (held.first ?? "").split(separator: ",")
+                            .compactMap { Double($0) }
+                        if xy.count == 2, held.count == 2,
+                           let ms = Int(held[1]) {
+                            await Self.postClick(x: xy[0], y: xy[1],
+                                                 holding: ms)
+                        } else if xy.count == 2 {
                             Self.postClick(x: xy[0], y: xy[1])
+                        }
+                    // "hintclick:<key>": a click held 150 ms on the
+                    // button whose ⌘? label is <key> ("Space", "⌘←"),
+                    // wherever it lies -- printed as `snapshot:
+                    // hintclick key= at=`, "-" when none shows.
+                    case "hintclick":
+                        let r = ShortcutHints.shared.place(of: arg)
+                        if let r {
+                            await Self.postClick(x: r.midX, y: r.midY,
+                                                 holding: 150)
+                        }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: hintclick key=\(arg) at=\(r.map { "\(Int($0.midX)),\(Int($0.midY))" } ?? "-") chain=\(r.map { Self.hitChain(x: $0.midX, y: $0.midY) } ?? "-")\n".utf8))
+                    // "scrub:<0...1>": a click held 150 ms on the stage's
+                    // scrubber, that far along its track -- printed as
+                    // `snapshot: scrub at= chain=`.
+                    case "scrub":
+                        var at = "-"
+                        if let v = ScrubberNSView.shown, let w = v.window,
+                           let host = w.contentView,
+                           let f = Double(arg) {
+                            let r = v.convert(v.bounds, to: host)
+                            let y = host.isFlipped ? r.midY
+                                : host.bounds.height - r.midY
+                            let x = r.minX + 4.5 + (r.width - 9) * f
+                            at = "\(Int(x)),\(Int(y)) chain=\(Self.hitChain(x: x, y: y))"
+                            await Self.postClick(x: x, y: y, holding: 150)
+                        }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: scrub \(arg) at=\(at)\n".utf8))
+                    // "key:left|right|cleft|cright|sleft|sright|home|
+                    // end|space": a key posted through the app's event
+                    // path (⌘ "c", ⇧ "s") -- the stage's transport keys.
+                    case "key" where arg == "space":
+                        Self.postSpace(m)
+                    case "key":
+                        let name = arg.drop(while: { "cs".contains($0) })
+                        let keys: [Substring: (UInt16, Unicode.Scalar)] = [
+                            "left": (123, "\u{F702}"),
+                            "right": (124, "\u{F703}"),
+                            "home": (115, "\u{F729}"),
+                            "end": (119, "\u{F72B}"),
+                        ]
+                        var mods: NSEvent.ModifierFlags = [.function]
+                        if name == "left" || name == "right" {
+                            mods.insert(.numericPad)
+                            if arg.hasPrefix("c") { mods.insert(.command) }
+                            if arg.hasPrefix("s") { mods.insert(.shift) }
+                        }
+                        if let (code, ch) = keys[name],
+                           let w = m.editorWindow,
+                           let ev = NSEvent.keyEvent(
+                               with: .keyDown, location: .zero,
+                               modifierFlags: mods, timestamp: 0,
+                               windowNumber: w.windowNumber, context: nil,
+                               characters: String(ch),
+                               charactersIgnoringModifiers: String(ch),
+                               isARepeat: false, keyCode: code) {
+                            NSApp.postEvent(ev, atStart: false)
                         }
                     // Valtz hidden (Hide Valtz, ⌘H) and shown again,
                     // the keyboard left where it is: a task landing
@@ -3795,7 +3862,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 + "\(Int($0.width))x\(Int($0.height))"
                         } ?? "-"
                         FileHandle.standardError.write(Data(
-                            "snapshot: zoom \(arg) zoom=\(v.zoomText) fit=\(v.fitting) canZoom=\(m.canZoom) videoShown=\(r)\n".utf8))
+                            "snapshot: zoom \(arg) zoom=\(v.zoomText) fit=\(v.fitting) canZoom=\(m.canZoom) videoShown=\(r) \(Self.cardSummary(m))\n".utf8))
                     // "export:<format>:<file>": what the stage shows,
                     // saved as Save… would.
                     case "export":
@@ -3814,7 +3881,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try? await Task.sleep(for: .milliseconds(400))
                     FileHandle.standardError.write(Data(
-                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) stage=\(m.stageAssetId.flatMap { id in m.assets.first { $0.id == id }?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m))\n".utf8))
+                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.assets.first { $0.id == id }?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary())\n".utf8))
                 }
             }
             // THE AGENT (DESIGN §9b), driven as its card drives it:
@@ -4367,7 +4434,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let m = model, let q = env["VALTZ_SNAPSHOT_SEARCH"] {
             m.searchText = q
         }
-        // The title bar's zoom group: "in,in,out,fit,actual".
+        // The title bar's zoom group: "in,in,out,fit,actual" -- each
+        // step printed with the card it leaves (`snapshot: zoom-step`).
         if let m = model, let z = env["VALTZ_SNAPSHOT_ZOOM"] {
             for step in z.split(separator: ",") {
                 switch step {
@@ -4379,6 +4447,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 default: break
                 }
                 try? await Task.sleep(for: .milliseconds(200))
+                let v = m.currentViewer
+                FileHandle.standardError.write(Data(
+                    "snapshot: zoom-step \(step) zoom=\(v.zoomText) fit=\(v.fitting) \(Self.cardSummary(m))\n".utf8))
             }
         }
         // A pan of the stage ("-4000,2500": points, as a drag or a
@@ -5210,7 +5281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "window=\(NSApp.windows.first { $0.isVisible }.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? "-") "
                 + "screen=\(NSScreen.main.map { "\(Int($0.visibleFrame.width))x\(Int($0.visibleFrame.height))" } ?? "-") "
                 + "installed=\(models) ready=\(ready) "
-                + "zoom=\(m.currentViewer.zoomText) fit=\(m.currentViewer.fitting) actual=\(m.currentViewer.isActualSize) canZoom=\(m.canZoom) videoShown=\(videoShown) videoRender=\(videoRender) "
+                + "zoom=\(m.currentViewer.zoomText) fit=\(m.currentViewer.fitting) actual=\(m.currentViewer.isActualSize) canZoom=\(m.canZoom) videoShown=\(videoShown) videoRender=\(videoRender) \(Self.cardSummary(m)) \(Self.scrubberSummary()) "
                 + "output=\(m.dimensions.width)x\(m.dimensions.height) "
                 + "sizes=\(m.sizeClasses.map { "\($0)" }.joined(separator: ",")) "
                 + "composer=\(Int(m.composerWidth))/\(Int(m.composerColumn)) "
@@ -5221,7 +5292,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "marked=\(m.promptMarked.replacingOccurrences(of: "\u{FFFC}", with: "[*]").replacingOccurrences(of: " ", with: "_")) "
                 + "languages=\(L10n.available.joined(separator: ",")) "
                 + "baseHint=\(m.baseHint.flatMap { h in m.promptAttachments.first { $0.id == h }?.url.lastPathComponent } ?? "-") "
-                + "refs=\(m.promptAttachments.map { a in (a.isBase ? "*" : "") + (a.ownCopy ? "+" : "") + a.url.lastPathComponent + (m.referenceNumber(a).map { "#\($0)" } ?? "") }.joined(separator: ",")) "
+                + "refs=\(m.promptAttachments.map { a in (a.isBase ? "*" : "") + (a.ownCopy ? "+" : "") + (m.cutsToLength(a) == false ? "~" : "") + a.url.lastPathComponent + (m.referenceNumber(a).map { "#\($0)" } ?? "") }.joined(separator: ",")) cutTo=\(String(format: "%.3f", m.referenceCutSeconds)) "
                 + "active=\((m.assets.first { $0.id == m.stageAssetId }?.name ?? "-").replacingOccurrences(of: " ", with: "_")) "
                 + "assets=\(m.assets.count) ops=\(Dictionary(grouping: m.assets, by: { $0.op ?? "import" }).map { "\($0.key):\($0.value.count)" }.sorted().joined(separator: ",")) stale=\(m.assets.filter { m.isStale($0, used: m.assetsInUse) }.count) folders=\(m.assetFolders.map { f in "\(f.name)\(m.closedFolders.contains(f.id) ? "-folded" : ""):\(m.assets.filter { $0.folder == f.id }.count)" }.joined(separator: "|").replacingOccurrences(of: " ", with: "_")) renaming=\(m.renamingAsset ?? "-") "
                 + "mentions=\(m.promptMentions.count) focus=\(m.promptAttachments.firstIndex { $0.id == m.focusedReference }.map(String.init) ?? "-") "
@@ -5359,6 +5430,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// dirty=true" -- their pixels, the stage's, where what they measure
     /// lies on the card, the marks shown (each at its point on the card's
     /// edge) and the number typed over.
+    /// The stage's card (its size and place in the window, from its top
+    /// left), what the zoom lays out, and where the picture -- or the
+    /// zoomed clip -- lies in it: "card=1200x640@40,60 content=1800x960
+    /// shown=-300,-160,1800x960".
+    /// The stage's scrubber in the window (points from its top left) and
+    /// its knob's x there: "scrubber=420,671,560x18@knob=700"; "-" while
+    /// it is not shown.
+    @MainActor
+    static func scrubberSummary() -> String {
+        guard let v = ScrubberNSView.shown, let w = v.window,
+              !v.isHiddenOrHasHiddenAncestor,
+              let host = w.contentView else { return "scrubber=-" }
+        let r = v.convert(v.bounds, to: host)
+        let y = host.isFlipped ? r.minY : host.bounds.height - r.maxY
+        return "scrubber=\(Int(r.minX.rounded())),\(Int(y.rounded())),"
+            + "\(Int(r.width.rounded()))x\(Int(r.height.rounded()))"
+            + "@knob=\(Int((r.minX + v.knobX).rounded()))"
+    }
+
+    @MainActor
+    static func cardSummary(_ m: AppModel) -> String {
+        let c = m.stageCardFrame
+        let content = m.currentViewer.content.map {
+            "\(Int($0.width.rounded()))x\(Int($0.height.rounded()))"
+        } ?? "-"
+        func text(_ r: CGRect) -> String {
+            "\(Int(r.minX.rounded())),\(Int(r.minY.rounded())),"
+                + "\(Int(r.width.rounded()))x\(Int(r.height.rounded()))"
+        }
+        let shown = m.stage.video != nil
+            ? (m.stageVideoRect.map(text) ?? "fitted")
+            : (m.stageCanvasRect.map(text) ?? "-")
+        return "card=\(Int(c.width.rounded()))x\(Int(c.height.rounded()))"
+            + "@\(Int(c.minX.rounded())),\(Int(c.minY.rounded())) "
+            + "content=\(content) shown=\(shown)"
+    }
+
     @MainActor
     static func guideSummary(_ m: AppModel) -> String {
         let g = m.stageGuides
@@ -5733,6 +5841,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// A click held `ms` between its press and its release.
+    @MainActor
+    private static func postClick(x: Double, y: Double,
+                                  holding ms: Int) async {
+        guard let win = NSApp.windows.first(where: { $0.isVisible }) else {
+            return
+        }
+        postedClickAt = CACurrentMediaTime()
+        let p = NSPoint(x: x, y: win.frame.height - y)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            if type == .leftMouseUp {
+                try? await Task.sleep(for: .milliseconds(ms))
+            }
+            if let ev = NSEvent.mouseEvent(
+                with: type, location: p, modifierFlags: [], timestamp: 0,
+                windowNumber: win.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1) {
+                NSApp.postEvent(ev, atStart: false)
+            }
+        }
+    }
+
     /// The fields focus visits from `start`, pressing Tab `count` times.
     @MainActor
     private static func tabOrder(from start: String,
@@ -5816,6 +5946,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let f = v as? NSTextField, f.isEditable { out.append(f) }
         for sub in v.subviews { out += fields(in: sub) }
         return out
+    }
+
+    /// "x,y,wxh" in points, rounded; "-" for none.
+    static func rectText(_ r: CGRect) -> String {
+        r.isNull || r.isInfinite ? "-"
+            : "\(Int(r.minX.rounded())),\(Int(r.minY.rounded())),"
+                + "\(Int(r.width.rounded()))x\(Int(r.height.rounded()))"
+    }
+
+    /// Where the keyboard is, and the prompt's caret: "fr=<the editor
+    /// window's first responder> key=<that window key> caret=<the
+    /// prompt's text view first responder or not>/<drawn or not>:<each
+    /// insertion indicator in the window -- its owner, display mode (0
+    /// automatic, 1 hidden, 2 visible), h hidden>".
+    @MainActor
+    static func keyboardSummary(_ m: AppModel) -> String {
+        guard let w = m.editorWindow
+                ?? NSApp.windows.first(where: { $0.isVisible }) else {
+            return "fr=- key=- caret=-"
+        }
+        let tv = m.promptTextView
+        var marks: [String] = []
+        var queue: [NSView] = w.contentView.map { [$0] } ?? []
+        while let v = queue.popLast() {
+            if let i = v as? NSTextInsertionIndicator {
+                let owner = i.superview.map {
+                    String(describing: type(of: $0)) } ?? "-"
+                marks.append("\(owner)/\(i.displayMode.rawValue)"
+                             + (i.isHiddenOrHasHiddenAncestor ? "h" : ""))
+                continue
+            }
+            queue += v.subviews
+        }
+        let mine = tv.map {
+            (w.firstResponder === $0 ? "fr" : "nofr")
+                + ($0.shouldDrawInsertionPoint ? "/draws" : "/off")
+        } ?? "-"
+        return "fr=\(focusName(w.firstResponder)) key=\(w.isKeyWindow) "
+            + "caret=\(mine):\(marks.isEmpty ? "-" : marks.joined(separator: ","))"
     }
 
     @MainActor
