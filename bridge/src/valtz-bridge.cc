@@ -20,6 +20,10 @@ namespace {
 
 std::string g_create_error;
 
+// A markup's objects listed with it in assets_json up to this many; past
+// it, its stamp and count alone (asset_op "markup-objects" has them).
+constexpr std::size_t kInlineObjects = 300;
+
 std::string
 ok(Json extra = Json::object())
 {
@@ -587,6 +591,12 @@ Core::machine_status_json() const
 }
 
 std::string
+Core::memory_held_json() const
+{
+  return guarded([&] { return to_text(_impl->ctl->memory_held()); });
+}
+
+std::string
 Core::gpu_thermal_json(int window_ms) const
 {
   return guarded([&] {
@@ -682,10 +692,9 @@ Core::default_project_path() const
 std::string
 Core::paths_json() const
 {
-  const auto& p = _impl->ctl->paths();
+  const AppPaths p = _impl->ctl->paths();
   Json roots = Json::array();
-  models::ModelStore store(models::ModelStore::default_roots(p.models));
-  for (const auto& r : store.roots()) {
+  for (const auto& r : _impl->ctl->model_store().roots()) {
     roots.push_back(r.string());
   }
   auto& c = _impl->ctl->cache();
@@ -693,11 +702,36 @@ Core::paths_json() const
               {"default_project", p.default_project().string()},
               {"models", p.models.string()},
               {"model_roots", roots},
-              {"cache", p.cache.string()},
+              {"cache", c.root().string()},
               {"cache_bytes", c.size_bytes()},
               {"cache_budget_bytes", c.budget_bytes()},
               {"cache_internal", c.on_internal_volume()},
               {"engine", p.engine.string()}});
+}
+
+std::string
+Core::locations_json() const
+{
+  return guarded([&] { return ok(_impl->ctl->locations()); });
+}
+
+std::string
+Core::set_location(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto r = _impl->ctl->set_location(
+        jget<std::string>(*j, "what", ""),
+        jget<std::string>(*j, "path", ""),
+        jget<std::string>(*j, "how", "move"));
+    if (!r.ok()) {
+      return err(r.error());
+    }
+    return ok({{"job", r->is_nil() ? Json() : Json(r->str())}});
+  });
 }
 
 std::string
@@ -930,28 +964,63 @@ Core::assets_json(const std::string& project_id) const
     if (!p) {
       return err(Code::NotFound, "project is not open");
     }
+    // Before the records: a write while they are read makes the next
+    // revision another, so the list is read again.
+    const std::string revision = p->revision();
     auto assets = p->assets();
     if (!assets.ok()) {
       return err(assets.error());
     }
+    // Each asset by id, for a composition's stand-in below: read once.
+    std::map<AssetId, std::size_t> listed;
+    for (std::size_t i = 0; i < assets->size(); ++i) {
+      listed[(*assets)[i].id] = i;
+    }
     Json arr = Json::array();
-    for (const auto& a : *assets) {
+    for (auto& a : *assets) {
+      // A markup's OBJECTS travel apart (2026-10-23): 16 000 of them were
+      // 5 MB in every list, read again -- and decoded by the app -- at
+      // each edit. Its stamp and count always; the objects themselves only
+      // for a few hundred (the app's copy follows its own edits, fetching
+      // the rest by stamp: asset_op "markup-objects").
+      Json objects;
+      if (a.markup) {
+        objects = std::move(a.markup->objects);
+        a.markup->objects = Json::array();
+      }
       Json j = a;
+      if (a.markup) {
+        Json& mk = j["markup"];
+        mk["stamp"] = a.markup->stamp.empty()
+                          ? Controller::objects_stamp(objects)
+                          : a.markup->stamp;
+        mk["count"] = objects.size();
+        if (objects.size() <= kInlineObjects) {
+          mk["objects"] = std::move(objects);
+        } else {
+          mk.erase("objects");
+        }
+      }
+      // Its head read once, its file and words found from it.
+      std::optional<project::AssetVersion> head;
       if (a.head > 0) {
-        if (auto v = p->version(a.id); v.ok()) {
-          j["info"] = v->info;
-          // How long it took to make (controller/job-timing.h).
-          if (!v->timing.empty()) {
-            j["timing"] = v->timing;
-          }
-          // What it made beside its file: a song's score (ABC).
-          if (const auto sc = jget<std::string>(v->outputs, "score", "");
-              !sc.empty()) {
-            j["score"] = sc;
-          }
-          if (auto path = p->media_path(a.id); path.ok()) {
-            j["path"] = path->string();
-          }
+        if (auto v = p->version(a.id, a.head); v.ok()) {
+          head = std::move(*v);
+        }
+      }
+      if (head) {
+        j["info"] = head->info;
+        // How long it took to make (controller/job-timing.h).
+        if (!head->timing.empty()) {
+          j["timing"] = head->timing;
+        }
+        // What it made beside its file: a song's score (ABC).
+        if (const auto sc = jget<std::string>(head->outputs, "score", "");
+            !sc.empty()) {
+          j["score"] = sc;
+        }
+        if (auto path = p->media_path(a, *head); path.ok()) {
+          j["path"] = path->string();
         }
       }
       // A composition: the frame its layers lie on, a timeline's length
@@ -982,19 +1051,23 @@ Core::assets_json(const std::string& project_id) const
           if (!l.source) {
             continue;
           }
-          auto s = p->asset(*l.source);
-          if (!s.ok() || s->kind != a.kind ||
+          // The list's own (a markup of thousands read again was 40 ms).
+          const auto at = listed.find(*l.source);
+          const project::Asset* s =
+              at != listed.end() ? &(*assets)[at->second] : nullptr;
+          if (!s || s->kind != a.kind ||
               (s->cls != project::AssetClass::Flat &&
                s->cls != project::AssetClass::Generated)) {
             continue;
           }
-          if (auto path = p->media_path(s->id, l.source_version);
+          auto v = p->version(s->id, l.source_version > 0 ? l.source_version
+                                                          : s->head);
+          if (auto path = v.ok() ? p->media_path(*s, *v)
+                                 : Result<fs::path>(v.error());
               path.ok()) {
             j["path"] = path->string();
             j["stand_in"] = true;
-            if (auto v = p->version(s->id, l.source_version); v.ok()) {
-              j["info"] = v->info;
-            }
+            j["info"] = v->info;
           }
           break;
         }
@@ -1006,8 +1079,8 @@ Core::assets_json(const std::string& project_id) const
       }
       // A text: its words -- a prompt's tags and all, and how much it
       // has made (once anything, it is kept as it is).
-      if (a.kind == project::AssetKind::Text && a.head > 0) {
-        if (auto t = p->read_text(a.id); t.ok()) {
+      if (a.kind == project::AssetKind::Text && head) {
+        if (auto t = p->read_text(a, *head); t.ok()) {
           j["text"] = std::string(utf8_prefix(*t, 65536));
         }
       }
@@ -1036,7 +1109,24 @@ Core::assets_json(const std::string& project_id) const
     }
     auto folders = p->folders();
     return ok({{"assets", arr},
-               {"folders", folders.ok() ? *folders : Json::array()}});
+               {"folders", folders.ok() ? *folders : Json::array()},
+               {"revision", revision}});
+  });
+}
+
+std::string
+Core::assets_revision(const std::string& project_id) const
+{
+  return guarded([&] {
+    auto id = parse_id<ProjectId>(project_id);
+    if (!id.ok()) {
+      return err(id.error());
+    }
+    auto* p = _impl->ctl->project(*id);
+    if (!p) {
+      return err(Code::NotFound, "project is not open");
+    }
+    return ok({{"revision", p->revision()}});
   });
 }
 
@@ -1059,6 +1149,20 @@ Core::asset_op(const std::string& request_json)
     auto asset = [&](const char* key) {
       return parse_id<AssetId>(jget<std::string>(*j, key, ""));
     };
+    // A MARKUP asset's objects -- {"asset"} -> {"objects", "stamp"}: what
+    // the asset list leaves out past a few hundred (assets_json).
+    if (op == "markup-objects") {
+      auto aid = parse_id<AssetId>(jget<std::string>(*j, "asset", ""));
+      if (!aid.ok()) {
+        return err(aid.error());
+      }
+      auto r = c.markup_objects(*pid, *aid);
+      if (!r.ok()) {
+        return err(r.error());
+      }
+      return ok({{"objects", std::move(r->first)},
+                 {"stamp", std::move(r->second)}});
+    }
     if (op == "create-folder") {
       auto f = c.create_folder(*pid, name);
       return f.ok() ? ok({{"folder", *f}}) : err(f.error());
@@ -2079,6 +2183,23 @@ Core::layer_op(const std::string& request_json)
                               strings(jget(*j, "selected", Json())), at);
       return r.ok() ? ok({{"layer", *r}}) : err(r.error());
     }
+    // The markup's objects PATCHED: {"upsert": [objects], "remove":
+    // [ids]} -> {"objects": those now as kept that changed (put in, or
+    // resolved for an anchor), "removed", "stamp", "count"} -- what the
+    // app's copy of them needs to follow (Controller::patch_markup_objects).
+    if (op == "patch-objects") {
+      auto r = c.patch_markup_objects(
+          *pid, *aid, jget<std::string>(*j, "layer", ""),
+          jget(*j, "upsert", Json::array()),
+          strings(jget(*j, "remove", Json())));
+      if (!r.ok()) {
+        return err(r.error());
+      }
+      return ok({{"objects", std::move(r->changed)},
+                 {"removed", r->removed},
+                 {"stamp", r->stamp},
+                 {"count", r->count}});
+    }
     // Layer folders: "group" {"layers", "name"} -> {"folder"}; "ungroup",
     // "folder-rename" {"name"}, "folder-show" / "folder-hide" {"folder"};
     // "place" {"layers", "above" (none: the bottom), "folder"}.
@@ -2233,6 +2354,12 @@ Core::layer_op(const std::string& request_json)
       st = c.arrange_markup(*pid, *aid, layer,
                             strings(jget(*j, "objects", Json())),
                             jget<std::string>(*j, "how", ""));
+    } else if (op == "connectors") {
+      // {"objects", "add"}: their default connectors added, or all
+      // taken off.
+      st = c.markup_connectors(*pid, *aid, layer,
+                               strings(jget(*j, "objects", Json())),
+                               jget(*j, "add", true));
     } else if (op == "materialize") {
       st = c.materialize_markup(*pid, *aid, layer,
                                 strings(jget(*j, "objects", Json())));

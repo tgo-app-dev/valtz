@@ -1641,7 +1641,7 @@ TEST(graph_builder, drama3_performs_a_script_in_its_voices)
 }
 
 // A quantized variant made: vpipe's model-quantize from the source folder
-// into the path the job names.
+// into the path the job names, its scales in BF16 -- what it runs in.
 TEST(graph_builder, quantize_model_names_its_output)
 {
   JobSpec j = job_for("moss-tts-v1.5-w8g64", kOpQuantizeModel);
@@ -1656,6 +1656,8 @@ TEST(graph_builder, quantize_model_names_its_output)
   CHECK(jget<std::string>(qc, "output_name", "") ==
         "/models/local/.MOSS-TTS-v1.5-8bit.quantizing");
   CHECK(jget(qc, "bits", 0) == 8 && jget(qc, "group_size", 0) == 64);
+  // Its scales in the dtype it runs in (vpipe's run_dtype).
+  CHECK(jget<std::string>(qc, "run_dtype", "") == "bf16");
   j.params.erase("output");
   CHECK(!vp::build_quantize_model(j).ok());
 }
@@ -1696,6 +1698,9 @@ TEST(graph_builder, a_compressed_copy_is_quantized_part_by_part)
   CHECK(!c2.contains("awq"));
   CHECK(src_of(q2, 0) == "quantize-1");
   CHECK(!jget(c2, "skip_existing", true));
+  // Every pass's scales in BF16, whatever a part's options say.
+  CHECK(jget<std::string>(c1, "run_dtype", "") == "bf16");
+  CHECK(jget<std::string>(c2, "run_dtype", "") == "bf16");
   j.params["parts"] = Json::array({{{"options", Json::object()}}});
   CHECK(!vp::build_quantize_model(j).ok());
 }

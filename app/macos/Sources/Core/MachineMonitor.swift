@@ -65,13 +65,42 @@ final class MachineMonitor {
         var tempC: Double?
     }
 
+    /// What the engine holds in memory (Controller::memory_held): the
+    /// RAM popover's, read while it is open (startMemory / stopMemory).
+    struct Memory: Equatable {
+        struct Item: Equatable, Identifiable {
+            /// "helper", "dit", "text-encoder", "vae" (kept warm), or
+            /// "weights" (a checkpoint resident, not kept).
+            var part: String
+            var name: String
+            var model: String
+            var bytes: Double
+            var kvBytes: Double
+            /// Kept warm: how long it stays unless used again.
+            var seconds: Double?
+            var warm: Bool
+            /// Its size from its files: vpipe counts none of it.
+            var estimated: Bool
+            var parked: Bool
+            var id: String { "\(part):\(model):\(name)" }
+        }
+        var items: [Item] = []
+        /// This process's Metal allocations: the items and the scratch
+        /// they work in.
+        var gpuAllocated: Double?
+        /// What letting idle models go would give back now.
+        var pooled: Double = 0
+    }
+
     private(set) var load = Load()
+    private(set) var memory: Memory?
     private(set) var thermal: Thermal?
     private(set) var osState = ProcessInfo.processInfo.thermalState
 
     @ObservationIgnored private let core: CoreService?
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var thermalTask: Task<Void, Never>?
+    @ObservationIgnored private var memoryTask: Task<Void, Never>?
     @ObservationIgnored private var observer: NSObjectProtocol?
 
     /// The web UI's pace; the macOS app's (each thermal sample costs a
@@ -122,8 +151,51 @@ final class MachineMonitor {
         thermalTask?.cancel()
         loadTask = nil
         thermalTask = nil
+        stopMemory()
         if let observer { NotificationCenter.default.removeObserver(observer) }
         observer = nil
+    }
+
+    /// The popover open: what the engine holds, every two seconds -- a
+    /// model kept warm counts down, one let go leaves the list.
+    func startMemory() {
+        guard memoryTask == nil, let core else { return }
+        memoryTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let d = await Task.detached(priority: .utility) {
+                    core.memoryHeldJSON()
+                }.value
+                if Task.isCancelled { return }
+                self?.take(memory: d)
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    func stopMemory() {
+        memoryTask?.cancel()
+        memoryTask = nil
+    }
+
+    private func take(memory d: Data) {
+        guard let j = try? JSONSerialization.jsonObject(with: d)
+                as? [String: Any] else { return }
+        func num(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
+        let items = (j["items"] as? [[String: Any]] ?? []).map { i in
+            Memory.Item(part: i["part"] as? String ?? "",
+                        name: i["name"] as? String ?? "",
+                        model: i["model"] as? String ?? "",
+                        bytes: num(i["bytes"]) ?? 0,
+                        kvBytes: num(i["kv_bytes"]) ?? 0,
+                        seconds: (i["warm"] as? Bool ?? false)
+                            ? num(i["seconds"]) : nil,
+                        warm: i["warm"] as? Bool ?? false,
+                        estimated: i["estimated"] as? Bool ?? false,
+                        parked: i["parked"] as? Bool ?? false)
+        }
+        let next = Memory(items: items, gpuAllocated: num(j["gpu_allocated"]),
+                          pooled: num(j["pooled_bytes"]) ?? 0)
+        if next != memory { memory = next }
     }
 
     private func take(load d: Data) {

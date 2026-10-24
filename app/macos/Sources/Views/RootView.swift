@@ -34,9 +34,9 @@ struct RootView: View {
             }
         }
         // A project dropped anywhere no panel takes a drop of its own:
-        // opened, the one open asked about first; other files: into
-        // Assets.
-        .onDrop(of: [.fileURL],
+        // opened, the one open asked about first; other media -- files,
+        // a browser's picture, an app's bytes, a link: into Assets.
+        .onDrop(of: DroppedMedia.dropTypes,
                 delegate: ProjectDropDelegate(model: model,
                                               drag: $projectDrag))
         .overlay {
@@ -137,7 +137,7 @@ struct RootView: View {
                             } action: { model.editorToolbarBottom = $0 }
                             .transition(.move(edge: .top)
                                 .combined(with: .opacity))
-                    } else if model.markupOpen {
+                    } else if model.markupOpen && !model.viewOnly {
                         MarkupBar(model: model)
                             .transition(.move(edge: .top)
                                 .combined(with: .opacity))
@@ -194,8 +194,9 @@ extension Color {
 }
 
 /// The ☰ column: a narrow glass strip of icons -- the screens (the
-/// editor, the log) at the top, Settings (⌘,) at the foot -- set well
-/// below the title bar's hairline.
+/// editor; the editor VIEW ONLY, its eye -- Tab too; the log) at the
+/// top, Settings (⌘,) at the foot -- set well below the title bar's
+/// hairline.
 struct NavPanel: View {
     @Bindable var model: AppModel
     @Environment(\.openSettings) private var openSettings
@@ -204,8 +205,19 @@ struct NavPanel: View {
         VStack(spacing: 6) {
             ForEach(AppScreen.allCases) { s in
                 NavRow(title: s.label, symbol: s.symbol,
-                       selected: model.screen == s) {
+                       selected: model.screen == s
+                           && !(s == .editor && model.viewOnly)) {
                     model.show(s)
+                }
+                // The editor as a viewer, right under it: its eye.
+                if s == .editor {
+                    NavRow(title: String(localized: "View Only"),
+                           symbol: "eye",
+                           selected: model.screen == .editor
+                               && model.viewOnly) {
+                        model.showViewOnly()
+                    }
+                    .shortcutHint(String(localized: "Tab"))
                 }
             }
             Spacer(minLength: 20)
@@ -254,10 +266,11 @@ private struct NavRow: View {
 }
 
 /// The window a view is in, told when it has one.
-/// Asks before the editor's window closes (its close button, ⌘W, File ›
-/// Close): standing in as the window's delegate, `windowShouldClose`
-/// asks; everything else goes on to the delegate SwiftUI gave the window,
-/// as it was. SwiftUI has no way to refuse a window's close.
+/// Asks before the editor's window closes (its close button; ⌘W closes
+/// the project, File › Close Project): standing in as the window's
+/// delegate, `windowShouldClose` asks; everything else goes on to the
+/// delegate SwiftUI gave the window, as it was. SwiftUI has no way to
+/// refuse a window's close.
 @MainActor
 /// A closed project's TASKS being stopped (AppModel.closingTasks): the
 /// window veiled and out of reach, saying what it waits for -- the work
@@ -380,33 +393,29 @@ private struct WindowReader: NSViewRepresentable {
 /// drop for itself (the prompt, Assets, Layers, the timeline, the compare
 /// bar keep theirs; the stage opens a project too) -- OPENS, the project
 /// open asked about first, as the Finder's double-click opens one. Other
-/// FILES let go there go into Assets, as on the list: with nothing on the
+/// MEDIA let go there go into Assets, as on the list -- files (a
+/// folder's pictures, clips and sounds), a browser's or Photos' picture,
+/// an app's bytes, a link to media (DroppedMedia): with nothing on the
 /// stage this is all of the editor, and it refused every file but a
 /// project -- a Finder drag to an empty window's Assets came back (no
 /// scripted drag reproduced it; let go here, it is taken all the same).
-/// What the drag holds is read as it comes in.
+/// What the drag holds is told by its types as it comes in.
 struct ProjectDropDelegate: DropDelegate {
     let model: AppModel
     @Binding var drag: ProjectDrag
 
+    /// Read off the drag's pasteboard, not its providers (DroppedMedia):
+    /// asked while the drag moves, a promise's providers would receive
+    /// its files -- which AppKit refuses outside a perform, aborting.
+    private var pasteboard: NSPasteboard { NSPasteboard(name: .drag) }
+
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.fileURL])
+        holds(pasteboard) != .nothing
     }
 
     func dropEntered(info: DropInfo) {
-        drag.number += 1
         drag.inside = true
-        drag.holds = nil
-        let n = drag.number
-        let providers = info.itemProviders(for: [.fileURL])
-        Task { @MainActor in
-            let found = await Self.read(providers, model: model)
-            // Read after the drag left or dropped: nothing to show.
-            if drag.number == n && drag.inside {
-                drag.holds = found.project != nil ? .project
-                    : found.files.isEmpty ? .nothing : .files
-            }
-        }
+        drag.holds = holds(pasteboard)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
@@ -418,48 +427,45 @@ struct ProjectDropDelegate: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        let providers = info.itemProviders(for: [.fileURL])
         drag.inside = false
-        Task { @MainActor in
-            let found = await Self.read(providers, model: model)
-            if let url = found.project {
-                model.openDropped(url)
-                return
-            }
-            AppModel.dropLog.notice("taken on the window: \(providers.count) item(s), \(found.files.count) file(s)")
-            model.importDropped(found.files, added: true)
+        let pb = pasteboard
+        let intake = DroppedMedia.take(pb)
+        if let url = intake.files.first(where: AppModel.isProjectFile) {
+            model.openDropped(url)
+            return true
         }
+        if model.viewOnly { return false }
+        // Not the stage's own drag (its picture flattened, let go beside
+        // it: nothing), nor a row of Assets.
+        intake.files.removeAll { model.isStageDrag($0) }
+        if DroppedMedia.isStage(pb) || !DroppedMedia.rows(pb).isEmpty {
+            intake.files = []
+        }
+        AppModel.dropLog.notice("taken on the window: \(intake.files.count) file(s), makes \(intake.makes)")
+        model.takeIntoAssets(intake, added: true)
         return true
     }
 
-    /// The drag's files: the first Valtz project among them, else the
-    /// rest -- not the stage's own (its picture flattened, a drag of the
-    /// stage let go beside it: nothing), nor a row of Assets.
-    @MainActor
-    private static func read(_ providers: [NSItemProvider],
-                             model: AppModel) async
-        -> (project: URL?, files: [URL]) {
-        var files: [URL] = []
-        for p in providers {
-            guard let u = await AppModel.droppedURL(p), u.isFileURL else {
-                continue
-            }
-            if AppModel.isProjectFile(u) { return (u, []) }
-            if !model.isStageDrag(u) && AppModel.draggedAssets([u]).isEmpty {
-                files.append(u)
-            }
+    /// What the drag holds: a Valtz project among its files, else media
+    /// to take -- files (not the stage's own, nor a row of Assets),
+    /// promised files, bytes, links.
+    private func holds(_ pb: NSPasteboard) -> ProjectDrag.Holds {
+        let p = DroppedMedia.peek(pb)
+        if p.files.contains(where: AppModel.isProjectFile) { return .project }
+        // View only: nothing goes into the project.
+        if model.viewOnly || DroppedMedia.isStage(pb)
+            || !DroppedMedia.rows(pb).isEmpty {
+            return .nothing
         }
-        return (nil, files)
+        let files = p.files.filter { !model.isStageDrag($0) }
+        return files.isEmpty && p.made == 0 ? .nothing : .files
     }
 }
 
-/// A drag over the window: its number (a read's answer for an earlier
-/// one is dropped), whether it is still over it, and what its files hold
-/// -- nil while they are read: refused only once known to hold nothing
-/// to take.
+/// A drag over the window: whether it is still over it, and what it
+/// holds -- refused only when it holds nothing to take.
 struct ProjectDrag: Equatable {
     enum Holds { case project, files, nothing }
-    var number = 0
     var inside = false
     var holds: Holds?
     var showsProject: Bool { inside && holds == .project }

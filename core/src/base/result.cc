@@ -102,6 +102,9 @@ all_messages()
     kExportEncodingInvalid,
     kExportNeedsPicture, kExportNeedsVideo, kExportNeedsSound,
     kExportNotSaved,
+    kLocationNotWritable, kLocationNested, kModelsBusy, kCacheBusy,
+    kLocationMoving, kModelsMoving, kLocationNoRoom, kModelsMoveFailed,
+    kCacheMoveFailed,
   };
   return kAll;
 }

@@ -185,6 +185,11 @@ final class CoreService: @unchecked Sendable {
     func machineStatusJSON() -> Data {
         Data(String(core.machine_status_json()).utf8)
     }
+    /// What the engine holds in memory, by what holds it (bridge
+    /// memory_held_json): the RAM popover's.
+    func memoryHeldJSON() -> Data {
+        Data(String(core.memory_held_json()).utf8)
+    }
     /// Whether the GPU is held back: blocks for `windowMs`, so never on
     /// the main thread.
     func gpuThermalJSON(windowMs: Int) -> Data {
@@ -198,6 +203,15 @@ final class CoreService: @unchecked Sendable {
     func autoJSON() -> Data { Data(String(core.auto_json()).utf8) }
 
     func pathsJSON() -> Data { Data(String(core.paths_json()).utf8) }
+    /// Where the projects, models and cache are kept (bridge
+    /// locations_json).
+    func locationsJSON() -> Data { Data(String(core.locations_json()).utf8) }
+    /// One of them put elsewhere (bridge set_location): `how` move / keep
+    /// / drop; a move's job, none when it is done already.
+    func setLocation(_ what: String, path: String, how: String)
+        -> CoreReply {
+        send(core.set_location, ["what": what, "path": path, "how": how])
+    }
 
     func rescanModels() { core.rescan_models() }
 
@@ -280,8 +294,26 @@ final class CoreService: @unchecked Sendable {
         reply(core.set_project_ephemeral(std.string(project), on))
     }
 
-    func assets(project: String) -> CoreReply {
-        reply(core.assets_json(std.string(project)))
+    /// What the project has written now: the revision of an asset list
+    /// read since nothing was (bridge assets_revision).
+    func assetsRevision(project: String) -> String? {
+        reply(core.assets_revision(std.string(project)))["revision"]
+            as? String
+    }
+
+    /// The project's assets and folders, decoded straight from the core's
+    /// reply: a list of 16 000 went through Foundation's objects and back
+    /// -- three passes over its 11 MB at every edit (2026-10-23). Not
+    /// read: the reply, for its message.
+    func assets(project: String) -> (list: AssetListDTO?, reply: CoreReply) {
+        let data = Data(String(core.assets_json(std.string(project))).utf8)
+        if let l = DTO.decode(AssetListDTO.self, data), l.ok {
+            return (l, CoreReply(ok: true, payload: [:]))
+        }
+        let obj = (try? JSONSerialization.jsonObject(with: data)
+            as? [String: Any]) ?? [:]
+        return (nil, CoreReply(ok: obj["ok"] as? Bool ?? false,
+                               payload: obj))
     }
 
     /// Canvas Size: the picture or clip on a `width` x `height` canvas,
@@ -416,7 +448,12 @@ final class CoreService: @unchecked Sendable {
     }
 
     func importFiles(project: String, paths: [String]) -> CoreReply {
-        send(core.import_files, ["project": project, "paths": paths])
+        importFiles(["project": project, "paths": paths])
+    }
+
+    /// {"project", "paths", "placement"?: "auto" | "copy" | "link"}.
+    func importFiles(_ request: [String: Any]) -> CoreReply {
+        send(core.import_files, request)
     }
 
     func generateImage(_ request: [String: Any]) -> CoreReply {

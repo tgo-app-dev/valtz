@@ -7,7 +7,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 /// What the window shows, picked in the ☰ column: the editor (the prompt,
-/// its cards and the stage) or the log of what the engine reports.
+/// its cards and the stage -- or the stage alone, VIEW ONLY: AppModel
+/// .viewOnly) or the log of what the engine reports.
 enum AppScreen: String, CaseIterable, Identifiable, Sendable {
     case editor, log
     var id: String { rawValue }
@@ -330,6 +331,19 @@ enum Modality: String, CaseIterable, Identifiable, Sendable {
         case .agent: "wand.and.stars"
         }
     }
+
+    /// Its prompt box's key, ⌘ and its place on the tab (View › Video
+    /// Prompt, ...; the Agent's ⇧⌘P too).
+    var key: KeyEquivalent {
+        switch self {
+        case .video: "1"
+        case .image: "2"
+        case .audio: "3"
+        case .agent: "4"
+        }
+    }
+
+    var shortcut: String { "⌘" + String(key.character) }
 }
 
 /// What a song plans before it is sung (YuE2's `cot`): a score of its
@@ -711,7 +725,7 @@ struct JobInfo {
     /// waited for a download before (2026-10-16).
     var inNoProject: Bool { Self.noProjectPurposes.contains(purpose) }
     static let noProjectPurposes: Set<String> =
-        ["download", "compress", "quantize", "fleet"]
+        ["download", "compress", "quantize", "fleet", "relocate"]
 
     var live: Bool { state == "queued" || state == "running" }
 }
@@ -878,6 +892,31 @@ final class AppModel {
     // Navigation
     var navOpen = false
     var screen: AppScreen = .editor
+    /// VIEW ONLY (DESIGN §10a): the editor as a viewer -- the ☰ column's
+    /// eye, or Tab where nothing in the window takes keys. The stage
+    /// alone: the prompt or the timeline, the cards over them, the panels
+    /// and the markup put away; the inspector's Information only, nothing
+    /// in it to edit; nothing dropped on the stage instantiated. Zoom and
+    /// pan, the compare, the player's transport and scrubber -- a still's
+    /// pages -- still work. Leaving it puts back what was open
+    /// (setViewOnly).
+    private(set) var viewOnly = false
+    /// What view-only put away, put back as it ends: the markup toolbar,
+    /// the Prompt Editor. (The timeline only goes out of reach -- it is
+    /// not offered meanwhile, timelineAvailable -- and its wish stays.)
+    @ObservationIgnored private var viewOnlyPutAway:
+        (markup: Bool, immersive: Bool)?
+    /// When view only last ended: the prompt box coming back then leaves
+    /// the keyboard where it is (promptKeepsOffKeyboard).
+    @ObservationIgnored private var viewOnlyEnded: Date?
+    /// The prompt box, coming back as view only ends, takes no keyboard:
+    /// the next Tab toggles view only again, not a tab typed in the box.
+    var promptKeepsOffKeyboard: Bool {
+        viewOnlyEnded.map { Date().timeIntervalSince($0) < 1 } ?? false
+    }
+    /// The Assets list holds SwiftUI's focus (AssetsSection): a key view
+    /// AppKit's first responder does not show, so Tab is its.
+    var assetListFocused = false
     /// The Log screen's rows (read while it is shown).
     let logState = LogState()
 
@@ -920,6 +959,9 @@ final class AppModel {
             }
         }
     }
+    /// RAM's popover open (a click on its meter): what Valtz holds in
+    /// memory, model by model (MemoryPopover).
+    var memoryPopoverOpen = false
     /// The status bar's items its context menu unchecked: remembered as
     /// the bar is.
     var hiddenStatusItems = AppModel.storedHiddenStatusItems {
@@ -1121,12 +1163,70 @@ final class AppModel {
     var catalog: [CatalogModel] = []
     var engine = ""
     var paths: PathsInfo?
+    /// Where the projects, models and cache are kept, and a move under way
+    /// (Settings › General › Storage; StorageLocations).
+    var locations: LocationsInfo?
+    /// A folder's change refused or failed: said in Settings, where it was
+    /// asked.
+    var locationError: String?
+    /// The folders not there at launch, said once.
+    @ObservationIgnored var locationsWarned = false
 
     // Project
-    var projectId: String?
+    var projectId: String? {
+        // Another project's markups -- and list -- are not this one's.
+        didSet {
+            if projectId != oldValue {
+                markupCopies = [:]
+                assetsRead = nil
+            }
+        }
+    }
+    /// The revision of the asset list last read (CoreService
+    /// assetsRevision): a reload with nothing written since is skipped --
+    /// an action's own reload and the core's "assets.changed" after it
+    /// read a list of 16 000 two or three times, 430 ms each (2026-10-23).
+    @ObservationIgnored var assetsRead: String?
+    /// The app's copy of each markup's objects, by asset id, under the
+    /// stamp they had (reloadAssets, followPatch): a markup of thousands
+    /// travels with the asset list no more.
+    @ObservationIgnored var markupCopies: [String: (stamp: String,
+                                                     objects: [MarkupObject])]
+        = [:]
     var projectName = ""
     var projectPath = ""
-    var assets: [AssetDTO] = []
+    var assets: [AssetDTO] = [] {
+        didSet {
+            assetIndex = Dictionary(
+                assets.indices.map { (assets[$0].id, $0) },
+                uniquingKeysWith: { first, _ in first })
+            assetsRevision &+= 1
+        }
+    }
+    /// Counts the list's changes: what is worked out from it is kept until
+    /// it changes (stageLayerIds, timelineLayout).
+    @ObservationIgnored private(set) var assetsRevision = 0
+    /// The stage stack's layers' ids, for the asset and revision they were
+    /// read from (activeLayer).
+    @ObservationIgnored var stageLayerIdsMemo:
+        (asset: String, revision: Int, ids: Set<String>)?
+    /// The timeline's rows as last laid out, and what from
+    /// (timelineLayout).
+    @ObservationIgnored var timelineLayoutMemo:
+        (key: TimelineLayoutKey, model: TimelineModel)?
+    /// Where each asset is in `assets`, by id: a lookup scanned the list,
+    /// and every view pass makes several -- a project of 16 000 assets, or
+    /// a stack of 16 000 layers each looking up its source, multiplied
+    /// them (2026-10-23).
+    @ObservationIgnored private var assetIndex: [String: Int] = [:]
+
+    /// The asset `id`, when the list has it (read through `assets`: a
+    /// view reading it follows the list).
+    func asset(id: String) -> AssetDTO? {
+        guard let i = assetIndex[id], assets.indices.contains(i),
+              assets[i].id == id else { return nil }
+        return assets[i]
+    }
     /// The asset list's folders, in order.
     var assetFolders: [FolderDTO] = []
     /// The project's output: what exporting it writes (ProjectOutput).
@@ -1587,6 +1687,9 @@ final class AppModel {
     /// The text view being written in -- the prompt's, or the Prompt
     /// Editor's suggestion beside it: what the toolbar's B / I / U format.
     @ObservationIgnored weak var promptTextView: NSTextView?
+    /// The prompt box's own text view (not the suggestion's): what ⌘1 to
+    /// ⌘4 put the keyboard in.
+    @ObservationIgnored weak var promptBox: NSTextView?
 
     // Adjustments (simple mode): of the picture on the stage
     /// Applied live to what the stage shows, and RECORDED ON THE IMAGE as
@@ -1857,7 +1960,7 @@ final class AppModel {
                 .first(where: { $0.id == activeLayer })?.source else {
             return nil
         }
-        return assets.first { $0.id == id }
+        return asset(id: id)
     }
 
     /// The Crop panel offers to RENDER UPSCALED (DESIGN §4f): the layer
@@ -2079,6 +2182,7 @@ final class AppModel {
                                   core.capabilitiesJSON()) ?? []
         catalog = DTO.decode([CatalogModel].self, core.catalogJSON()) ?? []
         paths = DTO.decode(PathsInfo.self, core.pathsJSON())
+        refreshLocations()
         auto = DTO.decode([String: [String: AutoChoice]].self,
                           core.autoJSON()) ?? [:]
         capabilityTree = DTO.decode(CapabilityTree.self,
@@ -2977,7 +3081,7 @@ final class AppModel {
         guard !adjustsBase, stage.video == nil,
               stage.clip == nil, stageOriginal != nil,
               let id = stageAssetId else { return nil }
-        return assets.first { $0.id == id && $0.kind == "image" }
+        return asset(id: id).flatMap { $0.kind == "image" ? $0 : nil }
     }
 
     /// The picture on the stage has a layer stack.
@@ -3009,12 +3113,27 @@ final class AppModel {
 
     /// The selected layer, if the stack has it; else the bottom one.
     var activeLayer: String {
-        guard let stack = stageStack?.layerStack else { return "" }
-        if stack.contains(where: { $0.id == selectedLayer }) {
+        guard let s = stageStack else { return "" }
+        let ids = stageLayerIds(s)
+        if ids.contains(selectedLayer) {
             return selectedLayer
         }
         // Layer 0, or -- gone from the project's -- the bottom one.
-        return stack.contains { $0.id.isEmpty } ? "" : stack.first?.id ?? ""
+        return ids.contains("") ? "" : s.layerStack.first?.id ?? ""
+    }
+
+    /// The ids of `s`'s layers, kept while the asset list is unchanged:
+    /// asked of the stack itself, a timeline of 16 000 layers -- each row
+    /// asking for the active layer -- went through it 16 000 times
+    /// (2026-10-23).
+    private func stageLayerIds(_ s: AssetDTO) -> Set<String> {
+        if let m = stageLayerIdsMemo, m.asset == s.id,
+           m.revision == assetsRevision {
+            return m.ids
+        }
+        let ids = Set(s.layerStack.map(\.id))
+        stageLayerIdsMemo = (s.id, assetsRevision, ids)
+        return ids
     }
 
     /// The stack on the stage keeps a frame of its own (the project's
@@ -3382,6 +3501,13 @@ final class AppModel {
     /// its layers' looks are keyed by page as a clip's are by frame.
     var pagedOnStage: Bool { stagePicture?.isPaged == true }
     var stagePages: Int { stagePicture?.pageCount ?? 1 }
+    /// A still's pages stepped under the stage, where a clip's transport
+    /// is -- its page row and ← → -- while the timeline, which steps them
+    /// otherwise, is not shown (editing or view only).
+    var stagePagesShown: Bool {
+        stageVisible && pagedOnStage && !clipOnStage && stagePages > 1
+            && !timelineOpen && !promptImmersive
+    }
 
     /// The panels KEY what they change: a clip's tracks at its frame, a
     /// still's with pages at its page.
@@ -3530,7 +3656,7 @@ final class AppModel {
         let id = clip.id
         let firstPoster = stackPlayback == nil
         // The markup objects being changed are drawn live, over it.
-        let hidden = markupOpen && markup.live ? markup.selectedIds : []
+        let hidden = markupHiddenIds
         let painted = markup.painted
         Task { @MainActor [weak self] in
             let made = await Task.detached {
@@ -3657,7 +3783,7 @@ final class AppModel {
                     crop: shownCrop)
         let id = pic.id
         // The markup objects being changed are drawn live, over it.
-        let hidden = markupOpen && markup.live ? markup.selectedIds : []
+        let hidden = markupHiddenIds
         let page = pic.isPaged ? stagePage : 0
         let painted = markup.painted
         let began = CACurrentMediaTime()
@@ -4506,12 +4632,118 @@ final class AppModel {
         withAnimation(Self.motion) { navOpen.toggle() }
     }
 
-    /// The editor or the log, from the ☰ column.
+    /// The editor or the log, from the ☰ column -- the editor to edit:
+    /// view-only ends.
     func show(_ s: AppScreen) {
+        if s == .editor { setViewOnly(false) }
         withAnimation(Self.motion) {
             screen = s
             navOpen = false
         }
+    }
+
+    /// The ☰ column's eye: the editor, view-only.
+    func showViewOnly() {
+        withAnimation(Self.motion) {
+            screen = .editor
+            navOpen = false
+        }
+        setViewOnly(true)
+    }
+
+    func toggleViewOnly() { setViewOnly(!viewOnly) }
+
+    /// ⌘1 ⌘2 ⌘3 ⌘4 (⇧⌘P the Agent's too): the prompt box for that target
+    /// -- the editor shown, view only and the timeline left, the box's
+    /// target switched, the keyboard in its words. A box that comes back
+    /// for it (view only ending, the timeline going) takes the keyboard
+    /// as it appears.
+    func focusPrompt(_ m: Modality) {
+        guard m != .agent || agentEnabled, closingTasks == nil,
+              fleetServing == nil else { return }
+        if screen != .editor { show(.editor) }
+        setViewOnly(false)
+        viewOnlyEnded = nil
+        if timelineOpen { showTimeline(false) }
+        if m != modality {
+            withAnimation(Self.motion) { setModality(m) }
+        }
+        editorWindow?.makeKeyAndOrderFront(nil)
+        if let tv = promptBox, let w = tv.window, tv.isEditable {
+            w.makeFirstResponder(tv)
+        }
+    }
+
+    /// ⇧⌘P: the Agent's prompt box, as ⌘4 (View › Agent Prompt) -- the
+    /// key monitor's, a menu item taking one key.
+    func agentPromptKey(_ e: NSEvent) -> Bool {
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.numericPad, .function, .capsLock])
+        guard mods == [.command, .shift],
+              e.keyCode == 35
+                || e.charactersIgnoringModifiers?.lowercased() == "p",
+              agentEnabled, closingTasks == nil, fleetServing == nil
+        else { return false }
+        if !e.isARepeat { focusPrompt(.agent) }
+        return true
+    }
+
+    /// A NEW project -- File › New…, New Anonymous Project, Start Over --
+    /// is made to be worked on: shown in the editor, the Log screen left
+    /// and view only ended. What view only put away was the project
+    /// before's: it stays away. The prompt box takes the keyboard as it
+    /// comes, as at any start.
+    private func showEditorForNewProject() {
+        viewOnlyPutAway = nil
+        show(.editor)
+        viewOnlyEnded = nil
+    }
+
+    /// VIEW ONLY on or off (`viewOnly`). On: the Prompt Editor left, the
+    /// markup's selection let go and its toolbar put away, the keyboard
+    /// taken from the text it was in (the box goes); off: those back as
+    /// they were.
+    func setViewOnly(_ on: Bool) {
+        guard on != viewOnly else { return }
+        if on {
+            viewOnlyPutAway = (markupOpen, promptImmersive)
+            if markupOpen { commitSelection() }
+            editorWindow?.makeFirstResponder(nil)
+            withAnimation(Self.motion) {
+                if promptImmersive { exitImmersivePrompt() }
+                markupOpen = false
+                viewOnly = true
+            }
+        } else {
+            let back = viewOnlyPutAway
+            viewOnlyPutAway = nil
+            viewOnlyEnded = Date()
+            withAnimation(Self.motion) {
+                viewOnly = false
+                if back?.markup == true { markupOpen = true }
+            }
+            if back?.immersive == true, !promptImmersive {
+                withAnimation(Self.motion) { enterImmersivePrompt() }
+            }
+        }
+    }
+
+    /// TAB toggles VIEW ONLY where nothing in the editor's window takes
+    /// keys: no text, list, control or focused Assets list has the
+    /// keyboard -- where Tab would move the focus, it still does. Plain
+    /// Tab; ⇧Tab is left to the window.
+    func viewOnlyKey(_ e: NSEvent) -> Bool {
+        guard e.keyCode == 48, screen == .editor, fleetServing == nil,
+              let w = e.window, !(w is NSPanel),
+              editorWindow == nil || w === editorWindow else { return false }
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.numericPad, .function, .capsLock])
+        guard mods.isEmpty, !assetListFocused else { return false }
+        let fr = w.firstResponder
+        if fr is NSText || fr is NSTableView || fr is NSOutlineView
+            || fr is NSCollectionView || fr is NSControl { return false }
+        if !e.isARepeat { toggleViewOnly() }
+        return true
     }
 
     // MARK: - Projects
@@ -4617,7 +4849,7 @@ final class AppModel {
             return
         }
         reloadAssets()
-        if let a = assets.first(where: { $0.id == id }) { putOnStage(a) }
+        if let a = asset(id: id) { putOnStage(a) }
     }
 
     /// That composition the project's.
@@ -4629,7 +4861,7 @@ final class AppModel {
         let r = core.assetOp(project: projectId, "project", ["asset": a.id])
         if !r.ok { flash(r.message, level: .error) }
         reloadAssets()
-        if let doc = assets.first(where: { $0.id == a.id }) {
+        if let doc = asset(id: a.id) {
             putOnStage(doc)
         }
     }
@@ -4667,12 +4899,12 @@ final class AppModel {
     /// decomposed.
     func showsComposition(_ layer: LayerDTO) -> Bool {
         guard let s = layer.source else { return false }
-        return assets.first { $0.id == s }?.isComposition == true
+        return asset(id: s)?.isComposition == true
     }
 
     /// What a layer shows, as the asset it is.
     func source(of layer: LayerDTO) -> AssetDTO? {
-        layer.source.flatMap { s in assets.first { $0.id == s } }
+        layer.source.flatMap { s in asset(id: s) }
     }
 
     /// A change to what the stage shows goes to a COMPOSITION (DESIGN
@@ -4680,7 +4912,7 @@ final class AppModel {
     /// edited copy -- the same picture, clip or sound -- which the stage
     /// shows from then on; the original never changes.
     func composedTarget(_ id: String) -> String {
-        guard let a = assets.first(where: { $0.id == id }), !a.isDrawn,
+        guard let a = asset(id: id), !a.isDrawn,
               a.kind == "image" || a.kind == "video" || a.kind == "audio",
               let core, let projectId else { return id }
         let r = core.assetOp(project: projectId, "modify", [
@@ -4703,29 +4935,50 @@ final class AppModel {
             name: url.deletingPathExtension().lastPathComponent)
         if r.ok {
             openProject(path: url.path)
+            showEditorForNewProject()
         } else {
             note("error", r.message)
         }
     }
 
-    func reloadAssets() {
+    /// The list read again where it holds linked originals: their states
+    /// on disk are read with it.
+    func recheckLinks() {
+        if assets.contains(where: \.linked) { reloadAssets(force: true) }
+    }
+
+    /// `force`: read whatever the project's revision -- a linked
+    /// original's state on disk is no record of it.
+    func reloadAssets(force: Bool = false) {
         guard let core, let projectId else { return }
-        let r = core.assets(project: projectId)
+        if !force, let read = assetsRead,
+           core.assetsRevision(project: projectId) == read {
+            return
+        }
+        let (got, r) = core.assets(project: projectId)
         // Never quietly: a list that cannot be read leaves every new
         // result unfindable, and each one looks failed.
         guard r.ok else {
             note("error", String(localized: "Could not read the project's assets: \(r.message)"))
             return
         }
-        guard var list = DTO.decode([AssetDTO].self, r["assets"]) else {
+        guard let got else {
             note("error", String(localized: "Could not read the project's assets: \(String(localized: "unexpected data"))"))
             return
         }
+        var list = got.assets
+        assetsRead = got.revision
         // A layer showing a MARKUP carries its content, as the markup
-        // toolbar and the layer rows read it.
-        let markups = Dictionary(list.compactMap { a in
-            a.isMarkupAsset ? a.markup.map { (a.id, $0) } : nil
-        }, uniquingKeysWith: { a, _ in a })
+        // toolbar and the layer rows read it -- its objects as the list
+        // brought them (a few hundred), else the app's own copy of them,
+        // fetched only when its stamp is new (markupCopies).
+        var markups: [String: MarkupDTO] = [:]
+        for i in list.indices where list[i].isMarkupAsset {
+            guard var m = list[i].markup else { continue }
+            m.objects = copiedObjects(list[i].id, m)
+            list[i].markup = m
+            markups[list[i].id] = m
+        }
         if !markups.isEmpty {
             for i in list.indices where list[i].isComposition {
                 guard var ls = list[i].layers else { continue }
@@ -4738,7 +4991,7 @@ final class AppModel {
             }
         }
         assets = list
-        assetFolders = DTO.decode([FolderDTO].self, r["folders"]) ?? []
+        assetFolders = got.folders
         reloadHistory()
         reloadOutput()
         // A picture to edit adjusted before its import finished: record
@@ -4753,14 +5006,135 @@ final class AppModel {
         }
     }
 
-    func importFiles(_ urls: [URL]) {
+    /// The objects of markup `id` as `m` says they are now: those the list
+    /// brought, kept as the copy; else the copy of that stamp -- the app's
+    /// own edits keep it up (followPatch) -- else fetched and kept.
+    private func copiedObjects(_ id: String, _ m: MarkupDTO) -> [MarkupObject] {
+        if m.inline {
+            markupCopies[id] = (m.stamp, m.objects)
+            return m.objects
+        }
+        if let c = markupCopies[id], c.stamp == m.stamp { return c.objects }
+        guard let core, let projectId else { return [] }
+        let r = core.assetOp(project: projectId, "markup-objects",
+                             ["asset": id])
+        guard r.ok else {
+            note("error", r.message)
+            return []
+        }
+        // One object the app cannot read dropped, not the list.
+        let objects = DTO.decode(MarkupDTO.self, ["objects": r["objects"]
+                                                  ?? []])?.objects ?? []
+        markupCopies[id] = ((r["stamp"] as? String) ?? m.stamp, objects)
+        return objects
+    }
+
+    /// A patch's reply (the core's patch-objects) laid on the copy of
+    /// markup `id`: the changed objects in their places, new ones on top,
+    /// the removed gone -- as the core laid them. Kept under the stamp it
+    /// gives when the count agrees; else the copy dropped (fetched again).
+    func followPatch(_ id: String, _ r: CoreReply) {
+        guard let old = markupCopies[id], let stamp = r["stamp"] as? String,
+              let count = (r["count"] as? NSNumber)?.intValue else {
+            markupCopies[id] = nil
+            return
+        }
+        let changed = DTO.decode(MarkupDTO.self, ["objects": r["objects"]
+                                                  ?? []])?.objects ?? []
+        let gone = Set((r["removed"] as? [String]) ?? [])
+        var objects = gone.isEmpty ? old.objects
+            : old.objects.filter { !gone.contains($0.id) }
+        var at = Dictionary(objects.indices.map { (objects[$0].id, $0) }) {
+            a, _ in a
+        }
+        for o in changed {
+            if let i = at[o.id] {
+                objects[i] = o
+            } else {
+                at[o.id] = objects.count
+                objects.append(o)
+            }
+        }
+        markupCopies[id] = objects.count == count ? (stamp, objects) : nil
+    }
+
+    /// `placement`: "copy" for files Valtz made (DroppedMedia), deleted
+    /// after -- a clip would be linked in place. The import's job.
+    @discardableResult
+    func importFiles(_ urls: [URL], placement: String? = nil) -> String? {
         // A project's own file -- a result dragged from the stage into the
         // prompt -- is that asset already: nothing to import.
         let fresh = urls.filter { asset(forFile: $0) == nil }
-        guard let core, let projectId, !fresh.isEmpty else { return }
-        let r = core.importFiles(project: projectId,
-                                 paths: fresh.map { $0.path })
+        guard let core, let projectId, !fresh.isEmpty else { return nil }
+        var req: [String: Any] = ["project": projectId,
+                                  "paths": fresh.map { $0.path }]
+        if let placement { req["placement"] = placement }
+        let r = core.importFiles(req)
         if !r.ok { note("error", r.message) }
+        return r["job"] as? String
+    }
+
+    /// The assets files become as their import lands, in their order:
+    /// polled, as a drop on the stage waits for its file, until each has
+    /// one, the import failed, or a minute went by (nil for those).
+    func importedAssets(_ files: [URL], job: String?) async -> [String?] {
+        for _ in 0..<600 {
+            let ids = files.map { asset(forFile: $0)?.id }
+            if !ids.contains(nil) { return ids }
+            if let job, let s = jobs[job]?.state,
+               s == "failed" || s == "cancelled" {
+                return ids
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return files.map { asset(forFile: $0)?.id }
+    }
+
+    /// What a drop made a file of (DroppedMedia: a promised file, bytes,
+    /// a download) into the project: imported as COPIES, the files
+    /// deleted once they are assets (or failed); then `then` with the
+    /// assets, in order. `folder`: put in that folder of Assets.
+    func importMade(_ files: [URL], into folder: String? = nil,
+                    then: @escaping @MainActor ([String]) -> Void = { _ in }) {
+        guard !files.isEmpty else { return }
+        let job = importFiles(files, placement: "copy")
+        Task { @MainActor [weak self] in
+            let ids = await self?.importedAssets(files, job: job) ?? []
+            files.forEach(DroppedMedia.discard)
+            let got = ids.compactMap { $0 }
+            guard let self else { return }
+            if let folder, !folder.isEmpty {
+                for id in got { self.moveAsset(id, to: folder) }
+            }
+            then(got)
+        }
+    }
+
+    /// Words dropped on Assets -- a passage out of a browser, a text
+    /// file's -- kept as TEXT assets (prompts: Use in Prompt puts one in
+    /// the box), each named by `names` where it has one.
+    @discardableResult
+    func addTextAssets(_ texts: [String], names: [String?] = [],
+                       into folder: String? = nil) -> [String] {
+        guard let core, let projectId else { return [] }
+        var made: [String] = []
+        for (i, t) in texts.enumerated() {
+            var req: [String: Any] = ["project": projectId, "prompt": t]
+            if i < names.count, let n = names[i], !n.isEmpty {
+                req["prompt_name"] = n
+            }
+            let r = core.capturePrompt(req)
+            if !r.ok {
+                flash(r.message, level: .error)
+                continue
+            }
+            if let id = r["asset"] as? String { made.append(id) }
+        }
+        reloadAssets()
+        if let folder, !folder.isEmpty {
+            for id in made { moveAsset(id, to: folder) }
+        }
+        return made
     }
 
     /// The imported asset for a dropped file, once its import finished.
@@ -5010,6 +5384,16 @@ final class AppModel {
             && !(activeModality == .audio ? audioModel : imageModel).isEmpty
             && projectId != nil
     }
+
+    /// Start pressed, its button's or the Prompt Editor's: by ⌘↩ the
+    /// button flashes once (startFlash), as a click shows it pressed.
+    func startPressed() {
+        if NSApp.currentEvent?.type == .keyDown { startFlash += 1 }
+        start()
+    }
+
+    /// Counted at each ⌘↩ Start: the Start buttons light up once.
+    private(set) var startFlash = 0
 
     /// Simple mode's Start.
     func start() {
@@ -5270,7 +5654,7 @@ final class AppModel {
     /// is -- a generation makes a composition of its own.
     var activeComposition: AssetDTO? {
         activeCompositionId.flatMap { id in
-            assets.first { $0.id == id && $0.isComposition }
+            asset(id: id).flatMap { $0.isComposition ? $0 : nil }
         }
     }
 
@@ -5344,7 +5728,7 @@ final class AppModel {
         }
         if t.kind == "upscale" {
             if let src = t.source,
-               let a = assets.first(where: { $0.id == src }) {
+               let a = asset(id: src) {
                 if stageAssetId != src { setActive(a) }
                 if let l = t.layer { selectLayer(l) }
                 upscaleJob = job
@@ -5816,7 +6200,7 @@ final class AppModel {
         }
         var target = src
         if !item.ownCopy {
-            let name = assets.first { $0.id == src }?.name
+            let name = asset(id: src)?.name
                 ?? item.url.lastPathComponent
             let r = core.assetOp(project: projectId, "modify", [
                 "asset": src, "name": String(localized: "\(name), edited"),
@@ -5831,7 +6215,7 @@ final class AppModel {
             reloadAssets()
             target = made
         }
-        guard let a = assets.first(where: { $0.id == target }) else { return }
+        guard let a = asset(id: target) else { return }
         let keep = lastStageResult
         withAnimation(Self.motion) { focusedReference = id }
         putOnStage(a)
@@ -5878,7 +6262,7 @@ final class AppModel {
         guard restore else { return }
         switch back {
         case .asset(let a)?:
-            if let x = assets.first(where: { $0.id == a }) {
+            if let x = asset(id: a) {
                 putOnStage(x)
             } else {
                 clearStage()
@@ -5898,8 +6282,8 @@ final class AppModel {
               promptAttachments[i].ownCopy,
               let copy = promptAttachments[i].asset,
               let orig = promptAttachments[i].original,
-              let c = assets.first(where: { $0.id == copy }),
-              let o = assets.first(where: { $0.id == orig }),
+              let c = asset(id: copy),
+              let o = asset(id: orig),
               Self.untouched(c, from: o)
         else { return }
         let r = core.assetOp(project: projectId, "remove", ["asset": copy])
@@ -5948,7 +6332,7 @@ final class AppModel {
     /// -- made and set active: only a composition is edited (DESIGN §3a).
     func editCopy(_ a: AssetDTO) {
         let id = composedTarget(a.id)
-        if let c = assets.first(where: { $0.id == id }) { setActive(c) }
+        if let c = asset(id: id) { setActive(c) }
     }
 
     /// An asset of the list SET ACTIVE -- a capture too, the project's
@@ -6144,7 +6528,7 @@ final class AppModel {
         // What its asset carries (the item's modified copy's look), else
         // what it was given here before its import finished.
         let shown = stagedItem.flatMap { assetId(of: $0) }
-            .flatMap { id in assets.first { $0.id == id } }
+            .flatMap { id in asset(id: id) }
             ?? asset(forFile: url)
         adjustments = shown?.adjustments
             ?? baseAdjustments[Self.fileKey(url)] ?? ImageAdjustments()
@@ -6498,7 +6882,7 @@ final class AppModel {
     /// suggestion was applied (its upstream).
     func promptUpstream(of a: AssetDTO) -> AssetDTO? {
         guard a.isEnhancedPrompt, let id = a.promptInput else { return nil }
-        return assets.first { $0.id == id }
+        return asset(id: id)
     }
 
     /// `follow` ("<image1>"): the size of that picture; else `aspect`
@@ -6551,7 +6935,7 @@ final class AppModel {
         guard let r = asset.recipe, r.op == "edit-image",
               let id = r.inputs?.first(where: { $0.role == "base" })?.asset
         else { return nil }
-        return assets.first { $0.id == id }
+        return self.asset(id: id)
     }
 
     // MARK: Layer looks
@@ -6764,7 +7148,7 @@ final class AppModel {
     func dropOnCompare(_ url: URL, in slot: StageSlot) -> Bool {
         if let id = Self.draggedAssets([url]).first {
             guard stageTakesCompare,
-                  let a = assets.first(where: { $0.id == id }),
+                  let a = asset(id: id),
                   a.kind == "image" else { return false }
             compareAsset(a, in: slot)
             return true
@@ -7206,7 +7590,7 @@ final class AppModel {
     private var cropContent: (Int, Int)? {
         if let stack = stageStack, isPlacedLayer(activeLayer),
            let l = stack.layerStack.first(where: { $0.id == activeLayer }) {
-            if let s = l.source, let a = assets.first(where: { $0.id == s }),
+            if let s = l.source, let a = asset(id: s),
                let f = a.info?.frame, f.w > 0, f.h > 0 {
                 return (f.w, f.h)
             }
@@ -7425,7 +7809,7 @@ final class AppModel {
         if pagedOnStage && !adjustsBase { return }
         let layer = adjustsBase ? "" : activeLayer
         guard let core, let projectId, let shown = adjustedAssetId,
-              assets.first(where: { $0.id == shown })?.crop(layer: layer)
+              asset(id: shown)?.crop(layer: layer)
                 != crop
         else { return }
         let id = writeTarget(shown)
@@ -7515,7 +7899,7 @@ final class AppModel {
     /// The clip on the stage, as an asset.
     var currentClip: AssetDTO? {
         guard stage.video != nil, let id = stageAssetId else { return nil }
-        return assets.first { $0.id == id }
+        return asset(id: id)
     }
 
     /// Set the mark-in (or the mark-out) where the player is -- held to
@@ -7626,15 +8010,19 @@ final class AppModel {
     /// sound (⇧ ten steps; ⌥ a sound's millisecond) -- its sound heard at
     /// each; ⌘← and ⌘→ go to its previous or next EVENT, as the
     /// transport's |< and >| do (the timeline's, open); Home and End to
-    /// its start and its last frame. With the timeline open a still's
-    /// pages step too. Handled -- true -- or left to go on (text, a list,
+    /// its start and its last frame. A still's pages step too -- on the
+    /// timeline open, or as its page row under the stage steps them
+    /// (stagePagesShown). Handled -- true -- or left to go on (text, a list,
     /// a control, another window keep their keys). Valtz's own, not the
     /// player's: AVKit's took them only while its view had the keyboard,
     /// which a click on the transport gives the window.
     func trimKey(_ e: NSEvent) -> Bool {
         // The timeline steps too: a clip's frames, a still's pages.
         let timeline = timelineOpen && (clipOnStage || pagedOnStage)
-        guard clipOnStage || timeline, let w = e.window,
+        // A still's pages, the timeline not shown: as its page row
+        // (stagePagesShown) steps them.
+        let pages = stagePagesShown
+        guard clipOnStage || timeline || pages, let w = e.window,
               !(w is NSPanel), editorWindow == nil || w === editorWindow
         else { return false }
         let fr = w.firstResponder
@@ -7642,6 +8030,19 @@ final class AppModel {
             || fr is NSCollectionView || fr is NSControl { return false }
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
+        if pages {
+            // ← → a page, ⌘← ⌘→ / Home End the first and the last.
+            let k = e.keyCode
+            guard [115, 119, 123, 124].contains(k),
+                  mods.isEmpty || (mods == .command && k != 115 && k != 119)
+            else { return false }
+            switch (k, mods) {
+            case (115, _), (123, .command): goToPage(0)
+            case (119, _), (124, .command): goToPage(stagePages - 1)
+            default: goToPage(stagePage + (k == 123 ? -1 : 1))
+            }
+            return true
+        }
         // Home, End.
         if e.keyCode == 115 || e.keyCode == 119 {
             guard clipOnStage, mods.isEmpty else { return false }
@@ -7975,7 +8376,7 @@ final class AppModel {
         let item = promptAttachments[i]
         if item.ownCopy, let a = item.asset { return a }
         guard let core, let projectId, let src = assetId(of: item),
-              let source = assets.first(where: { $0.id == src }) else {
+              let source = asset(id: src) else {
             return fallback
         }
         let r = core.assetOp(project: projectId, "modify", [
@@ -8017,7 +8418,7 @@ final class AppModel {
         if pagedOnStage && !adjustsBase { return }
         let layer = adjustsBase ? "" : activeLayer
         guard let core, let projectId, let shown = adjustedAssetId,
-              assets.first(where: { $0.id == shown })?.adjustments(layer: layer)
+              asset(id: shown)?.adjustments(layer: layer)
                 != adjustments else { return }
         // A picture of the prompt: through its own modified copy.
         let id = writeTarget(shown)
@@ -8175,7 +8576,7 @@ final class AppModel {
         trimPersistTask?.cancel()
         trimPersistTask = nil
         let before = stageAssetId.flatMap { id in
-            assets.first { $0.id == id }
+            asset(id: id)
         }
         reloadAssets()
         refreshDocument()
@@ -8186,7 +8587,7 @@ final class AppModel {
         // Reverted: the guides as saved.
         loadGuides()
         guard let id = stageAssetId,
-              let a = assets.first(where: { $0.id == id }) else {
+              let a = asset(id: id) else {
             // What was on the stage is gone: the project's work, or
             // nothing.
             if let view = projectViews.first {
@@ -8623,7 +9024,7 @@ final class AppModel {
     /// VALTZ_SNAPSHOT_CLOSE (VALTZ_SNAPSHOT_CLOSE_WINDOW's).
     @ObservationIgnored var snapshotCloseAnswer: String?
 
-    /// The editor's window asked to close -- its close button, ⌘W: the
+    /// The editor's window asked to close -- its close button: the
     /// project asked about FIRST, while the window is still there, so
     /// Cancel keeps it (before, the window went, and Cancel at the quit
     /// that followed left Valtz running with no window, asking again).
@@ -8843,7 +9244,8 @@ final class AppModel {
         }
         // ⌘? held: the buttons' keys shown. The brush's [ ] and ⇧[ ⇧] and
         // the markup tools' keys, wherever the keyboard is in the window
-        // but text; ⌘D, the markup's selection let go; the Trim panel's
+        // but text; ⌘D, the markup's selection let go; ⇧⌘P, the Agent's
+        // prompt; the timeline's scissors (S, Escape); the Trim panel's
         // ← →; Space, play / pause.
         if let m = NSEvent.addLocalMonitorForEvents(
             matching: .keyDown, handler: { [weak self] event in
@@ -8857,7 +9259,10 @@ final class AppModel {
                     if ShortcutHints.shared.handle(event) { return true }
                     guard let self else { return false }
                     return self.deselectKey(event) || self.brushKey(event)
+                        || self.agentPromptKey(event)
+                        || self.scissorsKey(event)
                         || self.markupToolKey(event)
+                        || self.viewOnlyKey(event)
                         || self.trimKey(event) || self.playerKey(event)
                 }
                 return handled ? nil : event
@@ -8930,9 +9335,9 @@ final class AppModel {
         dir.appendingPathExtension("lock")
     }
 
-    /// Sessions -- and share folders -- that no running Valtz holds: a
-    /// crash's, a relaunch's predecessor's. Another running Valtz's are
-    /// left alone.
+    /// Sessions -- and share and drop folders -- that no running Valtz
+    /// holds: a crash's, a relaunch's predecessor's. Another running
+    /// Valtz's are left alone.
     nonisolated static func removeOrphanSessions() {
         let fm = FileManager.default
         let items = (try? fm.contentsOfDirectory(
@@ -8951,20 +9356,22 @@ final class AppModel {
             }
             close(fd)
         }
-        // Share folders of processes no longer there.
-        let shares = shareRoot.deletingLastPathComponent()
-        for url in (try? fm.contentsOfDirectory(
-            at: shares, includingPropertiesForKeys: nil)) ?? [] {
-            guard let pid = Int32(url.lastPathComponent),
-                  pid != getpid() else { continue }
-            if kill(pid, 0) != 0 && errno == ESRCH {
-                try? fm.removeItem(at: url)
+        // Share and drop folders of processes no longer there.
+        for root in [shareRoot, DroppedMedia.root] {
+            for url in (try? fm.contentsOfDirectory(
+                at: root.deletingLastPathComponent(),
+                includingPropertiesForKeys: nil)) ?? [] {
+                guard let pid = Int32(url.lastPathComponent),
+                      pid != getpid() else { continue }
+                if kill(pid, 0) != 0 && errno == ESRCH {
+                    try? fm.removeItem(at: url)
+                }
             }
         }
     }
 
-    /// This process's own session folder, its lock, its share folder --
-    /// at quit and Start Over.
+    /// This process's own session folder, its lock, its share and drop
+    /// folders -- at quit and Start Over.
     private func removeOwnSession() {
         let fm = FileManager.default
         if isAnonymous, !projectPath.isEmpty {
@@ -8977,6 +9384,7 @@ final class AppModel {
             sessionLock = -1
         }
         try? fm.removeItem(at: Self.shareRoot)
+        try? fm.removeItem(at: DroppedMedia.root)
     }
 
     nonisolated static func randomAnonymousName() -> String {
@@ -9060,6 +9468,7 @@ final class AppModel {
         withAnimation(Self.motion) { resetSession() }
         anonymousName = Self.randomAnonymousName()
         startAnonymousSession()
+        showEditorForNewProject()
     }
 
     /// File › New Anonymous Project: a new ANONYMOUS session -- private,
@@ -9104,6 +9513,7 @@ final class AppModel {
             withAnimation(Self.motion) { resetSession() }
             anonymousName = Self.randomAnonymousName()
             startAnonymousSession()
+            showEditorForNewProject()
         }
     }
 
@@ -9164,6 +9574,7 @@ final class AppModel {
         videoCommand = nil
         videoRate = 0
         assets = []
+        assetsRead = nil
         // The generation settings, at their defaults.
         modality = .image
         modelChoice = ""
@@ -9317,6 +9728,8 @@ final class AppModel {
         case "markup.arrange": String(localized: "Arrange")
         case "markup.align": String(localized: "Align")
         case "markup.distribute": String(localized: "Distribute")
+        case "markup.connectors": String(localized: "Add Connectors")
+        case "markup.unconnect": String(localized: "Remove Connectors")
         case "markup.pixels": String(localized: "Make Pixels")
         case "markup.paste": String(localized: "Paste Drawing")
         case "markup.place": String(localized: "Place Drawing")
@@ -9411,7 +9824,7 @@ final class AppModel {
 
     /// What share and the inspector act on: the result on the stage.
     var currentAsset: AssetDTO? {
-        stageAssetId.flatMap { id in assets.first { $0.id == id } }
+        stageAssetId.flatMap { id in asset(id: id) }
     }
 
     /// Simple mode's result as shown, when it is adjusted: sharing and
@@ -9739,6 +10152,11 @@ final class AppModel {
             reloadHistory()
         case "models.changed":
             refreshMachine()
+        case "locations.changed":
+            if let core {
+                paths = DTO.decode(PathsInfo.self, core.pathsJSON())
+            }
+            refreshLocations()
         case "job.queued":
             if let job = ev.job {
                 jobs[job] = JobInfo(title: p["title"] as? String ?? "",
@@ -9759,7 +10177,7 @@ final class AppModel {
             // (the next Start keeps it for the same words).
             if ev.job == lastBegun, let id = p["asset"] as? String {
                 reloadAssets()
-                if let pa = assets.first(where: { $0.id == id })?
+                if let pa = asset(id: id)?
                     .promptInput {
                     promptAssetId = pa
                 }
@@ -9920,11 +10338,16 @@ final class AppModel {
         jobs[job]?.phase = nil
         if !tasks.isEmpty || taskContexts[job] != nil { reloadTasks() }
         if state == "finished" { jobs[job]?.progress = 1 }
+        // Links checked: an original found missing writes nothing.
+        if jobs[job]?.purpose == "refresh-links" { reloadAssets(force: true) }
         // A download ended -- stopped as asked, or not: its row is itself
         // again.
         if let j = jobs[job], j.purpose == "download", !j.model.isEmpty {
             downloadStopping[j.model] = nil
         }
+        // A folder moved (Settings › General › Storage): where things are
+        // now; a failure said in Settings, where it was asked.
+        if jobs[job]?.purpose == "relocate" { relocationEnded(ev) }
         // A compress done: what it freed, under its row.
         if state == "finished", let j = jobs[job], j.purpose == "compress",
            !j.model.isEmpty {
@@ -10015,7 +10438,7 @@ final class AppModel {
         }
         reloadAssets()
         let asset = (ev.payload["asset"] as? String).flatMap { id in
-            assets.first { $0.id == id }
+            asset(id: id)
         }
         // A generation is an asset, raw; it LANDS as a new layer of the
         // composition active at Start -- else in a composition of its own
@@ -10038,7 +10461,7 @@ final class AppModel {
             let r = core.assetOp(project: projectId, "place-result", req)
             if r.ok, let view = r["asset"] as? String {
                 reloadAssets()
-                if let doc = assets.first(where: { $0.id == view }) {
+                if let doc = self.asset(id: view) {
                     placed = (doc, r["layer"] as? String ?? "")
                 }
             } else if !r.ok {
@@ -10137,11 +10560,24 @@ final class AppModel {
         stageBaseOriginal = nil
         stageBeforeBase = nil
         parkedB = nil
+        // The size the stage shows: a stack's canvas (drawn below), else
+        // the picture's. B's place is in its pixels -- not the first
+        // image's: a composition's is its stand-in, its bottom picture,
+        // and an edit landing on a square canvas had B laid from the
+        // corner at the result's size, off to the top right (2026-10-23).
+        let shown: (Int, Int) = {
+            guard !(asset.layers ?? []).isEmpty || asset.canvas != nil
+            else { return (img.width, img.height) }
+            if let c = asset.canvas, c.resized { return (c.w, c.h) }
+            let o = ownFrame(of: asset)
+            return o.width > 0 && o.height > 0 ? (o.width, o.height)
+                                               : (img.width, img.height)
+        }()
         let edited = base.flatMap { b in
             b.fitted ? editB(b, result: result ?? asset, shown: asset,
                              layer: layer,
-                             canvas: CGSize(width: img.width,
-                                            height: img.height))
+                             canvas: CGSize(width: shown.0,
+                                            height: shown.1))
                      : nil
         }
         withAnimation(Self.motion) {
@@ -10202,15 +10638,6 @@ final class AppModel {
             if asset.isPaged { loadClipTracks(asset, layer: l0) }
             recomposite()
         }
-        // The size the stage shows: a stack's canvas (drawn just above),
-        // else the picture's.
-        let shown: (Int, Int) = {
-            guard !(asset.layers ?? []).isEmpty || asset.canvas != nil
-            else { return (img.width, img.height) }
-            if let c = asset.canvas, c.resized { return (c.w, c.h) }
-            let o = ownFrame(of: asset)
-            return (o.width, o.height)
-        }()
         if stage.mode == .a, let b = stage.b, stage.bFit != .identity
             || (b.width == shown.0 && b.height == shown.1) {
             // Lined up: the new take lands in a wipe against the last, or
@@ -10372,7 +10799,7 @@ final class AppModel {
             return asset(forFile: url)?.name ?? url.lastPathComponent
         }
         guard let id = stageAssetId, !isProjectView(id),
-              let a = assets.first(where: { $0.id == id }) else {
+              let a = asset(id: id) else {
             return nil
         }
         return a.name
@@ -10508,4 +10935,3 @@ extension UTType {
     static let valtzProject = UTType(filenameExtension: "valtz",
                                      conformingTo: .package) ?? .package
 }
-

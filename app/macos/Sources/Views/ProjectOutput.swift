@@ -187,6 +187,6 @@ extension AppModel {
             return
         }
         reloadAssets()
-        if let a = assets.first(where: { $0.id == id }) { putOnStage(a) }
+        if let a = asset(id: id) { putOnStage(a) }
     }
 }

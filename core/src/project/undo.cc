@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <format>
 
 namespace valtz::project {
@@ -75,6 +76,60 @@ unbin(const Json& j)
 
 }
 
+namespace {
+
+// A delta as the undo table keeps it: {"nb", "na", "hb", "ha" (the
+// values' sizes and SHA-256), "w": [[at before, at after, bytes before,
+// bytes after], ...]}.
+Json
+delta_json(const ValueDelta& d)
+{
+  Json w = Json::array();
+  for (const auto& x : d.windows) {
+    w.push_back(Json::array({x.at_before, x.at_after, Json::binary(x.before),
+                             Json::binary(x.after)}));
+  }
+  auto hash = [](const ContentHash& h) {
+    return Json::binary(std::vector<std::uint8_t>(h.bytes.begin(),
+                                                  h.bytes.end()));
+  };
+  return {{"nb", d.size_before}, {"na", d.size_after},
+          {"hb", hash(d.sum_before)}, {"ha", hash(d.sum_after)},
+          {"w", std::move(w)}};
+}
+
+std::shared_ptr<const ValueDelta>
+delta_from_json(const Json& j)
+{
+  auto d = std::make_shared<ValueDelta>();
+  d->size_before = jget<std::size_t>(j, "nb", 0);
+  d->size_after = jget<std::size_t>(j, "na", 0);
+  for (const auto* k : {"hb", "ha"}) {
+    const auto h = unbin(jget(j, k, Json()));
+    if (!h || h->size() != 32) {
+      return nullptr;
+    }
+    auto& to = std::string_view(k) == "hb" ? d->sum_before : d->sum_after;
+    std::copy(h->begin(), h->end(), to.bytes.begin());
+  }
+  for (const auto& w : jget(j, "w", Json::array())) {
+    if (!w.is_array() || w.size() != 4 || !w[0].is_number_unsigned() ||
+        !w[1].is_number_unsigned()) {
+      return nullptr;
+    }
+    auto before = unbin(w[2]);
+    auto after = unbin(w[3]);
+    if (!before || !after) {
+      return nullptr;
+    }
+    d->windows.push_back({w[0].get<std::size_t>(), w[1].get<std::size_t>(),
+                          std::move(*before), std::move(*after)});
+  }
+  return d;
+}
+
+}
+
 void
 blobs_named_in(const Json& j, std::set<std::string>& out)
 {
@@ -92,6 +147,266 @@ blobs_named_in(const Json& j, std::set<std::string>& out)
       blobs_named_in(v, out);
     }
   }
+}
+
+void
+blobs_in_cbor(db::Bytes cbor, std::set<std::string>& out)
+{
+  // The key "hash" (a text of 4) and a text of 64 (0x78 0x40), as CBOR
+  // writes a BlobRef's -- then its 64 hex characters.
+  static constexpr std::uint8_t kKey[] = {0x64, 'h', 'a', 's', 'h',
+                                          0x78, 0x40};
+  const auto* p = cbor.data();
+  const auto* end = p + cbor.size();
+  while (end - p >= static_cast<std::ptrdiff_t>(sizeof kKey + 64)) {
+    const void* at = memmem(p, static_cast<std::size_t>(end - p), kKey,
+                            sizeof kKey);
+    if (!at) {
+      break;
+    }
+    const auto* h = static_cast<const std::uint8_t*>(at) + sizeof kKey;
+    if (end - h < 64) {
+      break;
+    }
+    const bool hex = std::all_of(h, h + 64, [](std::uint8_t c) {
+      return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
+    if (hex) {
+      out.emplace(reinterpret_cast<const char*>(h), 64);
+    }
+    p = h;
+  }
+}
+
+namespace {
+
+// What is worth a delta (ValueDelta::of): values this large, a window
+// peeled off where the next run both share begins this many bytes on at
+// most, and a run this long to count as shared.
+constexpr std::size_t kCompactMin = 16 * 1024;
+constexpr std::size_t kGap = 32;
+constexpr std::size_t kRun = 16;
+// ...and bytes only one side has -- an object moved up or down the list,
+// taken out here, put in there -- this long at most, a longer run after.
+constexpr std::size_t kLongGap = 8192;
+constexpr std::size_t kLongRun = 64;
+
+// How far `a` and `b` match from their starts (64 bytes at a time first).
+std::size_t
+same_from_start(const std::uint8_t* a, const std::uint8_t* b, std::size_t n)
+{
+  std::size_t i = 0;
+  while (i + 64 <= n && std::memcmp(a + i, b + i, 64) == 0) {
+    i += 64;
+  }
+  while (i < n && a[i] == b[i]) {
+    ++i;
+  }
+  return i;
+}
+
+// How far they match back from their ends.
+std::size_t
+same_from_end(const std::uint8_t* a_end, const std::uint8_t* b_end,
+              std::size_t n)
+{
+  std::size_t i = 0;
+  while (i + 64 <= n && std::memcmp(a_end - i - 64, b_end - i - 64, 64) == 0) {
+    i += 64;
+  }
+  while (i < n && a_end[-1 - static_cast<std::ptrdiff_t>(i)] ==
+                      b_end[-1 - static_cast<std::ptrdiff_t>(i)]) {
+    ++i;
+  }
+  return i;
+}
+
+std::vector<std::uint8_t>
+copy_of(const std::uint8_t* p, std::size_t n)
+{
+  return {p, p + n};
+}
+
+// `from`, its windows' `old` bytes replaced by their `now` bytes: the
+// value at the other end of the delta.
+template <class Old, class New, class At>
+std::vector<std::uint8_t>
+rebuild(db::Bytes from, const std::vector<ValueDelta::Window>& windows,
+        Old old_of, New now_of, At at_of)
+{
+  std::vector<std::uint8_t> out;
+  out.reserve(from.size() + 64);
+  std::size_t pos = 0;
+  for (const auto& w : windows) {
+    const std::size_t at = at_of(w);
+    out.insert(out.end(), from.begin() + static_cast<std::ptrdiff_t>(pos),
+               from.begin() + static_cast<std::ptrdiff_t>(at));
+    const auto& now = now_of(w);
+    out.insert(out.end(), now.begin(), now.end());
+    pos = at + old_of(w).size();
+  }
+  out.insert(out.end(), from.begin() + static_cast<std::ptrdiff_t>(pos),
+             from.end());
+  return out;
+}
+
+}
+
+std::optional<ValueDelta>
+ValueDelta::of(db::Bytes before, db::Bytes after)
+{
+  const std::size_t nb = before.size(), na = after.size();
+  if (nb < kCompactMin || na < kCompactMin) {
+    return std::nullopt;
+  }
+  const std::uint8_t* b = before.data();
+  const std::uint8_t* a = after.data();
+  // The shared start and end; what differs lies between.
+  std::size_t sb = same_from_start(b, a, std::min(nb, na)), sa = sb;
+  const std::size_t tail =
+      same_from_end(b + nb, a + na, std::min(nb, na) - sb);
+  std::size_t eb = nb - tail, ea = na - tail;
+  std::vector<Window> head, back;
+  // A window peeled off the differing middle's start (`forward`) or end:
+  // of the gaps that a shared run follows -- any two lengths up to kGap
+  // (a number written wider), or bytes one side alone has up to kLongGap
+  // (an object moved up or down the list) -- the one whose run is
+  // LONGEST (looked at up to kSee): objects much alike line up wrongly a
+  // few bytes at a time otherwise, thousands of windows for one move.
+  constexpr std::size_t kSee = 4096;
+  auto peel = [&](bool forward) -> bool {
+    std::size_t best_b = 0, best_a = 0, best_run = 0;
+    auto run_of = [&](std::size_t gb, std::size_t ga, std::size_t need) {
+      if (forward) {
+        if (sb + gb + need > eb || sa + ga + need > ea ||
+            std::memcmp(b + sb + gb, a + sa + ga, need) != 0) {
+          return std::size_t{0};
+        }
+        return same_from_start(b + sb + gb, a + sa + ga,
+                               std::min({eb - sb - gb, ea - sa - ga, kSee}));
+      }
+      if (eb < sb + gb + need || ea < sa + ga + need ||
+          std::memcmp(b + eb - gb - need, a + ea - ga - need, need) != 0) {
+        return std::size_t{0};
+      }
+      return same_from_end(b + eb - gb, a + ea - ga,
+                           std::min({eb - sb - gb, ea - sa - ga, kSee}));
+    };
+    auto consider = [&](std::size_t gb, std::size_t ga, std::size_t need) {
+      const std::size_t r = run_of(gb, ga, need);
+      if (r > best_run) {
+        best_run = r;
+        best_b = gb;
+        best_a = ga;
+      }
+    };
+    for (std::size_t sum = 1; sum <= 2 * kGap; ++sum) {
+      for (std::size_t gb = sum > kGap ? sum - kGap : 0;
+           gb <= std::min(sum, kGap); ++gb) {
+        consider(gb, sum - gb, kRun);
+      }
+    }
+    if (best_run < kSee) {
+      for (std::size_t g = kGap + 1; g <= kLongGap; ++g) {
+        consider(g, 0, kLongRun);
+        consider(0, g, kLongRun);
+      }
+    }
+    if (best_run == 0) {
+      return false;
+    }
+    if (forward) {
+      head.push_back({sb, sa, copy_of(b + sb, best_b),
+                      copy_of(a + sa, best_a)});
+      sb += best_b;
+      sa += best_a;
+      const std::size_t run =
+          same_from_start(b + sb, a + sa, std::min(eb - sb, ea - sa));
+      sb += run;
+      sa += run;
+    } else {
+      back.push_back({eb - best_b, ea - best_a,
+                      copy_of(b + eb - best_b, best_b),
+                      copy_of(a + ea - best_a, best_a)});
+      eb -= best_b;
+      ea -= best_a;
+      const std::size_t run =
+          same_from_end(b + eb, a + ea, std::min(eb - sb, ea - sa));
+      eb -= run;
+      ea -= run;
+    }
+    return true;
+  };
+  // Off its start, then off its end (a time stamped after the change),
+  // while there is a middle; a few hundred windows at most -- past that,
+  // kept whole.
+  while (sb < eb && sa < ea && head.size() < 256 && peel(true)) {
+  }
+  while (sb < eb && sa < ea && back.size() < 256 && peel(false)) {
+  }
+  ValueDelta d;
+  d.size_before = nb;
+  d.size_after = na;
+  d.windows = std::move(head);
+  if (sb < eb || sa < ea) {
+    d.windows.push_back({sb, sa, copy_of(b + sb, eb - sb),
+                         copy_of(a + sa, ea - sa)});
+  }
+  for (auto it = back.rbegin(); it != back.rend(); ++it) {
+    d.windows.push_back(std::move(*it));
+  }
+  if (d.bytes() * 4 > nb + na) {
+    return std::nullopt;
+  }
+  d.sum_before = ContentHash::of(b, nb);
+  d.sum_after = ContentHash::of(a, na);
+  return d;
+}
+
+std::size_t
+ValueDelta::bytes() const
+{
+  std::size_t n = 0;
+  for (const auto& w : windows) {
+    n += w.before.size() + w.after.size();
+  }
+  return n;
+}
+
+std::optional<std::vector<std::uint8_t>>
+ValueDelta::forward(db::Bytes before) const
+{
+  if (before.size() != size_before ||
+      ContentHash::of(before.data(), before.size()) != sum_before) {
+    return std::nullopt;
+  }
+  auto out = rebuild(
+      before, windows, [](const Window& w) -> const auto& { return w.before; },
+      [](const Window& w) -> const auto& { return w.after; },
+      [](const Window& w) { return w.at_before; });
+  if (out.size() != size_after ||
+      ContentHash::of(out.data(), out.size()) != sum_after) {
+    return std::nullopt;
+  }
+  return out;
+}
+
+std::optional<std::vector<std::uint8_t>>
+ValueDelta::backward(db::Bytes after) const
+{
+  if (after.size() != size_after ||
+      ContentHash::of(after.data(), after.size()) != sum_after) {
+    return std::nullopt;
+  }
+  auto out = rebuild(
+      after, windows, [](const Window& w) -> const auto& { return w.after; },
+      [](const Window& w) -> const auto& { return w.before; },
+      [](const Window& w) { return w.at_after; });
+  if (out.size() != size_before ||
+      ContentHash::of(out.data(), out.size()) != sum_before) {
+    return std::nullopt;
+  }
+  return out;
 }
 
 // ---- the log ------------------------------------------------------------
@@ -134,13 +449,28 @@ UndoLog::attach(Project& p)
             if (!table || !key) {
               continue;  // a table this Valtz does not have
             }
-            db::Change dc;
+            UndoChange dc;
             dc.dbi = table->handle;
             dc.key = *key;
             dc.before = unbin(ch[2]);
             dc.after = unbin(ch[3]);
             dc.dup = ch[4].is_boolean() && ch[4].get<bool>();
+            if (ch.size() > 5 && ch[5].is_object()) {
+              dc.delta = delta_from_json(ch[5]);
+              if (!dc.delta) {
+                continue;  // unreadable: the change is lost, not invented
+              }
+            }
             c.changes.push_back(std::move(dc));
+          }
+          if (const Json b = jget(*j, "blobs", Json()); b.is_array()) {
+            auto names = std::make_shared<std::set<std::string>>();
+            for (const auto& h : b) {
+              if (h.is_string()) {
+                names->insert(h.get<std::string>());
+              }
+            }
+            c.blobs = std::move(names);
           }
           log->_next_seq = std::max(log->_next_seq, c.seq + 1);
           log->_cmds.push_back(std::move(c));
@@ -170,8 +500,9 @@ UndoLog::journal_(std::vector<db::Change>&& changes)
     std::lock_guard lk(_mu);
     if (auto it = _open.find(seq); seq != 0 && it != _open.end()) {
       auto& to = it->second.cmd.changes;
-      to.insert(to.end(), std::make_move_iterator(changes.begin()),
-                std::make_move_iterator(changes.end()));
+      for (auto& ch : changes) {
+        to.emplace_back(std::move(ch));
+      }
       return;
     }
     // Written in no command: not undoable, but not as saved either.
@@ -278,6 +609,7 @@ UndoLog::end_(Scope& s)
   });
   std::vector<std::uint64_t> dropped;
   std::optional<UndoCommand> stored;
+  std::optional<UndoCommand> compacted;
   {
     std::lock_guard lk(_mu);
     auto it = _open.find(s._seq);
@@ -296,6 +628,7 @@ UndoLog::end_(Scope& s)
       }
       return;
     }
+    c.blobs.reset();  // more changes: its blobs found again
     // A new action: what was undone can no longer be redone.
     for (const auto& u : _cmds) {
       if (!u.done) {
@@ -307,7 +640,13 @@ UndoLog::end_(Scope& s)
     const std::int64_t now = now_ms();
     // Never into the command a save was made at: its seq would stay the
     // saved one, and the change after the save read as saved (lost).
-    if (last && coalesces(c.kind) && last->kind == c.kind &&
+    // Never into one made compact (the last before an undo): its values
+    // are not whole to go on from.
+    const bool whole = last && std::ranges::none_of(
+        last->changes, [](const UndoChange& x) {
+          return x.delta && !x.before && !x.after;
+        });
+    if (last && whole && coalesces(c.kind) && last->kind == c.kind &&
         last->asset == c.asset && last->layer == c.layer &&
         c.at_ms - last->last_ms < kCoalesceMs &&
         (_untracked || last->seq != _saved_seq)) {
@@ -319,15 +658,22 @@ UndoLog::end_(Scope& s)
             });
         if (same != last->changes.end()) {
           same->after = std::move(ch.after);
+          same->delta.reset();  // made again for its new after-value
         } else {
           last->changes.push_back(std::move(ch));
         }
       }
       last->last_ms = now;
+      last->blobs.reset();  // its values changed: found again
       stored = *last;
     } else {
       c.last_ms = now;
       c.done = true;
+      // The one before is the last no more: kept compact from now on.
+      if (last) {
+        compact_(*last);
+        compacted = *last;
+      }
       _cmds.push_back(std::move(c));
       stored = _cmds.back();
     }
@@ -339,7 +685,32 @@ UndoLog::end_(Scope& s)
   for (const auto seq : dropped) {
     (void)erase_(seq);
   }
+  if (compacted && std::ranges::find(dropped, compacted->seq) ==
+                       dropped.end()) {
+    if (auto st = store_(*compacted); !st.ok()) {
+      VALTZ_LOG_WARN("undo", "cannot keep the history: {}",
+                     st.error().message);
+    }
+  }
   if (stored) {
+    // Stored compact even while it is the last (whole in memory, so a
+    // slider's next step coalesces): two copies of a page of thousands
+    // were written at every edit. Its delta and blobs kept with it.
+    {
+      std::lock_guard lk(_mu);
+      if (auto it = std::ranges::find(_cmds, stored->seq,
+                                      &UndoCommand::seq);
+          it != _cmds.end()) {
+        prepare_(*it);
+        *stored = *it;
+      }
+    }
+    for (auto& ch : stored->changes) {
+      if (ch.delta) {
+        ch.before.reset();
+        ch.after.reset();
+      }
+    }
     if (auto st = store_(*stored); !st.ok()) {
       VALTZ_LOG_WARN("undo", "cannot keep the history: {}",
                      st.error().message);
@@ -355,14 +726,21 @@ UndoLog::store_(const UndoCommand& c)
 {
   Json changes = Json::array();
   for (const auto& ch : c.changes) {
-    changes.push_back(Json::array({_p.table_name(ch.dbi),
-                                   Json::binary(ch.key), bin(ch.before),
-                                   bin(ch.after), ch.dup}));
+    Json one = Json::array({_p.table_name(ch.dbi), Json::binary(ch.key),
+                            bin(ch.before), bin(ch.after), ch.dup});
+    if (ch.delta) {
+      one.push_back(delta_json(*ch.delta));
+    }
+    changes.push_back(std::move(one));
   }
-  const Json doc = {{"kind", c.kind},   {"args", c.args},
-                    {"asset", c.asset}, {"layer", c.layer},
-                    {"at", c.at_ms},    {"last", c.last_ms},
-                    {"done", c.done},   {"changes", std::move(changes)}};
+  Json doc = {{"kind", c.kind},   {"args", c.args},
+              {"asset", c.asset}, {"layer", c.layer},
+              {"at", c.at_ms},    {"last", c.last_ms},
+              {"done", c.done},   {"changes", std::move(changes)}};
+  if (c.blobs) {
+    doc["blobs"] = Json(std::vector<std::string>(c.blobs->begin(),
+                                                 c.blobs->end()));
+  }
   const auto k = seq_key(c.seq);
   return _p.env().write([&](db::Txn& txn) -> Status {
     return put_cbor(txn, _p.undo_table(), {k.data(), k.size()}, doc);
@@ -470,9 +848,23 @@ UndoLog::apply_(const UndoCommand& c, bool forward)
   // Written back (or forward) as it was: no command of its own.
   db::Env::Unjournaled quiet;
   return _p.env().write([&](db::Txn& txn) -> Status {
-    auto step = [&](const db::Change& ch) -> Status {
+    auto step = [&](const UndoChange& ch) -> Status {
       const db::Dbi dbi{ch.dbi, ch.dup};
       const db::Bytes key(ch.key);
+      if (ch.delta && !ch.before && !ch.after) {
+        // Made from the value there now -- the one the command left (or,
+        // redone, found) -- else refused: changed since by no command.
+        VALTZ_ASSIGN(auto now, txn.get(dbi, key));
+        auto made = !now ? std::nullopt
+                    : forward ? ch.delta->forward(*now)
+                              : ch.delta->backward(*now);
+        if (!made) {
+          return make_error(Code::Corrupt,
+                            "the history no longer matches the project "
+                            "(it was changed outside any command)");
+        }
+        return txn.put(dbi, key, db::Bytes(*made));
+      }
       const auto& to = forward ? ch.after : ch.before;
       const auto& from = forward ? ch.before : ch.after;
       if (ch.dup) {
@@ -616,20 +1008,57 @@ UndoLog::held_blobs() const
   std::set<std::string> held;
   std::lock_guard lk(_mu);
   for (const auto& c : _cmds) {
-    for (const auto& ch : c.changes) {
-      if (ch.dup) {
-        continue;
-      }
-      for (const auto* v : {&ch.before, &ch.after}) {
-        if (*v) {
-          if (auto j = from_cbor(db::Bytes(**v)); j.ok()) {
-            blobs_named_in(*j, held);
-          }
-        }
+    const auto names = c.blobs ? c.blobs : blobs_of_(c);
+    held.insert(names->begin(), names->end());
+  }
+  return held;
+}
+
+std::shared_ptr<const std::set<std::string>>
+UndoLog::blobs_of_(const UndoCommand& c)
+{
+  auto names = std::make_shared<std::set<std::string>>();
+  for (const auto& ch : c.changes) {
+    if (ch.dup) {
+      continue;
+    }
+    for (const auto* v : {&ch.before, &ch.after}) {
+      if (*v) {
+        blobs_in_cbor(db::Bytes(**v), *names);
       }
     }
   }
-  return held;
+  return names;
+}
+
+void
+UndoLog::prepare_(UndoCommand& c) const
+{
+  // Its blobs found, and its large values' deltas made, while its values
+  // are still whole.
+  if (!c.blobs) {
+    c.blobs = blobs_of_(c);
+  }
+  for (auto& ch : c.changes) {
+    if (ch.dup || ch.delta || !ch.before || !ch.after) {
+      continue;
+    }
+    if (auto d = ValueDelta::of(db::Bytes(*ch.before), db::Bytes(*ch.after))) {
+      ch.delta = std::make_shared<const ValueDelta>(std::move(*d));
+    }
+  }
+}
+
+void
+UndoLog::compact_(UndoCommand& c) const
+{
+  prepare_(c);
+  for (auto& ch : c.changes) {
+    if (ch.delta) {
+      ch.before.reset();
+      ch.after.reset();
+    }
+  }
 }
 
 bool

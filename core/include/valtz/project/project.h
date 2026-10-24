@@ -195,12 +195,23 @@ public:
   // holds. Refused while another asset is built from it.
   Status remove_asset(AssetId);
 
+  // What the project has written, as its database counts it
+  // (db::Env::revision): unchanged, so is every record -- an asset list
+  // read again would be the same but for its linked originals' states on
+  // disk.
+  std::string revision() const { return _env->revision(); }
+
   // Where a version's bytes are: the blob, or the linked original. A
   // linked original is verified first -- relocations are followed; a
   // modified or missing original is an error until refresh_link() runs,
   // because its bytes no longer match the recorded content hash.
   Result<std::filesystem::path> media_path(AssetId,
                                            std::uint32_t number = 0) const;
+  // The same for version `v` of `a` as the caller has read them: no
+  // record read again (an asset list of 16 000 read each one's records
+  // three times over).
+  Result<std::filesystem::path> media_path(const Asset& a,
+                                           const AssetVersion& v) const;
 
   // Where a linked source is now, without changing anything.
   Result<LinkCheck> check_link(AssetId) const;
@@ -210,6 +221,10 @@ public:
   // Blocking (may hash a large file).
   Result<LinkCheck> refresh_link(AssetId);
   Result<std::string> read_text(AssetId, std::uint32_t number = 0) const;
+  // Version `v` of text asset `a`'s words, as read: a blob's are kept
+  // (its bytes never change) up to a few megabytes, so a list read again
+  // reads no file.
+  Result<std::string> read_text(const Asset& a, const AssetVersion& v) const;
 
   // ---- derived assets and recipes -----------------------------------
 
@@ -304,10 +319,12 @@ public:
   Result<std::vector<SubjectId>> subjects_referencing(AssetId) const;
 
 private:
-  Project() = default;
+  Project();
   Status open_dbs_();
   Result<std::uint32_t> append_version_(db::Txn&, Asset&, AssetVersion&);
   Result<std::optional<Asset>> get_asset_(const db::Txn&, AssetId) const;
+  // Its record written, a markup's objects moved in and back, not copied.
+  Status put_asset_(db::Txn&, Asset&) const;
   Result<std::string> unique_name_(const db::Txn&, std::string_view name,
                                    std::size_t max_bytes) const;
   Result<std::optional<AssetVersion>>
@@ -326,6 +343,9 @@ private:
   std::string              _name;
   bool                     _keep_blobs = false;
   bool                     _migrated = false;
+  // Texts read, by their blob's hash (read_text(const Asset&, ...)).
+  struct Texts;
+  std::unique_ptr<Texts>   _texts;
 
   struct Dbis {
     db::Dbi meta, assets, versions, recipes, dependents, subjects,

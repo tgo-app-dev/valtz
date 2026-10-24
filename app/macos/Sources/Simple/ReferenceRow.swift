@@ -71,35 +71,10 @@ struct ReferenceRow: View {
                     .help("Fewer references for the clip to fit in memory")
             }
         }
-        // Files dropped on the row are staged, mentioned nowhere; so are
-        // assets dragged from the list.
-        .dropDestination(for: URL.self) { urls, _ in
-            // Assets of the list arrive as URLs too.
-            let ids = AppModel.draggedAssets(urls)
-            if !ids.isEmpty {
-                model.addAssetReferences(ids)
-                return true
-            }
-            let files = urls.filter(\.isFileURL)
-            guard !files.isEmpty else { return false }
-            // The stage itself (its drag carries a file too): captured.
-            if files.count == 1, model.isStageDrag(files[0]) {
-                model.addStageToPrompt()
-                return true
-            }
-            model.addReferences(files)
-            return true
-        }
-        .dropDestination(for: String.self) { items, _ in
-            if items.contains(AppModel.stagePrefix) {
-                model.addStageToPrompt()
-                return true
-            }
-            let ids = items.compactMap { AppModel.draggedAsset($0) }
-            guard !ids.isEmpty else { return false }
-            model.addAssetReferences(ids)
-            return true
-        }
+        // Media dropped on the row are staged, mentioned nowhere: files,
+        // assets dragged from the list, what a drag from outside makes a
+        // file of (RowDrop).
+        .onDrop(of: DroppedMedia.dropTypes, delegate: RowDrop(model: model))
     }
 
     /// While a thumbnail is dragged. SwiftUI's drop targets hear nothing
@@ -386,6 +361,42 @@ private struct BaseHint: View {
         }
         .padding(14)
         .frame(width: 290, alignment: .leading)
+    }
+}
+
+/// A drop on the prompt's row: assets of the list and files staged; the
+/// stage itself (its drag carries a file too) captured; what a drag from
+/// outside makes a file of -- a browser's or Photos' picture, an app's
+/// bytes, a link (DroppedMedia) -- imported as a copy and staged as its
+/// asset. Read off the drag's pasteboard (an onDrop closure is handed
+/// providers, promises received, before it runs).
+private struct RowDrop: DropDelegate {
+    let model: AppModel
+
+    private var pasteboard: NSPasteboard { NSPasteboard(name: .drag) }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        let pb = pasteboard
+        return DroppedMedia.isStage(pb) || !DroppedMedia.rows(pb).isEmpty
+            || DroppedMedia.peek(pb).media
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let pb = pasteboard
+        let ids = DroppedMedia.rows(pb)
+        if !ids.isEmpty {
+            model.addAssetReferences(ids)
+            return true
+        }
+        let intake = DroppedMedia.take(pb)
+        if DroppedMedia.isStage(pb)
+            || (intake.files.count == 1
+                && model.isStageDrag(intake.files[0])) {
+            model.addStageToPrompt()
+            return true
+        }
+        model.stageDropped(intake)
+        return !intake.files.isEmpty || intake.makes
     }
 }
 

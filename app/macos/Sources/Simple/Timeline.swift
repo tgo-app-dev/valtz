@@ -76,6 +76,20 @@ struct TimelineTransition: Equatable {
 /// player is, the selected layer, its tools and zoom, its transitions --
 /// and its EVENTS, where |< and >| go: a key, where a layer begins or
 /// ends, the timeline's start and end.
+/// What a timeline's rows are laid out from (AppModel.timelineLayout).
+struct TimelineLayoutKey: Equatable {
+    var asset: AssetDTO
+    var assets: Int
+    var plan: UInt64?
+    var active: String
+    var adjust: Keyframes<ImageAdjustments>?
+    var crop: ClipCrop?
+    var speed: Keyframes<LayerSpeed>?
+    var sound: Keyframes<LayerSound>?
+    var folded: Set<String>
+    var rate: FrameRate
+}
+
 struct TimelineModel: Equatable {
     var rows: [TimelineRow] = []
     var frames = 1
@@ -100,11 +114,56 @@ extension AppModel {
         return s
     }
 
+    /// The SCISSORS' keys, wherever the keyboard is in the window but text,
+    /// a list or a control (a timeline header's name field, the Assets
+    /// list): S takes them up or puts them away -- a key the markup
+    /// toolbar's tools leave free (V B E L R C P I, and X) -- and Escape
+    /// puts them away. While the timeline is open on a timeline (a still's
+    /// pages are not cut), no modifier held. Handled -- true -- or left to
+    /// go on (the timeline's own keyDown had Escape only while it held the
+    /// keyboard, which a click on a block does not give it).
+    func scissorsKey(_ e: NSEvent) -> Bool {
+        guard timelineOpen, fleetServing == nil, let w = e.window,
+              !(w is NSPanel), editorWindow == nil || w === editorWindow,
+              let a = timelineAsset, !a.isPaged else { return false }
+        let fr = w.firstResponder
+        if fr is NSText || fr is NSTableView || fr is NSOutlineView
+            || fr is NSCollectionView || fr is NSControl { return false }
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .numericPad, .function])
+        guard mods.isEmpty else { return false }
+        if e.keyCode == 53 {
+            guard timelineCutting else { return false }
+            timelineCutting = false
+            return true
+        }
+        // By the letter, else -- a layout of other letters -- by its key
+        // on a US keyboard.
+        let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
+        let latin = ch.count == 1 && ch.first.map {
+            $0.isASCII && $0.isLetter } == true
+        guard latin ? ch == "s" : e.keyCode == 1 else { return false }
+        if !e.isARepeat { timelineCutting.toggle() }
+        return true
+    }
+
     /// Its switch is offered beside the prompt.
-    var timelineAvailable: Bool { !promptImmersive && timelineAsset != nil }
+    /// Not while VIEW ONLY: its wish kept for after (setViewOnly).
+    var timelineAvailable: Bool {
+        !promptImmersive && !viewOnly && timelineAsset != nil
+    }
 
     /// The timeline is in the prompt's place.
     var timelineOpen: Bool { timelineWanted && timelineAvailable }
+
+    /// What the composer shows in the prompt's place: the timeline open --
+    /// and, as VIEW ONLY takes the composer away, the timeline it had, not
+    /// the prompt swapped in while it goes (its text view took the
+    /// keyboard on the way out).
+    var composerShowsTimeline: Bool {
+        timelineOpen || (viewOnly && timelineWanted && !promptImmersive
+                         && timelineAsset != nil)
+    }
 
     /// The timeline in the prompt's place, or the prompt back: the
     /// generation card goes with the prompt. `flash`: the switch shown
@@ -129,7 +188,8 @@ extension AppModel {
     /// sound's too) or a still with pages; not over the Prompt Editor,
     /// nor when it is open already.
     func landed(on doc: AssetDTO, layer: String) {
-        guard landingOpensTimeline, !promptImmersive, !timelineOpen,
+        guard landingOpensTimeline, !promptImmersive, !viewOnly,
+              !timelineOpen,
               doc.isTimeline || doc.isPaged, doc.id == stageAssetId,
               doc.layerStack.contains(where: {
                   $0.id != layer && !$0.isEmpty })
@@ -152,23 +212,49 @@ extension AppModel {
             return
         }
         reloadAssets()
-        guard let doc = assets.first(where: { $0.id == view }),
+        guard let doc = self.asset(id: view),
               doc.id == stageAssetId else { return }
         layersChanged()
         landed(on: doc, layer: r["layer"] as? String ?? "")
     }
 
     var timelineModel: TimelineModel {
-        var m = TimelineModel()
-        guard let a = timelineAsset else { return m }
-        m.paged = a.isPaged
-        m.rate = a.isPaged ? FrameRate(num: 1, den: 1) : stageFrameRate
+        guard let a = timelineAsset else { return TimelineModel() }
+        var m = timelineLayout(a)
         m.playhead = a.isPaged ? stagePage : videoFrame
         m.selected = activeLayer
         if selectedLayers.count > 1 { m.chosen = selectedLayers }
         m.cutting = timelineCutting
         m.zoom = timelineZoom
+        return m
+    }
+
+    /// The timeline's rows, its length, transitions and events -- laid
+    /// out once for what they are made from: the timeline asks for its
+    /// model at each of the player's frames, and a timeline of 16 000
+    /// layers was laid out anew every time (2026-10-23).
+    private func timelineLayout(_ a: AssetDTO) -> TimelineModel {
+        let active = activeLayer
+        let live = keyedStage
+        let key = TimelineLayoutKey(
+            asset: a, assets: assetsRevision,
+            plan: clipOnStage ? stackPlayback?.plan : nil, active: active,
+            adjust: live ? clipAdjustKeys : nil,
+            crop: live ? clipCropKeys : nil,
+            speed: live && clipOnStage ? layerSpeed : nil,
+            sound: live && clipOnStage ? layerSound : nil,
+            folded: foldedLayerFolders, rate: stageFrameRate)
+        if let memo = timelineLayoutMemo, memo.key == key {
+            return memo.model
+        }
+        var m = TimelineModel()
+        m.paged = a.isPaged
+        m.rate = a.isPaged ? FrameRate(num: 1, den: 1) : stageFrameRate
         let fps = m.rate.fps
+        // Each layer's modifiers, found once (each layer's tracks scanned
+        // them all).
+        var mods: [String: [ModifierDTO]] = [:]
+        for d in a.modifiers ?? [] { mods[d.layer, default: []].append(d) }
         var spans: [String: StackSpan] = [:]
         if stackPlayback != nil, clipOnStage {
             for s in stackPlayback?.layers ?? [] { spans[s.id] = s }
@@ -204,7 +290,10 @@ extension AppModel {
             }
             // A layer's first frame is a key of its own: where its
             // tracks start.
-            let tracks = timelineTracks(a, layer: l.id)
+            let own = mods[l.id] ?? []
+            let tracks = timelineTracks(a, layer: l.id, active: active) {
+                kind in own.first { $0.kind == kind }
+            }
             let dots = Array(Set(tracks.flatMap { $0.map(\.frame) }
                 + (l.isEmpty ? [] : [0]))).sorted()
             r.keys = dots.map { r.start + $0 }
@@ -240,6 +329,7 @@ extension AppModel {
             ev.formUnion(r.keys)
         }
         m.events = ev.sorted()
+        timelineLayoutMemo = (key, m)
         return m
     }
 
@@ -250,10 +340,15 @@ extension AppModel {
         -> [TimelineRow] {
         var out: [TimelineRow] = []
         var open: String?
+        // Each folder's rows, gathered once.
+        var byFolder: [String: [TimelineRow]] = [:]
+        for r in rows {
+            if let f = r.folder { byFolder[f, default: []].append(r) }
+        }
         for r in rows {
             if let f = r.folder, f != open {
                 open = f
-                let members = rows.filter { $0.folder == f }
+                let members = byFolder[f] ?? []
                 var head = TimelineRow(
                     id: TimelineRow.folderID(f),
                     title: folders.first { $0.id == f }?.name ?? f,
@@ -264,12 +359,11 @@ extension AppModel {
                 head.folded = isFolderFolded(f)
                 head.members = members.reversed().map(\.id)
                 // Their spans merged: where any of them plays.
-                var spans = members.filter { $0.kind != .blank }.map {
+                let spans = members.filter { $0.kind != .blank }.map {
                     $0.start..<max($0.start + 1, $0.end ?? frames)
                 }.sorted { $0.lowerBound < $1.lowerBound }
                 var merged: [Range<Int>] = []
-                while let s = spans.first {
-                    spans.removeFirst()
+                for s in spans {
                     if let last = merged.last, s.lowerBound <= last.upperBound {
                         merged[merged.count - 1] =
                             last.lowerBound..<max(last.upperBound, s.upperBound)
@@ -324,19 +418,31 @@ extension AppModel {
     /// they hold now), the record's for the others. A track that changes
     /// nothing has none to show.
     func timelineTracks(_ a: AssetDTO, layer: String) -> [[TrackKey]] {
+        timelineTracks(a, layer: layer, active: activeLayer) { kind in
+            a.modifiers?.first { $0.kind == kind && $0.layer == layer }
+        }
+    }
+
+    /// The same, the active layer and the layer's modifier of each kind
+    /// found by the caller (timelineLayout: for every layer at once).
+    private func timelineTracks(_ a: AssetDTO, layer: String,
+                                active: String,
+                                modifier: (String) -> ModifierDTO?)
+        -> [[TrackKey]] {
         func keys<T>(_ k: Keyframes<T>) -> [TrackKey]? {
             k.isIdentity ? nil : k.keys.map { ($0.frame, $0.interp) }
         }
         var t: [[TrackKey]?]
-        if layer == activeLayer && keyedStage {
+        if layer == active && keyedStage {
             t = [keys(clipAdjustKeys), keys(clipCropKeys.place),
                  keys(clipCropKeys.turn)]
             if clipOnStage { t += [keys(layerSpeed), keys(layerSound)] }
         } else {
-            let crop = a.cropKeys(layer: layer)
-            t = [keys(a.adjustKeys(layer: layer)), keys(crop.place),
-                 keys(crop.turn), keys(a.speedKeys(layer: layer)),
-                 keys(a.soundKeys(layer: layer))]
+            let crop = AssetDTO.cropKeys(modifier("crop"))
+            t = [keys(AssetDTO.adjustKeys(modifier("adjust"))),
+                 keys(crop.place), keys(crop.turn),
+                 keys(AssetDTO.speedKeys(modifier("speed"))),
+                 keys(AssetDTO.soundKeys(modifier("audio")))]
         }
         return t.compactMap { $0 }
     }
@@ -486,7 +592,7 @@ extension AppModel {
     func dropOnTimeline(asset id: String, above layer: String?,
                         at frame: Int) -> Bool {
         guard let core, let projectId, let t = timelineAsset,
-              let a = assets.first(where: { $0.id == id }) else {
+              let a = asset(id: id) else {
             return false
         }
         guard ["image", "video", "audio"].contains(a.kind) else {
@@ -689,10 +795,11 @@ struct TimelineCard: View {
                          help: m.paged
                              ? "Pages cannot be cut: the scissors cut clips and sounds"
                              : model.timelineCutting
-                             ? "Put the scissors away (Escape)"
-                             : "Scissors: click a clip or a sound to cut it there in two") {
+                             ? "Put the scissors away (Escape or S)"
+                             : "Scissors (S): click a clip or a sound to cut it there in two") {
                 model.timelineCutting.toggle()
             }
+            .shortcutHint("S")
             .disabled(m.paged)
             Spacer(minLength: 4)
             TimelineTool(symbol: "minus.magnifyingglass", on: false,
@@ -1002,10 +1109,20 @@ final class TimelineNSView: NSView {
     var model = TimelineModel() {
         didSet {
             guard model != oldValue else { return }
+            if model.rows != oldValue.rows {
+                rowIndex = Dictionary(
+                    model.rows.indices.compactMap { i in
+                        model.rows[i].isFolder ? nil : (model.rows[i].id, i)
+                    }, uniquingKeysWith: { first, _ in first })
+            }
             modelChanged(from: oldValue)
             needsDisplay = true
         }
     }
+    /// Each layer's row, by its id (a folder's header left out): found by
+    /// a search of the rows, a transition's arrows searched 16 000 of them
+    /// twice at every draw (2026-10-23).
+    private var rowIndex: [String: Int] = [:]
     var actions = TimelineActions()
     var peaks: [String: AudioWaveform.TimedPeaks] = [:] {
         didSet { needsDisplay = true }
@@ -1113,6 +1230,19 @@ final class TimelineNSView: NSView {
 
     private func rowTop(_ i: Int) -> CGFloat {
         Self.rulerHeight + CGFloat(i) * Self.rowHeight - scrollY
+    }
+
+    /// The rows that can show between `area`'s top and foot: the rest are
+    /// out of sight -- a timeline of 16 000 layers was drawn whole at each
+    /// of the player's frames (2026-10-23).
+    private func rowsShown(_ area: CGRect) -> Range<Int> {
+        let n = model.rows.count
+        let first = Int(((area.minY - Self.rulerHeight + scrollY)
+                         / Self.rowHeight).rounded(.down))
+        let last = Int(((area.maxY - Self.rulerHeight + scrollY)
+                        / Self.rowHeight).rounded(.up))
+        let lo = min(max(0, first), n)
+        return lo..<min(max(lo, last + 1), n)
     }
 
     private func row(at y: CGFloat) -> Int? {
@@ -1237,7 +1367,8 @@ final class TimelineNSView: NSView {
             let area = CGRect(x: Self.nameWidth, y: Self.rulerHeight,
                               width: max(0, bounds.width - Self.nameWidth),
                               height: max(0, bounds.height - Self.rulerHeight))
-            for (i, r) in model.rows.enumerated() {
+            for i in rowsShown(area) {
+                let r = model.rows[i]
                 guard let b = block(i) else { continue }
                 for k in r.movable.sorted() where k >= r.start
                     && k < end(of: r) {
@@ -1285,8 +1416,9 @@ final class TimelineNSView: NSView {
 
     private func drawTracks(_ area: CGRect) {
         let n = model.rows.count
+        let shown = rowsShown(area)
         // Rows, every other one shaded; the selected one tinted.
-        for i in 0..<n {
+        for i in shown {
             let r = CGRect(x: area.minX, y: rowTop(i), width: area.width,
                            height: Self.rowHeight)
             guard r.intersects(area) else { continue }
@@ -1322,7 +1454,7 @@ final class TimelineNSView: NSView {
             s.draw(at: CGPoint(x: area.midX - sz.width / 2,
                                y: area.minY + 10))
         }
-        for i in 0..<n {
+        for i in shown {
             if model.rows[i].isFolder {
                 drawFolderSpan(i, area)
                 continue
@@ -1332,7 +1464,7 @@ final class TimelineNSView: NSView {
         }
         // The rows' lines, over the blocks that fill them.
         NSColor.labelColor.withAlphaComponent(0.08).setFill()
-        for i in 0..<n {
+        for i in shown {
             CGRect(x: area.minX, y: rowTop(i) + Self.rowHeight - 0.5,
                    width: area.width, height: 0.5).fill()
         }
@@ -1739,7 +1871,8 @@ final class TimelineNSView: NSView {
         area.fill()
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: area).addClip()
-        for (i, r) in model.rows.enumerated() {
+        for i in rowsShown(area) {
+            let r = model.rows[i]
             let top = rowTop(i)
             let rr = CGRect(x: 0, y: top, width: area.width,
                             height: Self.rowHeight)
@@ -2715,9 +2848,7 @@ extension TimelineNSView {
         return r.start..<max(r.start + 1, r.end ?? model.frames)
     }
 
-    private var selectedRow: Int? {
-        model.rows.firstIndex { $0.id == model.selected && !$0.isFolder }
-    }
+    private var selectedRow: Int? { rowIndex[model.selected] }
 
     /// With ⌘ held and a layer selected: its overlaps with the others
     /// that show a picture and have none with it yet. The one that starts
@@ -2726,15 +2857,17 @@ extension TimelineNSView {
         guard held, !model.paged, drag == nil, let s = selectedRow,
               Self.joins(model.rows[s].kind) else { return [] }
         let a = frames(of: s), me = model.rows[s].id
+        // The layers it has a transition with already.
+        let joined = Set(model.transitions.compactMap {
+            $0.from == me ? $0.to : $0.to == me ? $0.from : nil
+        })
         var out: [Overlap] = []
         for (j, r) in model.rows.enumerated()
             where j != s && !r.isFolder && Self.joins(r.kind) {
             let b = frames(of: j)
             let lo = max(a.lowerBound, b.lowerBound)
             let hi = min(a.upperBound, b.upperBound)
-            guard hi > lo, !model.transitions.contains(where: {
-                Set([$0.from, $0.to]) == Set([me, r.id])
-            }) else { continue }
+            guard hi > lo, !joined.contains(r.id) else { continue }
             let first = (a.lowerBound, a.upperBound)
                 <= (b.lowerBound, b.upperBound)
             out.append(Overlap(row: j, from: first ? me : r.id,
@@ -2793,10 +2926,7 @@ extension TimelineNSView {
     /// they no longer meet.
     private func arrow(_ t: TimelineTransition)
         -> (a: CGPoint, b: CGPoint, i: Int, j: Int)? {
-        guard let i = model.rows.firstIndex(where: {
-                  $0.id == t.from && !$0.isFolder }),
-              let j = model.rows.firstIndex(where: {
-                  $0.id == t.to && !$0.isFolder }),
+        guard let i = rowIndex[t.from], let j = rowIndex[t.to],
               let bi = block(i), let bj = block(j) else { return nil }
         let x0 = max(bi.minX, bj.minX), x1 = min(bi.maxX, bj.maxX)
         guard x1 > x0 else { return nil }

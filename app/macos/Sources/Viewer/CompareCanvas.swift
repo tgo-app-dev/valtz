@@ -221,6 +221,8 @@ final class CompareCanvas: NSView {
         didSet { if markupOrigin != oldValue { relayout() } }
     }
     private let overlayView = MarkupOverlayView()
+    /// Where markup's in-place text editor goes (MarkupTextEditor).
+    var markupOverlayHost: MarkupOverlayView { overlayView }
 
     /// Markup works on A, shown alone.
     private var markupHere: Bool {

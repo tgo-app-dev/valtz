@@ -10,6 +10,7 @@
 #include <cstring>
 #include <format>
 #include <limits>
+#include <map>
 #include <numbers>
 #include <optional>
 #include <tuple>
@@ -516,6 +517,101 @@ fill_arrowhead(CGContextRef ctx, double tx, double ty, double ux, double uy,
   CGContextFillPath(ctx);
 }
 
+// A shape's TEXT AREA in its own pixels (markup.h): its box -- an
+// ellipse's inscribed rectangle -- inset by half its outline and a fifth
+// of its font's size; empty where nothing fits.
+CGRect
+shape_text_area(const Json& o, double x0, double y0, double x1, double y1)
+{
+  CGRect r = CGRectStandardize(CGRectMake(x0, y0, x1 - x0, y1 - y0));
+  if (jget<std::string>(o, "kind", "") == "ellipse") {
+    const double k = (1 - std::numbers::sqrt2 / 2) / 2;
+    r = CGRectInset(r, r.size.width * k, r.size.height * k);
+  }
+  const double size =
+      std::clamp(finite_or(jget(o, "font", Json::object()), "size", 48),
+                 1.0, 2000.0);
+  const double pad =
+      std::max(0.0, finite_or(o, "width", 0)) / 2 + size * 0.2;
+  r = CGRectInset(r, pad, pad);
+  return r.size.width > 0 && r.size.height > 0 ? r : CGRectNull;
+}
+
+// A shape's WORDS (markup.h): set in its text area as a text box's are --
+// wrapped, the lines that fit whole -- the block of them centred down
+// it, centred across unless aligned otherwise. On a context whose CTM is
+// the shape's own pixels turned AND flipped: the flips taken back (its
+// box's centre stays), so the words are never mirrored.
+void
+draw_shape_text(CGContextRef ctx, const Json& o, double x0, double y0,
+                double x1, double y1)
+{
+  const std::string text = jget<std::string>(o, "text", "");
+  const CGRect area = shape_text_area(o, x0, y0, x1, y1);
+  if (text.empty() || CGRectIsNull(area)) {
+    return;
+  }
+  NSString* s = [[NSString alloc] initWithBytes:text.data()
+                                         length:text.size()
+                                       encoding:NSUTF8StringEncoding];
+  if (s.length == 0) {
+    return;
+  }
+  Json styled = o;
+  if (!styled.contains("align")) {
+    styled["align"] = "center";
+  }
+  CTFontRef f = font_of(jget(o, "font", Json::object()));
+  const auto tc = rgba_of(jget(o, "text_color", Json()), {0, 0, 0, 1});
+  CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  const CGFloat comps[4] = {tc[0], tc[1], tc[2], tc[3]};
+  CGColorRef color = CGColorCreate(srgb, comps);
+  CGColorSpaceRelease(srgb);
+  NSAttributedString* as = box_text(styled, s, f, color);
+  CTFramesetterRef fs = CTFramesetterCreateWithAttributedString(
+      (__bridge CFAttributedStringRef)as);
+  const double w = area.size.width, h = area.size.height;
+  CGPathRef path = CGPathCreateWithRect(CGRectMake(0, 0, w, h), nullptr);
+  CTFrameRef frame =
+      CTFramesetterCreateFrame(fs, CFRangeMake(0, 0), path, nullptr);
+  CFArrayRef lines = CTFrameGetLines(frame);
+  const CFIndex n = CFArrayGetCount(lines);
+  if (n > 0) {
+    std::vector<CGPoint> origins(static_cast<std::size_t>(n));
+    CTFrameGetLineOrigins(frame, CFRangeMake(0, 0), origins.data());
+    // The set lines' height: the frame's top to the last one's bottom.
+    CGFloat descent = 0;
+    CTLineGetTypographicBounds(
+        static_cast<CTLineRef>(CFArrayGetValueAtIndex(lines, n - 1)),
+        nullptr, &descent, nullptr);
+    const double bottom = origins.back().y - descent;
+    const double drop = std::max(0.0, bottom / 2);
+    CGContextSaveGState(ctx);
+    if (jget(o, "flip_x", false) || jget(o, "flip_y", false)) {
+      const double cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      CGAffineTransform t = CGAffineTransformMakeTranslation(cx, cy);
+      t = CGAffineTransformScale(t, jget(o, "flip_x", false) ? -1 : 1,
+                                 jget(o, "flip_y", false) ? -1 : 1);
+      CGContextConcatCTM(ctx, CGAffineTransformTranslate(t, -cx, -cy));
+    }
+    CGContextTranslateCTM(ctx, area.origin.x, area.origin.y + h);
+    CGContextScaleCTM(ctx, 1, -1);
+    CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
+    for (CFIndex i = 0; i < n; ++i) {
+      auto l = static_cast<CTLineRef>(CFArrayGetValueAtIndex(lines, i));
+      const auto& at = origins[static_cast<std::size_t>(i)];
+      CGContextSetTextPosition(ctx, at.x, at.y - drop);
+      CTLineDraw(l, ctx);
+    }
+    CGContextRestoreGState(ctx);
+  }
+  CFRelease(frame);
+  CGPathRelease(path);
+  CFRelease(fs);
+  CGColorRelease(color);
+  CFRelease(f);
+}
+
 // One object, on a context whose CTM is canvas pixels, y down: itself,
 // without its effects. For a VECTOR context (`vectors`: a PDF's), a
 // gradient in a text box's words is laid through their glyphs' outlines
@@ -613,6 +709,10 @@ draw_body(CGContextRef ctx, const Json& o, bool vectors)
       CGContextStrokePath(ctx);
     }
     CGPathRelease(path);
+    // Its words, over its inside and outline (an open path has none).
+    if (!open) {
+      draw_shape_text(ctx, o, x0, y0, x1, y1);
+    }
   } else if (kind == "text") {
     const Json font = jget(o, "font", Json::object());
     CTFontRef f = font_of(font);
@@ -1174,6 +1274,515 @@ object_bounds(const Json& o)
   return {r.origin.x, r.origin.y, r.size.width, r.size.height};
 }
 
+// ---- Connectors and anchors (markup.h) ------------------------------
+
+bool
+takes_connectors(const std::string& kind)
+{
+  return kind == "line" || kind == "rect" || kind == "ellipse" ||
+         kind == "polygon";
+}
+
+bool
+takes_anchors(const std::string& kind)
+{
+  return kind == "line" || kind == "polygon";
+}
+
+namespace {
+
+// A polygon's points in its own pixels -- its box's units laid out -- and
+// which are smooth.
+std::vector<CGPoint>
+own_points(const Json& o, std::vector<bool>* smooth = nullptr)
+{
+  const double x0 = finite_or(o, "x0", 0), y0 = finite_or(o, "y0", 0);
+  const double x1 = finite_or(o, "x1", 0), y1 = finite_or(o, "y1", 0);
+  const Json all = jget(o, "points", Json::array());
+  const Json flags = jget(o, "smooth", Json::array());
+  std::vector<CGPoint> pts;
+  for (std::size_t i = 0; all.is_array() && i < all.size(); ++i) {
+    const Json& p = all[i];
+    if (!p.is_array() || p.size() != 2 || !p[0].is_number() ||
+        !p[1].is_number()) {
+      continue;
+    }
+    pts.push_back(CGPointMake(x0 + p[0].get<double>() * (x1 - x0),
+                              y0 + p[1].get<double>() * (y1 - y0)));
+    if (smooth) {
+      smooth->push_back(flags.is_array() && i < flags.size() &&
+                        flags[i].is_boolean() && flags[i].get<bool>());
+    }
+  }
+  return pts;
+}
+
+// An outline's SEGMENTS, in its own pixels, as its connectors lie on them
+// (markup.h): a line's one, a rectangle's four from (x0, y0) clockwise,
+// a path's pieces. An ellipse's is its turn: none here.
+std::vector<Piece>
+outline_pieces(const Json& o)
+{
+  const auto kind = jget<std::string>(o, "kind", "");
+  const double x0 = finite_or(o, "x0", 0), y0 = finite_or(o, "y0", 0);
+  const double x1 = finite_or(o, "x1", 0), y1 = finite_or(o, "y1", 0);
+  auto straight = [](CGPoint a, CGPoint b) { return Piece{a, a, b, b}; };
+  if (kind == "line") {
+    return {straight(CGPointMake(x0, y0), CGPointMake(x1, y1))};
+  }
+  if (kind == "rect") {
+    const CGPoint c[4] = {CGPointMake(x0, y0), CGPointMake(x1, y0),
+                          CGPointMake(x1, y1), CGPointMake(x0, y1)};
+    return {straight(c[0], c[1]), straight(c[1], c[2]),
+            straight(c[2], c[3]), straight(c[3], c[0])};
+  }
+  if (kind == "polygon") {
+    std::vector<bool> smooth;
+    const auto pts = own_points(o, &smooth);
+    return path_pieces(pts, smooth, !jget(o, "open", false));
+  }
+  return {};
+}
+
+// A piece's point at `t`: along a straight one evenly, a curve's own
+// parameter on a curve (the app's MarkupRender.Piece.along alike).
+CGPoint
+piece_at(const Piece& c, double t)
+{
+  if (CGPointEqualToPoint(c.c1, c.a) && CGPointEqualToPoint(c.c2, c.b)) {
+    return CGPointMake(c.a.x + t * (c.b.x - c.a.x),
+                       c.a.y + t * (c.b.y - c.a.y));
+  }
+  const double u = 1 - t;
+  const double k0 = u * u * u, k1 = 3 * u * u * t, k2 = 3 * u * t * t;
+  const double k3 = t * t * t;
+  return CGPointMake(k0 * c.a.x + k1 * c.c1.x + k2 * c.c2.x + k3 * c.b.x,
+                     k0 * c.a.y + k1 * c.c1.y + k2 * c.c2.y + k3 * c.b.y);
+}
+
+// Halfway along a piece, as a parameter: its curve measured in short
+// steps (a straight one's, 0.5).
+double
+piece_middle(const Piece& c)
+{
+  if (CGPointEqualToPoint(c.c1, c.a) && CGPointEqualToPoint(c.c2, c.b)) {
+    return 0.5;
+  }
+  constexpr int kSteps = 64;
+  std::array<double, kSteps + 1> run{};
+  CGPoint from = c.a;
+  for (int s = 1; s <= kSteps; ++s) {
+    const CGPoint to = piece_at(c, static_cast<double>(s) / kSteps);
+    run[s] = run[s - 1] + std::hypot(to.x - from.x, to.y - from.y);
+    from = to;
+  }
+  const double half = run[kSteps] / 2;
+  for (int s = 1; s <= kSteps; ++s) {
+    if (run[s] >= half) {
+      const double span = run[s] - run[s - 1];
+      const double f = span > 0 ? (half - run[s - 1]) / span : 0;
+      return (s - 1 + f) / kSteps;
+    }
+  }
+  return 0.5;
+}
+
+// Connector (seg, t)'s place in `o`'s own pixels; none off its outline.
+std::optional<CGPoint>
+own_connector(const Json& o, int seg, double t)
+{
+  if (jget<std::string>(o, "kind", "") == "ellipse") {
+    if (seg != 0) {
+      return std::nullopt;
+    }
+    const double x0 = finite_or(o, "x0", 0), y0 = finite_or(o, "y0", 0);
+    const double x1 = finite_or(o, "x1", 0), y1 = finite_or(o, "y1", 0);
+    const double a = 2 * std::numbers::pi * t;
+    return CGPointMake((x0 + x1) / 2 + std::abs(x1 - x0) / 2 * std::cos(a),
+                       (y0 + y1) / 2 + std::abs(y1 - y0) / 2 * std::sin(a));
+  }
+  const auto pieces = outline_pieces(o);
+  if (seg < 0 || static_cast<std::size_t>(seg) >= pieces.size()) {
+    return std::nullopt;
+  }
+  return piece_at(pieces[static_cast<std::size_t>(seg)], t);
+}
+
+// Where connector `id` of `o` is shown, canvas pixels; none without it.
+std::optional<CGPoint>
+connector_at(const Json& o, const std::string& id)
+{
+  for (const auto& c : jget(o, "connectors", Json::array())) {
+    if (jget<std::string>(c, "id", "") != id) {
+      continue;
+    }
+    const auto p = own_connector(o, jget(c, "seg", 0),
+                                 clamp01(finite_or(c, "t", 0)));
+    if (!p) {
+      return std::nullopt;
+    }
+    return CGPointApplyAffineTransform(*p, object_transform(o));
+  }
+  return std::nullopt;
+}
+
+// A polygon laid through `pts` (its own pixels): its box their bounds,
+// its points in the box's units, its gradient's ends left where they lay.
+void
+set_polygon(Json& o, const std::vector<CGPoint>& pts)
+{
+  if (pts.empty()) {
+    return;
+  }
+  const double ox0 = finite_or(o, "x0", 0), oy0 = finite_or(o, "y0", 0);
+  const double ow = finite_or(o, "x1", 0) - ox0;
+  const double oh = finite_or(o, "y1", 0) - oy0;
+  double x0 = pts[0].x, y0 = pts[0].y, x1 = x0, y1 = y0;
+  for (const auto& p : pts) {
+    x0 = std::min(x0, p.x);
+    y0 = std::min(y0, p.y);
+    x1 = std::max(x1, p.x);
+    y1 = std::max(y1, p.y);
+  }
+  const double w = x1 - x0, h = y1 - y0;
+  auto unit = [&](double v, double lo, double size) {
+    return std::abs(size) > 1e-6 ? (v - lo) / size : 0.5;
+  };
+  if (Json g = jget(o, "gradient", Json()); g.is_object()) {
+    for (const char* k : {"from", "to"}) {
+      const Json e = jget(g, k, Json());
+      if (e.is_array() && e.size() == 2 && e[0].is_number() &&
+          e[1].is_number()) {
+        const double cx = ox0 + e[0].get<double>() * ow;
+        const double cy = oy0 + e[1].get<double>() * oh;
+        g[k] = {unit(cx, x0, w), unit(cy, y0, h)};
+      }
+    }
+    o["gradient"] = std::move(g);
+  }
+  Json units = Json::array();
+  for (const auto& p : pts) {
+    units.push_back({unit(p.x, x0, w), unit(p.y, y0, h)});
+  }
+  o["points"] = std::move(units);
+  o["x0"] = x0;
+  o["y0"] = y0;
+  o["x1"] = x1;
+  o["y1"] = y1;
+}
+
+// An anchored object's turn and flips made its points': a line's ends, a
+// path's points where they are shown (its gradient's ends with them).
+void
+bake_transform(Json& o)
+{
+  const CGAffineTransform t = object_transform(o);
+  if (CGAffineTransformIsIdentity(t)) {
+    return;
+  }
+  if (jget<std::string>(o, "kind", "") == "line") {
+    const CGPoint a = CGPointApplyAffineTransform(
+        CGPointMake(finite_or(o, "x0", 0), finite_or(o, "y0", 0)), t);
+    const CGPoint b = CGPointApplyAffineTransform(
+        CGPointMake(finite_or(o, "x1", 0), finite_or(o, "y1", 0)), t);
+    o["x0"] = a.x;
+    o["y0"] = a.y;
+    o["x1"] = b.x;
+    o["y1"] = b.y;
+  } else {
+    auto pts = own_points(o);
+    for (auto& p : pts) {
+      p = CGPointApplyAffineTransform(p, t);
+    }
+    // Its gradient's ends where they were shown, in its own pixels now.
+    if (Json g = jget(o, "gradient", Json()); g.is_object()) {
+      const double x0 = finite_or(o, "x0", 0), y0 = finite_or(o, "y0", 0);
+      const double w = finite_or(o, "x1", 0) - x0;
+      const double h = finite_or(o, "y1", 0) - y0;
+      for (const char* k : {"from", "to"}) {
+        const Json e = jget(g, k, Json());
+        if (e.is_array() && e.size() == 2 && e[0].is_number() &&
+            e[1].is_number()) {
+          const CGPoint c = CGPointApplyAffineTransform(
+              CGPointMake(x0 + e[0].get<double>() * w,
+                          y0 + e[1].get<double>() * h), t);
+          // Back into the old box's units: set_polygon moves them on.
+          g[k] = {std::abs(w) > 1e-6 ? (c.x - x0) / w : 0.5,
+                  std::abs(h) > 1e-6 ? (c.y - y0) / h : 0.5};
+        }
+      }
+      o["gradient"] = std::move(g);
+    }
+    set_polygon(o, pts);
+  }
+  o.erase("rotate");
+  o.erase("flip_x");
+  o.erase("flip_y");
+}
+
+// `o`'s point `k` put at `p` (canvas pixels: it has no turn); whether it
+// moved.
+bool
+put_point(Json& o, int k, CGPoint p)
+{
+  constexpr double kNear = 1e-6;
+  if (jget<std::string>(o, "kind", "") == "line") {
+    const char* xk = k == 0 ? "x0" : "x1";
+    const char* yk = k == 0 ? "y0" : "y1";
+    if (std::abs(finite_or(o, xk, 0) - p.x) < kNear &&
+        std::abs(finite_or(o, yk, 0) - p.y) < kNear) {
+      return false;
+    }
+    o[xk] = p.x;
+    o[yk] = p.y;
+    return true;
+  }
+  auto pts = own_points(o);
+  if (k < 0 || static_cast<std::size_t>(k) >= pts.size()) {
+    return false;
+  }
+  auto& q = pts[static_cast<std::size_t>(k)];
+  if (std::abs(q.x - p.x) < kNear && std::abs(q.y - p.y) < kNear) {
+    return false;
+  }
+  q = p;
+  set_polygon(o, pts);
+  return true;
+}
+
+// How many points an anchored object has: a line's two ends, a path's.
+int
+point_count(const Json& o)
+{
+  return jget<std::string>(o, "kind", "") == "line"
+             ? 2
+             : static_cast<int>(jget(o, "points", Json::array()).size());
+}
+
+}  // namespace
+
+std::vector<ConnectorPoint>
+connector_points(const Json& o)
+{
+  std::vector<ConnectorPoint> out;
+  if (!takes_connectors(jget<std::string>(o, "kind", ""))) {
+    return out;
+  }
+  const CGAffineTransform t = object_transform(o);
+  for (const auto& c : jget(o, "connectors", Json::array())) {
+    const auto p = own_connector(o, jget(c, "seg", 0),
+                                 clamp01(finite_or(c, "t", 0)));
+    if (p) {
+      const CGPoint s = CGPointApplyAffineTransform(*p, t);
+      out.push_back({jget<std::string>(c, "id", ""), s.x, s.y});
+    }
+  }
+  return out;
+}
+
+Json
+with_default_connectors(const Json& object)
+{
+  Json o = object;
+  const auto kind = jget<std::string>(o, "kind", "");
+  if (!takes_connectors(kind)) {
+    return o;
+  }
+  std::vector<std::pair<int, double>> wanted;
+  if (kind == "ellipse") {
+    for (const double t : {0.0, 0.25, 0.5, 0.75}) {
+      wanted.emplace_back(0, t);
+    }
+  } else {
+    const auto pieces = outline_pieces(o);
+    for (std::size_t i = 0; i < pieces.size(); ++i) {
+      wanted.emplace_back(static_cast<int>(i), piece_middle(pieces[i]));
+    }
+  }
+  Json have = jget(o, "connectors", Json::array());
+  if (!have.is_array()) {
+    have = Json::array();
+  }
+  std::set<std::string> ids;
+  for (const auto& c : have) {
+    ids.insert(jget<std::string>(c, "id", ""));
+  }
+  int next = 1;
+  for (const auto& [seg, t] : wanted) {
+    bool taken = false;
+    for (const auto& c : have) {
+      const double u = finite_or(c, "t", 0);
+      // Round an ellipse, 0 and 1 are one place.
+      const double d = kind == "ellipse"
+                           ? std::min(std::abs(u - t), 1 - std::abs(u - t))
+                           : std::abs(u - t);
+      taken = taken || (jget(c, "seg", 0) == seg && d < 0.01);
+    }
+    if (taken) {
+      continue;
+    }
+    std::string id;
+    while (id.empty() || ids.count(id)) {
+      id = std::format("c{}", next++);
+    }
+    ids.insert(id);
+    have.push_back({{"id", id}, {"seg", seg}, {"t", t}});
+  }
+  o["connectors"] = std::move(have);
+  return o;
+}
+
+namespace {
+
+// Object `i` of `out` with its anchored points on their connectors now
+// (resolve_anchors): an anchor whose object or connector is gone, or its
+// own, dropped; its turn made its points'. Whether a point moved.
+bool
+resolve_one(Json& out, std::size_t i,
+            const std::map<std::string, std::size_t>& by_id)
+{
+  Json& o = out[i];
+  if (!o.contains("anchors")) {
+    return false;
+  }
+  Json kept = Json::array();
+  std::vector<std::pair<int, CGPoint>> at;
+  for (const auto& a : jget(o, "anchors", Json::array())) {
+    const auto it = by_id.find(jget<std::string>(a, "to", ""));
+    if (it == by_id.end() || it->second == i) {
+      continue;
+    }
+    const auto p = connector_at(out[it->second],
+                                jget<std::string>(a, "connector", ""));
+    if (!p) {
+      continue;
+    }
+    kept.push_back(a);
+    at.emplace_back(jget(a, "point", 0), *p);
+  }
+  if (kept.empty()) {
+    o.erase("anchors");
+    return false;
+  }
+  if (kept.size() != o["anchors"].size()) {
+    o["anchors"] = kept;
+  }
+  bake_transform(o);
+  bool moved = false;
+  for (const auto& [k, p] : at) {
+    moved = put_point(o, k, p) || moved;
+  }
+  return moved;
+}
+
+std::map<std::string, std::size_t>
+index_of(const Json& out)
+{
+  std::map<std::string, std::size_t> by_id;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    by_id[jget<std::string>(out[i], "id", "")] = i;
+  }
+  return by_id;
+}
+
+}  // namespace
+
+Json
+resolve_anchors(const Json& objects)
+{
+  Json out = objects.is_array() ? objects : Json::array();
+  const auto by_id = index_of(out);
+  // Through chains -- a line anchored to a line anchored to a shape --
+  // a pass a link, a few at most (a loop of anchors settles somewhere).
+  const std::size_t passes = std::clamp<std::size_t>(out.size(), 1, 8);
+  for (std::size_t pass = 0; pass < passes; ++pass) {
+    bool moved = false;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+      moved = resolve_one(out, i, by_id) || moved;
+    }
+    if (!moved) {
+      break;
+    }
+  }
+  return out;
+}
+
+Json
+resolve_anchors(Json objects, const std::set<std::string>& moved,
+                std::set<std::string>& touched)
+{
+  Json out = std::move(objects);
+  if (!out.is_array()) {
+    out = Json::array();
+  }
+  const auto by_id = index_of(out);
+  // Who is anchored to whom: an object's id -> those anchored to it.
+  std::map<std::string, std::vector<std::size_t>> anchored_to;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    for (const auto& a : jget(out[i], "anchors", Json::array())) {
+      anchored_to[jget<std::string>(a, "to", "")].push_back(i);
+    }
+  }
+  // The moved ones still there, and what hangs on them, through chains.
+  std::set<std::size_t> reach;
+  std::vector<std::string> todo(moved.begin(), moved.end());
+  std::set<std::string> seen(moved.begin(), moved.end());
+  while (!todo.empty()) {
+    const std::string id = std::move(todo.back());
+    todo.pop_back();
+    if (auto it = by_id.find(id); it != by_id.end()) {
+      reach.insert(it->second);
+    }
+    if (auto it = anchored_to.find(id); it != anchored_to.end()) {
+      for (const auto i : it->second) {
+        const auto dep = jget<std::string>(out[i], "id", "");
+        reach.insert(i);
+        if (seen.insert(dep).second) {
+          todo.push_back(dep);
+        }
+      }
+    }
+  }
+  const std::size_t passes = std::clamp<std::size_t>(reach.size(), 1, 8);
+  for (std::size_t pass = 0; pass < passes; ++pass) {
+    bool any = false;
+    for (const auto i : reach) {
+      any = resolve_one(out, i, by_id) || any;
+    }
+    if (!any) {
+      break;
+    }
+  }
+  for (const auto i : reach) {
+    touched.insert(jget<std::string>(out[i], "id", ""));
+  }
+  return out;
+}
+
+Json
+detach_moved(const Json& objects, const std::set<std::string>& moved)
+{
+  Json out = objects.is_array() ? objects : Json::array();
+  for (auto& o : out) {
+    if (!moved.count(jget<std::string>(o, "id", "")) ||
+        !o.contains("anchors")) {
+      continue;
+    }
+    Json kept = Json::array();
+    for (const auto& a : o["anchors"]) {
+      if (moved.count(jget<std::string>(a, "to", ""))) {
+        kept.push_back(a);
+      }
+    }
+    if (kept.empty()) {
+      o.erase("anchors");
+    } else {
+      o["anchors"] = std::move(kept);
+    }
+  }
+  return resolve_anchors(out);
+}
+
 namespace {
 
 // An object moved whole: its corners (its points and gradient are in its
@@ -1274,7 +1883,8 @@ arrange_objects(const Json& objects, const std::vector<std::string>& ids,
                                    : (lo + hi) / 2 - (start + size / 2);
       move_object(out[picked[k]], across ? d : 0, across ? 0 : d);
     }
-    return out;
+    // Moved whole: let go of the shapes they were not moved with.
+    return detach_moved(out, named);
   }
   if (how == "distribute-h" || how == "distribute-v") {
     if (picked.size() < 3) {
@@ -1304,7 +1914,7 @@ arrange_objects(const Json& objects, const std::vector<std::string>& ids,
       move_object(out[picked[k]], across ? d : 0, across ? 0 : d);
       at += b[k][ax + 2] + gap;
     }
-    return out;
+    return detach_moved(out, named);
   }
   return make_error(Code::InvalidArgument,
                     std::format("cannot arrange objects by '{}'", how));
@@ -1330,6 +1940,285 @@ stroke_from_json(const Json& j)
   return s;
 }
 
+namespace {
+
+// An object normalize_objects keeps: of a known kind -- a lifted drawing
+// with its picture's blob (its box and that, no file: whoever draws it
+// says where its blob is).
+bool
+kept_kind(const Json& o)
+{
+  const auto kind = jget<std::string>(o, "kind", "");
+  if (kind != "line" && kind != "rect" && kind != "ellipse" &&
+      kind != "polygon" && kind != "text" && kind != "drawing") {
+    return false;
+  }
+  const Json image = jget(o, "image", Json());
+  return kind != "drawing" ||
+         (image.is_object() &&
+          jget<std::string>(image, "hash", "").size() == 64);
+}
+
+// One object as it is kept (kept_kind), its id `id`: every field there
+// and in range. Its anchors are not resolved (resolve_anchors).
+Json
+normalize_one(const Json& o, const std::string& id)
+{
+  const auto kind = jget<std::string>(o, "kind", "");
+  // Its turn, within half a turn either way, and its flips (absent:
+  // none).
+  auto turned = [&o](Json& n) {
+    double turn = std::fmod(finite_or(o, "rotate", 0), 360.0);
+    if (turn > 180) {
+      turn -= 360;
+    } else if (turn <= -180) {
+      turn += 360;
+    }
+    if (std::abs(turn) > 1e-9) {
+      n["rotate"] = turn;
+    }
+    for (const char* k : {"flip_x", "flip_y"}) {
+      if (jget(o, k, false)) {
+        n[k] = true;
+      }
+    }
+  };
+  if (kind == "drawing") {
+    const Json image = jget(o, "image", Json());
+    Json n = {{"id", id},
+              {"kind", kind},
+              {"x0", finite_or(o, "x0", 0)},
+              {"y0", finite_or(o, "y0", 0)},
+              {"x1", finite_or(o, "x1", 0)},
+              {"y1", finite_or(o, "y1", 0)},
+              {"image", {{"hash", jget<std::string>(image, "hash", "")},
+                         {"size", jget<std::uint64_t>(image, "size", 0)},
+                         {"ext", jget<std::string>(image, "ext", "png")}}}};
+    turned(n);
+    return n;
+  }
+  auto rgba = [](const std::array<double, 4>& c) {
+    return Json::array({c[0], c[1], c[2], c[3]});
+  };
+  Json n = {
+    {"id", id},
+    {"kind", kind},
+    {"x0", finite_or(o, "x0", 0)},
+    {"y0", finite_or(o, "y0", 0)},
+    {"x1", finite_or(o, "x1", 0)},
+    {"y1", finite_or(o, "y1", 0)},
+    {"stroke", rgba(rgba_of(jget(o, "stroke", Json()), {0, 0, 0, 1}))},
+    {"fill", rgba(rgba_of(jget(o, "fill", Json()), {0, 0, 0, 0}))},
+    {"width", std::clamp(finite_or(o, "width", 4), 0.0, 1000.0)},
+  };
+  turned(n);
+  // A line's or an outline's dashes; a line's arrowheads (absent:
+  // solid, none).
+  if (kind != "text") {
+    const auto d = jget<std::string>(o, "dash", "");
+    if (d == "dashed" || d == "dotted") {
+      n["dash"] = d;
+    }
+  }
+  if (kind == "line") {
+    const auto a = jget<std::string>(o, "arrows", "");
+    if (a == "start" || a == "end" || a == "both") {
+      n["arrows"] = a;
+    }
+  }
+  if (kind == "text") {
+    const Json f = jget(o, "font", Json::object());
+    n["text"] = jget<std::string>(o, "text", "");
+    n["box"] = jget(o, "box", false);
+    n["font"] = {
+      {"family", jget<std::string>(f, "family", "Helvetica Neue")},
+      {"size", std::clamp(finite_or(f, "size", 48), 1.0, 2000.0)},
+      {"bold", jget(f, "bold", false)},
+      {"italic", jget(f, "italic", false)},
+      {"underline", jget(f, "underline", false)},
+    };
+    // Its paragraph style, where it has one (absent: as before).
+    if (o.contains("align")) {
+      const auto a = jget<std::string>(o, "align", "left");
+      n["align"] = a == "center" || a == "right" || a == "justified"
+                       ? a : std::string("left");
+    }
+    if (o.contains("line_spacing")) {
+      n["line_spacing"] =
+          std::clamp(finite_or(o, "line_spacing", 1), 1.0, 3.0);
+    }
+    if (o.contains("paragraph_spacing")) {
+      n["paragraph_spacing"] =
+          std::clamp(finite_or(o, "paragraph_spacing", 0), 0.0, 2000.0);
+    }
+    if (jget(o, "justify_last", false)) {
+      n["justify_last"] = true;
+    }
+  }
+  // A polygon's points, its box's units -- a PATH's smooth ones marked
+  // (none: all corners, as before), and whether it is open.
+  if (kind == "polygon") {
+    Json pts = Json::array(), smooth = Json::array();
+    const Json all = jget(o, "points", Json::array());
+    const Json flags = jget(o, "smooth", Json::array());
+    bool curved = false;
+    for (std::size_t i = 0; i < all.size(); ++i) {
+      const Json& p = all[i];
+      if (p.is_array() && p.size() == 2 && p[0].is_number() &&
+          p[1].is_number() && std::isfinite(p[0].get<double>()) &&
+          std::isfinite(p[1].get<double>())) {
+        pts.push_back({p[0].get<double>(), p[1].get<double>()});
+        const bool s = flags.is_array() && i < flags.size() &&
+                       flags[i].is_boolean() && flags[i].get<bool>();
+        smooth.push_back(s);
+        curved = curved || s;
+      }
+    }
+    n["points"] = std::move(pts);
+    if (curved) {
+      n["smooth"] = std::move(smooth);
+    }
+    if (jget(o, "open", false)) {
+      n["open"] = true;
+    }
+  }
+  // Its gradient (a shape's inside, a text's words): its stops sorted
+  // and held, at least two; its ends where they were put.
+  if (const Json g = jget(o, "gradient", Json());
+      g.is_object() && kind != "line") {
+    Json stops = Json::array();
+    for (const auto& st : jget(g, "stops", Json::array())) {
+      stops.push_back(
+          {{"at", clamp01(finite_or(st, "at", 0))},
+           {"color", rgba(rgba_of(jget(st, "color", Json()),
+                                  {0, 0, 0, 1}))}});
+    }
+    std::stable_sort(stops.begin(), stops.end(),
+                     [](const Json& a, const Json& b) {
+                       return jget(a, "at", 0.0) < jget(b, "at", 0.0);
+                     });
+    if (stops.size() >= 2) {
+      const bool radial =
+          jget<std::string>(g, "kind", "linear") == "radial";
+      Json kept = {{"kind", radial ? "radial" : "linear"},
+                   {"stops", std::move(stops)}};
+      for (const char* k : {"from", "to"}) {
+        const Json p = jget(g, k, Json());
+        if (p.is_array() && p.size() == 2 && p[0].is_number() &&
+            p[1].is_number() && std::isfinite(p[0].get<double>()) &&
+            std::isfinite(p[1].get<double>())) {
+          kept[k] = {p[0].get<double>(), p[1].get<double>()};
+        }
+      }
+      n["gradient"] = std::move(kept);
+    }
+  }
+  // Its effects: a shadow's and a glow's values held to their ranges;
+  // a kind not known here kept as it is (a later Valtz's).
+  if (const Json fx = jget(o, "effects", Json()); fx.is_array()) {
+    Json kept = Json::array();
+    for (const auto& e : fx) {
+      const auto k = jget<std::string>(e, "kind", "");
+      const auto c = rgba(rgba_of(jget(e, "color", Json()),
+                                  {0, 0, 0, 0.5}));
+      if (k == "shadow") {
+        kept.push_back(
+            {{"kind", k}, {"color", c},
+             {"blur", std::clamp(finite_or(e, "blur", 8), 0.0, 1000.0)},
+             {"dx", std::clamp(finite_or(e, "dx", 0), -4000.0, 4000.0)},
+             {"dy", std::clamp(finite_or(e, "dy", 0), -4000.0, 4000.0)}});
+      } else if (k == "glow") {
+        kept.push_back({{"kind", k}, {"color", c},
+                        {"radius", std::clamp(finite_or(e, "radius", 12),
+                                              0.0, 1000.0)}});
+      } else if (!k.empty() && e.is_object()) {
+        kept.push_back(e);
+      }
+    }
+    if (!kept.empty()) {
+      n["effects"] = std::move(kept);
+    }
+  }
+  // A shape's words: its text, font and paragraph style, as a text
+  // box's, and their colour (absent: none, black, centred).
+  if (kind == "rect" || kind == "ellipse" || kind == "polygon") {
+    if (auto t = jget<std::string>(o, "text", ""); !t.empty()) {
+      const Json f = jget(o, "font", Json::object());
+      n["text"] = std::move(t);
+      n["font"] = {
+        {"family", jget<std::string>(f, "family", "Helvetica Neue")},
+        {"size", std::clamp(finite_or(f, "size", 48), 1.0, 2000.0)},
+        {"bold", jget(f, "bold", false)},
+        {"italic", jget(f, "italic", false)},
+        {"underline", jget(f, "underline", false)},
+      };
+      if (o.contains("align")) {
+        const auto a = jget<std::string>(o, "align", "center");
+        n["align"] = a == "left" || a == "right" || a == "justified"
+                         ? a : std::string("center");
+      }
+      if (o.contains("line_spacing")) {
+        n["line_spacing"] =
+            std::clamp(finite_or(o, "line_spacing", 1), 1.0, 3.0);
+      }
+      if (o.contains("text_color")) {
+        n["text_color"] =
+            rgba(rgba_of(jget(o, "text_color", Json()), {0, 0, 0, 1}));
+      }
+    }
+  }
+  // Its connectors: on its outline's segments, ids its own.
+  if (takes_connectors(kind)) {
+    const int segs = kind == "ellipse"   ? 1
+                     : kind == "line"    ? 1
+                     : kind == "rect"    ? 4
+                     : static_cast<int>(outline_pieces(n).size());
+    Json kept = Json::array();
+    std::set<std::string> cids;
+    int next = 1;
+    for (const auto& c : jget(o, "connectors", Json::array())) {
+      const int seg = jget(c, "seg", 0);
+      if (!c.is_object() || seg < 0 || seg >= segs) {
+        continue;
+      }
+      auto cid = jget<std::string>(c, "id", "");
+      while (cid.empty() || cids.count(cid)) {
+        cid = std::format("c{}", next++);
+      }
+      cids.insert(cid);
+      kept.push_back({{"id", cid},
+                      {"seg", seg},
+                      {"t", clamp01(finite_or(c, "t", 0))}});
+    }
+    if (!kept.empty()) {
+      n["connectors"] = std::move(kept);
+    }
+  }
+  // Its anchors: a point each at most (the last), to another object.
+  if (takes_anchors(kind)) {
+    const int points = point_count(n);
+    std::map<int, Json> by_point;
+    for (const auto& a : jget(o, "anchors", Json::array())) {
+      const int k = jget(a, "point", -1);
+      const auto to = jget<std::string>(a, "to", "");
+      const auto c = jget<std::string>(a, "connector", "");
+      if (k >= 0 && k < points && !to.empty() && to != id && !c.empty()) {
+        by_point[k] = {{"point", k}, {"to", to}, {"connector", c}};
+      }
+    }
+    if (!by_point.empty()) {
+      Json kept = Json::array();
+      for (auto& [k, a] : by_point) {
+        kept.push_back(std::move(a));
+      }
+      n["anchors"] = std::move(kept);
+    }
+  }
+  return n;
+}
+
+}  // namespace
+
 Json
 normalize_objects(const Json& in)
 {
@@ -1340,17 +2229,7 @@ normalize_objects(const Json& in)
   std::set<std::string> ids;
   int next = 1;
   for (const auto& o : in) {
-    const auto kind = jget<std::string>(o, "kind", "");
-    if (kind != "line" && kind != "rect" && kind != "ellipse" &&
-        kind != "polygon" && kind != "text" && kind != "drawing") {
-      continue;
-    }
-    // A drawing lifted: its box and its picture's blob -- no file (whoever
-    // draws it says where its blob is), nothing else.
-    const Json image = jget(o, "image", Json());
-    if (kind == "drawing" &&
-        (!image.is_object() || jget<std::string>(image, "hash", "").size() !=
-                                   64)) {
+    if (!kept_kind(o)) {
       continue;
     }
     auto id = jget<std::string>(o, "id", "");
@@ -1358,182 +2237,55 @@ normalize_objects(const Json& in)
       id = std::format("o{}", next++);
     }
     ids.insert(id);
-    // Its turn, within half a turn either way, and its flips (absent:
-    // none).
-    auto turned = [&o](Json& n) {
-      double turn = std::fmod(finite_or(o, "rotate", 0), 360.0);
-      if (turn > 180) {
-        turn -= 360;
-      } else if (turn <= -180) {
-        turn += 360;
-      }
-      if (std::abs(turn) > 1e-9) {
-        n["rotate"] = turn;
-      }
-      for (const char* k : {"flip_x", "flip_y"}) {
-        if (jget(o, k, false)) {
-          n[k] = true;
-        }
-      }
-    };
-    if (kind == "drawing") {
-      out.push_back({{"id", id},
-                     {"kind", kind},
-                     {"x0", finite_or(o, "x0", 0)},
-                     {"y0", finite_or(o, "y0", 0)},
-                     {"x1", finite_or(o, "x1", 0)},
-                     {"y1", finite_or(o, "y1", 0)},
-                     {"image", {{"hash", jget<std::string>(image, "hash", "")},
-                                {"size", jget<std::uint64_t>(image, "size", 0)},
-                                {"ext", jget<std::string>(image, "ext",
-                                                          "png")}}}});
-      turned(out.back());
+    out.push_back(normalize_one(o, id));
+  }
+  return resolve_anchors(out);
+}
+
+Json
+patch_objects(Json objects, const Json& upsert,
+              const std::set<std::string>& remove,
+              std::set<std::string>& changed)
+{
+  // In place: a page of thousands is not copied.
+  Json out = std::move(objects);
+  if (!out.is_array()) {
+    out = Json::array();
+  }
+  if (!remove.empty()) {
+    std::erase_if(out.get_ref<Json::array_t&>(), [&](const Json& o) {
+      return remove.count(jget<std::string>(o, "id", "")) > 0;
+    });
+  }
+  std::map<std::string, std::size_t> at;
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    at[jget<std::string>(out[i], "id", "")] = i;
+  }
+  std::set<std::string> moved(remove.begin(), remove.end());
+  int next = 1;
+  for (const auto& u : upsert.is_array() ? upsert : Json::array()) {
+    if (!kept_kind(u)) {
       continue;
     }
-    auto rgba = [](const std::array<double, 4>& c) {
-      return Json::array({c[0], c[1], c[2], c[3]});
-    };
-    Json n = {
-      {"id", id},
-      {"kind", kind},
-      {"x0", finite_or(o, "x0", 0)},
-      {"y0", finite_or(o, "y0", 0)},
-      {"x1", finite_or(o, "x1", 0)},
-      {"y1", finite_or(o, "y1", 0)},
-      {"stroke", rgba(rgba_of(jget(o, "stroke", Json()), {0, 0, 0, 1}))},
-      {"fill", rgba(rgba_of(jget(o, "fill", Json()), {0, 0, 0, 0}))},
-      {"width", std::clamp(finite_or(o, "width", 4), 0.0, 1000.0)},
-    };
-    turned(n);
-    // A line's or an outline's dashes; a line's arrowheads (absent:
-    // solid, none).
-    if (kind != "text") {
-      const auto d = jget<std::string>(o, "dash", "");
-      if (d == "dashed" || d == "dotted") {
-        n["dash"] = d;
-      }
+    auto id = jget<std::string>(u, "id", "");
+    while (id.empty() || (remove.count(id) && !at.count(id))) {
+      do {
+        id = std::format("o{}", next++);
+      } while (at.count(id));
     }
-    if (kind == "line") {
-      const auto a = jget<std::string>(o, "arrows", "");
-      if (a == "start" || a == "end" || a == "both") {
-        n["arrows"] = a;
-      }
+    Json n = normalize_one(u, id);
+    if (auto it = at.find(id); it != at.end()) {
+      out[it->second] = std::move(n);
+    } else {
+      at[id] = out.size();
+      out.push_back(std::move(n));
     }
-    if (kind == "text") {
-      const Json f = jget(o, "font", Json::object());
-      n["text"] = jget<std::string>(o, "text", "");
-      n["box"] = jget(o, "box", false);
-      n["font"] = {
-        {"family", jget<std::string>(f, "family", "Helvetica Neue")},
-        {"size", std::clamp(finite_or(f, "size", 48), 1.0, 2000.0)},
-        {"bold", jget(f, "bold", false)},
-        {"italic", jget(f, "italic", false)},
-        {"underline", jget(f, "underline", false)},
-      };
-      // Its paragraph style, where it has one (absent: as before).
-      if (o.contains("align")) {
-        const auto a = jget<std::string>(o, "align", "left");
-        n["align"] = a == "center" || a == "right" || a == "justified"
-                         ? a : std::string("left");
-      }
-      if (o.contains("line_spacing")) {
-        n["line_spacing"] =
-            std::clamp(finite_or(o, "line_spacing", 1), 1.0, 3.0);
-      }
-      if (o.contains("paragraph_spacing")) {
-        n["paragraph_spacing"] =
-            std::clamp(finite_or(o, "paragraph_spacing", 0), 0.0, 2000.0);
-      }
-      if (jget(o, "justify_last", false)) {
-        n["justify_last"] = true;
-      }
-    }
-    // A polygon's points, its box's units -- a PATH's smooth ones marked
-    // (none: all corners, as before), and whether it is open.
-    if (kind == "polygon") {
-      Json pts = Json::array(), smooth = Json::array();
-      const Json all = jget(o, "points", Json::array());
-      const Json flags = jget(o, "smooth", Json::array());
-      bool curved = false;
-      for (std::size_t i = 0; i < all.size(); ++i) {
-        const Json& p = all[i];
-        if (p.is_array() && p.size() == 2 && p[0].is_number() &&
-            p[1].is_number() && std::isfinite(p[0].get<double>()) &&
-            std::isfinite(p[1].get<double>())) {
-          pts.push_back({p[0].get<double>(), p[1].get<double>()});
-          const bool s = flags.is_array() && i < flags.size() &&
-                         flags[i].is_boolean() && flags[i].get<bool>();
-          smooth.push_back(s);
-          curved = curved || s;
-        }
-      }
-      n["points"] = std::move(pts);
-      if (curved) {
-        n["smooth"] = std::move(smooth);
-      }
-      if (jget(o, "open", false)) {
-        n["open"] = true;
-      }
-    }
-    // Its gradient (a shape's inside, a text's words): its stops sorted
-    // and held, at least two; its ends where they were put.
-    if (const Json g = jget(o, "gradient", Json());
-        g.is_object() && kind != "line") {
-      Json stops = Json::array();
-      for (const auto& st : jget(g, "stops", Json::array())) {
-        stops.push_back(
-            {{"at", clamp01(finite_or(st, "at", 0))},
-             {"color", rgba(rgba_of(jget(st, "color", Json()),
-                                    {0, 0, 0, 1}))}});
-      }
-      std::stable_sort(stops.begin(), stops.end(),
-                       [](const Json& a, const Json& b) {
-                         return jget(a, "at", 0.0) < jget(b, "at", 0.0);
-                       });
-      if (stops.size() >= 2) {
-        const bool radial =
-            jget<std::string>(g, "kind", "linear") == "radial";
-        Json kept = {{"kind", radial ? "radial" : "linear"},
-                     {"stops", std::move(stops)}};
-        for (const char* k : {"from", "to"}) {
-          const Json p = jget(g, k, Json());
-          if (p.is_array() && p.size() == 2 && p[0].is_number() &&
-              p[1].is_number() && std::isfinite(p[0].get<double>()) &&
-              std::isfinite(p[1].get<double>())) {
-            kept[k] = {p[0].get<double>(), p[1].get<double>()};
-          }
-        }
-        n["gradient"] = std::move(kept);
-      }
-    }
-    // Its effects: a shadow's and a glow's values held to their ranges;
-    // a kind not known here kept as it is (a later Valtz's).
-    if (const Json fx = jget(o, "effects", Json()); fx.is_array()) {
-      Json kept = Json::array();
-      for (const auto& e : fx) {
-        const auto k = jget<std::string>(e, "kind", "");
-        const auto c = rgba(rgba_of(jget(e, "color", Json()),
-                                    {0, 0, 0, 0.5}));
-        if (k == "shadow") {
-          kept.push_back(
-              {{"kind", k}, {"color", c},
-               {"blur", std::clamp(finite_or(e, "blur", 8), 0.0, 1000.0)},
-               {"dx", std::clamp(finite_or(e, "dx", 0), -4000.0, 4000.0)},
-               {"dy", std::clamp(finite_or(e, "dy", 0), -4000.0, 4000.0)}});
-        } else if (k == "glow") {
-          kept.push_back({{"kind", k}, {"color", c},
-                          {"radius", std::clamp(finite_or(e, "radius", 12),
-                                                0.0, 1000.0)}});
-        } else if (!k.empty() && e.is_object()) {
-          kept.push_back(e);
-        }
-      }
-      if (!kept.empty()) {
-        n["effects"] = std::move(kept);
-      }
-    }
-    out.push_back(std::move(n));
+    moved.insert(id);
+    changed.insert(id);
   }
+  std::set<std::string> touched;
+  out = resolve_anchors(std::move(out), moved, touched);
+  changed.insert(touched.begin(), touched.end());
   return out;
 }
 
@@ -1947,6 +2699,235 @@ render_markup_picture(const fs::path& raster, PixelSize canvas,
       return make_error(Code::Internal, "cannot make the markup image");
     }
     return DrawnPicture(img, CGImageRelease);
+  }
+}
+
+namespace {
+
+// Where an object's pixels can fall, canvas pixels (MarkupCanvas): its
+// outline's box padded for what draws past it -- a line's arrowheads, a
+// path's sharp corners (its miters, five widths), its effects' layers,
+// words' ink, the edge's antialiasing; null where it is not measured (a
+// text without a box: anywhere).
+CGRect
+paint_rect(const Json& o)
+{
+  const CGRect r = object_rect(o);
+  if (CGRectIsNull(r)) {
+    return r;
+  }
+  const auto kind = jget<std::string>(o, "kind", "");
+  const double w = std::max(0.0, finite_or(o, "width", 0));
+  double pad = 2;
+  for (const auto& p : passes_of(o)) {
+    pad += p.blur * 2 + std::max(std::abs(p.dx), std::abs(p.dy)) + 2;
+  }
+  if (kind == "line" && o.contains("arrows")) {
+    pad += std::max(5.0, 2 * w) + w;
+  }
+  if (kind == "polygon") {
+    pad += 5 * w;
+  }
+  if (o.contains("text")) {
+    pad += finite_or(jget(o, "font", Json::object()), "size", 48) * 0.3;
+  }
+  return CGRectIntegral(CGRectInset(r, -pad, -pad));
+}
+
+}  // namespace
+
+MarkupCanvas::~MarkupCanvas()
+{
+  for (CGContextRef c : {_ctx, _scratch}) {
+    if (c) {
+      CGContextRelease(c);
+    }
+  }
+}
+
+std::optional<DrawnPicture>
+MarkupCanvas::kept(const std::string& stamp, const fs::path& raster,
+                   PixelSize canvas, const std::set<std::string>& hidden)
+{
+  std::lock_guard lk(_mu);
+  if (stamp.empty() || stamp != _stamp || !_last || raster != _raster ||
+      canvas.width != _size.width || canvas.height != _size.height ||
+      hidden != _hidden) {
+    return std::nullopt;
+  }
+  _whole = false;
+  _area = 0;
+  return _last;
+}
+
+Result<DrawnPicture>
+MarkupCanvas::draw(const fs::path& raster, PixelSize canvas, Json objects,
+                   const std::set<std::string>& hidden,
+                   const std::string& stamp)
+{
+  if (canvas.width <= 0 || canvas.height <= 0) {
+    return make_error(Code::InvalidArgument, "the canvas has no size");
+  }
+  if (!objects.is_array()) {
+    objects = Json::array();
+  }
+  std::lock_guard lk(_mu);
+  @autoreleasepool {
+    const CGRect page = CGRectMake(0, 0, canvas.width, canvas.height);
+    bool whole = !_ctx || canvas.width != _size.width ||
+                 canvas.height != _size.height || raster != _raster;
+    std::vector<CGRect> rects(objects.size());
+    std::map<std::string, std::size_t> at;
+    std::vector<CGRect> dirty;
+    double area = 0;
+    auto mark = [&](CGRect r) {
+      if (CGRectIsNull(r)) {
+        whole = true;
+        return;
+      }
+      r = CGRectIntersection(r, page);
+      if (!CGRectIsEmpty(r)) {
+        dirty.push_back(r);
+        area += r.size.width * r.size.height;
+      }
+    };
+    // What differs from the last drawing: put in, changed, hidden or
+    // shown -- where each lies now and lay then; reordered, all of it.
+    std::size_t last = 0;
+    for (std::size_t i = 0; i < objects.size(); ++i) {
+      const auto id = jget<std::string>(objects[i], "id", "");
+      at[id] = i;
+      const auto was = whole ? _at.end() : _at.find(id);
+      if (was != _at.end()) {
+        whole = whole || was->second < last;
+        last = was->second;
+      }
+      if (was != _at.end() && _objects[was->second] == objects[i]) {
+        rects[i] = _rects[was->second];
+        if (_hidden.count(id) != hidden.count(id)) {
+          mark(rects[i]);
+        }
+        continue;
+      }
+      rects[i] = paint_rect(objects[i]);
+      if (!whole) {
+        if (was != _at.end()) {
+          mark(_rects[was->second]);
+        }
+        mark(rects[i]);
+      }
+    }
+    if (!whole) {
+      for (const auto& [id, j] : _at) {
+        if (!at.count(id)) {
+          mark(_rects[j]);  // taken out
+        }
+      }
+      whole = whole || area > page.size.width * page.size.height / 2;
+    }
+    if (whole) {
+      if (!_ctx || canvas.width != _size.width ||
+          canvas.height != _size.height) {
+        if (_ctx) {
+          CGContextRelease(_ctx);
+        }
+        if (_scratch) {
+          CGContextRelease(_scratch);
+          _scratch = nullptr;
+        }
+        _ctx = rgba_context(canvas);
+        if (!_ctx) {
+          return make_error(Code::Internal, "cannot make the markup canvas");
+        }
+      } else {
+        CGContextClearRect(_ctx, page);
+      }
+      VALTZ_TRY(draw_markup(_ctx, raster, canvas, objects, hidden, false));
+      area = page.size.width * page.size.height;
+    } else if (!dirty.empty()) {
+      // What changed in clusters -- the areas that touch merged, so an
+      // object with effects lies whole in one -- each drawn again in a
+      // second bitmap of the canvas's size: the part cleared, the raster
+      // there, then EVERY object over it, whole, where it lies; only the
+      // part copied in. Not under a clip, nor in a bitmap of its own (its
+      // place moved): Core Graphics rounds coverage otherwise -- 1 or 2 of
+      // 255 off where edges or translucent objects meet.
+      std::vector<CGRect> parts = dirty;
+      for (bool merged = true; merged;) {
+        merged = false;
+        for (std::size_t i = 0; i < parts.size() && !merged; ++i) {
+          for (std::size_t k = i + 1; k < parts.size(); ++k) {
+            if (CGRectIntersectsRect(parts[i], parts[k])) {
+              parts[i] = CGRectUnion(parts[i], parts[k]);
+              parts.erase(parts.begin() + static_cast<std::ptrdiff_t>(k));
+              merged = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!_scratch) {
+        _scratch = rgba_context(canvas);
+      }
+      auto* dst = static_cast<std::uint8_t*>(CGBitmapContextGetData(_ctx));
+      const auto* src =
+          static_cast<const std::uint8_t*>(CGBitmapContextGetData(_scratch));
+      if (!_scratch || !dst || !src) {
+        return make_error(Code::Internal, "cannot make the markup canvas");
+      }
+      const std::size_t row = CGBitmapContextGetBytesPerRow(_ctx);
+      const std::size_t src_row = CGBitmapContextGetBytesPerRow(_scratch);
+      for (const auto& r : parts) {
+        const CGRect up = CGRectMake(
+            r.origin.x, canvas.height - r.origin.y - r.size.height,
+            r.size.width, r.size.height);
+        CGContextClearRect(_scratch, up);
+        CGContextSaveGState(_scratch);
+        CGContextClipToRect(_scratch, up);  // the raster's pixels alone
+        const Status st = draw_raster(_scratch, canvas, raster);
+        CGContextRestoreGState(_scratch);
+        VALTZ_TRY(st);
+        CGContextSaveGState(_scratch);
+        // Not clipped: any clip set rounds coverage a level off, even far
+        // from its edge -- an object over the part is drawn whole (a line
+        // across the page costs its length).
+        CGContextTranslateCTM(_scratch, 0, canvas.height);
+        CGContextScaleCTM(_scratch, 1, -1);
+        for (std::size_t i = 0; i < objects.size(); ++i) {
+          if (!hidden.count(jget<std::string>(objects[i], "id", "")) &&
+              CGRectIntersectsRect(r, rects[i])) {
+            draw_object(_scratch, objects[i], false);
+          }
+        }
+        CGContextRestoreGState(_scratch);
+        // Its rows, the first in memory the top.
+        const auto x = static_cast<std::size_t>(r.origin.x);
+        const auto y = static_cast<std::size_t>(r.origin.y);
+        const auto w = static_cast<std::size_t>(r.size.width);
+        for (std::size_t j = 0; j < static_cast<std::size_t>(r.size.height);
+             ++j) {
+          std::memcpy(dst + (y + j) * row + x * 4,
+                      src + (y + j) * src_row + x * 4, w * 4);
+        }
+      }
+    }
+    _whole = whole;
+    _area = area;
+    if (whole || !dirty.empty() || !_last) {
+      CGImageRef img = CGBitmapContextCreateImage(_ctx);
+      if (!img) {
+        return make_error(Code::Internal, "cannot make the markup image");
+      }
+      _last = DrawnPicture(img, CGImageRelease);
+    }
+    _size = canvas;
+    _raster = raster;
+    _objects = std::move(objects);
+    _hidden = hidden;
+    _stamp = stamp;
+    _rects = std::move(rects);
+    _at = std::move(at);
+    return _last;
   }
 }
 

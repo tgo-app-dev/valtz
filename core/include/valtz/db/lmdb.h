@@ -117,6 +117,10 @@ public:
 
   std::size_t map_bytes() const noexcept { return _map_bytes; }
   const std::filesystem::path& path() const noexcept { return _path; }
+  // What has been written, as "<this env>.<its last write>": the same
+  // while nothing is committed, another for each commit -- or another
+  // env, even of the same file (its count of writes starts again).
+  std::string revision() const;
   MDB_env* raw() const noexcept { return _env; }
 
   // What write transactions change in `watched`, told when each commits
@@ -140,6 +144,7 @@ private:
   std::vector<bool>     _watched;  // by dbi handle
 
   MDB_env*              _env = nullptr;
+  std::uint64_t         _serial = 0;  // which env of this process
   std::filesystem::path _path;
   Options               _opts;
   std::size_t           _map_bytes = 0;

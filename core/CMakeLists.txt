@@ -12,6 +12,7 @@ set(VALTZ_CORE_SOURCES
   src/base/paths.cc
   src/base/result.cc
   src/base/text.cc
+  src/base/tree-copy.cc
   src/cache/cache-store.cc
   src/db/lmdb.cc
   src/media/adjust.cc
@@ -70,6 +71,7 @@ set(VALTZ_CORE_SOURCES
   src/controller/event-bus.cc
   src/controller/job-queue.cc
   src/controller/job-timing.cc
+  src/controller/locations.cc
   src/controller/log-book.cc
 )
 

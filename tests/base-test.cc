@@ -5,6 +5,10 @@
 #include "valtz/base/json.h"
 #include "valtz/base/rational.h"
 #include "valtz/base/text.h"
+#include "valtz/base/tree-copy.h"
+
+#include <filesystem>
+#include <fstream>
 
 #include <set>
 #include <thread>
@@ -172,4 +176,63 @@ TEST(base, base64_is_rfc4648)
   CHECK(b64("fo") == "Zm8=");
   CHECK(b64("foo") == "Zm9v");
   CHECK(b64("foobar") == "Zm9vYmFy");
+}
+
+// A folder's files copied elsewhere, as a move across drives copies them
+// (Settings › General › Storage): counted, merged with what is there,
+// stopped with nothing left that passes for a file.
+TEST(base, a_tree_is_copied_counted_merged_and_stopped)
+{
+  namespace fs = std::filesystem;
+  const fs::path root = test::temp_dir("tree-copy");
+  const fs::path from = root / "from", to = root / "to";
+  auto write = [](const fs::path& f, std::size_t n) {
+    fs::create_directories(f.parent_path());
+    std::ofstream(f) << std::string(n, 'x');
+  };
+  write(from / "org/repo/a.safetensors", 3000);
+  write(from / "org/repo/sub/b.json", 10);
+  write(from / "compressed/m-8bit/c.bin", 500);
+  // There already, whole: taken as it; another of its name but not its
+  // size: replaced.
+  write(to / "org/repo/sub/b.json", 10);
+  write(to / "compressed/m-8bit/c.bin", 7);
+  CHECK(tree_size(from).bytes == 3510);
+  CHECK(tree_size(from).files == 3);
+
+  std::vector<std::uint64_t> told;
+  std::vector<fs::path> made;
+  Status st = copy_tree(from, to, [&](std::uint64_t n) {
+    told.push_back(n);
+    return true;
+  }, &made);
+  REQUIRE(st.ok());
+  CHECK(fs::file_size(to / "org/repo/a.safetensors") == 3000);
+  CHECK(fs::file_size(to / "compressed/m-8bit/c.bin") == 500);
+  CHECK(made.size() == 2);
+  CHECK(!told.empty() && told.back() == 3510);
+  CHECK(std::is_sorted(told.begin(), told.end()));
+  CHECK(fs::exists(from / "org/repo/a.safetensors"));  // the caller's
+
+  // Stopped: no file half written, under its name or a hidden one.
+  const fs::path again = root / "again";
+  made.clear();
+  st = copy_tree(from, again, [](std::uint64_t) { return false; }, &made);
+  CHECK(!st.ok() && st.error().code == Code::Cancelled);
+  for (const auto& e : fs::recursive_directory_iterator(again)) {
+    if (e.is_regular_file()) {
+      CHECK(std::ranges::find(made, e.path()) != made.end());
+      CHECK(!e.path().filename().string().starts_with("."));
+    }
+  }
+
+  // On one volume: renamed, folders merged, the source left empty.
+  const fs::path moved = root / "moved";
+  write(moved / "org/other/d.bin", 4);
+  REQUIRE(move_tree(from, moved).ok());
+  CHECK(fs::exists(moved / "org/repo/a.safetensors"));
+  CHECK(fs::exists(moved / "org/other/d.bin"));
+  CHECK(fs::is_empty(from));
+  remove_empty_dirs(from);
+  CHECK(!fs::exists(from));
 }

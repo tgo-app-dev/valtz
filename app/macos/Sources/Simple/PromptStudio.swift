@@ -614,7 +614,7 @@ extension AppModel {
         if let n = promptTabName(i) { return n }
         // A text asset opened from Assets: called as Assets calls it.
         if promptTabs.indices.contains(i), let src = promptTabs[i].source,
-           let a = assets.first(where: { $0.id == src }) {
+           let a = asset(id: src) {
             return a.name
         }
         let t = Self.tabTitle(i == activePromptTab ? prompt
@@ -649,7 +649,7 @@ extension AppModel {
     }
 
     private func givenName(asset: String?, kept: String?) -> String? {
-        if let asset, let a = assets.first(where: { $0.id == asset }),
+        if let asset, let a = self.asset(id: asset),
            a.isPrompt {
             return a.isNamed ? a.name : nil
         }
@@ -669,7 +669,7 @@ extension AppModel {
         if live { promptName = given }
         promptTabs[i].name = given
         guard let id = live ? promptAssetId : promptTabs[i].assetId,
-              let a = assets.first(where: { $0.id == id }),
+              let a = asset(id: id),
               let core, let projectId else { return }
         // Any other text (a transcript looked at) is named only when a
         // name is given.

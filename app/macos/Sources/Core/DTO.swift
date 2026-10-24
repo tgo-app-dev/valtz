@@ -538,6 +538,15 @@ struct FolderDTO: Decodable, Sendable, Hashable, Identifiable {
     var name: String
 }
 
+/// The asset list as the core sends it (bridge assets_json).
+struct AssetListDTO: Decodable, Sendable {
+    var ok: Bool
+    var assets: [AssetDTO]
+    var folders: [FolderDTO]
+    /// What the project had written as it was read (assetsRevision).
+    var revision: String?
+}
+
 /// An ASSET OPERATION (DESIGN §4j; core asset-ops.h) as this Mac can run
 /// it: what is done to an asset with no prompt -- transcribed, summarized,
 /// separated, upscaled. One protocol: the menus list these as the core
@@ -863,30 +872,43 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
 
     /// A layer's tracks, on a clip with a stack ("" is the clip itself).
     func adjustKeys(layer: String) -> Keyframes<ImageAdjustments> {
-        guard let m = modifiers?.first(where: {
-            $0.kind == "adjust" && $0.layer == layer
-        }) else { return Keyframes() }
-        return Keyframes(m.keys ?? [m.params], interps: m.keyInterps) {
-            ImageAdjustments($0)
-        }
+        Self.adjustKeys(modifier("adjust", layer))
     }
 
     func cropKeys(layer: String) -> ClipCrop {
-        guard let m = modifiers?.first(where: {
-            $0.kind == "crop" && $0.layer == layer
-        }) else { return ClipCrop() }
-        return ClipCrop(m)
+        Self.cropKeys(modifier("crop", layer))
     }
 
     /// A layer's SPEED and SOUND tracks (its "speed" / "audio"
     /// modifiers), keyed from its own start; empty with none.
     func speedKeys(layer: String) -> Keyframes<LayerSpeed> {
-        guard let m = modifier("speed", layer) else { return Keyframes() }
-        return Keyframes(m.keys ?? []) { LayerSpeed(rate: $0["rate"] ?? 1) }
+        Self.speedKeys(modifier("speed", layer))
     }
 
     func soundKeys(layer: String) -> Keyframes<LayerSound> {
-        guard let m = modifier("audio", layer) else { return Keyframes() }
+        Self.soundKeys(modifier("audio", layer))
+    }
+
+    /// The same, of a modifier already found (the timeline's: every
+    /// layer's at once).
+    static func adjustKeys(_ m: ModifierDTO?) -> Keyframes<ImageAdjustments> {
+        guard let m else { return Keyframes() }
+        return Keyframes(m.keys ?? [m.params], interps: m.keyInterps) {
+            ImageAdjustments($0)
+        }
+    }
+
+    static func cropKeys(_ m: ModifierDTO?) -> ClipCrop {
+        m.map(ClipCrop.init) ?? ClipCrop()
+    }
+
+    static func speedKeys(_ m: ModifierDTO?) -> Keyframes<LayerSpeed> {
+        guard let m else { return Keyframes() }
+        return Keyframes(m.keys ?? []) { LayerSpeed(rate: $0["rate"] ?? 1) }
+    }
+
+    static func soundKeys(_ m: ModifierDTO?) -> Keyframes<LayerSound> {
+        guard let m else { return Keyframes() }
         return Keyframes(m.keys ?? []) {
             LayerSound(volume: $0["volume"] ?? 1, pitch: $0["pitch"] ?? 0)
         }
@@ -1065,6 +1087,48 @@ struct PathsInfo: Decodable, Sendable {
     var cacheBudgetBytes: Int64
     var cacheInternal: Bool
     var engine: String
+}
+
+/// Where the projects, models and cache are kept (Controller::locations;
+/// Settings › General › Storage).
+struct LocationsInfo: Decodable, Sendable {
+    struct Place: Decodable, Sendable {
+        var path: String
+        var defaultPath: String
+        var isDefault: Bool
+        var there: Bool
+        var `internal`: Bool
+        var missingAtLaunch: Bool
+        /// The models', the cache's in use.
+        var bytes: Int64?
+        /// The models folders kept where they were, still used.
+        var kept: [Kept]?
+        /// The cache in use: its default while the one chosen is not there.
+        var inUse: String?
+
+        enum CodingKeys: String, CodingKey {
+            case path, isDefault, there, `internal`, missingAtLaunch, bytes,
+                 kept, inUse
+            case defaultPath = "default"
+        }
+    }
+
+    struct Kept: Decodable, Sendable {
+        var path: String
+        var there: Bool
+        var `internal`: Bool
+    }
+
+    struct Moving: Decodable, Sendable {
+        var job: String
+        var what: String
+        var to: String
+    }
+
+    var projects: Place
+    var models: Place
+    var cache: Place
+    var moving: Moving?
 }
 
 struct IntentInfo: Sendable {

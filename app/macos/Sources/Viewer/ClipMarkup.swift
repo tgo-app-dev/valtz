@@ -76,6 +76,8 @@ final class ClipMarkupNSView: NSView {
     var canKey: ((MarkupKey) -> Bool)?
 
     private let overlayView = MarkupOverlayView()
+    /// Where markup's in-place text editor goes (MarkupTextEditor).
+    var markupOverlayHost: MarkupOverlayView { overlayView }
     private let ringView = BrushRingView()
     private var pointerAt: CGPoint?
     private var pressed = false

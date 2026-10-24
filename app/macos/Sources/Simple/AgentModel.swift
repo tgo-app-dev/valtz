@@ -145,7 +145,7 @@ extension AppModel {
     /// knows it.
     private func stageAgentComposition(_ id: String, tries: Int = 0) {
         if activeComposition?.id == id { return }
-        if let a = assets.first(where: { $0.id == id }) {
+        if let a = asset(id: id) {
             setActive(a)
             return
         }

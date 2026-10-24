@@ -449,6 +449,16 @@
         }
       }
     },
+    "%@ of %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ / %2$@"
+          }
+        }
+      }
+    },
     "%@ of about %@" : {
       "localizations" : {
         "en" : {
@@ -461,6 +471,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@ / 约 %2$@"
+          }
+        }
+      }
+    },
+    "%@ of conversations" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "对话占 %@"
+          }
+        }
+      }
+    },
+    "%@ of models are in Valtz’s models folders now. Moved, they are copied into the new folder and then deleted where they were — from another drive, that takes a while. Kept where they are, they are still used, and new downloads go to the new folder." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 的模型文件夹中现有 %@ 的模型。移动时，它们会先复制到新文件夹，再从原处删除——从另一个驱动器移动需要一段时间。留在原处时，它们仍会被使用，新的下载则存入新文件夹。"
+          }
+        }
+      }
+    },
+    "%@ of thumbnails, renderings and kept encodings are in the cache now. Moved, they are in “%@” at once; left where they are, they stay on disk, unused; deleted, Valtz makes them again as it needs them." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "缓存中现有 %1$@ 的缩略图、渲染结果和保留的编码。移动后，它们立即位于“%2$@”中；留在原处时，它们留在磁盘上但不再使用；删除后，Valtz 会在需要时重新生成。"
           }
         }
       }
@@ -1085,6 +1125,16 @@
         }
       }
     },
+    "%lld more: type more of the name" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "还有 %lld 个：再多输入一些名称"
+          }
+        }
+      }
+    },
     "%lld of its %lld tokens" : {
       "localizations" : {
         "en" : {
@@ -1589,6 +1639,26 @@
         }
       }
     },
+    "A promised file could not be received." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法接收承诺的文件。"
+          }
+        }
+      }
+    },
+    "A promised file did not come." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "承诺的文件没有送达。"
+          }
+        }
+      }
+    },
     "A scale a row and a token, rotated: the fastest" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1855,6 +1925,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "添加片段"
+          }
+        }
+      }
+    },
+    "Add Connectors" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加连接点"
+          }
+        }
+      }
+    },
+    "Add Connectors: a point in the middle of each side — four round an ellipse — that lines and paths drawn from it stay joined to. ⌥-click an outline to add one there, ⌥-click one to take it off, drag one to slide it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加连接点：每条边的中点各一个（椭圆周围四个），从连接点画出的线条和路径会一直与之相连。按住 ⌥ 点按轮廓可在该处添加一个，按住 ⌥ 点按连接点可将其移除，拖移连接点可沿轮廓滑动。"
           }
         }
       }
@@ -2243,6 +2333,16 @@
         }
       }
     },
+    "Agent Prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体提示词"
+          }
+        }
+      }
+    },
     "Agent Turns" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2410,6 +2510,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已在素材中"
+          }
+        }
+      }
+    },
+    "Also used, kept where it was: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仍在原处使用：%@"
           }
         }
       }
@@ -2745,6 +2855,16 @@
         }
       }
     },
+    "Ask the agent to work on the document (⌘4, ⇧⌘P)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "让智能体处理文档（⌘4、⇧⌘P）"
+          }
+        }
+      }
+    },
     "Asked for each place" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2913,6 +3033,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "音频"
+          }
+        }
+      }
+    },
+    "Audio Prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "音频提示词"
           }
         }
       }
@@ -3323,6 +3453,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "图层开始之前"
+          }
+        }
+      }
+    },
+    "Begin or end it on a shape's connector to keep it joined to the shape (the toolbar's Connectors adds them)." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在形状的连接点上开始或结束，线条便会与形状保持相连（用工具栏的“连接点”添加）。"
           }
         }
       }
@@ -3847,6 +3987,36 @@
         }
       }
     },
+    "Choose where Valtz keeps its cache." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "选择 Valtz 存放缓存的位置。"
+          }
+        }
+      }
+    },
+    "Choose where Valtz keeps its models." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "选择 Valtz 存放模型的位置。"
+          }
+        }
+      }
+    },
+    "Choose where new projects are saved." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "选择新项目的存储位置。"
+          }
+        }
+      }
+    },
     "Chords" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3927,6 +4097,16 @@
         }
       }
     },
+    "Click its corners; click the first to close it, or press Return. A corner placed on a shape's connector stays joined to the shape." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "点按放置各个角点；点按第一个角点或按 Return 闭合。放在形状连接点上的角点会与形状保持相连。"
+          }
+        }
+      }
+    },
     "Click the picture to take its colour as the Color, ⌥-click as the Fill — the selected objects' too." : {
       "localizations" : {
         "zh-Hans" : {
@@ -3948,11 +4128,22 @@
       }
     },
     "Click to place points the curve passes through, ⌥-click for a corner; click the first point to close it, Return to end it. On a selected path: click its curve to add a point, double-click a point to switch it between smooth and corner." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "点按放置曲线经过的点，按住 ⌥ 点按放置角点；点按第一个点闭合路径，按 Return 结束。在选中的路径上：点按曲线添加点，连按一个点使其在平滑点与角点之间切换。"
+          }
+        }
+      }
+    },
+    "Click to place points the curve passes through, ⌥-click for a corner; click the first point to close it, Return to end it. On a selected path: click its curve to add a point, double-click a point to switch it between smooth and corner. A point placed on a shape's connector stays joined to the shape." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "点按放置曲线经过的点，按住 ⌥ 点按放置角点；点按第一个点闭合路径，按 Return 结束。在选中的路径上：点按曲线添加点，连按一个点使其在平滑点与角点之间切换。放在形状连接点上的点会与形状保持相连。"
           }
         }
       }
@@ -3963,6 +4154,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "点按以重新命名"
+          }
+        }
+      }
+    },
+    "Click to type a text box there, or click a shape to type its words in it; Escape when done." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "点按在该处输入文本框，或点按形状在其中输入文字；完成后按 Esc。"
           }
         }
       }
@@ -4033,6 +4234,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "关闭"
+          }
+        }
+      }
+    },
+    "Close Project" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关闭项目"
           }
         }
       }
@@ -4493,6 +4704,16 @@
         }
       }
     },
+    "Connectors" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "连接点"
+          }
+        }
+      }
+    },
     "Context" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4614,6 +4835,32 @@
         }
       }
     },
+    "Could not download from %@." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法从 %@ 下载。"
+          }
+        }
+      }
+    },
+    "Could not download from %@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Could not download from %1$@: %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法从 %1$@ 下载：%2$@"
+          }
+        }
+      }
+    },
     "Could not open %@: %@" : {
       "localizations" : {
         "en" : {
@@ -4700,22 +4947,22 @@
         }
       }
     },
-    "Create a song" : {
+    "Create a song (⌘3)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "创作歌曲"
+            "value" : "创作歌曲（⌘3）"
           }
         }
       }
     },
-    "Create a video" : {
+    "Create a video (⌘1)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "创建视频"
+            "value" : "创建视频（⌘1）"
           }
         }
       }
@@ -4730,12 +4977,12 @@
         }
       }
     },
-    "Create an image" : {
+    "Create an image (⌘2)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "创建图片"
+            "value" : "创建图片（⌘2）"
           }
         }
       }
@@ -5102,6 +5349,16 @@
         }
       }
     },
+    "Delete It" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "删除"
+          }
+        }
+      }
+    },
     "Delete the paused download of %@?" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5128,6 +5385,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "删除它已下载的部分"
+          }
+        }
+      }
+    },
+    "Deleting the old files…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在删除旧文件…"
           }
         }
       }
@@ -5341,6 +5608,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "差异 |A − B|"
+          }
+        }
+      }
+    },
+    "Diffusion model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "扩散模型"
           }
         }
       }
@@ -5861,6 +6138,36 @@
         }
       }
     },
+    "Dropped Clip" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "拖入的片段"
+          }
+        }
+      }
+    },
+    "Dropped Picture" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "拖入的图片"
+          }
+        }
+      }
+    },
+    "Dropped Sound" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "拖入的声音"
+          }
+        }
+      }
+    },
     "Duplicate Layer" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6042,6 +6349,7 @@
       }
     },
     "Edit the text in its own window" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -7989,11 +8297,22 @@
       }
     },
     "How the text's lines lie in its box" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "文字各行在文本框中的对齐方式"
+          }
+        }
+      }
+    },
+    "How the text's lines lie in its box — or a shape's words in it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "文字各行在文本框中的对齐方式（或形状中文字的对齐方式）"
           }
         }
       }
@@ -8044,6 +8363,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "图像"
+          }
+        }
+      }
+    },
+    "Image Prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图像提示词"
           }
         }
       }
@@ -8215,6 +8544,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "排队中：前面的任务完成后运行。"
+          }
+        }
+      }
+    },
+    "In use meanwhile: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "暂时使用：%@"
           }
         }
       }
@@ -8655,6 +8994,16 @@
         }
       }
     },
+    "Keep Them Where They Are" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "留在原处"
+          }
+        }
+      }
+    },
     "Keep in Assets" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9019,6 +9368,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "离开舰队"
+          }
+        }
+      }
+    },
+    "Leave It Where It Is" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "留在原处"
           }
         }
       }
@@ -10089,6 +10448,36 @@
         }
       }
     },
+    "Move the Cache" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移动缓存"
+          }
+        }
+      }
+    },
+    "Move the Models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移动模型"
+          }
+        }
+      }
+    },
+    "Move the models to “%@”?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "要将模型移动到“%@”吗？"
+          }
+        }
+      }
+    },
     "Move the playhead onto the layer to change it" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10145,6 +10534,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "移到最顶层"
+          }
+        }
+      }
+    },
+    "Moving: %@ of %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在移动：%1$@ / %2$@"
+          }
+        }
+      }
+    },
+    "Moving…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在移动…"
           }
         }
       }
@@ -10411,6 +10820,16 @@
         }
       }
     },
+    "New projects are saved here" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "新项目存储在这里"
+          }
+        }
+      }
+    },
     "New prompt" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10427,6 +10846,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "下一个事件"
+          }
+        }
+      }
+    },
+    "Next Page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "下一页"
           }
         }
       }
@@ -10593,6 +11022,16 @@
         }
       }
     },
+    "No model is kept loaded now: each job loads what it needs and lets it go when it ends." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "现在没有保持加载的模型：每个任务加载所需的模型，结束时释放。"
+          }
+        }
+      }
+    },
     "No model is on this Mac or offered by a member yet." : {
       "localizations" : {
         "zh-Hans" : {
@@ -10639,6 +11078,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "尚未找到其他成员。成员在此网络上可被发现时才会被找到。"
+          }
+        }
+      }
+    },
+    "No picture, clip or sound in what was dropped." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "拖入的内容中没有图片、片段或声音。"
           }
         }
       }
@@ -10813,6 +11262,16 @@
         }
       }
     },
+    "Not on the internal drive: it may limit Valtz’s speed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不在内置驱动器上：可能会限制 Valtz 的速度"
+          }
+        }
+      }
+    },
     "Not on this page" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10883,6 +11342,16 @@
         }
       }
     },
+    "Not there: is its drive connected?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "找不到：其驱动器是否已连接？"
+          }
+        }
+      }
+    },
     "Not this one: it is told, with your note" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10919,6 +11388,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "尚未用它生成任何内容，所以它不在素材中：关闭其标签页会丢失它。"
+          }
+        }
+      }
+    },
+    "Nothing in the drag to add: no picture, clip, sound or words." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "拖入的内容中没有可添加的东西：没有图片、片段、声音或文字。"
           }
         }
       }
@@ -10969,6 +11448,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "当前"
+          }
+        }
+      }
+    },
+    "OK" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "好"
           }
         }
       }
@@ -11512,6 +12001,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "其他"
+          }
+        }
+      }
+    },
+    "Other apps and macOS" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "其他应用与 macOS"
           }
         }
       }
@@ -12158,6 +12657,16 @@
         }
       }
     },
+    "Previous Page" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上一页"
+          }
+        }
+      }
+    },
     "Previous event: a key, where a layer begins or ends, the start" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12449,12 +12958,12 @@
         }
       }
     },
-    "Put the scissors away (Escape)" : {
+    "Put the scissors away (Escape or S)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "收起剪刀（Esc）"
+            "value" : "收起剪刀（Esc 或 S）"
           }
         }
       }
@@ -12692,6 +13201,16 @@
         }
       }
     },
+    "Reading what the engine holds…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在读取引擎占用的内存…"
+          }
+        }
+      }
+    },
     "Ready" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -12909,6 +13428,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "移除素材"
+          }
+        }
+      }
+    },
+    "Remove Connectors" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除连接点"
           }
         }
       }
@@ -13893,12 +14422,12 @@
         }
       }
     },
-    "Scissors: click a clip or a sound to cut it there in two" : {
+    "Scissors (S): click a clip or a sound to cut it there in two" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "剪刀：点按片段或声音，在该处一分为二"
+            "value" : "剪刀（S）：点按片段或声音，在该处一分为二"
           }
         }
       }
@@ -15440,6 +15969,16 @@
         }
       }
     },
+    "Stop the move: what was copied goes, the folders as they were" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "停止移动：已复制的内容将被删除，文件夹保持原样"
+          }
+        }
+      }
+    },
     "Stop the task on the stage (⌘.)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15660,6 +16199,16 @@
         }
       }
     },
+    "Tab" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Tab"
+          }
+        }
+      }
+    },
     "Take Fleet Jobs" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15850,6 +16399,16 @@
         }
       }
     },
+    "Text encoder" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "文本编码器"
+          }
+        }
+      }
+    },
     "Text to audio" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16026,12 +16585,42 @@
         }
       }
     },
+    "The app: the pictures on screen, the project, the rest" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "应用本身：屏幕上的图片、项目及其他"
+          }
+        }
+      }
+    },
     "The arithmetic Valtz achieves, in trillions of operations a second (TFLOP/s). The first figure and the bar in front: the GPU's. The second figure and the grey bar after it: the Neural Engine's. The last figure, the bar's full length: the highest the two have reached together since Valtz started. Counted as the models that report it count it: the picture and video models' transformers, not yet their decoders or text encoders." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Valtz 实际达到的运算量，单位为每秒万亿次运算（TFLOP/s）。第一个数字和前面的条：GPU 的。第二个数字和其后的灰色条：神经网络引擎的。最后一个数字，即条的全长：两者合计自 Valtz 启动以来达到的最高值。按报告它的模型的计数方式统计：图片和视频模型的 Transformer，尚不包括它们的解码器和文本编码器。"
+          }
+        }
+      }
+    },
+    "The cache folder “%@” is not there — is its drive connected? Valtz keeps its cache in the default folder meanwhile." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "找不到缓存文件夹“%@”——其驱动器是否已连接？在此期间，Valtz 将缓存存放在默认文件夹中。"
+          }
+        }
+      }
+    },
+    "The cache is in “%@” now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "缓存现在位于“%@”。"
           }
         }
       }
@@ -16052,6 +16641,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "直线、轮廓、文字和画笔所用的颜色"
+          }
+        }
+      }
+    },
+    "The colour of the words in the selected shapes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "所选形状中文字的颜色"
           }
         }
       }
@@ -16107,11 +16706,22 @@
       }
     },
     "The first figure and the bar in front: the memory Valtz is using, models included (its footprint, as Activity Monitor shows it). The second figure and the grey bar behind it: the memory the whole Mac is using (Activity Monitor's Memory Used), of all it has." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "第一个数字和前面的条：Valtz 正在使用的内存，包括模型（它的内存占用，与“活动监视器”显示的一致）。第二个数字和后面的灰色条：整台 Mac 正在使用的内存（“活动监视器”中的“已使用内存”），占全部内存的多少。"
+          }
+        }
+      }
+    },
+    "The first figure and the bar in front: the memory Valtz is using, models included (its footprint, as Activity Monitor shows it). The second figure and the grey bar behind it: the memory the whole Mac is using (Activity Monitor's Memory Used), of all it has. Click it for what Valtz holds, model by model." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "第一个数字和前面的条：Valtz 正在使用的内存，包括模型（它的内存占用，与“活动监视器”显示的一致）。第二个数字和后面的灰色条：整台 Mac 正在使用的内存（“活动监视器”中的“已使用内存”），占全部内存的多少。点按可查看 Valtz 逐个模型占用的内存。"
           }
         }
       }
@@ -16152,6 +16762,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "此网络上成员可被发现的舰队。加入需要舰队的密钥。"
+          }
+        }
+      }
+    },
+    "The folder was not changed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "文件夹未更改"
           }
         }
       }
@@ -16257,6 +16877,26 @@
         }
       }
     },
+    "The models are in “%@” now." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型现在位于“%@”。"
+          }
+        }
+      }
+    },
+    "The models folder “%@” is not there — is its drive connected? Its models cannot run until it is." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "找不到模型文件夹“%@”——其驱动器是否已连接？在连接之前，其中的模型无法运行。"
+          }
+        }
+      }
+    },
     "The most it may spend in any one second -- empty for no cap" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16307,12 +16947,32 @@
         }
       }
     },
+    "The page after" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "后一页"
+          }
+        }
+      }
+    },
     "The page after (→)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "下一页（→）"
+          }
+        }
+      }
+    },
+    "The page before" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "前一页"
           }
         }
       }
@@ -17252,6 +17912,16 @@
         }
       }
     },
+    "Type its words where they are (Return, or a double-click)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "就地输入文字（按 Return，或连按）"
+          }
+        }
+      }
+    },
     "Type the words to speak — or drop in a voice to speak in" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17563,6 +18233,16 @@
         }
       }
     },
+    "Use This Folder" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "使用此文件夹"
+          }
+        }
+      }
+    },
     "Use Whole" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17671,6 +18351,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "使用 %@ 位副本"
+          }
+        }
+      }
+    },
+    "Use the Default Folder" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "使用默认文件夹"
           }
         }
       }
@@ -17798,6 +18488,32 @@
         }
       }
     },
+    "Valtz is using %@ of %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Valtz is using %1$@ of %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 正在使用 %1$@（共 %2$@）"
+          }
+        }
+      }
+    },
+    "Valtz itself" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 本身"
+          }
+        }
+      }
+    },
     "Valtz may not use the camera: allow it in System Settings › Privacy & Security › Camera." : {
       "localizations" : {
         "zh-Hans" : {
@@ -17824,6 +18540,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "停止后 Valtz 将退出。"
+          }
+        }
+      }
+    },
+    "Valtz reads and writes its cache as it works — thumbnails, renderings, the encodings it keeps — so a drive slower than the internal one limits how fast Valtz works. Connect the drive by USB4 or Thunderbolt at least: USB 3 and Ethernet carry 10 Gb/s at most, which cannot keep up with a model’s streaming." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 工作时会读写缓存——缩略图、渲染结果、保留的编码——因此比内置驱动器慢的驱动器会限制 Valtz 的速度。请至少通过 USB4 或雷雳连接该驱动器：USB 3 和以太网最高只有 10 Gb/s，跟不上模型的流式读取。"
+          }
+        }
+      }
+    },
+    "Valtz streams a model’s weights from the models folder while it generates, so a drive slower than the internal one limits how fast Valtz works. Connect the drive by USB4 or Thunderbolt at least: USB 3 and Ethernet carry 10 Gb/s at most, which cannot keep up with a model’s streaming." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 生成时会从模型文件夹流式读取模型权重，因此比内置驱动器慢的驱动器会限制 Valtz 的速度。请至少通过 USB4 或雷雳连接该驱动器：USB 3 和以太网最高只有 10 Gb/s，跟不上模型的流式读取。"
           }
         }
       }
@@ -17904,6 +18640,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "视频"
+          }
+        }
+      }
+    },
+    "Video Prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "视频提示词"
           }
         }
       }
@@ -18034,6 +18780,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "VideoDeltaNet：对邻近帧做窗口 softmax，其余帧用线性递归，是模型旁的第二个检查点。视频越长越大，优势越明显；它会取代 Sol-Attn。"
+          }
+        }
+      }
+    },
+    "View Only" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仅查看"
           }
         }
       }
@@ -18180,6 +18936,16 @@
         }
       }
     },
+    "Waiting for the work under way to finish…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在等待进行中的工作完成…"
+          }
+        }
+      }
+    },
     "Waiting for your word" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18230,6 +18996,26 @@
         }
       }
     },
+    "Weights loaded" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已加载的权重"
+          }
+        }
+      }
+    },
+    "What %@ sent is not a picture, a clip or a sound." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 发来的不是图片、片段或声音。"
+          }
+        }
+      }
+    },
     "What Start makes" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18256,6 +19042,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Valtz 可能向 macOS 请求使用的内容——摄像头、麦克风、Mac 的声音、你的文件夹——当前是否已允许，以及 Valtz 在哪里需要它。"
+          }
+        }
+      }
+    },
+    "What becomes of the cache?" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "如何处理现有缓存？"
           }
         }
       }
@@ -18362,6 +19158,16 @@
         }
       }
     },
+    "What the models work in: scratch, caches, buffers" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型运行所用的内存：暂存、缓存、缓冲区"
+          }
+        }
+      }
+    },
     "What the speed adds" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18378,6 +19184,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "生成在已有内容的合成上完成时"
+          }
+        }
+      }
+    },
+    "Where Valtz keeps its cache: moved there, left or deleted" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 存放缓存的位置：移动过去、留在原处或删除"
+          }
+        }
+      }
+    },
+    "Where Valtz keeps its models: moved there, or kept where they are" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 存放模型的位置：移动过去，或留在原处"
+          }
+        }
+      }
+    },
+    "Where new projects are saved" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "新项目的存储位置"
           }
         }
       }
@@ -18569,6 +19405,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "歌词"
+          }
+        }
+      }
+    },
+    "Working memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "工作内存"
           }
         }
       }
@@ -19260,6 +20106,40 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "它在等待 {model} 下载完成，但下载已停止。"
+          }
+        }
+      }
+    },
+    "core.cache_busy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wait for the work in progress to finish: the cache cannot move while Valtz is working."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请等待进行中的工作完成：Valtz 工作时无法移动缓存。"
+          }
+        }
+      }
+    },
+    "core.cache_move_failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The cache could not be moved to {path}: {why}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法将缓存移动到 {path}：{why}"
           }
         }
       }
@@ -20675,6 +21555,74 @@
         }
       }
     },
+    "core.location_moving" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A folder is being moved already: wait for it to finish."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已有文件夹正在移动：请等待其完成。"
+          }
+        }
+      }
+    },
+    "core.location_nested" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{path} is inside the folder it would replace, or holds it: choose another folder."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 位于要替换的文件夹之内，或包含该文件夹：请选择其他文件夹。"
+          }
+        }
+      }
+    },
+    "core.location_no_room" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{path} has {free} free, and the move needs {need}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{path} 的可用空间为 {free}，而移动需要 {need}。"
+          }
+        }
+      }
+    },
+    "core.location_not_writable" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Valtz cannot write in {path}."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 无法写入 {path}。"
+          }
+        }
+      }
+    },
     "core.lora_missing" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -20824,6 +21772,57 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "{model} 已下载但未解包：请重新下载。"
+          }
+        }
+      }
+    },
+    "core.models_busy" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wait for the work in progress to finish: the models folder cannot change while Valtz is working."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "请等待进行中的工作完成：Valtz 工作时无法更改模型文件夹。"
+          }
+        }
+      }
+    },
+    "core.models_move_failed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The models could not be moved to {path}: {why}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无法将模型移动到 {path}：{why}"
+          }
+        }
+      }
+    },
+    "core.models_moving" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The models are being moved: wait for the move to finish."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型正在移动：请等待移动完成。"
           }
         }
       }
@@ -22340,6 +23339,36 @@
         }
       }
     },
+    "kept %@ more" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "还将保留 %@"
+          }
+        }
+      }
+    },
+    "kept while Valtz runs" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在 Valtz 运行期间保留"
+          }
+        }
+      }
+    },
+    "let go within a minute" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "一分钟内释放"
+          }
+        }
+      }
+    },
     "linked" : {
       "localizations" : {
         "zh-Hans" : {
@@ -22397,6 +23426,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无适用模型"
+          }
+        }
+      }
+    },
+    "not kept: let go when nothing uses it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不保留：无人使用时释放"
           }
         }
       }
@@ -22557,6 +23596,16 @@
         }
       }
     },
+    "set aside: macOS may take it back" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已搁置：macOS 可能收回"
+          }
+        }
+      }
+    },
     "text encoder" : {
       "localizations" : {
         "zh-Hans" : {
@@ -22709,6 +23758,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“%@”仍有工作正在进行"
+          }
+        }
+      }
+    },
+    "“%@” is not a picture, a clip or a sound." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“%@”不是图片、片段或声音。"
+          }
+        }
+      }
+    },
+    "“%@” is not on this Mac’s internal drive" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“%@”不在这台 Mac 的内置驱动器上"
           }
         }
       }

@@ -153,11 +153,12 @@ struct PromptBar: View {
             .help("Stop the task on the stage (⌘.)")
             .shortcutHint("⌘.")
         }
-        Button("Start", action: model.start)
+        Button("Start", action: model.startPressed)
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: .command)
             .shortcutHint("⌘↩")
             .disabled(!model.canStart)
+            .startFlash(model.startFlash)
             .help(model.tasks.isEmpty
                   ? "Start (⌘↩)"
                   : "Start (⌘↩): queued after the tasks before it")

@@ -21,20 +21,40 @@ struct InspectorView: View {
     @Bindable var model: AppModel
 
     /// The section shown: in the Prompt Editor, Layers or Assets -- what
-    /// the prompt draws on, dragged into it -- whatever was asked for.
+    /// the prompt draws on, dragged into it -- whatever was asked for;
+    /// VIEW ONLY, Information alone (the tab asked for kept for after).
     private var section: InspectorTab {
-        model.promptImmersive && model.inspectorTab != .layers
+        if model.viewOnly { return .info }
+        return model.promptImmersive && model.inspectorTab != .layers
             ? .assets : model.inspectorTab
     }
 
-    /// The sections offered: the Prompt Editor's two, else the three.
+    /// The sections offered: the Prompt Editor's two, view only
+    /// Information, else the three.
     private var sections: [InspectorTab] {
-        model.promptImmersive ? [.layers, .assets] : InspectorTab.allCases
+        model.viewOnly ? [.info]
+            : model.promptImmersive ? [.layers, .assets]
+            : InspectorTab.allCases
     }
+
+    /// Nothing in Information to edit (AppModel.viewOnly): what is shown
+    /// is read, not set.
+    private var readOnly: Bool { model.viewOnly }
 
     var body: some View {
         VStack(spacing: 0) {
-            if model.inspectorStacked {
+            // View only: Information alone, no sections to stack or pick.
+            if model.viewOnly {
+                Label(InspectorTab.info.label,
+                      systemImage: InspectorTab.info.symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 4)
+                content(.info, stacked: false)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.inspectorStacked {
                 stacked
                 // The way back to one section at a time, at the foot.
                 modeButton
@@ -165,7 +185,8 @@ struct InspectorView: View {
                         .padding(.vertical, 14)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-            } else if model.projectViews.isEmpty, model.projectId != nil {
+            } else if model.projectViews.isEmpty, model.projectId != nil,
+                      !readOnly {
                 // An empty project: set up here, or by its first result.
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
@@ -222,7 +243,7 @@ struct InspectorView: View {
             }
         }
         // The project's: what exporting it writes, and its timeline's rate.
-        if a.isProject {
+        if a.isProject && !readOnly {
             section("Output") {
                 OutputFields(
                     kind: a.kind == "audio" ? .sound
@@ -240,15 +261,17 @@ struct InspectorView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        HStack {
-            if a.isProject {
-                NewProjectButton(model: model)
-            } else {
-                Button("Use as Project") { model.useAsProject(a) }
-                    .help("Make this composition the project's")
+        if !readOnly {
+            HStack {
+                if a.isProject {
+                    NewProjectButton(model: model)
+                } else {
+                    Button("Use as Project") { model.useAsProject(a) }
+                        .help("Make this composition the project's")
+                }
             }
+            .controlSize(.small)
         }
-        .controlSize(.small)
     }
 
     private func details(_ a: AssetDTO) -> some View {
@@ -259,14 +282,14 @@ struct InspectorView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             // Markup objects selected on it: where they lie, typed.
-            if model.markupAsset?.id == a.id,
+            if !readOnly, model.markupAsset?.id == a.id,
                let f = model.selectionFrame {
                 SelectionFrameSection(model: model, frame: f)
             }
 
             if a.isComposition {
                 composition(a)
-                if a.kind != "audio" {
+                if a.kind != "audio" && !readOnly {
                     CanvasSection(model: model, asset: a)
                 }
             } else if let info = a.info, a.kind == "audio" {
@@ -288,7 +311,7 @@ struct InspectorView: View {
                     row("Depth") { Text("\(f.bits)-bit") }
                     row("Format") { Text(verbatim: info.codecName) }
                 }
-                if a.kind == "image" || a.kind == "video" {
+                if (a.kind == "image" || a.kind == "video") && !readOnly {
                     CanvasSection(model: model, asset: a)
                 }
                 let exif = ExifRow.rows(info.exif ?? [:])
@@ -355,7 +378,7 @@ struct InspectorView: View {
         if let l = a.layerStack.first(where: { $0.id == id })
             ?? a.layerStack.first(where: { $0.id.isEmpty }) {
             let src = l.source.flatMap { s in
-                model.assets.first { $0.id == s }
+                model.asset(id: s)
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text(verbatim: l.title)
@@ -436,15 +459,22 @@ struct InspectorView: View {
                 ForEach(told) { t in
                     row(t.recipe?.op == "summarize-video" ? Text("Summary")
                                                           : Text("Transcript")) {
-                        Button {
-                            model.openTextAsset(t)
-                        } label: {
+                        if readOnly {
+                            // Its name: the Prompt Editor is away.
                             Text(verbatim: t.name)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                        } else {
+                            Button {
+                                model.openTextAsset(t)
+                            } label: {
+                                Text(verbatim: t.name)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            .buttonStyle(.link)
+                            .help("Open it in the Prompt Editor")
                         }
-                        .buttonStyle(.link)
-                        .help("Open it in the Prompt Editor")
                     }
                 }
             }
@@ -494,7 +524,7 @@ struct InspectorView: View {
                let from = r.inputs?.first(where: {
                    $0.role == "base" || $0.role == "own" ||
                        $0.role == "source" })?.asset,
-               let a = model.assets.first(where: { $0.id == from }) {
+               let a = model.asset(id: from) {
                 row("From") {
                     Text(verbatim: a.name)
                         .lineLimit(1)
@@ -532,7 +562,7 @@ struct InspectorView: View {
             if let first = r.inputs?.first(where: { $0.role == "first" })?
                 .asset {
                 row("First frame") {
-                    Text(verbatim: model.assets.first { $0.id == first }?.name
+                    Text(verbatim: model.asset(id: first)?.name
                          ?? first)
                 }
             }
@@ -585,15 +615,17 @@ struct InspectorView: View {
         // row (DESIGN §10c) -- to use again; or, made before prompts were
         // kept, the words the model read.
         if let pid = r.inputs?.first(where: { $0.role == "prompt" })?.asset,
-           let pa = model.assets.first(where: { $0.id == pid }),
+           let pa = model.asset(id: pid),
            let text = pa.text {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("Prompt").foregroundStyle(.secondary)
                     Spacer()
-                    Button("Use in Prompt") { model.usePrompt(pa) }
-                        .buttonStyle(.link)
-                        .help("Put this prompt in the box: its references bind to the row's media by position")
+                    if !readOnly {
+                        Button("Use in Prompt") { model.usePrompt(pa) }
+                            .buttonStyle(.link)
+                            .help("Put this prompt in the box: its references bind to the row's media by position")
+                    }
                 }
                 Text(verbatim: text)
                     .textSelection(.enabled)
@@ -606,9 +638,11 @@ struct InspectorView: View {
                     HStack {
                         Text("Before Enhancing").foregroundStyle(.secondary)
                         Spacer()
-                        Button("Use in Prompt") { model.usePrompt(up) }
-                            .buttonStyle(.link)
-                            .help("Put the words the assistant enhanced in the box, to change them and enhance again")
+                        if !readOnly {
+                            Button("Use in Prompt") { model.usePrompt(up) }
+                                .buttonStyle(.link)
+                                .help("Put the words the assistant enhanced in the box, to change them and enhance again")
+                        }
                     }
                     Text(verbatim: words)
                         .textSelection(.enabled)
@@ -1117,7 +1151,9 @@ struct LayersSection: View {
                 }
                 ScrollViewReader { proxy in
                     ScrollView {
-                        VStack(spacing: 2) {
+                        // Lazy: only the rows in sight are made (a stack
+                        // of 16 000 made every row at each change).
+                        LazyVStack(spacing: 2) {
                             ForEach(items(stack)) { item in
                                 switch item.kind {
                                 case .folder(let f, let members):
@@ -1176,6 +1212,11 @@ struct LayersSection: View {
     private func items(_ stack: [LayerDTO]) -> [LayerListItem] {
         var out: [LayerListItem] = []
         var open: String?
+        // Each folder's layers, gathered once.
+        var byFolder: [String: [LayerDTO]] = [:]
+        for l in stack {
+            if let f = l.folder { byFolder[f, default: []].append(l) }
+        }
         for (i, l) in stack.enumerated().reversed() {
             if let f = l.folder, f != open {
                 open = f
@@ -1183,7 +1224,7 @@ struct LayersSection: View {
                     ?? LayerFolderDTO(id: f, name: f)
                 out.append(LayerListItem(
                     id: "folder:" + f,
-                    kind: .folder(folder, stack.filter { $0.folder == f })))
+                    kind: .folder(folder, byFolder[f] ?? [])))
             } else if l.folder == nil {
                 open = nil
             }
@@ -1268,6 +1309,8 @@ struct FilterField: View {
 private struct LayerFindPanel: View {
     @Bindable var model: AppModel
     @FocusState private var focused: Bool
+    /// How many matches it lists.
+    static let listed = 200
 
     var body: some View {
         let found = model.layerFindMatches
@@ -1287,7 +1330,8 @@ private struct LayerFindPanel: View {
             }
             .onKeyPress(.downArrow) {
                 model.layerFindMark = min(model.layerFindMark + 1,
-                                          max(model.layerFindMatches.count
+                                          max(min(model.layerFindMatches
+                                                      .count, Self.listed)
                                               - 1, 0))
                 return .handled
             }
@@ -1304,11 +1348,23 @@ private struct LayerFindPanel: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(spacing: 1) {
-                            ForEach(Array(found.enumerated()),
-                                    id: \.element.id) { i, l in
+                            // The first few hundred: the popover is sized
+                            // to its rows, and sized to every layer of a
+                            // stack of 16 000 it held the window 6 s.
+                            ForEach(Array(found.prefix(Self.listed)
+                                .enumerated()), id: \.element.id) { i, l in
                                 row(l, marked: i == mark)
                                     .id(l.id)
                                     .onTapGesture { model.goToLayer(l.id) }
+                            }
+                            if found.count > Self.listed {
+                                Text("\(found.count - Self.listed) more: type more of the name")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity,
+                                           alignment: .leading)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 3)
                             }
                         }
                     }

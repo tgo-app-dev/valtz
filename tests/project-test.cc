@@ -59,6 +59,48 @@ TEST(project, create_reopen_and_text_assets)
   CHECK(!Project::create(pkg, "again").ok());  // no clobbering
 }
 
+// A project's REVISION is what it has written: unchanged by reads,
+// another after each write, and another for the same file opened again
+// (its count of writes starts over). A text's words and file are found
+// the same from its records as by its id.
+TEST(project, a_revision_changes_with_each_write)
+{
+  auto pkg = test::temp_dir("revision") / "R.valtz";
+  std::string before;
+  AssetId tid;
+  {
+    auto p = Project::create(pkg, "Rev");
+    REQUIRE_OK(p);
+    const std::string r0 = (*p)->revision();
+    auto t = (*p)->add_text("note", "some words");
+    REQUIRE_OK(t);
+    tid = t->id;
+    const std::string r1 = (*p)->revision();
+    CHECK(r1 != r0);
+    REQUIRE_OK((*p)->assets());
+    REQUIRE_OK((*p)->read_text(tid));
+    CHECK((*p)->revision() == r1);
+    REQUIRE_OK((*p)->rename_asset(tid, "renamed"));
+    CHECK((*p)->revision() != r1);
+    auto a = (*p)->asset(tid);
+    REQUIRE_OK(a);
+    auto v = (*p)->version(tid, a->head);
+    REQUIRE_OK(v);
+    for (int pass = 0; pass < 2; ++pass) {  // read, then kept
+      auto words = (*p)->read_text(*a, *v);
+      REQUIRE_OK(words);
+      CHECK(*words == "some words");
+    }
+    auto path = (*p)->media_path(*a, *v);
+    REQUIRE_OK(path);
+    CHECK(*path == *(*p)->media_path(tid));
+    before = (*p)->revision();
+  }
+  auto p = Project::open(pkg);
+  REQUIRE_OK(p);
+  CHECK((*p)->revision() != before);
+}
+
 TEST(project, identical_content_is_stored_once)
 {
   auto pkg = test::temp_dir("proj") / "D.valtz";

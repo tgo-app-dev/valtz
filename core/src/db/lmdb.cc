@@ -3,6 +3,7 @@
 #include <lmdb.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <format>
 #include <thread>
@@ -76,7 +77,9 @@ struct TxnGuard {
 Result<std::unique_ptr<Env>>
 Env::open(const std::filesystem::path& path, const Options& opts)
 {
+  static std::atomic<std::uint64_t> opened{0};
   std::unique_ptr<Env> env(new Env());
+  env->_serial = ++opened;
   env->_path = path;
   env->_opts = opts;
   env->_map_bytes = opts.initial_map_bytes;
@@ -115,6 +118,14 @@ Env::open(const std::filesystem::path& path, const Options& opts)
     env->_map_bytes = info.me_mapsize;
   }
   return env;
+}
+
+std::string
+Env::revision() const
+{
+  MDB_envinfo info{};
+  mdb_env_info(_env, &info);
+  return std::format("{}.{}", _serial, info.me_last_txnid);
 }
 
 Env::~Env()

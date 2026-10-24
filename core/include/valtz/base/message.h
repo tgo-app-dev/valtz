@@ -625,6 +625,35 @@ inline constexpr Message kExportNeedsSound{
     "core.export_needs_sound", "{format} is a format for sounds."};
 inline constexpr Message kExportNotSaved{
     "core.export_not_saved", "The export could not be saved to {path}."};
+inline constexpr Message kLocationNotWritable{
+    "core.location_not_writable", "Valtz cannot write in {path}."};
+inline constexpr Message kLocationNested{
+    "core.location_nested",
+    "{path} is inside the folder it would replace, or holds it: choose "
+    "another folder."};
+inline constexpr Message kModelsBusy{
+    "core.models_busy",
+    "Wait for the work in progress to finish: the models folder cannot "
+    "change while Valtz is working."};
+inline constexpr Message kCacheBusy{
+    "core.cache_busy",
+    "Wait for the work in progress to finish: the cache cannot move while "
+    "Valtz is working."};
+inline constexpr Message kLocationMoving{
+    "core.location_moving",
+    "A folder is being moved already: wait for it to finish."};
+inline constexpr Message kModelsMoving{
+    "core.models_moving",
+    "The models are being moved: wait for the move to finish."};
+inline constexpr Message kLocationNoRoom{
+    "core.location_no_room",
+    "{path} has {free} free, and the move needs {need}."};
+inline constexpr Message kModelsMoveFailed{
+    "core.models_move_failed",
+    "The models could not be moved to {path}: {why}"};
+inline constexpr Message kCacheMoveFailed{
+    "core.cache_move_failed",
+    "The cache could not be moved to {path}: {why}"};
 
 }  // namespace msg
 

@@ -18,6 +18,11 @@
 // and must not be purged by the system while in use. Entries in use are
 // PINNED and never evicted.
 //
+// Its folder can be put elsewhere while Valtz runs (set_root, Settings ›
+// General › Storage): from then on entries are found and made there --
+// what was in the old one moved there first, left or deleted by the
+// caller.
+//
 // Thread-safe.
 
 #ifndef VALTZ_CACHE_CACHE_STORE_H
@@ -58,8 +63,8 @@ public:
   // Keys are file names: [A-Za-z0-9._-], 1..200 chars.
   static bool valid_key(std::string_view);
 
-  const std::filesystem::path& root() const noexcept { return _root; }
-  bool on_internal_volume() const noexcept { return _internal; }
+  std::filesystem::path root() const;
+  bool on_internal_volume() const;
   std::uint64_t budget_bytes() const noexcept { return _budget; }
   std::uint64_t size_bytes() const;
 
@@ -96,11 +101,21 @@ public:
   // Evict least-recently-used, unpinned entries until size <= target.
   void evict_to(std::uint64_t target_bytes);
 
+  // The cache in `root` from now on: the entries there (brought in by
+  // the caller, or left there before) are what it holds; its budget, the
+  // default one's, that volume's. Busy while an entry is pinned -- in
+  // use, by a path into the old folder.
+  Status set_root(const std::filesystem::path& root);
+  bool pinned() const;
+
 private:
   CacheStore() = default;
   std::filesystem::path object_path_(std::string_view key) const;
   void unpin_(const std::string& key);
   void evict_locked_(std::uint64_t target_bytes);
+  // `root`'s entries into the table (empty), the staging left by an
+  // interrupted write deleted.
+  void scan_locked_(const std::filesystem::path& root);
 
   struct Entry {
     std::uint64_t bytes = 0;
@@ -108,9 +123,13 @@ private:
     int           pins = 0;
   };
 
+  // `_root` and `_internal` under `_root_mu`, taken after `_mu` when
+  // both are.
   std::filesystem::path                  _root;
-  std::uint64_t                          _budget = 0;
   bool                                   _internal = true;
+  mutable std::mutex                     _root_mu;
+  std::uint64_t                          _budget = 0;
+  bool                                   _budget_auto = false;
   mutable std::mutex                     _mu;
   std::unordered_map<std::string, Entry> _entries;
   std::uint64_t                          _bytes = 0;

@@ -27,19 +27,31 @@ enum MarkupRender {
     /// font, colour, underline and paragraph style -- the line spacing an
     /// adjustment BETWEEN lines, so the first is at the box's top.
     static func boxText(_ o: MarkupObject) -> NSAttributedString {
+        boxText(o, color: o.stroke, align: o.align ?? "left")
+    }
+
+    /// A shape's WORDS as Core Text sets them: a text box's, in their own
+    /// colour (none: black), centred unless aligned otherwise.
+    static func shapeText(_ o: MarkupObject) -> NSAttributedString {
+        boxText(o, color: o.textColor ?? RGBA(r: 0, g: 0, b: 0, a: 1),
+                align: o.align ?? "center")
+    }
+
+    static func boxText(_ o: MarkupObject, color: RGBA,
+                        align alignName: String) -> NSAttributedString {
         let f = font(o.font)
         var attrs: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): f,
             NSAttributedString.Key(
                 kCTForegroundColorAttributeName as String):
-                o.stroke.cgColor,
+                color.cgColor,
         ]
         if o.font.underline {
             attrs[NSAttributedString.Key(
                 kCTUnderlineStyleAttributeName as String)] =
                 CTUnderlineStyle.single.rawValue
         }
-        var align: CTTextAlignment = switch o.align {
+        var align: CTTextAlignment = switch alignName {
         case "center": .center
         case "right": .right
         case "justified": .justified
@@ -290,6 +302,8 @@ enum MarkupRender {
                 ctx.addPath(path)
                 ctx.strokePath()
             }
+            // Its words, over its inside and outline.
+            if !open { drawWords(o, in: ctx) }
         case .text where o.box:
             // A text BOX: wrapped within its width, only the lines that
             // fit whole in its height (a framesetter sets whole lines
@@ -365,6 +379,59 @@ enum MarkupRender {
                                     height: th))
                 }
             }
+        }
+    }
+
+    /// A shape's TEXT AREA in its own pixels (the core's
+    /// shape_text_area): its box -- an ellipse's inscribed rectangle --
+    /// inset by half its outline and a fifth of its font's size; nil where
+    /// nothing fits.
+    static func textArea(_ o: MarkupObject) -> CGRect? {
+        var r = box(o)
+        if o.kind == .ellipse {
+            let k = (1 - 2.0.squareRoot() / 2) / 2
+            r = r.insetBy(dx: r.width * k, dy: r.height * k)
+        }
+        let pad = max(0, o.width) / 2 + min(2000, max(1, o.font.size)) * 0.2
+        r = r.insetBy(dx: pad, dy: pad)
+        return r.isNull || r.width <= 0 || r.height <= 0 ? nil : r
+    }
+
+    /// A shape's WORDS (the core's draw_shape_text): wrapped in its text
+    /// area, the lines that fit whole, the block of them centred down it;
+    /// on a context in its own pixels turned and flipped, the flips taken
+    /// back -- the words are never mirrored.
+    private static func drawWords(_ o: MarkupObject, in ctx: CGContext) {
+        guard !o.text.isEmpty, let area = textArea(o) else { return }
+        let fs = CTFramesetterCreateWithAttributedString(shapeText(o))
+        let frame = CTFramesetterCreateFrame(
+            fs, CFRange(location: 0, length: 0),
+            CGPath(rect: CGRect(x: 0, y: 0, width: area.width,
+                                height: area.height), transform: nil),
+            nil)
+        let lines = CTFrameGetLines(frame) as? [CTLine] ?? []
+        guard let last = lines.last else { return }
+        var origins = [CGPoint](repeating: .zero, count: lines.count)
+        CTFrameGetLineOrigins(frame, CFRange(location: 0, length: 0),
+                              &origins)
+        // The set lines' height: the frame's top to the last one's bottom.
+        var descent: CGFloat = 0
+        CTLineGetTypographicBounds(last, nil, &descent, nil)
+        let drop = max(0, (origins[lines.count - 1].y - descent) / 2)
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        if o.flipX || o.flipY {
+            let c = CGPoint(x: (o.x0 + o.x1) / 2, y: (o.y0 + o.y1) / 2)
+            ctx.concatenate(CGAffineTransform(translationX: c.x, y: c.y)
+                .scaledBy(x: o.flipX ? -1 : 1, y: o.flipY ? -1 : 1)
+                .translatedBy(x: -c.x, y: -c.y))
+        }
+        ctx.translateBy(x: area.minX, y: area.maxY)
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.textMatrix = .identity
+        for (i, l) in lines.enumerated() {
+            ctx.textPosition = CGPoint(x: origins[i].x, y: origins[i].y - drop)
+            CTLineDraw(l, ctx)
         }
     }
 
@@ -587,7 +654,7 @@ enum MarkupRender {
     }
 
     /// The same in its own pixels.
-    private static func ownGradientHandles(_ o: MarkupObject) -> [CGPoint] {
+    static func ownGradientHandles(_ o: MarkupObject) -> [CGPoint] {
         guard let g = o.gradient else { return [] }
         return [onCanvas(g.from, of: o), onCanvas(g.to, of: o)]
     }
@@ -892,7 +959,42 @@ enum MarkupRender {
         var pts = polygonPoints(o)
         var flags = pts.indices.map { o.isSmooth($0) }
         let at = min(k + 1, pts.count)
-        pts.insert(own(p, of: o), at: at)
+        // Where on piece `k` it goes, for the connectors on it: those
+        // before stay on it, those after go on the new piece.
+        let q = own(p, of: o)
+        let ps = outlinePieces(o)
+        var split = 0.5
+        if ps.indices.contains(k) {
+            var near = Double.infinity
+            for s in 0...200 {
+                let t = Double(s) / 200
+                let c = ps[k].along(CGFloat(t))
+                let d = Double(hypot(c.x - q.x, c.y - q.y))
+                if d < near { (near, split) = (d, t) }
+            }
+        }
+        split = min(0.999, max(0.001, split))
+        o.connectors = o.connectors.map { c in
+            var c = c
+            if c.seg > k {
+                c.seg += 1
+            } else if c.seg == k {
+                if c.t < split {
+                    c.t /= split
+                } else {
+                    c.seg += 1
+                    c.t = (c.t - split) / (1 - split)
+                }
+            }
+            return c
+        }
+        // Its points' anchors by their place, those after it one on.
+        o.anchors = o.anchors.map { a in
+            var a = a
+            if a.point >= at { a.point += 1 }
+            return a
+        }
+        pts.insert(q, at: at)
         flags.insert(true, at: at)
         let ends = ownGradientHandles(o)
         setPolygon(&o, pts)
@@ -914,7 +1016,7 @@ enum MarkupRender {
 
     /// A gradient's ends put back where they were on the canvas, its box
     /// made again.
-    private static func keepGradient(_ o: inout MarkupObject,
+    static func keepGradient(_ o: inout MarkupObject,
                                      _ ends: [CGPoint]) {
         guard ends.count == 2, var g = o.gradient else { return }
         g.from = inBox(ends[0], of: o)

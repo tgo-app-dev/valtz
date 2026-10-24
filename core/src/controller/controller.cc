@@ -7,6 +7,7 @@
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
+#include "valtz/base/tree-copy.h"
 #include "valtz/media/layers.h"
 #include "valtz/media/model-input.h"
 #include "valtz/media/sound.h"
@@ -343,13 +344,37 @@ Result<std::unique_ptr<Controller>>
 Controller::create(ControllerConfig cfg)
 {
   AppPaths paths = AppPaths::standard(cfg.support_root);
+  const AppPaths defaults = AppPaths::defaults(cfg.support_root);
   std::error_code ec;
-  for (const auto& d : {paths.support, paths.models, paths.engine}) {
+  for (const auto& d : {paths.support, paths.engine}) {
     fs::create_directories(d, ec);
     if (ec) {
       return make_error(Code::Io, std::format("cannot create {}: {}",
                                               d.string(), ec.message()));
     }
+  }
+  // A folder put elsewhere (locations.json) is made again where its
+  // parent is -- not where a drive not connected would be: Valtz starts
+  // without it, saying so (locations()).
+  std::set<std::string> missing;
+  auto reachable = [&ec](const fs::path& d) {
+    if (fs::is_directory(d, ec)) {
+      return true;
+    }
+    if (!fs::is_directory(d.parent_path(), ec)) {
+      return false;
+    }
+    fs::create_directories(d, ec);
+    return !ec;
+  };
+  if (!reachable(paths.models)) {
+    if (paths.models == defaults.models) {
+      return make_error(Code::Io, std::format("cannot create {}",
+                                              paths.models.string()));
+    }
+    VALTZ_LOG_WARN("models", "the models folder {} is not there",
+                   paths.models.string());
+    missing.insert("models");
   }
 
   std::unique_ptr<Controller> c(new Controller());
@@ -358,14 +383,34 @@ Controller::create(ControllerConfig cfg)
   c->_keep_working_copies = cfg.keep_working_copies;
   cache::CacheStore::Options copts;
   copts.budget_bytes = cfg.cache_budget_bytes;
-  VALTZ_ASSIGN(c->_cache, cache::CacheStore::open(paths.cache, copts));
+  if (paths.cache != defaults.cache && !reachable(paths.cache)) {
+    // Meanwhile the default one: a cache must be written.
+    VALTZ_LOG_WARN("cache", "the cache folder {} is not there: {} for now",
+                   paths.cache.string(), defaults.cache.string());
+    missing.insert("cache");
+    VALTZ_ASSIGN(c->_cache, cache::CacheStore::open(defaults.cache, copts));
+  } else {
+    VALTZ_ASSIGN(c->_cache, cache::CacheStore::open(paths.cache, copts));
+  }
+  c->_locations_missing = std::move(missing);
   c->_hw = models::probe_hardware();
   VALTZ_ASSIGN(c->_catalog, models::Catalog::builtin());
+  // The models folder and those kept after it moved are Valtz's own.
+  const auto roots = cfg.model_roots.empty()
+      ? models::ModelStore::default_roots(paths.models, paths.models_kept)
+      : cfg.model_roots;
+  std::size_t owned = 1;
+  if (cfg.model_roots.empty()) {
+    for (std::size_t i = 1; i < roots.size(); ++i) {
+      if (std::ranges::any_of(paths.models_kept, [&](const fs::path& k) {
+            return k.lexically_normal() == roots[i].lexically_normal();
+          })) {
+        owned = i + 1;
+      }
+    }
+  }
   c->_store = std::make_unique<models::ModelStore>(
-      cfg.model_roots.empty()
-          ? models::ModelStore::default_roots(paths.models)
-          : cfg.model_roots,
-      paths.support / "model-links.json");
+      roots, paths.support / "model-links.json", owned);
   // A compress a crash stopped (DESIGN §8b): its passes, never marked,
   // never read -- gone. Only one untouched for six hours: another Valtz
   // (the app, valtzctl) may be writing one now.
@@ -561,6 +606,13 @@ Controller::shutdown()
       t.join();
     }
   }
+  // The caches left behind this run: vpipe's scratch in them, done with
+  // now -- and the folder too, emptied by a move or a drop.
+  for (const auto& left : _caches_left) {
+    std::error_code ec;
+    fs::remove_all(left / "scratch", ec);
+    remove_empty_dirs(left);
+  }
   set_log_sink(nullptr);
   _bus.close();
   std::lock_guard lk(_projects_mu);
@@ -628,6 +680,199 @@ Controller::machine_status()
       j["fleet"] = std::move(f);
     }
   }
+  return j;
+}
+
+namespace {
+
+// A path as the held ones are compared: absolute, normalized, no
+// trailing slash.
+std::string
+held_path(const fs::path& p)
+{
+  std::error_code ec;
+  fs::path c = fs::weakly_canonical(p, ec);
+  std::string s = (ec ? p : c).lexically_normal().string();
+  while (s.size() > 1 && s.back() == '/') {
+    s.pop_back();
+  }
+  return s;
+}
+
+// What a model's weight files take, for one loaded unwired (vpipe counts
+// what a language model reads into its own members nowhere): its
+// .safetensors, two folders deep at most.
+std::uint64_t
+weight_files_bytes(const fs::path& dir)
+{
+  std::error_code ec;
+  std::uint64_t n = 0;
+  if (fs::is_regular_file(dir, ec)) {
+    return fs::file_size(dir, ec);
+  }
+  fs::recursive_directory_iterator it(
+      dir, fs::directory_options::skip_permission_denied, ec), end;
+  for (; !ec && it != end; it.increment(ec)) {
+    if (it.depth() > 1) {
+      it.disable_recursion_pending();
+    }
+    if (it->is_regular_file(ec) &&
+        it->path().extension() == ".safetensors") {
+      n += it->file_size(ec);
+    }
+  }
+  return n;
+}
+
+}  // namespace
+
+Json
+Controller::memory_held()
+{
+  Json j = _engine ? _engine->memory_held() : Json::object();
+  if (!j.is_object()) {
+    return Json::object();
+  }
+  // Every installed model's folders -- its own, a kept original or
+  // copy, its parts linked apart -- for the held directories (a model's
+  // folder, a component in it, a part's file) to be named by.
+  std::vector<std::pair<std::string, const models::ModelEntry*>> dirs;
+  for (const auto& e : _catalog.models()) {
+    const auto info = _store->info(e);
+    if (info.state != models::InstallState::Installed) {
+      continue;
+    }
+    for (const fs::path& p : {info.dir, info.other_dir}) {
+      if (!p.empty()) {
+        dirs.emplace_back(held_path(p), &e);
+      }
+    }
+    for (const auto& [part, link] : info.parts) {
+      if (!link.file.empty()) {
+        dirs.emplace_back(held_path(link.file), &e);
+      }
+    }
+  }
+  // The longest folder holding it: a component's model, not its repo's.
+  auto owner = [&](const std::string& dir) -> const models::ModelEntry* {
+    const std::string d = held_path(dir);
+    const models::ModelEntry* best = nullptr;
+    std::size_t len = 0;
+    for (const auto& [p, e] : dirs) {
+      const bool in = d == p || (d.size() > p.size() &&
+                                 d.compare(0, p.size(), p) == 0 &&
+                                 d[p.size()] == '/');
+      if (in && p.size() > len) {
+        best = e;
+        len = p.size();
+      }
+    }
+    return best;
+  };
+  for (const char* list : {"warm", "weights"}) {
+    if (!j.contains(list) || !j[list].is_array()) {
+      j[list] = Json::array();
+    }
+    for (auto& w : j[list]) {
+      if (const auto* e = owner(jget<std::string>(w, "dir", ""))) {
+        w["model"] = e->id;
+        w["name"] = e->name;
+        w["role"] = e->role;
+      }
+    }
+  }
+  // ITEMS, what the popover draws, each byte once: a hold kept warm,
+  // the checkpoints of its own model and -- a language model's -- its
+  // drafters folded in (inside its wired bytes, or, loaded unwired,
+  // added to its files' size); then every other checkpoint resident.
+  // Its part, by vpipe's kind: "krea2-dit", "qwen-text-encoder",
+  // "flux2-vae-decoder", "language-model".
+  auto part_of = [](const std::string& kind) -> std::string {
+    auto has = [&](std::string_view t) {
+      return kind.find(t) != std::string::npos;
+    };
+    if (kind == "language-model") return "helper";
+    if (has("vae")) return "vae";
+    if (has("dit")) return "dit";
+    if (has("encoder")) return "text-encoder";
+    return kind;
+  };
+  std::vector<bool> folded(j["weights"].size(), false);
+  Json items = Json::array();
+  for (const auto& w : j["warm"]) {
+    const std::string dir = jget<std::string>(w, "dir", "");
+    const std::string model = jget<std::string>(w, "model", "");
+    const bool lm = jget<std::string>(w, "kind", "") == "language-model";
+    // Its own and, a language model's, its drafters (catalog
+    // engine.vpipe's mtp_drafter / dflash_drafter, `requires`).
+    std::vector<std::string> own{model};
+    if (const auto* e = lm ? _catalog.find(model) : nullptr) {
+      const Json vp = jget(e->engine, "vpipe", Json::object());
+      for (const char* k : {"mtp_drafter", "dflash_drafter"}) {
+        own.push_back(jget<std::string>(vp, k, ""));
+      }
+      own.insert(own.end(), e->requires_models.begin(),
+                 e->requires_models.end());
+    }
+    std::uint64_t bytes = jget<std::uint64_t>(w, "bytes", 0);
+    bool estimated = false;
+    // The drafters' weight sets, and all it folds in.
+    std::uint64_t folded_bytes = 0, folded_all = 0;
+    for (std::size_t i = 0; i < j["weights"].size(); ++i) {
+      const auto& c = j["weights"][i];
+      const std::string m = jget<std::string>(c, "model", "");
+      const bool same_dir = jget<std::string>(c, "dir", "") == dir;
+      // A stage's model folds its own folder's set alone: a DiT and a
+      // VAE of one model are each their own.
+      if (folded[i] || !(same_dir || (lm && !m.empty() &&
+          std::find(own.begin(), own.end(), m) != own.end()))) {
+        continue;
+      }
+      folded[i] = true;
+      const auto n = jget<std::uint64_t>(c, "bytes", 0);
+      folded_all += n;
+      if (!same_dir) folded_bytes += n;
+    }
+    if (lm && bytes == 0) {
+      // Loaded unwired: vpipe counts none of what it read -- its files'
+      // size stands for it, its drafters' weight sets beside them.
+      bytes = weight_files_bytes(dir) + folded_bytes;
+      estimated = bytes > 0;
+    } else if (bytes < folded_all) {
+      // Kept with fewer bytes than its weight sets hold (a VAE kept with
+      // none): those, at least.
+      bytes = folded_all;
+      estimated = true;
+    }
+    Json it{{"part", part_of(jget<std::string>(w, "kind", ""))},
+            {"kind", jget<std::string>(w, "kind", "")},
+            {"name", jget<std::string>(w, "name",
+                                       fs::path(dir).filename().string())},
+            {"model", model},
+            {"bytes", bytes},
+            {"kv_bytes", jget<std::uint64_t>(w, "kv_bytes", 0)},
+            {"seconds", jget<double>(w, "seconds", 0.0)},
+            {"warm", true}};
+    if (estimated) it["estimated"] = true;
+    items.push_back(std::move(it));
+  }
+  for (std::size_t i = 0; i < j["weights"].size(); ++i) {
+    if (folded[i]) {
+      continue;
+    }
+    const auto& c = j["weights"][i];
+    const std::string dir = jget<std::string>(c, "dir", "");
+    items.push_back(
+        {{"part", "weights"},
+         {"name", jget<std::string>(c, "name",
+                                    fs::path(dir).filename().string())},
+         {"model", jget<std::string>(c, "model", "")},
+         {"bytes", jget<std::uint64_t>(c, "bytes", 0)},
+         {"holders", jget<std::int64_t>(c, "holders", 0)},
+         {"parked", jget<bool>(c, "parked", false)},
+         {"warm", false}});
+  }
+  j["items"] = std::move(items);
   return j;
 }
 
@@ -949,9 +1194,9 @@ Json
 Controller::capability_tree() const
 {
   const fs::path valtz_root = _store->download_root();
-  auto under = [](const fs::path& p, const fs::path& root) {
-    const auto rel = p.lexically_relative(root);
-    return !rel.empty() && *rel.begin() != "..";
+  // In a folder of Valtz's own: the models folder, or one kept.
+  auto ours = [this](const fs::path& p) {
+    return !_store->own_root_of(p).empty();
   };
   Json families = Json::array();
   for (const auto& f : _catalog.families()) {
@@ -967,7 +1212,7 @@ Controller::capability_tree() const
       std::string source;
       if (info.state != models::InstallState::Missing) {
         source = info.linked                  ? "link"
-                 : under(info.dir, valtz_root) ? "valtz"
+                 : ours(info.dir)              ? "valtz"
                                               : "vpipe";
       }
       members.push_back({
@@ -1037,7 +1282,7 @@ Controller::capability_tree() const
             : info.compressed_bits > 0 || info.other_bits > 0
                 ? "compressed"
             : info.linked              ? "link"
-            : !under(info.dir, valtz_root) ? "vpipe"
+            : !ours(info.dir)          ? "vpipe"
             : !_engine->supports(engine::kOpQuantizeModel) ? "engine"
                                                            : "";
         Json widths = Json::array();
@@ -1145,12 +1390,18 @@ Controller::storage_report() const
                    {"capacity", ec ? 0 : space.capacity},
                    {"free", ec ? 0 : space.available}};
 
-  // Models: each repo folder in the managed root, named by the catalog
-  // entries it holds.
+  // Models: each repo folder in the managed roots -- the models folder,
+  // those kept after it moved -- named by the catalog entries it holds.
   const fs::path mroot = _store->download_root();
   Json models = Json::array();
   std::uint64_t mtotal = 0;
-  for (const auto& org : fs::directory_iterator(mroot, ec)) {
+  std::vector<fs::directory_entry> orgs;
+  for (const auto& root : _store->owned_roots()) {
+    for (const auto& org : fs::directory_iterator(root, ec)) {
+      orgs.push_back(org);
+    }
+  }
+  for (const auto& org : orgs) {
     if (!org.is_directory(ec)) {
       continue;
     }
@@ -1196,7 +1447,8 @@ Controller::storage_report() const
                       &op});
     }
   }
-  for (const auto& e : fs::directory_iterator(_paths.projects, ec)) {
+  const fs::path proot = paths().projects;
+  for (const auto& e : fs::directory_iterator(proot, ec)) {
     if (e.path().extension() == ".valtz" &&
         std::none_of(pkgs.begin(), pkgs.end(), [&](const auto& p) {
           return fs::equivalent(p.first, e.path(), ec);
@@ -1245,7 +1497,7 @@ Controller::storage_report() const
     }
     projects.push_back(std::move(item));
   }
-  out["projects"] = {{"root", _paths.projects.string()}, {"bytes", ptotal},
+  out["projects"] = {{"root", proot.string()}, {"bytes", ptotal},
                      {"items", std::move(projects)}};
 
   out["cache"] = {{"root", _cache->root().string()},
@@ -2271,6 +2523,9 @@ Controller::download_model(const std::string& model_id,
   if (!_engine->supports(engine::kOpFetchModel)) {
     return make_error(Code::Unsupported, msg::kNoEngineForDownload);
   }
+  if (models_moving_()) {
+    return make_error(Code::Busy, msg::kModelsMoving);
+  }
   // Asked again while it downloads: that download.
   {
     std::lock_guard lk(_downloads_mu);
@@ -2287,7 +2542,7 @@ Controller::download_model(const std::string& model_id,
   spec.op = std::string(engine::kOpFetchModel);
   spec.model.id = e->id;
   spec.params = {{"hf_path", e->hf_path},
-                 {"base_path", _store->download_root().string()}};
+                 {"base_path", download_base_(*e).string()}};
   if (!e->fetch_variant.empty()) {
     spec.params["variant"] = e->fetch_variant;
   }
@@ -2354,13 +2609,16 @@ Controller::download_model(const std::string& model_id,
       discarded(true);
       // Fetched again over a compressed copy (DESIGN §8b): the original
       // is back, the copy goes.
-      for (const int bits : {8, 4}) {
-        std::error_code ec;
-        const fs::path d = _store->compressed_dir(id, bits);
-        if (fs::exists(d / models::ModelStore::kCompressedMarker, ec)) {
-          VALTZ_LOG_INFO("models", "{} downloaded: its {}-bit copy at {} "
-                         "deleted", id, bits, d.string());
-          fs::remove_all(d, ec);
+      for (const auto& root : _store->owned_roots()) {
+        for (const int bits : {8, 4}) {
+          std::error_code ec;
+          const fs::path d = root / "compressed" /
+                             std::format("{}-{}bit", id, bits);
+          if (fs::exists(d / models::ModelStore::kCompressedMarker, ec)) {
+            VALTZ_LOG_INFO("models", "{} downloaded: its {}-bit copy at "
+                           "{} deleted", id, bits, d.string());
+            fs::remove_all(d, ec);
+          }
         }
       }
       _store->rescan();
@@ -2477,7 +2735,7 @@ Controller::model_path_(const models::ModelEntry& e) const
   }
   // Where its download puts it: <download root>/<hf_path>[/<subdir>],
   // its file in it.
-  fs::path dir = _store->download_root() / e.hf_path;
+  fs::path dir = download_base_(e) / e.hf_path;
   if (!e.subdir.empty()) {
     dir /= e.subdir;
   }
@@ -2590,6 +2848,9 @@ Controller::quantize_model(const std::string& model_id)
   if (e->quantize_from.empty()) {
     return make_error(Code::InvalidArgument, msg::kNotQuantizable,
                       {{"model", e->name}});
+  }
+  if (models_moving_()) {
+    return make_error(Code::Busy, msg::kModelsMoving);
   }
   const auto* src = _catalog.find(e->quantize_from);
   const auto si = src ? _store->info(*src) : models::InstallInfo{};
@@ -2761,6 +3022,9 @@ Controller::compress_model(const std::string& model_id, int bits,
   if (bits != 8 && bits != 4) {
     return make_error(Code::InvalidArgument, msg::kCompressBits);
   }
+  if (models_moving_()) {
+    return make_error(Code::Busy, msg::kModelsMoving);
+  }
   {
     std::lock_guard lk(_downloads_mu);
     if (auto it = _compressing.find(e->id); it != _compressing.end()) {
@@ -2785,8 +3049,7 @@ Controller::compress_model(const std::string& model_id, int bits,
   }
   // Valtz's own download only: the copy replaces it, and a link's files
   // or vpipe's are not Valtz's to delete.
-  const fs::path root = _store->download_root();
-  if (info.linked || !inside(info.dir, root)) {
+  if (info.linked || _store->own_root_of(info.dir).empty()) {
     return make_error(Code::InvalidArgument, msg::kCompressNotOurs,
                       {{"model", e->name}, {"path", info.dir.string()}});
   }
@@ -2800,7 +3063,7 @@ Controller::compress_model(const std::string& model_id, int bits,
   const auto est = compress_estimate_(*e, info.dir, bits);
   constexpr std::uint64_t kSpare = 2'000'000'000ULL;
   std::error_code ec;
-  const auto space = fs::space(root, ec);
+  const auto space = fs::space(_store->download_root(), ec);
   if (!ec && space.available < est.written + kSpare) {
     return make_error(Code::Io, msg::kCompressNoRoom,
                       {{"model", e->name},
@@ -3028,8 +3291,8 @@ Controller::delete_original_(const models::ModelEntry& e,
                     ec.message());
     return false;
   }
-  // Its folders left empty, up to the models folder.
-  const fs::path root = _store->download_root();
+  // Its folders left empty, up to the models folder it is in.
+  const fs::path root = _store->own_root_of(original);
   for (fs::path up = original.parent_path();
        inside(up, root) && up != root && fs::is_empty(up, ec);
        up = up.parent_path()) {
@@ -3166,7 +3429,7 @@ Controller::keep_compressed(const std::string& model_id, bool compressed)
 std::uint64_t
 Controller::discard_download_(const models::ModelEntry& e)
 {
-  const fs::path root = _store->download_root().lexically_normal();
+  const fs::path root = download_base_(e).lexically_normal();
   const fs::path repo = (root / e.hf_path).lexically_normal();
   // Never the models folder itself, nor anything outside it: a link's
   // files and vpipe's folders are not a download of Valtz's.
@@ -8047,6 +8310,14 @@ Controller::on_export_event_(const engine::JobEvent& ev)
 Status
 Controller::cancel(JobId id)
 {
+  // A folder being moved: it stops copying, the move undone.
+  {
+    std::lock_guard lk(_paths_mu);
+    if (!id.is_nil() && id == _moving) {
+      _moving_stop = true;
+      return ok_status();
+    }
+  }
   // Waiting for a download: it waits no more.
   std::optional<Waiting> w;
   bool held = false;

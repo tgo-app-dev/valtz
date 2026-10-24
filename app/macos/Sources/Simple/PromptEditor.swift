@@ -124,6 +124,9 @@ final class PromptTextView: NSTextView {
     var onAssetsDropped: (([String]) -> [UUID])?
     /// The stage dragged in: what it shows, captured and staged.
     var onStageDropped: (() -> Void)?
+    /// What a drag from outside makes a file of -- a browser's or Photos'
+    /// picture, an app's bytes, a link to media (DroppedMedia): staged.
+    var onMediaTaken: ((DroppedMedia.Intake) -> Void)?
 
     /// A drag from the stage.
     static func draggedStage(_ pb: NSPasteboard) -> Bool {
@@ -146,6 +149,7 @@ final class PromptTextView: NSTextView {
     private func carriesMedia(_ pb: NSPasteboard) -> Bool {
         Self.draggedReference(pb) != nil || Self.draggedAsset(pb) != nil
             || Self.draggedStage(pb) || !Self.fileURLs(pb).isEmpty
+            || DroppedMedia.peek(pb, links: .media).made > 0
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -203,7 +207,14 @@ final class PromptTextView: NSTextView {
         }
         let urls = Self.fileURLs(pb)
         guard !urls.isEmpty else {
-            return super.performDragOperation(sender)
+            // A link to a page is words; to a picture, a clip or a sound,
+            // media, as a browser's picture, Photos' or an app's bytes.
+            let intake = DroppedMedia.take(pb, links: .media)
+            guard intake.makes, let taken = onMediaTaken else {
+                return super.performDragOperation(sender)
+            }
+            taken(intake)
+            return true
         }
         _ = onFilesDropped?(urls)
         return true
@@ -631,6 +642,11 @@ final class KnobScroller: NSScroller {
 final class PromptScrollView: NSScrollView {
     private var text: PromptTextView? { documentView as? PromptTextView }
 
+    /// Whether it takes the keyboard as it appears now: not as view only
+    /// ends (AppModel.promptKeepsOffKeyboard) -- Tab, which ended it, is
+    /// the next Tab's to toggle again, not a tab typed in the box.
+    var takesKeyboard: () -> Bool = { true }
+
     /// Typing goes to the prompt when it appears -- not to the first text
     /// field AppKit's key-view loop finds, which was one in the closed
     /// generation drawer.
@@ -639,7 +655,8 @@ final class PromptScrollView: NSScrollView {
         guard let window else { return }
         window.initialFirstResponder = documentView
         DispatchQueue.main.async { [weak self, weak window] in
-            guard let self, let window, self.window === window else { return }
+            guard let self, let window, self.window === window,
+                  self.takesKeyboard() else { return }
             window.makeFirstResponder(self.documentView)
         }
     }
@@ -681,7 +698,7 @@ struct PromptMargin: NSViewRepresentable {
 
         override init(frame: NSRect) {
             super.init(frame: frame)
-            registerForDraggedTypes([.fileURL, .string])
+            registerForDraggedTypes(DroppedMedia.pasteboardTypes)
         }
 
         required init?(coder: NSCoder) { fatalError("not used") }
@@ -1100,7 +1117,7 @@ struct PromptEditor: NSViewRepresentable {
                                .paragraphStyle: Self.latinParagraph]
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
-        tv.registerForDraggedTypes([.fileURL, .string])
+        tv.registerForDraggedTypes(DroppedMedia.pasteboardTypes)
         tv.onDropTargeted = { t in
             DispatchQueue.main.async { dropTargeted = t }
         }
@@ -1113,6 +1130,7 @@ struct PromptEditor: NSViewRepresentable {
         }
         tv.onAssetsDropped = { ids in model.addAssetReferences(ids) }
         tv.onStageDropped = { model.addStageToPrompt() }
+        tv.onMediaTaken = { model.stageDropped($0) }
         tv.mentionImage = { id in Self.mentionImage(id, model) }
         tv.refTagImage = { kind, index in
             Self.refTagImage(kind, index, model)
@@ -1127,9 +1145,11 @@ struct PromptEditor: NSViewRepresentable {
             coordinator.measure()
         }
         model.promptTextView = tv
+        model.promptBox = tv
         context.coordinator.textView = tv
 
         let scroll = PromptScrollView()
+        scroll.takesKeyboard = { !model.promptKeepsOffKeyboard }
         scroll.documentView = tv
         scroll.drawsBackground = false
         scroll.automaticallyAdjustsContentInsets = false
@@ -1140,7 +1160,7 @@ struct PromptEditor: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
-        scroll.registerForDraggedTypes([.fileURL, .string])
+        scroll.registerForDraggedTypes(DroppedMedia.pasteboardTypes)
         context.coordinator.scrollView = scroll
         context.coordinator.wasCompact = compact
         return scroll

@@ -233,6 +233,127 @@ TEST(workspace, undo_redo_coalesce_and_join)
   CHECK(w.dirty());
 }
 
+// A LARGE record's history kept COMPACT (project/undo.h): a markup of
+// 3000 objects moved one at a time keeps, for each command but the last,
+// the bytes that changed -- the undo table a fraction of whole copies --
+// undone and redone to the byte, resumed from disk, and refused where the
+// record was changed outside any command since. Its blobs found from the
+// bytes, without decoding them.
+TEST(workspace, a_large_records_history_is_kept_compact)
+{
+  const fs::path root = test::temp_dir("ws-compact");
+  const fs::path pkg = root / "C.valtz";
+  const fs::path work = root / "work";
+  auto made = Workspace::create(pkg, "C", work);
+  REQUIRE_OK(made);
+  Project& p = (*made)->project();
+  Json objects = Json::array();
+  for (int i = 0; i < 3000; ++i) {
+    objects.push_back({{"id", "o" + std::to_string(i)}, {"kind", "rect"},
+                       {"x0", i}, {"y0", 2 * i}, {"x1", i + 40},
+                       {"y1", 2 * i + 30}, {"width", 2}});
+  }
+  Asset m;
+  m.name = "markup";
+  m.kind = AssetKind::Image;
+  m.cls = AssetClass::Markup;
+  m.markup = Markup{};
+  m.markup->width = 4000;
+  m.markup->height = 7000;
+  m.markup->objects = objects;
+  AssetId id;
+  {
+    auto cmd = (*made)->undo().command("markup.layer");
+    auto a = p.add_asset(std::move(m));
+    REQUIRE_OK(a);
+    id = a->id;
+  }
+  auto x_of = [&](Project& pr, int k) {
+    auto a = pr.asset(id);
+    return a.ok() ? a->markup->objects[k]["x0"].get<double>() : -1.0;
+  };
+  auto table_bytes = [&](Project& pr) {
+    std::size_t n = 0;
+    (void)pr.env().read([&](db::Txn& txn) -> Status {
+      return db::for_each_prefix(txn, pr.undo_table(), {},
+          [&](const db::Cursor::Entry& e) {
+            n += e.value.size();
+            return true;
+          });
+    });
+    return n;
+  };
+  // Ten moves, each a command (another kind between: no coalescing).
+  for (int k = 0; k < 10; ++k) {
+    auto cmd = (*made)->undo().command(
+        k % 2 ? "markup.align" : "markup.arrange", {}, id.str(), "");
+    REQUIRE_OK(p.update_asset(id, [&](Asset& a) {
+      a.markup->objects[100 * k]["x0"] = 5000.5 + k;
+      return ok_status();
+    }));
+  }
+  const std::size_t whole = to_cbor(Json(*p.asset(id))).size();
+  CHECK(whole > 100000);
+  // The add keeps its record whole (one copy: nothing before it); the
+  // ten moves a few hundred bytes each, the last stored so too (whole in
+  // memory alone) -- not twenty copies more.
+  CHECK(table_bytes(p) < whole + 10 * 1024);
+  // An object moved to the top -- out of its place, onto the end: a
+  // window each, not two copies.
+  const std::size_t had = table_bytes(p);
+  {
+    auto cmd = (*made)->undo().command("markup.arrange", {}, id.str(), "");
+    REQUIRE_OK(p.update_asset(id, [&](Asset& a) {
+      auto& os = a.markup->objects;
+      Json o = os[50];
+      os.erase(os.begin() + 50);
+      os.push_back(std::move(o));
+      return ok_status();
+    }));
+  }
+  CHECK(table_bytes(p) < had + 4 * 1024);
+  REQUIRE_OK((*made)->undo().undo());
+  CHECK(p.asset(id)->markup->objects[50]["id"] == "o50");
+  CHECK(x_of(p, 900) == 5009.5);
+  for (int k = 9; k >= 0; --k) {
+    REQUIRE_OK((*made)->undo().undo());
+    CHECK(x_of(p, 100 * k) == 100 * k);
+  }
+  for (int k = 0; k < 10; ++k) {
+    REQUIRE_OK((*made)->undo().redo());
+  }
+  CHECK(x_of(p, 900) == 5009.5);
+  CHECK(x_of(p, 0) == 5000.5);
+  // Resumed from disk: the compact history read back, undone.
+  REQUIRE_OK((*made)->close(false));
+  made->reset();
+  WorkspaceReport report;
+  auto again = Workspace::open(pkg, work, &report);
+  REQUIRE_OK(again);
+  Project& q = (*again)->project();
+  REQUIRE_OK((*again)->undo().undo());
+  CHECK(x_of(q, 900) == 900);
+  REQUIRE_OK((*again)->undo().undo());
+  CHECK(x_of(q, 800) == 800);
+  // Changed outside any command: the next compact step refused, the
+  // record left as it is.
+  REQUIRE_OK(q.update_asset(id, [&](Asset& a) {
+    a.markup->objects[1]["x0"] = 7.25;
+    return ok_status();
+  }));
+  CHECK(!(*again)->undo().undo().ok());
+  CHECK(x_of(q, 700) == 5007.5);
+  CHECK(x_of(q, 1) == 7.25);
+  // Blobs from the bytes: a BlobRef's hash, nested, found; a short one not.
+  std::set<std::string> found;
+  const std::string h(64, 'a');
+  blobs_in_cbor(to_cbor(Json{{"raster", {{"ext", "png"}, {"hash", h},
+                                         {"size", 9}}},
+                             {"x", {{"hash", "abc"}}}}),
+                found);
+  CHECK(found.size() == 1 && found.count(h) == 1);
+}
+
 // A file from a Valtz with extensions this one lacks -- or a newer one --
 // opens, and its unknown parts are written back at the next save.
 TEST(workspace, unknown_parts_are_kept)

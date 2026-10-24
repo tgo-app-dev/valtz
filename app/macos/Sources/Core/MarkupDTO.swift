@@ -201,6 +201,32 @@ struct MarkupGradient: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+/// A CONNECTOR (core media/markup.h): a point on an object's outline
+/// that another line's or path's points anchor to -- on segment `seg`
+/// (a line's one, a rectangle's four from (x0, y0) clockwise, a path's
+/// pieces; an ellipse's one) at `t` along it (an ellipse's a fraction of
+/// a turn from its right, clockwise).
+struct MarkupConnector: Codable, Equatable, Hashable, Sendable {
+    var id: String
+    var seg: Int
+    var t: Double
+
+    var json: [String: Any] { ["id": id, "seg": seg, "t": t] }
+}
+
+/// An ANCHORED point (core media/markup.h): a line's end -- 0 its start,
+/// 1 its end -- or a path's point `point`, lying on connector `connector`
+/// of object `to`, another of its markup's: where that one goes, it goes.
+struct MarkupAnchor: Codable, Equatable, Hashable, Sendable {
+    var point: Int
+    var to: String
+    var connector: String
+
+    var json: [String: Any] {
+        ["point": point, "to": to, "connector": connector]
+    }
+}
+
 /// A vector object on a markup layer (core media/markup.h): canvas
 /// pixels, top-left origin. A line runs (x0, y0) -> (x1, y1); a rectangle
 /// or ellipse fills that box; a text starts at (x0, y0), its top-left.
@@ -264,12 +290,33 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
     var gradient: MarkupGradient?
     /// A lifted drawing's picture: its blob, as the core keeps it.
     var image: DrawingImage?
+    /// Its CONNECTORS (a line, a rectangle, an ellipse, a path) and its
+    /// points ANCHORED to others' (a line, a path) -- core media/markup.h.
+    var connectors: [MarkupConnector] = []
+    var anchors: [MarkupAnchor] = []
+    /// A shape's WORDS' colour (its `text`, `font`, `align` and
+    /// `lineSpacing` as a text box's): nil, black.
+    var textColor: RGBA?
 
     /// Shapes with an inside: a fill or a gradient goes there (an open
     /// path has none).
     var fillable: Bool {
         kind == .rect || kind == .ellipse || (kind == .polygon && !open)
     }
+
+    /// It holds WORDS: a text, or a shape with an inside (core
+    /// media/markup.h: a rectangle's, an ellipse's, a closed path's).
+    var takesWords: Bool { kind == .text || fillable }
+
+    /// A shape holding words now.
+    var shapeWithWords: Bool { fillable && !text.isEmpty }
+
+    /// It takes connectors; its points take anchors.
+    var takesConnectors: Bool {
+        kind == .line || kind == .rect || kind == .ellipse
+            || kind == .polygon
+    }
+    var takesAnchors: Bool { kind == .line || kind == .polygon }
 
     /// A line or an outline: it takes dashes (a text, a drawing none).
     var dashable: Bool {
@@ -288,7 +335,7 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
         case id, kind, x0, y0, x1, y1, stroke, fill, width, text, font, box
         case align, effects, lineSpacing, paragraphSpacing, justifyLast
         case points, smooth, open, gradient, image, dash, arrows
-        case rotate, flipX, flipY
+        case rotate, flipX, flipY, connectors, anchors, textColor
     }
 
     init(id: String, kind: Kind, x0: Double, y0: Double, x1: Double,
@@ -352,6 +399,13 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
         flipY = ((try? c.decodeIfPresent(Bool.self, forKey: .flipY)) ?? nil)
             ?? false
         if gradient.map({ $0.stops.count < 2 }) ?? false { gradient = nil }
+        connectors = ((try? c.decodeIfPresent([MarkupConnector].self,
+                                              forKey: .connectors))
+            ?? nil) ?? []
+        anchors = ((try? c.decodeIfPresent([MarkupAnchor].self,
+                                           forKey: .anchors)) ?? nil) ?? []
+        textColor = (try? c.decodeIfPresent(RGBA.self, forKey: .textColor))
+            ?? nil
         if var arr = try? c.nestedUnkeyedContainer(forKey: .effects) {
             while !arr.isAtEnd {
                 if let e = try? arr.decode(MarkupEffect.self) {
@@ -382,6 +436,19 @@ struct MarkupObject: Codable, Equatable, Hashable, Sendable, Identifiable {
                 j["paragraph_spacing"] = paragraphSpacing
             }
             if justifyLast { j["justify_last"] = true }
+        } else if fillable && !text.isEmpty {
+            // A shape's words, set in it.
+            j["text"] = text
+            j["font"] = font.json
+            if let align { j["align"] = align }
+            if let lineSpacing { j["line_spacing"] = lineSpacing }
+            if let textColor { j["text_color"] = textColor.json }
+        }
+        if takesConnectors && !connectors.isEmpty {
+            j["connectors"] = connectors.map(\.json)
+        }
+        if takesAnchors && !anchors.isEmpty {
+            j["anchors"] = anchors.map(\.json)
         }
         if !effects.isEmpty { j["effects"] = effects.map(\.json) }
         if kind == .polygon {
@@ -416,7 +483,9 @@ struct DrawingImage: Codable, Hashable, Sendable {
 }
 
 /// A markup layer's content (core project::Markup): whether anything is
-/// painted on it, and its objects.
+/// painted on it, and its objects -- with the asset list only up to a few
+/// hundred (the bridge's assets_json): past that `stamp` and `count`
+/// alone, the objects the app's own copy of them (AppModel.markupCopies).
 struct MarkupDTO: Decodable, Sendable, Hashable {
     /// The painted raster's content hash; "" with nothing painted.
     var raster: String
@@ -424,8 +493,15 @@ struct MarkupDTO: Decodable, Sendable, Hashable {
     /// Its size (a markup asset's); 0: the frame it is drawn on.
     var w = 0
     var h = 0
+    /// Its objects' stamp (the core's objects_stamp) and how many; and
+    /// whether they came with it.
+    var stamp = ""
+    var count = 0
+    var inline = true
 
-    private enum K: String, CodingKey { case raster, objects, w, h }
+    private enum K: String, CodingKey {
+        case raster, objects, w, h, stamp, count
+    }
     private struct Blob: Decodable { var hash: String? }
 
     init(from d: Decoder) throws {
@@ -444,6 +520,11 @@ struct MarkupDTO: Decodable, Sendable, Hashable {
             }
         }
         objects = list
+        inline = c.contains(.objects)
+        stamp = (try? c.decodeIfPresent(String.self, forKey: .stamp))
+            .flatMap { $0 } ?? ""
+        count = (try? c.decodeIfPresent(Int.self, forKey: .count))
+            .flatMap { $0 } ?? list.count
         w = (try? c.decodeIfPresent(Int.self, forKey: .w)).flatMap { $0 }
             ?? 0
         h = (try? c.decodeIfPresent(Int.self, forKey: .h)).flatMap { $0 }

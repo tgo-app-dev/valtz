@@ -280,6 +280,18 @@ public:
   }
 
   Json
+  memory_held() override
+  {
+    // Under _mu, as `_stop` is set: the session is destroyed only after
+    // it, so it is never read while it goes.
+    std::lock_guard lk(_mu);
+    if (_stop || _session == nullptr) {
+      return Json::object();
+    }
+    return vp::from_flex(_session->memory_report());
+  }
+
+  Json
   gpu_thermal(int window_ms) override
   {
     return vp::from_flex(vpipe::SystemMonitor::gpu_thermal(window_ms));

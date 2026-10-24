@@ -12,8 +12,10 @@
 #include <array>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace valtz::project {
@@ -87,6 +89,14 @@ check_local_volume(const fs::path& path)
 }
 
 // ---- open / create ----------------------------------------------------
+
+struct Project::Texts {
+  std::mutex                                   mu;
+  std::unordered_map<std::string, std::string> kept;
+  std::size_t                                  bytes = 0;
+};
+
+Project::Project() : _texts(std::make_unique<Texts>()) {}
 
 Project::~Project() = default;
 
@@ -245,7 +255,41 @@ Project::get_asset_(const db::Txn& txn, AssetId id) const
   if (!j) {
     return std::optional<Asset>{};
   }
-  return std::optional<Asset>{j->get<Asset>()};
+  // A markup's objects moved out of the record, not copied (a page of
+  // thousands of them).
+  Json objects;
+  bool moved = false;
+  if (auto m = j->find("markup"); m != j->end() && m->is_object()) {
+    if (auto o = m->find("objects"); o != m->end() && o->is_array()) {
+      objects = std::move(*o);
+      *o = Json::array();
+      moved = true;
+    }
+  }
+  Asset a = j->get<Asset>();
+  if (moved && a.markup) {
+    a.markup->objects = std::move(objects);
+  }
+  return std::optional<Asset>{std::move(a)};
+}
+
+Status
+Project::put_asset_(db::Txn& txn, Asset& a) const
+{
+  Json objects;
+  if (a.markup) {
+    objects = std::move(a.markup->objects);
+    a.markup->objects = Json::array();
+  }
+  Json j = a;
+  if (a.markup) {
+    j["markup"]["objects"] = std::move(objects);
+  }
+  Status st = put_cbor(txn, _db.assets, id_key(a.id), j);
+  if (a.markup) {
+    a.markup->objects = std::move(j["markup"]["objects"]);
+  }
+  return st;
 }
 
 Result<std::optional<AssetVersion>>
@@ -280,7 +324,7 @@ Project::append_version_(db::Txn& txn, Asset& a, AssetVersion& v)
                      Json(v)));
   a.head = v.number;
   a.modified_ms = v.created_ms;
-  VALTZ_TRY(put_cbor(txn, _db.assets, id_key(a.id), Json(a)));
+  VALTZ_TRY(put_asset_(txn, a));
   return v.number;
 }
 
@@ -398,7 +442,7 @@ Project::refresh_link(AssetId id)
       return ok_status();
     }
     a->modified_ms = now_ms();
-    return put_cbor(txn, _db.assets, id_key(id), Json(*a));
+    return put_asset_(txn, *a);
   }));
   VALTZ_LOG_INFO("project", "linked source {} {}{}", chk.path.string(),
                  to_str(chk.state), fresh ? " -> new version" : "");
@@ -549,7 +593,7 @@ Project::rename_asset(AssetId id, std::string name)
     }
     a->name = name;
     a->modified_ms = now_ms();
-    return put_cbor(txn, _db.assets, id_key(id), Json(*a));
+    return put_asset_(txn, *a);
   });
 }
 
@@ -563,7 +607,7 @@ Project::set_modifiers(AssetId id, std::vector<Modifier> mods)
     }
     a->modifiers = std::move(mods);
     a->modified_ms = now_ms();
-    return put_cbor(txn, _db.assets, id_key(id), Json(*a));
+    return put_asset_(txn, *a);
   });
 }
 
@@ -578,7 +622,7 @@ Project::set_layers(AssetId id, std::vector<Layer> layers)
     a->layers = std::move(layers);
     tidy_layer_folders(*a);
     a->modified_ms = now_ms();
-    return put_cbor(txn, _db.assets, id_key(id), Json(*a));
+    return put_asset_(txn, *a);
   });
 }
 
@@ -591,16 +635,28 @@ Project::update_asset(AssetId id,
     if (!a) {
       return make_error(Code::NotFound, "no such asset");
     }
-    Asset b = *a;
+    // Moved, not copied (a markup of thousands); what the edit may not
+    // change kept apart.
+    const AssetId aid = a->id;
+    const AssetKind kind = a->kind;
+    const auto head = a->head;
+    const RecipeId recipe = a->recipe;
+    const Origin origin = a->origin;
+    const std::string stamp = a->markup ? a->markup->stamp : std::string();
+    Asset b = std::move(*a);
     VALTZ_TRY(edit(b));
     tidy_layer_folders(b);
-    b.id = a->id;
-    b.kind = a->kind;
-    b.head = a->head;
-    b.recipe = a->recipe;
-    b.origin = a->origin;
+    b.id = aid;
+    b.kind = kind;
+    b.head = head;
+    b.recipe = recipe;
+    b.origin = origin;
     b.modified_ms = now_ms();
-    return put_cbor(txn, _db.assets, id_key(id), Json(b));
+    // A markup written: a new stamp, unless the edit gave one.
+    if (b.markup && b.markup->stamp == stamp) {
+      b.markup->stamp = Markup::fresh_stamp();
+    }
+    return put_asset_(txn, b);
   });
 }
 
@@ -611,11 +667,14 @@ Project::add_asset(Asset a, std::size_t max_name_bytes)
   a.origin = Origin::Source;
   a.head = 0;
   a.recipe = RecipeId{};
+  if (a.markup) {
+    a.markup->stamp = Markup::fresh_stamp();
+  }
   a.created_ms = now_ms();
   a.modified_ms = a.created_ms;
   VALTZ_TRY(_env->write([&](db::Txn& txn) -> Status {
     VALTZ_ASSIGN(a.name, unique_name_(txn, a.name, max_name_bytes));
-    return put_cbor(txn, _db.assets, id_key(a.id), Json(a));
+    return put_asset_(txn, a);
   }));
   return a;
 }
@@ -672,7 +731,7 @@ Project::set_canvas(AssetId id, const media::StackCanvas& canvas)
     }
     a->canvas = canvas;
     a->modified_ms = now_ms();
-    return put_cbor(txn, _db.assets, id_key(id), Json(*a));
+    return put_asset_(txn, *a);
   });
 }
 
@@ -686,7 +745,7 @@ Project::set_timeline(AssetId id, std::int64_t frames)
     }
     a->timeline_frames = std::max<std::int64_t>(0, frames);
     a->modified_ms = now_ms();
-    return put_cbor(txn, _db.assets, id_key(id), Json(*a));
+    return put_asset_(txn, *a);
   });
 }
 
@@ -695,19 +754,25 @@ Project::media_path(AssetId id, std::uint32_t number) const
 {
   VALTZ_ASSIGN(Asset a, asset(id));
   VALTZ_ASSIGN(AssetVersion v, version(id, number));
+  return media_path(a, v);
+}
+
+Result<fs::path>
+Project::media_path(const Asset& a, const AssetVersion& v) const
+{
   if (!v.blob.empty()) {
     return _blobs.path_of(v.blob);
   }
   if (!a.linked) {
     return make_error(Code::NotFound, "asset version has no media");
   }
-  if (number != 0 && number != a.head) {
+  if (v.number != 0 && v.number != a.head) {
     // Only the current bytes of a linked original exist anywhere.
     return make_error(Code::NotFound, std::format(
         "version {} of linked {} was replaced when the original changed",
-        number, a.name));
+        v.number, a.name));
   }
-  VALTZ_ASSIGN(LinkCheck chk, check_link(id));
+  VALTZ_ASSIGN(LinkCheck chk, check_link(a.id));
   switch (chk.state) {
   case LinkState::Ok:
   case LinkState::Relocated:
@@ -727,14 +792,42 @@ Project::media_path(AssetId id, std::uint32_t number) const
 Result<std::string>
 Project::read_text(AssetId id, std::uint32_t number) const
 {
-  VALTZ_ASSIGN(fs::path p, media_path(id, number));
+  VALTZ_ASSIGN(Asset a, asset(id));
+  VALTZ_ASSIGN(AssetVersion v, version(id, number));
+  return read_text(a, v);
+}
+
+Result<std::string>
+Project::read_text(const Asset& a, const AssetVersion& v) const
+{
+  // A blob's bytes never change: its words kept, a few megabytes of
+  // them (past that, let go all at once -- the list reads them again).
+  constexpr std::size_t kKept = std::size_t{8} << 20;
+  const std::string key = v.blob.empty() ? std::string() : v.blob.hash.hex();
+  if (!key.empty()) {
+    std::lock_guard lock(_texts->mu);
+    if (const auto at = _texts->kept.find(key); at != _texts->kept.end()) {
+      return at->second;
+    }
+  }
+  VALTZ_ASSIGN(fs::path p, media_path(a, v));
   std::ifstream in(p, std::ios::binary);
   if (!in) {
     return make_error(Code::Io, std::format("cannot read {}", p.string()));
   }
   std::ostringstream ss;
   ss << in.rdbuf();
-  return ss.str();
+  std::string text = ss.str();
+  if (!key.empty() && text.size() < kKept / 64) {
+    std::lock_guard lock(_texts->mu);
+    if (_texts->bytes + text.size() > kKept) {
+      _texts->kept.clear();
+      _texts->bytes = 0;
+    }
+    _texts->bytes += text.size();
+    _texts->kept.emplace(key, text);
+  }
+  return text;
 }
 
 // ---- derived assets ---------------------------------------------------
@@ -809,7 +902,7 @@ Project::define_derived(std::string name, AssetKind kind, Recipe r,
       }
     }
     VALTZ_TRY(put_cbor(txn, _db.recipes, id_key(r.id), Json(r)));
-    VALTZ_TRY(put_cbor(txn, _db.assets, id_key(a.id), Json(a)));
+    VALTZ_TRY(put_asset_(txn, a));
     for (const auto& in : r.inputs) {
       VALTZ_TRY(txn.put(_db.dependents, id_key(in.asset), id_key(a.id),
                         /*unique=*/false));
@@ -867,7 +960,7 @@ Project::set_recipe(AssetId id, Recipe r)
     }
     a->recipe = r.id;
     a->modified_ms = r.created_ms;
-    return put_cbor(txn, _db.assets, id_key(id), Json(*a));
+    return put_asset_(txn, *a);
   });
 }
 
@@ -1040,7 +1133,7 @@ Project::set_asset_folder(AssetId id, std::string folder)
       return make_error(Code::NotFound, "no such asset");
     }
     a->folder = std::move(folder);
-    return put_cbor(txn, _db.assets, id_key(id), Json(*a));
+    return put_asset_(txn, *a);
   });
 }
 

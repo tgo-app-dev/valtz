@@ -707,21 +707,10 @@ private struct GeneralSettings: View {
                         .settingsMark(String(localized: "This Mac"))
                 }
             }
-            if let p = model.paths {
+            if model.locations != nil {
+                // Each folder put elsewhere here (StorageLocations).
                 Section {
-                    location("Projects", p.projects)
-                        .settingsMark(String(localized: "Projects"))
-                    location("Models", p.models)
-                        .settingsMark(String(localized: "Models"))
-                    location("Cache", p.cache,
-                             detail: ByteCountFormatter.string(
-                                fromByteCount: p.cacheBytes, countStyle: .file)
-                                + " of "
-                                + ByteCountFormatter.string(
-                                    fromByteCount: p.cacheBudgetBytes,
-                                    countStyle: .file)
-                                + (p.cacheInternal ? "" : " — not on the internal SSD"))
-                        .settingsMark(String(localized: "Cache"))
+                    StorageLocationRows(model: model)
                 } header: {
                     Text("Storage")
                         .settingsMark(String(localized: "Storage"))
@@ -738,23 +727,4 @@ private struct GeneralSettings: View {
         .formStyle(.grouped)
     }
 
-    private func location(_ title: String, _ path: String,
-                          detail: String? = nil) -> some View {
-        LabeledContent(title) {
-            HStack {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(path).lineLimit(1).truncationMode(.middle)
-                    if let detail {
-                        Text(detail).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Button {
-                    NSWorkspace.shared.selectFile(
-                        nil, inFileViewerRootedAtPath: path)
-                } label: { Image(systemName: "arrow.right.circle") }
-                    .buttonStyle(.borderless)
-                    .help("Show in Finder")
-            }
-        }
-    }
 }

@@ -29,7 +29,7 @@ extension AppModel {
     /// yet, so it records.
     var captureTarget: AssetDTO? {
         guard clipOnStage, let id = stageAssetId,
-              let c = assets.first(where: { $0.id == id }),
+              let c = asset(id: id),
               c.isTimeline, c.kind == "audio",
               (c.layers ?? []).allSatisfy(\.isEmpty) else { return nil }
         return c
@@ -216,16 +216,8 @@ struct CaptureOverlay: View {
                     .allowsHitTesting(false)
             }
         }
-        .dropDestination(for: URL.self) { urls, _ in
-            if let id = AppModel.draggedAssets(urls).first {
-                return model.dropAssetOnStage(id)
-            }
-            return model.dropFilesOnStage(urls.filter(\.isFileURL))
-        } isTargeted: { dropTargeted = $0 }
-        .dropDestination(for: String.self) { items, _ in
-            items.compactMap { AppModel.draggedAsset($0) }
-                .first.map { model.dropAssetOnStage($0) } ?? false
-        } isTargeted: { dropTargeted = $0 }
+        .onDrop(of: DroppedMedia.dropTypes,
+                delegate: StageDrop(model: model, targeted: $dropTargeted))
         .onAppear { model.refreshCaptureSources() }
     }
 }

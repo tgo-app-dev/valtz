@@ -249,12 +249,16 @@ private struct HintPlacement: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
                        subviews: Subviews, cache: inout ()) {
         let n = min(subviews.count, anchors.count)
+        let rects = (0..<n).map {
+            anchors[$0].offsetBy(dx: bounds.minX, dy: bounds.minY)
+        }
+        let rows = Self.rows(rects)
         var frames: [CGRect] = (0..<n).map { i in
-            let a = anchors[i].offsetBy(dx: bounds.minX, dy: bounds.minY)
+            let a = rects[i], row = rows[i]
             let size = subviews[i].sizeThatFits(.unspecified)
-            var y = a.maxY - 4
+            var y = row.maxY - 4
             if y + size.height > bounds.maxY - 4 {
-                y = a.minY - size.height + 4
+                y = row.minY - size.height + 4
             }
             return CGRect(x: a.midX - size.width / 2, y: y,
                           width: size.width, height: size.height)
@@ -284,6 +288,38 @@ private struct HintPlacement: Layout {
             subviews[i].place(at: CGPoint(x: x, y: f.minY),
                               anchor: .topLeading, proposal: .unspecified)
         }
+    }
+
+    /// Each button's ROW, as its label goes under it: the buttons centred
+    /// alike and side by side, its neighbours' and theirs, one span from
+    /// the highest top to the lowest foot -- their labels on one line.
+    /// A menu's frame is not a button's of the same glyph: the prompt
+    /// box's paperclip label hung lower than the Prompt Editor button's
+    /// beside it.
+    private static func rows(_ rects: [CGRect]) -> [CGRect] {
+        func sideBySide(_ a: CGRect, _ b: CGRect) -> Bool {
+            abs(a.midY - b.midY) <= 3
+                && max(a.minX, b.minX) - min(a.maxX, b.maxX) <= 16
+        }
+        var rows = rects
+        for _ in rects.indices {
+            var grew = false
+            for i in rects.indices {
+                for j in rects.indices
+                    where j != i && sideBySide(rects[i], rects[j]) {
+                    let top = min(rows[i].minY, rows[j].minY)
+                    let foot = max(rows[i].maxY, rows[j].maxY)
+                    if top < rows[i].minY || foot > rows[i].maxY {
+                        rows[i] = CGRect(x: rows[i].minX, y: top,
+                                         width: rows[i].width,
+                                         height: foot - top)
+                        grew = true
+                    }
+                }
+            }
+            if !grew { break }
+        }
+        return rows
     }
 }
 

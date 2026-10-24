@@ -1,7 +1,9 @@
 #include "valtz/models/model-store.h"
 
 #include "valtz/base/json.h"
+#include "valtz/base/paths.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <format>
 #include <fstream>
@@ -21,8 +23,12 @@ to_str(InstallState s)
   return "?";
 }
 
-ModelStore::ModelStore(std::vector<fs::path> roots, fs::path links_file)
-  : _roots(std::move(roots)), _links_file(std::move(links_file))
+ModelStore::ModelStore(std::vector<fs::path> roots, fs::path links_file,
+                       std::size_t owned)
+  : _roots(std::move(roots)),
+    _owned(std::clamp<std::size_t>(owned, 1, std::max<std::size_t>(
+                                                 _roots.size(), 1))),
+    _links_file(std::move(links_file))
 {
   if (_links_file.empty()) {
     return;
@@ -207,18 +213,101 @@ ModelStore::scan_link_(const ModelEntry& e, const fs::path& target) const
 }
 
 std::vector<fs::path>
-ModelStore::default_roots(const fs::path& primary)
+ModelStore::default_roots(const fs::path& primary,
+                          const std::vector<fs::path>& kept)
 {
   std::vector<fs::path> out{primary};
+  auto listed = [&out](const fs::path& p) {
+    return std::ranges::any_of(out, [&p](const fs::path& q) {
+      return q.lexically_normal() == p.lexically_normal();
+    });
+  };
+  for (const auto& k : kept) {
+    if (!listed(k)) {
+      out.push_back(k);
+    }
+  }
   const char* home = std::getenv("HOME");
   fs::path h = home ? fs::path(home) : fs::path("/tmp");
   std::error_code ec;
   for (auto p : {h / "vpipe/models", h / "dump/vpipe-test/models"}) {
-    if (fs::is_directory(p, ec)) {
+    if (fs::is_directory(p, ec) && !listed(p)) {
       out.push_back(p);
     }
   }
   return out;
+}
+
+std::vector<fs::path>
+ModelStore::roots() const
+{
+  std::lock_guard lk(_mu);
+  return _roots;
+}
+
+fs::path
+ModelStore::download_root() const
+{
+  std::lock_guard lk(_mu);
+  return _roots.front();
+}
+
+std::vector<fs::path>
+ModelStore::owned_roots() const
+{
+  std::lock_guard lk(_mu);
+  return {_roots.begin(), _roots.begin() + static_cast<std::ptrdiff_t>(
+                                               _owned)};
+}
+
+fs::path
+ModelStore::own_root_of(const fs::path& p) const
+{
+  for (const auto& r : owned_roots()) {
+    if (path_within(p, r)) {
+      return r;
+    }
+  }
+  return {};
+}
+
+void
+ModelStore::set_roots(std::vector<fs::path> roots, std::size_t owned)
+{
+  if (roots.empty()) {
+    return;
+  }
+  std::lock_guard lk(_mu);
+  _roots = std::move(roots);
+  _owned = std::clamp<std::size_t>(owned, 1, _roots.size());
+  _cache.clear();
+}
+
+void
+ModelStore::rebase(const fs::path& from, const fs::path& to)
+{
+  auto moved = [&](fs::path& p) {
+    if (!path_within(p, from)) {
+      return false;
+    }
+    p = to / p.lexically_normal().lexically_relative(
+                 from.lexically_normal());
+    return true;
+  };
+  std::lock_guard lk(_mu);
+  bool any = false;
+  for (auto& [id, p] : _links) {
+    any = moved(p) || any;
+  }
+  for (auto& [id, parts] : _part_links) {
+    for (auto& [part, p] : parts) {
+      any = moved(p) || any;
+    }
+  }
+  if (any) {
+    save_links_();
+  }
+  _cache.clear();
 }
 
 fs::path
@@ -233,6 +322,16 @@ ModelStore::compressed_dir(const std::string& id, int bits) const
   return download_root() / "compressed" / std::format("{}-{}bit", id, bits);
 }
 
+namespace {
+
+fs::path
+compressed_in(const fs::path& root, const std::string& id, int bits)
+{
+  return root / "compressed" / std::format("{}-{}bit", id, bits);
+}
+
+}
+
 InstallInfo
 ModelStore::scan_(const ModelEntry& e) const
 {
@@ -242,24 +341,35 @@ ModelStore::scan_(const ModelEntry& e) const
   }
   // Compressed: the copy that replaced its download, whole (marked last,
   // once it passed its check).
+  // In any folder of Valtz's own: the models folder, or one kept after
+  // it moved.
+  std::vector<fs::path> roots;
+  std::size_t owned = 1;
+  {
+    std::lock_guard lk(_mu);
+    roots = _roots;
+    owned = _owned;
+  }
   InstallInfo copy;
   Json mark;
-  for (const int bits : {8, 4}) {
-    const fs::path d = compressed_dir(e.id, bits);
-    std::ifstream in(d / kCompressedMarker);
-    const Json m = in ? Json::parse(in, nullptr, false) : Json();
-    if (!m.is_object() || jget<std::string>(m, "model", "") != e.id) {
-      continue;
-    }
-    InstallInfo info = scan_dir_(e, d, InstallInfo{});
-    if (info.state == InstallState::Installed) {
-      info.compressed_bits = bits;
-      copy = info;
-      mark = m;
-      break;
+  for (std::size_t r = 0; r < owned && copy.compressed_bits == 0; ++r) {
+    for (const int bits : {8, 4}) {
+      const fs::path d = compressed_in(roots[r], e.id, bits);
+      std::ifstream in(d / kCompressedMarker);
+      const Json m = in ? Json::parse(in, nullptr, false) : Json();
+      if (!m.is_object() || jget<std::string>(m, "model", "") != e.id) {
+        continue;
+      }
+      InstallInfo info = scan_dir_(e, d, InstallInfo{});
+      if (info.state == InstallState::Installed) {
+        info.compressed_bits = bits;
+        copy = info;
+        mark = m;
+        break;
+      }
     }
   }
-  InstallInfo orig = scan_roots_(e);
+  InstallInfo orig = scan_roots_(e, roots);
   if (copy.compressed_bits == 0) {
     return orig;
   }
@@ -286,10 +396,11 @@ ModelStore::scan_(const ModelEntry& e) const
 
 // The roots in order: the first whole copy, else the first partial one.
 InstallInfo
-ModelStore::scan_roots_(const ModelEntry& e) const
+ModelStore::scan_roots_(const ModelEntry& e,
+                        const std::vector<fs::path>& roots) const
 {
   InstallInfo best;
-  for (const auto& root : _roots) {
+  for (const auto& root : roots) {
     fs::path dir = root / e.hf_path;
     if (!e.subdir.empty()) {
       dir /= e.subdir;

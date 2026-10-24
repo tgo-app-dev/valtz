@@ -34,32 +34,6 @@ extension AppModel {
     static let dropLog = Logger(subsystem: "com.tgous.valtz",
                                 category: "assets-drop")
 
-    /// The file a drop's item carries. The Finder writes a file REFERENCE
-    /// URL (file:///.file/id=...): read as an NSURL it comes as a path;
-    /// read from its bytes -- where no URL object came -- it is resolved.
-    static func droppedURL(_ p: NSItemProvider) async -> URL? {
-        if p.canLoadObject(ofClass: NSURL.self) {
-            let u: URL? = await withCheckedContinuation { c in
-                _ = p.loadObject(ofClass: NSURL.self) { u, _ in
-                    c.resume(returning: (u as? NSURL) as URL?)
-                }
-            }
-            if let u { return u }
-        }
-        let file = UTType.fileURL.identifier
-        guard p.hasItemConformingToTypeIdentifier(file) else { return nil }
-        return await withCheckedContinuation { c in
-            _ = p.loadDataRepresentation(forTypeIdentifier: file) { d, _ in
-                let u = d.flatMap {
-                    URL(dataRepresentation: $0, relativeTo: nil)
-                }
-                c.resume(returning: u.map {
-                    ($0 as NSURL).filePathURL ?? $0
-                })
-            }
-        }
-    }
-
     /// The asset list's rows, newest first: every asset but the project's
     /// compositions (pinned on top) -- versionless compositions (drawn)
     /// and a task's asset being made too.
@@ -84,7 +58,9 @@ extension AppModel {
     /// the window no panel takes them (`added`: said, as the list may not
     /// be in sight): imported; those in Assets already -- dropped before,
     /// or through the prompt's row -- not again, and that is said.
-    func importDropped(_ files: [URL], added: Bool = false) {
+    /// `folder`: into that folder of Assets, those there already moved.
+    func importDropped(_ files: [URL], added: Bool = false,
+                       into folder: String? = nil) {
         guard !files.isEmpty else { return }
         let known = files.filter { asset(forFile: $0) != nil }
         let missing = files.filter {
@@ -94,12 +70,99 @@ extension AppModel {
             !known.contains(f) && !missing.contains(f)
         }
         Self.dropLog.notice("files: \(files.count) (\(known.count) in Assets already, \(missing.count) not found)")
-        importFiles(fresh)
+        let job = importFiles(fresh)
+        if let folder, !folder.isEmpty {
+            for f in known {
+                if let id = asset(forFile: f)?.id { moveAsset(id, to: folder) }
+            }
+            Task { @MainActor [weak self] in
+                guard let ids = await self?.importedAssets(fresh, job: job)
+                else { return }
+                for id in ids.compactMap({ $0 }) {
+                    self?.moveAsset(id, to: folder)
+                }
+            }
+        }
         if known.count == files.count {
             flash(String(localized: "Already in Assets"))
         } else if added && !fresh.isEmpty {
             flash(String(localized: "Added to Assets"))
         }
+    }
+
+    /// A drop TAKEN into the project (DroppedMedia) -- on Assets, a
+    /// folder of it (`folder`), or the window where no panel takes it
+    /// (`added`: said, the list maybe out of sight): its files imported
+    /// -- a folder's pictures, clips and sounds, a text file's words as
+    /// a text asset -- what it made a file of (a browser's picture, an
+    /// app's bytes, a link) imported as copies, and, `words`, the words
+    /// dragged in kept as a text asset.
+    func takeIntoAssets(_ intake: DroppedMedia.Intake,
+                        into folder: String? = nil, added: Bool = false,
+                        words: Bool = false) {
+        var media: [URL] = []
+        var texts: [String] = []
+        var names: [String?] = []
+        for f in intake.files {
+            var dir: ObjCBool = false
+            let fm = FileManager.default
+            if fm.fileExists(atPath: f.path, isDirectory: &dir),
+               dir.boolValue, !Self.isProjectFile(f) {
+                media += DroppedMedia.media(in: f)
+            } else if let t = Self.textFile(f) {
+                texts.append(t)
+                names.append(f.deletingPathExtension().lastPathComponent)
+            } else {
+                media.append(f)
+            }
+        }
+        if words {
+            texts += intake.text
+            names += intake.text.map { _ in nil }
+        }
+        Self.dropLog.notice("taken into assets: \(intake.files.count) file(s) -> \(media.count) media, \(texts.count) text(s), makes \(intake.makes)")
+        importDropped(media, added: added, into: folder)
+        if !texts.isEmpty {
+            let made = addTextAssets(texts, names: names, into: folder)
+            if !made.isEmpty && media.isEmpty && (added || !intake.makes) {
+                flash(String(localized: "Added to Assets"))
+            }
+        }
+        if intake.makes {
+            Task { @MainActor [weak self] in
+                let made = await intake.made()
+                guard let self else { return }
+                if let e = intake.failed.first {
+                    self.flash(e, level: made.isEmpty ? .error : .warning)
+                }
+                self.importMade(made, into: folder) { [weak self] ids in
+                    if !ids.isEmpty {
+                        self?.flash(String(localized: "Added to Assets"))
+                    }
+                }
+            }
+        } else if media.isEmpty && texts.isEmpty && intake.files.isEmpty {
+            flash(String(localized: "Nothing in the drag to add: no picture, clip, sound or words."),
+                  level: .warning)
+        } else if media.isEmpty && texts.isEmpty {
+            flash(String(localized: "No picture, clip or sound in what was dropped."),
+                  level: .warning)
+        }
+    }
+
+    /// A TEXT file's words (plain text, Markdown; up to 1 MB of UTF-8),
+    /// for a text asset: nil for anything else.
+    nonisolated static func textFile(_ f: URL) -> String? {
+        guard let t = UTType(filenameExtension: f.pathExtension),
+              (t.conforms(to: .plainText) && !t.conforms(to: .sourceCode))
+                || ["md", "markdown"].contains(f.pathExtension.lowercased()),
+              let size = (try? f.resourceValues(forKeys: [.fileSizeKey]))?
+                  .fileSize, size <= 1 << 20,
+              let d = try? Data(contentsOf: f),
+              let s = String(data: d, encoding: .utf8),
+              !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return s
     }
 
     /// What the active project uses: the stage's asset, the prompt row's,
@@ -117,6 +180,12 @@ extension AppModel {
             }
         }
         return used
+    }
+
+    /// How many are stale (the snapshot hooks' summary).
+    var staleCount: Int {
+        let used = assetsInUse
+        return assets.filter { isStale($0, used: used) }.count
     }
 
     /// A GENERATION the project no longer uses -- replaced by another,
@@ -176,7 +245,7 @@ extension AppModel {
         guard stageAssetId == viewed else { return }
         swapStageAnimated { [weak self] in
             guard let self else { return }
-            if let back, let a = self.assets.first(where: { $0.id == back }) {
+            if let back, let a = self.asset(id: back) {
                 self.putOnStage(a)
             } else {
                 self.clearStage()
@@ -304,7 +373,7 @@ extension AppModel {
             return
         }
         reloadAssets()
-        if let a = assets.first(where: { $0.id == id }) { setActive(a) }
+        if let a = asset(id: id) { setActive(a) }
     }
 
     /// A new folder, "New Folder" (numbered past the ones there), its id.
@@ -360,7 +429,7 @@ extension AppModel {
     /// Out of the project -- refused (and said why) while it is in use.
     func removeAsset(_ id: String) {
         guard !assetsInUse.contains(id) else {
-            let name = assets.first { $0.id == id }?.name ?? ""
+            let name = asset(id: id)?.name ?? ""
             flash(String(localized: "\(name) is in use: on the stage, in the prompt, or a part of another asset."), level: .warning)
             return
         }
@@ -384,6 +453,24 @@ extension AppModel {
         if reload { reloadAssets() }
     }
 
+    /// A drag taken into the prompt -- on its row or into its words: its
+    /// files staged, what it made a file of (DroppedMedia) imported as
+    /// copies and staged as their assets once they are.
+    func stageDropped(_ intake: DroppedMedia.Intake) {
+        if !intake.files.isEmpty { addReferences(intake.files) }
+        guard intake.makes else { return }
+        Task { @MainActor [weak self] in
+            let made = await intake.made()
+            guard let self else { return }
+            if let e = intake.failed.first {
+                self.flash(e, level: made.isEmpty ? .error : .warning)
+            }
+            self.importMade(made) { [weak self] ids in
+                _ = self?.addAssetReferences(ids)
+            }
+        }
+    }
+
     /// Assets of the list into the prompt's row -- each once -- as they
     /// are (a look of their own goes with them). Their row ids, in order.
     @discardableResult
@@ -394,7 +481,7 @@ extension AppModel {
         for id in ids {
             // A composition with no file to stand in for it (a still
             // showing a clip's frame) is drawn, as the core draws it.
-            guard let a = assets.first(where: { $0.id == id }),
+            guard let a = asset(id: id),
                   let url = a.url ?? (a.isComposition && projectId != nil
                       ? core?.renderedPath(project: projectId!, asset: id)
                       : nil) else { continue }
@@ -443,7 +530,7 @@ extension AppModel {
     @discardableResult
     func dropAssetOnStage(_ id: String) -> Bool {
         guard let core, let projectId,
-              let a = assets.first(where: { $0.id == id }) else {
+              let a = asset(id: id) else {
             return false
         }
         guard a.kind == "image" || a.kind == "video" || a.kind == "audio"
@@ -470,12 +557,12 @@ extension AppModel {
         }
         reloadAssets()
         let landed = r["layer"] as? String ?? ""
-        if target != nil, let u = assets.first(where: { $0.id == held }) {
+        if target != nil, let u = asset(id: held) {
             if stageAssetId != held { putOnStage(u) }
             layersChanged()
             revealInspector(.layers)
             selectLayer(landed)
-        } else if let u = assets.first(where: { $0.id == held }) {
+        } else if let u = asset(id: held) {
             putOnStage(u)
         }
         return true
@@ -589,7 +676,10 @@ struct AssetsSection: View {
         // others -- versionless, drawn -- are listed as any asset is.
         // Being made (a task's asset, no version yet) too: T0, T1, ...
         let all = model.listedAssets
-        let stale = all.filter { model.isStale($0, used: used) }
+        // By id: a row asks of the set (of 16 000, each row asked of an
+        // array of them).
+        let stale = Set(all.filter { model.isStale($0, used: used) }
+            .map(\.id))
         // The filter: the rows whose name -- or whose folder's -- has
         // every word typed; a folder holding none is left out, the others
         // open whatever their fold.
@@ -697,7 +787,7 @@ struct AssetsSection: View {
                         }
                         ForEach(shown.filter { ($0.folder ?? "").isEmpty }) { a in
                             AssetRow(model: model, asset: a,
-                                     stale: stale.contains(a),
+                                     stale: stale.contains(a.id),
                                      used: used.contains(a.id))
                         }
                     }
@@ -714,6 +804,11 @@ struct AssetsSection: View {
                 .focusable()
                 .focused($listFocused)
                 .focusEffectDisabled()
+                // Tab is the focus's here, not view-only's.
+                .onChange(of: listFocused) { _, f in
+                    model.assetListFocused = f
+                }
+                .onDisappear { model.assetListFocused = false }
                 .onKeyPress(.escape) {
                     guard model.viewedAsset != nil else { return .ignored }
                     model.endViewing()
@@ -739,80 +834,19 @@ struct AssetsSection: View {
                     .padding(.bottom, 12)
             }
         }
-        // Files from the Finder: into the project; a row of its own: to
-        // the top of the list. The only drop destination over the list --
-        // see above.
-        .onDrop(of: Self.dropTypes, isTargeted: nil) { providers in
-            takeDrop(providers, into: "")
-        }
-    }
-
-    /// What the list and a folder's row take: files, and rows of the list
-    /// (their drag's text, "valtz-asset:<id>" -- which may come as a URL).
-    private static let dropTypes: [UTType] = [.fileURL, .url, .utf8PlainText]
-
-    /// A drop on the list -- or on a folder's row: `folder` ("" the top):
-    /// rows moved there, files from the Finder imported. One destination
-    /// takes both: AppKit hands a drag to the front destination only, and
-    /// one for rows alone in front of the files' refused every file over
-    /// the list once it had a row.
-    /// Each drop is said in the system log (AppModel.dropLog).
-    private func takeDrop(_ providers: [NSItemProvider],
-                          into folder: String) -> Bool {
-        let ours = providers.filter { p in
-            Self.dropTypes.contains {
-                p.hasItemConformingToTypeIdentifier($0.identifier)
-            }
-        }
-        guard !ours.isEmpty else {
-            let types = providers.map {
-                $0.registeredTypeIdentifiers.joined(separator: "+")
-            }.joined(separator: " ")
-            AppModel.dropLog.notice("refused: \(providers.count) item(s) of \(types, privacy: .public)")
-            return false
-        }
-        Task { @MainActor in
-            var files: [URL] = []
-            var rows = 0
-            var unread: [String] = []
-            for p in ours {
-                if let s = await Self.loadText(p),
-                   let id = AppModel.draggedAsset(s) {
-                    model.moveAsset(id, to: folder)
-                    rows += 1
-                } else if let u = await AppModel.droppedURL(p) {
-                    if let id = AppModel.draggedAssets([u]).first {
-                        model.moveAsset(id, to: folder)
-                        rows += 1
-                    } else if u.isFileURL {
-                        files.append(u)
-                    } else {
-                        unread.append("not a file")
-                    }
-                } else {
-                    unread.append(p.registeredTypeIdentifiers
-                        .joined(separator: "+"))
-                }
-            }
-            AppModel.dropLog.notice("taken on the list: \(ours.count) item(s): \(rows) row(s), \(files.count) file(s), unread \(unread.joined(separator: " "), privacy: .public)")
-            model.importDropped(files)
-        }
-        return true
-    }
-
-    private static func loadText(_ p: NSItemProvider) async -> String? {
-        guard p.canLoadObject(ofClass: NSString.self) else { return nil }
-        return await withCheckedContinuation { c in
-            _ = p.loadObject(ofClass: NSString.self) { s, _ in
-                c.resume(returning: (s as? NSString) as String?)
-            }
-        }
+        // Media from outside -- the Finder's files, a browser's picture,
+        // an app's bytes, a link, words -- into the project; a row of its
+        // own: to the top of the list. The only drop destination over
+        // the list -- see above.
+        .onDrop(of: DroppedMedia.dropTypes,
+                delegate: AssetsDrop(model: model, folder: "",
+                                     targeted: .constant(false)))
     }
 
     /// A folder: its header, and -- open -- its assets set in under it.
     /// Folded, they slide up under the header as the block closes.
     private func folderBlock(_ f: FolderDTO, items: [AssetDTO],
-                             stale: [AssetDTO],
+                             stale: Set<String>,
                              used: Set<String>, open: Bool) -> some View {
         VStack(spacing: 2) {
             folderRow(f, count: items.count, open: open)
@@ -822,7 +856,7 @@ struct AssetsSection: View {
                 VStack(spacing: 2) {
                     ForEach(items) { a in
                         AssetRow(model: model, asset: a,
-                                 stale: stale.contains(a),
+                                 stale: stale.contains(a.id),
                                  used: used.contains(a.id))
                     }
                 }
@@ -872,11 +906,11 @@ struct AssetsSection: View {
         }
         // A row dropped on it goes in; a file from the Finder is imported,
         // as on the list (a destination for rows alone refused it here).
-        .onDrop(of: Self.dropTypes, isTargeted: Binding(
-            get: { dropFolder == f.id },
-            set: { dropFolder = $0 ? f.id : nil })) { providers in
-            takeDrop(providers, into: f.id)
-        }
+        .onDrop(of: DroppedMedia.dropTypes,
+                delegate: AssetsDrop(model: model, folder: f.id,
+                                     targeted: Binding(
+                    get: { dropFolder == f.id },
+                    set: { dropFolder = $0 ? f.id : nil })))
         .contextMenu {
             Button("Rename Folder") { renaming = f.id }
             Button("Delete Folder") { model.deleteFolder(f.id) }
@@ -909,6 +943,46 @@ struct AssetsSection: View {
 
 /// A folder's or an asset's name, being typed: Return or clicking away
 /// keeps it, Escape leaves it as it was.
+/// A drop on the list -- or on a folder's row: `folder` ("" the top):
+/// rows moved there; the Finder's files, a browser's picture, an app's
+/// bytes, a link to media, words: into the project (AppModel
+/// .takeIntoAssets). One destination takes all of it: AppKit hands a
+/// drag to the front destination only, and one for rows alone in front
+/// of the files' refused every file over the list once it had a row.
+/// Read off the drag's pasteboard (DroppedMedia: an onDrop closure is
+/// handed providers -- promises received -- before it runs); each drop
+/// said in the system log (AppModel.dropLog).
+private struct AssetsDrop: DropDelegate {
+    let model: AppModel
+    let folder: String
+    @Binding var targeted: Bool
+
+    private var pasteboard: NSPasteboard { NSPasteboard(name: .drag) }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        let pb = pasteboard
+        let p = DroppedMedia.peek(pb)
+        return !DroppedMedia.rows(pb).isEmpty || p.media || p.text
+    }
+
+    func dropEntered(info: DropInfo) { targeted = true }
+    func dropExited(info: DropInfo) { targeted = false }
+
+    func performDrop(info: DropInfo) -> Bool {
+        targeted = false
+        let pb = pasteboard
+        let rows = DroppedMedia.rows(pb)
+        for id in rows { model.moveAsset(id, to: folder) }
+        let intake = DroppedMedia.take(pb)
+        AppModel.dropLog.notice("taken on the list: \(rows.count) row(s), \(intake.files.count) file(s), \(intake.text.count) text(s), makes \(intake.makes)")
+        if !rows.isEmpty && intake.files.isEmpty && !intake.makes {
+            return true
+        }
+        model.takeIntoAssets(intake, into: folder, words: rows.isEmpty)
+        return true
+    }
+}
+
 private struct NameField: View {
     @State var name: String
     let done: (String) -> Void
@@ -1311,7 +1385,7 @@ private struct AssetRow: View {
     /// What the project's layer 0 shows.
     private var layer0Name: String {
         asset.layerStack.first { $0.id.isEmpty }?.source
-            .flatMap { id in model.assets.first { $0.id == id }?.name } ?? "—"
+            .flatMap { id in model.asset(id: id)?.name } ?? "—"
     }
 
     /// When it was made: "12:38" today, else "Oct 3, 12:38".

@@ -150,7 +150,14 @@ struct Markup {
   Json         objects = Json::array();  // media/markup.h's objects
   std::int32_t width = 0;                // its size (a markup asset's)
   std::int32_t height = 0;
+  // Made new at each write of its asset (Project::add_asset,
+  // update_asset; an undo brings the old back with the old objects): what
+  // a copy of its objects is known by -- the app's, a kept drawing's
+  // (2026-10-23). "" in a record from before: none known.
+  std::string  stamp;
   Json         rest = Json::object();    // keys not read, kept
+
+  static std::string fresh_stamp();
 };
 
 // Where a layer lies in TIME (a composition's layers; DESIGN §6a). Marks

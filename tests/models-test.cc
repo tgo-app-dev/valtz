@@ -943,12 +943,13 @@ TEST(models, favor_presets_follow_the_catalog)
     CHECK(f["ane_ffn"] == false && f["taomate"] == false);
   }
   {
-    // Med: the int8 P*V on the clip's rows alone, int8 Accurate.
+    // Med: Sage without its int8 P*V (an artifact over a long clip,
+    // 2026-10-23), int8 Accurate.
     TuningContext h8 = h;
     h8.loras["minimax-h3-turbo-8step"] = {"8-step",
                                           file("eight.safetensors")};
     const Json m = resolve_tuning(fl, h8, "balanced", false);
-    CHECK(m["sage_attn"] == true && m["sage_pv8"] == true);
+    CHECK(m["sage_attn"] == true && m["sage_pv8"] == false);
     CHECK(m["sage_pv8_all_rows"] == false);
     CHECK(m["i8_gemm"] == true && m["i8_gemm_tier"] == "accurate");
   }
@@ -1028,7 +1029,7 @@ TEST(models, favor_presets_follow_the_catalog)
   CHECK(f["i8_gemm_tier"] == "token");
   CHECK(missing_loras(rf, r, "balanced").size() == 1);
   f = resolve_tuning(rf, r, "balanced", false);
-  CHECK(f["sage_pv8"] == true && f["sage_pv8_all_rows"] == false);
+  CHECK(f["sage_pv8"] == false && f["sage_pv8_all_rows"] == false);
   CHECK(f["i8_gemm_tier"] == "accurate");
 
   // Qwen-Image 2.1: Fast needs its Turbo LoRA; Med 25, Fine 40, plain.
@@ -1178,10 +1179,10 @@ TEST(models, the_int8_gemms_tier_is_a_choice)
 
 // SageAttention's int8 P*V (vpipe's `sage_pv8`): MiniMax H3's and the
 // picture models', a switch that needs SageAttention and the matrix
-// cores, on where a preset's table says (Krea 2's and MOSS-Image's Fast,
-// H3's Fast and Med); H3's prompt and soundtrack rows on it too
-// (`sage_pv8_all_rows`) a switch of H3's alone, needing it -- on H3's
-// Fast.
+// cores, on where a preset's table says (Krea 2's, MOSS-Image's and
+// H3's Fast -- not H3's Med since 2026-10-23: an artifact over a long
+// clip); H3's prompt and soundtrack rows on it too (`sage_pv8_all_rows`)
+// a switch of H3's alone, needing it -- on H3's Fast.
 TEST(models, sage_pv8_needs_sage)
 {
   auto c = Catalog::builtin();
@@ -1217,8 +1218,7 @@ TEST(models, sage_pv8_needs_sage)
     for (const char* p : {"speed", "balanced", "quality"}) {
       const std::string_view pref(p);
       const Json v = resolve_tuning(m, m5, p, false);
-      CHECK(v["sage_pv8"] == ((pref == "speed" && fast) ||
-                              (pref == "balanced" && h3)));
+      CHECK(v["sage_pv8"] == (pref == "speed" && fast));
       if (h3) {
         CHECK(v["sage_pv8_all_rows"] == (pref == "speed"));
       }

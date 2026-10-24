@@ -122,6 +122,38 @@ struct StorageView: View {
     }
 }
 
+/// A share of a whole, as the Storage page's bar and the RAM popover's
+/// draw it.
+struct UsagePart: Identifiable {
+    let id: String
+    let bytes: Double
+    let color: Color
+}
+
+/// A bar split by what takes a whole (`capacity`): each part its share
+/// -- a sliver still shows -- and what is left a faint track.
+struct UsageBar: View {
+    let parts: [UsagePart]
+    let capacity: Double
+    var height: CGFloat = 22
+
+    var body: some View {
+        GeometryReader { g in
+            HStack(spacing: 1) {
+                ForEach(parts) { p in
+                    let share = p.bytes / max(1, capacity)
+                    Rectangle().fill(p.color)
+                        .frame(width: p.bytes > 0
+                               ? max(2, g.size.width * share) : 0)
+                }
+                Rectangle().fill(Color.primary.opacity(0.08))
+            }
+        }
+        .frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+}
+
 /// The disk in one bar: Valtz's models, projects and cache, everything
 /// else used, and what is free -- with each one's share named below.
 private struct VolumeBar: View {
@@ -151,21 +183,11 @@ private struct VolumeBar: View {
                 .buttonStyle(.borderless)
                 .help("Measure again")
             }
-            GeometryReader { g in
-                HStack(spacing: 1) {
-                    ForEach(parts.indices, id: \.self) { i in
-                        let share = Double(parts[i].1)
-                            / Double(max(1, r.volume.capacity))
-                        // A sliver still shows.
-                        Rectangle().fill(parts[i].2)
-                            .frame(width: parts[i].1 > 0
-                                   ? max(2, g.size.width * share) : 0)
-                    }
-                    Rectangle().fill(Color.primary.opacity(0.08))
-                }
-            }
-            .frame(height: 22)
-            .clipShape(RoundedRectangle(cornerRadius: 5))
+            UsageBar(parts: parts.indices.map {
+                         UsagePart(id: "\($0)", bytes: Double(parts[$0].1),
+                                   color: parts[$0].2)
+                     },
+                     capacity: Double(r.volume.capacity))
             HStack(spacing: 16) {
                 ForEach(parts.indices, id: \.self) { i in
                     HStack(spacing: 5) {

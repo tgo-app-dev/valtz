@@ -25,10 +25,25 @@
 // file. It keeps at most kMaxCommands; a new command clears what could be
 // redone. The media the history's records name stay in the working copy
 // while it holds them (held_blobs: Workspace collects the rest).
+//
+// COMPACT (2026-10-23): a command no longer the last keeps each LARGE
+// value's change -- 16 KB or more, a markup of thousands of objects -- as
+// the bytes that changed: WINDOWS (where each lies before and after, its
+// bytes in each) between the runs the two values share, with the SHA-256
+// of each value. Undo reads the value there now, checks it is the one the
+// command left, and puts the windows' before-bytes back in it (redo the
+// after-bytes); one changed since by no command is refused, not
+// overwritten. A move of one object of 16 000 keeps a few hundred bytes,
+// not two copies of 3.7 MB, in memory and in the undo table; the last
+// command stays whole, so a slider's next step coalesces into it. Each
+// command's BLOBS are found once -- a scan of its values' bytes for the
+// BlobRefs' "hash" keys -- and kept and stored with it: held_blobs (every
+// save and close) decodes nothing.
 
 #ifndef VALTZ_PROJECT_UNDO_H
 #define VALTZ_PROJECT_UNDO_H
 
+#include "valtz/base/hash.h"
 #include "valtz/base/json.h"
 #include "valtz/base/result.h"
 #include "valtz/db/lmdb.h"
@@ -36,6 +51,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -46,16 +62,53 @@ namespace valtz::project {
 
 class Project;
 
+// A large value's change, COMPACT (above): the windows the two values
+// differ in, in order along them, and what each whole value was.
+struct ValueDelta {
+  struct Window {
+    std::size_t               at_before = 0;
+    std::size_t               at_after = 0;
+    std::vector<std::uint8_t> before;
+    std::vector<std::uint8_t> after;
+  };
+  std::size_t         size_before = 0;
+  std::size_t         size_after = 0;
+  ContentHash         sum_before;
+  ContentHash         sum_after;
+  std::vector<Window> windows;
+
+  // The values' delta, where it is worth keeping: both 16 KB or more, the
+  // windows a quarter of them at most; else none (kept whole).
+  static std::optional<ValueDelta> of(db::Bytes before, db::Bytes after);
+  // The value after, made from the value before -- or before from after
+  // -- checked against what it was; none when `from` is not the value the
+  // delta was made from.
+  std::optional<std::vector<std::uint8_t>> forward(db::Bytes before) const;
+  std::optional<std::vector<std::uint8_t>> backward(db::Bytes after) const;
+  // Its windows' bytes.
+  std::size_t bytes() const;
+};
+
+// A change as the history keeps it: its values whole (with its delta,
+// once made: how it is stored) -- or, compact, none and its delta.
+struct UndoChange : db::Change {
+  UndoChange() = default;
+  explicit UndoChange(db::Change c) : db::Change(std::move(c)) {}
+  std::shared_ptr<const ValueDelta> delta;
+};
+
 struct UndoCommand {
-  std::uint64_t           seq = 0;     // its place in the history
-  std::string             kind;        // "layer.add", "adjust", ...
-  Json                    args = Json::object();  // {"name": ...}
-  std::string             asset;       // what it is about ("" none)
-  std::string             layer;
-  std::int64_t            at_ms = 0;   // begun
-  std::int64_t            last_ms = 0; // last joined or coalesced
-  bool                    done = true; // false: undone, can be redone
-  std::vector<db::Change> changes;
+  std::uint64_t            seq = 0;     // its place in the history
+  std::string              kind;        // "layer.add", "adjust", ...
+  Json                     args = Json::object();  // {"name": ...}
+  std::string              asset;       // what it is about ("" none)
+  std::string              layer;
+  std::int64_t             at_ms = 0;   // begun
+  std::int64_t             last_ms = 0; // last joined or coalesced
+  bool                     done = true; // false: undone, can be redone
+  std::vector<UndoChange>  changes;
+  // The blobs its values name, by hash: found once (blobs_in_cbor).
+  std::shared_ptr<const std::set<std::string>> blobs;
 };
 
 class UndoLog {
@@ -130,6 +183,12 @@ private:
   Status erase_(std::uint64_t seq);
   Status store_saved_();
   Status apply_(const UndoCommand&, bool forward);
+  // Its large values' deltas made and its blobs found (once); compact,
+  // its values dropped where a delta stands for them.
+  void prepare_(UndoCommand&) const;
+  void compact_(UndoCommand&) const;
+  static std::shared_ptr<const std::set<std::string>>
+  blobs_of_(const UndoCommand&);
   UndoCommand* last_done_();
   const UndoCommand* last_done_() const;
   UndoCommand* first_undone_();
@@ -157,6 +216,11 @@ private:
 // The blobs (by hash) named in records: any {"hash", "ext"} map in them --
 // a version's blob, a markup raster, a history state's picture.
 void blobs_named_in(const Json& record, std::set<std::string>& out);
+// The same read off a record's CBOR bytes without decoding it: every
+// "hash" key with a 64-character hex string -- as a BlobRef's is written
+// (any such key: a few more than blobs_named_in finds, never fewer --
+// a blob kept a little longer, none lost).
+void blobs_in_cbor(db::Bytes cbor, std::set<std::string>& out);
 
 }
 

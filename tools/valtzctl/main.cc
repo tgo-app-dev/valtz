@@ -45,6 +45,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <readpassphrase.h>
 #include <sstream>
 #include <set>
@@ -105,10 +106,19 @@ usage()
       "  status [--thermal]   (the machine's load, as the app's status bar\n"
       "         shows it: ANE, GPU, memory; --thermal adds whether the GPU\n"
       "         is held back, from a 600 ms sample)\n"
+      "  <command> ... --memory   (as it ends: what the engine holds in\n"
+      "         memory -- the models kept warm, checkpoints, K/V -- as the\n"
+      "         status bar's RAM popover shows it)\n"
       "  probe <file>\n"
       "  new <project.valtz> [name]\n"
       "  info <project.valtz>\n"
       "  paths\n"
+      "  locations [projects|models|cache <dir>|--default [--move|--keep|\n"
+      "         --drop]]   (Settings > General > Storage: where the projects,\n"
+      "         models and cache are kept -- the models moved there, or kept\n"
+      "         where they are and still used; the cache moved, kept or\n"
+      "         dropped. A move across drives is copied, counted, then the\n"
+      "         old files deleted)\n"
       "  import <project.valtz> [--copy|--link] <file>...\n"
       "  links <project.valtz>\n"
       "  thumb <project.valtz> <asset-id> [px]\n"
@@ -348,7 +358,12 @@ usage()
       "                 a line's or outline's dash=dashed|dotted|solid, a\n"
       "                 line's arrows=start|end|both|none; any one's\n"
       "                 rotate=<degrees> and flip=h|v|hv|none, about its\n"
-      "                 middle; text and shape take them too)\n"
+      "                 middle; text and shape take them too; a shape's\n"
+      "                 WORDS text=<words>,text_color=#..,size=,font=,\n"
+      "                 align= (centred in it); a line's or path's point\n"
+      "                 ANCHORED anchor<point>=<object-id>:<connector-id>\n"
+      "                 -- anchor0= a line's start, anchor1= its end --\n"
+      "                 or =none: free)\n"
       "         | shape <layer> polygon <x,y;x,y;x,y...> [options]\n"
       "                 (a polygon through its corners; a PATH -- the\n"
       "                 curvature pen's: smooth=all, or smooth=1+3 the\n"
@@ -358,6 +373,10 @@ usage()
       "                 to-top|to-bottom|up|down; lined up: left|center|\n"
       "                 right|top|middle|bottom -- one object on the\n"
       "                 canvas; spaced: distribute-h|distribute-v)\n"
+      "         | connectors <layer> add|remove <object-id...>  (a\n"
+      "                 line's, shape's or path's CONNECTORS: the middle\n"
+      "                 of each segment, four round an ellipse -- or none:\n"
+      "                 what was anchored to them free where it is)\n"
       "         | materialize <layer> [object-id...]\n"
       "         | duplicate <layer> [name]  (a copy right above it: a\n"
       "                 markup's drawing and objects its own)\n"
@@ -596,12 +615,61 @@ options_arg(const std::string& v)
 void
 style_opts(Json& obj, const Json& o)
 {
-  const bool text = jget<std::string>(obj, "kind", "") == "text";
-  if (text && o.contains("align")) {
+  const auto kind = jget<std::string>(obj, "kind", "");
+  const bool text = kind == "text";
+  // A shape's WORDS (text=, empty: none) and their colour, set in it.
+  const bool shape = kind == "rect" || kind == "ellipse" ||
+                     kind == "polygon";
+  if (shape && o.contains("text")) {
+    const auto words = o["text"].is_string() ? o["text"].get<std::string>()
+                                             : std::string();
+    if (words.empty()) {
+      obj.erase("text");
+    } else {
+      obj["text"] = words;
+    }
+  }
+  if (Json tc = rgba_arg(jget<std::string>(o, "text_color", ""));
+      shape && !tc.is_null()) {
+    obj["text_color"] = tc;
+  }
+  const bool words = text || (shape && obj.contains("text"));
+  if (words && o.contains("align")) {
     obj["align"] = jget<std::string>(o, "align", "left");
   }
-  if (text && o.contains("spacing")) {
+  if (words && o.contains("spacing")) {
     obj["line_spacing"] = jget(o, "spacing", 1.0);
+  }
+  // Its points ANCHORED: anchor<point>=<object>:<connector> (none: free).
+  if (kind == "line" || kind == "polygon") {
+    std::map<int, Json> by_point;
+    for (const auto& a : jget(obj, "anchors", Json::array())) {
+      by_point[jget(a, "point", 0)] = a;
+    }
+    for (const auto& [k, v] : o.items()) {
+      if (!k.starts_with("anchor") || k.size() == 6) {
+        continue;
+      }
+      const int point = std::atoi(k.c_str() + 6);
+      const auto spec = v.is_string() ? v.get<std::string>() : "";
+      const auto colon = spec.find(':');
+      if (colon == std::string::npos) {
+        by_point.erase(point);
+      } else {
+        by_point[point] = {{"point", point},
+                           {"to", spec.substr(0, colon)},
+                           {"connector", spec.substr(colon + 1)}};
+      }
+    }
+    Json kept = Json::array();
+    for (auto& [k, a] : by_point) {
+      kept.push_back(std::move(a));
+    }
+    if (kept.empty()) {
+      obj.erase("anchors");
+    } else {
+      obj["anchors"] = std::move(kept);
+    }
   }
   if (Json col = rgba_arg(jget<std::string>(o, "color", ""));
       !col.is_null()) {
@@ -652,7 +720,7 @@ style_opts(Json& obj, const Json& o)
       obj["flip_y"] = true;
     }
   }
-  if (text) {
+  if (words) {
     Json font = jget(obj, "font", Json::object());
     if (o.contains("font")) {
       font["family"] = jget<std::string>(o, "font", "Helvetica Neue");
@@ -1923,6 +1991,10 @@ main(int argc, char** argv)
                     cmd == "auto" || cmd == "agent" ||
                     (cmd == "export" &&
                      !(args.size() == 1 && args[0] == "--formats"));
+  // "--memory": what the engine holds in memory as the command ends --
+  // the models kept warm, the checkpoints resident (the status bar's RAM
+  // popover, Controller::memory_held).
+  const bool show_memory = std::erase(args, std::string("--memory")) > 0;
   // "--fleet": a member of its fleet for this run (DESIGN §11) -- what
   // this Mac cannot run, or not now, goes to a member that can.
   const bool in_fleet = std::erase(args, std::string("--fleet")) > 0;
@@ -1936,6 +2008,18 @@ main(int argc, char** argv)
     return fail(cr.error());
   }
   Controller& c = **cr;
+  // Printed as main returns, whichever command ran -- before the
+  // controller goes, with what it holds.
+  struct MemoryAtEnd {
+    Controller& c;
+    bool        on;
+    ~MemoryAtEnd()
+    {
+      if (on) {
+        std::cout << to_text(Json{{"memory", c.memory_held()}}, 2) << "\n";
+      }
+    }
+  } memory_at_end{c, show_memory};
   if (in_fleet) {
     // Its members reached first: a few seconds ($VALTZ_FLEET_WAIT).
     const char* w = std::getenv("VALTZ_FLEET_WAIT");
@@ -2259,7 +2343,7 @@ main(int argc, char** argv)
     return 0;
   }
   if (cmd == "paths") {
-    const auto& p = c.paths();
+    const AppPaths p = c.paths();
     std::printf("projects  %s\nmodels    %s\ncache     %s (%llu of %llu MB, "
                 "%s)\nengine    %s\n",
                 p.projects.c_str(), p.models.c_str(), p.cache.c_str(),
@@ -2270,9 +2354,77 @@ main(int argc, char** argv)
                 p.engine.c_str());
     return 0;
   }
+  if (cmd == "locations") {
+    const auto print = [&c] {
+      const Json l = c.locations();
+      const auto line = [](const char* what, const Json& j) {
+        const bool there = jget(j, "there", false);
+        std::printf("%-9s %s  (%s%s)\n", what,
+                    jget<std::string>(j, "path", "").c_str(),
+                    !there ? "NOT THERE"
+                    : jget(j, "internal", true) ? "internal"
+                                                : "EXTERNAL",
+                    jget(j, "is_default", false) ? ", default" : "");
+      };
+      line("projects", jget(l, "projects", Json::object()));
+      line("models", jget(l, "models", Json::object()));
+      for (const auto& k : jget(jget(l, "models", Json::object()), "kept",
+                                Json::array())) {
+        line("  kept", k);
+      }
+      const Json cache = jget(l, "cache", Json::object());
+      line("cache", cache);
+      std::printf("          %llu MB in use at %s\n",
+                  static_cast<unsigned long long>(
+                      jget<std::uint64_t>(cache, "bytes", 0) >> 20),
+                  jget<std::string>(cache, "in_use", "").c_str());
+      if (const Json m = jget(l, "moving", Json()); m.is_object()) {
+        std::printf("moving    %s to %s\n",
+                    jget<std::string>(m, "what", "").c_str(),
+                    jget<std::string>(m, "to", "").c_str());
+      }
+    };
+    if (args.empty()) {
+      print();
+      return 0;
+    }
+    const std::string what = args[0];
+    std::string how = "move";
+    fs::path dir;
+    bool to_default = false;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+      if (args[i] == "--move" || args[i] == "--keep" ||
+          args[i] == "--drop") {
+        how = args[i].substr(2);
+      } else if (args[i] == "--default") {
+        to_default = true;
+      } else {
+        dir = args[i];
+      }
+    }
+    if (to_default) {
+      dir = jget<std::string>(
+          jget(c.locations(), what.c_str(), Json::object()), "default", "");
+    }
+    if (dir.empty()) {
+      std::fprintf(stderr, "usage: valtzctl locations projects|models|cache "
+                           "<dir>|--default [--move|--keep|--drop]\n");
+      return 2;
+    }
+    auto r = c.set_location(what, dir, how);
+    if (!r.ok()) {
+      std::fprintf(stderr, "%s\n", r.error().message.c_str());
+      return 1;
+    }
+    int rc = 0;
+    if (!r->is_nil()) {
+      rc = follow(c, *r);
+    }
+    print();
+    return rc;
+  }
   if (cmd == "models") {
-    models::ModelStore store(
-        models::ModelStore::default_roots(c.paths().models));
+    const auto& store = c.model_store();
     for (const auto& m : c.catalog().models()) {
       auto i = store.info(m);
       std::printf("%-16s %-10s %6.1f GB%s  >=%2u GB  %-28s %s\n",
@@ -3220,6 +3372,15 @@ main(int argc, char** argv)
       }
       st = c.arrange_markup(*pid, *aid, layer,
                             {plain.begin() + 5, plain.end()}, arg);
+    } else if (op == "connectors") {
+      // connectors <layer> add|remove <object-id>...: their default
+      // connectors, or none (media::with_default_connectors).
+      if (plain.size() < 6 || (arg != "add" && arg != "remove")) {
+        return usage();
+      }
+      st = c.markup_connectors(*pid, *aid, layer,
+                               {plain.begin() + 5, plain.end()},
+                               arg == "add");
     } else if (op == "materialize") {
       std::vector<std::string> ids(args.begin() + std::min<std::size_t>(
                                                       4, args.size()),
@@ -3366,6 +3527,19 @@ main(int argc, char** argv)
             more += std::format(" flipped {}{}",
                                 jget(o, "flip_x", false) ? "h" : "",
                                 jget(o, "flip_y", false) ? "v" : "");
+          }
+          // Its connectors where they are ("c1@200,100"), its points
+          // anchored ("0>r:c2": its point 0 on r's connector c2).
+          if (const auto cs = media::connector_points(o); !cs.empty()) {
+            more += " connectors";
+            for (const auto& cp : cs) {
+              more += std::format(" {}@{:.4g},{:.4g}", cp.id, cp.x, cp.y);
+            }
+          }
+          for (const auto& an : jget(o, "anchors", Json::array())) {
+            more += std::format(" {}>{}:{}", jget(an, "point", 0),
+                                jget<std::string>(an, "to", ""),
+                                jget<std::string>(an, "connector", ""));
           }
           const auto r = media::object_bounds(o);
           more += std::format(" at {:.4g},{:.4g} {:.4g}x{:.4g}", r[0], r[1],
@@ -4933,9 +5107,7 @@ main(int argc, char** argv)
       if (!e) {
         return;
       }
-      models::ModelStore store(
-          models::ModelStore::default_roots(c.paths().models));
-      const auto i = store.info(*e);
+      const auto i = c.model_store().info(*e);
       std::printf("%s: %s%s\n", id.c_str(), models::to_str(i.state),
                   i.state == models::InstallState::Missing
                       ? ""

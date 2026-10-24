@@ -342,6 +342,76 @@ TEST(model_input, a_kept_picture_draws_as_its_file)
   check("rewritten");
 }
 
+// A stack of many layers -- past 64 drawn, composed in groups, each drawn
+// before the next -- is the picture the same stack makes a few dozen at
+// a time (each part fewer than 64, drawn as one chain, then put under the
+// next): 150 asymmetric, half-clear layers placed, scaled and turned on
+// a framed canvas, one hidden and one off the canvas; on the screen's
+// surface as in the PNG.
+TEST(model_input, a_stack_of_many_layers_is_drawn_in_groups)
+{
+  const auto dir = test::temp_dir("many-layers");
+  std::vector<std::filesystem::path> pics;
+  for (int k = 0; k < 5; ++k) {
+    pics.push_back(dir / ("p" + std::to_string(k) + ".png"));
+    write_pattern(pics.back(), 40 + 9 * k, 30 + 5 * k, 37 * k);
+  }
+  std::vector<media::LayerPicture> stack(150);
+  for (int i = 0; i < 150; ++i) {
+    auto& l = stack[static_cast<std::size_t>(i)];
+    l.file = pics[static_cast<std::size_t>(i % 5)];
+    l.crop.scale_x = 0.15 + 0.01 * (i % 7);
+    l.crop.scale_y = 0.12 + 0.01 * (i % 5);
+    l.crop.offset_x = -0.45 + 0.9 * ((i * 37) % 101) / 100.0;
+    l.crop.offset_y = -0.45 + 0.9 * ((i * 53) % 97) / 96.0;
+    l.crop.rotate = (i % 9) * 4 - 16;
+  }
+  stack[40].visible = false;
+  stack[77].crop.offset_x = 3;  // off the canvas: nothing drawn
+  media::StackCanvas sc;
+  sc.frame_w = 400;
+  sc.frame_h = 300;
+  // The reference: in parts of 50, each part's picture the bottom of the
+  // next -- a layer on the frame at its own size, as it was made.
+  std::filesystem::path below;
+  for (int part = 0; part < 3; ++part) {
+    std::vector<media::LayerPicture> some;
+    if (!below.empty()) {
+      media::LayerPicture b;
+      b.file = below;
+      some.push_back(b);
+    }
+    some.insert(some.end(), stack.begin() + part * 50,
+                stack.begin() + (part + 1) * 50);
+    below = dir / ("part" + std::to_string(part) + ".png");
+    REQUIRE_OK(media::flatten_layers(some, below, sc));
+  }
+  int w = 0, h = 0;
+  const auto want = file_pixels(below, w, h);
+  const auto whole = dir / "whole.png";
+  REQUIRE_OK(media::flatten_layers(stack, whole, sc));
+  int ww = 0, wh = 0;
+  const auto got = file_pixels(whole, ww, wh);
+  REQUIRE(ww == w && wh == h);
+  int off = 0, past1 = 0;
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    const int d = std::abs(got[i] - want[i]);
+    off = std::max(off, d);
+    past1 += d > 1;
+  }
+  auto surf = media::flatten_layers_surface(stack, sc);
+  REQUIRE_OK(surf);
+  const int soff = surface_off(*surf, want, w, h);
+  CFRelease(*surf);
+  std::fprintf(stderr, "[many] %dx%d: the PNG off by %d (%d values by "
+               "more than 1), the surface %d\n", w, h, off, past1, soff);
+  CHECK(w == 400 && h == 300);
+  // Half floats between the groups, 16-bit PNGs between the parts.
+  CHECK(off <= 2);
+  CHECK(past1 <= 10);
+  CHECK(soff <= 2);
+}
+
 // A movie whose picture track runs past its last frame (its session ended
 // a frame late, the last frame lasting two): counted by the last frame's
 // own time, 48 frames -- the track's length made 49, one that does not

@@ -5,12 +5,14 @@ import SwiftUI
 /// the title bar's hairline, as Preview's. Its tools -- select, brush,
 /// eraser, line, rectangle, ellipse, polygon, the curvature pen, text, the
 /// eyedropper -- then what the tool (or the selection) takes: a brush's
-/// size and softness, a line's width, a text's font (and line spacing),
-/// its alignment and the button opening its words' edit window
-/// (MarkupTextPanel); the colour and the fill (sRGB with opacity), swapped
-/// by X; an object's EFFECTS -- a shadow, a glow; what can be done with a
-/// selection -- ARRANGE it (its order, alignment, spacing), make it
-/// pixels, delete it; and which layer the markup goes on.
+/// size and softness, a line's width, a text's -- or a shape's words' --
+/// font (and line spacing), its alignment and the button typing its words
+/// in place (MarkupTextEditor); the colour and the fill (sRGB with
+/// opacity), swapped by X, and a shape's words' colour; an object's
+/// EFFECTS -- a shadow, a glow; what can be done with a selection --
+/// ARRANGE it (its order, alignment, spacing), give it CONNECTORS (or
+/// take them off), make it pixels, delete it; and which layer the markup
+/// goes on.
 struct MarkupBar: View {
     @Bindable var model: AppModel
     @State private var fontPanel = false
@@ -42,13 +44,13 @@ struct MarkupBar: View {
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
         .onChange(of: m.tool) { _, _ in model.markupToolChanged() }
-        // The text's edit window follows the selection, and closes with
-        // the toolbar.
-        .onChange(of: m.selectedText) { _, _ in m.textPanel.follow(model) }
+        // The words typed in place follow the selection, and end with the
+        // toolbar.
+        .onChange(of: m.selectedWords) { _, _ in m.textEditor.follow(model) }
         .onChange(of: model.markupReady) { _, _ in
-            m.textPanel.follow(model)
+            m.textEditor.follow(model)
         }
-        .onDisappear { m.textPanel.close() }
+        .onDisappear { m.textEditor.close() }
     }
 
     // MARK: Tools
@@ -167,11 +169,12 @@ struct MarkupBar: View {
                    range: 0...60, text: String(Int(m.width.rounded())),
                    width: 90)
         }
-        if tool == .text || kinds.contains(.text) {
+        if tool == .text || kinds.contains(.text)
+            || m.selection.contains(where: \.shapeWithWords) {
             fontButton
             alignment
         }
-        if m.selectedText != nil {
+        if m.selectedWords != nil && m.editingText == nil {
             Button {
                 model.editMarkupText()
             } label: {
@@ -180,7 +183,7 @@ struct MarkupBar: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
-            .help("Edit the text in its own window")
+            .help("Type its words where they are (Return, or a double-click)")
             .accessibilityLabel(Text("Edit Text"))
         }
     }
@@ -206,7 +209,7 @@ struct MarkupBar: View {
     }
 
     private var fontButton: some View {
-        let f = m.selectedText?.font ?? m.font
+        let f = m.wordsStyle?.font ?? m.font
         let size = String(Int(f.size.rounded()))
         return Button {
             fontPanel = true
@@ -220,23 +223,23 @@ struct MarkupBar: View {
         .help("Font")
         .popover(isPresented: $fontPanel, arrowEdge: .bottom) {
             FontPanel(font: Binding(
-                get: { m.selectedText?.font ?? m.font },
+                get: { m.wordsStyle?.font ?? m.font },
                 set: { nf in
                     m.font = nf
                     model.editSelection {
-                        if $0.kind == .text { $0.font = nf }
+                        if $0.kind == .text || $0.shapeWithWords {
+                            $0.font = nf
+                        }
                     }
                 }),
                       spacing: Binding(
-                get: {
-                    m.selection.first { $0.kind == .text }
-                        .map { $0.lineSpacing ?? 1 } ?? m.lineSpacing
-                },
+                get: { m.wordsStyle.map { $0.lineSpacing ?? 1 }
+                       ?? m.lineSpacing },
                 set: { v in
                     let v = min(3, max(1, v))
                     m.lineSpacing = v
                     model.editSelection {
-                        if $0.kind == .text {
+                        if $0.kind == .text || $0.shapeWithWords {
                             $0.lineSpacing = v == 1 ? nil : v
                         }
                     }
@@ -247,15 +250,21 @@ struct MarkupBar: View {
     /// A text box's alignment: its lines left, centred, right or
     /// justified in the box -- the selected texts', or the next one's.
     private var alignment: some View {
+        // A text's lines left unless aligned, a shape's words centred.
         Picker("Alignment", selection: Binding(
             get: {
-                m.selection.first { $0.kind == .text }
-                    .map { $0.align ?? "left" } ?? m.align
+                m.wordsStyle.map {
+                    $0.align ?? ($0.kind == .text ? "left" : "center")
+                } ?? m.align
             },
             set: { a in
                 m.align = a
                 model.editSelection {
-                    if $0.kind == .text { $0.align = a == "left" ? nil : a }
+                    if $0.kind == .text {
+                        $0.align = a == "left" ? nil : a
+                    } else if $0.shapeWithWords {
+                        $0.align = a == "center" ? nil : a
+                    }
                 }
             })) {
             Label("Align Left", systemImage: "text.alignleft")
@@ -271,7 +280,7 @@ struct MarkupBar: View {
         .labelStyle(.iconOnly)
         .labelsHidden()
         .fixedSize()
-        .help("How the text's lines lie in its box")
+        .help("How the text's lines lie in its box — or a shape's words in it")
     }
 
     // MARK: Effects
@@ -352,6 +361,25 @@ struct MarkupBar: View {
             }
             .disabled(!fills)
             .help("What rectangles, ellipses, polygons and closed curves are filled with")
+            if m.selection.contains(where: \.shapeWithWords) {
+                HStack(spacing: 3) {
+                    Text("Text").foregroundStyle(.secondary)
+                    ColorPicker("Text", selection: Binding(
+                        get: {
+                            (m.selection.first(where: \.shapeWithWords)?
+                                .textColor ?? RGBA(r: 0, g: 0, b: 0, a: 1))
+                                .cgColor
+                        },
+                        set: { c in
+                            let t = RGBA(cgColor: c)
+                            model.editSelection {
+                                if $0.shapeWithWords { $0.textColor = t }
+                            }
+                        }), supportsOpacity: true)
+                        .labelsHidden()
+                }
+                .help("The colour of the words in the selected shapes")
+            }
             if fills || kinds.contains(.text) {
                 gradientButton
             }
@@ -409,6 +437,9 @@ struct MarkupBar: View {
     private var selectionActions: some View {
         if !m.selection.isEmpty {
             arrangeButton
+            if m.selection.contains(where: \.takesConnectors) {
+                connectorsButton
+            }
             Button {
                 model.materializeSelection()
             } label: {
@@ -443,6 +474,32 @@ struct MarkupBar: View {
                  arrowEdge: .bottom) {
             ArrangePanel(model: model)
         }
+    }
+
+    /// CONNECTORS: the selected lines', shapes' and paths' defaults
+    /// added -- the middle of each segment, four round an ellipse -- or,
+    /// from its menu, taken off. Lit while one has any.
+    private var connectorsButton: some View {
+        let on = m.selection.contains { !$0.connectors.isEmpty }
+        return Menu {
+            Button("Add Connectors") {
+                model.setSelectionConnectors(add: true)
+            }
+            .disabled(!model.markupCanConnect(add: true))
+            Button("Remove Connectors") {
+                model.setSelectionConnectors(add: false)
+            }
+            .disabled(!model.markupCanConnect(add: false))
+        } label: {
+            Image(systemName: "point.3.connected.trianglepath.dotted")
+                .foregroundStyle(on ? Color.accentColor : Color.primary)
+        } primaryAction: {
+            model.setSelectionConnectors(add: true)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Add Connectors: a point in the middle of each side — four round an ellipse — that lines and paths drawn from it stay joined to. ⌥-click an outline to add one there, ⌥-click one to take it off, drag one to slide it.")
+        .accessibilityLabel(Text("Connectors"))
     }
 
     /// Where markup goes: the selection's layer, the layer the next mark

@@ -118,6 +118,9 @@ struct ControllerConfig {
   // The agent's model, in place of the helper or a cloud's (DESIGN §9b):
   // a test's own, which answers as it is scripted to.
   std::function<std::unique_ptr<agent::Backend>()> agent_backend;
+  // A folder moved within one drive is COPIED as one across drives is
+  // (set_location): a test's, the copy and the waits seen on one volume.
+  bool                               move_by_copy = false;
 };
 
 // THE PROMPT IS AN ASSET (DESIGN §10c). Every generation request carries
@@ -420,10 +423,39 @@ public:
   Controller& operator=(const Controller&) = delete;
 
   EventBus& events() noexcept { return _bus; }
-  const AppPaths& paths() const noexcept { return _paths; }
+  // Where things are -- the folders as they are now: the projects,
+  // models and cache folders may be moved while Valtz runs
+  // (set_location).
+  AppPaths paths() const;
   cache::CacheStore& cache() noexcept { return *_cache; }
+  const models::ModelStore& model_store() const noexcept { return *_store; }
   std::string version() const;
   std::string engine_description() const;
+
+  // ---- where things are kept (base/paths.h) ---------------------------
+
+  // The projects, models and cache folders (Settings › General ›
+  // Storage): each one's path, its default, whether it is on the
+  // internal drive and there at all; the models folders kept, the
+  // cache's size; and a move under way ("moving": its job, what, where).
+  Json locations() const;
+  // `what` ("projects", "models", "cache") put in `dir`, made when it is
+  // not there. `how`, for the MODELS: "move" -- every model in Valtz's
+  // own folders (the models folder and those kept) brought into `dir` --
+  // or "keep" -- left where they are and still used, `dir` taking the
+  // downloads from now on; for the CACHE: "move", "keep" (left where it
+  // is, unused: in use again if the cache comes back there) or "drop"
+  // (deleted). Projects move no file: `dir` is where new ones go.
+  // Refused while work runs (kModelsBusy, kCacheBusy). A move -- and a
+  // drop -- is a JOB (purpose "relocate", events with "phase" copying /
+  // waiting / deleting, "done" / "total" bytes): across drives a copy,
+  // counted, stopped by cancel(); the folders switched once nothing
+  // reads the old files, which then go. The rest is done at once: no job
+  // (a zero id). Downloads, quantizes and compresses wait for a models
+  // move (kModelsMoving).
+  Result<JobId> set_location(const std::string& what,
+                             const std::filesystem::path& dir,
+                             const std::string& how);
 
   // ---- machine and models -------------------------------------------
 
@@ -436,6 +468,11 @@ public:
   // `window_ms`.
   Json machine_status();
   Json gpu_thermal(int window_ms = 600);
+  // What the engine holds in memory, by what holds it (Engine
+  // ::memory_held): each held directory named as the catalog's model
+  // ("model", "name", "role"), a language model loaded unwired given its
+  // files' size ("estimated"). The status bar's RAM popover.
+  Json memory_held();
   // The Log view's rows (log-book.h): the engine's and Valtz's lines
   // after `seq`, at most `max`; and every row cleared.
   Json log_since(std::uint64_t seq, std::size_t max = 4096) const;
@@ -646,12 +683,43 @@ public:
   // Its vector objects, as the app now has them: kept normalized.
   Status set_markup_objects(ProjectId, AssetId, const std::string& layer,
                             const Json& objects);
+  // Its objects PATCHED (media::patch_objects, 2026-10-23): `upsert` put
+  // in by id, `remove` taken out, only they and what is anchored to them
+  // normalized and resolved again -- the app's edits, which send what
+  // changed, not the list. One command of "markup.objects" (coalescing,
+  // as set_markup_objects); the markup read once, in its write. -> what a
+  // copy of the objects needs to follow: those now as kept that changed,
+  // those removed, their stamp and count now.
+  struct MarkupPatched {
+    Json                     changed = Json::array();
+    std::vector<std::string> removed;
+    std::string              stamp;
+    std::size_t              count = 0;
+  };
+  Result<MarkupPatched> patch_markup_objects(
+      ProjectId, AssetId, const std::string& layer, const Json& upsert,
+      const std::vector<std::string>& remove);
+  // A markup's objects' STAMP: 16 hex of the SHA-256 of their CBOR. They
+  // travel apart from the asset list past a few hundred (the bridge's
+  // assets_json); the app keys its copy of them by it.
+  static std::string objects_stamp(const Json& objects);
+  // A MARKUP asset's objects, as kept, and their stamp.
+  Result<std::pair<Json, std::string>> markup_objects(ProjectId,
+                                                      AssetId markup);
   // Its objects ARRANGED (media::arrange_objects): `objects` (ids) moved
   // up or down the order, lined up or spaced evenly -- one command,
   // "Arrange", "Align" or "Distribute".
   Status arrange_markup(ProjectId, AssetId, const std::string& layer,
                         const std::vector<std::string>& objects,
                         const std::string& how);
+  // Its objects' CONNECTORS (media/markup.h): `add`, each of `objects`
+  // given its default ones -- the middle of each segment, four round an
+  // ellipse -- beside those it has; else all of theirs taken off, the
+  // points anchored to them let go where they are. One command,
+  // "Add Connectors" / "Remove Connectors"; none changed, no change.
+  Status markup_connectors(ProjectId, AssetId, const std::string& layer,
+                           const std::vector<std::string>& objects,
+                           bool add);
   // Objects made pixels: drawn into its raster and gone from its objects.
   Status materialize_markup(ProjectId, AssetId, const std::string& layer,
                             const std::vector<std::string>& objects);
@@ -1963,6 +2031,12 @@ private:
   // A markup's objects as drawn: each lifted drawing told where its
   // picture is ("file": its blob's path).
   static Json drawn_objects_(project::Project&, const Json& objects);
+  // A markup KEPT DRAWN for the screen (media::MarkupCanvas): the few
+  // drawn last, by asset -- each redrawn only where it changed since.
+  std::shared_ptr<media::MarkupCanvas> markup_canvas_(AssetId markup);
+  std::mutex _canvases_mu;
+  std::vector<std::pair<AssetId, std::shared_ptr<media::MarkupCanvas>>>
+      _canvases;
   // The RENDER KEY of an asset (a version of it): its content, or a
   // composition's structure with what it shows, recursively.
   Result<ContentHash> render_key_(project::Project&, AssetId,
@@ -2022,14 +2096,22 @@ private:
   static media::LayerTiming timing_over_(const project::LayerTime&,
                                          const TimedSource&, Rational rate,
                                          media::KeyedSpeed speed);
+  // What plain sources -- a picture, a clip, a sound as they are -- show,
+  // by source and version, as one call reads them: 16 000 layers of 50
+  // pictures read each one's records four times over (2026-10-23).
+  using PlainSources =
+      std::map<std::pair<AssetId, std::uint32_t>, TimedSource>;
   // `sound_only`: for a composition of sound -- a clip gives its sound
   // alone (a composition its mix), its marks in milliseconds. `hidden`:
-  // a markup's objects left out (drawn in memory only).
+  // a markup's objects left out (drawn in memory only). `plain`: the
+  // plain sources read so far, by the same call with the same
+  // `sound_only`.
   Result<TimedSource> timed_source_(ProjectId, project::Project&,
                                     const project::Layer&, bool for_job,
                                     media::PixelSize frame, int depth,
                                     bool sound_only = false,
-                                    const std::set<std::string>& hidden = {});
+                                    const std::set<std::string>& hidden = {},
+                                    PlainSources* plain = nullptr);
   Result<media::MovieStack> movie_stack_(
       ProjectId, AssetId, bool for_job,
       const std::optional<LiveTracks>& live, int depth,
@@ -2056,7 +2138,35 @@ private:
   void take_extensions_();
 
   ControllerConfig                   _cfg;
+  // Its folders (projects, models, models_kept, cache) under
+  // `_paths_mu`, changed by set_location; the rest fixed.
   AppPaths                           _paths;
+  mutable std::mutex                 _paths_mu;
+  // A folder's move (set_location): its job, what moves ("models",
+  // "cache"), where to -- under `_paths_mu` -- and a stop asked of it.
+  JobId                              _moving;
+  std::string                        _moving_what;
+  std::filesystem::path              _moving_to;
+  std::atomic<bool>                  _moving_stop{false};
+  // Caches left behind this run: their scratch -- vpipe's temporary
+  // files, set at launch -- goes as Valtz does.
+  std::vector<std::filesystem::path> _caches_left;
+  // A folder chosen whose drive is not there at launch ("models",
+  // "cache"): the cache run from its default meanwhile.
+  std::set<std::string>              _locations_missing;
+  // The move itself, on its own thread.
+  void relocate_(JobId, std::string what,
+                 std::vector<std::filesystem::path> from,
+                 std::filesystem::path to, std::string how);
+  // Any job but `self` queued or running.
+  bool others_live_(JobId self) const;
+  // The folders as they are now into locations.json.
+  Status save_locations_();
+  bool models_moving_() const;
+  // Where `e`'s download goes: the download root -- or the folder of
+  // Valtz's own holding what came down of it, paused there before the
+  // models folder moved (Keep): it goes on from there.
+  std::filesystem::path download_base_(const models::ModelEntry& e) const;
   bool                               _keep_working_copies = false;
   // Downloads queued or running, by catalog id; the jobs waiting for
   // them.

@@ -892,6 +892,127 @@ source_seconds(Controller& c, project::Project& p, const project::Asset& a)
 
 }  // namespace
 
+namespace {
+
+// A markup listed in full up to this many objects (get_composition);
+// past it, the ones on top this many, and find_objects for the rest.
+constexpr std::size_t kListedObjects = 80;
+constexpr std::size_t kListedTop = 40;
+constexpr std::size_t kFoundMost = 200;
+
+// How many objects of each kind.
+Json
+kinds_of(const Json& objects)
+{
+  std::map<std::string, std::size_t> n;
+  for (const auto& o : objects) {
+    ++n[jget<std::string>(o, "kind", "")];
+  }
+  Json out = Json::object();
+  for (const auto& [k, c] : n) {
+    out[k] = c;
+  }
+  return out;
+}
+
+// A markup object as the agent is told it (get_composition,
+// find_objects): its id, kind and box; a line's ends; a text's words (a
+// long one's head), font and colour; a shape's fill and outline; a
+// gradient, a path's points, its effects, its turn.
+Json
+described(const Json& o)
+{
+  Json x = {{"id", jget<std::string>(o, "id", "")},
+            {"kind", jget<std::string>(o, "kind", "")}};
+  const double x0 = jget(o, "x0", 0.0), y0 = jget(o, "y0", 0.0);
+  const double x1 = jget(o, "x1", 0.0), y1 = jget(o, "y1", 0.0);
+  x["x"] = std::lround(std::min(x0, x1));
+  x["y"] = std::lround(std::min(y0, y1));
+  x["width"] = std::lround(std::abs(x1 - x0));
+  x["height"] = std::lround(std::abs(y1 - y0));
+  // A line's ends: its box says nothing of which way it runs.
+  if (x["kind"] == "line") {
+    x["from"] = {std::lround(x0), std::lround(y0)};
+    x["to"] = {std::lround(x1), std::lround(y1)};
+  }
+  if (x["kind"] == "text") {
+    // A long text's head only: a flowed page would tell the whole
+    // text back.
+    const auto words = jget<std::string>(o, "text", "");
+    x["text"] = words.size() <= 160
+                    ? words
+                    : std::string(utf8_prefix(words, 120)) +
+                          std::string(kEllipsis);
+    if (auto al = jget<std::string>(o, "align", "left");
+        al != "left") {
+      x["align"] = al;
+    }
+    const Json f = jget(o, "font", Json::object());
+    x["size"] = jget(f, "size", 0.0);
+    x["font"] = jget<std::string>(f, "family", "");
+    if (jget(f, "bold", false)) {
+      x["bold"] = true;
+    }
+    if (jget(f, "italic", false)) {
+      x["italic"] = true;
+    }
+    x["color"] = hex(jget(o, "stroke", Json()));
+    if (!media::text_fit(o).fits) {
+      x["fits"] = false;
+    }
+  }
+  if (const Json g = jget(o, "gradient", Json()); g.is_object()) {
+    Json cs = Json::array();
+    for (const auto& st : jget(g, "stops", Json::array())) {
+      cs.push_back(hex(jget(st, "color", Json())));
+    }
+    x["gradient"] = {{"type", jget<std::string>(g, "kind", "linear")},
+                     {"colors", std::move(cs)}};
+  }
+  if (x["kind"] == "polygon") {
+    x["points"] = jget(o, "points", Json::array()).size();
+    const Json sm = jget(o, "smooth", Json::array());
+    if (std::ranges::any_of(sm, [](const Json& b) {
+          return b.is_boolean() && b.get<bool>();
+        })) {
+      x["smooth"] = true;
+    }
+    if (jget(o, "open", false)) {
+      x["open"] = true;
+    }
+  }
+  // Its effects: each kind, and its colour.
+  for (const auto& e : jget(o, "effects", Json::array())) {
+    const auto k = jget<std::string>(e, "kind", "");
+    if (k == "shadow" || k == "glow") {
+      x[k] = hex(jget(e, "color", Json()));
+    }
+  }
+  if (x["kind"] != "text") {
+    if (auto f = hex(jget(o, "fill", Json())); !f.empty()) {
+      x["fill"] = f;
+    }
+    if (jget(o, "width", 0.0) > 0) {
+      x["stroke"] = hex(jget(o, "stroke", Json()));
+      x["line_width"] = jget(o, "width", 0.0);
+    }
+    for (const char* k : {"dash", "arrows"}) {
+      if (o.contains(k)) {
+        x[k] = o[k];
+      }
+    }
+  }
+  // Its turn and flips, where it has them.
+  for (const char* k : {"rotate", "flip_x", "flip_y"}) {
+    if (o.contains(k)) {
+      x[k] = o[k];
+    }
+  }
+  return x;
+}
+
+}  // namespace
+
 // ---- the table ------------------------------------------------------------
 
 const std::vector<Controller::AgentHost::Tool>&
@@ -926,6 +1047,28 @@ Controller::AgentHost::tools()
                          {"page", integer("a still's page: only the "
                                           "layers on it")}}),
                  &H::t_get_composition});
+    t.push_back({"find_objects", "read", "Find objects",
+                 "A markup's objects get_composition did not list -- a "
+                 "page of many lists the ones on top: those lying in a "
+                 "region, of a kind, whose words hold a text, or by id, "
+                 "200 at most, bottom first.",
+                 schema({{"composition", str(kCompDoc)},
+                         {"layer", str("a markup layer's id, as "
+                                       "get_composition gives it (none: "
+                                       "every markup layer)")},
+                         {"region", Json{{"type", "object"},
+                                         {"description",
+                                          "only those whose box meets "
+                                          "this one"},
+                                         {"properties", box_props}}},
+                         {"kind", one_of({"text", "rect", "ellipse",
+                                          "polygon", "line", "drawing"},
+                                         "only these")},
+                         {"text", str("only texts and shapes whose words "
+                                      "hold this (any case)")},
+                         {"ids", ids("only these objects")},
+                         {"limit", integer("at most this many (200)")}}),
+                 &H::t_find_objects});
     t.push_back({"view_page", "read", "Look at a page",
                  "A page drawn as it is now, shown to you as a picture "
                  "(when you can see pictures; else told in words).",
@@ -2662,6 +2805,81 @@ Controller::AgentHost::t_get_project(Session& s, Step&, const Json&,
 }
 
 Result<Json>
+Controller::AgentHost::t_find_objects(Session& s, Step&, const Json& args,
+                                      std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, composition_(s, args));
+  auto* p = _c.project(s.project);
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  const std::string only = text_arg(args, "layer");
+  const std::string want = jget<std::string>(args, "kind", "");
+  std::string words = text_arg(args, "text");
+  std::ranges::transform(words, words.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  std::set<std::string> ids;
+  for (const auto& i : jget(args, "ids", Json::array())) {
+    if (i.is_string()) {
+      ids.insert(i.get<std::string>());
+    }
+  }
+  const Json region = jget(args, "region", Json());
+  const bool in_region = region.is_object();
+  const double rx = jget(region, "x", 0.0), ry = jget(region, "y", 0.0);
+  const double rw = jget(region, "width", 0.0);
+  const double rh = jget(region, "height", 0.0);
+  const std::size_t limit = std::clamp<std::size_t>(
+      jget<std::size_t>(args, "limit", kFoundMost), 1, kFoundMost);
+  Json found = Json::array();
+  std::size_t matches = 0;
+  for (const auto& l : a.layers) {
+    if ((!only.empty() && model_layer(l.id) != only) || !l.source) {
+      continue;
+    }
+    auto src = p->asset(*l.source);
+    if (!src.ok() || src->cls != AssetClass::Markup || !src->markup) {
+      continue;
+    }
+    for (const auto& o : src->markup->objects) {
+      if (!want.empty() && jget<std::string>(o, "kind", "") != want) {
+        continue;
+      }
+      if (!ids.empty() && !ids.count(jget<std::string>(o, "id", ""))) {
+        continue;
+      }
+      if (!words.empty()) {
+        std::string t = jget<std::string>(o, "text", "");
+        std::ranges::transform(t, t.begin(), [](unsigned char c) {
+          return static_cast<char>(std::tolower(c));
+        });
+        if (t.find(words) == std::string::npos) {
+          continue;
+        }
+      }
+      if (in_region) {
+        const auto b = media::object_bounds(o);
+        if (b[0] > rx + rw || b[0] + b[2] < rx || b[1] > ry + rh ||
+            b[1] + b[3] < ry) {
+          continue;
+        }
+      }
+      if (++matches <= limit) {
+        Json x = described(o);
+        x["layer"] = model_layer(l.id);
+        found.push_back(std::move(x));
+      }
+    }
+  }
+  Json out = {{"objects", std::move(found)}, {"matches", matches}};
+  if (matches > limit) {
+    out["note"] = std::format("{} match; the first {} are listed: narrow "
+                              "the region, kind or words for the rest.",
+                              matches, limit);
+  }
+  return out;
+}
+
+Result<Json>
 Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
                                          std::vector<fs::path>&)
 {
@@ -2748,96 +2966,23 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
         if (src->markup && !src->markup->raster.empty()) {
           j["painted"] = true;
         }
+        // Many objects -- a page of thousands -- told in sum, the ones on
+        // top listed: they were all listed, megabytes past any context.
         Json objs = Json::array();
         const Json raw = src->markup ? src->markup->objects : Json();
-        for (const auto& o : raw.is_array() ? raw : Json::array()) {
-          Json x = {{"id", jget<std::string>(o, "id", "")},
-                    {"kind", jget<std::string>(o, "kind", "")}};
-          const double x0 = jget(o, "x0", 0.0), y0 = jget(o, "y0", 0.0);
-          const double x1 = jget(o, "x1", 0.0), y1 = jget(o, "y1", 0.0);
-          x["x"] = std::lround(std::min(x0, x1));
-          x["y"] = std::lround(std::min(y0, y1));
-          x["width"] = std::lround(std::abs(x1 - x0));
-          x["height"] = std::lround(std::abs(y1 - y0));
-          // A line's ends: its box says nothing of which way it runs.
-          if (x["kind"] == "line") {
-            x["from"] = {std::lround(x0), std::lround(y0)};
-            x["to"] = {std::lround(x1), std::lround(y1)};
-          }
-          if (x["kind"] == "text") {
-            // A long text's head only: a flowed page would tell the whole
-            // text back.
-            const auto words = jget<std::string>(o, "text", "");
-            x["text"] = words.size() <= 160
-                            ? words
-                            : std::string(utf8_prefix(words, 120)) +
-                                  std::string(kEllipsis);
-            if (auto al = jget<std::string>(o, "align", "left");
-                al != "left") {
-              x["align"] = al;
-            }
-            const Json f = jget(o, "font", Json::object());
-            x["size"] = jget(f, "size", 0.0);
-            x["font"] = jget<std::string>(f, "family", "");
-            if (jget(f, "bold", false)) {
-              x["bold"] = true;
-            }
-            if (jget(f, "italic", false)) {
-              x["italic"] = true;
-            }
-            x["color"] = hex(jget(o, "stroke", Json()));
-            if (!media::text_fit(o).fits) {
-              x["fits"] = false;
-            }
-          }
-          if (const Json g = jget(o, "gradient", Json()); g.is_object()) {
-            Json cs = Json::array();
-            for (const auto& st : jget(g, "stops", Json::array())) {
-              cs.push_back(hex(jget(st, "color", Json())));
-            }
-            x["gradient"] = {{"type", jget<std::string>(g, "kind", "linear")},
-                             {"colors", std::move(cs)}};
-          }
-          if (x["kind"] == "polygon") {
-            x["points"] = jget(o, "points", Json::array()).size();
-            const Json sm = jget(o, "smooth", Json::array());
-            if (std::ranges::any_of(sm, [](const Json& b) {
-                  return b.is_boolean() && b.get<bool>();
-                })) {
-              x["smooth"] = true;
-            }
-            if (jget(o, "open", false)) {
-              x["open"] = true;
-            }
-          }
-          // Its effects: each kind, and its colour.
-          for (const auto& e : jget(o, "effects", Json::array())) {
-            const auto k = jget<std::string>(e, "kind", "");
-            if (k == "shadow" || k == "glow") {
-              x[k] = hex(jget(e, "color", Json()));
-            }
-          }
-          if (x["kind"] != "text") {
-            if (auto f = hex(jget(o, "fill", Json())); !f.empty()) {
-              x["fill"] = f;
-            }
-            if (jget(o, "width", 0.0) > 0) {
-              x["stroke"] = hex(jget(o, "stroke", Json()));
-              x["line_width"] = jget(o, "width", 0.0);
-            }
-            for (const char* k : {"dash", "arrows"}) {
-              if (o.contains(k)) {
-                x[k] = o[k];
-              }
-            }
-          }
-          // Its turn and flips, where it has them.
-          for (const char* k : {"rotate", "flip_x", "flip_y"}) {
-            if (o.contains(k)) {
-              x[k] = o[k];
-            }
-          }
-          objs.push_back(std::move(x));
+        const Json all = raw.is_array() ? raw : Json::array();
+        const std::size_t from =
+            all.size() > kListedObjects ? all.size() - kListedTop : 0;
+        for (std::size_t i = from; i < all.size(); ++i) {
+          objs.push_back(described(all[i]));
+        }
+        if (from > 0) {
+          j["objects_total"] = all.size();
+          j["objects_by_kind"] = kinds_of(all);
+          j["objects_note"] = std::format(
+              "{} objects: the {} on top are listed. find_objects lists "
+              "the others -- in a region, of a kind, with words, by id.",
+              all.size(), kListedTop);
         }
         j["objects"] = std::move(objs);
       } else {

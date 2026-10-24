@@ -41,7 +41,10 @@ enum MarkupTool: String, CaseIterable, Identifiable, Sendable {
     /// plain from its name.
     var hint: String? {
         switch self {
-        case .pen: String(localized: "Click to place points the curve passes through, ⌥-click for a corner; click the first point to close it, Return to end it. On a selected path: click its curve to add a point, double-click a point to switch it between smooth and corner.")
+        case .line: String(localized: "Begin or end it on a shape's connector to keep it joined to the shape (the toolbar's Connectors adds them).")
+        case .polygon: String(localized: "Click its corners; click the first to close it, or press Return. A corner placed on a shape's connector stays joined to the shape.")
+        case .pen: String(localized: "Click to place points the curve passes through, ⌥-click for a corner; click the first point to close it, Return to end it. On a selected path: click its curve to add a point, double-click a point to switch it between smooth and corner. A point placed on a shape's connector stays joined to the shape.")
+        case .text: String(localized: "Click to type a text box there, or click a shape to type its words in it; Escape when done.")
         case .eyedropper: String(localized: "Click the picture to take its colour as the Color, ⌥-click as the Fill — the selected objects' too.")
         default: nil
         }
@@ -277,8 +280,23 @@ final class MarkupState {
     var selectionLayer: String?
     /// The picture they are on: a selection never outlives it.
     @ObservationIgnored var selectionAsset: String?
-    /// The selected text's edit window.
-    @ObservationIgnored let textPanel = MarkupTextPanel()
+    /// The selected text's -- or shape's -- words typed in place, and the
+    /// object it edits (its words drawn by it, not the overlay).
+    @ObservationIgnored let textEditor = MarkupTextEditor()
+    var editingText: String?
+    /// The CONNECTOR a point being placed would anchor to -- a line's
+    /// end, a path's point, one dragged -- shown filled there.
+    var hotConnector: ConnectorHit?
+    /// Where the connectors shown are centred (canvas pixels): the pointer,
+    /// moved on once it is 40 points away; canvas pixels a point.
+    var ringsAt: CGPoint?
+    @ObservationIgnored var pointScale = 1.0
+    /// The layer's connectors by where they are, under what they were made
+    /// from (AppModel.connectorsNear).
+    @ObservationIgnored var connectorGrid: (key: String, grid: ConnectorGrid)?
+    /// The anchors of the polygon's or the pen's points placed so far, by
+    /// their place among them.
+    @ObservationIgnored var draftAnchors: [Int: ConnectorHit] = [:]
     /// Pastes of what was copied last (the pasteboard's change count
     /// then): each one a step further from the original.
     @ObservationIgnored var pastes = 0
@@ -294,6 +312,19 @@ final class MarkupState {
         case gradient(String, Int)
         /// A drawing pressed (where): dragged, it is lifted and moved.
         case lift(CGPoint)
+        /// A selected object's connector (object, connector) slid along
+        /// its outline.
+        case connector(String, String)
+    }
+
+    /// A connector found under the pointer: whose, which, where (canvas
+    /// pixels).
+    struct ConnectorHit: Equatable {
+        var object: String
+        var connector: String
+        var at: CGPoint
+
+        var anchor: (to: String, connector: String) { (object, connector) }
     }
     /// The DRAWING selected on the raster (core media/markup.h: strokes
     /// that touch): a point of it, and its box -- canvas pixels.
@@ -340,6 +371,17 @@ final class MarkupState {
     var selectedText: MarkupObject? {
         selection.count == 1 && selection[0].kind == .text
             ? selection[0] : nil
+    }
+    /// The one object selected that holds words: a text, or a shape.
+    var selectedWords: MarkupObject? {
+        selection.count == 1 && selection[0].takesWords
+            ? selection[0] : nil
+    }
+    /// The selection's words' object, for the font and alignment: the
+    /// first text, else the first shape holding words.
+    var wordsStyle: MarkupObject? {
+        selection.first { $0.kind == .text }
+            ?? selection.first(where: \.shapeWithWords)
     }
 }
 
@@ -390,7 +432,9 @@ extension AppModel {
                 points: m.stroke, radius: m.radius, softness: m.softness,
                 color: m.edge, erase: m.strokeErase))
         }
-        o.objects = m.selection + (m.draft.map { [$0] } ?? [])
+        // The selection, its anchored points on their connectors, and --
+        // while it changes -- what is anchored to it, following.
+        o.objects = markupLiveObjects + (m.draft.map { [$0] } ?? [])
         if let d = polygonDraft { o.objects.append(d) }
         if let d = penDraft { o.objects.append(d) }
         o.path = m.polygon + (m.polygonHover.map { [$0] } ?? [])
@@ -414,6 +458,9 @@ extension AppModel {
         o.selected = m.selectedIds
         // Drawn by the core, in its layer's place, but while it changes.
         o.drawsSelection = m.live || m.settling
+        o.editing = m.editingText
+        o.connectors = markupConnectorsShown
+        o.hotConnector = m.hotConnector?.at
         if m.drawing, let layer = m.selectionLayer {
             o.drawingBounds = m.drawingBox ?? drawingBounds(layer)
         }
@@ -426,6 +473,198 @@ extension AppModel {
             o.selected = []
         }
         return o
+    }
+
+    /// The selection as the stage draws it -- its anchored points on
+    /// their connectors -- and, while it changes, the objects anchored to
+    /// it, directly or through others: they follow it (core
+    /// media::resolve_anchors), drawn here and left out of the core's
+    /// picture meanwhile (markupHiddenIds). In their layer's order.
+    var markupLiveObjects: [MarkupObject] {
+        let m = markup
+        guard let layer = m.selectionLayer, !m.selection.isEmpty else {
+            return m.selection
+        }
+        let all = layerWithSelection(layer)
+        guard all.contains(where: { !$0.anchors.isEmpty }) else {
+            return m.selection
+        }
+        let ids = m.selectedIds
+        let follow = m.live || m.settling
+            ? MarkupRender.followers(of: ids, in: all) : []
+        return MarkupRender.resolve(all).filter {
+            ids.contains($0.id) || follow.contains($0.id)
+        }
+    }
+
+    /// `layer`'s objects with the selection's values in their place (and
+    /// a selected one not on it yet after them).
+    private func layerWithSelection(_ layer: String) -> [MarkupObject] {
+        let m = markup
+        var byId = Dictionary(m.selection.map { ($0.id, $0) }) { a, _ in a }
+        var out = markupObjects(layer).map { o in
+            byId.removeValue(forKey: o.id) ?? o
+        }
+        out += m.selection.filter { byId[$0.id] != nil }
+        return out
+    }
+
+    /// What the core leaves out of the picture it draws meanwhile: the
+    /// selection while it changes, and what follows it.
+    var markupHiddenIds: Set<String> {
+        let m = markup
+        guard markupOpen, m.live else { return [] }
+        guard let layer = m.selectionLayer else { return m.selectedIds }
+        return m.selectedIds.union(MarkupRender.followers(
+            of: m.selectedIds, in: layerWithSelection(layer)))
+    }
+
+    // MARK: Connectors
+
+    /// Where connectors show: a line's, path's or polygon's points being
+    /// placed -- or one of a selected one's dragged -- those of the objects
+    /// on its layer it could anchor to; else the selection's own (the
+    /// select tool's, to slide or ⌥-click away).
+    private var markupConnectorsShown: [CGPoint] {
+        let m = markup
+        if let (layer, skip) = anchoringNow {
+            // Those round the pointer alone (160 points), a few hundred at
+            // most: a layer of thousands drew them all at each move -- 0.2 s
+            // for 39 000.
+            guard let at = m.ringsAt else { return [] }
+            return connectorsNear(at, within: 160 * m.pointScale, on: layer,
+                                  excluding: skip).prefix(400).map(\.at)
+        }
+        guard m.tool == .select || m.tool == .pen else { return [] }
+        return markupLiveObjects.filter { m.selectedIds.contains($0.id) }
+            .flatMap { MarkupRender.connectorPoints($0).map(\.at) }
+    }
+
+    /// A point being placed that could anchor: the layer it would be on
+    /// and the object it is (whose own connectors it does not take).
+    private var anchoringNow: (layer: String?, skip: Set<String>)? {
+        let m = markup
+        switch m.tool {
+        case .line, .polygon:
+            return (markupTargetPreview?.id, [])
+        case .pen where m.selection.isEmpty || !m.pen.isEmpty:
+            return (markupTargetPreview?.id, [])
+        default:
+            break
+        }
+        if case .handle(let id, let i) = m.drag,
+           let o = m.selection.first(where: { $0.id == id }),
+           Self.anchorablePoint(o, handle: i) != nil {
+            return (m.selectionLayer, [id])
+        }
+        return nil
+    }
+
+    /// Handle `i` of `o` (MarkupRender.handles) as the point it moves --
+    /// a line's ends, a path's points -- that anchors; nil for the rest.
+    static func anchorablePoint(_ o: MarkupObject, handle i: Int) -> Int? {
+        switch o.kind {
+        case .line: return i == 0 || i == 1 ? i : nil
+        case .polygon: return i < o.points.count ? i : nil
+        default: return nil
+        }
+    }
+
+    /// The connectors within `reach` of `p` on `layer` -- but
+    /// `excluding`'s objects' -- nearest first; none on a layer hidden or
+    /// locked. The layer's resting objects through a grid of where their
+    /// connectors are (ConnectorGrid), made again only when the markup or
+    /// what is selected on it changed; the selection's where it is now.
+    private func connectorsNear(_ p: CGPoint, within reach: Double,
+                                on layer: String?,
+                                excluding: Set<String>)
+        -> [MarkupState.ConnectorHit]
+    {
+        guard let layer, let a = markupAsset,
+              let l = a.layerStack.first(where: { $0.id == layer }),
+              l.visible, !l.locked else { return [] }
+        let m = markup
+        let selected = m.selectionLayer == layer ? m.selectedIds : []
+        let key = "\(layer)|\(l.markup?.stamp ?? "")|"
+            + "\(l.markup?.count ?? 0)|\(selected.sorted().joined(separator: ","))"
+        if m.connectorGrid?.key != key {
+            m.connectorGrid = (key, ConnectorGrid(
+                markupObjects(layer).filter { !selected.contains($0.id) }))
+        }
+        var out = (m.connectorGrid?.grid.near(p, within: reach) ?? [])
+            .filter { !excluding.contains($0.object) }
+            .map { MarkupState.ConnectorHit(object: $0.object,
+                                            connector: $0.connector,
+                                            at: $0.at) }
+        if !selected.isEmpty {
+            for o in markupLiveObjects
+            where selected.contains(o.id) && !excluding.contains(o.id) {
+                for c in MarkupRender.connectorPoints(o)
+                where hypot(c.at.x - p.x, c.at.y - p.y) <= reach {
+                    out.append(.init(object: o.id, connector: c.id,
+                                     at: c.at))
+                }
+            }
+            out.sort {
+                hypot($0.at.x - p.x, $0.at.y - p.y)
+                    < hypot($1.at.x - p.x, $1.at.y - p.y)
+            }
+        }
+        return out
+    }
+
+    /// The connector nearest `p` within reach -- 8 points on screen -- of
+    /// the objects on `layer` but `excluding`'s; nil with none there.
+    private func connectorNear(_ p: CGPoint, on layer: String?,
+                               excluding: Set<String>,
+                               _ e: MarkupPointer) -> MarkupState.ConnectorHit? {
+        connectorsNear(p, within: 8 * e.pixelsPerPoint, on: layer,
+                       excluding: excluding).first
+    }
+
+    /// `o` with its point `k` anchored to `hit` (nil: free).
+    private static func anchoring(_ o: MarkupObject, point k: Int,
+                                  to hit: MarkupState.ConnectorHit?)
+        -> MarkupObject
+    {
+        var o = o
+        o.anchors.removeAll { $0.point == k }
+        if let hit {
+            o.anchors.append(MarkupAnchor(point: k, to: hit.object,
+                                          connector: hit.connector))
+            o.anchors.sort { $0.point < $1.point }
+        }
+        return o
+    }
+
+    /// The selected objects' CONNECTORS (the toolbar's): their defaults
+    /// added -- the middle of each segment, four round an ellipse -- or
+    /// all taken off, the points anchored to them left free where they
+    /// are. One command.
+    func setSelectionConnectors(add: Bool) {
+        let m = markup
+        guard let core, let projectId, let pic = markupAsset,
+              let layer = m.selectionLayer,
+              m.selection.contains(where: \.takesConnectors) else { return }
+        commitSelection(keep: true)
+        let ids = m.selection.filter(\.takesConnectors).map(\.id)
+        let r = core.layerOp(project: projectId,
+                             asset: composedTarget(pic.id), "connectors",
+                             layer: layer,
+                             extra: ["objects": ids, "add": add])
+        if !r.ok { note("error", r.message) }
+        reloadAssets()
+        let sel = m.selectedIds
+        m.selection = markupObjects(layer).filter { sel.contains($0.id) }
+        markupChanged()
+    }
+
+    /// Whether the toolbar's Connectors has something to work on: add --
+    /// a selected line, shape or path; remove -- one with connectors.
+    func markupCanConnect(add: Bool) -> Bool {
+        let s = markup.selection.filter(\.takesConnectors)
+        return markupReady && (add ? !s.isEmpty
+                                   : s.contains { !$0.connectors.isEmpty })
     }
 
     /// The layer a markup action goes on (core: an empty selected layer,
@@ -474,6 +713,16 @@ extension AppModel {
     /// A pointer on the picture, as the tool takes it.
     func markupPointer(_ e: MarkupPointer) {
         guard markupReady else { return }
+        // The connectors shown follow the pointer -- a step at a time.
+        let mk = markup
+        mk.pointScale = e.pixelsPerPoint
+        if e.phase == .exit {
+            mk.ringsAt = nil
+        } else if mk.ringsAt.map({
+            hypot($0.x - e.point.x, $0.y - e.point.y) > 40 * e.pixelsPerPoint
+        }) ?? true {
+            mk.ringsAt = e.point
+        }
         // A mark that would go on a LOCKED layer (the selected one): said
         // at the press, nothing begun -- the eyedropper marks nothing, and
         // the pen on a path selected works on the path's own layer.
@@ -501,11 +750,15 @@ extension AppModel {
             m.drag = .none
             paintStroke()
         case (.down, .text):
-            // On a text: edit it; else a new one there -- a BOX, a few
-            // words wide and two lines tall, wrapping what is typed.
-            if let hit = markupHit(p, e) , hit.object.kind == .text {
-                select([hit.object], on: hit.layer)
-                editMarkupText()
+            // On a text -- or a shape, its words -- edit it; else a new
+            // one there: a BOX, a few words wide and two lines tall,
+            // wrapping what is typed.
+            if let hit = markupHit(p, e), hit.object.takesWords {
+                if m.editingText != hit.object.id {
+                    commitSelection()
+                    select([hit.object], on: hit.layer)
+                    editMarkupText()
+                }
                 return
             }
             commitSelection()
@@ -518,46 +771,81 @@ extension AppModel {
             editMarkupText()
         case (.down, _) where m.tool.shape != nil:
             commitSelection()
-            m.draft = newObject(m.tool.shape!, at: p)
+            var d = newObject(m.tool.shape!, at: p)
+            // A line begun on a connector: its start anchored there.
+            if d.kind == .line,
+               let hit = connectorNear(p, on: markupTargetPreview?.id,
+                                       excluding: [], e) {
+                (d.x0, d.y0, d.x1, d.y1) = (hit.at.x, hit.at.y, hit.at.x,
+                                            hit.at.y)
+                d = Self.anchoring(d, point: 0, to: hit)
+            }
+            m.hotConnector = nil
+            m.draft = d
             m.drag = .shape
         case (.drag, _) where m.tool.shape != nil:
             guard case .shape = m.drag, var d = m.draft else { return }
             var q = p
             if e.shift { q = constrained(d, q) }
+            // Its end over a connector: on it.
+            m.hotConnector = d.kind == .line
+                ? connectorNear(q, on: markupTargetPreview?.id,
+                                excluding: [], e) : nil
+            if let hit = m.hotConnector { q = hit.at }
             (d.x1, d.y1) = (q.x, q.y)
             m.draft = d
         case (.up, _) where m.tool.shape != nil:
-            guard case .shape = m.drag, let d = m.draft else { return }
+            guard case .shape = m.drag, var d = m.draft else { return }
             m.drag = .none
             m.draft = nil
+            if d.kind == .line, let hit = m.hotConnector {
+                d = Self.anchoring(d, point: 1, to: hit)
+            }
+            m.hotConnector = nil
             let big = d.kind == .line
                 ? hypot(d.x1 - d.x0, d.y1 - d.y0) >= 2
                 : abs(d.x1 - d.x0) >= 2 && abs(d.y1 - d.y0) >= 2
             if big { addObject(d) }
+        case (.hover, .line):
+            m.hotConnector = connectorNear(p, on: markupTargetPreview?.id,
+                                           excluding: [], e)
         case (.down, .polygon):
             polygonDown(e)
         case (.drag, .polygon):
-            // The corner pressed follows the pointer until let go.
+            // The corner pressed follows the pointer until let go -- on a
+            // connector, anchored there.
             guard case .polygon = m.drag, !m.polygon.isEmpty else { return }
-            m.polygon[m.polygon.count - 1] = p
+            let hit = connectorNear(p, on: markupTargetPreview?.id,
+                                    excluding: [], e)
+            m.polygon[m.polygon.count - 1] = hit?.at ?? p
+            m.draftAnchors[m.polygon.count - 1] = hit
+            m.hotConnector = hit
         case (.up, .polygon):
             m.drag = .none
+            m.hotConnector = nil
         case (.hover, .polygon):
-            if !m.polygon.isEmpty { m.polygonHover = p }
+            m.hotConnector = connectorNear(p, on: markupTargetPreview?.id,
+                                           excluding: [], e)
+            if !m.polygon.isEmpty { m.polygonHover = m.hotConnector?.at ?? p }
         case (.down, .pen):
             penDown(e)
         case (.drag, .pen):
             penDrag(e)
         case (.up, .pen):
-            if case .handle = m.drag {
+            if case .handle(let id, let i) = m.drag {
+                anchorDragged(id, handle: i)
                 if m.moved { commitSelection(keep: true) } else {
                     settleSelection()
                 }
             }
             m.drag = .none
             m.moved = false
+            m.hotConnector = nil
         case (.hover, .pen):
-            if !m.pen.isEmpty { m.penHover = p }
+            m.hotConnector = m.selection.isEmpty || !m.pen.isEmpty
+                ? connectorNear(p, on: markupTargetPreview?.id,
+                                excluding: [], e) : nil
+            if !m.pen.isEmpty { m.penHover = m.hotConnector?.at ?? p }
         case (_, .eyedropper):
             eyedropper(e)
         case (.down, .select):
@@ -565,18 +853,40 @@ extension AppModel {
         case (.drag, .select):
             selectDrag(e)
         case (.up, .select):
+            if case .handle(let id, let i) = m.drag {
+                anchorDragged(id, handle: i)
+            }
             if m.moved { commitSelection(keep: true) } else { settleSelection() }
             m.drag = .none
             m.moved = false
+            m.hotConnector = nil
         default:
             break
         }
     }
 
-    /// The selected text's words in their edit window (the toolbar's
-    /// button, a new text, a double-click on one).
+    /// The selected text's -- or shape's -- words typed in place (the
+    /// toolbar's button, a new text, a double-click on one, Return).
     func editMarkupText() {
-        markup.textPanel.open(self)
+        markup.textEditor.open(self)
+    }
+
+    /// Where the in-place text editor goes: the stage markup works on.
+    var markupTextHost: MarkupOverlayView? {
+        markupOnClip ? ClipMarkupNSView.shown?.markupOverlayHost
+                     : CompareCanvas.shown?.markupOverlayHost
+    }
+
+    /// A dragged point let go: anchored to the connector it is on, else
+    /// free (its anchor taken off as the drag began).
+    private func anchorDragged(_ id: String, handle i: Int) {
+        let m = markup
+        guard let k = m.selection.firstIndex(where: { $0.id == id }),
+              let point = Self.anchorablePoint(m.selection[k], handle: i),
+              let hit = m.hotConnector else { return }
+        m.selection[k] = Self.anchoring(m.selection[k], point: point,
+                                        to: hit)
+        m.moved = true
     }
 
     func markupKey(_ k: MarkupKey) {
@@ -594,7 +904,15 @@ extension AppModel {
                 commitSelection()
             }
         case .enter:
-            if markup.pen.isEmpty { finishPolygon() } else { finishPen() }
+            // Nothing being drawn: the one text or shape selected has its
+            // words typed.
+            if !markup.pen.isEmpty {
+                finishPen()
+            } else if !markup.polygon.isEmpty {
+                finishPolygon()
+            } else if markup.selectedWords != nil {
+                editMarkupText()
+            }
         case .cut: copySelectedObjects(cut: true)
         case .copy: copySelectedObjects(cut: false)
         case .paste: pasteObjects()
@@ -687,7 +1005,9 @@ extension AppModel {
             return NSPasteboard.general.availableType(
                 from: [Self.markupPasteboardType]) != nil
         case .escape, .smaller, .larger, .softer, .harder: return true
-        case .enter: return !markup.polygon.isEmpty || !markup.pen.isEmpty
+        case .enter:
+            return !markup.polygon.isEmpty || !markup.pen.isEmpty
+                || markup.selectedWords != nil
         }
     }
 
@@ -755,10 +1075,14 @@ extension AppModel {
     /// polygon made.
     private func polygonDown(_ e: MarkupPointer) {
         let m = markup
-        let p = e.point
+        // A corner on a connector: there, anchored.
+        let hit = connectorNear(e.point, on: markupTargetPreview?.id,
+                                excluding: [], e)
+        let p = hit?.at ?? e.point
         if m.polygon.isEmpty {
             commitSelection()
             m.polygon = [p]
+            m.draftAnchors = [0: hit].compactMapValues { $0 }
             m.polygonHover = nil
             m.drag = .polygon
             return
@@ -772,28 +1096,54 @@ extension AppModel {
             return
         }
         m.polygon.append(p)
+        m.draftAnchors[m.polygon.count - 1] = hit
         m.drag = .polygon
     }
 
+    /// The points placed -- a polygon's, the pen's -- the same one twice
+    /// running taken once, a closed one's last again on its first taken
+    /// off: those kept, by their place among those placed.
+    private static func keptPoints(_ placed: [CGPoint],
+                                   closed: Bool) -> [Int] {
+        var kept: [Int] = []
+        for (i, p) in placed.enumerated() {
+            if let k = kept.last,
+               hypot(p.x - placed[k].x, p.y - placed[k].y) < 1 { continue }
+            kept.append(i)
+        }
+        if closed, let a = kept.first, let z = kept.last, kept.count > 1,
+           hypot(placed[a].x - placed[z].x, placed[a].y - placed[z].y) < 1 {
+            kept.removeLast()
+        }
+        return kept
+    }
+
+    /// The anchors the points placed took, for those kept.
+    private func draftAnchors(_ kept: [Int]) -> [MarkupAnchor] {
+        kept.enumerated().compactMap { k, i in
+            markup.draftAnchors[i].map {
+                MarkupAnchor(point: k, to: $0.object, connector: $0.connector)
+            }
+        }
+    }
+
     /// The polygon drawn made an object -- three corners or more, the
-    /// same corner twice running taken once -- and selected.
+    /// same corner twice running taken once -- and selected; corners
+    /// placed on connectors anchored to them.
     func finishPolygon() {
         let m = markup
-        var pts: [CGPoint] = []
-        for p in m.polygon {
-            if let q = pts.last, hypot(p.x - q.x, p.y - q.y) < 1 { continue }
-            pts.append(p)
-        }
-        if let a = pts.first, let z = pts.last, pts.count > 1,
-           hypot(a.x - z.x, a.y - z.y) < 1 {
-            pts.removeLast()
-        }
+        let kept = Self.keptPoints(m.polygon, closed: true)
+        let pts = kept.map { m.polygon[$0] }
+        let anchors = draftAnchors(kept)
         m.polygon = []
         m.polygonHover = nil
+        m.draftAnchors = [:]
+        m.hotConnector = nil
         m.drag = .none
         guard pts.count >= 3 else { return }
         var o = newObject(.polygon, at: pts[0])
         MarkupRender.setPolygon(&o, pts)
+        o.anchors = anchors
         addObject(o)
     }
 
@@ -840,6 +1190,10 @@ extension AppModel {
         let p = e.point
         let reach = penReach(e)
         m.moved = false
+        // A point placed on a connector: there, anchored.
+        func connector() -> MarkupState.ConnectorHit? {
+            connectorNear(p, on: markupTargetPreview?.id, excluding: [], e)
+        }
         if !m.pen.isEmpty {
             if let i = pointNear(p, in: m.pen, reach: reach) {
                 if e.clickCount >= 2 {
@@ -852,8 +1206,10 @@ extension AppModel {
                 }
                 return
             }
-            m.pen.append(p)
+            let hit = connector()
+            m.pen.append(hit?.at ?? p)
             m.penSmooth.append(!e.option)
+            m.draftAnchors[m.pen.count - 1] = hit
             m.drag = .penPoint(m.pen.count - 1)
             return
         }
@@ -882,8 +1238,10 @@ extension AppModel {
             }
         }
         commitSelection()
-        m.pen = [p]
+        let hit = connector()
+        m.pen = [hit?.at ?? p]
         m.penSmooth = [!e.option]
+        m.draftAnchors = [0: hit].compactMapValues { $0 }
         m.penHover = nil
         m.drag = .penPoint(0)
     }
@@ -894,13 +1252,18 @@ extension AppModel {
         let m = markup
         switch m.drag {
         case .penPoint(let i) where m.pen.indices.contains(i):
-            m.pen[i] = e.point
+            // On a connector: there, anchored.
+            let hit = connectorNear(e.point, on: markupTargetPreview?.id,
+                                    excluding: [], e)
+            m.pen[i] = hit?.at ?? e.point
+            m.draftAnchors[i] = hit
+            m.hotConnector = hit
         case .handle(let id, let i):
             guard let k = m.selection.firstIndex(where: { $0.id == id })
             else { return }
             liveSelection()
-            m.selection[k] = MarkupRender.moving(m.selection[k], handle: i,
-                                                 to: e.point)
+            m.selection[k] = movingHandle(m.selection[k], handle: i,
+                                          to: e.point, e)
             m.moved = true
         default:
             break
@@ -912,26 +1275,22 @@ extension AppModel {
     /// running taken once. Fewer: none.
     func finishPen(closed: Bool = false) {
         let m = markup
-        var pts: [CGPoint] = [], flags: [Bool] = []
-        for (p, s) in zip(m.pen, m.penSmooth) {
-            if let q = pts.last, hypot(p.x - q.x, p.y - q.y) < 1 { continue }
-            pts.append(p)
-            flags.append(s)
-        }
-        if closed, let a = pts.first, let z = pts.last, pts.count > 1,
-           hypot(a.x - z.x, a.y - z.y) < 1 {
-            pts.removeLast()
-            flags.removeLast()
-        }
+        let kept = Self.keptPoints(m.pen, closed: closed)
+        let pts = kept.map { m.pen[$0] }
+        let flags = kept.map { $0 < m.penSmooth.count && m.penSmooth[$0] }
+        let anchors = draftAnchors(kept)
         m.pen = []
         m.penSmooth = []
         m.penHover = nil
+        m.draftAnchors = [:]
+        m.hotConnector = nil
         m.drag = .none
         guard pts.count >= (closed ? 3 : 2) else { return }
         var o = newObject(.polygon, at: pts[0])
         MarkupRender.setPolygon(&o, pts)
         o.smooth = flags.contains(true) ? flags : []
         o.open = !closed
+        o.anchors = anchors
         if o.open {
             o.fill = .clear
             o.gradient = nil
@@ -1141,12 +1500,24 @@ extension AppModel {
             dx = f.width / 2 - union.midX
             dy = f.height / 2 - union.midY
         }
+        var renamed: [String: String] = [:]
         for i in objects.indices {
-            objects[i].id = "m" + UUID().uuidString.prefix(8).lowercased()
+            let id = "m" + UUID().uuidString.prefix(8).lowercased()
+            renamed[objects[i].id] = id
+            objects[i].id = id
             objects[i].x0 += dx
             objects[i].x1 += dx
             objects[i].y0 += dy
             objects[i].y1 += dy
+        }
+        // Anchored among themselves, still; to an object not pasted, free.
+        for i in objects.indices {
+            objects[i].anchors = objects[i].anchors.compactMap { a in
+                renamed[a.to].map {
+                    MarkupAnchor(point: a.point, to: $0,
+                                 connector: a.connector)
+                }
+            }
         }
         // A drawing FLOATS where it lands: a lifted one, selected with
         // the objects -- laid into the raster when they are let go.
@@ -1166,8 +1537,7 @@ extension AppModel {
             floating = markupObjects(layer).filter { $0.id == id }
             markupChanged()
         }
-        if !objects.isEmpty,
-           !saveObjects(markupObjects(layer) + objects, on: layer) {
+        if !objects.isEmpty, !patchObjects(objects, on: layer) {
             return
         }
         if m.tool != .select && m.tool != .text { m.tool = .select }
@@ -1376,8 +1746,12 @@ extension AppModel {
     /// picture painted with it is shown, the overlay draws it.
     private func paintStroke() {
         let m = markup
-        guard let core, let projectId, let pic = markupAsset,
-              !m.stroke.isEmpty, let layer = markupTarget() else {
+        guard let core, let projectId, markupAsset != nil,
+              !m.stroke.isEmpty, let layer = markupTarget(),
+              // Read after the target: the first mark on a flat picture
+              // made its edited copy, the layer on it (read before, the
+              // paint went to another copy -- "not a markup layer").
+              let pic = markupAsset else {
             m.stroke = []
             return
         }
@@ -1422,23 +1796,33 @@ extension AppModel {
     /// A new object on the target layer, selected.
     private func addObject(_ o: MarkupObject) {
         guard let layer = markupTarget() else { return }
-        guard saveObjects(markupObjects(layer) + [o], on: layer) else {
-            return
-        }
+        guard patchObjects([o], on: layer) else { return }
         select([o], on: layer)
     }
 
-    /// `objects` kept as `layer`'s.
+    /// `upsert` put in on `layer` by id -- one there in its place, a new
+    /// one on top -- and `remove` taken out: what changed, not the list
+    /// (the core's patch-objects resolves what is anchored to them). The
+    /// app's copy of the markup follows the reply (followPatch), so the
+    /// list read again brings no objects.
     @discardableResult
-    private func saveObjects(_ objects: [MarkupObject],
-                             on layer: String) -> Bool {
+    private func patchObjects(_ upsert: [MarkupObject],
+                              remove: [String] = [],
+                              on layer: String) -> Bool {
         guard let core, let projectId, let pic = markupAsset else {
             return false
         }
-        let r = core.layerOp(project: projectId, asset: composedTarget(pic.id), "objects",
-                             layer: layer,
-                             extra: ["objects": objects.map(\.json)])
-        if !r.ok { note("error", r.message) }
+        let target = composedTarget(pic.id)
+        let source = markupAsset?.layerStack.first { $0.id == layer }?.source
+        let r = core.layerOp(project: projectId, asset: target,
+                             "patch-objects", layer: layer,
+                             extra: ["upsert": upsert.map(\.json),
+                                     "remove": remove])
+        if !r.ok {
+            note("error", r.message)
+        } else if let source {
+            followPatch(source, r)
+        }
         reloadAssets()
         return r.ok
     }
@@ -1472,7 +1856,9 @@ extension AppModel {
     /// live copy goes once that picture is shown (markupComposited).
     func settleSelection() {
         let m = markup
-        guard m.live else { return }
+        // Its words being typed in place: still live -- the editor draws
+        // them, over the object the stage draws.
+        guard m.live, m.editingText == nil else { return }
         m.live = false
         m.settling = true
         markupChanged()
@@ -1483,6 +1869,8 @@ extension AppModel {
     func commitSelection(keep: Bool = false) {
         defer { settleSelection() }
         let m = markup
+        // Let go: its words typed in place kept first.
+        if !keep && m.editingText != nil { m.textEditor.close() }
         // Another picture on the stage now: the selection was its.
         if m.selectionAsset != nil && m.selectionAsset != markupAsset?.id {
             m.selection = []
@@ -1501,9 +1889,24 @@ extension AppModel {
         }
         let byId = Dictionary(uniqueKeysWithValues:
                                 m.selection.map { ($0.id, $0) })
-        let now = markupObjects(layer).map { byId[$0.id] ?? $0 }
-        if now != markupObjects(layer) {
-            saveObjects(now, on: layer)
+        // Its anchored points on their connectors, as the core keeps them
+        // -- and what is anchored to it where it now puts them.
+        let now = MarkupRender.resolve(
+            markupObjects(layer).map { byId[$0.id] ?? $0 })
+        if keep {
+            let resolved = Dictionary(now.map { ($0.id, $0) }) { a, _ in a }
+            m.selection = m.selection.map { resolved[$0.id] ?? $0 }
+        }
+        // What the selection changed, alone: the core resolves what is
+        // anchored to it, as `now` did.
+        let stored = Dictionary(markupObjects(layer).compactMap {
+            byId[$0.id] != nil ? ($0.id, $0) : nil
+        }) { a, _ in a }
+        let changed = now.filter {
+            byId[$0.id] != nil && stored[$0.id] != $0
+        }
+        if !changed.isEmpty {
+            patchObjects(changed, on: layer)
             // Changed at once (a colour, the eyedropper's, X), not live:
             // the core draws it, so the picture is made again -- a live
             // one is when it settles. (A well's colour was kept and not
@@ -1562,13 +1965,17 @@ extension AppModel {
         let m = markup
         guard m.selectionAsset == nil || m.selectionAsset == markupAsset?.id
         else { return }
-        m.live = false
         if let layer = m.selectionLayer {
             let now = markupObjects(layer)
             let ids = m.selectedIds
             m.selection = now.filter { ids.contains($0.id) }
             if m.selection.isEmpty && !m.drawing { m.selectionLayer = nil }
         }
+        // Its words being typed in place: still live, the editor following
+        // what the project has (MarkupBar's follow); else drawn by the core.
+        m.live = m.editingText.map { id in
+            m.selection.contains { $0.id == id }
+        } ?? false
         if m.selection.isEmpty, !m.drawing, let a = markupAsset,
            let l = a.layerStack.first(where: { l in
                l.visible && (l.markup?.objects ?? []).contains {
@@ -1687,7 +2094,12 @@ extension AppModel {
         // As a drag changes it: drawn live, then kept -- the core draws
         // it again where it now is.
         liveSelection()
-        editSelection { $0 = MarkupRender.reframed($0, from: f, to: to) }
+        // Moved whole: free of the shapes it is not moved with.
+        let ids = markup.selectedIds
+        editSelection {
+            $0 = MarkupRender.detached(
+                MarkupRender.reframed($0, from: f, to: to), keeping: ids)
+        }
     }
 
     /// The selection's FLIPS as Information signs its width and height:
@@ -1719,7 +2131,9 @@ extension AppModel {
         if let height { to.size.height = max(1, abs(height)) }
         guard flipX || flipY || to != f else { return }
         liveSelection()
+        let ids = markup.selectedIds
         editSelection { o in
+            o = MarkupRender.detached(o, keeping: ids)
             let c = MarkupRender.centre(o)
             if flipX {
                 o = MarkupRender.offset(o, dx: f.minX + f.maxX - 2 * c.x,
@@ -1747,7 +2161,11 @@ extension AppModel {
             return
         }
         liveSelection()
-        editSelection { $0.rotate = d }
+        let ids = markup.selectedIds
+        editSelection {
+            $0 = MarkupRender.detached($0, keeping: ids)
+            $0.rotate = d
+        }
     }
 
     /// The layer the next mark goes on, as the core will choose it (an
@@ -1799,8 +2217,7 @@ extension AppModel {
         let gone = m.selectedIds
         m.selection = []
         m.selectionLayer = nil
-        saveObjects(markupObjects(layer).filter { !gone.contains($0.id) },
-                    on: layer)
+        patchObjects([], remove: Array(gone), on: layer)
         markupChanged()
     }
 
@@ -1906,13 +2323,37 @@ extension AppModel {
                 consider(h, .gradient(o.id, i))
             }
         }
-        for o in m.selection {
+        let live = markupLiveObjects.filter { m.selectedIds.contains($0.id) }
+        for o in live {
             for (i, h) in MarkupRender.handles(o).enumerated() {
                 consider(h, .handle(o.id, i))
             }
+            // Its connectors: slid along its outline -- ⌥-clicked, taken
+            // off.
+            for c in MarkupRender.connectorPoints(o) {
+                consider(c.at, .connector(o.id, c.id))
+            }
         }
         if let best {
+            if e.option, case .connector(let id, let c) = best.drag {
+                editSelection {
+                    if $0.id == id { $0.connectors.removeAll { $0.id == c } }
+                }
+                m.drag = .none
+                return
+            }
             m.drag = best.drag
+            return
+        }
+        // ⌥ on a selected object's outline: a connector there.
+        if e.option, let (o, at) = outlineNear(p, e) {
+            editSelection {
+                guard $0.id == o.id else { return }
+                $0.connectors.append(MarkupConnector(
+                    id: MarkupRender.newConnectorId($0), seg: at.seg,
+                    t: at.t))
+            }
+            m.drag = .none
             return
         }
         guard let hit = markupHit(p, e) else {
@@ -1948,7 +2389,8 @@ extension AppModel {
             m.drag = .none
             return
         }
-        if e.clickCount >= 2 && hit.object.kind == .text {
+        // A double-click on a text -- or a shape -- types its words.
+        if e.clickCount >= 2 && hit.object.takesWords {
             select([hit.object], on: hit.layer)
             editMarkupText()
             m.drag = .none
@@ -1983,7 +2425,7 @@ extension AppModel {
         }
         // Moved or reshaped: drawn live from its first step.
         switch m.drag {
-        case .move, .handle, .gradient: liveSelection()
+        case .move, .handle, .gradient, .connector: liveSelection()
         default: break
         }
         // A drawing pressed, dragged: lifted -- an object where it lay,
@@ -2017,15 +2459,29 @@ extension AppModel {
                                 to: lines.ys, within: reach)
             }
             if m.selection.count == m.moveStart.count {
+                // Moved whole: free of the shapes it is not moved with.
+                let ids = m.selectedIds
                 m.selection = m.moveStart.map {
-                    MarkupRender.offset($0, dx: dx, dy: dy)
+                    MarkupRender.detached(
+                        MarkupRender.offset($0, dx: dx, dy: dy),
+                        keeping: ids)
                 }
             }
             m.moved = true
         case .handle(let id, let i):
             if let k = m.selection.firstIndex(where: { $0.id == id }) {
-                m.selection[k] = MarkupRender.moving(m.selection[k],
-                                                     handle: i, to: p)
+                m.selection[k] = movingHandle(m.selection[k], handle: i,
+                                              to: p, e)
+                m.moved = true
+            }
+        case .connector(let id, let c):
+            // Slid along its outline: where it comes nearest the pointer.
+            if let k = m.selection.firstIndex(where: { $0.id == id }),
+               let at = MarkupRender.nearestOnOutline(m.selection[k], to: p),
+               let j = m.selection[k].connectors.firstIndex(where: {
+                   $0.id == c }) {
+                m.selection[k].connectors[j].seg = at.seg
+                m.selection[k].connectors[j].t = at.t
                 m.moved = true
             }
         case .gradient(let id, let i):
@@ -2038,6 +2494,46 @@ extension AppModel {
             break
         }
         m.last = p
+    }
+
+    /// `o` with handle `i` dragged to `p`. A point that anchors -- a
+    /// line's end, a path's -- over a connector of another object on its
+    /// layer goes onto it, taken when let go (anchorDragged); its anchor
+    /// let go meanwhile.
+    private func movingHandle(_ o: MarkupObject, handle i: Int,
+                              to p: CGPoint,
+                              _ e: MarkupPointer) -> MarkupObject {
+        let m = markup
+        guard let k = Self.anchorablePoint(o, handle: i) else {
+            m.hotConnector = nil
+            return MarkupRender.moving(o, handle: i, to: p)
+        }
+        let hit = connectorNear(p, on: m.selectionLayer, excluding: [o.id],
+                                e)
+        m.hotConnector = hit
+        return MarkupRender.moving(Self.anchoring(o, point: k, to: nil),
+                                   handle: i, to: hit?.at ?? p)
+    }
+
+    /// A selected object that takes connectors whose outline passes
+    /// within reach of `p`, and where on it.
+    private func outlineNear(_ p: CGPoint, _ e: MarkupPointer)
+        -> (MarkupObject, (seg: Int, t: Double, at: CGPoint,
+                           distance: Double))?
+    {
+        let reach = 6 * e.pixelsPerPoint
+        var best: (MarkupObject, (seg: Int, t: Double, at: CGPoint,
+                                  distance: Double))?
+        for o in markupLiveObjects where markup.selectedIds.contains(o.id)
+            && o.takesConnectors {
+            guard let at = MarkupRender.nearestOnOutline(o, to: p),
+                  at.distance <= o.width / 2 + reach,
+                  at.distance < (best?.1.distance ?? .infinity) else {
+                continue
+            }
+            best = (o, at)
+        }
+        return best
     }
 
     /// How far `edges` go to put the nearest of them on one of `lines`
@@ -2120,6 +2616,10 @@ extension AppModel {
             m.sampleAt = nil
             m.sampleColor = nil
         }
+        // Another tool but the text tool: the words typed in place kept,
+        // the editing ended.
+        if m.tool != .text && m.editingText != nil { m.textEditor.close() }
+        m.hotConnector = nil
         // The pen edits a selected path; the eyedropper colours what is
         // selected: they keep it.
         if ![.select, .text, .pen, .eyedropper].contains(m.tool) {

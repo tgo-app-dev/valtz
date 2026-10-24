@@ -235,6 +235,8 @@ private:
   // ---- the tools (agent-tools.cc)
   Result<Json> t_get_project(Session&, Step&, const Json&,
                              std::vector<std::filesystem::path>&);
+  Result<Json> t_find_objects(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
   Result<Json> t_get_composition(Session&, Step&, const Json&,
                                  std::vector<std::filesystem::path>&);
   Result<Json> t_view_page(Session&, Step&, const Json&,

@@ -79,7 +79,7 @@ struct ComposerStack: View {
     /// The timeline in the prompt's place (DESIGN §10a Timeline): no
     /// modality tab, no generation card -- the other cards tucked under it
     /// as under the prompt.
-    private var timeline: Bool { !immersive && model.timelineOpen }
+    private var timeline: Bool { !immersive && model.composerShowsTimeline }
 
     var body: some View {
         // The tab first: its foot, under the card, is drawn behind it.
@@ -1111,8 +1111,17 @@ private struct ModalityTab: View {
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(on ? .isSelected : [])
-        .help(m == .video ? "Create a video"
-              : m == .audio ? "Create a song" : "Create an image")
+        .shortcutHint(m.shortcut)
+        .help(help(m))
+    }
+
+    private func help(_ m: Modality) -> LocalizedStringKey {
+        switch m {
+        case .video: "Create a video (⌘1)"
+        case .image: "Create an image (⌘2)"
+        case .audio: "Create a song (⌘3)"
+        case .agent: "Ask the agent to work on the document (⌘4, ⇧⌘P)"
+        }
     }
 }
 
@@ -1378,6 +1387,41 @@ extension View {
             .buttonBorderShape(.capsule)
             .controlSize(.large)
     }
+
+    /// Start pressed by ⌘↩ (`count`, AppModel.startFlash): the button
+    /// lit up once, a lighter colour -- a key shows no press as a click
+    /// does. A glass button's is laid over it in its `shape`, not a
+    /// filter of it: a filter on a glass layer would draw its glass
+    /// flattened. Without a shape, the button itself brightened.
+    func startFlash(_ count: Int, in shape: AnyShape? = nil) -> some View {
+        modifier(StartFlash(count: count, shape: shape))
+    }
+}
+
+private struct StartFlash: ViewModifier {
+    let count: Int
+    let shape: AnyShape?
+    @State private var lit = false
+
+    func body(content: Content) -> some View {
+        Group {
+            if let shape {
+                content.overlay {
+                    shape.fill(Color.white.opacity(lit ? 0.3 : 0))
+                        .allowsHitTesting(false)
+                }
+            } else {
+                content.brightness(lit ? 0.15 : 0)
+            }
+        }
+        .onChange(of: count) {
+            withAnimation(.easeOut(duration: 0.08)) {
+                lit = true
+            } completion: {
+                withAnimation(.easeIn(duration: 0.3)) { lit = false }
+            }
+        }
+    }
 }
 
 /// Start -- always: a task runs now, or after the tasks before it (the
@@ -1389,7 +1433,7 @@ private struct StartButton: View {
     var body: some View {
         HStack(spacing: 0) {
             stop(shown: model.isGenerating)
-            Button(action: model.start) {
+            Button(action: model.startPressed) {
                 Text("Start")
                     .frame(minWidth: 70)
             }
@@ -1400,6 +1444,7 @@ private struct StartButton: View {
             // A capsule: the rounder shape sits better inside the tab's
             // own rounded corner.
             .buttonBorderShape(.capsule)
+            .startFlash(model.startFlash, in: AnyShape(Capsule()))
             .help(model.tasks.isEmpty
                   ? "Start (⌘↩)"
                   : "Start (⌘↩): queued after the tasks before it")

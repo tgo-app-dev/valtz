@@ -793,7 +793,7 @@
                  "config": {"video_shift": 6.0}}
               ],
               "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
-              "sage_pv8": true, "i8_gemm": true, "i8_gemm_tier": "accurate"
+              "i8_gemm": true, "i8_gemm_tier": "accurate"
             },
             "quality": {
               "turbo": [], "sage_attn": true, "i8_gemm": true,
@@ -903,7 +903,7 @@
                  "config": {"video_shift": 6.0}}
               ],
               "sol_attn": true, "sol_tau": 0.0, "sage_attn": true,
-              "sage_pv8": true, "i8_gemm": true, "i8_gemm_tier": "accurate"
+              "i8_gemm": true, "i8_gemm_tier": "accurate"
             },
             "quality": {
               "turbo": [], "sage_attn": true, "i8_gemm": true,

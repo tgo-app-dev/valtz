@@ -53,13 +53,81 @@ struct ValtzApp: App {
     @MainActor
     static func appliedSummary(_ m: AppModel) -> String {
         let id: String = m.promptAssetId ?? "-"
-        let a: AssetDTO? = m.assets.first { $0.id == id }
+        let a: AssetDTO? = m.asset(id: id)
         let up: AssetDTO? = a.flatMap { m.promptUpstream(of: $0) }
         let enhanced: Bool = a?.isEnhancedPrompt ?? false
         let before: String = String((up?.text ?? "-").prefix(60))
         let prompts: Int = m.assets.filter(\.isPrompt).count
         let undo: String = m.document.undo ?? "-"
         return "prompt=\(id) enhanced=\(enhanced) upstream=\(up?.id ?? "-") before=\(before) prompts=\(prompts) undo=\(undo)"
+    }
+
+    /// The in-place text editor, as the hooks print it: open, what it
+    /// edits, where its words and its object's box are in the window
+    /// (points from its top left), the zoom, its first responder.
+    @MainActor
+    static func editorLine(_ m: AppModel) -> String {
+        let e = m.markup.textEditor
+        func box(_ r: CGRect?) -> String {
+            guard let r else { return "-" }
+            return "\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width))x\(Int(r.height))"
+        }
+        let fr = e.editor.map { $0.window?.firstResponder === $0 } ?? false
+        let o = m.markup.selectedWords
+        // The object's box as the overlay draws its outline, in the window.
+        var drawn: CGRect?
+        if let o, let h = m.markupTextHost, let w = h.window {
+            let r = h.convert(MarkupRender.bounds(o).applying(h.toView),
+                              to: nil)
+            drawn = CGRect(x: r.minX, y: w.frame.height - r.maxY,
+                           width: r.width, height: r.height)
+        }
+        return "open=\(e.isOpen) object=\(o.map { "\($0.id):\($0.kind.rawValue)" } ?? "-") "
+            + "editor=\(box(e.frameInWindow)) box=\(box(e.boxInWindow)) "
+            + "outline=\(box(drawn)) "
+            + "keyboard=\(fr) live=\(m.markup.live) "
+            + "text=\((e.editor?.string ?? "-").debugDescription)"
+    }
+
+    /// Every markup object on the stage with connectors or anchors: its
+    /// connectors where they are, its points anchored (`0>o1:c2`), a
+    /// line's ends; the connector a point would take now.
+    @MainActor
+    static func connectorLine(_ m: AppModel) -> String {
+        var parts: [String] = []
+        for l in m.markupAsset?.layerStack ?? [] {
+            for o in l.markup?.objects ?? []
+            where !o.connectors.isEmpty || !o.anchors.isEmpty {
+                let cs = MarkupRender.connectorPoints(o).map {
+                    "\($0.id)@\(Int($0.at.x.rounded())),\(Int($0.at.y.rounded()))"
+                }.joined(separator: "+")
+                let an = o.anchors.map { "\($0.point)>\($0.to):\($0.connector)" }
+                    .joined(separator: "+")
+                var ends = ""
+                if o.kind == .line {
+                    ends = "@\(Int(o.x0.rounded())),\(Int(o.y0.rounded()))-\(Int(o.x1.rounded())),\(Int(o.y1.rounded()))"
+                } else if o.kind == .polygon {
+                    ends = "@" + MarkupRender.shownPoints(o).map {
+                        "\(Int($0.x.rounded())),\(Int($0.y.rounded()))"
+                    }.joined(separator: ";")
+                }
+                parts.append("\(o.id):\(o.kind.rawValue)"
+                             + (cs.isEmpty ? "" : ":\(cs)")
+                             + (an.isEmpty ? "" : ":\(an)") + ends)
+            }
+        }
+        let hot = m.markup.hotConnector.map { "\($0.object):\($0.connector)" }
+            ?? "-"
+        let all = (m.markupAsset?.layerStack ?? []).flatMap {
+            $0.markup?.objects ?? []
+        }
+        let words = all.filter { !$0.text.isEmpty }
+            .map { "\($0.kind.rawValue):\($0.text.debugDescription)" }
+            .joined(separator: ",")
+        return "count=\(all.count) words=\(words.isEmpty ? "-" : words) "
+            + "objects=\(parts.isEmpty ? "-" : parts.joined(separator: ","))"
+            + " hot=\(hot) shown=\(m.markupOverlay.connectors.count)"
+            + " undo=\(m.document.undo ?? "-")"
     }
 
     /// One VALTZ_SNAPSHOT_MARKUP_OPS step, as the toolbar and the
@@ -542,27 +610,37 @@ struct ValtzApp: App {
             print("snapshot: objects \(kv[0]) can=\(can) "
                   + "selected=\(mk.selection.map(\.kind.rawValue)) "
                   + "at=\(mk.selection.map { "\(Int($0.x0)),\(Int($0.y0))" })")
-        // The text's edit window: opened, typed into ("\n" a line),
-        // a range selected, the Edit menu's commands -- as the menu sends
-        // them, to the key window's text, when the panel is key -- and
-        // drawn to <snapshot>-text.png.
+        // The words typed IN PLACE: the editor opened on the selected
+        // text or shape, typed into ("\n" a line), a range selected, the
+        // Edit menu's commands -- as the menu sends them, to the key
+        // window's text -- and the window drawn to <snapshot>-text.png.
         case "edit":
             m.editMarkupText()
-            // Where it opened: beside the text's box, both on the screen.
             try? await Task.sleep(for: .milliseconds(300))
-            let pf = mk.textPanel.window?.frame
-            let bf = mk.selectedText.flatMap(MarkupTextPanel.screenBox)
-            func box(_ r: CGRect?) -> String {
-                guard let r else { return "-" }
-                return "\(Int(r.minX)),\(Int(r.minY)),\(Int(r.width))x\(Int(r.height))"
+            print("snapshot: text-editor edit \(Self.editorLine(m))")
+        // The editor as it is now; Escape pressed in it, as the keyboard
+        // sends it (the editing ended, its words kept).
+        case "editor":
+            print("snapshot: text-editor now \(Self.editorLine(m))")
+        case "esc":
+            if let tv = mk.textEditor.editor, let w = tv.window,
+               let e = NSEvent.keyEvent(
+                   with: .keyDown, location: .zero, modifierFlags: [],
+                   timestamp: 0, windowNumber: w.windowNumber, context: nil,
+                   characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+                   isARepeat: false, keyCode: 53) {
+                tv.keyDown(with: e)
             }
-            var side = "-"
-            if let p = pf, let b = bf {
-                side = p.minX >= b.maxX ? "right" : p.maxX <= b.minX ? "left"
-                    : p.maxY <= b.minY ? "below" : "over"
-            }
-            print("snapshot: text-panel edit open=\(mk.textPanel.isOpen) "
-                  + "panel=\(box(pf)) box=\(box(bf)) side=\(side)")
+            try? await Task.sleep(for: .milliseconds(100))
+            print("snapshot: text-editor esc \(Self.editorLine(m)) "
+                  + "words=\(mk.selection.map { $0.text.debugDescription })")
+        // CONNECTORS: the selection's defaults added or taken off (the
+        // toolbar's), and each object's connectors and anchors printed.
+        case "connectors":
+            m.setSelectionConnectors(add: arg != "remove")
+            print("snapshot: connectors \(arg) \(Self.connectorLine(m))")
+        case "conn":
+            print("snapshot: conn \(Self.connectorLine(m))")
         // A colour well clicked through the app's event queue -- the
         // toolbar's Color or Fill, by place ("colorwell=0") -- and where
         // the colour panel then is beside it.
@@ -605,13 +683,13 @@ struct ValtzApp: App {
                   + "placed=\(ColorPanelPlacer.last != nil)")
         case "type", "sel", "cut", "copy", "paste", "undo", "redo",
              "selall", "panel":
-            let tp = mk.textPanel
+            let tp = mk.textEditor
             guard let tv = tp.editor, tp.isOpen else {
-                print("snapshot: text-panel closed for \(kv[0]) "
+                print("snapshot: text-editor closed for \(kv[0]) "
                       + "active=\(NSApp.isActive)")
                 return
             }
-            let key = NSApp.keyWindow === tp.window
+            let key = NSApp.keyWindow === tv.window
             switch kv[0] {
             case "type":
                 tv.insertText(arg.replacingOccurrences(of: "\\n", with: "\n"),
@@ -632,7 +710,7 @@ struct ValtzApp: App {
             case "redo":
                 if key { m.redoAny() } else { tv.undoManager?.redo() }
             default:
-                if let w = tp.window, let v = w.contentView?.superview,
+                if let w = tv.window, let v = w.contentView?.superview,
                    let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
                     v.cacheDisplay(in: v.bounds, to: rep)
                     let out = ProcessInfo.processInfo
@@ -652,8 +730,8 @@ struct ValtzApp: App {
                 NSApp.postEvent(ev, atStart: false)
             }
             try? await Task.sleep(for: .milliseconds(50))
-            let words = m.markup.selectedText?.text ?? "-"
-            print("snapshot: text-panel \(kv[0]) key=\(key) "
+            let words = m.markup.selectedWords?.text ?? "-"
+            print("snapshot: text-editor \(kv[0]) key=\(key) "
                   + "undoLevel=\(tv.undoManager?.groupingLevel ?? -1) "
                   + "editor=\(tv.string.debugDescription) "
                   + "object=\(words.debugDescription) "
@@ -716,6 +794,13 @@ struct ValtzApp: App {
             // The project as a document (DESIGN §5b): Save writes its
             // working copy to its file; Revert to Saved goes back to it.
             CommandGroup(replacing: .saveItem) {
+                // ⌘W: the project closed, a new anonymous one in its
+                // place -- New Anonymous Project's -- the window staying.
+                // Another window in front (Settings) closes as ⌘W closes
+                // any.
+                Button("Close Project") { closeProjectOrWindow() }
+                    .keyboardShortcut("w")
+                    .disabled(model.closingTasks != nil)
                 Button("Save") { model.saveDocument() }
                     .keyboardShortcut("s")
                     .disabled(model.projectId == nil
@@ -803,12 +888,19 @@ struct ValtzApp: App {
                     withAnimation(AppModel.motion) { model.inspectorOpen.toggle() }
                 }
                 .keyboardShortcut("i", modifiers: [.command, .option])
+                // The editor as a viewer (Tab, where nothing takes keys;
+                // the ☰ column's eye): no key here -- a menu's Tab would
+                // be every text field's.
+                Toggle("View Only", isOn: Binding(
+                    get: { model.viewOnly },
+                    set: { model.setViewOnly($0) }))
+                .disabled(model.screen != .editor)
                 Button(model.markupOpen ? "Hide Markup Toolbar"
                                         : "Show Markup Toolbar") {
                     withAnimation(AppModel.motion) { model.markupOpen.toggle() }
                 }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
-                .disabled(model.promptImmersive)
+                .disabled(model.promptImmersive || model.viewOnly)
                 // The prompt the window's height, several open as tabs
                 // (PromptStudio).
                 Toggle("Prompt Editor", isOn: Binding(
@@ -820,6 +912,18 @@ struct ValtzApp: App {
                         }
                     }))
                 .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(model.viewOnly)
+                // The prompt box for a target, the keyboard in it -- the
+                // tabs over it in their order; the Agent's ⇧⌘P too (the
+                // key monitor's).
+                Divider()
+                ForEach(model.modalities) { m in
+                    Button(promptItemTitle(m)) { model.focusPrompt(m) }
+                        .keyboardShortcut(m.key)
+                        .disabled(model.closingTasks != nil
+                                  || model.fleetServing != nil)
+                }
+                Divider()
                 // The timeline in the prompt's place, while the stage
                 // works on a timeline or a still with pages.
                 Toggle("Timeline", isOn: Binding(
@@ -871,6 +975,27 @@ struct ValtzApp: App {
         Settings {
             SettingsView(model: model)
         }
+    }
+
+    private func promptItemTitle(_ m: Modality) -> LocalizedStringKey {
+        switch m {
+        case .video: "Video Prompt"
+        case .image: "Image Prompt"
+        case .audio: "Audio Prompt"
+        case .agent: "Agent Prompt"
+        }
+    }
+
+    /// File › Close Project (⌘W): a window in front of the editor's --
+    /// Settings -- closed; else the project, as New Anonymous Project
+    /// closes it.
+    private func closeProjectOrWindow() {
+        if let w = NSApp.keyWindow, w !== model.editorWindow,
+           w.styleMask.contains(.closable) {
+            w.performClose(nil)
+            return
+        }
+        model.newAnonymousProject()
     }
 
     /// Dev aid: a mouse click, sent to `window`, on the first control in
@@ -1133,7 +1258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let v = env["VALTZ_SNAPSHOT_USE_PROMPT"],
                let a = v == "newest"
                    ? m.assets.last(where: \.isPrompt)
-                   : m.assets.first(where: { $0.id == v }) {
+                   : m.asset(id: v) {
                 m.usePrompt(a)
             }
             // Settings › Experimental's switches, for the run:
@@ -1754,7 +1879,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         let a = arg == "newest"
                             ? m.assets.filter(\.isPrompt)
                                 .max { $0.created < $1.created }
-                            : m.assets.first { $0.id == arg }
+                            : m.asset(id: arg)
                         if let a { m.openTextAsset(a) }
                     case "type":
                         m.setPrompt(arg.replacingOccurrences(
@@ -2033,7 +2158,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "newest-image": made.last { $0.kind == "image" }
                 case "newest-audio": made.last { $0.kind == "audio" }
                 case "project": m.projectViews.first
-                default: m.assets.first { $0.id == which }
+                default: m.asset(id: which)
                 }
                 if let a { m.putOnStage(a) }
                 try? await Task.sleep(for: .milliseconds(500))
@@ -2201,14 +2326,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "original":
                         let e: AssetDTO? = arg == "newest"
                             ? m.assets.last(where: \.isEnhancedPrompt)
-                            : m.assets.first { $0.id == arg }
+                            : m.asset(id: arg)
                         if let e, let up = m.promptUpstream(of: e) {
                             m.usePrompt(up)
                         }
                         print("snapshot: original box=\(m.prompt.prefix(60)) "
                               + ValtzApp.appliedSummary(m))
                     case "active":
-                        if let a = m.assets.first(where: { $0.id == arg }) {
+                        if let a = m.asset(id: arg) {
                             m.setActive(a)
                         }
                     case "stage": m.dropAssetOnStage(arg)
@@ -2218,7 +2343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // done, what it made: a transcript's or a
                     // summary's words; a separation's sounds.
                     case "transcribe", "summarize", "separate":
-                        guard let a = m.assets.first(where: { $0.id == arg }),
+                        guard let a = m.asset(id: arg),
                               let op = m.operation(p[0]) else {
                             print("snapshot: \(p[0]) offered=\(m.operation(p[0]) != nil) asset=\(arg) -")
                             break
@@ -2259,7 +2384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // the stage ("view:<id>"); "unview" the list
                     // losing focus -- the active one back.
                     case "view":
-                        if let a = m.assets.first(where: { $0.id == arg }) {
+                        if let a = m.asset(id: arg) {
                             m.viewAsset(a)
                         }
                     case "unview": m.endViewing()
@@ -2530,6 +2655,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Clicks posted to the window ("x,y" in points from its top
             // left; ";" between), as the pointer's would come: each
             // prints what has the focus after it.
+            // VALTZ_SNAPSHOT_MEMORY=1|<s>: RAM's popover opened (as a
+            // click on its meter opens it), read for s seconds (3), what
+            // it shows printed -- each share, the engine's own figures --
+            // and drawn to <snapshot>-memory.png (a popover is a window
+            // of its own: the capture does not hold it).
+            if let m = model, let spec = env["VALTZ_SNAPSHOT_MEMORY"] {
+                m.memoryPopoverOpen = true
+                try? await Task.sleep(for: .seconds(Double(spec) ?? 3))
+                let parts = MemoryPopover.parts(load: m.monitor.load,
+                                                memory: m.monitor.memory)
+                func mb(_ v: Double?) -> String {
+                    v.map { "\(Int($0 / 1_048_576))" } ?? "-"
+                }
+                let shares = parts.map {
+                    "\($0.title.replacingOccurrences(of: " ", with: "_"))=\(mb($0.bytes))"
+                        + ($0.about ? "~" : "")
+                }.joined(separator: ",")
+                let items = (m.monitor.memory?.items ?? []).map {
+                    "\($0.part):\($0.model):\(mb($0.bytes))+kv\(mb($0.kvBytes))"
+                        + ($0.seconds.map { "@\(Int($0))s" } ?? "")
+                }.joined(separator: ",")
+                FileHandle.standardError.write(Data(
+                    "snapshot: memory open=\(m.memoryPopoverOpen) read=\(m.monitor.memory != nil) items=\(items.isEmpty ? "-" : items) shares=\(shares) footprint=\(mb(m.monitor.load.footprint)) gpu=\(mb(m.monitor.memory?.gpuAllocated)) total=\(mb(m.monitor.load.total))\n".utf8))
+                let r = ImageRenderer(content: MemoryPopover(model: m)
+                    .background(Color(nsColor: .windowBackgroundColor)))
+                r.scale = 2
+                if let img = r.nsImage, let tiff = img.tiffRepresentation,
+                   let rep = NSBitmapImageRep(data: tiff),
+                   let png = rep.representation(using: .png,
+                                                properties: [:]) {
+                    let out = (path as NSString).deletingPathExtension
+                        + "-memory.png"
+                    try? png.write(to: URL(fileURLWithPath: out))
+                }
+            }
             // The status bar's context menu, opened by a right-click
             // posted on the bar: its items printed (+ checked), then
             // the one named picked ("-": only looked at).
@@ -2980,6 +3140,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "scissors": m.timelineCutting = arg != "off"
                     case "key" where arg == "space":
                         Self.postSpace(m)
+                    // "s" / "esc": the scissors' keys, posted through the
+                    // app's event path as a real key's.
+                    case "key" where arg == "s" || arg == "esc":
+                        let esc = arg == "esc"
+                        if let w = m.editorWindow,
+                           let ev = NSEvent.keyEvent(
+                               with: .keyDown, location: .zero,
+                               modifierFlags: [], timestamp: 0,
+                               windowNumber: w.windowNumber, context: nil,
+                               characters: esc ? "\u{1B}" : "s",
+                               charactersIgnoringModifiers:
+                                   esc ? "\u{1B}" : "s",
+                               isARepeat: false, keyCode: esc ? 53 : 1) {
+                            NSApp.postEvent(ev, atStart: false)
+                        }
                     case "key":
                         // "cleft" / "cright": with ⌘ (the previous / next
                         // event); "sleft" / "sright" with ⇧ (ten).
@@ -3031,7 +3206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             m.assets.filter(\.isComposition)
                                 .max { $0.created < $1.created }
                         default:
-                            m.assets.first { $0.id == p.first ?? "" }
+                            m.asset(id: String(p.first ?? ""))
                         }
                         let at = p.count > 1
                             ? p[1].split(separator: ":") : []
@@ -3557,7 +3732,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             ? m.assets.filter { $0.kind == "image"
                                 && $0.head > 0 && $0.op != "project" }
                                 .max { $0.created < $1.created }
-                            : m.assets.first { $0.id == arg }
+                            : m.asset(id: arg)
                         if let a { m.viewAsset(a) }
                     case "active":
                         if let a = m.projectViews.first { m.setActive(a) }
@@ -3618,18 +3793,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         Self.postSpace(m)
                     case "key":
                         let name = arg.drop(while: { "cs".contains($0) })
+                        let pre = arg.prefix(arg.count - name.count)
                         let keys: [Substring: (UInt16, Unicode.Scalar)] = [
                             "left": (123, "\u{F702}"),
                             "right": (124, "\u{F703}"),
                             "home": (115, "\u{F729}"),
                             "end": (119, "\u{F72B}"),
+                            "tab": (48, "\t"),
+                            "p": (35, "P"),
+                            "return": (36, "\r"),
                         ]
-                        var mods: NSEvent.ModifierFlags = [.function]
+                        // "tab" (⇧ "stab"): view only toggled where
+                        // nothing takes keys (AppModel.viewOnlyKey).
+                        // "csp" ⇧⌘P, the Agent's prompt; "creturn" ⌘↩,
+                        // Start (the line's `startFlash=` counting it).
+                        var mods: NSEvent.ModifierFlags =
+                            ["tab", "p", "return"].contains(name)
+                                ? [] : [.function]
                         if name == "left" || name == "right" {
                             mods.insert(.numericPad)
-                            if arg.hasPrefix("c") { mods.insert(.command) }
-                            if arg.hasPrefix("s") { mods.insert(.shift) }
                         }
+                        if pre.contains("c") { mods.insert(.command) }
+                        if pre.contains("s") { mods.insert(.shift) }
                         if let (code, ch) = keys[name],
                            let w = m.editorWindow,
                            let ev = NSEvent.keyEvent(
@@ -3640,6 +3825,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                charactersIgnoringModifiers: String(ch),
                                isARepeat: false, keyCode: code) {
                             NSApp.postEvent(ev, atStart: false)
+                        }
+                    // "viewonly:on|off|toggle|eye": VIEW ONLY, as View ›
+                    // View Only sets it -- "eye" the ☰ column's (the
+                    // editor shown so).
+                    // "screen:log|editor": the ☰ column's Log or Editor.
+                    case "screen":
+                        if let s = AppScreen(rawValue: arg) { m.show(s) }
+                    // "prompt:video|image|audio|agent": View › Video
+                    // Prompt, ... (⌘1 to ⌘4: a background run's menu
+                    // items take no key) -- the line's `target=`, `fr=`.
+                    case "prompt":
+                        if let t = Modality(rawValue: arg) {
+                            m.focusPrompt(t)
+                        }
+                    case "viewonly":
+                        switch arg {
+                        case "eye": m.showViewOnly()
+                        case "toggle": m.toggleViewOnly()
+                        default: m.setViewOnly(arg == "on")
                         }
                     // Valtz hidden (Hide Valtz, ⌘H) and shown again,
                     // the keyboard left where it is: a task landing
@@ -3881,7 +4085,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try? await Task.sleep(for: .milliseconds(400))
                     FileHandle.standardError.write(Data(
-                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.assets.first { $0.id == id }?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary())\n".utf8))
+                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.asset(id: id)?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary())\n".utf8))
                 }
             }
             // THE AGENT (DESIGN §9b), driven as its card drives it:
@@ -4354,7 +4558,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "newest-video": made.first { $0.kind == "video" }
                 case "newest-audio": made.first { $0.kind == "audio" }
                 case "newest-edit": made.first { m.baseEntry(of: $0) != nil }
-                default: m.assets.first { $0.id == arg }
+                default: m.asset(id: arg)
                 }
             }
             for step in spec.split(separator: ";") {
@@ -4719,6 +4923,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // quit.
             m.gatedDownload = nil
             try? await Task.sleep(for: .milliseconds(600))
+        }
+        // Settings › General › Storage's folders (";" between):
+        // "<projects|models|cache>:<path>[:move|keep|drop]" a folder
+        // chosen, its alerts answered so (`asked=` the questions it would
+        // ask: external, how), "default:<what>[:<how>]" Use the Default
+        // Folder, "stop:<what>" a move's Stop, "wait:<s>" -- each printing
+        // `snapshot: locations <step> asked= error= projects= models=
+        // kept= cache= moving=<what>:<phase>:<done>/<total>`. Run with
+        // HOME at a scratch folder: the folders chosen are kept.
+        if let m = model, let spec = env["VALTZ_SNAPSHOT_LOCATIONS"] {
+            try? await Task.sleep(for: .milliseconds(800))
+            for step in spec.split(separator: ";").map(String.init) {
+                let parts = step.split(separator: ":",
+                                       maxSplits: 2).map(String.init)
+                var asked: [String] = []
+                switch parts.first ?? "" {
+                case "wait":
+                    let s = Double(parts.count > 1 ? parts[1] : "1") ?? 1
+                    try? await Task.sleep(for: .seconds(s))
+                case "stop" where parts.count > 1:
+                    m.stopRelocation(parts[1])
+                case "default" where parts.count > 1:
+                    if let d = m.place(parts[1])?.defaultPath {
+                        let url = URL(fileURLWithPath: d)
+                        asked = m.locationQuestions(parts[1], url)
+                        m.applyLocation(parts[1], url,
+                                        how: parts.count > 2 ? parts[2]
+                                                             : "move")
+                    }
+                case let what where parts.count > 1:
+                    // "<what>:<path>:<how>", the path may hold no colon.
+                    let rest = parts.count > 2
+                        ? parts[1] + ":" + parts[2] : parts[1]
+                    var path = rest, how = "move"
+                    if let c = rest.lastIndex(of: ":"),
+                       ["move", "keep", "drop"].contains(
+                           String(rest[rest.index(after: c)...])) {
+                        path = String(rest[..<c])
+                        how = String(rest[rest.index(after: c)...])
+                    }
+                    let url = URL(fileURLWithPath: path)
+                    asked = m.locationQuestions(what, url)
+                    m.applyLocation(what, url, how: how)
+                default:
+                    break
+                }
+                try? await Task.sleep(for: .milliseconds(400))
+                let l = m.locations
+                let moving = l?.moving.map { mv in
+                    let ph = m.jobs[mv.job]?.phase
+                    return "\(mv.what):\(ph?.phase ?? "-"):"
+                        + "\(ph?.done ?? 0)/\(ph?.total ?? 0)"
+                } ?? "-"
+                FileHandle.standardError.write(Data(
+                    "snapshot: locations \(step) asked=\(asked.isEmpty ? "-" : asked.joined(separator: "+")) error=\(m.locationError ?? "-") projects=\(l?.projects.path ?? "-") models=\(l?.models.path ?? "-") kept=\((l?.models.kept ?? []).map(\.path).joined(separator: ",")) cache=\(l?.cache.path ?? "-")@\(l?.cache.inUse ?? "-") moving=\(moving)\n".utf8))
+                m.locationError = nil
+            }
         }
         // Settings' navigation (";" between): "go:<place>" (fleet,
         // fleet-offload, fleet-sharing, ...), "back", "forward",
@@ -5113,12 +5374,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 .contains(n) == true
                                 ? model?.promptAttachments[n].id : nil
                         } : nil
+                    // From outside, as a browser or an app drags it:
+                    // "data:<file>" its bytes under its type, with a link
+                    // naming it (a browser's picture, its promise left
+                    // out -- AppKit receives one only in a real drop);
+                    // "link:<url>" a link alone; "text:<words>" words.
+                    let outside = ["data:", "link:", "text:"].first {
+                        parts[0].hasPrefix($0)
+                    }
                     let info = ref.map {
                         FakeDrag(text: PromptTextView.referencePrefix
                                      + $0.uuidString,
                                  at: p, window: w)
                     } ?? row.map {
                         FakeDrag(text: AppModel.assetPrefix + $0.id,
+                                 at: p, window: w)
+                    } ?? outside.map {
+                        FakeDrag(outside: $0,
+                                 String(parts[0].dropFirst($0.count)),
                                  at: p, window: w)
                     } ?? FakeDrag(
                         file: URL(fileURLWithPath: parts[0]),
@@ -5171,7 +5444,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: .seconds(3))
                     var rowFolder = "-"
                     if let r = row, let m = model,
-                       let now = m.assets.first(where: { $0.id == r.id }) {
+                       let now = m.asset(id: r.id) {
                         let fid = now.folder ?? ""
                         rowFolder = fid.isEmpty ? "top"
                             : (m.assetFolders.first { $0.id == fid }?
@@ -5293,8 +5566,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "languages=\(L10n.available.joined(separator: ",")) "
                 + "baseHint=\(m.baseHint.flatMap { h in m.promptAttachments.first { $0.id == h }?.url.lastPathComponent } ?? "-") "
                 + "refs=\(m.promptAttachments.map { a in (a.isBase ? "*" : "") + (a.ownCopy ? "+" : "") + (m.cutsToLength(a) == false ? "~" : "") + a.url.lastPathComponent + (m.referenceNumber(a).map { "#\($0)" } ?? "") }.joined(separator: ",")) cutTo=\(String(format: "%.3f", m.referenceCutSeconds)) "
-                + "active=\((m.assets.first { $0.id == m.stageAssetId }?.name ?? "-").replacingOccurrences(of: " ", with: "_")) "
-                + "assets=\(m.assets.count) ops=\(Dictionary(grouping: m.assets, by: { $0.op ?? "import" }).map { "\($0.key):\($0.value.count)" }.sorted().joined(separator: ",")) stale=\(m.assets.filter { m.isStale($0, used: m.assetsInUse) }.count) folders=\(m.assetFolders.map { f in "\(f.name)\(m.closedFolders.contains(f.id) ? "-folded" : ""):\(m.assets.filter { $0.folder == f.id }.count)" }.joined(separator: "|").replacingOccurrences(of: " ", with: "_")) renaming=\(m.renamingAsset ?? "-") "
+                + "active=\((m.stageAssetId.flatMap { m.asset(id: $0) }?.name ?? "-").replacingOccurrences(of: " ", with: "_")) "
+                + "assets=\(m.assets.count) ops=\(Dictionary(grouping: m.assets, by: { $0.op ?? "import" }).map { "\($0.key):\($0.value.count)" }.sorted().joined(separator: ",")) stale=\(m.staleCount) folders=\(m.assetFolders.map { f in "\(f.name)\(m.closedFolders.contains(f.id) ? "-folded" : ""):\(m.assets.filter { $0.folder == f.id }.count)" }.joined(separator: "|").replacingOccurrences(of: " ", with: "_")) renaming=\(m.renamingAsset ?? "-") "
                 + "mentions=\(m.promptMentions.count) focus=\(m.promptAttachments.firstIndex { $0.id == m.focusedReference }.map(String.init) ?? "-") "
                 + "stack=\(m.stackPlayback.map { "\($0.width)x\($0.height)/\($0.frames)f/\($0.clips.count)clips" } ?? "-") "
                 + "look=\(m.stageStack?.layerStack.map { l in let k = m.layerLook(l.id); return "\(l.id.isEmpty ? "0" : l.id):\(k.adjust ? "a" : "")\(k.place ? "p" : "")\(k.turn ? "t" : "")\(k.keyed ? "k" : "")" }.joined(separator: ",") ?? "-") "
@@ -5307,7 +5580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "tuneValues=\(tuneValues) "
                 + "upscale=\(m.upscaleJob != nil ? "running" : m.canUpscaleLayer ? "offered" : m.upscaleNeedsFlatten ? "flatten-first" : "-") "
                 + "capture=\(m.capture.recording ? "recording" : m.showsCapture ? "offered" : "-") captureSources=\(m.captureSources.map(\.kind).joined(separator: ",")) "
-                + "viewed=\(m.viewedAsset.flatMap { id in m.assets.first { $0.id == id }?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") stageLift=\(String(format: "%.2f", m.stageLift)) "
+                + "viewed=\(m.viewedAsset.flatMap { id in m.asset(id: id)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") stageLift=\(String(format: "%.2f", m.stageLift)) "
                 + "pages=\(m.stagePages) page=\(m.stagePage + 1) layerPages=\(m.stagePicture.map { p in p.layerStack.map { l in "\(l.id.isEmpty ? "0" : l.id):\(p.pageSpan(of: l).map { "\($0.lowerBound + 1)-\($0.upperBound + 1)" } ?? "none")" }.joined(separator: ",") } ?? "-") keyed=\(m.keyedStage) keys=\(m.keyFrames(.place).map(String.init).joined(separator: ",")) "
                 + "memoryFailure=\(m.memoryFailure.map { f in "\(f.step):\(MemoryFailure.size(f.need)):\(f.gates.filter { !$0.ok }.map(\.name).joined(separator: "+")):parts=\(f.parts.map(\.name).joined(separator: "+")):plan=\(MemoryFailure.size(f.planPeak))" } ?? "-") "
                 + "suggests=\([m.suggestsShorterClip ? "length" : nil, m.suggestsSmallerSize ? "size" : nil, m.suggestsFewerReferences ? "refs" : nil].compactMap { $0 }.joined(separator: ",")) "
@@ -5337,7 +5610,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "b=\(m.stage.b.map { "\($0.width)x\($0.height)" } ?? "-") "
                 + "a=\(m.stage.a.map { "\($0.width)x\($0.height)" } ?? "-") "
                 + "clip=\(m.stage.clip.map { "\($0.frames.count)f@\($0.fps)" } ?? "-") "
-                + "video=\(m.stage.video?.lastPathComponent ?? "-") stageVisible=\(m.stageVisible) stageCorners=\(m.roundStageCorners ? "round" : "square") suggestion=\(m.enhanced != nil) "
+                + "video=\(m.stage.video?.lastPathComponent ?? "-") stageVisible=\(m.stageVisible) viewOnly=\(m.viewOnly) stageCorners=\(m.roundStageCorners ? "round" : "square") suggestion=\(m.enhanced != nil) "
                 + "clipFrames=\(m.clipFrames) favorHint=\(m.preferenceHint.replacingOccurrences(of: " ", with: "_")) "
                 + "wipeLine=\(m.stage.wipeLine) canDragStage=\(m.canDragStage) "
                 + "lastError=\(m.log.last { $0.level == "error" }?.text ?? "-") "
@@ -5985,6 +6258,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } ?? "-"
         return "fr=\(focusName(w.firstResponder)) key=\(w.isKeyWindow) "
             + "caret=\(mine):\(marks.isEmpty ? "-" : marks.joined(separator: ","))"
+            + " viewOnly=\(m.viewOnly) appScreen=\(m.screen.rawValue)"
+            + " target=\(m.modality.rawValue) startFlash=\(m.startFlash)"
+            + " timeline=\(m.timelineOpen)"
+            + " markup=\(m.markupOpen) immersive=\(m.promptImmersive)"
+            + " page=\(m.stagePage + 1)/\(m.stagePages)"
     }
 
     @MainActor
@@ -6053,6 +6331,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Back in front: a linked original may have moved or changed while
+    /// Valtz was not -- which the project's records do not say.
+    @MainActor
+    func applicationDidBecomeActive(_ notification: Notification) {
+        model?.recheckLinks()
+    }
+
     @MainActor
     func applicationWillTerminate(_ notification: Notification) {
         // Stop the engine (finishing or cancelling the running job) and
@@ -6061,22 +6346,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// A drag as Finder makes one -- a file URL on its own pasteboard -- for
+/// A drag as Finder makes one -- a file URL on the drag pasteboard -- for
 /// VALTZ_SNAPSHOT_FAKE_DROP: handed straight to a drop view, since a run
-/// cannot move the pointer for a real one.
+/// cannot move the pointer for a real one. On the DRAG pasteboard, as a
+/// real drag is: the drop places read it there (DroppedMedia).
 @MainActor
 final class FakeDrag: NSObject, @preconcurrency NSDraggingInfo {
     let pasteboard: NSPasteboard
     var location: NSPoint
     let window: NSWindow
 
+    private static func dragBoard() -> NSPasteboard {
+        let pb = NSPasteboard(name: .drag)
+        pb.clearContents()
+        return pb
+    }
+
     /// A file's drag as the Finder makes it: its FILE REFERENCE URL
     /// (file:///.file/id=...), as public.file-url and the Finder's own
     /// node type -- a path URL took drops a real drag did not.
     init(file: URL, at: NSPoint, window: NSWindow) {
-        pasteboard = NSPasteboard(name: NSPasteboard.Name(
-            "valtz-fake-drag-\(UUID().uuidString)"))
-        pasteboard.clearContents()
+        pasteboard = Self.dragBoard()
         // Through Core Foundation: Swift's URL makes a reference a path.
         let s = CFURLCreateFileReferenceURL(nil, file as CFURL, nil)
             .map { CFURLGetString($0.takeRetainedValue()) as String }
@@ -6092,10 +6382,36 @@ final class FakeDrag: NSObject, @preconcurrency NSDraggingInfo {
 
     /// A row's drag: its text, as NSItemProvider(object: NSString) has it.
     init(text: String, at: NSPoint, window: NSWindow) {
-        pasteboard = NSPasteboard(name: NSPasteboard.Name(
-            "valtz-fake-drag-\(UUID().uuidString)"))
-        pasteboard.clearContents()
+        pasteboard = Self.dragBoard()
         pasteboard.writeObjects([text as NSString])
+        location = at
+        self.window = window
+    }
+
+    /// A drag from outside (`kind` "data:", "link:", "text:"): a file's
+    /// bytes under its type beside a link naming it, as a browser's
+    /// picture without its promise; a link alone; words.
+    init(outside kind: String, _ value: String, at: NSPoint,
+         window: NSWindow) {
+        pasteboard = Self.dragBoard()
+        let item = NSPasteboardItem()
+        switch kind {
+        case "data:":
+            let u = URL(fileURLWithPath: value)
+            if let t = UTType(filenameExtension: u.pathExtension),
+               let d = try? Data(contentsOf: u) {
+                item.setData(d, forType: NSPasteboard.PasteboardType(
+                    t.identifier))
+            }
+            item.setString("https://example.com/media/"
+                               + u.lastPathComponent, forType: .URL)
+        case "link:":
+            item.setString(value, forType: .URL)
+            item.setString(value, forType: .string)
+        default:
+            item.setString(value, forType: .string)
+        }
+        pasteboard.writeObjects([item])
         location = at
         self.window = window
     }

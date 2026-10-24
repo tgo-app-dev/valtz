@@ -1711,7 +1711,11 @@ build_speech(const JobSpec& job, const std::vector<fs::path>& voices)
 
 // vpipe's model-quantize (prepare-moss-tts-v1.5's last stage): the source
 // folder in, an affine-quantized pack out, where the job says -- a path,
-// so vpipe neither infers nor registers it.
+// so vpipe neither infers nor registers it. Its scales written in BF16,
+// the dtype every model here runs in, and the codes fit to them (vpipe
+// 9f74a0c2's `run_dtype`): an F16 pair fit to the f32 scale, rounded to
+// bf16 at load, left the codes up to half a step off the scale the
+// dequant uses -- MOSS-Image's w8 pack twice as far from its reference.
 Result<BuiltGraph>
 build_quantize_model(const JobSpec& job)
 {
@@ -1722,9 +1726,11 @@ build_quantize_model(const JobSpec& job)
   }
   BuiltGraph g;
   Json stages = Json::array();
-  const Json base = {{"bits", jget(job.params, "bits", 8)},
-                     {"group_size", jget(job.params, "group_size", 64)},
-                     {"skip_existing", false}};
+  const Json base = {
+      {"bits", jget(job.params, "bits", 8)},
+      {"group_size", jget(job.params, "group_size", 64)},
+      {"run_dtype", jget<std::string>(job.params, "run_dtype", "bf16")},
+      {"skip_existing", false}};
   const Json parts = jget(job.params, "parts", Json::array());
   if (!parts.is_array() || parts.empty()) {
     Json cfg = base;

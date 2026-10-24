@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -1079,6 +1080,62 @@ faded(CIImage* img, double opacity)
   }];
 }
 
+// `img` where it is `seen`, drawn by the GPU into a picture of its own --
+// half floats in the working space, premultiplied, as Core Image holds
+// its own buffers -- and read back as an image there: what composes over
+// it then is one image, not the graph that made it.
+Result<CIImage*>
+materialized(CIImage* img, CGRect seen)
+{
+  const auto w = static_cast<int>(std::lround(seen.size.width));
+  const auto h = static_cast<int>(std::lround(seen.size.height));
+  if (w <= 0 || h <= 0) {
+    return img;
+  }
+  NSDictionary* props = @{
+    (id)kIOSurfaceWidth : @(w),
+    (id)kIOSurfaceHeight : @(h),
+    (id)kIOSurfaceBytesPerElement : @8,
+    (id)kIOSurfaceBytesPerRow :
+        @(IOSurfaceAlignProperty(kIOSurfaceBytesPerRow, w * 8)),
+    (id)kIOSurfacePixelFormat : @(kCVPixelFormatType_64RGBAHalf),
+  };
+  IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
+  if (!surface) {
+    return make_error(Code::Internal, "cannot make a surface");
+  }
+  CGColorSpaceRef ws =
+      CGColorSpaceCreateWithName(kCGColorSpaceExtendedLinearSRGB);
+  CIRenderDestination* dest = [[CIRenderDestination alloc]
+      initWithIOSurface:(__bridge IOSurface*)surface];
+  dest.colorSpace = ws;
+  dest.alphaMode = CIRenderDestinationAlphaPremultiplied;
+  NSError* err = nil;
+  CIRenderTask* task = [decode_context() startTaskToRender:img
+                                                  fromRect:seen
+                                             toDestination:dest
+                                                   atPoint:CGPointZero
+                                                     error:&err];
+  const bool ok = task && [task waitUntilCompletedAndReturnError:&err];
+  CIImage* out = nil;
+  if (ok) {
+    out = [[CIImage imageWithIOSurface:surface
+                               options:@{
+                                 kCIImageColorSpace : (__bridge id)ws,
+                               }]
+        imageByApplyingTransform:CGAffineTransformMakeTranslation(
+                                     seen.origin.x, seen.origin.y)];
+  }
+  CGColorSpaceRelease(ws);
+  CFRelease(surface);  // the image holds it
+  if (!out) {
+    return make_error(Code::Internal, std::format(
+        "cannot draw the stack: {}",
+        err ? err.localizedDescription.UTF8String : "?"));
+  }
+  return out;
+}
+
 // The stack as one Core Image picture (media/layers.h), on its CANVAS
 // from (0, 0). Pictures and a clip's frames alike. The layers lie on a
 // FRAME: the stack's own (the project's: StackCanvas::framed), or the
@@ -1191,20 +1248,55 @@ compose_images(const std::vector<ComposeLayer>& layers,
   if (!framed && masks_it(0) && layers.front().visible) {
     base = masked(base, 1);
   }
+  // Past kChunk layers drawn, they go in GROUPS: a group's layers
+  // composed over one another, the group over what is below, and that
+  // DRAWN (materialized) before the next. Core Image walks a picture's
+  // graph recursively and holds a pass's buffers for each link of it:
+  // a stack of thousands as one chain held 2.3 GB at 1 000 small layers
+  // on a 4K canvas, 8.6 GB at 4 000, and past ~5 000 overflowed a Swift
+  // task's 512 KB stack (2026-10-23). A group composed apart is worked
+  // only where its layers lie, not over the whole canvas a layer at a
+  // time. "Over" is associative: the same picture. Fewer layers are
+  // drawn as they always were.
+  constexpr std::size_t kChunk = 64;
+  auto drawable = [](const ComposeLayer& l) {
+    return l.image && l.visible && !l.mask && l.opacity > 0;
+  };
+  const bool grouped =
+      std::count_if(layers.begin() + (framed ? 0 : 1), layers.end(),
+                    drawable) > static_cast<std::ptrdiff_t>(kChunk);
+  CIImage* group = nil;
+  std::size_t in_group = 0;
   for (std::size_t i = framed ? 0 : 1; i < layers.size(); ++i) {
     const ComposeLayer& l = layers[i];
-    if (!l.image || !l.visible || l.mask || l.opacity <= 0) {
+    if (!drawable(l)) {
       continue;
     }
-    CIImage* img = placed(l);
-    if (!img) {
-      continue;
+    @autoreleasepool {
+      CIImage* img = placed(l);
+      // Nothing of it on the canvas: nothing to draw.
+      if (!img || CGRectIsEmpty(img.extent)) {
+        continue;
+      }
+      if (masks_it(i)) {
+        img = masked(img, i + 1);
+      }
+      img = faded(dipped(img, l.dip, l.dip_level), l.opacity);
+      if (!grouped) {
+        base = [img imageByCompositingOverImage:base];
+        continue;
+      }
+      group = group ? [img imageByCompositingOverImage:group] : img;
+      if (++in_group == kChunk) {
+        VALTZ_ASSIGN(base, materialized(
+            [group imageByCompositingOverImage:base], seen));
+        group = nil;
+        in_group = 0;
+      }
     }
-    if (masks_it(i)) {
-      img = masked(img, i + 1);
-    }
-    base = [faded(dipped(img, l.dip, l.dip_level), l.opacity)
-        imageByCompositingOverImage:base];
+  }
+  if (group) {
+    base = [group imageByCompositingOverImage:base];
   }
   // On the canvas, from (0, 0).
   base = [base imageByCroppingToRect:seen];
@@ -2228,11 +2320,20 @@ StackRenderer::make(MovieStack stack, Rational rate)
     } else {
       m.own = stack.canvas.frame();
     }
+    // A file shown by many layers read once: 16 000 layers of 50
+    // pictures read 16 000 files, 3.4 s of a plan (2026-10-23).
+    std::map<fs::path, CIImage*> read;
     for (const auto& l : stack.layers) {
       if (l.video || l.audio_only) {
         m.stills.push_back(nil);
+      } else if (const auto at = read.find(l.file);
+                 !l.drawn && !l.file.empty() && at != read.end()) {
+        m.stills.push_back(at->second);
       } else {
         VALTZ_ASSIGN(CIImage* img, layer_image(l.file, l.drawn));
+        if (!l.drawn && !l.file.empty()) {
+          read.emplace(l.file, img);
+        }
         m.stills.push_back(img);
       }
     }

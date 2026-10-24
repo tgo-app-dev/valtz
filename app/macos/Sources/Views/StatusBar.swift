@@ -19,7 +19,8 @@ import SwiftUI
 /// Where the window is too narrow for them all, the ANE's note goes
 /// first, then the thermal row's word and the Mac's memory figure.
 ///
-/// Its context menu checks which items show (remembered).
+/// Its context menu checks which items show (remembered). A click on RAM
+/// shows what Valtz holds, model by model (MemoryPopover).
 ///
 /// Each figure keeps the width of the widest it can show -- a template
 /// of it, every digit as wide as any other in monospaced digits -- so a
@@ -63,7 +64,11 @@ struct StatusBar: View {
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
         .onAppear { monitor.start() }
-        .onDisappear { monitor.stop() }
+        .onDisappear {
+            monitor.stop()
+            // Its popover goes with it, not to come back with the bar.
+            model.memoryPopoverOpen = false
+        }
     }
 
     private func row(_ detail: Detail) -> some View {
@@ -110,7 +115,13 @@ struct StatusBar: View {
                 }
             }
         }
-        .help("The first figure and the bar in front: the memory Valtz is using, models included (its footprint, as Activity Monitor shows it). The second figure and the grey bar behind it: the memory the whole Mac is using (Activity Monitor's Memory Used), of all it has.")
+        .help("The first figure and the bar in front: the memory Valtz is using, models included (its footprint, as Activity Monitor shows it). The second figure and the grey bar behind it: the memory the whole Mac is using (Activity Monitor's Memory Used), of all it has. Click it for what Valtz holds, model by model.")
+        // A click: what Valtz holds, model by model.
+        .contentShape(Rectangle())
+        .onTapGesture { model.memoryPopoverOpen.toggle() }
+        .popover(isPresented: $model.memoryPopoverOpen, arrowEdge: .top) {
+            MemoryPopover(model: model)
+        }
     }
 
     private func aneMeter(_ load: MachineMonitor.Load,

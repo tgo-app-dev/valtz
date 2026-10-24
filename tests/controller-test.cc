@@ -6,6 +6,7 @@
 #include <array>
 
 #include "valtz/assist/transcript.h"
+#include "valtz/base/tree-copy.h"
 #include "valtz/controller/controller.h"
 #include "valtz/media/camera.h"
 #include "valtz/media/markup.h"
@@ -30,6 +31,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <numbers>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -5318,6 +5320,476 @@ TEST(composition, markup_objects_are_arranged)
   CHECK(!ctl.arrange_markup(pid, *comp, *layer, {"a"}, "sideways").ok());
 }
 
+namespace {
+
+// Object `id` of `os`; null without it.
+Json
+object_of(const Json& os, const std::string& id)
+{
+  for (const auto& o : os) {
+    if (jget<std::string>(o, "id", "") == id) {
+      return o;
+    }
+  }
+  return Json();
+}
+
+// Whether connector point `c` lies at (x, y), to a hundredth of a pixel.
+bool
+lies_at(const media::ConnectorPoint& c, double x, double y)
+{
+  return std::abs(c.x - x) < 0.01 && std::abs(c.y - y) < 0.01;
+}
+
+}  // namespace
+
+// CONNECTORS and ANCHORS (media/markup.h): the default connectors on each
+// outline -- the middle of each segment, four round an ellipse -- turned
+// with their object; a line's and a path's points anchored to them,
+// following where their shapes go, through a chain; let go where they
+// are when the shape or the connector goes, or the line is moved apart.
+TEST(media, connectors_hold_anchored_points)
+{
+  const Json rect = media::with_default_connectors(
+      {{"id", "r"}, {"kind", "rect"}, {"x0", 100}, {"y0", 100},
+       {"x1", 300}, {"y1", 200}, {"width", 4}});
+  auto rc = media::connector_points(rect);
+  REQUIRE(rc.size() == 4);
+  CHECK(lies_at(rc[0], 200, 100) && lies_at(rc[1], 300, 150));
+  CHECK(lies_at(rc[2], 200, 200) && lies_at(rc[3], 100, 150));
+  CHECK(rc[0].id == "c1" && rc[3].id == "c4");
+  // Added again: nothing new.
+  CHECK(media::with_default_connectors(rect)["connectors"].size() == 4);
+  const Json ellipse = media::with_default_connectors(
+      {{"id", "e"}, {"kind", "ellipse"}, {"x0", 400}, {"y0", 100},
+       {"x1", 600}, {"y1", 200}});
+  auto ec = media::connector_points(ellipse);
+  REQUIRE(ec.size() == 4);
+  CHECK(lies_at(ec[0], 600, 150) && lies_at(ec[1], 500, 200));
+  CHECK(lies_at(ec[2], 400, 150) && lies_at(ec[3], 500, 100));
+  const Json line = media::with_default_connectors(
+      {{"id", "l"}, {"kind", "line"}, {"x0", 0}, {"y0", 0}, {"x1", 100},
+       {"y1", 0}});
+  REQUIRE(media::connector_points(line).size() == 1);
+  CHECK(lies_at(media::connector_points(line)[0], 50, 0));
+  // A path: a connector each piece -- a closed triangle three.
+  const Json tri = media::with_default_connectors(
+      {{"id", "p"}, {"kind", "polygon"}, {"x0", 0}, {"y0", 0},
+       {"x1", 100}, {"y1", 100}, {"points", {{0, 0}, {1, 0}, {0, 1}}}});
+  auto pc = media::connector_points(tri);
+  REQUIRE(pc.size() == 3);
+  CHECK(lies_at(pc[0], 50, 0) && lies_at(pc[1], 50, 50));
+  CHECK(lies_at(pc[2], 0, 50));
+  // A smooth piece's halfway along its curve: four smooth points round a
+  // square are a circle, its connectors at 45 degrees.
+  const Json round = media::with_default_connectors(
+      {{"id", "o"}, {"kind", "polygon"}, {"x0", 0}, {"y0", 0},
+       {"x1", 200}, {"y1", 200},
+       {"points", {{0.5, 0}, {1, 0.5}, {0.5, 1}, {0, 0.5}}},
+       {"smooth", {true, true, true, true}}});
+  auto oc = media::connector_points(round);
+  REQUIRE(oc.size() == 4);
+  const double r45 = 100 + 100 * std::numbers::sqrt2 / 2;
+  CHECK(std::abs(oc[0].x - r45) < 1.5);
+  CHECK(std::abs(oc[0].y - (200 - r45)) < 1.5);
+  // Turned with it: a quarter turn puts the top's on the right.
+  Json turned = rect;
+  turned["rotate"] = 90;
+  CHECK(lies_at(media::connector_points(turned)[0], 250, 150));
+
+  // A line from r's right to e's left: its ends put there, its turn
+  // made its ends'; none to itself, one a point (the last).
+  const Json joined = {
+      {"id", "a"}, {"kind", "line"}, {"x0", 0}, {"y0", 0}, {"x1", 5},
+      {"y1", 5}, {"rotate", 30},
+      {"anchors", {{{"point", 0}, {"to", "e"}, {"connector", "c1"}},
+                   {{"point", 0}, {"to", "r"}, {"connector", "c2"}},
+                   {{"point", 1}, {"to", "e"}, {"connector", "c3"}},
+                   {{"point", 1}, {"to", "a"}, {"connector", "c1"}}}}};
+  Json os = media::normalize_objects(Json::array({rect, ellipse, joined}));
+  Json a = object_of(os, "a");
+  CHECK(a["x0"] == 300 && a["y0"] == 150);
+  CHECK(!a.contains("rotate"));
+  CHECK(a["anchors"].size() == 2);
+  os[2] = media::with_default_connectors(a);
+  os = media::normalize_objects(os);
+  a = object_of(os, "a");
+  CHECK(a["x0"] == 300 && a["y0"] == 150);
+  CHECK(a["x1"] == 400 && a["y1"] == 150);
+  // The rectangle moved: the end follows; a path anchored to the line's
+  // own connector follows it in turn.
+  os[0]["x0"] = 120;
+  os[0]["x1"] = 320;
+  os.push_back({{"id", "b"}, {"kind", "polygon"}, {"x0", 0}, {"y0", 0},
+                {"x1", 10}, {"y1", 10}, {"open", true},
+                {"points", {{0, 0}, {1, 1}}},
+                {"anchors", {{{"point", 1}, {"to", "a"},
+                              {"connector", "c1"}}}}});
+  os = media::normalize_objects(os);
+  a = object_of(os, "a");
+  CHECK(a["x0"] == 320 && a["x1"] == 400);
+  const Json bp = object_of(os, "b");
+  CHECK(bp["x1"] == 360 && bp["y1"] == 150);  // a's middle, now
+  // The ellipse gone: that end let go where it was.
+  Json gone = Json::array();
+  for (const auto& o : os) {
+    if (o["id"] != "e") {
+      gone.push_back(o);
+    }
+  }
+  gone = media::normalize_objects(gone);
+  a = object_of(gone, "a");
+  CHECK(a["x1"] == 400 && a["y1"] == 150 && a["anchors"].size() == 1);
+  // The rectangle's connectors taken off: the other end let go too.
+  gone[0].erase("connectors");
+  gone = media::normalize_objects(gone);
+  CHECK(!object_of(gone, "a").contains("anchors"));
+  CHECK(object_of(gone, "a")["x0"] == 320);
+  // The line moved apart from the shapes it joins: free of them; moved
+  // with its shape, kept.
+  const Json still = media::normalize_objects(
+      Json::array({rect, ellipse,
+                   {{"id", "a"}, {"kind", "line"}, {"x0", 0}, {"y0", 0},
+                    {"x1", 1}, {"y1", 1},
+                    {"anchors", {{{"point", 0}, {"to", "r"},
+                                  {"connector", "c2"}}}}}}));
+  CHECK(!object_of(media::detach_moved(still, {"a"}), "a")
+             .contains("anchors"));
+  CHECK(object_of(media::detach_moved(still, {"a", "r"}), "a")
+            .contains("anchors"));
+  auto aligned = media::arrange_objects(still, {"a"}, "left", {800, 400});
+  REQUIRE_OK(aligned);
+  CHECK(!object_of(*aligned, "a").contains("anchors"));
+  // The shape aligned alone: the line follows it (its right side, half
+  // the outline in from the canvas's edge).
+  auto shifted = media::arrange_objects(still, {"r"}, "right", {800, 400});
+  REQUIRE_OK(shifted);
+  CHECK(object_of(*shifted, "a")["x0"] == 798);
+}
+
+// A PATCH (media::patch_objects): objects put in by id -- in their place,
+// a new one on top -- and taken out; only they and what is anchored to
+// them resolved again, the rest left as they were kept.
+TEST(media, objects_are_patched)
+{
+  const Json rect = media::with_default_connectors(
+      {{"id", "r"}, {"kind", "rect"}, {"x0", 0}, {"y0", 0}, {"x1", 100},
+       {"y1", 50}});
+  const Json line = {{"id", "l"}, {"kind", "line"}, {"x0", 0}, {"y0", 0},
+                     {"x1", 500}, {"y1", 500},
+                     {"anchors", {{{"point", 0}, {"to", "r"},
+                                   {"connector", "c2"}}}}};
+  const Json far = {{"id", "f"}, {"kind", "ellipse"}, {"x0", 300},
+                    {"y0", 300}, {"x1", 400}, {"y1", 400}};
+  const Json os = media::normalize_objects(Json::array({rect, line, far}));
+  CHECK(object_of(os, "l")["x0"] == 100);
+  // The rectangle moved: it and the line hanging on it changed, the
+  // ellipse not looked at (an odd field kept as it was).
+  Json moved = object_of(os, "r");
+  moved["x0"] = 200;
+  moved["x1"] = 300;
+  Json odd = os;
+  odd[2]["kept"] = "as is";
+  std::set<std::string> changed;
+  const Json a = media::patch_objects(odd, Json::array({moved}), {},
+                                      changed);
+  CHECK((changed == std::set<std::string>{"l", "r"}));
+  CHECK(a.size() == 3 && a[0]["id"] == "r" && a[2]["kept"] == "as is");
+  CHECK(object_of(a, "l")["x0"] == 300);
+  // A new one on top (no id: one made), one taken out: what hung on it
+  // let go where it is.
+  changed.clear();
+  const Json b = media::patch_objects(
+      a, Json::array({{{"kind", "line"}, {"x0", 1}, {"y0", 1}, {"x1", 2},
+                       {"y1", 2}}}),
+      {"r"}, changed);
+  CHECK(b.size() == 3 && b[0]["id"] == "l" && b[2]["kind"] == "line");
+  CHECK(!b[2]["id"].get<std::string>().empty());
+  CHECK(!object_of(b, "l").contains("anchors"));
+  CHECK(object_of(b, "l")["x0"] == 300);
+  CHECK(changed.count("l") == 1 && changed.count("f") == 0);
+  // The same as resolving all of it.
+  CHECK(media::resolve_anchors(b) == b);
+}
+
+namespace {
+
+// A picture's pixels, 8-bit RGBA premultiplied, as drawn into a bitmap.
+std::vector<std::uint8_t>
+pixels_of(const media::DrawnPicture& img)
+{
+  const std::size_t w = CGImageGetWidth(img.get());
+  const std::size_t h = CGImageGetHeight(img.get());
+  std::vector<std::uint8_t> px(w * h * 4);
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(
+      px.data(), w, h, 8, w * 4, cs,
+      static_cast<std::uint32_t>(kCGImageAlphaPremultipliedLast));
+  CGColorSpaceRelease(cs);
+  CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), img.get());
+  CGContextRelease(ctx);
+  return px;
+}
+
+}  // namespace
+
+// A markup KEPT DRAWN (media::MarkupCanvas): after each change -- an
+// object moved, recoloured, hidden, shown, taken out, put in -- the same
+// pixels as drawn whole, only where it changed redrawn; whole again on
+// another order.
+TEST(media, a_markup_kept_drawn_is_redrawn_where_it_changed)
+{
+  Json os = Json::array();
+  for (int i = 0; i < 400; ++i) {
+    const double x = (i * 37) % 900, y = (i * 53) % 560;
+    Json o = {{"id", "o" + std::to_string(i)},
+              {"kind", i % 4 == 0 ? "line" : i % 4 == 1 ? "rect"
+                       : i % 4 == 2 ? "ellipse" : "polygon"},
+              {"x0", x}, {"y0", y}, {"x1", x + 60}, {"y1", y + 40},
+              {"stroke", {0.1, 0.2, 0.6, 1}}, {"fill", {0.9, 0.5, 0.1, 0.6}},
+              {"width", 3}};
+    if (i % 4 == 0) {
+      o["arrows"] = "end";
+    }
+    if (i % 4 == 3) {
+      o["points"] = {{0, 0}, {1, 0.1}, {0.5, 1}};
+    }
+    if (i % 25 == 1) {
+      o["effects"] = {{{"kind", "shadow"}, {"color", {0, 0, 0, 0.5}},
+                       {"blur", 4}, {"dx", 3}, {"dy", 3}}};
+      o["text"] = "Hi";
+      o["font"] = {{"family", "Helvetica"}, {"size", 14}};
+    }
+    os.push_back(std::move(o));
+  }
+  os = media::normalize_objects(os);
+  const media::PixelSize canvas{960, 600};
+  media::MarkupCanvas kept;
+  auto same = [&](const Json& now, const std::set<std::string>& hidden) {
+    auto a = kept.draw({}, canvas, now, hidden);
+    auto b = media::render_markup_picture({}, canvas, now, hidden);
+    return a.ok() && b.ok() && pixels_of(*a) == pixels_of(*b);
+  };
+  CHECK(same(os, {}));
+  CHECK(kept.last_whole());
+  Json now = os;
+  now[101]["x0"] = 500.5;   // moved
+  now[101]["x1"] = 560.5;
+  CHECK(same(now, {}));
+  CHECK(!kept.last_whole());
+  CHECK(kept.last_area() < 960.0 * 600 / 10);
+  now[26]["stroke"] = {1, 0, 0, 1};  // a shadowed one recoloured
+  CHECK(same(now, {}));
+  CHECK(!kept.last_whole());
+  CHECK(same(now, {"o7", "o8"}));    // hidden
+  CHECK(!kept.last_whole());
+  CHECK(same(now, {"o8"}));          // one shown again
+  now.erase(now.begin() + 3);        // taken out
+  CHECK(same(now, {}));
+  CHECK(!kept.last_whole());
+  now.push_back({{"id", "new"}, {"kind", "ellipse"}, {"x0", 10},
+                 {"y0", 10}, {"x1", 90}, {"y1", 50},
+                 {"fill", {0, 1, 0, 1}}, {"stroke", {0, 0, 0, 1}},
+                 {"width", 6}});  // put in, on top
+  now = media::normalize_objects(now);
+  CHECK(same(now, {}));
+  CHECK(!kept.last_whole());
+  std::swap(now[0], now[1]);         // reordered: whole
+  CHECK(same(now, {}));
+  CHECK(kept.last_whole());
+}
+
+// A SHAPE'S WORDS (media/markup.h): set in its text area, the block
+// centred down it and across, in their own colour; flipped with its
+// shape, never mirrored.
+TEST(media, a_shape_holds_its_words)
+{
+  const auto root = test::temp_dir("markup-shape-text");
+  const Json box = {
+      {"id", "r"}, {"kind", "rect"}, {"x0", 20}, {"y0", 20}, {"x1", 280},
+      {"y1", 180}, {"fill", {1, 1, 1, 1}}, {"width", 0}, {"text", "HL"},
+      {"font", {{"family", "Helvetica"}, {"size", 60}}},
+      {"text_color", {0, 0, 1, 1}}};
+  const auto out = root / "text.png";
+  REQUIRE_OK(media::render_markup({}, {300, 200}, Json::array({box}), {},
+                                  out));
+  // The words' pixels: blue, their block's middle near the shape's.
+  int lo = 200, hi = -1, left = 300, right = -1;
+  for (int y = 20; y < 180; ++y) {
+    for (int x = 20; x < 280; ++x) {
+      const auto p = pixel_at(out, x, y);
+      if (p[2] > 200 && p[0] < 60) {
+        lo = std::min(lo, y);
+        hi = std::max(hi, y);
+        left = std::min(left, x);
+        right = std::max(right, x);
+      }
+    }
+  }
+  REQUIRE(hi > lo);
+  CHECK(std::abs((lo + hi) / 2 - 100) <= 6);
+  CHECK(std::abs((left + right) / 2 - 150) <= 6);
+  CHECK(pixel_at(out, 30, 30)[0] > 240);  // the fill round them
+  // Flipped across: the rectangle is itself, its words as they were.
+  Json flipped = box;
+  flipped["flip_x"] = true;
+  const auto out2 = root / "flipped.png";
+  REQUIRE_OK(media::render_markup({}, {300, 200}, Json::array({flipped}),
+                                  {}, out2));
+  bool same = true;
+  for (int y = 0; y < 200 && same; y += 3) {
+    for (int x = 0; x < 300 && same; x += 3) {
+      same = pixel_at(out, x, y) == pixel_at(out2, x, y);
+    }
+  }
+  CHECK(same);
+  // Kept: its words, font, colour; an alignment named, else centred.
+  Json odd = box;
+  odd["align"] = "sideways";
+  const Json n = media::normalize_objects(Json::array({box, odd}));
+  CHECK(n[0]["text"] == "HL" && n[0]["font"]["size"] == 60);
+  CHECK(n[0]["text_color"] == Json::array({0, 0, 1, 1}));
+  CHECK(!n[0].contains("align") && n[1]["align"] == "center");
+  Json plain = box;
+  plain.erase("text");
+  CHECK(!media::normalize_objects(Json::array({plain}))[0].contains("font"));
+}
+
+// Add Connectors / Remove Connectors on a project: one command each, of
+// its kind; removed, the points anchored to them let go where they are.
+TEST(controller, connectors_are_added_and_taken_off)
+{
+  Bench b("comp-connectors");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto pic = b.png("base.png", 400, 200, {0x80, 0x80, 0x80, 0xff});
+  REQUIRE(pic);
+  auto comp = ctl.derive_modified(pid, *pic);
+  REQUIRE_OK(comp);
+  auto layer = ctl.markup_layer(pid, *comp, {""});
+  REQUIRE_OK(layer);
+  REQUIRE_OK(ctl.set_markup_objects(
+      pid, *comp, *layer,
+      Json::array({{{"id", "r"}, {"kind", "rect"}, {"x0", 10}, {"y0", 10},
+                    {"x1", 110}, {"y1", 60}},
+                   {{"id", "e"}, {"kind", "ellipse"}, {"x0", 200},
+                    {"y0", 10}, {"x1", 300}, {"y1", 110}},
+                   {{"id", "t"}, {"kind", "text"}, {"x0", 0}, {"y0", 150},
+                    {"text", "words"}}})));
+  auto objects = [&] {
+    for (const auto& l : b.layers(*comp)) {
+      if (l.id == *layer && l.source) {
+        auto m = b.p().asset(*l.source);
+        if (m.ok() && m->markup) {
+          return m->markup->objects;
+        }
+      }
+    }
+    return Json();
+  };
+  auto undo_kind = [&] {
+    return jget<std::string>(
+        jget(ctl.project_state(pid), "undo", Json::object()), "kind", "");
+  };
+  REQUIRE_OK(ctl.markup_connectors(pid, *comp, *layer, {"r", "e", "t"},
+                                   true));
+  CHECK(undo_kind() == "markup.connectors");
+  CHECK(object_of(objects(), "r")["connectors"].size() == 4);
+  CHECK(object_of(objects(), "e")["connectors"].size() == 4);
+  CHECK(!object_of(objects(), "t").contains("connectors"));  // a text
+  // A line between them, then the rectangle's taken off: its end free.
+  Json os = objects();
+  os.push_back({{"id", "l"}, {"kind", "line"}, {"x0", 0}, {"y0", 0},
+                {"x1", 1}, {"y1", 1},
+                {"anchors", {{{"point", 0}, {"to", "r"},
+                              {"connector", "c2"}},
+                             {{"point", 1}, {"to", "e"},
+                              {"connector", "c3"}}}}});
+  REQUIRE_OK(ctl.set_markup_objects(pid, *comp, *layer, os));
+  CHECK(object_of(objects(), "l")["x0"] == 110);
+  CHECK(object_of(objects(), "l")["x1"] == 200);
+  REQUIRE_OK(ctl.markup_connectors(pid, *comp, *layer, {"r"}, false));
+  CHECK(undo_kind() == "markup.unconnect");
+  const Json l = object_of(objects(), "l");
+  CHECK(l["x0"] == 110 && l["anchors"].size() == 1);
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(object_of(objects(), "l")["anchors"].size() == 2);
+  // Nothing to change: no command.
+  REQUIRE_OK(ctl.markup_connectors(pid, *comp, *layer, {"t"}, true));
+  CHECK(undo_kind() == "markup.objects");
+}
+
+// The app's edits as PATCHES on a project: one command of the objects'
+// kind; the reply what a copy needs -- the changed objects as kept, those
+// removed, the stamp and count -- and the stamp the objects' own.
+TEST(controller, markup_objects_are_patched)
+{
+  Bench b("comp-patch");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto pic = b.png("base.png", 400, 200, {0x80, 0x80, 0x80, 0xff});
+  REQUIRE(pic);
+  auto comp = ctl.derive_modified(pid, *pic);
+  REQUIRE_OK(comp);
+  auto layer = ctl.markup_layer(pid, *comp, {""});
+  REQUIRE_OK(layer);
+  Json many = Json::array();
+  for (int i = 0; i < 500; ++i) {
+    many.push_back({{"id", "o" + std::to_string(i)}, {"kind", "rect"},
+                    {"x0", i}, {"y0", 0}, {"x1", i + 10}, {"y1", 10}});
+  }
+  REQUIRE_OK(ctl.set_markup_objects(pid, *comp, *layer, many));
+  auto source = [&] {
+    for (const auto& l : b.layers(*comp)) {
+      if (l.id == *layer) {
+        return *l.source;
+      }
+    }
+    return AssetId{};
+  };
+  Json moved = many[7];
+  moved["x0"] = 70;
+  auto r = ctl.patch_markup_objects(
+      pid, *comp, *layer, Json::array({moved, {{"kind", "line"}}}),
+      {"o9", "nope"});
+  REQUIRE_OK(r);
+  CHECK(r->count == 500);
+  CHECK((r->removed == std::vector<std::string>{"o9"}));
+  REQUIRE(r->changed.size() == 2);
+  CHECK(r->changed[0]["id"] == "o7" && r->changed[0]["x0"] == 70);
+  CHECK(r->changed[1]["kind"] == "line");
+  auto got = ctl.markup_objects(pid, source());
+  REQUIRE_OK(got);
+  CHECK(got->first.size() == 500 && got->second == r->stamp);
+  CHECK(r->stamp.size() == 16);
+  CHECK(jget<std::string>(jget(ctl.project_state(pid), "undo",
+                               Json::object()), "kind", "") ==
+        "markup.objects");
+  CHECK(got->first[7]["x0"] == 70 && got->first[499]["kind"] == "line");
+  // Another edit: another stamp -- its undo the one before back.
+  moved["x0"] = 71;
+  {
+    // Not coalesced with the patch before (another command between).
+    auto other = ctl.arrange_markup(pid, *comp, *layer, {"o1"}, "to-top");
+    REQUIRE_OK(other);
+  }
+  const std::string before = ctl.markup_objects(pid, source())->second;
+  auto r2 = ctl.patch_markup_objects(pid, *comp, *layer,
+                                     Json::array({moved}), {});
+  REQUIRE_OK(r2);
+  CHECK(r2->stamp != before && r2->stamp != r->stamp);
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(ctl.markup_objects(pid, source())->second == before);
+  // Undone whole -- the arrange, then the first patch with the objects
+  // set just before it, coalesced as a slider's steps are (one kind, one
+  // layer, within two seconds).
+  REQUIRE_OK(ctl.undo(pid));
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(ctl.markup_objects(pid, source())->first.empty());
+}
+
 // TIME (media/timing.h): a layer's source time through its marks and a
 // speed ramp, its natural length, the transitions' weights, the
 // player's segments and volume ramps.
@@ -7434,6 +7906,115 @@ TEST(controller, upscalers_run_as_settings_have_them)
 // person's pick, kept beside the upscalers' values; a pick not installed
 // gives way to Auto's until it is. What the asset menu says Render
 // Upscaled runs follows it.
+// An engine that says what it holds as the test sets it (Engine
+// ::memory_held), and runs nothing.
+class MemoryEngine final : public engine::Engine {
+public:
+  Json held = Json::object();
+  std::string description() const override { return "memory"; }
+  bool available() const override { return true; }
+  bool supports(std::string_view) const override { return false; }
+  Status submit(engine::JobSpec, engine::JobSink) override
+  {
+    return ok_status();
+  }
+  Status cancel(JobId) override { return ok_status(); }
+  void shutdown() override {}
+  Json memory_held() override { return held; }
+};
+
+// What the engine holds, NAMED for the RAM popover (Controller
+// ::memory_held): a warm language model by its catalog entry, its own
+// weight set and its drafter's folded in; one loaded unwired sized from
+// its files; a stage's models by their part, a VAE kept with no bytes
+// given its weight set's; a checkpoint of no model an item of its own.
+TEST(controller, what_the_engine_holds_is_named_and_counted_once)
+{
+  auto root = test::temp_dir("ctl-memory-held");
+  const fs::path models = root / "models";
+  MemoryEngine* engine = nullptr;
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<MemoryEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  REQUIRE(engine != nullptr);
+  auto dir = [&](const char* id) -> std::string {
+    const auto* e = ctl.catalog().find(id);
+    CHECK(e != nullptr);
+    if (e == nullptr) {
+      return {};
+    }
+    const fs::path d = models / e->hf_path / e->subdir;
+    fs::create_directories(d);
+    std::ofstream(d / "model.safetensors") << "wwww";   // 4 bytes
+    return d.string();
+  };
+  const std::string big = dir("qwen3.8-27b-4bit");
+  const std::string drafter = dir("qwen3.8-27b-dflash2");
+  const std::string small = dir("qwen3.5-9b");
+  const std::string zimage = dir("z-image-turbo");
+  ctl.rescan_models();
+  engine->held = {
+      {"warm", Json::array({
+          {{"kind", "language-model"}, {"dir", big},
+           {"bytes", 17000}, {"kv_bytes", 100}, {"seconds", 500.0}},
+          {{"kind", "language-model"}, {"dir", small},
+           {"bytes", 0}, {"kv_bytes", 0}, {"seconds", 60.0}},
+          {{"kind", "z-image-dit"}, {"dir", zimage + "/transformer"},
+           {"bytes", 5000}, {"seconds", 300.0}},
+          {{"kind", "flux2-vae-decoder"}, {"dir", zimage + "/vae"},
+           {"bytes", 0}, {"seconds", 300.0}},
+      })},
+      {"weights", Json::array({
+          {{"dir", big}, {"bytes", 900}, {"holders", 2}},
+          {{"dir", drafter}, {"bytes", 1200}, {"holders", 1}},
+          {{"dir", zimage + "/vae"}, {"bytes", 80}, {"holders", 1}},
+          {{"dir", (root / "elsewhere").string()}, {"bytes", 300},
+           {"holders", 0}, {"parked", true}},
+      })},
+      {"gpu_allocated", 30000}};
+  const Json m = ctl.memory_held();
+  const Json items = jget(m, "items", Json::array());
+  REQUIRE(items.size() == 5);
+  auto item = [&](std::string_view part, std::string_view model) {
+    for (const auto& i : items) {
+      if (i["part"] == part && i["model"] == model) {
+        return i;
+      }
+    }
+    return Json();
+  };
+  // The 27B: its wired bytes, which hold its own and its drafter's sets.
+  const Json lm = item("helper", "qwen3.8-27b-4bit");
+  REQUIRE(lm.is_object());
+  CHECK(lm["bytes"] == 17000);
+  CHECK(lm["kv_bytes"] == 100);
+  CHECK(lm["name"] == ctl.catalog().find("qwen3.8-27b-4bit")->name);
+  CHECK(!lm.contains("estimated"));
+  // The 9B loaded unwired: its files' 4 bytes stand for it.
+  const Json nine = item("helper", "qwen3.5-9b");
+  CHECK(nine["bytes"] == 4);
+  CHECK(nine["estimated"] == true);
+  // A stage's DiT, by its component's folder; its VAE kept with none,
+  // its weight set's 80.
+  CHECK(item("dit", "z-image-turbo")["bytes"] == 5000);
+  CHECK(item("vae", "z-image-turbo")["bytes"] == 80);
+  // The checkpoint of no model: an item, by its folder's name.
+  const Json other = item("weights", "");
+  CHECK(other["name"] == "elsewhere");
+  CHECK(other["parked"] == true);
+  CHECK(other["bytes"] == 300);
+}
+
 TEST(controller, a_video_upscaler_is_auto_or_picked)
 {
   auto root = test::temp_dir("ctl-upscaler-pick");
@@ -8549,6 +9130,103 @@ TEST(agent, texts_and_shapes_move_as_themselves)
   CHECK((jget(lo[0], "from", J()) == J::array({200, 200})));
   CHECK((jget(lo[0], "to", J()) == J::array({300, 100})));
   REQUIRE_OK(ctl.agent_stop(*line));
+}
+
+// A markup of MANY objects told the agent in sum -- the ones on top
+// listed, the count by kind -- and the rest found by region, kind, words
+// or id (find_objects), 200 at most: all of them were listed, megabytes
+// past any helper's context.
+TEST(agent, a_page_of_many_objects_is_told_in_sum_and_searched)
+{
+  auto root = test::temp_dir("agent-many");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "M.valtz", "many");
+  REQUIRE_OK(pid);
+  using J = Json;
+  script->replies = {
+      {call("create_composition", {{"name", "Map"}, {"width", 2000},
+                                   {"height", 1000}})},
+      {call("add_text", {{"text", "Legend"}, {"x", 10}, {"y", 10},
+                         {"width", 200}, {"height", 40}, {"size", 24}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A map";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "done");
+  Json steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 2);
+  const AssetId comp =
+      *AssetId::parse(jget<std::string>(st, "composition", ""));
+  const std::string layer =
+      jget<std::string>(jget(steps[1], "result", J()), "layer", "");
+  REQUIRE_OK(ctl.agent_stop(*id));
+  // 500 dots, then the legend's words among them.
+  Json objs = J::array();
+  for (int i = 0; i < 500; ++i) {
+    objs.push_back({{"id", "d" + std::to_string(i)}, {"kind", "ellipse"},
+                    {"x0", (i % 50) * 40}, {"y0", (i / 50) * 100},
+                    {"x1", (i % 50) * 40 + 10}, {"y1", (i / 50) * 100 + 10}});
+  }
+  objs.push_back({{"id", "w"}, {"kind", "text"}, {"box", true},
+                  {"x0", 600}, {"y0", 600}, {"x1", 900}, {"y1", 640},
+                  {"text", "Harbour Road"}});
+  REQUIRE_OK(ctl.set_markup_objects(*pid, comp, layer == "0" ? "" : layer,
+                                    objs));
+  script->replies = {
+      {call("get_composition", {{"composition", comp.str()}}),
+       call("find_objects", {{"composition", comp.str()},
+                             {"region", {{"x", 0}, {"y", 0},
+                                         {"width", 100}, {"height", 50}}}}),
+       call("find_objects", {{"composition", comp.str()},
+                             {"text", "harbour"}}),
+       call("find_objects", {{"composition", comp.str()},
+                             {"kind", "ellipse"}, {"limit", 5}})}};
+  auto look = ctl.agent_start(req);
+  REQUIRE_OK(look);
+  st = agent_wait(ctl, *look, "done");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 4);
+  const Json g = jget(steps[0], "result", J());
+  Json listed = J::array();
+  Json told;
+  for (const auto& l : jget(g, "layers", J::array())) {
+    if (l.contains("objects_total")) {
+      told = l;
+      listed = jget(l, "objects", J::array());
+    }
+  }
+  REQUIRE(told.is_object());
+  CHECK(jget(told, "objects_total", 0) == 501);
+  CHECK(jget(jget(told, "objects_by_kind", J()), "ellipse", 0) == 500);
+  CHECK(listed.size() == 40);
+  CHECK(jget<std::string>(listed.back(), "id", "") == "w");
+  // In a region: the dots there (two across, one row) -- by words, the
+  // street's name; by kind, five of five hundred, said so.
+  const Json near = jget(steps[1], "result", J());
+  CHECK(jget(near, "matches", 0) == 3);
+  const Json named = jget(steps[2], "result", J());
+  REQUIRE(jget(named, "objects", J::array()).size() == 1);
+  CHECK(jget<std::string>(jget(named, "objects", J::array())[0], "text",
+                          "") == "Harbour Road");
+  const Json some = jget(steps[3], "result", J());
+  CHECK(jget(some, "objects", J::array()).size() == 5);
+  CHECK(jget(some, "matches", 0) == 500);
+  CHECK(some.contains("note"));
+  REQUIRE_OK(ctl.agent_stop(*look));
 }
 
 TEST(agent, a_picture_is_moved_by_its_box)
@@ -10236,4 +10914,130 @@ TEST(controller, an_enhances_speed_comes_with_it)
   CHECK(stats["accepted_pct"] == 75);
   CHECK(stats.contains("turn_ms"));
   CHECK(!stats.contains("first_ms"));   // no words were streamed
+}
+
+// THE FOLDERS PUT ELSEWHERE (Settings › General › Storage; base/paths.h):
+// the models KEPT where they are -- still found, downloads going to the
+// new folder -- then MOVED, the kept one with them; the cache moved by a
+// copy, its entries found there; kept where it is; and every choice read
+// back at the next start.
+TEST(controller, folders_are_moved_kept_or_dropped)
+{
+  const fs::path root = test::temp_dir("ctl-locations");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.move_by_copy = true;  // a move copies, as across drives
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  const fs::path models = root / "support/models";
+  auto write = [](const fs::path& f) {
+    fs::create_directories(f.parent_path());
+    std::ofstream(f) << "weights";
+  };
+  write(models / "krea/Krea-2-Turbo/model.safetensors");
+  // The job, waited for: its end by the locations it leaves.
+  auto settled = [](Controller& ctl) {
+    for (int i = 0; i < 400; ++i) {
+      if (!jget(ctl.locations(), "moving", Json()).is_object()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return false;
+  };
+  const fs::path a = root / "a", b = root / "b";
+  const fs::path c1 = root / "c1", c2 = root / "c2";
+  std::string key;
+  {
+    auto made = Controller::create(cfg);
+    REQUIRE_OK(made);
+    Controller& ctl = **made;
+    const auto* krea = ctl.catalog().find("krea2-turbo");
+    REQUIRE(krea != nullptr);
+    CHECK(path_within(ctl.model_store().info(*krea).dir, models));
+
+    // Work under way: refused, the folders as they were.
+    auto dl = ctl.download_model("z-image-turbo");
+    REQUIRE_OK(dl);
+    auto busy = ctl.set_location("models", a, "keep");
+    CHECK(!busy.ok() && busy.error().key == msg::kModelsBusy.key);
+    auto busy2 = ctl.set_location("cache", c1, "drop");
+    CHECK(!busy2.ok() && busy2.error().key == msg::kCacheBusy.key);
+    CHECK(ctl.model_store().download_root() == models);
+    REQUIRE_OK(ctl.cancel(*dl));
+
+    // KEPT: at once, no job; the old folder still looked in, and owned.
+    auto kept = ctl.set_location("models", a, "keep");
+    REQUIRE_OK(kept);
+    CHECK(kept->is_nil());
+    CHECK(ctl.model_store().download_root() == a);
+    CHECK(path_within(ctl.model_store().info(*krea).dir, models));
+    CHECK(!ctl.model_store().own_root_of(models / "krea").empty());
+    CHECK(ctl.paths().models_kept.size() == 1);
+    // Into itself: refused.
+    auto in = ctl.set_location("models", a / "inner", "move");
+    CHECK(!in.ok() && in.error().key == msg::kLocationNested.key);
+
+    // MOVED: every folder of Valtz's own brought over -- the kept one
+    // too -- the emptied ones gone. Downloads wait for it.
+    write(a / "org/repo/x.bin");
+    auto mv = ctl.set_location("models", b, "move");
+    REQUIRE_OK(mv);
+    REQUIRE(!mv->is_nil());
+    auto twice = ctl.set_location("cache", c1, "move");
+    CHECK(!twice.ok());
+    REQUIRE(settled(ctl));
+    CHECK(fs::exists(b / "krea/Krea-2-Turbo/model.safetensors"));
+    CHECK(fs::exists(b / "org/repo/x.bin"));
+    CHECK(!fs::exists(models));
+    CHECK(!fs::exists(a));
+    CHECK(ctl.paths().models == b);
+    CHECK(ctl.paths().models_kept.empty());
+    CHECK(path_within(ctl.model_store().info(*krea).dir, b));
+
+    // The cache MOVED by a copy: its entry found in the new folder.
+    key = cache::CacheStore::key_for(ContentHash{}, "thumb-256.jpg");
+    std::ofstream(ctl.cache().staging_path(key)) << "thumb";
+    REQUIRE_OK(ctl.cache().commit(key));
+    const fs::path old = ctl.cache().root();
+    auto cm = ctl.set_location("cache", c1, "move");
+    REQUIRE_OK(cm);
+    REQUIRE(!cm->is_nil());
+    REQUIRE(settled(ctl));
+    CHECK(ctl.cache().root() == c1);
+    auto hit = ctl.cache().find(key);
+    CHECK(hit && path_within(*hit, c1));
+    CHECK(!fs::exists(old / "objects"));
+    // KEPT where it is: unused, its entry left there.
+    auto ck = ctl.set_location("cache", c2, "keep");
+    REQUIRE_OK(ck);
+    CHECK(ck->is_nil());
+    CHECK(!ctl.cache().find(key));
+    CHECK(tree_size(c1 / "objects").files == 1);
+
+    // Projects: where new ones go, nothing moved.
+    auto projects = ctl.set_location("projects", root / "projects", "move");
+    REQUIRE_OK(projects);
+    CHECK(ctl.paths().projects == root / "projects");
+  }
+  // Read back by the next start -- the cache back where its entry is,
+  // found at once.
+  {
+    auto made = Controller::create(cfg);
+    REQUIRE_OK(made);
+    Controller& ctl = **made;
+    CHECK(ctl.paths().models == b);
+    CHECK(ctl.cache().root() == c2);
+    CHECK(ctl.paths().projects == root / "projects");
+    REQUIRE_OK(ctl.set_location("cache", c1, "drop"));
+    REQUIRE(settled(ctl));
+    CHECK(ctl.cache().find(key).has_value());
+    CHECK(!fs::exists(c2 / "objects"));
+  }
 }

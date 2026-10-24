@@ -29,6 +29,9 @@ to_json_markup(const Markup& m)
     j["w"] = m.width;
     j["h"] = m.height;
   }
+  if (!m.stamp.empty()) {
+    j["stamp"] = m.stamp;
+  }
   put_rest(j, m.rest);
   return j;
 }
@@ -44,7 +47,8 @@ markup_from_json(const Json& m)
   }
   mk.width = std::max(0, jget<std::int32_t>(m, "w", 0));
   mk.height = std::max(0, jget<std::int32_t>(m, "h", 0));
-  mk.rest = rest_of(m, {"raster", "objects", "w", "h"});
+  mk.stamp = jget<std::string>(m, "stamp", "");
+  mk.rest = rest_of(m, {"raster", "objects", "w", "h", "stamp"});
   return mk;
 }
 
@@ -694,6 +698,13 @@ from_json(const Json& j, HistoryEntry& h)
                        "height", "asset", "version", "generation",
                        "generation_version", "label", "rendered", "kind",
                        "frames", "seconds"});
+}
+
+std::string
+Markup::fresh_stamp()
+{
+  return std::format("{:016x}", (std::uint64_t{arc4random()} << 32) |
+                                    arc4random());
 }
 
 }

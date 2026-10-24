@@ -58,6 +58,7 @@ struct SimpleView: View {
         .animation(AppModel.motion, value: model.stageVisible)
         .animation(AppModel.motion, value: model.openPanel)
         .animation(AppModel.motion, value: model.timelineOpen)
+        .animation(AppModel.motion, value: model.viewOnly)
         .onGeometryChange(for: CGRect.self) {
             $0.frame(in: .global)
         } action: {
@@ -150,7 +151,9 @@ struct SimpleView: View {
             // The cards over the composer, and the composer: a notice
             // floats over the topmost of them.
             VStack(spacing: 0) {
-                if !immersive {
+                // View only: the stage alone (AppModel.viewOnly) -- the
+                // notice still floats where the composer's top would be.
+                if !immersive && !model.viewOnly {
                     if let f = model.memoryFailure, !model.suggesting {
                         MemoryFailureCard(model: model, failure: f)
                             .frame(maxWidth: Self.columnWidth)
@@ -187,6 +190,7 @@ struct SimpleView: View {
                                 .combined(with: .opacity))
                     }
                 }
+                if !model.viewOnly {
                 ComposerStack(model: model, maxPromptHeight: size.height / 2,
                               immersive: immersive, cardWidth: card)
                     .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
@@ -203,6 +207,8 @@ struct SimpleView: View {
                            alignment: .top)
                     // Wider, it grows to the right: its left edge stays.
                     .offset(x: immersive ? (card - base) / 2 : 0)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
             // A NOTICE, floating between the stage (or the mark) and the
             // prompt or the timeline -- over neither's layout: nothing
@@ -245,7 +251,8 @@ struct SimpleView: View {
     /// bar under the picture and of a generation's status.
     private var noticeLift: CGFloat {
         let clip = model.stage.video != nil && model.stage.clip == nil
-        let bar = model.stageVisible && (clip || model.compareOn)
+        let bar = model.stageVisible && (clip || model.compareOn
+            || model.stagePagesShown)
         // A clip's scrubber over its bar, but while the timeline is open.
         let scrubber = model.stageVisible && clip && !model.timelineOpen
         return 12 + (bar ? 40 : 0) + (scrubber ? 28 : 0)
@@ -293,6 +300,72 @@ struct SimpleView: View {
 
 /// Where the stage goes: the slot above the prompt, or the editor's top
 /// left.
+/// Media dropped on the stage are INSTANTIATED in its work: in the
+/// selected layer when it is blank, else in a new one right above it --
+/// an asset of the list, a file (imported first), or what a drag from
+/// outside makes a file of (a browser's or Photos' picture, an app's
+/// bytes, a link: DroppedMedia, imported as a copy). A project opens, as
+/// anywhere in the window. The stage's own drag is not taken back.
+/// Read off the drag's pasteboard (an onDrop closure is handed
+/// providers, promises received, before it runs).
+struct StageDrop: DropDelegate {
+    let model: AppModel
+    @Binding var targeted: Bool
+
+    private var pasteboard: NSPasteboard { NSPasteboard(name: .drag) }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        let pb = pasteboard
+        if DroppedMedia.isStage(pb) { return false }
+        let p = DroppedMedia.peek(pb)
+        // View only: a project still opens; nothing else is taken.
+        if model.viewOnly {
+            return p.files.contains(where: AppModel.isProjectFile)
+        }
+        if !DroppedMedia.rows(pb).isEmpty { return true }
+        return p.made > 0 || p.files.contains {
+            AppModel.isProjectFile($0)
+                || PromptTextView.kind(of: $0) != "file"
+        }
+    }
+
+    func dropEntered(info: DropInfo) { targeted = true }
+    func dropExited(info: DropInfo) { targeted = false }
+
+    func performDrop(info: DropInfo) -> Bool {
+        targeted = false
+        let pb = pasteboard
+        if model.viewOnly {
+            let p = DroppedMedia.peek(pb)
+            guard let project = p.files.first(where: AppModel.isProjectFile)
+            else { return false }
+            model.openDropped(project)
+            return true
+        }
+        if let id = DroppedMedia.rows(pb).first {
+            return model.dropAssetOnStage(id)
+        }
+        let intake = DroppedMedia.take(pb)
+        if let project = intake.files.first(where: AppModel.isProjectFile) {
+            model.openDropped(project)
+            return true
+        }
+        if model.dropFilesOnStage(intake.files) { return true }
+        guard intake.makes else { return false }
+        Task { @MainActor in
+            let made = await intake.made()
+            if let e = intake.failed.first {
+                model.flash(e, level: made.isEmpty ? .error : .warning)
+            }
+            // The first one, as a file dropped there; the rest into Assets.
+            model.importMade(made) { ids in
+                if let first = ids.first { model.dropAssetOnStage(first) }
+            }
+        }
+        return true
+    }
+}
+
 private struct StageSlotKey: PreferenceKey {
     static let defaultValue: Anchor<CGRect>? = nil
     static func reduce(value: inout Anchor<CGRect>?,
@@ -349,6 +422,35 @@ private struct SmallTransport: View {
         .foregroundStyle(.secondary)
         .help(help)
         .accessibilityLabel(Text(help))
+    }
+}
+
+/// A still's PAGES under the stage, where a clip's transport is, while
+/// the timeline that steps them is not shown -- editing or VIEW ONLY: ‹,
+/// which page of how many, › (← → too; ⌘← ⌘→ or Home and End the first
+/// and the last: AppModel.trimKey).
+private struct StagePages: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        HStack(spacing: 2) {
+            TitleBarButton(symbol: "chevron.backward", title: "Previous Page",
+                           help: "The page before") {
+                model.goToPage(model.stagePage - 1)
+            }
+            .disabled(model.stagePage <= 0)
+            .shortcutHint("←")
+            Text("Page \(String(model.stagePage + 1)) of \(String(model.stagePages))")
+                .monospacedDigit()
+                .padding(.horizontal, 6)
+            TitleBarButton(symbol: "chevron.forward", title: "Next Page",
+                           help: "The page after") {
+                model.goToPage(model.stagePage + 1)
+            }
+            .disabled(model.stagePage >= model.stagePages - 1)
+            .shortcutHint("→")
+        }
+        .titleBarCapsule()
     }
 }
 
@@ -471,8 +573,11 @@ private struct ResultStage: View {
 
     /// The guides' marks beside the card: guides shown over something of
     /// the project's they measure.
+    /// The guides' marks set them by hand: not while view only (the
+    /// lines still show).
     private var marksShown: Bool {
         model.showsGuides && !small && model.guideCanvas != nil
+            && !model.viewOnly
     }
     private static let showsBand =
         ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT_RING"] != nil
@@ -512,7 +617,7 @@ private struct ResultStage: View {
                     }
                     // Media dropped on the stage are INSTANTIATED in its
                     // work: in the selected layer when it is blank, else
-                    // in a new one right above it (a file imported first).
+                    // in a new one right above it (StageDrop).
                     .overlay {
                         if dropTargeted {
                             RoundedRectangle(
@@ -522,24 +627,9 @@ private struct ResultStage: View {
                                 .allowsHitTesting(false)
                         }
                     }
-                    .dropDestination(for: URL.self) { urls, _ in
-                        // An asset of the list arrives as a URL too.
-                        if let id = AppModel.draggedAssets(urls).first {
-                            return model.dropAssetOnStage(id)
-                        }
-                        // A project opens, as anywhere in the window.
-                        if let project = urls.first(where:
-                            AppModel.isProjectFile) {
-                            model.openDropped(project)
-                            return true
-                        }
-                        return model.dropFilesOnStage(
-                            urls.filter(\.isFileURL))
-                    } isTargeted: { dropTargeted = $0 }
-                    .dropDestination(for: String.self) { items, _ in
-                        items.compactMap { AppModel.draggedAsset($0) }
-                            .first.map { model.dropAssetOnStage($0) } ?? false
-                    } isTargeted: { dropTargeted = $0 }
+                    .onDrop(of: DroppedMedia.dropTypes,
+                            delegate: StageDrop(model: model,
+                                                targeted: $dropTargeted))
                     .overlay { dragRing }
                     // Over the ring: a click on a mark is the mark's.
                     .overlay(alignment: .topLeading) {
@@ -599,15 +689,25 @@ private struct ResultStage: View {
                             // The timeline's transport is the fuller one.
                             transport: model.timelineOpen
                                 ? nil : StageTransport(model: model),
-                            canContinue: model.canContinueClip,
+                            // View only: nothing made from it.
+                            canContinue: model.canContinueClip
+                                && !model.viewOnly,
                             guides: model.guideLengths,
                             continueClip: { model.continueClip(seconds: $0) },
                             menuRequest: model.continueMenuRequest,
-                            canGrab: model.clipOnStage && !model.isGenerating,
+                            canGrab: model.clipOnStage && !model.isGenerating
+                                && !model.viewOnly,
                             grabFrame: model.grabFrame)
                 }
                 .transition(.opacity)
             } else {
+                VStack(spacing: 6) {
+                // A still's pages, where a clip's transport would be,
+                // while the timeline that steps them is not shown.
+                if model.stagePagesShown {
+                    StagePages(model: model)
+                        .transition(.opacity)
+                }
                 CompareBar(
                     mode: model.stage.mode,
                     hasB: model.stage.b != nil,
@@ -621,7 +721,8 @@ private struct ResultStage: View {
                     swap: model.swapStage,
                     returnToCurrent: model.returnToCurrent,
                     drop: { model.dropOnCompare($1, in: $0) })
-                    .transition(.opacity)
+                }
+                .transition(.opacity)
             }
             }
             .onGeometryChange(for: CGRect.self) {

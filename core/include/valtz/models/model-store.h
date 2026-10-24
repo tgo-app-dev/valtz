@@ -79,25 +79,35 @@ struct InstallInfo {
 
 class ModelStore {
 public:
-  // `roots` must not be empty; the first is the download root.
+  // `roots` must not be empty; the first is the download root. The first
+  // `owned` are VALTZ'S OWN -- the models folder and those kept after it
+  // moved (base/paths.h): what is in them Valtz downloaded, may
+  // compress and delete; the others (vpipe's) only read.
   // `links_file`: where links are kept (none: links are not kept).
   explicit ModelStore(std::vector<std::filesystem::path> roots,
-                      std::filesystem::path links_file = {});
+                      std::filesystem::path links_file = {},
+                      std::size_t owned = 1);
 
-  // `primary` (the app's models dir, where downloads go), then
-  // ~/vpipe/models and ~/dump/vpipe-test/models when present -- a
-  // developer box that already holds vpipe's checkpoints.
+  // `primary` (the app's models dir, where downloads go), the folders
+  // `kept` after it moved, then ~/vpipe/models and
+  // ~/dump/vpipe-test/models when present -- a developer box that
+  // already holds vpipe's checkpoints.
   static std::vector<std::filesystem::path>
-  default_roots(const std::filesystem::path& primary);
+  default_roots(const std::filesystem::path& primary,
+                const std::vector<std::filesystem::path>& kept = {});
 
-  const std::vector<std::filesystem::path>& roots() const noexcept
-  {
-    return _roots;
-  }
-  const std::filesystem::path& download_root() const
-  {
-    return _roots.front();
-  }
+  std::vector<std::filesystem::path> roots() const;
+  std::filesystem::path download_root() const;
+  std::vector<std::filesystem::path> owned_roots() const;
+  // The root of Valtz's own that holds `p`; empty: none does.
+  std::filesystem::path own_root_of(const std::filesystem::path& p) const;
+  // The models folder moved, or another kept (Settings › General ›
+  // Storage): looked in from now on.
+  void set_roots(std::vector<std::filesystem::path> roots,
+                 std::size_t owned);
+  // Links into `from` -- files moved to `to` -- pointed there.
+  void rebase(const std::filesystem::path& from,
+              const std::filesystem::path& to);
 
   // Scans lazily and caches; rescan() after a download or delete.
   InstallInfo info(const ModelEntry&) const;
@@ -120,14 +130,16 @@ public:
   std::map<std::string, std::filesystem::path>
   part_links_of(const std::string& id) const;
 
-  // Where `id`'s copy compressed to `bits` is kept.
+  // Where `id`'s copy compressed to `bits` is made: in the download
+  // root (one made before the models folder moved may be in a kept one).
   std::filesystem::path compressed_dir(const std::string& id,
                                        int bits) const;
   static constexpr const char* kCompressedMarker = "valtz-compressed.json";
 
 private:
   InstallInfo scan_(const ModelEntry&) const;
-  InstallInfo scan_roots_(const ModelEntry&) const;
+  InstallInfo scan_roots_(const ModelEntry&,
+                          const std::vector<std::filesystem::path>&) const;
   InstallInfo scan_dir_(const ModelEntry&, const std::filesystem::path&,
                         InstallInfo best) const;
   InstallInfo scan_link_(const ModelEntry&,
@@ -135,6 +147,7 @@ private:
   void save_links_() const;
 
   std::vector<std::filesystem::path>                   _roots;
+  std::size_t                                          _owned = 1;
   std::filesystem::path                                _links_file;
   std::unordered_map<std::string, std::filesystem::path> _links;
   std::unordered_map<std::string,

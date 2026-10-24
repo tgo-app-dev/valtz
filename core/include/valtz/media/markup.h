@@ -71,7 +71,37 @@
 //                             pixels, `dx` right and `dy` down -- and
 //                             {"kind": "glow", "color", "radius"} -- a
 //                             halo `radius` pixels out; any kind
-//                             unknown kept, not drawn}
+//                             unknown kept, not drawn,
+//    "connectors": [{"id", "seg", "t"}, ...]  CONNECTORS (2026-10-23):
+//                             points on a line's, a rectangle's, an
+//                             ellipse's or a path's outline that another
+//                             line's or path's points ANCHOR to -- each on
+//                             segment `seg` at `t` (0 .. 1) along it: a
+//                             line's one (its first end to its second), a
+//                             rectangle's four (from (x0, y0) clockwise:
+//                             top, right, bottom, left), a path's pieces
+//                             (from its point `seg` to the next; `t` the
+//                             curve's own parameter, along a straight one
+//                             evenly); an ellipse's one, `t` a fraction of
+//                             a turn from its right, clockwise (y down) --
+//                             in its own pixels, so they move, scale, turn
+//                             and flip with it,
+//    "anchors": [{"point", "to", "connector"}, ...]  a line's or a path's
+//                             points ANCHORED (2026-10-23): its point
+//                             `point` (a line's 0 / 1 its ends, a path's
+//                             its index) lying on connector `connector`
+//                             of object `to` -- another object of the
+//                             same markup. Kept so: where that object
+//                             goes, the point goes (resolve_anchors); an
+//                             object anchored has no turn or flips of its
+//                             own (they are made its points'),
+//    a rectangle's, an ellipse's or a closed path's WORDS (2026-10-23):
+//    "text", "font", "align" (absent: "center"), "line_spacing" as a text
+//    box's, and "text_color" [r, g, b, a] (absent: black) -- set in the
+//    shape's text area (its box, an ellipse's inscribed rectangle, inset
+//    by half its outline and a fifth of the font), wrapped, the lines
+//    that fit whole, the block of them centred down it; turned with the
+//    shape, never mirrored}
 //   {"id", "kind": "drawing", "x0", "y0", "x1", "y1", "image"}
 //                             a DRAWING lifted off the raster (below): its
 //                             pixels a PNG blob (`image`, a
@@ -126,6 +156,9 @@
 
 #include <array>
 #include <filesystem>
+#include <map>
+#include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -145,7 +178,8 @@ struct Stroke {
 Stroke stroke_from_json(const Json&);
 
 // The objects as they are kept: known kinds only, every field there and
-// in range, an id each (a missing or repeated one is made).
+// in range, an id each (a missing or repeated one is made), their
+// anchored points on their connectors (resolve_anchors).
 Json normalize_objects(const Json&);
 
 // `raster` (a PNG; empty: a clear one) with `s` painted on it -- or
@@ -235,6 +269,60 @@ std::array<double, 4> object_bounds(const Json& object);
 // box's centre ("rotate", "flip_x", "flip_y"); the identity without.
 CGAffineTransform object_transform(const Json& object);
 
+// CONNECTORS (2026-10-23; the "connectors" and "anchors" above).
+//
+// Whether an object of `kind` takes connectors (a line, a rectangle, an
+// ellipse, a path) and whether its points take anchors (a line, a path).
+bool takes_connectors(const std::string& kind);
+bool takes_anchors(const std::string& kind);
+
+// Its connectors where they are shown, canvas pixels: turned and flipped
+// with it.
+struct ConnectorPoint {
+  std::string id;
+  double      x = 0;
+  double      y = 0;
+};
+std::vector<ConnectorPoint> connector_points(const Json& object);
+
+// `object` with its DEFAULT connectors added (the toolbar's Add
+// Connectors): one in the middle of each segment -- a line's, each side
+// of a rectangle, each piece of a path, halfway along its curve -- and
+// four round an ellipse, a quarter of a turn apart from its right; one
+// where it has one already (on that segment, within a hundredth) is not
+// added again. Its own ids, "c1", "c2", ... not taken.
+Json with_default_connectors(const Json& object);
+
+// The objects with their ANCHORED points where their connectors are now
+// (normalize_objects does it): each anchor's point put on its connector
+// -- through chains of them, a few passes -- an anchored object's turn
+// and flips made its points'. An anchor whose object or connector is gone
+// (or is its own) is DROPPED: the point stays where it was, free.
+Json resolve_anchors(const Json& objects);
+
+// resolve_anchors for what `moved` -- objects changed, added or taken out
+// -- reaches alone: they and the objects anchored to them through chains
+// (found by an index of who is anchored to whom; the rest is not looked
+// at). The ids of the objects it resolved go in `touched`.
+Json resolve_anchors(Json objects, const std::set<std::string>& moved,
+                     std::set<std::string>& touched);
+
+// The objects PATCHED (2026-10-23): `upsert`'s -- each normalized as
+// normalize_objects does -- put in by id, one already there in its place
+// and a new one on top, in their order (no id: one made); `remove`'s ids
+// taken out; only they and what is anchored to them resolved again. The
+// ids of the objects now there that changed -- put in or resolved -- go in
+// `changed`. The rest are left as they were kept: O(changed), but for one
+// pass over the list.
+Json patch_objects(Json objects, const Json& upsert,
+                   const std::set<std::string>& remove,
+                   std::set<std::string>& changed);
+
+// The objects after `moved` were moved or reshaped as a whole (aligned,
+// spaced): their anchors to objects not among them let go -- a line
+// moved away from the shapes it joined is free of them -- then resolved.
+Json detach_moved(const Json& objects, const std::set<std::string>& moved);
+
 // Objects ARRANGED (the markup toolbar's Arrange, 2026-10-11): `ids`
 // among `objects` -- a layer's, in drawing order, the last on top -- the
 // rest left as they are, by `how`:
@@ -268,6 +356,57 @@ Status render_markup(const std::filesystem::path& raster, PixelSize canvas,
 Result<DrawnPicture> render_markup_picture(
     const std::filesystem::path& raster, PixelSize canvas,
     const Json& objects, const std::set<std::string>& hidden);
+
+// A markup KEPT DRAWN (2026-10-23): its picture and what it was drawn
+// from, so the next drawing redraws only where they differ -- the objects
+// put in, changed, taken out or hidden or shown since (where they lie
+// and lay: their bounds, their outlines, arrowheads, sharp corners,
+// effects and words padded in) -- each such part cleared and the raster
+// and every object over it drawn again, whole and in order, in a second
+// bitmap of the canvas's size, then copied in: the pixels a whole drawing
+// makes, to the bit. Whole again with another canvas, raster or order, or
+// once the change covers half the canvas. A move of one object of 16 000
+// redraws a few hundred pixels, not 0.4 s of them all. One drawing at a
+// time (a lock); its pictures copy on write. Two bitmaps of the canvas's
+// size: 66 MB for a 4K page.
+class MarkupCanvas {
+public:
+  MarkupCanvas() = default;
+  ~MarkupCanvas();
+  MarkupCanvas(const MarkupCanvas&) = delete;
+  MarkupCanvas& operator=(const MarkupCanvas&) = delete;
+
+  // render_markup_picture's picture, kept up (`objects` taken). With a
+  // `stamp` (project::Markup's), the next drawing of the same stamp,
+  // raster, size and hidden ones is the last picture (kept()).
+  Result<DrawnPicture> draw(const std::filesystem::path& raster,
+                            PixelSize canvas, Json objects,
+                            const std::set<std::string>& hidden,
+                            const std::string& stamp = {});
+  // The last picture, when it is of these: nothing to look at again.
+  std::optional<DrawnPicture> kept(const std::string& stamp,
+                                   const std::filesystem::path& raster,
+                                   PixelSize canvas,
+                                   const std::set<std::string>& hidden);
+  // How the last one went: redrawn whole, the area redrawn (pixels).
+  bool   last_whole() const { return _whole; }
+  double last_area() const { return _area; }
+
+private:
+  std::mutex                    _mu;
+  CGContextRef                  _ctx = nullptr;
+  CGContextRef                  _scratch = nullptr;  // where parts are made
+  PixelSize                     _size{};
+  std::filesystem::path         _raster;
+  Json                          _objects = Json::array();
+  std::set<std::string>         _hidden;
+  std::string                   _stamp;
+  std::vector<CGRect>           _rects;    // each object's, as drawn
+  std::map<std::string, std::size_t> _at;  // by id
+  DrawnPicture                  _last;
+  bool                          _whole = true;
+  double                        _area = 0;
+};
 
 // The same, drawn on `ctx`, its CTM putting the canvas at (0, 0) to
 // (width, height), y up, a unit a pixel: a bitmap's, as above -- or, with

@@ -1795,6 +1795,83 @@ Controller::set_markup_objects(ProjectId pid, AssetId aid,
   return put_markup_(pid, *p, aid, mid, std::move(mk));
 }
 
+std::string
+Controller::objects_stamp(const Json& objects)
+{
+  const auto bytes = to_cbor(objects);
+  return ContentHash::of(bytes.data(), bytes.size()).hex().substr(0, 16);
+}
+
+Result<std::pair<Json, std::string>>
+Controller::markup_objects(ProjectId pid, AssetId markup)
+{
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset m, p->asset(markup));
+  if (m.cls != AssetClass::Markup || !m.markup) {
+    return make_error(Code::InvalidArgument, "not a markup");
+  }
+  std::string stamp = m.markup->stamp.empty()
+                          ? objects_stamp(m.markup->objects)
+                          : m.markup->stamp;
+  return std::pair{std::move(m.markup->objects), std::move(stamp)};
+}
+
+Result<Controller::MarkupPatched>
+Controller::patch_markup_objects(ProjectId pid, AssetId aid,
+                                 const std::string& layer, const Json& upsert,
+                                 const std::vector<std::string>& remove)
+{
+  auto undo = command_(pid, "markup.objects", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
+  // The markup the layer shows -- patched in its own write, read once.
+  std::optional<AssetId> source;
+  for (const auto& l : a.layers) {
+    if (l.id == layer) {
+      source = l.source;
+    }
+  }
+  if (!source) {
+    return make_error(Code::InvalidArgument, "not a markup layer");
+  }
+  MarkupPatched out;
+  const std::set<std::string> gone(remove.begin(), remove.end());
+  VALTZ_TRY(p->update_asset(*source, [&](project::Asset& m) -> Status {
+    if (m.cls != AssetClass::Markup || !m.markup) {
+      return make_error(Code::InvalidArgument, "not a markup layer");
+    }
+    Json& objects = m.markup->objects;
+    for (const auto& o : objects) {
+      if (gone.count(jget<std::string>(o, "id", ""))) {
+        out.removed.push_back(jget<std::string>(o, "id", ""));
+      }
+    }
+    std::set<std::string> changed;
+    objects = media::patch_objects(std::move(objects), upsert, gone, changed);
+    for (const auto& o : objects) {
+      if (changed.count(jget<std::string>(o, "id", ""))) {
+        out.changed.push_back(o);
+      }
+    }
+    out.count = objects.size();
+    m.markup->stamp = project::Markup::fresh_stamp();
+    out.stamp = m.markup->stamp;
+    return ok_status();
+  }));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", *source},
+                                    {"reason", "modified"}});
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return out;
+}
+
 Status
 Controller::arrange_markup(ProjectId pid, AssetId aid,
                            const std::string& layer,
@@ -1822,6 +1899,42 @@ Controller::arrange_markup(ProjectId pid, AssetId aid,
     return ok_status();
   }
   mk.objects = std::move(arranged);
+  return put_markup_(pid, *p, aid, mid, std::move(mk));
+}
+
+Status
+Controller::markup_connectors(ProjectId pid, AssetId aid,
+                              const std::string& layer,
+                              const std::vector<std::string>& objects,
+                              bool add)
+{
+  auto undo = command_(pid, add ? "markup.connectors" : "markup.unconnect",
+                       aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  VALTZ_TRY(unlocked_(a, layer));
+  VALTZ_ASSIGN(auto at, markup_at_(*p, a, layer));
+  auto& [mid, mk] = at;
+  const std::set<std::string> named(objects.begin(), objects.end());
+  Json changed = mk.objects;
+  for (auto& o : changed) {
+    if (!named.count(jget<std::string>(o, "id", ""))) {
+      continue;
+    }
+    if (add) {
+      o = media::with_default_connectors(o);
+    } else {
+      o.erase("connectors");
+    }
+  }
+  changed = media::normalize_objects(changed);
+  if (changed == mk.objects) {
+    return ok_status();
+  }
+  mk.objects = std::move(changed);
   return put_markup_(pid, *p, aid, mid, std::move(mk));
 }
 
@@ -2452,6 +2565,27 @@ Controller::rendered(ProjectId pid, AssetId id, std::uint32_t version)
   return rendered_(pid, id, version, 0);
 }
 
+std::shared_ptr<media::MarkupCanvas>
+Controller::markup_canvas_(AssetId markup)
+{
+  std::lock_guard lk(_canvases_mu);
+  auto it = std::ranges::find(_canvases, markup,
+                              &decltype(_canvases)::value_type::first);
+  std::shared_ptr<media::MarkupCanvas> c;
+  if (it != _canvases.end()) {
+    c = it->second;
+    _canvases.erase(it);
+  } else {
+    c = std::make_shared<media::MarkupCanvas>();
+  }
+  // The latest last; three kept (a 4K page's two bitmaps are 66 MB).
+  _canvases.emplace_back(markup, c);
+  if (_canvases.size() > 3) {
+    _canvases.erase(_canvases.begin());
+  }
+  return c;
+}
+
 Status
 Controller::layer_picture_(ProjectId pid, project::Project& p,
                            const project::Asset& comp,
@@ -2479,9 +2613,14 @@ Controller::layer_picture_(ProjectId pid, project::Project& p,
       pic.file = raster;
       return ok_status();
     }
-    VALTZ_ASSIGN(pic.drawn, media::render_markup_picture(
-                                raster, size, drawn_objects_(p, mk.objects),
-                                hidden));
+    const auto canvas = markup_canvas_(s.id);
+    if (auto k = canvas->kept(mk.stamp, raster, size, hidden)) {
+      pic.drawn = std::move(*k);
+      return ok_status();
+    }
+    VALTZ_ASSIGN(pic.drawn, canvas->draw(raster, size,
+                                         drawn_objects_(p, mk.objects),
+                                         hidden, mk.stamp));
     return ok_status();
   }
   if (sound_like(s)) {
@@ -2759,11 +2898,18 @@ Result<Controller::TimedSource>
 Controller::timed_source_(ProjectId pid, project::Project& p,
                           const project::Layer& l, bool for_job,
                           media::PixelSize frame, int depth, bool sound_only,
-                          const std::set<std::string>& hidden)
+                          const std::set<std::string>& hidden,
+                          PlainSources* plain)
 {
   TimedSource t;
   if (!l.source) {
     return t;
+  }
+  const std::pair key{*l.source, l.source_version};
+  if (plain) {
+    if (const auto at = plain->find(key); at != plain->end()) {
+      return at->second;
+    }
   }
   VALTZ_ASSIGN(project::Asset s, p.asset(*l.source));
   if (s.cls == AssetClass::Markup) {
@@ -2779,9 +2925,14 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
       // Drawn into a file the job reads.
       VALTZ_ASSIGN(t.file, rendered_(pid, s.id, 0, depth + 1));
     } else {
-      VALTZ_ASSIGN(t.drawn, media::render_markup_picture(
-                                raster, size, drawn_objects_(p, mk.objects),
-                                hidden));
+      const auto canvas = markup_canvas_(s.id);
+      if (auto k = canvas->kept(mk.stamp, raster, size, hidden)) {
+        t.drawn = std::move(*k);
+      } else {
+        VALTZ_ASSIGN(t.drawn, canvas->draw(raster, size,
+                                           drawn_objects_(p, mk.objects),
+                                           hidden, mk.stamp));
+      }
     }
     return t;
   }
@@ -2846,14 +2997,19 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
     t.mark_rate = r;
     return t;
   }
-  VALTZ_ASSIGN(t.file, p.media_path(s.id, l.source_version));
-  VALTZ_ASSIGN(project::AssetVersion v, p.version(s.id, l.source_version));
+  VALTZ_ASSIGN(project::AssetVersion v,
+               p.version(s.id, l.source_version > 0 ? l.source_version
+                                                    : s.head));
+  VALTZ_ASSIGN(t.file, p.media_path(s, v));
   t.video = s.kind == AssetKind::Video && !clip_sound;
   t.audio_only = s.kind == AssetKind::Audio || clip_sound;
   if (t.video || t.audio_only) {
     t.seconds = seconds_of(v, t.video);
     t.mark_rate = t.video && v.info.frame_rate.num > 0
                       ? v.info.frame_rate : Rational{1000, 1};
+  }
+  if (plain) {
+    plain->emplace(key, t);
   }
   return t;
 }
@@ -2945,6 +3101,7 @@ Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
   m.frames = a.timeline_frames;
   m.rate = rate;
   std::map<std::string, std::size_t> index;
+  PlainSources plain;
   for (const auto& l : a.layers) {
     media::MovieLayer ml;
     ml.id = l.id;
@@ -2959,7 +3116,7 @@ Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
     }
     VALTZ_ASSIGN(TimedSource src,
                  timed_source_(pid, *p, l, for_job, frame, depth,
-                               a.kind == AssetKind::Audio, hidden));
+                               a.kind == AssetKind::Audio, hidden, &plain));
     ml.file = src.file;
     ml.drawn = src.drawn;
     ml.video = src.video;

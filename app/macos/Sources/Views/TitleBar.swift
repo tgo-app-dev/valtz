@@ -72,7 +72,7 @@ struct WindowTitleField: View {
     @Environment(\.controlActiveState) private var active
 
     private let font = Font.system(size: 15, weight: .semibold)
-    private var renamable: Bool { model.isAnonymous }
+    private var renamable: Bool { model.isAnonymous && !model.viewOnly }
 
     var body: some View {
         Group {
@@ -225,7 +225,9 @@ struct TitleBarControls: View {
     var body: some View {
         GlassEffectContainer(spacing: 10) {
             HStack(spacing: 10) {
-                if model.isAnonymous {
+                // View only: nothing to start over or mark up (zoom, the
+                // compare, the ground, the inspector, share, search stay).
+                if model.isAnonymous && !model.viewOnly {
                     StartOverButton(model: model)
                 }
                 editorGroups
@@ -266,15 +268,19 @@ struct TitleBarControls: View {
                 }
                 .titleBarCapsule()
 
-                TitleBarButton(
-                    symbol: "pencil.tip.crop.circle", title: "Markup",
-                    help: model.markupOpen ? "Hide the markup toolbar"
-                                           : "Show the markup toolbar",
-                    on: model.markupOpen) {
-                    withAnimation(AppModel.motion) { model.markupOpen.toggle() }
+                if !model.viewOnly {
+                    TitleBarButton(
+                        symbol: "pencil.tip.crop.circle", title: "Markup",
+                        help: model.markupOpen ? "Hide the markup toolbar"
+                                               : "Show the markup toolbar",
+                        on: model.markupOpen) {
+                        withAnimation(AppModel.motion) {
+                            model.markupOpen.toggle()
+                        }
+                    }
+                    .shortcutHint("⇧⌘A")
+                    .titleBarCapsule()
                 }
-                .shortcutHint("⇧⌘A")
-                .titleBarCapsule()
 
                 HStack(spacing: 2) {
                     TitleBarButton(

@@ -81,7 +81,10 @@ the note into account and go on.
 7. When you can see pages (`view_page` returns the picture), look at a
    page once its pictures have landed (`wait_for_generations` first) and
    fix what reads badly. Do not look at every page if the layout is the
-   same on each.
+   same on each. A markup layer of many objects is told in sum by
+   `get_composition` (`objects_total`, `objects_by_kind`, the ones on top):
+   `find_objects` lists the others -- in a region, of a kind, with words,
+   by id.
 8. Use the assets the person gave you (the prompt row's media, listed in
    the request) where they fit: `place_asset` puts one in a box on a page.
 9. Never remove or change what the person made unless they ask. A layer

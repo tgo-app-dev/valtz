@@ -1,8 +1,8 @@
 #include "valtz/cache/cache-store.h"
 
 #include "valtz/base/log.h"
+#include "valtz/base/paths.h"
 
-#include <CoreFoundation/CoreFoundation.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -48,25 +48,18 @@ touch(const fs::path& p, std::int64_t prev_ns)
   utimes(p.c_str(), nullptr);
 }
 
-bool
-volume_is_internal(const fs::path& p)
+// The default budget on `root`'s volume: min(20 GB, a tenth of it).
+std::uint64_t
+default_budget(const fs::path& root)
 {
-  CFURLRef url = CFURLCreateFromFileSystemRepresentation(
-      nullptr, reinterpret_cast<const UInt8*>(p.c_str()),
-      static_cast<CFIndex>(p.native().size()), true);
-  if (!url) {
-    return true;
+  struct statfs st;
+  std::uint64_t cap = 0;
+  if (statfs(root.c_str(), &st) == 0) {
+    cap = static_cast<std::uint64_t>(st.f_blocks) * st.f_bsize;
   }
-  CFBooleanRef v = nullptr;
-  bool internal = true;
-  if (CFURLCopyResourcePropertyForKey(url, kCFURLVolumeIsInternalKey, &v,
-                                      nullptr) &&
-      v) {
-    internal = CFBooleanGetValue(v);
-    CFRelease(v);
-  }
-  CFRelease(url);
-  return internal;
+  const std::uint64_t b = std::min<std::uint64_t>(std::uint64_t{20} << 30,
+                                                  cap ? cap / 10 : 0);
+  return b ? b : std::uint64_t{20} << 30;
 }
 
 }
@@ -111,20 +104,25 @@ CacheStore::open(const fs::path& root, const Options& opts)
                    "proxies and thumbnails will be slow", root.string());
   }
 
-  c->_budget = opts.budget_bytes;
-  if (c->_budget == 0) {
-    struct statfs st;
-    std::uint64_t cap = 0;
-    if (statfs(root.c_str(), &st) == 0) {
-      cap = static_cast<std::uint64_t>(st.f_blocks) * st.f_bsize;
-    }
-    c->_budget = std::min<std::uint64_t>(std::uint64_t{20} << 30,
-                                         cap ? cap / 10 : 0);
-    if (c->_budget == 0) {
-      c->_budget = std::uint64_t{20} << 30;
-    }
+  c->_budget_auto = opts.budget_bytes == 0;
+  c->_budget = c->_budget_auto ? default_budget(root) : opts.budget_bytes;
+  {
+    std::lock_guard lk(c->_mu);
+    c->scan_locked_(root);
   }
+  if (c->_bytes > c->_budget) {
+    c->evict_to(c->_budget * 9 / 10);
+  }
+  VALTZ_LOG_INFO("cache", "{}: {} entries, {} MB of {} MB budget",
+                 root.string(), c->_entries.size(), c->_bytes >> 20,
+                 c->_budget >> 20);
+  return c;
+}
 
+void
+CacheStore::scan_locked_(const fs::path& root)
+{
+  std::error_code ec;
   for (auto it = fs::recursive_directory_iterator(root / "objects", ec);
        it != fs::recursive_directory_iterator(); it.increment(ec)) {
     if (ec) {
@@ -134,23 +132,75 @@ CacheStore::open(const fs::path& root, const Options& opts)
       continue;
     }
     const std::string name = it->path().filename().string();
-    if (name.ends_with(".staging")) {
-      fs::remove(it->path(), ec);  // an interrupted write
+    if (name.ends_with(".staging") || name.starts_with(".")) {
+      fs::remove(it->path(), ec);  // an interrupted write, or copy
       continue;
     }
     Entry e;
     e.bytes = it->file_size(ec);
     e.last_used_ns = mtime_ns(it->path());
-    c->_bytes += e.bytes;
-    c->_entries[name] = e;
+    _bytes += e.bytes;
+    _entries[name] = e;
   }
-  if (c->_bytes > c->_budget) {
-    c->evict_to(c->_budget * 9 / 10);
+}
+
+fs::path
+CacheStore::root() const
+{
+  std::lock_guard lk(_root_mu);
+  return _root;
+}
+
+bool
+CacheStore::on_internal_volume() const
+{
+  std::lock_guard lk(_root_mu);
+  return _internal;
+}
+
+bool
+CacheStore::pinned() const
+{
+  std::lock_guard lk(_mu);
+  return std::ranges::any_of(_entries,
+                             [](const auto& kv) { return kv.second.pins; });
+}
+
+Status
+CacheStore::set_root(const fs::path& root)
+{
+  std::error_code ec;
+  fs::create_directories(root / "objects", ec);
+  if (ec) {
+    return make_error(Code::Io, std::format("cache {}: {}", root.string(),
+                                            ec.message()));
   }
-  VALTZ_LOG_INFO("cache", "{}: {} entries, {} MB of {} MB budget",
-                 root.string(), c->_entries.size(), c->_bytes >> 20,
-                 c->_budget >> 20);
-  return c;
+  fs::remove_all(root / "scratch", ec);
+  fs::create_directories(root / "scratch", ec);
+  std::lock_guard lk(_mu);
+  if (std::ranges::any_of(_entries,
+                          [](const auto& kv) { return kv.second.pins; })) {
+    return make_error(Code::Busy, "a cache entry is in use");
+  }
+  _entries.clear();
+  _bytes = 0;
+  scan_locked_(root);
+  const bool internal = volume_is_internal(root);
+  {
+    std::lock_guard rk(_root_mu);
+    _root = root;
+    _internal = internal;
+  }
+  if (_budget_auto) {
+    _budget = default_budget(root);
+  }
+  if (_bytes > _budget) {
+    evict_locked_(_budget * 9 / 10);
+  }
+  VALTZ_LOG_INFO("cache", "now {}: {} entries, {} MB of {} MB budget",
+                 root.string(), _entries.size(), _bytes >> 20,
+                 _budget >> 20);
+  return {};
 }
 
 std::uint64_t
@@ -166,7 +216,7 @@ CacheStore::scratch_dir(std::string_view owner)
   if (!valid_key(owner)) {
     return make_error(Code::InvalidArgument, "bad scratch owner name");
   }
-  fs::path p = _root / "scratch" / std::string(owner);
+  fs::path p = root() / "scratch" / std::string(owner);
   std::error_code ec;
   fs::create_directories(p, ec);
   if (ec) {
@@ -178,7 +228,7 @@ CacheStore::scratch_dir(std::string_view owner)
 fs::path
 CacheStore::object_path_(std::string_view key) const
 {
-  return _root / "objects" / std::string(key.substr(0, 2)) /
+  return root() / "objects" / std::string(key.substr(0, 2)) /
          std::string(key);
 }
 

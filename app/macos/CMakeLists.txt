@@ -84,6 +84,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/HelperView.swift
   Sources/Views/UpscalingView.swift
   Sources/Views/StorageView.swift
+  Sources/Views/StorageLocations.swift
   Sources/Views/SettingsView.swift
   Sources/Views/SettingsNavigation.swift
   Sources/Views/SettingsMarks.swift
@@ -101,6 +102,8 @@ set(VALTZ_APP_SOURCES
   Sources/Views/CanvasSize.swift
   Sources/Views/ProjectOutput.swift
   Sources/Views/AssetsSection.swift
+  Sources/Views/DroppedMedia.swift
+  Sources/Views/MemoryPopover.swift
   Sources/Views/StatusBar.swift
   Sources/Views/MarkupBar.swift
   Sources/Views/PromptBar.swift
@@ -113,7 +116,8 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/Keyframes.swift
   Sources/Simple/TuningPanel.swift
   Sources/Simple/Markup.swift
-  Sources/Simple/MarkupTextPanel.swift
+  Sources/Simple/MarkupTextEditor.swift
+  Sources/Simple/MarkupConnectors.swift
   Sources/Simple/MarkupRender.swift
   Sources/Simple/PromptEditor.swift
   Sources/Simple/PromptMarkdown.swift

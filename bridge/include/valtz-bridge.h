@@ -57,6 +57,13 @@ public:
   // when unavailable). Poll at a steady pace: the ANE's is a delta since
   // the last call.
   std::string machine_status_json() const;
+  // What the engine holds in memory, by what holds it -- the status
+  // bar's RAM popover: {"warm": [{"kind", "dir", "bytes", "kv_bytes",
+  // "seconds", "model", "name", "role", "estimated"?}], "weights":
+  // [{"dir", "bytes", "holders", "parked", "model"?, "name"?}],
+  // "kv_bytes", "pooled_bytes", "wired_used", "wired_limit",
+  // "gpu_allocated"} (Controller::memory_held; {} without an engine).
+  std::string memory_held_json() const;
   // Settings > Capabilities (Controller::capability_tree): the model
   // families, their features and members, where each member is.
   std::string capability_tree_json() const;
@@ -148,6 +155,13 @@ public:
   // {"projects", "default_project", "models", "model_roots", "cache",
   //  "cache_bytes", "cache_budget_bytes", "cache_internal", "engine"}
   std::string paths_json() const;
+  // Where the projects, models and cache are kept (Controller::locations)
+  // -> {"ok", "projects", "models", "cache", "moving"}.
+  std::string locations_json() const;
+  // One put elsewhere (Controller::set_location): {"what": "projects" |
+  // "models" | "cache", "path", "how": "move" | "keep" | "drop"} ->
+  // {"ok", "job"}: a move's job, null when it is done already.
+  std::string set_location(const std::string& request_json);
 
   // Results: {"ok": true, ...} or {"ok": false, "code", "message"}.
   std::string default_project_path() const;
@@ -179,7 +193,15 @@ public:
   // session): Controller::set_ephemeral.
   std::string set_project_ephemeral(const std::string& project_id,
                                     bool ephemeral);
+  // A markup asset's "markup" carries its objects' "stamp" and "count",
+  // and the objects themselves only up to a few hundred (asset_op
+  // "markup-objects" {"asset"} -> {"objects", "stamp"} has the rest).
+  // "revision": what the project had written as the list was read.
   std::string assets_json(const std::string& project_id) const;
+  // {"revision"}: what the project has written now (Project::revision).
+  // The same as a list's: that list is the project's still (but for its
+  // linked originals' states on disk).
+  std::string assets_revision(const std::string& project_id) const;
   // {"entries": [{"id", "created", "role" (base|result), "path", "width",
   //  "height", "asset", "version", "generation", "generation_version",
   //  "label", "rendered"}]}: the generation history, oldest first
@@ -364,8 +386,13 @@ public:
   // Markup (media/markup.h): "markup-target" ("selected": [layer ids])
   // -> {"layer"}: the layer to draw on, made when there is none;
   // "canvas" -> {"width", "height"}; "stroke" ("layer", "stroke");
-  // "objects" ("layer", "objects": the whole list); "arrange" ("layer",
-  // "objects": ids, "how": media::arrange_objects's); "materialize"
+  // "objects" ("layer", "objects": the whole list); "patch-objects"
+  // ("layer", "upsert": objects, "remove": ids -> {"objects": those that
+  // changed, as kept, "removed", "stamp", "count"}: the app's edits);
+  // "arrange" ("layer",
+  // "objects": ids, "how": media::arrange_objects's); "connectors"
+  // ("layer", "objects": ids, "add": their default connectors, or
+  // false: none); "materialize"
   // ("layer", "objects": ids); "merge" ("layer", "with"); "mask" /
   // "unmask" ("layer").
   std::string layer_op(const std::string& request_json);

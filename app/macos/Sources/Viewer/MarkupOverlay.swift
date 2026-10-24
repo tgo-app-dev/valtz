@@ -39,10 +39,19 @@ struct MarkupOverlay: Equatable {
     var sampleAt: CGPoint?
     var sampleColor: RGBA?
     var sampleNow: RGBA?
+    /// The object whose words the in-place editor shows (MarkupTextEditor):
+    /// drawn without them, outlined without handles.
+    var editing: String?
+    /// CONNECTORS shown (canvas pixels): the selection's, or -- a line, a
+    /// path or a point of one being placed -- those it could anchor to;
+    /// `hotConnector` the one it would take, there.
+    var connectors: [CGPoint] = []
+    var hotConnector: CGPoint?
 
     var isEmpty: Bool {
         strokes.isEmpty && objects.isEmpty && drawingBounds == nil
-            && path.isEmpty && sampleAt == nil
+            && path.isEmpty && sampleAt == nil && connectors.isEmpty
+            && hotConnector == nil
     }
 }
 
@@ -80,18 +89,36 @@ enum MarkupKey {
     case smaller, larger, softer, harder
 }
 
-/// Draws a MarkupOverlay over CompareCanvas's picture; takes no clicks.
+/// Draws a MarkupOverlay over CompareCanvas's picture; takes no clicks
+/// but its in-place text editor's.
 final class MarkupOverlayView: NSView {
     var overlay = MarkupOverlay() {
         didSet { if overlay != oldValue { needsDisplay = true } }
     }
     /// Canvas pixels -> this view's points (y down).
     var toView = CGAffineTransform.identity {
-        didSet { if toView != oldValue { needsDisplay = true } }
+        didSet {
+            if toView != oldValue {
+                needsDisplay = true
+                textEditor?.layout()
+            }
+        }
     }
+    /// The in-place text editor it holds while a text is edited here: laid
+    /// out again as the stage zooms and moves.
+    weak var textEditor: MarkupTextEditor?
 
     override var isFlipped: Bool { true }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let v = super.hitTest(point)
+        return v === self ? nil : v
+    }
+
+    override func layout() {
+        super.layout()
+        textEditor?.layout()
+    }
 
     /// How its draws went (the snapshot hooks' `scribble=` reads them):
     /// how many, their total and longest, in seconds.
@@ -114,7 +141,14 @@ final class MarkupOverlayView: NSView {
         }
         for o in overlay.objects
         where overlay.drawsSelection || !overlay.selected.contains(o.id) {
-            MarkupRender.draw(o, in: ctx)
+            if o.id == overlay.editing {
+                // Its words are the editor's.
+                var bare = o
+                bare.text = ""
+                if bare.kind != .text { MarkupRender.draw(bare, in: ctx) }
+            } else {
+                MarkupRender.draw(o, in: ctx)
+            }
         }
         ctx.restoreGState()
         // The selected drawing: its outline alone (it is not reshaped).
@@ -203,6 +237,8 @@ final class MarkupOverlayView: NSView {
             outline.setLineDash([4, 3], count: 2, phase: 0)
             NSColor.controlAccentColor.setStroke()
             outline.stroke()
+            // Its words being typed: no handles under the editor.
+            if o.id == overlay.editing { continue }
             // A path the pen edits: its points by their kind.
             if overlay.editsPath && o.kind == .polygon {
                 for (i, h) in MarkupRender.shownPoints(o).enumerated() {
@@ -220,7 +256,33 @@ final class MarkupOverlayView: NSView {
                 NSBezierPath(rect: r).stroke()
             }
         }
+        drawConnectors()
         drawSampleRing()
+    }
+
+    /// The connectors shown: small rings, white edged in the accent; the
+    /// one a point would take, larger and filled.
+    private func drawConnectors() {
+        for c in overlay.connectors {
+            let p = c.applying(toView)
+            let ring = NSBezierPath(ovalIn: NSRect(x: p.x - 4, y: p.y - 4,
+                                                   width: 8, height: 8))
+            NSColor.white.withAlphaComponent(0.9).setFill()
+            ring.fill()
+            ring.lineWidth = 1.5
+            NSColor.controlAccentColor.setStroke()
+            ring.stroke()
+        }
+        if let c = overlay.hotConnector {
+            let p = c.applying(toView)
+            let dot = NSBezierPath(ovalIn: NSRect(x: p.x - 6.5, y: p.y - 6.5,
+                                                  width: 13, height: 13))
+            NSColor.controlAccentColor.setFill()
+            dot.fill()
+            dot.lineWidth = 2
+            NSColor.white.setStroke()
+            dot.stroke()
+        }
     }
 
     /// A path's point at `p` (view points): a smooth one round, a corner

@@ -382,6 +382,16 @@ public:
   // VAEs or text encoders). Empty from an engine without the meter.
   // Thread-safe.
   virtual Json throughput() { return Json::object(); }
+  // What it HOLDS in memory now, by what holds it -- the status bar's RAM
+  // popover (vpipe's SessionIntf::memory_report, DESIGN §15 0zz):
+  // {"warm": [{"kind" -- "language-model", "krea2-dit",
+  // "qwen-text-encoder", "flux2-vae", ... -- "dir", "bytes", "kv_bytes",
+  // "seconds" it has left}], "weights": [{"dir", "bytes", "mapped_bytes",
+  // "holders", "parked"}], "kv_bytes", "pooled_bytes", "wired_used",
+  // "wired_limit", "gpu_allocated"}. A language model loaded unwired
+  // reads 0 bytes (vpipe counts none). Empty from an engine that cannot
+  // say. Thread-safe.
+  virtual Json memory_held() { return Json::object(); }
 
   // The EXTENSIONS' backends (EngineConfig::backends), as this engine
   // took them: [{"extension", "file", "state": "loaded" | "refused" (kept
