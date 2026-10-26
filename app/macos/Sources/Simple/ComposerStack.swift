@@ -1692,7 +1692,7 @@ private struct DrawerSettings: View {
                     Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
                     Text(model.activeModality == .audio
                          ? "Audio generation needs YuE2 (songs), or Drama 3 or MOSS-TTS (speech): download one in Settings › Capabilities."
-                         : "Video generation is not available yet.")
+                         : "Video generation needs MiniMax H3 FL2VA or Ref2VA: download one in Settings › Capabilities.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

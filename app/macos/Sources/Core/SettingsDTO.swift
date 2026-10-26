@@ -1,10 +1,52 @@
 import Foundation
 
+/// Settings › General › Memory's WIRED LIMIT (core Controller::wired_limit):
+/// how much memory the local models may make unswappable. Bytes; `chosen`
+/// 0 is Automatic -- `automatic` here; a limit set lies in `min`...`max`.
+struct WiredLimit: Decodable, Sendable, Equatable {
+    var chosen: Int64
+    var automatic: Int64
+    var min: Int64
+    var max: Int64
+    /// The engine's now (0 without one).
+    var inForce: Int64
+    /// Wired now.
+    var used: Int64
+    /// A lower limit waiting for the work under way.
+    var pending: Bool
+}
+
 /// Settings › Capabilities (core Controller::capability_tree): the model
 /// families, what each makes here, and every resource it runs with.
 struct CapabilityTree: Decodable, Sendable {
     var families: [Family]
     var downloadRoot: String
+    /// Where downloads come from (core download_sources): vpipe's model
+    /// sources -- Hugging Face, ModelScope -- and the one chosen.
+    var downloadSources: [DownloadSource]?
+    var downloadSource: String?
+
+    /// A place models are downloaded from (vpipe's model-source table).
+    struct DownloadSource: Decodable, Sendable, Identifiable, Hashable {
+        var name: String
+        var label: String
+        var id: String { name }
+        /// As a person reads it: Valtz's own words for the sources it
+        /// knows, vpipe's label for another.
+        var title: String {
+            switch name {
+            case "huggingface": String(localized: "Hugging Face")
+            case "modelscope": String(localized: "ModelScope")
+            default: label
+            }
+        }
+    }
+
+    /// A source carrying a member's repo, under its path there.
+    struct SourcePath: Decodable, Sendable, Hashable {
+        var name: String
+        var path: String
+    }
 
     struct Family: Decodable, Sendable, Identifiable {
         var id: String
@@ -44,6 +86,13 @@ struct CapabilityTree: Decodable, Sendable {
         /// there first, and an access token to download it.
         var gated: Bool?
         var isGated: Bool { gated == true }
+        /// The download sources carrying its repo (nil: not downloaded --
+        /// a quantized variant -- or a core without them).
+        var sources: [SourcePath]?
+        /// Its path on `source`; nil where that source does not carry it.
+        func path(on source: String) -> String? {
+            sources?.first { $0.name == source }?.path
+        }
         /// A quantized variant (core catalog `quantize`): made here from
         /// its source -- which must be here first -- not downloaded.
         var quantize: Quantize?
@@ -207,10 +256,13 @@ struct HelperList: Decodable, Sendable {
     /// block drafter, held at `drafterBits` in memory).
     var drafter: String?
     var drafterBits: Int?
-    /// A video summary's FRAME INTERVAL (DESIGN §4i): as set (0: Auto),
-    /// what it comes to now, and the memory bandwidth Auto went by (GB/s).
+    /// A video summary's FRAME INTERVAL (DESIGN §4i): as set (0: Auto --
+    /// by the clip's length), what it comes to for a clip of no known
+    /// length, and the memory bandwidth Auto goes by (GB/s); its FRAME
+    /// SIZE, "standard" | "high" | "highest".
     var videoEvery: Double?
     var videoEveryNow: Double?
+    var videoSize: String?
     var memoryBandwidthGbs: Double?
     /// Its context at most, in tokens, as set (0: Auto -- each helper's
     /// own, as far as this Mac's memory holds it).

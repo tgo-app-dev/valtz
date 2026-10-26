@@ -965,6 +965,17 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
     return make_error(Code::InvalidArgument,
                       "a clip opens on a picture or reads references");
   }
+  // A reference model asked for a clip from words (catalog
+  // `references.prompt_only`): vpipe's prompt-only request, its encoder
+  // handed an EMPTY reference list -- the Ref2VA weights refuse a
+  // conditioning that carries none (diffusion-conditioner's), and its
+  // sequence has no keyframe.
+  const bool prompt_only = refs.empty() && rv.is_object() &&
+                           jget(rv, "prompt_only", false);
+  if (prompt_only && first) {
+    return make_error(Code::InvalidArgument, std::format(
+        "{} does not open on a picture", job.model.id));
+  }
 
   Json stages = Json::array();
   stages.push_back(stage("model-select", "model-select", Json::array(),
@@ -981,7 +992,7 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   const RefMedia* song = nullptr;
   // The clip continued, stacked: what the new clip's seam is matched to.
   std::string seam_ref;
-  if (refs.empty()) {
+  if (refs.empty() && !prompt_only) {
     // The prompt encoder (Qwen3-VL-32B for H3) streams, and is dropped
     // before the denoise: the two never share the machine. KEPT
     // (encoding-cache.h): the words and its config are all it reads.
@@ -1140,7 +1151,9 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                                        {"prompt", prompt},
                                        {"references", made}}));
     }
-    if (!files.empty()) {
+    // Prompt only, the list is there and empty: left out, the encoder
+    // would take the request for an unwired graph and skip it.
+    if (!files.empty() || prompt_only) {
       enc["references"] = files;
     }
     static constexpr std::array<const char*, 3> kRefPorts = {
@@ -1810,6 +1823,12 @@ helper_chat_config(const JobSpec& job)
   if (jget(job.params, "i8_prefill", false)) {
     chat_cfg["i8_prefill"] = true;
   }
+  // The most it may hold (the agent's Memory: vpipe's memory_limit_mb,
+  // DESIGN §15 0zzd) -- a Mixture of Experts' cache sized within it.
+  if (const auto mb = jget<std::int64_t>(job.params, "memory_limit_mb", 0);
+      mb > 0) {
+    chat_cfg["memory_limit_mb"] = mb;
+  }
   // A drafter shipped apart from the model (its conversion dropped the
   // head): vpipe's text-chat loads it beside the model.
   if (auto mm = jget<std::string>(job.params, "mtp_model", "");
@@ -2211,7 +2230,10 @@ build_export(const JobSpec& job)
       g.movie = std::move(m);
       stages.push_back(stage(kExportRead, ex::kSourceType, Json::array(),
                              Json::object()));
-    } else if (!adj.identity() || !crop.identity()) {
+    } else if (!adj.identity() || !crop.identity() || in.info.turn > 0) {
+      // Turned (a phone's portrait clip), it is drawn upright by Valtz:
+      // vpipe's reader takes its picture as stored, its writer writes no
+      // turn.
       MovieFeed m;
       m.stage = kExportRead;
       m.path = in.path;
@@ -2746,11 +2768,29 @@ build_summarize_video(const JobSpec& job, media::PixelSize size)
     cfg[ex::kSummaryDraftModel] = dm;
     cfg[ex::kSummaryDraftBits] = jget(job.params, "draft_bits", 8);
   }
-  // A scene's frames at most: ~180 tokens each at 576 x 320, so 24 keep a
-  // prefill near 4,500 -- and at one every two seconds, 48 s of a shot.
-  if (const int sf = jget(job.params, "scene_frames", 0); sf > 0) {
-    cfg[ex::kSummarySceneFrames] = sf;
+  if (const auto mb = jget<std::int64_t>(job.params, "memory_limit_mb", 0);
+      mb > 0) {
+    cfg[ex::kSummaryMemoryLimitMb] = mb;
   }
+  // A scene's frames at most: ~180 tokens each at 576 x 320, so 24 keep a
+  // prefill near 4,500 -- at one every two seconds 48 s of a shot, at
+  // eight a second 3 s. Larger frames, more tokens each (a token is 32 x
+  // 32 pixels on Qwen3-VL's grid: 720 at 1152 x 640), so no more than
+  // two fifths of the helper's context a scene.
+  const std::int64_t frame_tokens = std::max<std::int64_t>(
+      1, static_cast<std::int64_t>(size.width / 32) * (size.height / 32));
+  const std::int64_t context = static_cast<std::int64_t>(
+      helper_max_pages(job)) * kHelperPageTokens;
+  int scene = static_cast<int>(std::clamp<std::int64_t>(
+      context * 2 / 5 / frame_tokens, 4, 24));
+  if (const int sf = jget(job.params, "scene_frames", 0); sf > 0) {
+    scene = sf;
+  }
+  cfg[ex::kSummarySceneFrames] = scene;
+  // A scene's frames at least before a cut ends it: two, or a second's
+  // where more come a second -- a flash, a fast turn, is not a scene.
+  cfg[ex::kSummaryMinFrames] = std::max(
+      2, static_cast<int>(std::lround(1.0 / every)));
   Json stages = Json::array();
   stages.push_back(stage("frames", ex::kSourceType, Json::array(),
                          Json::object()));
@@ -2803,6 +2843,11 @@ build_fetch_model(const JobSpec& job)
   // the stage as the requests' bearer, in this spec in memory only.
   if (auto t = jget<std::string>(job.params, "hf_token", ""); !t.empty()) {
     cfg["hf_token"] = t;
+  }
+  // Where from (Controller::download_model): a model-source name -- the
+  // same model, the same folder, whichever serves it.
+  if (auto s = jget<std::string>(job.params, "source", ""); !s.empty()) {
+    cfg["source"] = s;
   }
   Json stages = Json::array();
   stages.push_back(stage("model-fetch", "model-fetch", Json::array(), cfg));

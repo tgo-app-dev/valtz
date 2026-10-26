@@ -393,6 +393,35 @@ public:
   // say. Thread-safe.
   virtual Json memory_held() { return Json::object(); }
 
+  // THE WIRED LIMIT: the most memory the engine makes UNSWAPPABLE -- its
+  // models' weights, a streaming DiT's kept blocks, their scratch, the
+  // helper's weights as they load (vpipe's wired pool, DESIGN §15 0zzc).
+  // `mb` 0: the engine's own. A limit lower than the one in force waits
+  // while any graph runs -- vpipe cannot give back what a running model
+  // holds wired -- and is made as the last one ends. Thread-safe.
+  virtual void set_wired_limit_mb(std::uint64_t mb) { (void)mb; }
+  // {"asked_mb" (0: its own), "auto_mb" (what its own is here),
+  // "limit_mb" (in force now), "pending" (a lower one waiting)}; empty
+  // from an engine that wires nothing. Thread-safe.
+  virtual Json wired_limit() const { return Json::object(); }
+
+  // WHERE models are downloaded from (vpipe's model sources, DESIGN §15
+  // 0zzb): [{"name" -- "huggingface", "modelscope" -- "label"}], with
+  // "default" -- the one vpipe fetches from unless told
+  // ($VPIPE_MODEL_SOURCE) -- true on one. Empty from an engine that
+  // downloads nothing. Thread-safe.
+  virtual Json download_sources() const { return Json::array(); }
+  // `repo` (a Hugging Face owner/repo: a catalog model's hf_path) as
+  // `source` carries it: its path there -- the same, or a mirror's own
+  // name -- or "" where the source is known not to carry it. A source
+  // that says nothing of a repo is taken to carry it under its own name.
+  virtual std::string
+  source_path(std::string_view source, std::string_view repo) const
+  {
+    (void)source;
+    return std::string(repo);
+  }
+
   // The EXTENSIONS' backends (EngineConfig::backends), as this engine
   // took them: [{"extension", "file", "state": "loaded" | "refused" (kept
   // out of the session) | "not-loaded" (vpipe did not register its
@@ -437,6 +466,9 @@ struct EngineConfig {
   // read back for a job made from the same. The caller's, outliving the
   // engine; null: nothing kept.
   cache::CacheStore* cache = nullptr;
+  // The wired limit at start (Engine::set_wired_limit_mb), MB; 0 the
+  // engine's own.
+  std::uint64_t wired_limit_mb = 0;
 };
 
 // An engine that runs nothing; used when Valtz is built without libvpipe.

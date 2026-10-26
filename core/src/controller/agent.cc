@@ -41,13 +41,38 @@ constexpr double kDefaultLease = 600;
 // A turn that wrote a tool call nothing could read is taken again, told
 // so, at most this many times running: it is not the session's end. The
 // form shown is the one the helper's own template teaches (Qwen3.5 /
-// 3.8's, as vpipe writes its tools turn: DESIGN §15 0zs).
+// 3.8's, as vpipe writes its tools turn: DESIGN §15 0zs; DeepSeek V4.1's
+// DSML, 0zzd).
 constexpr int kUnreadCalls = 2;
 constexpr const char* kUnreadCall =
     "[Valtz] Your tool call could not be read, so nothing ran. Write each "
     "call again in the format the system message gives:\n<tool_call>\n"
     "<function=TOOL>\n<parameter=NAME>\nvalue\n</parameter>\n</function>\n"
     "</tool_call>";
+// DeepSeek V4.1's own form, DSML, as its system message teaches it
+// (vpipe's template, DESIGN §15 0zzd).
+#define VALTZ_DSML_ "\uff5cDSML\uff5c"
+constexpr const char* kUnreadDsmlCall =
+    "[Valtz] Your tool call could not be read, so nothing ran. Write each "
+    "call again in the format the system message gives:\n\n<" VALTZ_DSML_
+    " calls>\n<" VALTZ_DSML_ " invoke name=\"TOOL\">\n<" VALTZ_DSML_
+    " parameter name=\"NAME\" string=\"true\">value</" VALTZ_DSML_
+    " parameter>\n</" VALTZ_DSML_ " invoke>\n</" VALTZ_DSML_ " calls>";
+
+// The form a reply's unread call was written in -- what to ask again
+// with -- or null when it wrote none.
+const char*
+unread_call_form(const std::string& raw)
+{
+  if (raw.find("<tool_call>") != std::string::npos) {
+    return kUnreadCall;
+  }
+  if (raw.find(VALTZ_DSML_) != std::string::npos) {
+    return kUnreadDsmlCall;
+  }
+  return nullptr;
+}
+#undef VALTZ_DSML_
 
 Json
 read_json(const fs::path& file)
@@ -119,7 +144,7 @@ public:
   Json
   describe() const override
   {
-    const auto* m = _c.assistant_model();
+    const auto* m = _c.agent_model();
     std::lock_guard lk(_mu);
     return {{"kind", _where.empty() ? "local" : "fleet"},
             {"model", m ? m->name : std::string()},
@@ -129,8 +154,9 @@ public:
   bool
   sees() const override
   {
-    const auto* m = _c.assistant_model();
-    return m != nullptr && m->has(models::Capability::VideoSummary);
+    const auto* m = _c.agent_model();
+    return m != nullptr && (m->has(models::Capability::VideoSummary) ||
+                            m->has(models::Capability::Caption));
   }
 
   // This Mac's helper's, as its memory gives it -- or the member's that
@@ -146,7 +172,7 @@ public:
     }
     std::lock_guard lk(_mu);
     if (_local_context < 0) {
-      const auto* m = _c.assistant_model();
+      const auto* m = _c.agent_model();
       _local_context = m ? _c.helper_context_(*m) : 0;
     }
     return _local_context;
@@ -158,7 +184,7 @@ public:
        const std::function<void(std::string_view)>& on_text,
        const std::atomic<bool>& cancel) override
   {
-    const auto* m = _c.assistant_model();
+    const auto* m = _c.agent_model();
     const bool here = m != nullptr && _c._engine &&
                       _c._engine->supports(engine::kOpAgentTurn);
     auto members = _c.fleet_candidates_(std::string(engine::kOpAgentTurn),
@@ -268,9 +294,12 @@ public:
         std::lock_guard lk(_mu);
         _member = jget<std::string>(members.front(), "id", "");
         _where = jget<std::string>(members.front(), "name", "");
+        // Its agent model's, which serves the turn; a member from before
+        // says only its helper's.
+        const Json self = jget(members.front(), "self", Json::object());
         _member_context = jget<std::int64_t>(
-            jget(members.front(), "self", Json::object()),
-            "assistant_context", 0);
+            self, "agent_context",
+            jget<std::int64_t>(self, "assistant_context", 0));
       }
       std::optional<engine::JobSpec> local;
       if (here && !fleet_only) {
@@ -407,11 +436,30 @@ Controller::AgentHost::find_(const std::string& id) const
   return it == _sessions.end() ? nullptr : it->second;
 }
 
+std::string
+Controller::AgentHost::model_choice() const
+{
+  std::lock_guard lk(_mu);
+  return jget<std::string>(_settings, "model", "");
+}
+
+int
+Controller::AgentHost::memory_gb() const
+{
+  std::lock_guard lk(_mu);
+  return std::max(0, jget(_settings, "memory_gb", 0));
+}
+
 Json
 Controller::AgentHost::settings() const
 {
+  // The model that runs asked first: agent_model takes this lock.
+  const auto* using_ = _c.agent_model();
   std::lock_guard lk(_mu);
   Json s = {{"backend", jget<std::string>(_settings, "backend", "helper")},
+            {"model", jget<std::string>(_settings, "model", "")},
+            {"using", using_ ? using_->id : std::string()},
+            {"memory_gb", std::max(0, jget(_settings, "memory_gb", 0))},
             {"review", jget(_settings, "review", true)},
             {"lease", jget(_settings, "lease", kDefaultLease)},
             {"compact", jget(_settings, "compact", true)}};
@@ -435,8 +483,32 @@ Controller::AgentHost::settings() const
 Status
 Controller::AgentHost::set_settings(const Json& j)
 {
+  // The model named: a helper of the catalog ("" the Agentic Helper's),
+  // here or not -- downloaded later, it is taken then.
+  if (j.contains("model")) {
+    const std::string id = jget<std::string>(j, "model", "");
+    const auto* m = id.empty() ? nullptr : _c._catalog.find(id);
+    if (!id.empty() && (m == nullptr || m->role != "assistant")) {
+      return make_error(Code::InvalidArgument,
+                        std::format("no helper '{}' for the agent", id));
+    }
+  }
+  if (j.contains("memory_gb")) {
+    const int gb = jget(j, "memory_gb", -1);
+    if (gb != 0 && (gb < 16 || gb > 4096)) {
+      return make_error(Code::InvalidArgument, std::format(
+          "the agent's memory is 0 (no limit) or 16 to 4096 GB, not {}",
+          to_text(j["memory_gb"])));
+    }
+  }
   std::lock_guard lk(_mu);
   Json next = _settings;
+  if (j.contains("model")) {
+    next["model"] = jget<std::string>(j, "model", "");
+  }
+  if (j.contains("memory_gb")) {
+    next["memory_gb"] = jget(j, "memory_gb", 0);
+  }
   if (j.contains("backend")) {
     const std::string b = jget<std::string>(j, "backend", "helper");
     if (b != "helper" && b != "cloud") {
@@ -1031,14 +1103,13 @@ Controller::AgentHost::run_(Session& s)
     // A call written that neither the helper's parser nor Valtz's
     // lenient reading could make out (the 27B's, 2026-10-20: the session
     // ended "done" on its first turn): said, and the turn taken again.
-    if (calls.empty() &&
-        reply->raw.find("<tool_call>") != std::string::npos &&
-        unread < kUnreadCalls) {
+    if (const char* again = unread_call_form(reply->raw);
+        calls.empty() && again != nullptr && unread < kUnreadCalls) {
       ++unread;
       VALTZ_LOG_WARN("agent", "session {}: a tool call it wrote could "
                      "not be read; asked again", s.id);
       std::lock_guard lk(s.mu);
-      s.messages.push_back({.role = "user", .content = kUnreadCall});
+      s.messages.push_back({.role = "user", .content = again});
       continue;
     }
     if (!calls.empty()) {
@@ -1839,7 +1910,8 @@ Controller::AgentHost::served_turn(const fleet::Offer& o,
                                    const std::string& from,
                                    const fs::path& dir)
 {
-  const auto* m = _c.assistant_model();
+  // This Mac's agent model thinks for the member's agent too.
+  const auto* m = _c.agent_model();
   if (m == nullptr) {
     return make_error(Code::Unsupported, msg::kNoAssistantModel);
   }

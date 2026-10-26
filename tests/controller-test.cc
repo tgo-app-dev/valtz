@@ -32,6 +32,7 @@
 #include <map>
 #include <mutex>
 #include <numbers>
+#include <set>
 #include <chrono>
 #include <thread>
 #include <vector>
@@ -983,6 +984,35 @@ public:
   std::string description() const override { return "held"; }
   bool available() const override { return true; }
   bool supports(std::string_view) const override { return true; }
+
+  // Where downloads come from, as vpipe's table says it: its sources,
+  // and the repos one does not carry ("<source>|<repo>").
+  Json sources = Json::array();
+  std::set<std::string> absent;
+  Json download_sources() const override { return sources; }
+  // The wired limit asked of it (0: its own, `auto_mb`), and how often.
+  std::uint64_t wired_mb = 0;
+  std::uint64_t auto_mb = 12288;
+  int wired_sets = 0;
+  void
+  set_wired_limit_mb(std::uint64_t mb) override
+  {
+    wired_mb = mb;
+    ++wired_sets;
+  }
+  Json
+  wired_limit() const override
+  {
+    return {{"asked_mb", wired_mb}, {"auto_mb", auto_mb},
+            {"limit_mb", wired_mb > 0 ? wired_mb : auto_mb},
+            {"pending", false}};
+  }
+  std::string
+  source_path(std::string_view source, std::string_view repo) const override
+  {
+    return absent.contains(std::format("{}|{}", source, repo))
+               ? std::string() : std::string(repo);
+  }
 
   Status
   submit(engine::JobSpec spec, engine::JobSink sink) override
@@ -2949,6 +2979,176 @@ TEST(controller, a_generations_encodings_are_kept_and_fed)
 // reaches the fetch in the job's params and nowhere else -- no event, no
 // job record, no log line carries it -- and Hugging Face's refusal is
 // said in words the person can act on.
+// A download comes from the source chosen (Settings › Capabilities'
+// Download From, `downloads.json`), or one named -- vpipe's model
+// sources; a source vpipe knows not to carry a model's repo is refused
+// when named and passed over for Hugging Face when only chosen.
+// THE WIRED LIMIT (Settings › General › Memory, DESIGN §10a): Automatic
+// -- the engine's own -- until one is set; a limit between 1 GB and what
+// the GPU keeps resident, given to the engine at once and kept for the
+// next launch; one outside that range refused in words, nothing changed;
+// Automatic given back to the engine as its own.
+TEST(controller, the_wired_limit_is_set_kept_and_given_to_the_engine)
+{
+  auto root = test::temp_dir("ctl-wired");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  constexpr std::uint64_t kGB = std::uint64_t{1} << 30;
+
+  Json w = ctl.wired_limit();
+  const auto max = jget<std::uint64_t>(w, "max", 0);
+  REQUIRE(max >= 2 * kGB);
+  CHECK(jget<std::uint64_t>(w, "chosen", 1) == 0);
+  CHECK(jget<std::uint64_t>(w, "min", 0) == kGB);
+  CHECK(jget<std::uint64_t>(w, "automatic", 0) ==
+        std::min<std::uint64_t>(12 * kGB, max));
+  CHECK(jget<std::uint64_t>(w, "in_force", 0) ==
+        std::min<std::uint64_t>(12 * kGB, max));
+  CHECK(engine->wired_sets == 0);
+
+  // Set: the engine told, in MB.
+  const std::uint64_t half = max / 2 / (1 << 20) * (1 << 20);
+  REQUIRE_OK(ctl.set_wired_limit(half));
+  CHECK(engine->wired_mb == half >> 20);
+  w = ctl.wired_limit();
+  CHECK(jget<std::uint64_t>(w, "chosen", 0) == half);
+  CHECK(jget<std::uint64_t>(w, "in_force", 0) == half);
+
+  // Out of range: refused, the limit as it was.
+  for (const std::uint64_t bad : {kGB / 2, max + kGB}) {
+    auto st = ctl.set_wired_limit(bad);
+    CHECK(!st.ok());
+    CHECK(st.error().key == "core.wired_limit_range");
+  }
+  CHECK(engine->wired_sets == 1);
+  CHECK(jget<std::uint64_t>(ctl.wired_limit(), "chosen", 0) == half);
+
+  // Kept for the next launch -- the app's and valtzctl's alike.
+  made->reset();
+  auto again = Controller::create(cfg);
+  REQUIRE_OK(again);
+  CHECK(jget<std::uint64_t>((*again)->wired_limit(), "chosen", 0) == half);
+
+  // Automatic: the engine's own again, nothing kept.
+  REQUIRE_OK((*again)->set_wired_limit(0));
+  CHECK(engine->wired_mb == 0);
+  CHECK(engine->wired_sets == 1);
+  CHECK(jget<std::uint64_t>((*again)->wired_limit(), "chosen", 1) == 0);
+  std::ifstream kept(cfg.support_root / "memory.json");
+  const Json file = Json::parse(kept, nullptr, false);
+  CHECK(file.is_object() && !file.contains("wired_limit_mb"));
+}
+
+TEST(controller, a_download_comes_from_the_source_chosen)
+{
+  auto root = test::temp_dir("ctl-sources");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    e->sources = Json::array(
+        {{{"name", "huggingface"}, {"label", "HuggingFace"},
+          {"default", true}},
+         {{"name", "modelscope"}, {"label", "ModelScope"},
+          {"default", false}}});
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  const auto* krea = ctl.catalog().find("krea2-turbo");
+  REQUIRE(krea != nullptr);
+  engine->absent.insert("modelscope|" + krea->hf_path);
+
+  // vpipe's default until one is chosen; a source it has not, refused.
+  CHECK(jget<std::string>(ctl.download_sources(), "chosen", "") ==
+        "huggingface");
+  auto bad = ctl.set_download_source("nowhere");
+  CHECK(!bad.ok());
+  CHECK(bad.error().key == "core.unknown_download_source");
+  REQUIRE_OK(ctl.set_download_source("modelscope"));
+  CHECK(jget<std::string>(ctl.download_sources(), "chosen", "") ==
+        "modelscope");
+
+  // The chosen one, said to vpipe.
+  auto z = ctl.download_model("z-image-turbo");
+  REQUIRE_OK(z);
+  CHECK(jget<std::string>(engine->spec(*z)->params, "source", "") ==
+        "modelscope");
+  // Not carried there: refused when named, Hugging Face when chosen.
+  auto named = ctl.download_model("krea2-turbo", "", "modelscope");
+  CHECK(!named.ok());
+  CHECK(named.error().key == "core.not_on_download_source");
+  auto k = ctl.download_model("krea2-turbo");
+  REQUIRE_OK(k);
+  CHECK(jget<std::string>(engine->spec(*k)->params, "source", "") ==
+        "huggingface");
+  // Named, whatever is chosen.
+  auto q = ctl.download_model("qwen-image-2.1", "", "huggingface");
+  REQUIRE_OK(q);
+  CHECK(jget<std::string>(engine->spec(*q)->params, "source", "") ==
+        "huggingface");
+  CHECK(!ctl.download_model("vosr", "", "nowhere").ok());
+
+  // Capabilities' tree: the sources, the one chosen, and each row's.
+  const Json tree = ctl.capability_tree();
+  CHECK(jget<std::string>(tree, "download_source", "") == "modelscope");
+  CHECK(jget(tree, "download_sources", Json::array()).size() == 2);
+  int rows = 0;
+  for (const auto& f : jget(tree, "families", Json::array())) {
+    for (const auto& m : jget(f, "members", Json::array())) {
+      const auto id = jget<std::string>(m, "model", "");
+      if (id != "krea2-turbo" && id != "z-image-turbo") {
+        continue;
+      }
+      ++rows;
+      std::set<std::string> from;
+      for (const auto& s : jget(m, "sources", Json::array())) {
+        from.insert(jget<std::string>(s, "name", ""));
+      }
+      CHECK(from.contains("huggingface"));
+      CHECK(from.contains("modelscope") == (id == "z-image-turbo"));
+    }
+  }
+  CHECK(rows >= 2);
+
+  // Kept for the next launch -- the app's and valtzctl's alike.
+  made->reset();
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    e->sources = Json::array(
+        {{{"name", "huggingface"}, {"label", "HuggingFace"},
+          {"default", true}},
+         {{"name", "modelscope"}, {"label", "ModelScope"},
+          {"default", false}}});
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto again = Controller::create(cfg);
+  REQUIRE_OK(again);
+  CHECK(jget<std::string>((*again)->download_sources(), "chosen", "") ==
+        "modelscope");
+}
+
 TEST(controller, a_gated_download_takes_a_token_kept_nowhere)
 {
   auto root = test::temp_dir("ctl-gated");
@@ -6319,6 +6519,45 @@ TEST(composition, a_clip_is_read_sparse_for_a_summary)
   }
   REQUIRE_OK(ctl.set_video_every(0));
   CHECK(ctl.video_every() == 2.0);
+  // Auto by the clip's length: about 40 frames here -- 8 a second for a
+  // 5 s clip, 4 for 10 s -- and one every two past 44 s.
+  CHECK(ctl.video_every(5) == 0.125);
+  CHECK(ctl.video_every(10) == 0.25);
+  CHECK(ctl.video_every(40) == 1.0);
+  CHECK(ctl.video_every(60) == 2.0);
+  // As many as eight a second may be chosen, no more.
+  REQUIRE_OK(ctl.set_video_every(0.05));
+  CHECK(ctl.video_every(10) == 0.125);
+  REQUIRE_OK(ctl.set_video_every(0));
+
+  // The frame's size: standard, or larger -- kept; nothing else.
+  CHECK(ctl.video_size() == "standard");
+  CHECK(jget<std::string>(ctl.assistants(), "video_size", "") ==
+        "standard");
+  REQUIRE_OK(ctl.set_video_size("highest"));
+  CHECK(!ctl.set_video_size("huge").ok());
+  CHECK(ctl.video_size() == "highest");
+  CHECK(Controller::video_frame_most("highest").width == 1152);
+  CHECK(Controller::video_frame_most("high").height == 480);
+  CHECK(Controller::video_frame_most("standard").width == 576);
+
+  // Memory that moves fast: about 80 frames -- 8 a second for 10 s, 4
+  // for 20, 2 for 40 -- and one a second past 88 s or not known.
+  ::setenv("VALTZ_MEMORY_BANDWIDTH_GBS", "400", 1);
+  ControllerConfig cfg;
+  cfg.support_root = b.root / "support";
+  cfg.model_roots = {b.root / "models"};
+  cfg.with_engine = false;
+  auto fast = Controller::create(cfg);
+  ::unsetenv("VALTZ_MEMORY_BANDWIDTH_GBS");
+  REQUIRE_OK(fast);
+  CHECK((*fast)->video_size() == "highest");
+  CHECK((*fast)->video_every() == 1.0);
+  CHECK((*fast)->video_every(10.04) == 0.125);
+  CHECK((*fast)->video_every(20) == 0.25);
+  CHECK((*fast)->video_every(40) == 0.5);
+  CHECK((*fast)->video_every(80) == 1.0);
+  CHECK((*fast)->video_every(600) == 1.0);
 }
 
 // A CLIP'S SOUND (DESIGN §6a): a composition of sound takes a clip with
@@ -7773,6 +8012,126 @@ TEST(controller, the_chosen_helper_is_kept_and_falls_back_to_auto)
   CHECK((*third)->assistants()["choice"] == "");
 }
 
+// THE AGENT'S OWN MODEL AND ITS MEMORY (Settings › Experimental › Agent,
+// DESIGN §9b): the agent thinks with the Agentic Helper's model until it
+// names one of its own -- DeepSeek V4.1 Flash -- which runs once it is
+// here, the helper's meanwhile; and the most that model may hold goes to
+// vpipe with every load of it (vpipe's memory_limit_mb, §15 0zzd: an
+// Enhance too, where the helper is the agent's) and with no other
+// model's. DeepSeek's context is the catalog's, not the 1,048,576 tokens
+// its config says. Both kept for a later run.
+TEST(controller, the_agent_thinks_on_a_model_of_its_own_within_its_memory)
+{
+  auto root = test::temp_dir("ctl-agent-model");
+  const fs::path helper =
+      root / "models" / "mlx-community" / "Qwen3.5-9B-OptiQ-4bit";
+  const fs::path dsv41 = root / "models" / "mlx-community" /
+                         "DeepSeek-V4.1-Flash-1017-oQ2e-mtp";
+  for (const auto& d : {helper, dsv41}) {
+    fs::create_directories(d);
+    std::ofstream(d / "model.safetensors") << "w";
+  }
+  std::ofstream(helper / "config.json") << "{}";
+  std::ofstream(dsv41 / "config.json")
+      << R"({"model_type": "deepseek_v41", "text_config": {)"
+         R"("max_position_embeddings": 1048576, "num_hidden_layers": 40,)"
+         R"("num_attention_heads": 64, "num_key_value_heads": 1,)"
+         R"("head_dim": 512}})";
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  const std::string using_helper =
+      jget<std::string>(ctl.assistants(), "using", "");
+  CHECK(using_helper == "qwen3.5-9b");
+  Json st = ctl.agent_settings();
+  CHECK(st["model"] == "");
+  CHECK(st["using"] == using_helper);
+  CHECK(st["memory_gb"] == 0);
+  // A model of its own, here: it runs; one not downloaded: the helper's
+  // meanwhile.
+  REQUIRE_OK(ctl.set_agent_settings({{"model", "deepseek-v4.1-flash-2bit"}}));
+  CHECK(ctl.agent_settings()["using"] == "deepseek-v4.1-flash-2bit");
+  REQUIRE_OK(ctl.set_agent_settings({{"model", "deepseek-v4.1-flash"}}));
+  CHECK(ctl.agent_settings()["using"] == using_helper);
+  // Not a helper, not one at all, a memory under 16 GB: refused, the
+  // settings as they were.
+  CHECK(ctl.set_agent_settings({{"model", "z-image-turbo"}}).code() ==
+        Code::InvalidArgument);
+  CHECK(ctl.set_agent_settings({{"model", "no-such-model"}}).code() ==
+        Code::InvalidArgument);
+  CHECK(ctl.set_agent_settings({{"memory_gb", 8}}).code() ==
+        Code::InvalidArgument);
+  CHECK(ctl.set_agent_settings({{"memory_gb", -64}}).code() ==
+        Code::InvalidArgument);
+  CHECK(ctl.agent_settings()["model"] == "deepseek-v4.1-flash");
+  CHECK(ctl.agent_settings()["memory_gb"] == 0);
+
+  // The memory goes with the agent's model alone: an Enhance on the
+  // helper while the agent thinks on DeepSeek carries none...
+  REQUIRE_OK(ctl.set_agent_settings(
+      {{"model", "deepseek-v4.1-flash-2bit"}, {"memory_gb", 64}}));
+  auto enhance = [&]() -> Json {
+    EnhancePromptRequest req;
+    req.prompt = "a fox in snow";
+    auto job = ctl.enhance_prompt(req);
+    CHECK(job.ok());
+    const auto chats = engine->held_of(engine::kOpChat);
+    CHECK(chats.size() == 1);
+    const engine::JobSpec* spec =
+        chats.size() == 1 ? engine->spec(chats[0]) : nullptr;
+    if (spec == nullptr) {
+      return Json();
+    }
+    Json p = spec->params;
+    engine->turn(chats[0], {{"text", R"({"prompt": "A fox."})"}});
+    return p;
+  };
+  Json p = enhance();
+  CHECK(!p.contains("memory_limit_mb"));
+  // ...and the helper's own, it being the agent's, carries it: one copy
+  // kept warm for both.
+  REQUIRE_OK(ctl.set_agent_settings({{"model", ""}}));
+  p = enhance();
+  CHECK(jget<std::int64_t>(p, "memory_limit_mb", 0) == 65536);
+
+  // DeepSeek's context: the catalog's 131,072 of its own 1,048,576.
+  const Json helpers = ctl.assistants();
+  int seen = 0;
+  for (const auto& m : helpers["models"]) {
+    if (m["id"] == "deepseek-v4.1-flash-2bit") {
+      CHECK(m["state"] == "installed");
+      CHECK(m["by_name"] == true);
+      CHECK(m["context"]["model"] == 1048576);
+      CHECK(m["context"]["here"] == 131072);
+      ++seen;
+    }
+  }
+  CHECK(seen == 1);
+  // Never Auto's.
+  CHECK(helpers["auto"] != "deepseek-v4.1-flash-2bit");
+  CHECK(helpers["auto"] != "deepseek-v4.1-flash");
+
+  // A later run: as set.
+  ControllerConfig again = cfg;
+  again.engine_factory = nullptr;
+  auto later = Controller::create(again);
+  REQUIRE_OK(later);
+  CHECK((*later)->agent_settings()["model"] == "");
+  CHECK((*later)->agent_settings()["memory_gb"] == 64);
+}
+
 // THE UPSCALERS' OPTIONS (Settings › Upscaling, DESIGN §4f): an upscale
 // has no generation card, so each upscaler's arithmetic -- int8 GEMMs,
 // Sage, Sol where it takes it -- is set once, kept in the support folder
@@ -8275,6 +8634,93 @@ TEST(controller, a_clip_opens_and_ends_on_pictures)
     }
   }
   CHECK(marked == 2 && whole == 1);
+}
+
+// MiniMax H3 Ref2VA alone (FL2VA neither downloaded nor linked): a clip
+// from words is still made, on Ref2VA from the prompt alone -- vpipe's
+// prompt-only request (catalog `references.prompt_only`) -- so Auto's
+// video generate pick is Ref2VA, after FL2VA. It does not open on a
+// picture; once FL2VA is here, Auto makes clips from words with it.
+TEST(controller, ref2va_alone_makes_a_clip_from_words)
+{
+  auto root = test::temp_dir("ref2va-alone");
+  auto install = [&](const char* f) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  };
+  install("MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors");
+  install("lightx2v/Minimax-h3-Turbo/"
+          "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto pick = [](Controller& c, const char* op) {
+    for (const auto& a : c.auto_models()) {
+      if (a.modality == "video" && a.op == op) {
+        return a.chosen;
+      }
+    }
+    return std::string();
+  };
+  {
+    auto made = Controller::create(cfg);
+    REQUIRE_OK(made);
+    REQUIRE(engine != nullptr);
+    Controller& ctl = **made;
+    CHECK(pick(ctl, "generate") == "minimax-h3-ref2va");
+    CHECK(pick(ctl, "edit") == "minimax-h3-ref2va");
+    auto pid = ctl.create_project(root / "R.valtz", "ref2va-alone");
+    REQUIRE_OK(pid);
+    GenerateVideoRequest req;
+    req.project = *pid;
+    req.prompt = "A fox trots through snow at dawn, birdsong.";
+    req.width = 832;
+    req.height = 480;
+    req.frames = 39;
+    REQUIRE_OK(ctl.generate_video(req));
+    REQUIRE(eventually([&] {
+      return engine->held_of(engine::kOpGenerateVideo).size() == 1;
+    }, 10));
+    const auto* spec =
+        engine->spec(engine->held_of(engine::kOpGenerateVideo).front());
+    REQUIRE(spec != nullptr);
+    CHECK(spec->model.id == "minimax-h3-ref2va");
+    CHECK(jget(spec->params, "frames", 0) == 39);
+    for (const auto& in : spec->inputs) {
+      CHECK(in.role == "prompt");
+    }
+    // Named too: the same clip.
+    req.model = "minimax-h3-ref2va";
+    REQUIRE_OK(ctl.generate_video(req));
+    // No keyframe in its sequence: a picture to open on is refused.
+    REQUIRE(write_png(root / "fox.png", 32, 32, {0x80, 0x40, 0x20, 0xff}));
+    auto fox = import_and_wait(ctl, *pid, root / "fox.png");
+    REQUIRE(fox.has_value());
+    GenerateVideoRequest opens = req;
+    opens.model.clear();
+    opens.row = {*fox};
+    opens.first = *fox;
+    auto r = ctl.generate_video(opens);
+    REQUIRE(!r.ok());
+    CHECK(r.error().key == msg::kVideoStartsFromPicture.key);
+  }
+  // FL2VA here too: Auto's clip from words is FL2VA's again.
+  install("MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors");
+  install("lightx2v/Minimax-h3-Turbo/"
+          "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors");
+  auto both = Controller::create(cfg);
+  REQUIRE_OK(both);
+  CHECK(pick(**both, "generate") == "minimax-h3-fl2va");
+  CHECK(pick(**both, "edit") == "minimax-h3-ref2va");
 }
 
 // A continuation's GUIDE (continuation_guide): the clip's last seconds,
@@ -9130,6 +9576,172 @@ TEST(agent, texts_and_shapes_move_as_themselves)
   CHECK((jget(lo[0], "from", J()) == J::array({200, 200})));
   CHECK((jget(lo[0], "to", J()) == J::array({300, 100})));
   REQUIRE_OK(ctl.agent_stop(*line));
+}
+
+// A DIAGRAM (DESIGN §9b, §10a Markup): shapes holding their words --
+// sized to fit, white on a dark fill -- and lines JOINED to them, the
+// nearest connectors or the sides named, the shapes given connectors
+// for it; a shape moved, its lines follow; a joined line moved alone
+// lets go and stays where it was moved (it snapped back); a shape's
+// words recoloured by `color` and taken off; all of it told back.
+TEST(agent, a_diagram_is_joined_and_follows_its_shapes)
+{
+  auto root = test::temp_dir("agent-diagram");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "F.valtz", "flow");
+  REQUIRE_OK(pid);
+  using J = Json;
+  script->replies = {
+      {call("create_composition", {{"name", "Flow"}, {"width", 400},
+                                   {"height", 300}})},
+      {call("add_shape", {{"shape", "rect"}, {"x", 20}, {"y", 100},
+                          {"width", 100}, {"height", 60},
+                          {"fill", "#2f6fd8"}, {"text", "Start"}})},
+      {call("add_shape", {{"shape", "ellipse"}, {"x", 260}, {"y", 100},
+                          {"width", 100}, {"height", 60},
+                          {"fill", "#ffffff"}, {"text", "End"},
+                          {"text_color", "#ff0000"}, {"size", 18}})},
+      // Words on a line, refused.
+      {call("add_shape", {{"shape", "line"}, {"x", 0}, {"y", 0},
+                          {"width", 10}, {"height", 10},
+                          {"text", "no"}})},
+      {call("get_composition", J::object())}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A two-step flowchart";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  Json steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 5);
+  CHECK(jget<std::string>(steps[3], "state", "") == "failed");
+  const AssetId comp =
+      *AssetId::parse(jget<std::string>(st, "composition", ""));
+  const Json r1 = jget(steps[1], "result", J());
+  const std::string a = jget<std::string>(r1, "object", "");
+  const std::string b =
+      jget<std::string>(jget(steps[2], "result", J()), "object", "");
+  const std::string layer = jget<std::string>(r1, "layer", "");
+  REQUIRE(!a.empty() && !b.empty());
+  // Sized to fit: a third of its height, the line whole.
+  CHECK(jget(r1, "size", 0.0) == 20);
+  CHECK(jget(r1, "fits", true));
+  const auto objects = [](const Json& r) {
+    std::map<std::string, Json> out;
+    for (const auto& l : jget(r, "layers", J::array())) {
+      for (const auto& o : jget(l, "objects", J::array())) {
+        out[jget<std::string>(o, "id", "")] = o;
+      }
+    }
+    return out;
+  };
+  {
+    auto told = objects(jget(steps[4], "result", J()));
+    CHECK(jget<std::string>(told[a], "text", "") == "Start");
+    CHECK(jget<std::string>(told[a], "text_color", "") == "#ffffff");
+    CHECK(jget<std::string>(told[b], "text_color", "") == "#ff0000");
+    CHECK(jget(told[b], "size", 0.0) == 18);
+    CHECK(!told[a].contains("connectors"));
+  }
+  REQUIRE_OK(ctl.agent_stop(*id));
+
+  // Two arrows: the nearest pair (A's right, B's left), and bottom to
+  // bottom; B moved down -- both follow; the first moved alone -- it lets
+  // go, where it was moved.
+  const auto tool = [&](const char* name, Json args) {
+    args["composition"] = comp.str();
+    return std::vector<agent::ToolCall>{call(name, std::move(args))};
+  };
+  script->replies = {
+      tool("add_shape", {{"shape", "line"}, {"x", 0}, {"y", 0},
+                         {"width", 1}, {"height", 1}, {"arrows", "end"},
+                         {"from_object", a}, {"to_object", b}}),
+      tool("add_shape", {{"shape", "line"}, {"x", 0}, {"y", 0},
+                         {"width", 1}, {"height", 1},
+                         {"from_object", a}, {"from_connector", "bottom"},
+                         {"to_object", b}, {"to_connector", "bottom"}}),
+      tool("move_objects", {{"layer", layer}, {"objects", J::array({b})},
+                            {"dy", 100}}),
+      tool("get_composition", J::object())};
+  auto join = ctl.agent_start(req);
+  REQUIRE_OK(join);
+  st = agent_wait(ctl, *join, "done");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 4);
+  for (std::size_t i = 0; i < 4; ++i) {
+    CHECK(jget<std::string>(steps[i], "state", "") == "done");
+  }
+  const Json j1 = jget(steps[0], "result", J());
+  const std::string l1 = jget<std::string>(j1, "object", "");
+  CHECK((jget(j1, "from", J()) == J::array({120, 130})));
+  CHECK((jget(j1, "to", J()) == J::array({260, 130})));
+  CHECK(jget(j1, "connectors_added", J::array()).size() == 2);
+  const Json j2 = jget(steps[1], "result", J());
+  const std::string l2 = jget<std::string>(j2, "object", "");
+  CHECK((jget(j2, "from", J()) == J::array({70, 160})));
+  CHECK((jget(j2, "to", J()) == J::array({310, 160})));
+  CHECK(!j2.contains("connectors_added"));
+  const Json fol = jget(jget(steps[2], "result", J()), "followed", J());
+  CHECK(fol.contains(l1) && fol.contains(l2));
+  {
+    auto told = objects(jget(steps[3], "result", J()));
+    CHECK((jget(told[l1], "to", J()) == J::array({260, 230})));
+    CHECK(jget<std::string>(told[l1], "from_object", "") == a);
+    CHECK(jget<std::string>(told[l1], "to_object", "") == b);
+    CHECK(jget<std::string>(told[l2], "from_connector", "") == "c3");
+    CHECK(jget(told[a], "connectors", J::object()).size() == 4);
+  }
+  REQUIRE_OK(ctl.agent_stop(*join));
+
+  script->replies = {
+      tool("move_objects", {{"layer", layer}, {"objects", J::array({l1})},
+                            {"dy", -50}}),
+      tool("update_object", {{"layer", layer}, {"object", a},
+                             {"color", "#00ff00"}}),
+      tool("update_object", {{"layer", layer}, {"object", b},
+                             {"text", ""}}),
+      tool("update_object", {{"layer", layer}, {"object", l2},
+                             {"to_connector", "top"}}),
+      tool("get_composition", J::object())};
+  auto apart = ctl.agent_start(req);
+  REQUIRE_OK(apart);
+  st = agent_wait(ctl, *apart, "done");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 5);
+  for (std::size_t i = 0; i < 5; ++i) {
+    CHECK(jget<std::string>(steps[i], "state", "") == "done");
+  }
+  const Json mv = jget(steps[0], "result", J());
+  CHECK((jget(jget(mv, "moved", J::object()), l1.c_str(), J()) ==
+         J::array({120, 80, 140, 100})));
+  CHECK(jget(mv, "let_go", J::array()).size() == 1);
+  {
+    auto told = objects(jget(steps[4], "result", J()));
+    CHECK((jget(told[l1], "from", J()) == J::array({120, 80})));
+    CHECK((jget(told[l1], "to", J()) == J::array({260, 180})));
+    CHECK(!told[l1].contains("from_object"));
+    CHECK(jget<std::string>(told[a], "text_color", "") == "#00ff00");
+    CHECK(!told[a].contains("stroke"));
+    CHECK(!told[b].contains("text"));
+    // Bottom to B's top, B 100 down.
+    CHECK((jget(told[l2], "to", J()) == J::array({310, 200})));
+    CHECK(jget<std::string>(told[l2], "to_connector", "") == "c4");
+  }
+  REQUIRE_OK(ctl.agent_stop(*apart));
 }
 
 // A markup of MANY objects told the agent in sum -- the ones on top

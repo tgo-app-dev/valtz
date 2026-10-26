@@ -103,6 +103,12 @@ struct MediaInfo {
   std::string codec;         // FourCC or format name, e.g. "ap4h", "png"
   std::string codec_name;    // human-readable, e.g. "Apple ProRes 4444"
   FrameDesc   frame;         // first/representative frame
+  // A movie's picture is as it SHOWS: `frame` is its upright size, and
+  // `turn` the degrees clockwise its track turns the stored picture by
+  // (0, 90, 180, 270) -- a phone's portrait clip is stored landscape with
+  // a quarter turn. -1 in a record from before it was read (2026-10-24):
+  // its size may be the stored one.
+  std::int32_t turn = 0;
   // Video / audio
   Rational     frame_rate{0, 1};
   MediaTime    duration;

@@ -49,6 +49,10 @@ public:
 
   Json settings() const;
   Status set_settings(const Json&);
+  // Its settings' "model" ("" the Agentic Helper's) and "memory_gb" (0
+  // none): Controller::agent_model, agent_memory_limit_.
+  std::string model_choice() const;
+  int memory_gb() const;
   Json tools_json() const;
 
   // A job's event as the controller posts it: an agent's picture landing

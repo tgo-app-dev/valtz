@@ -707,6 +707,12 @@ private struct GeneralSettings: View {
                         .settingsMark(String(localized: "This Mac"))
                 }
             }
+            // How much wired memory the local models may hold (none to
+            // set without an engine).
+            if let wired = model.wiredLimit, wired.max > 0,
+               wired.inForce > 0 {
+                WiredLimitSection(model: model, wired: wired)
+            }
             if model.locations != nil {
                 // Each folder put elsewhere here (StorageLocations).
                 Section {
@@ -725,6 +731,129 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
+        // What is wired moves as models load and go: read while shown.
+        .task {
+            while !Task.isCancelled {
+                model.refreshWiredLimit()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
     }
 
+}
+
+/// Settings › General › Memory: how much WIRED memory -- memory macOS
+/// cannot compress or swap out, which vpipe runs its models from -- the
+/// helper, the agent and the picture, clip and sound models may hold
+/// (Controller::wired_limit, DESIGN §10a). Automatic is vpipe's own; a
+/// limit set is a whole number of GB up to what the GPU keeps resident,
+/// taken as the slider is let go, and what is wired now is beside it.
+private struct WiredLimitSection: View {
+    @Bindable var model: AppModel
+    let wired: WiredLimit
+    /// The slider's place while it moves (an index into `stops`).
+    @State private var moving: Double?
+    @State private var editing = false
+
+    private static let gb: Int64 = 1 << 30
+
+    /// The limits offered: each whole GB from the least, then the most.
+    private var stops: [Int64] {
+        var s: [Int64] = []
+        var g = (wired.min + Self.gb - 1) / Self.gb
+        while g * Self.gb < wired.max {
+            s.append(g * Self.gb)
+            g += 1
+        }
+        s.append(wired.max)
+        return s
+    }
+
+    /// The stop nearest `bytes`.
+    private func index(of bytes: Int64) -> Int {
+        let s = stops
+        return s.indices.min(by: { abs(s[$0] - bytes) < abs(s[$1] - bytes) })
+            ?? 0
+    }
+
+    private func commit() {
+        guard let m = moving else { return }
+        moving = nil
+        let s = stops
+        let v = s[Swift.min(Swift.max(Int(m.rounded()), 0), s.count - 1)]
+        if v != wired.chosen { model.setWiredLimit(v) }
+    }
+
+    nonisolated static func text(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .memory)
+    }
+
+    var body: some View {
+        Section {
+            Picker("Wired memory for models", selection: Binding(
+                get: { wired.chosen == 0 },
+                set: { automatic in
+                    model.setWiredLimit(automatic
+                        ? 0 : stops[index(of: wired.automatic)])
+                })) {
+                Text("Automatic (\(Self.text(wired.automatic)))").tag(true)
+                Text("Set a Limit").tag(false)
+            }
+            .settingsMark(String(localized: "Wired memory"),
+                          String(localized: "Wired memory for models"))
+            if wired.chosen != 0, stops.count > 1 {
+                LabeledContent("Limit") {
+                    HStack(spacing: 10) {
+                        Slider(value: Binding(
+                                   get: { moving
+                                          ?? Double(index(of: wired.chosen)) },
+                                   set: {
+                                       moving = $0
+                                       // An arrow key moves it with no
+                                       // drag to end: taken at once.
+                                       if !editing { commit() }
+                                   }),
+                               in: 0...Double(stops.count - 1), step: 1) {
+                            Text("Limit")
+                        } minimumValueLabel: {
+                            Text(verbatim: Self.text(stops[0]))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } maximumValueLabel: {
+                            Text(verbatim: Self.text(wired.max))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } onEditingChanged: { now in
+                            editing = now
+                            if !now { commit() }
+                        }
+                        .labelsHidden()
+                        Text(verbatim: Self.text(moving.map {
+                            stops[Swift.min(Int($0.rounded()),
+                                            stops.count - 1)]
+                        } ?? wired.chosen))
+                            .monospacedDigit()
+                            .frame(minWidth: 52, alignment: .trailing)
+                    }
+                }
+                .settingsMark(String(localized: "Limit"))
+            }
+            LabeledContent("Wired now") {
+                Text("\(Self.text(wired.used)) of \(Self.text(wired.inForce))")
+                    .monospacedDigit()
+            }
+            .settingsMark(String(localized: "Wired now"))
+            if wired.pending {
+                Text("The lower limit applies once the work under way ends.")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Memory")
+                .settingsMark(String(localized: "Memory"))
+        } footer: {
+            Text("The helper, the agent and the picture, video and sound models run from wired memory, which macOS cannot compress or swap out. A lower limit leaves more memory to other apps; past it, a model reads its weights from disk as it runs, more slowly. Automatic is three quarters of this Mac's memory, at most what its GPU keeps resident.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
 }

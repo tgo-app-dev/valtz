@@ -1166,6 +1166,9 @@ final class AppModel {
     /// Where the projects, models and cache are kept, and a move under way
     /// (Settings › General › Storage; StorageLocations).
     var locations: LocationsInfo?
+    /// How much wired memory the local models may hold (Settings ›
+    /// General › Memory; refreshWiredLimit).
+    var wiredLimit: WiredLimit?
     /// A folder's change refused or failed: said in Settings, where it was
     /// asked.
     var locationError: String?
@@ -4366,9 +4369,16 @@ final class AppModel {
     }
 
     /// Video and audio are listed (Auto's order is settled), but nothing
-    /// runs for them until a model that makes them is installed here.
+    /// runs for them until a model that makes them is installed here --
+    /// for clips, from words or from references: either has the same
+    /// rows, Length among them.
     var modalityRuns: Bool {
-        activeModality == .image || !autoPick("generate").isEmpty
+        switch activeModality {
+        case .image: true
+        case .video: !autoPick("generate").isEmpty
+            || !autoPick("edit").isEmpty
+        default: !autoPick("generate").isEmpty
+        }
     }
 
     func capability(_ id: String) -> CapabilityStatus? {
@@ -4416,13 +4426,52 @@ final class AppModel {
         capability("prompt-enhance")?.availability == "ready"
     }
 
-    func download(model: String, token: String = "") {
+    /// A model downloaded from `source` ("" the one chosen).
+    func download(model: String, token: String = "", source: String = "") {
         guard let core else { return }
         downloadFailures[model] = nil
-        let r = core.downloadModel(model, token: token)
+        let r = core.downloadModel(model, token: token, source: source)
         if !r.ok {
             note("error", r.message)
             downloadFailures[model] = r.message
+        }
+    }
+
+    /// Where downloads come from (Settings › Capabilities' Download From),
+    /// kept by the core for every download after; the page follows
+    /// through models.changed.
+    func setDownloadSource(_ name: String) {
+        guard let core else { return }
+        let r = core.setDownloadSource(name)
+        if !r.ok { flash(r.message, level: .error) }
+    }
+
+    /// Settings › General › Memory: the wired limit as the core has it --
+    /// set only when it changed, so a page reading it every two seconds
+    /// is drawn again only then.
+    func refreshWiredLimit() {
+        guard let core else { return }
+        let w = DTO.decode(WiredLimit.self, core.wiredLimitJSON())
+        if w != wiredLimit { wiredLimit = w }
+    }
+
+    /// A wired limit set (bytes; 0 Automatic): kept by the core and given
+    /// to the engine -- a lower one once the work under way ends.
+    func setWiredLimit(_ bytes: Int64) {
+        guard let core else { return }
+        let r = core.setWiredLimit(bytes)
+        if !r.ok { flash(r.message, level: .error) }
+        refreshWiredLimit()
+    }
+
+    /// A row's download: from `source` -- Hugging Face asking for a gated
+    /// model's license and token first (its sheet); another source's gate,
+    /// if it has one, is its own and answers in the row.
+    func startDownload(_ m: CapabilityTree.Member, from source: String) {
+        if m.isGated && source == "huggingface" {
+            gatedDownload = m
+        } else {
+            download(model: m.model, source: source)
         }
     }
 
@@ -4432,7 +4481,8 @@ final class AppModel {
     func downloadGated(_ member: CapabilityTree.Member, token: String) {
         let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        download(model: member.model, token: t)
+        // The sheet is Hugging Face's gate: from there, whatever is chosen.
+        download(model: member.model, token: t, source: "huggingface")
         gatedDownload = nil
     }
 
@@ -4622,6 +4672,15 @@ final class AppModel {
     func setVideoEvery(_ seconds: Double) {
         guard let core else { return }
         let r = core.setVideoEvery(seconds)
+        if !r.ok { flash(r.message, level: .error) }
+        helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+    }
+
+    /// A video summary's frame size (DESIGN §4i): "standard", "high",
+    /// "highest".
+    func setVideoSize(_ level: String) {
+        guard let core else { return }
+        let r = core.setVideoSize(level)
         if !r.ok { flash(r.message, level: .error) }
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
     }
@@ -5380,9 +5439,15 @@ final class AppModel {
         if activeModality == .agent {
             return words && projectId != nil
         }
-        return words
-            && !(activeModality == .audio ? audioModel : imageModel).isEmpty
-            && projectId != nil
+        // What Start runs: a clip from references its reference model
+        // (usesReferences has one), not the one that makes clips from
+        // words.
+        let runs = switch activeModality {
+        case .audio: !audioModel.isEmpty
+        case .video: usesReferences || !imageModel.isEmpty
+        default: !imageModel.isEmpty
+        }
+        return words && runs && projectId != nil
     }
 
     /// Start pressed, its button's or the Prompt Editor's: by ⌘↩ the

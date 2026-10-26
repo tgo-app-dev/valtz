@@ -473,6 +473,23 @@ public:
   // ("model", "name", "role"), a language model loaded unwired given its
   // files' size ("estimated"). The status bar's RAM popover.
   Json memory_held();
+  // THE WIRED LIMIT (Settings › General › Memory, DESIGN §10a, §15 0zzc):
+  // how much memory Valtz's local models -- the helper and the agent's
+  // turns, every picture, clip and sound model -- may make UNSWAPPABLE.
+  // vpipe runs from wired memory, which macOS cannot compress or page
+  // out; past the limit a model streams its weights and the helper's stay
+  // pageable. {"chosen": bytes, 0 Automatic; "automatic": what Automatic
+  // is here (vpipe's own, 75% of the memory); "min", "max" -- a limit set
+  // lies between them, the most the GPU keeps resident (vpipe caps the
+  // pool there); "in_force": the engine's now (0 without one); "used":
+  // wired now; "pending": a lower one waiting for the work under way}.
+  Json wired_limit() const;
+  // A limit set (`bytes`; 0 Automatic), between min and max
+  // (kWiredLimitRange), kept in <support>/memory.json -- read by the app
+  // and valtzctl at their start -- and given to the engine now: a lower
+  // one once the work under way ends. What is wired already stays until
+  // the model holding it is let go.
+  Status set_wired_limit(std::uint64_t bytes);
   // The Log view's rows (log-book.h): the engine's and Valtz's lines
   // after `seq`, at most `max`; and every row cleared.
   Json log_since(std::uint64_t seq, std::size_t max = 4096) const;
@@ -489,8 +506,10 @@ public:
   //                  "state": installed | partial | missing, "bytes",
   //                  "disk_gb", "fits", "min_ram_gb", "path",
   //                  "source": "valtz" | "vpipe" | "link" | "", "license",
-  //                  "notes"}]}],
-  //    "download_root"}
+  //                  "notes", "sources": [{"name", "path"}] -- the download
+  //                  sources carrying its repo, under its path there}]}],
+  //    "download_root", "download_sources", "download_source" (as
+  //    download_sources() says them)}
   Json capability_tree() const;
   // EXTENSIONS (ext/extension.h, DESIGN §8a): every package found at
   // launch, as this run took it --
@@ -1192,6 +1211,17 @@ public:
   Json preset_summary(const models::ModelEntry& m,
                       std::string_view preference) const;
   const models::ModelEntry* assistant_model() const;
+  // The model the AGENT thinks with on this Mac (DESIGN §9b): Settings ›
+  // Experimental › Agent's Model when it names a helper that is here --
+  // DeepSeek V4.1 Flash, a Qwen3.8 -- else the Agentic Helper's
+  // (assistant_model). Null with neither.
+  const models::ModelEntry* agent_model() const;
+  // The most the agent's model may hold, bytes (the Agent's Memory: 64,
+  // 128, 192 GB, or 0 -- no limit but the Mac's): its expert cache sized
+  // within it, its context's K/V counted in it -- whatever asks for the
+  // model, the Agentic Helper's Enhance too when it is the same one, so
+  // the copy kept warm is one. 0 for any other model.
+  std::uint64_t agent_memory_limit_(const models::ModelEntry& m) const;
   // The assistant decodes with its MTP head (multi-token prediction: a
   // drafter vpipe's text-chat verifies, token for token the same reply,
   // faster) where its catalog entry says it ships one (`engine.vpipe.mtp`,
@@ -1224,14 +1254,28 @@ public:
   // Past it an agent's conversation is compacted (DESIGN §9b).
   Status set_assistant_context(std::int64_t tokens);
   // A video summary's FRAME INTERVAL (Settings > Agentic Helper), seconds
-  // of the clip a frame stands for: 0 Auto -- one a second where memory
-  // moves kFastMemoryGbs or more, one every two below, where a frame's
-  // ~180 tokens are as many again to prefill per second of work. Kept in
-  // assistant.json ("video_every"). video_every(): what Auto comes to.
+  // of the clip a frame stands for, 1/8 to 60: 0 Auto -- by the clip's
+  // length, the densest of 8, 4, 2 and 1 a second that reads it in about
+  // kSummaryFrames frames (a 10 s clip at 8 a second, 20 s at 4), else
+  // one a second; where memory moves under kFastMemoryGbs, half as many
+  // and one every two at least -- each frame's tokens are as many again
+  // to prefill there. Kept in assistant.json ("video_every").
+  // video_every(seconds): what Auto comes to for a clip that long (0:
+  // not known -- one a second, or one every two).
   static constexpr double kFastMemoryGbs = 200;
+  static constexpr int    kSummaryFrames = 80;
   Status set_video_every(double seconds);
   double video_every_setting() const { return _video_every; }
-  double video_every() const;
+  double video_every(double clip_seconds = 0) const;
+  // A video summary's FRAME SIZE, the most a frame is drawn at -- its long
+  // edge and its short, a portrait clip's turned (media::sampled_size):
+  // "standard" 576 x 320 (~180 of Qwen3-VL's tokens), "high" 864 x 480
+  // (~400), "highest" 1152 x 640 (~720) -- small words, a face's look,
+  // read at the cost of a longer prefill. Kept in assistant.json
+  // ("video_size").
+  Status set_video_size(const std::string& level);
+  const std::string& video_size() const { return _video_size; }
+  static media::PixelSize video_frame_most(std::string_view level);
   // The helper's DRAFTER (speculative decoding, token for token the same
   // reply, faster): "mtp" -- its MTP head, or the one shipped apart -- by
   // default; "dflash" -- a DFlash 2 block drafter (catalog
@@ -1259,8 +1303,26 @@ public:
   // §3a): a generation runs while one downloads, unless it needs what is
   // downloading -- then it waits for that alone, and fails if the
   // download does. Asked again while it downloads: the same job.
+  //
+  // From `source` -- one of download_sources' (Hugging Face, ModelScope:
+  // vpipe's model sources), "" the one chosen. A source vpipe knows not
+  // to carry the model's repo is refused (kNotOnDownloadSource) when
+  // named, passed over for Hugging Face when it is only the one chosen.
+  // Wherever it comes from, a model is the same files in the same folder:
+  // a download paused on one source goes on from the other.
   Result<JobId> download_model(const std::string& model_id,
-                               const std::string& hf_token = "");
+                               const std::string& hf_token = "",
+                               const std::string& source = "");
+  // WHERE downloads come from (DESIGN §8, §15 0zzb): {"sources": [{"name"
+  // -- "huggingface", "modelscope" -- "label"}] (the engine's: vpipe's
+  // model sources), "chosen": the one a download takes when it names
+  // none -- Settings › Capabilities' Download From, kept in
+  // `<support>/downloads.json`; unset, vpipe's own default (Hugging Face,
+  // or $VPIPE_MODEL_SOURCE's)}.
+  Json download_sources() const;
+  // The source downloads take from now on: one of download_sources'
+  // names (kUnknownDownloadSource otherwise). Posts "models.changed".
+  Status set_download_source(const std::string& name);
   // A model's download STOPPED (Settings › Capabilities' Pause and
   // Cancel, DESIGN §8): its job, queued or running, cancelled -- what
   // waits for it fails, the download stopped. PAUSED (`discard` false),
@@ -1436,11 +1498,15 @@ public:
   // The project's sessions, newest first, each as agent_state without
   // its messages.
   Json agents(ProjectId) const;
-  // Settings > Agentic Helper > Agent: {"backend": "helper" | "cloud",
+  // Settings > Experimental > Agent: {"backend": "helper" | "cloud",
+  // "model" (the local model it thinks with: a helper's id, "" the
+  // Agentic Helper's), "using" (the one that runs: agent_model's id),
+  // "memory_gb" (the most that model may hold: 0 no limit),
   // "review" (new sessions'), "lease" (s a fleet member keeps a session's
   // context), "cloud": {"provider", "model", "base_url", "max_tokens"},
   // "keys": {provider: bool (one is in the Keychain)}}. Kept in
-  // <support>/agent.json -- never a key.
+  // <support>/agent.json -- never a key. A "model" not a helper, or a
+  // "memory_gb" other than 0 and 16-4096, is refused.
   Json agent_settings() const;
   Status set_agent_settings(const Json&);
   // A cloud provider's API key into the Keychain ("" removes it).
@@ -1665,12 +1731,14 @@ private:
   // How the helper `m` is loaded and decodes, as its chat and a video
   // summary hand it to vpipe -- alike, so the model one keeps warm is the
   // other's: {mtp, sampling, keep_loaded, context_tokens?, mtp_model?,
-  // draft_model?, draft_bits?}.
+  // draft_model?, draft_bits?, memory_limit_mb?}.
   Json helper_params_(const models::ModelEntry& m) const;
-  // The tokens of its context the helper `m` is given here: its own, as
-  // far as this Mac's memory holds its K/V (models::helper_context) --
-  // and, `chosen`, no more than Settings › Agentic Helper's Context
-  // (set_assistant_context); 0, its files say none.
+  // The tokens of its context the helper `m` is given here: its catalog
+  // `context_tokens`, else its own as far as this Mac's memory -- or the
+  // agent's Memory, where it is the agent's model -- holds its K/V
+  // (models::helper_context); and, `chosen`, no more than Settings ›
+  // Agentic Helper's Context (set_assistant_context); 0, its files say
+  // none.
   int helper_context_(const models::ModelEntry& m, bool chosen = true) const;
   // ---- downloads (DESIGN §3a)
   // Installed, or downloading: here by the time a job waiting for it
@@ -2048,6 +2116,17 @@ private:
       const std::function<Status(const std::filesystem::path&)>& make);
   Result<std::filesystem::path> rendered_(ProjectId, AssetId,
                                           std::uint32_t version, int depth);
+  // A clip input as it SHOWS (MediaInfo::turn): a record from before the
+  // turn was read has its info probed again where the clip is turned;
+  // with `copy`, a turned clip is handed over as an upright copy -- for
+  // what vpipe reads itself, a clip's references and the clip it
+  // continues (its readers take a picture as stored) -- ProRes 422 HQ with
+  // its sound, kept in the managed cache by the clip's content.
+  Status upright_input_(ProjectId, engine::JobInput&, bool copy);
+  // The download source chosen (download_sources' "chosen").
+  std::string download_source_() const;
+  // The most a wired limit may be: what the GPU keeps resident.
+  std::uint64_t wired_limit_max_() const;
   // A still's page (DESIGN §6a), drawn and cached as its rendering is --
   // its only page without pages; anything else, its rendering.
   Result<std::filesystem::path> rendered_page_(ProjectId, AssetId,
@@ -2202,6 +2281,7 @@ private:
   int                                _assistant_drafter_bits = 8;
   std::int64_t                       _assistant_context = 0;  // 0 Auto
   double                             _video_every = 0;  // 0: Auto
+  std::string                        _video_size = "standard";
   models::Catalog                    _catalog;
   // Every package found at launch, as taken (fixed for the run).
   std::vector<ext::Extension>        _extensions;

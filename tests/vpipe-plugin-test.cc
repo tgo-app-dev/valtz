@@ -931,6 +931,41 @@ TEST(vpipe_plugin, a_pdf_export_is_written_in_the_export_lane)
   e->shutdown();
 }
 
+// The wired limit (Engine::set_wired_limit_mb, DESIGN §15 0zzc) is
+// vpipe's wired pool: the one chosen in force from the engine's start,
+// before any graph; changed with nothing running, at once -- lowered too;
+// 0 vpipe's own again, which is what it read as Automatic.
+TEST(vpipe_plugin, the_wired_limit_is_vpipes_wired_pool)
+{
+  if (!plugin_present()) {
+    SKIP("valtz-vpipe.so not found");
+  }
+  const auto dir = test::temp_dir("wired-limit");
+  EngineConfig cfg;
+  cfg.state_dir = dir / "engine";
+  cfg.temp_dir = dir / "tmp";
+  cfg.log_level = "error";
+  cfg.wired_limit_mb = 3072;
+  auto e = make_vpipe_engine(cfg);
+  REQUIRE(e && e->available());
+  Json w = e->wired_limit();
+  const auto own = jget<std::uint64_t>(w, "auto_mb", 0);
+  REQUIRE(own > 3072);
+  CHECK(jget<std::uint64_t>(w, "asked_mb", 0) == 3072);
+  CHECK(jget<std::uint64_t>(w, "limit_mb", 0) == 3072);
+  CHECK(!jget(w, "pending", true));
+  e->set_wired_limit_mb(4096);
+  CHECK(jget<std::uint64_t>(e->wired_limit(), "limit_mb", 0) == 4096);
+  e->set_wired_limit_mb(2048);
+  w = e->wired_limit();
+  CHECK(jget<std::uint64_t>(w, "limit_mb", 0) == 2048);
+  CHECK(!jget(w, "pending", true));
+  e->set_wired_limit_mb(0);
+  CHECK(jget<std::uint64_t>(e->wired_limit(), "limit_mb", 0) == own);
+  e->shutdown();
+  CHECK(e->wired_limit().empty());
+}
+
 // The FLOP/s meter as the status bar reads it (Engine::throughput): the
 // GPU's and the ANE's arithmetic over the two seconds their credits
 // reach; a unit idle past the hold reads zero; the peak is the highest

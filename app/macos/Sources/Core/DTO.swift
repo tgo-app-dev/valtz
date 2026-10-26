@@ -1753,6 +1753,14 @@ struct AgentCloudSettings: Decodable, Sendable, Equatable {
 
 struct AgentSettings: Decodable, Sendable, Equatable {
     var backend: String     // helper | cloud
+    /// The model it thinks with here: a helper's id, "" the Agentic
+    /// Helper's; `using` the one that runs (the Agentic Helper's while the
+    /// one named is not downloaded).
+    var model: String?
+    var using: String?
+    /// The most that model may hold, GB: its expert cache sized within it,
+    /// its context counted in it. 0: no limit but the Mac's memory.
+    var memoryGb: Int?
     var review: Bool
     var lease: Double
     /// A long conversation compacted past its model's context (DESIGN

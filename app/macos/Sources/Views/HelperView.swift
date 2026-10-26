@@ -244,17 +244,20 @@ struct HelperView: View {
             + " GB"
     }
 
-    /// How often a video summary looks at the clip: Auto -- one frame a
-    /// second, or one every two on a Mac whose memory moves less than
-    /// 200 GB/s -- or as chosen.
+    /// How often a video summary looks at the clip -- Auto by its length,
+    /// up to eight frames a second for a short one, or as chosen -- and
+    /// how large each frame is read (DESIGN §4i).
     @ViewBuilder
     private func videoSection(_ list: HelperList) -> some View {
         Section {
             Picker("Frames", selection: Binding(
                 get: { Self.everyChoice(list.videoEvery ?? 0) },
                 set: { model.setVideoEvery($0) })) {
-                Text(autoEveryLabel(list)).tag(0.0)
+                Text("Auto (by the clip's length)").tag(0.0)
                 Divider()
+                Text("8 a second").tag(0.125)
+                Text("4 a second").tag(0.25)
+                Text("2 a second").tag(0.5)
                 Text("One a second").tag(1.0)
                 Text("One every 2 seconds").tag(2.0)
                 Text("One every 3 seconds").tag(3.0)
@@ -262,34 +265,42 @@ struct HelperView: View {
                 Text("One every 10 seconds").tag(10.0)
             }
             .settingsMark(String(localized: "Frames"))
+            Picker("Frame Size", selection: Binding(
+                get: { list.videoSize ?? "standard" },
+                set: { model.setVideoSize($0) })) {
+                Text("Standard (576 × 320)").tag("standard")
+                Text("High (864 × 480)").tag("high")
+                Text("Highest (1152 × 640)").tag("highest")
+            }
+            .settingsMark(String(localized: "Frame Size"))
         } header: {
             Text("Video Summary")
                 .settingsMark(String(localized: "Video Summary"))
         } footer: {
             VStack(alignment: .leading, spacing: 4) {
-                Text("A clip is read a frame at a time, 576 × 320 at most, cut into scenes where the picture changes, and each scene told in a few sentences, then the whole. More frames see more and take longer: each is about 180 of the model's words to read.")
-                if let bw = list.memoryBandwidthGbs, bw > 0 {
-                    Text("Auto reads one a second, or one every 2 seconds on a Mac whose memory moves less than 200 GB/s. This Mac's moves \(String(Int(bw.rounded()))) GB/s.")
-                }
+                Text("A clip is read a frame at a time, landscape or portrait, upright, cut into scenes where the picture changes, and each scene told in a few sentences, then the whole. More frames, and larger ones, see more and take longer: a frame is about 180 of the model's words to read at Standard, 400 at High, 720 at Highest.")
+                Text(autoEveryNote(list))
             }
             .foregroundStyle(.secondary)
         }
     }
 
-    /// What Auto comes to here, by the memory's bandwidth (the core's
-    /// rule: Controller::video_every).
-    private func autoEveryLabel(_ list: HelperList) -> String {
+    /// What Auto does here, by the memory's bandwidth (the core's rule:
+    /// Controller::video_every).
+    private func autoEveryNote(_ list: HelperList) -> String {
         let bw = list.memoryBandwidthGbs ?? 0
-        return bw > 0 && bw < 200
-            ? String(localized: "Auto (one every 2 seconds)")
-            : String(localized: "Auto (one a second)")
+        guard bw > 0 && bw < 200 else {
+            return String(localized: "Auto reads about 80 frames of a short clip: 8 a second up to 10 seconds, 4 up to 20, 2 up to 40, then one a second.")
+        }
+        return String(localized: "This Mac's memory moves \(String(Int(bw.rounded()))) GB/s, under 200, so Auto reads about 40 frames of a short clip: 8 a second up to 5 seconds, 4 up to 10, 2 up to 20, 1 up to 40, then one every 2 seconds.")
     }
 
-    /// The offered interval nearest to what is set (valtzctl may set any).
+    /// The offered interval nearest to what is set (valtzctl may set any),
+    /// by ratio: 0.2 s is 4 a second's.
     private static func everyChoice(_ s: Double) -> Double {
         guard s > 0 else { return 0 }
-        let offered: [Double] = [1, 2, 3, 5, 10]
-        return offered.min { abs($0 - s) < abs($1 - s) } ?? 1
+        let offered: [Double] = [0.125, 0.25, 0.5, 1, 2, 3, 5, 10]
+        return offered.min { abs(log($0 / s)) < abs(log($1 / s)) } ?? 1
     }
 
     /// The offered time nearest to what is kept (valtzctl may set any).
@@ -391,9 +402,11 @@ struct HelperView: View {
 
 /// Settings › Experimental › Agent (DESIGN §9b): where the agent's model
 /// thinks -- the helper (this Mac's, or a fleet member's, as Offload
-/// Policies send agent turns) or a cloud API -- whether each step it takes
-/// waits for the person, and a cloud's provider, model and key (into the
-/// Keychain, never kept here).
+/// Policies send agent turns) or a cloud API -- which model it is here
+/// (the Agentic Helper's, or one of its own: DeepSeek V4.1 Flash) and the
+/// most that model may hold, whether each step it takes waits for the
+/// person, and a cloud's provider, model and key (into the Keychain,
+/// never kept here).
 struct AgentSettingsSection: View {
     @Bindable var model: AppModel
     /// The key typed, until it is saved: never written anywhere else.
@@ -415,6 +428,7 @@ struct AgentSettingsSection: View {
                     set: { model.setAgentSettings(["review": $0]) }))
                     .settingsMark(String(localized: "Ask before each step"))
                 if s.backend == "helper" {
+                    modelRows(s)
                     Picker("A member keeps its context", selection: Binding(
                         get: { s.lease },
                         set: { model.setAgentSettings(["lease": $0]) })) {
@@ -437,6 +451,92 @@ struct AgentSettingsSection: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// The model it thinks with here -- the Agentic Helper's, or a
+    /// helper of its own -- and the most that model may hold: its expert
+    /// cache sized within it (a Mixture of Experts too large for the Mac
+    /// keeps the experts it can and reads the rest from disk), the rest of
+    /// the memory left to the pictures and clips.
+    @ViewBuilder
+    private func modelRows(_ s: AgentSettings) -> some View {
+        let list = model.helpers
+        Picker("Model", selection: Binding(
+            get: { s.model ?? "" },
+            set: { model.setAgentSettings(["model": $0]) })) {
+            Text(sameLabel(list)).tag("")
+            Divider()
+            ForEach(list?.models ?? []) { h in
+                Text(label(h)).tag(h.id)
+            }
+            if let id = s.model, !id.isEmpty,
+               list?.helper(id) == nil {
+                Text(verbatim: id).tag(id)
+            }
+        }
+        .settingsMark(String(localized: "Model"),
+                      String(localized: "DeepSeek"))
+        if let id = s.model, !id.isEmpty, let using = s.using, using != id,
+           let chosen = list?.helper(id) {
+            LabeledContent {
+                Button("Open Capabilities") {
+                    model.openCapabilities(family: "helpers")
+                }
+            } label: {
+                Text("\(chosen.name) is not downloaded: \(name(using, list)) thinks until it is.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        Picker("Memory", selection: Binding(
+            get: { s.memoryGb ?? 0 },
+            set: { model.setAgentSettings(["memory_gb": $0]) })) {
+            Text("No Limit").tag(0)
+            Divider()
+            ForEach(Self.memorySizes, id: \.self) { gb in
+                Text("\(String(gb)) GB").tag(gb)
+            }
+            if let gb = s.memoryGb, gb > 0, !Self.memorySizes.contains(gb) {
+                Text("\(String(gb)) GB").tag(gb)
+            }
+        }
+        .settingsMark(String(localized: "Memory"),
+                      String(localized: "Agent Memory"))
+        Text(memoryNote(s))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private static let memorySizes = [64, 128, 192]
+
+    private func sameLabel(_ list: HelperList?) -> String {
+        guard let list, let h = list.helper(list.using) else {
+            return String(localized: "Agentic Helper")
+        }
+        return String(localized: "Agentic Helper (\(h.name))")
+    }
+
+    private func name(_ id: String, _ list: HelperList?) -> String {
+        list?.helper(id)?.name ?? id
+    }
+
+    /// A helper's name, and what keeps it from running here.
+    private func label(_ h: HelperList.Helper) -> String {
+        if h.state != "installed" {
+            return String(localized: "\(h.name) — not downloaded")
+        }
+        if !h.fits {
+            return String(localized: "\(h.name) — needs \(String(h.minRamGb)) GB")
+        }
+        return h.name
+    }
+
+    /// What the limit does on this Mac.
+    private func memoryNote(_ s: AgentSettings) -> String {
+        let ram = model.hardware?.ramGb ?? 0
+        if let gb = s.memoryGb, gb > 0, ram > 0, gb >= ram {
+            return String(localized: "This Mac has \(String(ram)) GB, so the limit changes nothing here: the model sizes itself to the Mac.")
+        }
+        return String(localized: "The most the agent's model holds: its weights, its expert cache and its conversation. A model whose experts run from a cache -- DeepSeek V4.1 Flash, Qwen3.8 Flash-Next -- keeps what fits and reads the rest from disk, more slowly; a smaller model loads whole. The rest of the memory is left to pictures, clips and sounds. For the model's next load: one kept loaded keeps its size until it unloads.")
     }
 
     @ViewBuilder

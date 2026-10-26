@@ -70,13 +70,19 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "This Mac"),
              String(localized: "Chip"), String(localized: "Memory"),
              String(localized: "GPU"), String(localized: "Neural Engine"),
-             String(localized: "Engine"), String(localized: "Storage"),
+             String(localized: "Engine"),
+             String(localized: "Wired memory"),
+             String(localized: "Wired memory for models"),
+             String(localized: "Limit"), String(localized: "Wired now"),
+             String(localized: "Storage"),
              String(localized: "Projects"),
              String(localized: "Models"), String(localized: "Cache"),
              String(localized: "Project")]
         case .page(.capabilities):
             // Its families, and under each its models, as listed there.
             [String(localized: "Models"), String(localized: "Download"),
+             String(localized: "Download From"),
+             String(localized: "Hugging Face"), String(localized: "ModelScope"),
              String(localized: "Link"), String(localized: "Quantize")]
                 + (model.capabilityTree?.families.flatMap { f in
                     [f.name] + f.members.flatMap { [$0.label, $0.name] }
@@ -85,6 +91,7 @@ enum SettingsPlace: Hashable, Sendable {
             [String(localized: "Helper"), String(localized: "Enhance"),
              String(localized: "Memory"), String(localized: "Keep Loaded"),
              String(localized: "Video Summary"), String(localized: "Frames"),
+             String(localized: "Frame Size"),
              String(localized: "Sampling"), String(localized: "Drafter"),
              String(localized: "Multi-token prediction"),
              String(localized: "Thinking"),
@@ -108,6 +115,8 @@ enum SettingsPlace: Hashable, Sendable {
             [String(localized: "Agent"), String(localized: "Thinks On"),
              String(localized: "Cloud"),
              String(localized: "Ask before each step"),
+             String(localized: "DeepSeek"), String(localized: "Memory"),
+             String(localized: "Agent Memory"),
              String(localized: "A member keeps its context"),
              String(localized: "Provider"), String(localized: "Model"),
              String(localized: "Server"), String(localized: "API Key")]

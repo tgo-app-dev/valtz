@@ -243,6 +243,453 @@ turn_style(Json& obj, const Json& args)
   }
 }
 
+// ---- words in shapes, connectors, joined ends (media/markup.h) ------------
+
+// A shape that holds WORDS: a rectangle, an ellipse, a closed polygon.
+bool
+holds_words(const Json& o)
+{
+  const auto k = jget<std::string>(o, "kind", "");
+  return k == "rect" || k == "ellipse" ||
+         (k == "polygon" && !jget(o, "open", false));
+}
+
+// Words set on a shape's inside unless told: black on a light one (or
+// none), white on a dark one -- its fill, or its gradient's colours
+// together.
+Json
+words_colour_on(const Json& o)
+{
+  std::array<double, 4> c{0, 0, 0, 0};
+  std::size_t n = 0;
+  auto add = [&](const Json& v) {
+    if (!v.is_array() || v.size() != 4) {
+      return;
+    }
+    for (std::size_t i = 0; i < 4; ++i) {
+      c[i] += v[i].is_number() ? v[i].get<double>() : 0;
+    }
+    ++n;
+  };
+  if (const Json g = jget(o, "gradient", Json()); g.is_object()) {
+    for (const auto& st : jget(g, "stops", Json::array())) {
+      add(jget(st, "color", Json()));
+    }
+  } else {
+    add(jget(o, "fill", Json()));
+  }
+  for (auto& v : c) {
+    v /= static_cast<double>(std::max<std::size_t>(n, 1));
+  }
+  const double luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  return c[3] >= 0.5 && luma < 0.5 ? Json::array({1, 1, 1, 1})
+                                   : Json::array({0, 0, 0, 1});
+}
+
+// A shape's WORDS from a tool's arguments onto `o` (holds_words): `text`
+// ("" takes them off, with their style), `size`, `font`, `bold`,
+// `italic`, `align`, `line_spacing`, `text_color`. New words are
+// Helvetica Neue, centred, black or white against the inside and -- no
+// `size` given -- as big as fits, up to 48. Its outline's width set
+// first (the words lie inside it). -> a note when a style was given to a
+// shape with no words.
+Result<std::string>
+set_words(Json& o, const Json& args)
+{
+  const bool had = !jget<std::string>(o, "text", "").empty();
+  if (args.contains("text")) {
+    const std::string t = text_arg(args, "text");
+    if (t.empty()) {
+      for (const char* k :
+           {"text", "font", "align", "line_spacing", "text_color"}) {
+        o.erase(k);
+      }
+      return std::string();
+    }
+    o["text"] = t;
+  }
+  if (jget<std::string>(o, "text", "").empty()) {
+    for (const char* k : {"size", "font", "bold", "italic", "align",
+                          "line_spacing", "text_color"}) {
+      if (args.contains(k)) {
+        return std::string("It holds no words, so the words' style was "
+                           "not set: give `text` with it.");
+      }
+    }
+    return std::string();
+  }
+  Json font = had ? jget(o, "font", Json::object())
+                  : Json{{"family", "Helvetica Neue"},
+                         {"bold", false},
+                         {"italic", false},
+                         {"underline", false}};
+  const double w = std::abs(jget(o, "x1", 0.0) - jget(o, "x0", 0.0));
+  const double h = std::abs(jget(o, "y1", 0.0) - jget(o, "y0", 0.0));
+  const bool sized = args.contains("size");
+  if (sized) {
+    font["size"] = std::clamp(number(args, "size", 48), 4.0, 2000.0);
+  } else if (!had) {
+    // A third of its shorter side (an ellipse's words lie in the
+    // rectangle inside it), then smaller until they fit.
+    const double side = std::min(w, h) *
+        (jget<std::string>(o, "kind", "") == "ellipse" ? 0.7 : 1.0);
+    font["size"] = std::clamp(std::round(side / 3), 12.0, 48.0);
+  }
+  if (args.contains("font")) {
+    font["family"] = text_arg(args, "font");
+  }
+  for (const char* k : {"bold", "italic"}) {
+    if (args.contains(k)) {
+      font[k] = flag(args, k);
+    }
+  }
+  o["font"] = std::move(font);
+  if (args.contains("align")) {
+    const std::string al = text_arg(args, "align");
+    if (al != "left" && al != "center" && al != "right" &&
+        al != "justified") {
+      return make_error(Code::InvalidArgument,
+                        "align is left, center, right or justified");
+    }
+    o["align"] = al;
+  }
+  if (args.contains("line_spacing")) {
+    o["line_spacing"] =
+        std::clamp(number(args, "line_spacing", 1), 1.0, 3.0);
+  }
+  if (args.contains("text_color")) {
+    auto c = colour(text_arg(args, "text_color"));
+    if (!c) {
+      return make_error(Code::InvalidArgument,
+                        "a colour is \"#rrggbb\" or \"#rrggbbaa\"");
+    }
+    o["text_color"] = {(*c)[0], (*c)[1], (*c)[2], (*c)[3]};
+  } else if (!had) {
+    o["text_color"] = words_colour_on(o);
+  }
+  if (!sized && !had) {
+    for (int i = 0; i < 24 && !media::text_fit(o).fits; ++i) {
+      const double now = jget(o["font"], "size", 12.0);
+      if (now <= 10) {
+        break;
+      }
+      o["font"]["size"] = std::max(10.0, std::floor(now * 0.9));
+    }
+  }
+  return std::string();
+}
+
+// A line's ends, a path's points: canvas pixels, before its turn.
+std::vector<std::array<double, 2>>
+points_of(const Json& o)
+{
+  const double x0 = jget(o, "x0", 0.0), y0 = jget(o, "y0", 0.0);
+  const double x1 = jget(o, "x1", 0.0), y1 = jget(o, "y1", 0.0);
+  if (jget<std::string>(o, "kind", "") == "line") {
+    return {{x0, y0}, {x1, y1}};
+  }
+  std::vector<std::array<double, 2>> out;
+  for (const auto& p : jget(o, "points", Json::array())) {
+    if (p.is_array() && p.size() == 2 && p[0].is_number() &&
+        p[1].is_number()) {
+      out.push_back({x0 + p[0].get<double>() * (x1 - x0),
+                     y0 + p[1].get<double>() * (y1 - y0)});
+    }
+  }
+  return out;
+}
+
+// Connector `want` of `t`: its id, a SIDE -- "top", "right", "bottom",
+// "left": the one furthest that way, the nearest the middle across --
+// or, none named, the one nearest `toward`.
+Result<media::ConnectorPoint>
+connector_named(const Json& t, const std::string& want,
+                std::array<double, 2> toward)
+{
+  const auto pts = media::connector_points(t);
+  const auto id = jget<std::string>(t, "id", "");
+  if (pts.empty()) {
+    return make_error(Code::InvalidArgument,
+                      std::format("'{}' has no connectors", id));
+  }
+  if (want.empty() || want == "nearest") {
+    return *std::ranges::min_element(pts, {}, [&](const auto& p) {
+      return std::hypot(p.x - toward[0], p.y - toward[1]);
+    });
+  }
+  for (const auto& p : pts) {
+    if (p.id == want) {
+      return p;
+    }
+  }
+  const bool across = want == "top" || want == "bottom";
+  if (!across && want != "left" && want != "right") {
+    std::string ids;
+    for (const auto& p : pts) {
+      ids += (ids.empty() ? "" : ", ") + p.id;
+    }
+    return make_error(Code::InvalidArgument, std::format(
+        "'{}' has connectors {} -- or name a side: top, right, bottom, "
+        "left",
+        id, ids));
+  }
+  const auto b = media::object_bounds(t);
+  const double cx = b[0] + b[2] / 2, cy = b[1] + b[3] / 2;
+  auto along = [&](const media::ConnectorPoint& p) {
+    return want == "top"    ? -p.y
+           : want == "bottom" ? p.y
+           : want == "left"   ? -p.x
+                              : p.x;
+  };
+  const double most = along(std::ranges::max(pts, {}, along));
+  const media::ConnectorPoint* best = nullptr;
+  for (const auto& p : pts) {
+    if (along(p) < most - 1) {
+      continue;
+    }
+    const double off = across ? std::abs(p.x - cx) : std::abs(p.y - cy);
+    if (!best || off < (across ? std::abs(best->x - cx)
+                               : std::abs(best->y - cy))) {
+      best = &p;
+    }
+  }
+  return *best;
+}
+
+// A line's or an open path's ENDS JOINED to shapes of its layer (its
+// "anchors") as a tool's arguments ask: `from_object` / `to_object` the
+// shape's id ("none" lets that end go), `from_connector` /
+// `to_connector` which of its connectors (connector_named: by default
+// the one nearest the other end -- both ends left so, the nearest pair).
+// A shape with no connectors is given its default ones. `objs` the
+// layer's objects (`line` among them, or about to be). What was joined,
+// and the shapes given connectors, told in `out`.
+Status
+join_ends(Json& line, Json& objs, const Json& args, Json& out)
+{
+  if (!args.contains("from_object") && !args.contains("to_object") &&
+      !args.contains("from_connector") && !args.contains("to_connector")) {
+    return ok_status();
+  }
+  const auto kind = jget<std::string>(line, "kind", "");
+  if (kind != "line" && !(kind == "polygon" && jget(line, "open", false))) {
+    return make_error(Code::InvalidArgument,
+                      "only a line or an open polygon (a path) joins "
+                      "shapes");
+  }
+  const auto pts = points_of(line);
+  if (pts.size() < 2) {
+    return make_error(Code::InvalidArgument, "it has no ends to join");
+  }
+  const std::string self = jget<std::string>(line, "id", "");
+  Json anchors = jget(line, "anchors", Json::array());
+  struct End {
+    const char*                          name = "";
+    int                                  point = 0;
+    bool                                 asked = false;
+    std::string                          to;
+    std::string                          want;
+    Json*                                shape = nullptr;
+    std::optional<media::ConnectorPoint> at;
+  };
+  std::array<End, 2> ends;
+  ends[0].name = "from";
+  ends[1].name = "to";
+  ends[1].point = static_cast<int>(pts.size()) - 1;
+  Json given = Json::array();
+  for (auto& e : ends) {
+    const std::string obj_key = std::string(e.name) + "_object";
+    const std::string conn_key = std::string(e.name) + "_connector";
+    e.want = text_arg(args, conn_key.c_str());
+    if (args.contains(obj_key)) {
+      e.asked = true;
+      e.to = text_arg(args, obj_key.c_str());
+      if (e.to == "none") {
+        e.to.clear();
+      }
+    } else if (args.contains(conn_key)) {
+      // Another connector of the shape it is joined to.
+      for (const auto& a : anchors) {
+        if (jget(a, "point", -1) == e.point) {
+          e.asked = true;
+          e.to = jget<std::string>(a, "to", "");
+        }
+      }
+      if (!e.asked) {
+        return make_error(Code::InvalidArgument, std::format(
+            "{} names no shape: give {} too", conn_key, obj_key));
+      }
+    }
+    if (!e.asked || e.to.empty()) {
+      continue;
+    }
+    if (e.to == self) {
+      return make_error(Code::InvalidArgument,
+                        "a line joins other shapes, not itself");
+    }
+    auto it = std::ranges::find_if(objs, [&](const Json& o) {
+      return jget<std::string>(o, "id", "") == e.to;
+    });
+    if (it == objs.end()) {
+      return make_error(Code::NotFound, std::format(
+          "its layer has no object '{}': a line joins shapes of its own "
+          "layer",
+          e.to));
+    }
+    const auto tk = jget<std::string>(*it, "kind", "");
+    if (!media::takes_connectors(tk)) {
+      return make_error(Code::InvalidArgument, std::format(
+          "'{}' is a {}: join the shape it lies on (or give the words a "
+          "shape: add_shape's text)",
+          e.to, tk));
+    }
+    if (jget(*it, "connectors", Json::array()).empty()) {
+      *it = media::with_default_connectors(*it);
+      given.push_back(e.to);
+    }
+    e.shape = &*it;
+  }
+  // Those named first; then, both left to choose, the nearest pair (two
+  // of one shape apart); then each nearest the other end.
+  for (auto& e : ends) {
+    if (e.shape && !e.want.empty() && e.want != "nearest") {
+      VALTZ_ASSIGN(e.at, connector_named(*e.shape, e.want, {}));
+    }
+  }
+  if (ends[0].shape && ends[1].shape && !ends[0].at && !ends[1].at) {
+    const auto a = media::connector_points(*ends[0].shape);
+    const auto b = media::connector_points(*ends[1].shape);
+    const bool same = ends[0].to == ends[1].to;
+    double best = INFINITY;
+    for (const auto& p : a) {
+      for (const auto& q : b) {
+        const double d = std::hypot(p.x - q.x, p.y - q.y);
+        if ((!same || p.id != q.id) && d < best) {
+          best = d;
+          ends[0].at = p;
+          ends[1].at = q;
+        }
+      }
+    }
+  }
+  for (std::size_t i = 0; i < 2; ++i) {
+    auto& e = ends[i];
+    if (!e.shape || e.at) {
+      continue;
+    }
+    const auto& o = ends[1 - i];
+    std::array<double, 2> toward = pts[static_cast<std::size_t>(o.point)];
+    if (o.at) {
+      toward = {o.at->x, o.at->y};
+    } else if (o.shape) {
+      const auto b = media::object_bounds(*o.shape);
+      toward = {b[0] + b[2] / 2, b[1] + b[3] / 2};
+    }
+    VALTZ_ASSIGN(e.at, connector_named(*e.shape, "", toward));
+  }
+  Json kept = Json::array();
+  for (const auto& a : anchors) {
+    const int k = jget(a, "point", -1);
+    if (std::ranges::none_of(ends, [&](const End& e) {
+          return e.asked && e.point == k;
+        })) {
+      kept.push_back(a);
+    }
+  }
+  Json joined = Json::object();
+  for (const auto& e : ends) {
+    if (!e.asked) {
+      continue;
+    }
+    if (e.to.empty()) {
+      joined[e.name] = "none";
+      continue;
+    }
+    kept.push_back(
+        {{"point", e.point}, {"to", e.to}, {"connector", e.at->id}});
+    joined[e.name] = {{"object", e.to},
+                      {"connector", e.at->id},
+                      {"at", {std::lround(e.at->x), std::lround(e.at->y)}}};
+  }
+  if (kept.empty()) {
+    line.erase("anchors");
+  } else {
+    line["anchors"] = std::move(kept);
+  }
+  out["joined"] = std::move(joined);
+  if (!given.empty()) {
+    out["connectors_added"] = std::move(given);
+  }
+  return ok_status();
+}
+
+// The anchors of `o`'s points that lay elsewhere in `before` let go: a
+// line or a path moved or reshaped is free of the shapes it was joined
+// to, as one dragged in the app is (an end left where it was stays
+// joined). The ids it was joined to that it let go of.
+std::vector<std::string>
+let_moved_points_go(Json& o, const Json& before)
+{
+  std::vector<std::string> gone;
+  if (!o.contains("anchors")) {
+    return gone;
+  }
+  const auto now = points_of(o), was = points_of(before);
+  Json kept = Json::array();
+  for (const auto& a : o["anchors"]) {
+    const int k = jget(a, "point", -1);
+    const auto i = static_cast<std::size_t>(k);
+    if (k >= 0 && i < now.size() && i < was.size() &&
+        std::hypot(now[i][0] - was[i][0], now[i][1] - was[i][1]) < 0.5) {
+      kept.push_back(a);
+    } else {
+      gone.push_back(jget<std::string>(a, "to", ""));
+    }
+  }
+  if (kept.empty()) {
+    o.erase("anchors");
+  } else {
+    o["anchors"] = std::move(kept);
+  }
+  return gone;
+}
+
+// Each object's box as the agent is told it: [x, y, width, height].
+Json
+box_told(const Json& o)
+{
+  const double x0 = jget(o, "x0", 0.0), y0 = jget(o, "y0", 0.0);
+  const double x1 = jget(o, "x1", 0.0), y1 = jget(o, "y1", 0.0);
+  return Json::array({std::lround(std::min(x0, x1)),
+                      std::lround(std::min(y0, y1)),
+                      std::lround(std::abs(x1 - x0)),
+                      std::lround(std::abs(y1 - y0))});
+}
+
+// The lines and paths that FOLLOWED what was changed: the objects of
+// `after` not in `skip` whose box `before` had otherwise -- joined to a
+// shape that moved -- by id, with their boxes now.
+Json
+followed(const Json& before, const Json& after,
+         const std::set<std::string>& skip)
+{
+  std::map<std::string, Json> was;
+  for (const auto& o : before) {
+    if (o.contains("anchors")) {
+      was[jget<std::string>(o, "id", "")] = box_told(o);
+    }
+  }
+  Json out = Json::object();
+  for (const auto& o : after) {
+    const auto id = jget<std::string>(o, "id", "");
+    const auto it = was.find(id);
+    if (it != was.end() && !skip.count(id) && it->second != box_told(o)) {
+      out[id] = box_told(o);
+    }
+  }
+  return out;
+}
+
 bool
 on_page(const project::LayerTime& t, std::int64_t page)
 {
@@ -654,19 +1101,28 @@ picture_tags(std::size_t n)
   return out;
 }
 
-// A text box's words as they lie in it: whether all show, the height
-// they need, the widest line (to centre a box on its words).
+// A text box's words as they lie in it -- or a shape's: whether all
+// show, the height they need, the widest line (to centre a box on its
+// words).
 void
 tell_fit(Json& out, const Json& object)
 {
   const media::TextFit f = media::text_fit(object);
+  const bool shape = jget<std::string>(object, "kind", "") != "text";
   out["lines"] = f.lines;
   out["text_width"] = std::lround(f.widest);
+  if (shape) {
+    out["size"] = jget(jget(object, "font", Json::object()), "size", 0.0);
+  }
   if (!f.fits) {
     out["fits"] = false;
-    out["needs_height"] = std::lround(f.needed_height);
-    out["note"] = "Not every word shows: make the box taller (or wider), "
-                  "or the text smaller.";
+    if (f.needed_height > 0) {
+      out["needs_height"] = std::lround(f.needed_height);
+    }
+    out["note"] = shape ? "Not every word shows: make the shape bigger, "
+                          "or the words smaller (size)."
+                        : "Not every word shows: make the box taller (or "
+                          "wider), or the text smaller.";
   }
 }
 
@@ -898,6 +1354,8 @@ namespace {
 // past it, the ones on top this many, and find_objects for the rest.
 constexpr std::size_t kListedObjects = 80;
 constexpr std::size_t kListedTop = 40;
+// A path's points told one by one up to so many, else counted.
+constexpr std::size_t kListedPoints = 64;
 constexpr std::size_t kFoundMost = 200;
 
 // How many objects of each kind.
@@ -917,8 +1375,10 @@ kinds_of(const Json& objects)
 
 // A markup object as the agent is told it (get_composition,
 // find_objects): its id, kind and box; a line's ends; a text's words (a
-// long one's head), font and colour; a shape's fill and outline; a
-// gradient, a path's points, its effects, its turn.
+// long one's head), font and colour -- a shape's words too; a shape's
+// fill and outline; a gradient, a path's points, its effects, its turn;
+// its connectors, and the shapes a line's or a path's ends are joined
+// to.
 Json
 described(const Json& o)
 {
@@ -935,16 +1395,18 @@ described(const Json& o)
     x["from"] = {std::lround(x0), std::lround(y0)};
     x["to"] = {std::lround(x1), std::lround(y1)};
   }
-  if (x["kind"] == "text") {
+  const bool words = x["kind"] == "text" ||
+                     (holds_words(o) && o.contains("text"));
+  if (words) {
     // A long text's head only: a flowed page would tell the whole
     // text back.
-    const auto words = jget<std::string>(o, "text", "");
-    x["text"] = words.size() <= 160
-                    ? words
-                    : std::string(utf8_prefix(words, 120)) +
+    const auto said = jget<std::string>(o, "text", "");
+    x["text"] = said.size() <= 160
+                    ? said
+                    : std::string(utf8_prefix(said, 120)) +
                           std::string(kEllipsis);
-    if (auto al = jget<std::string>(o, "align", "left");
-        al != "left") {
+    const char* plain = x["kind"] == "text" ? "left" : "center";
+    if (auto al = jget<std::string>(o, "align", plain); al != plain) {
       x["align"] = al;
     }
     const Json f = jget(o, "font", Json::object());
@@ -956,7 +1418,13 @@ described(const Json& o)
     if (jget(f, "italic", false)) {
       x["italic"] = true;
     }
-    x["color"] = hex(jget(o, "stroke", Json()));
+    if (x["kind"] == "text") {
+      x["color"] = hex(jget(o, "stroke", Json()));
+    } else {
+      x["text_color"] = o.contains("text_color")
+                            ? hex(o["text_color"])
+                            : std::string("#000000");
+    }
     if (!media::text_fit(o).fits) {
       x["fits"] = false;
     }
@@ -970,15 +1438,70 @@ described(const Json& o)
                      {"colors", std::move(cs)}};
   }
   if (x["kind"] == "polygon") {
-    x["points"] = jget(o, "points", Json::array()).size();
+    // Its points where they lie (before its turn), as add_shape and
+    // update_object take them: one changed, the rest sent back as told.
+    const auto pts = points_of(o);
+    if (pts.size() <= kListedPoints) {
+      Json at = Json::array();
+      for (const auto& p : pts) {
+        at.push_back({std::lround(p[0]), std::lround(p[1])});
+      }
+      x["points"] = std::move(at);
+    } else {
+      x["point_count"] = pts.size();
+    }
+    // Smooth, with the points kept corners (from 1) where some are.
     const Json sm = jget(o, "smooth", Json::array());
-    if (std::ranges::any_of(sm, [](const Json& b) {
-          return b.is_boolean() && b.get<bool>();
-        })) {
+    Json corners = Json::array();
+    bool any = false;
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+      const bool on = i < sm.size() && sm[i].is_boolean() &&
+                      sm[i].get<bool>();
+      any = any || on;
+      if (!on) {
+        corners.push_back(i + 1);
+      }
+    }
+    if (any) {
       x["smooth"] = true;
+      if (!corners.empty()) {
+        x["corners"] = std::move(corners);
+      }
     }
     if (jget(o, "open", false)) {
       x["open"] = true;
+    }
+  }
+  // Its connectors where they are, and what its ends are joined to.
+  if (const auto cs = media::connector_points(o); !cs.empty()) {
+    Json at = Json::object();
+    for (const auto& c : cs) {
+      at[c.id] = {std::lround(c.x), std::lround(c.y)};
+    }
+    x["connectors"] = std::move(at);
+  }
+  if (o.contains("anchors")) {
+    const auto n = static_cast<int>(points_of(o).size());
+    const bool ends = x["kind"] == "line" || jget(o, "open", false);
+    Json others = Json::array();
+    for (const auto& a : o["anchors"]) {
+      const int k = jget(a, "point", -1);
+      const auto to = jget<std::string>(a, "to", "");
+      const auto c = jget<std::string>(a, "connector", "");
+      const char* end = !ends ? nullptr
+                        : k == 0 ? "from"
+                        : k == n - 1 ? "to"
+                                     : nullptr;
+      if (end) {
+        x[std::string(end) + "_object"] = to;
+        x[std::string(end) + "_connector"] = c;
+      } else {
+        others.push_back({{"point", k + 1}, {"object", to},
+                          {"connector", c}});
+      }
+    }
+    if (!others.empty()) {
+      x["joined_points"] = std::move(others);
     }
   }
   // Its effects: each kind, and its colour.
@@ -1031,6 +1554,38 @@ Controller::AgentHost::tools()
       }
       return a;
     };
+    // A shape's words, its connectors and a line's ends joined to shapes
+    // (media/markup.h): add_shape's and update_object's alike.
+    const Json words_props = {
+        {"text", str("WORDS IN the rectangle, ellipse or closed polygon: "
+                     "centred in it, wrapped (\\n a new line); \"\" "
+                     "takes them off")},
+        {"size", num("the words' size, pixels; by default as big as "
+                     "fits, up to 48")},
+        {"font", str("their font family; \"Helvetica Neue\" by default")},
+        {"bold", boolean("bold")},
+        {"italic", boolean("italic")},
+        {"text_color", str("their colour, \"#rrggbb[aa]\"; black, or "
+                           "white on a dark fill, by default")},
+        {"align", one_of({"left", "center", "right", "justified"},
+                         "their lines; center by default")},
+        {"line_spacing", num("lines apart, 1-3")}};
+    const Json join_props = {
+        {"connectors", boolean("its CONNECTORS: true adds them -- the "
+                               "middle of each side, four round an "
+                               "ellipse -- for lines to join; false takes "
+                               "them off")},
+        {"from_object", str("a line's (an open path's) START JOINED to "
+                            "this shape of its layer -- its id: it stays "
+                            "on it wherever the shape moves; \"none\" "
+                            "lets it go")},
+        {"from_connector", str("where on it: \"top\", \"right\", "
+                               "\"bottom\", \"left\" or a connector's id "
+                               "(\"c2\"); by default the one nearest the "
+                               "other end")},
+        {"to_object", str("its END joined to this shape (an arrow's "
+                          "head, with arrows \"end\")")},
+        {"to_connector", str("where on it, as from_connector")}};
     std::vector<Tool> t;
     t.push_back({"get_project", "read", "Look at the project",
                  "The project: its compositions (size, pages), its other "
@@ -1193,8 +1748,11 @@ Controller::AgentHost::tools()
          "leaf, a hill), with `open` a curved or bent LINE (a swoosh, a "
          "path, an outline stroke). A line runs from "
          "(x, y) to (x + width, y + height): a level rule has height 0, "
-         "its thickness `line_width`.",
-         schema(with({{"composition", str(kCompDoc)},
+         "its thickness `line_width`. A DIAGRAM's step is a shape with "
+         "its words (`text`), an arrow between two a line JOINED to them "
+         "(`from_object`, `to_object`, arrows \"end\"): its ends stay on "
+         "them as they move -- its box then any.",
+         schema(with(with(with({{"composition", str(kCompDoc)},
                       {"page", integer(kPageDoc)},
                       {"start", num(kStartDoc)},
                       {"duration", num(kDurationDoc)},
@@ -1261,18 +1819,24 @@ Controller::AgentHost::tools()
                                        "off")},
                       {"glow_color", str("its colour; the object's own by "
                                          "default")}},
-                     box_props),
+                     box_props), words_props), join_props),
                 {"shape", "x", "y", "width", "height"}),
          &H::t_add_shape});
     t.push_back(
         {"update_object", "edit", "Change a text or shape",
          "A text box or shape changed: only the fields given -- x, y its "
          "place (moved, the rest kept), width, height its size. To move "
-         "it, or several together, or onto another page: move_objects.",
-         schema(with({{"composition", str(kCompDoc)},
+         "it, or several together, or onto another page: move_objects. "
+         "A shape's words, its connectors, a line's ends joined to "
+         "shapes as add_shape's; a joined line given a new place or new "
+         "points lets go of the shapes where its ends moved.",
+         schema(with(with({{"composition", str(kCompDoc)},
                       {"layer", str(kLayerDoc)},
                       {"object", str("the object's id")},
-                      {"text", str("new words")},
+                      {"text", str("new words: a text box's, or a "
+                                   "shape's -- a rectangle's, an "
+                                   "ellipse's, a closed polygon's (\"\" "
+                                   "takes them off)")},
                       {"points", {{"type", "array"},
                                   {"items", {{"type", "array"},
                                              {"items", {{"type",
@@ -1293,7 +1857,9 @@ Controller::AgentHost::tools()
                       {"font", str("font family")},
                       {"bold", boolean("bold")},
                       {"italic", boolean("italic")},
-                      {"color", str("text colour")},
+                      {"color", str("text colour (a shape's words' "
+                                    "too)")},
+                      {"text_color", str("a shape's words' colour")},
                       {"align", one_of({"left", "center", "right",
                                         "justified"}, "its lines")},
                       {"line_spacing", num("lines apart, 1-3")},
@@ -1329,7 +1895,7 @@ Controller::AgentHost::tools()
                                        "off")},
                       {"glow_color", str("its colour; the object's own by "
                                          "default")}},
-                     box_props),
+                     box_props), join_props),
                 {"layer", "object"}),
          &H::t_update_object});
     t.push_back(
@@ -1338,7 +1904,9 @@ Controller::AgentHost::tools()
          "keeps its id, size, words and look. By `dx`, `dy`, or to `x`, "
          "`y` (where the top left of them all goes); several move as one "
          "(a title and the shape behind it). With `page`: onto that page "
-         "of a still, where they lie unless moved too. Strokes from "
+         "of a still, where they lie unless moved too. Lines joined to a "
+         "shape moved follow it; a joined line moved without its shapes "
+         "lets go of them. Strokes from "
          "draw_strokes are pixels of the layer it named: move that layer "
          "with set_layer_box.",
          schema({{"composition", str(kCompDoc)},
@@ -3360,10 +3928,18 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
   double lw = std::clamp(number(args, "line_width",
                                 shape == "line" || open ? 4.0 : 0.0),
                          0.0, 500.0);
+  // Joined to shapes (from_object, to_object): its ends where their
+  // connectors are, whatever its box.
+  std::vector<std::string> joins;
+  for (const char* k : {"from_object", "to_object"}) {
+    if (auto to = text_arg(args, k); !to.empty() && to != "none") {
+      joins.push_back(std::move(to));
+    }
+  }
   // A line far longer than it is "high" is a RULE given its thickness as
   // its height (the 9B's "height": 4 -- or 54, a band at a page's foot):
   // laid level through the box's middle, that thick. And so upright.
-  if (shape == "line") {
+  if (shape == "line" && joins.empty()) {
     const double w = std::abs(box[2]), h = std::abs(box[3]);
     const double thin = std::max(8.0, lw * 2);
     if (h > 0 && ((h <= thin && w > h * 10) || w >= h * 20)) {
@@ -3393,7 +3969,41 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
                       (*fill)[3] >= 0.95 &&
                       box[2] * box[3] >= 0.9 * frame.width * frame.height;
   const bool below = flag(args, "below_all") || covers;
-  if (every || below) {
+  if (!joins.empty()) {
+    // On the layer of the shapes it joins: its anchors are to objects of
+    // its own markup.
+    std::optional<std::string> there;
+    for (const auto& to : joins) {
+      std::optional<std::string> holds;
+      for (const auto& l : a.layers) {
+        if (!l.source) {
+          continue;
+        }
+        auto src = p->asset(*l.source);
+        if (src.ok() && src->cls == AssetClass::Markup && src->markup &&
+            std::ranges::any_of(src->markup->objects, [&](const Json& o) {
+              return jget<std::string>(o, "id", "") == to;
+            })) {
+          holds = l.id;
+          break;
+        }
+      }
+      if (!holds) {
+        return make_error(Code::NotFound, std::format(
+            "no object '{}' in \"{}\": the shapes' ids, as "
+            "get_composition lists them",
+            to, a.name));
+      }
+      if (there && *there != *holds) {
+        return make_error(Code::InvalidArgument, std::format(
+            "'{}' and '{}' are on different layers ({} and {}): a line "
+            "joins shapes of one layer",
+            joins[0], to, model_layer(*there), model_layer(*holds)));
+      }
+      there = holds;
+    }
+    on = {*there, Json::object()};
+  } else if (every || below) {
     // Across every page (on top, or under all: the background), or under
     // a page's own layers.
     std::optional<std::int64_t> page;
@@ -3452,6 +4062,21 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
                                       own));
     made["effects"] = std::move(fx);
   }
+  // Its words, in it.
+  Json out = {{"layer", model_layer(layer)}, {"object", id}};
+  const bool worded = !text_arg(args, "text").empty();
+  if (worded) {
+    if (!holds_words(made)) {
+      return make_error(Code::InvalidArgument,
+                        "a line or an open path holds no words: put a "
+                        "text box by it (add_text)");
+    }
+    VALTZ_TRY(set_words(made, args));
+  }
+  if (flag(args, "connectors")) {
+    made = media::with_default_connectors(made);
+  }
+  VALTZ_TRY(join_ends(made, objs, args, out));
   // Under the layer's words, whenever it is added: a panel is behind
   // the text it was made for (objects are drawn in order).
   const auto words = std::ranges::find_if(objs, [](const Json& o) {
@@ -3459,8 +4084,27 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
   });
   objs.insert(words, std::move(made));
   VALTZ_TRY(_c.set_markup_objects(s.project, comp, layer, objs));
-  Json out = {{"layer", model_layer(layer)}, {"object", id}};
   out.update(on.second);
+  // As kept: a joined line's ends where its shapes' connectors are, the
+  // connectors it has, how its words lie.
+  VALTZ_ASSIGN(Json now, objects_(s.project, comp, layer));
+  for (const auto& o : now) {
+    if (jget<std::string>(o, "id", "") != id) {
+      continue;
+    }
+    const Json told = described(o);
+    for (const char* k : {"from", "to", "connectors"}) {
+      if (told.contains(k)) {
+        out[k] = told[k];
+      }
+    }
+    if (!joins.empty() && shape != "line") {
+      out["points"] = jget(told, "points", Json());
+    }
+    if (worded) {
+      tell_fit(out, o);
+    }
+  }
   return out;
 }
 
@@ -3482,6 +4126,9 @@ Controller::AgentHost::t_update_object(Session& s, Step& step,
                                   model_layer(layer), id));
   }
   Json& o = *it;
+  // As they were: what lets go of where it was joined, what followed.
+  const Json was = objs;
+  const Json before = o;
   const double x0 = std::min(jget(o, "x0", 0.0), jget(o, "x1", 0.0));
   const double y0 = std::min(jget(o, "y0", 0.0), jget(o, "y1", 0.0));
   const double w = std::abs(jget(o, "x1", 0.0) - jget(o, "x0", 0.0));
@@ -3533,40 +4180,50 @@ Controller::AgentHost::t_update_object(Session& s, Step& step,
       o.erase("open");
     }
   }
-  if (args.contains("text")) {
-    o["text"] = text_arg(args, "text");
-  }
-  if (args.contains("align")) {
-    const std::string al = text_arg(args, "align");
-    if (al != "left" && al != "center" && al != "right" &&
-        al != "justified") {
-      return make_error(Code::InvalidArgument,
-                        "align is left, center, right or justified");
+  const auto kind = jget<std::string>(o, "kind", "");
+  // A shape's words take `color` as theirs (a shape with none, its
+  // outline's, as before).
+  const bool shape_words =
+      holds_words(o) && (o.contains("text") ||
+                         !text_arg(args, "text").empty());
+  if (kind == "text") {
+    if (args.contains("text")) {
+      o["text"] = text_arg(args, "text");
     }
-    o["align"] = al;
-  }
-  if (args.contains("line_spacing")) {
-    o["line_spacing"] =
-        std::clamp(number(args, "line_spacing", 1), 1.0, 3.0);
-  }
-  Json font = jget(o, "font", Json::object());
-  if (args.contains("size")) {
-    font["size"] = std::clamp(number(args, "size", 48), 4.0, 2000.0);
-  }
-  if (args.contains("font")) {
-    font["family"] = text_arg(args, "font");
-  }
-  if (args.contains("bold")) {
-    font["bold"] = flag(args, "bold");
-  }
-  if (args.contains("italic")) {
-    font["italic"] = flag(args, "italic");
-  }
-  if (o.contains("font")) {
+    if (args.contains("align")) {
+      const std::string al = text_arg(args, "align");
+      if (al != "left" && al != "center" && al != "right" &&
+          al != "justified") {
+        return make_error(Code::InvalidArgument,
+                          "align is left, center, right or justified");
+      }
+      o["align"] = al;
+    }
+    if (args.contains("line_spacing")) {
+      o["line_spacing"] =
+          std::clamp(number(args, "line_spacing", 1), 1.0, 3.0);
+    }
+    Json font = jget(o, "font", Json::object());
+    if (args.contains("size")) {
+      font["size"] = std::clamp(number(args, "size", 48), 4.0, 2000.0);
+    }
+    if (args.contains("font")) {
+      font["family"] = text_arg(args, "font");
+    }
+    if (args.contains("bold")) {
+      font["bold"] = flag(args, "bold");
+    }
+    if (args.contains("italic")) {
+      font["italic"] = flag(args, "italic");
+    }
     o["font"] = font;
+  } else if (!holds_words(o) && !text_arg(args, "text").empty()) {
+    return make_error(Code::InvalidArgument,
+                      "a line or an open path holds no words: put a text "
+                      "box by it (add_text)");
   }
   for (const char* k : {"color", "stroke", "fill"}) {
-    if (!args.contains(k)) {
+    if (!args.contains(k) || (shape_words && std::string(k) == "color")) {
       continue;
     }
     auto c = colour(text_arg(args, k));
@@ -3612,13 +4269,65 @@ Controller::AgentHost::t_update_object(Session& s, Step& step,
       }
     }
   }
-  const Json changed = o;
+  Json out = {{"layer", model_layer(layer)}, {"object", id}};
+  // Its words, once its outline and fill are set (they lie inside it,
+  // their colour against it).
+  std::string note;
+  if (holds_words(o)) {
+    Json wargs = args;
+    if (shape_words && args.contains("color") &&
+        !args.contains("text_color")) {
+      wargs["text_color"] = args["color"];
+    }
+    VALTZ_ASSIGN(note, set_words(o, wargs));
+  }
+  // Its connectors; its ends let go where they moved, joined as asked.
+  if (args.contains("connectors")) {
+    if (flag(args, "connectors")) {
+      o = media::with_default_connectors(o);
+    } else {
+      o.erase("connectors");
+    }
+  }
+  const bool reshaped = args.contains("x") || args.contains("y") ||
+                        args.contains("width") || args.contains("height") ||
+                        args.contains("points");
+  const auto let_go = reshaped ? let_moved_points_go(o, before)
+                               : std::vector<std::string>();
+  VALTZ_TRY(join_ends(o, objs, args, out));
   auto undo = _c.command_(s.project, "agent", comp, layer,
                           {{"tool", step.tool}, {"title", step.title}});
   VALTZ_TRY(_c.set_markup_objects(s.project, comp, layer, objs));
-  Json out = {{"layer", model_layer(layer)}, {"object", id}};
-  if (jget<std::string>(changed, "kind", "") == "text") {
-    tell_fit(out, changed);
+  // As kept: its words, the lines that followed it, what it let go of.
+  VALTZ_ASSIGN(Json now, objects_(s.project, comp, layer));
+  for (const auto& n : now) {
+    if (jget<std::string>(n, "id", "") != id) {
+      continue;
+    }
+    if (kind == "text" || (holds_words(n) && n.contains("text"))) {
+      tell_fit(out, n);
+    }
+    if (args.contains("connectors") || out.contains("joined")) {
+      const Json told = described(n);
+      for (const char* k : {"from", "to", "connectors"}) {
+        if (told.contains(k)) {
+          out[k] = told[k];
+        }
+      }
+    }
+  }
+  if (Json f = followed(was, now, {id}); !f.empty()) {
+    out["followed"] = std::move(f);
+  }
+  if (!let_go.empty() && !out.contains("joined")) {
+    out["let_go_of"] = let_go;
+    note = "Its ends moved off the shapes they were joined to and are "
+           "free: from_object / to_object join them again.";
+  }
+  if (!note.empty()) {
+    out["note"] = out.contains("note")
+                      ? jget<std::string>(out, "note", "") + " " + note
+                      : note;
   }
   return out;
 }
@@ -3700,17 +4409,37 @@ Controller::AgentHost::t_move_objects(Session& s, Step& step,
   const double dy = to_ ? number(args, "y", top) - top : number(args, "dy", 0);
   // A polygon's points and a gradient's ends are in its box's units: they
   // go with it.
-  Json moved = Json::array();
+  const Json was = objs;
+  const std::set<std::string> them(which.begin(), which.end());
   for (auto& o : objs) {
-    if (std::ranges::find(which, jget<std::string>(o, "id", "")) ==
-        which.end()) {
+    if (!them.count(jget<std::string>(o, "id", ""))) {
       continue;
     }
     o["x0"] = jget(o, "x0", 0.0) + dx;
     o["x1"] = jget(o, "x1", 0.0) + dx;
     o["y0"] = jget(o, "y0", 0.0) + dy;
     o["y1"] = jget(o, "y1", 0.0) + dy;
-    moved.push_back(o);
+  }
+  // Lines moved without the shapes they join let go of them (as the
+  // app's drag); lines joined to what moved follow it.
+  std::vector<std::string> let_go;
+  for (const auto& o : objs) {
+    if (!them.count(jget<std::string>(o, "id", ""))) {
+      continue;
+    }
+    for (const auto& a : jget(o, "anchors", Json::array())) {
+      if (!them.count(jget<std::string>(a, "to", ""))) {
+        let_go.push_back(jget<std::string>(o, "id", ""));
+        break;
+      }
+    }
+  }
+  objs = media::detach_moved(objs, them);
+  Json moved = Json::array();
+  for (const auto& o : objs) {
+    if (them.count(jget<std::string>(o, "id", ""))) {
+      moved.push_back(o);
+    }
   }
   auto undo = _c.command_(s.project, "agent", comp, "",
                           {{"tool", step.tool}, {"title", step.title}});
@@ -3740,29 +4469,60 @@ Controller::AgentHost::t_move_objects(Session& s, Step& step,
                                        which.end();
                               }),
                objs.end());
+    // Renamed, the lines among them joined to the shapes among them
+    // follow the new ids.
+    std::map<std::string, std::string> renamed;
     for (auto& o : moved) {
       const auto id = jget<std::string>(o, "id", "");
       if (std::ranges::any_of(there, [&](const Json& t) {
             return jget<std::string>(t, "id", "") == id;
           })) {
-        o["id"] = object_id();
+        renamed[id] = object_id();
+        o["id"] = renamed[id];
+      }
+    }
+    for (auto& o : moved) {
+      if (o.contains("anchors")) {
+        for (auto& a : o["anchors"]) {
+          if (auto r = renamed.find(jget<std::string>(a, "to", ""));
+              r != renamed.end()) {
+            a["to"] = r->second;
+          }
+        }
       }
       there.push_back(o);
+    }
+    for (auto& id : which) {
+      if (auto r = renamed.find(id); r != renamed.end()) {
+        id = r->second;
+      }
     }
     VALTZ_TRY(_c.set_markup_objects(s.project, comp, layer, objs));
     VALTZ_TRY(_c.set_markup_objects(s.project, comp, onto, there));
   }
-  // Where each lies now.
+  // Where each lies now, as kept; what followed them.
+  VALTZ_ASSIGN(Json now, objects_(s.project, comp, onto));
   Json boxes = Json::object();
-  for (const auto& o : moved) {
-    const double x0 = jget(o, "x0", 0.0), y0 = jget(o, "y0", 0.0);
-    const double x1 = jget(o, "x1", 0.0), y1 = jget(o, "y1", 0.0);
-    boxes[jget<std::string>(o, "id", "")] = {
-        std::lround(std::min(x0, x1)), std::lround(std::min(y0, y1)),
-        std::lround(std::abs(x1 - x0)), std::lround(std::abs(y1 - y0))};
+  for (const auto& o : now) {
+    const auto id = jget<std::string>(o, "id", "");
+    if (std::ranges::find(which, id) != which.end()) {
+      boxes[id] = box_told(o);
+    }
   }
   Json out = {{"layer", model_layer(onto)}, {"moved", std::move(boxes)}};
   out.update(where);
+  {
+    VALTZ_ASSIGN(Json left, objects_(s.project, comp, layer));
+    if (Json f = followed(was, left, them); !f.empty()) {
+      out["followed"] = std::move(f);
+    }
+  }
+  if (!let_go.empty()) {
+    out["let_go"] = let_go;
+    out["note"] = "Moved without the shapes they joined, these let go of "
+                  "them: from_object / to_object (update_object) join "
+                  "them again.";
+  }
   return out;
 }
 
@@ -3786,10 +4546,25 @@ Controller::AgentHost::t_remove_object(Session& s, Step& step,
                       std::format("layer {} has no object '{}'",
                                   model_layer(layer), id));
   }
+  // The lines joined to it stay where they are, free.
+  Json freed = Json::array();
+  for (const auto& o : objs) {
+    if (std::ranges::any_of(jget(o, "anchors", Json::array()),
+                            [&](const Json& a) {
+                              return jget<std::string>(a, "to", "") == id;
+                            })) {
+      freed.push_back(jget<std::string>(o, "id", ""));
+    }
+  }
   auto undo = _c.command_(s.project, "agent", comp, layer,
                           {{"tool", step.tool}, {"title", step.title}});
   VALTZ_TRY(_c.set_markup_objects(s.project, comp, layer, objs));
-  return Json{{"removed", id}};
+  Json out = {{"removed", id}};
+  if (!freed.empty()) {
+    out["let_go"] = std::move(freed);
+    out["note"] = "The lines joined to it stay where they were, free.";
+  }
+  return out;
 }
 
 Result<Json>
@@ -3841,8 +4616,13 @@ Controller::AgentHost::t_arrange_objects(Session& s, Step& step,
                    std::lround(std::abs(y1 - y0))};
     }
   }
-  return Json{{"layer", model_layer(layer)}, {"how", how},
+  Json out = {{"layer", model_layer(layer)}, {"how", how},
               {"order", std::move(order)}, {"boxes", std::move(boxes)}};
+  if (Json f = followed(objs, now, {which.begin(), which.end()});
+      !f.empty()) {
+    out["followed"] = std::move(f);
+  }
+  return out;
 }
 
 Result<Json>

@@ -449,6 +449,39 @@ Project::refresh_link(AssetId id)
   return chk;
 }
 
+Result<bool>
+Project::read_turns(AssetId id)
+{
+  VALTZ_ASSIGN(Asset a, asset(id));
+  VALTZ_ASSIGN(std::vector<AssetVersion> vs, versions(id));
+  std::vector<AssetVersion> fixed;
+  for (auto& v : vs) {
+    if (v.info.type != media::MediaType::Video || v.info.turn >= 0) {
+      continue;
+    }
+    auto path = media_path(a, v);
+    if (!path.ok() || media::movie_turn(*path) == 0) {
+      continue;  // offline, or upright as recorded
+    }
+    VALTZ_ASSIGN(media::MediaInfo info, media::probe_file(*path));
+    v.info = std::move(info);
+    fixed.push_back(std::move(v));
+  }
+  if (fixed.empty()) {
+    return false;
+  }
+  VALTZ_TRY(_env->write([&](db::Txn& txn) -> Status {
+    for (const auto& v : fixed) {
+      VALTZ_TRY(put_cbor(txn, _db.versions, version_key(id, v.number),
+                         Json(v)));
+    }
+    return ok_status();
+  }));
+  VALTZ_LOG_INFO("project", "{}: {} version(s) read upright", a.name,
+                 fixed.size());
+  return true;
+}
+
 Result<Asset>
 Project::add_text(std::string name, std::string_view text,
                   std::vector<std::string> tags)

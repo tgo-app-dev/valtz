@@ -817,6 +817,9 @@ to_json(Json& j, const MediaInfo& m)
     j["frames"] = m.frame_count;
     j["audio"] = {m.has_audio, m.audio_channels, m.audio_sample_rate};
   }
+  if (m.type == MediaType::Video) {
+    j["turn"] = m.turn;
+  }
   if (m.has_hdr_gain_map) {
     j["gain_map"] = true;
   }
@@ -848,6 +851,8 @@ from_json(const Json& j, MediaInfo& m)
     m.duration = MediaTime{d[0], static_cast<std::int32_t>(d[1])};
   }
   m.frame_count = jget<std::int64_t>(j, "frames", 0);
+  m.turn = m.type == MediaType::Video ? jget<std::int32_t>(j, "turn", -1)
+                                      : 0;
   if (auto it = j.find("audio"); it != j.end() && it->is_array() &&
                                  it->size() == 3) {
     m.has_audio = (*it)[0].get<bool>();

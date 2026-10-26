@@ -137,7 +137,9 @@ build it from shapes, the back first:
 - `add_shape` polygons for any outline: with `smooth` a curve through
   its points (hills, clouds, leaves, a face), `corners` the points kept
   sharp (a leaf's tip), `open` a curved or bent line (a river, a path,
-  hair, a swoosh), its width `line_width`.
+  hair, a swoosh), its width `line_width`. `get_composition` tells a
+  path's `points`: to move one, send them all to `update_object` with
+  that one changed.
 - `draw_strokes` for marks made by hand: a sketch's lines, hatching,
   texture, a signature -- brush strokes through points, `size` wide.
   They are pixels: they cannot be changed after, only drawn over -- or
@@ -149,6 +151,26 @@ build it from shapes, the back first:
 - To draw FROM a picture (one the person imported): `view_asset` it,
   lay its big areas in their colours, then the details; `view_page` to
   compare the two.
+
+A DIAGRAM -- a flowchart, a process, a mind map, an org chart -- is
+shapes that hold their words and lines JOINED to them:
+
+- Each step or idea one `add_shape` (rect, ellipse, a polygon diamond
+  for a decision) with its words as `text`: centred in it, as big as
+  fits unless `size` (`text_color`, `font`, `bold` as a text's). No
+  text box over a shape: its words are its own.
+- Each arrow one `add_shape` line with `from_object` and `to_object`
+  (the shapes' ids) and `arrows` "end": its ends go onto the shapes'
+  CONNECTORS -- the middle of a side -- the nearest pair unless
+  `from_connector` / `to_connector` names a side ("top", "right",
+  "bottom", "left"). Its box does not matter. An open polygon joins
+  them as a bent or curved arrow.
+- Joined, a line FOLLOWS: move or align the shapes (`move_objects`,
+  `arrange_objects`, `update_object`) and its ends go with them. A
+  joined line moved by itself lets go. `get_composition` tells each
+  shape's `connectors` and each line's `from_object` / `to_object`.
+- Lay the shapes out first -- even gaps, one row or column per level --
+  then the lines between them.
 
 ## A long text on pages
 

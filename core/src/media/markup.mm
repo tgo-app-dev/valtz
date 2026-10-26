@@ -1115,7 +1115,32 @@ TextFit
 text_fit(const Json& o, bool all_lines)
 {
   TextFit fit;
-  if (jget<std::string>(o, "kind", "") != "text") {
+  const auto kind = jget<std::string>(o, "kind", "");
+  if ((kind == "rect" || kind == "ellipse" ||
+       (kind == "polygon" && !jget(o, "open", false))) &&
+      !jget<std::string>(o, "text", "").empty()) {
+    // A shape's words, in its text area as draw_shape_text sets them:
+    // a box of that size, centred unless aligned otherwise.
+    const CGRect area = shape_text_area(
+        o, finite_or(o, "x0", 0), finite_or(o, "y0", 0),
+        finite_or(o, "x1", 0), finite_or(o, "y1", 0));
+    if (CGRectIsNull(area)) {
+      fit.fits = false;
+      return fit;
+    }
+    Json box = {{"kind", "text"},
+                {"text", o["text"]},
+                {"font", jget(o, "font", Json::object())},
+                {"align", jget<std::string>(o, "align", "center")},
+                {"line_spacing", finite_or(o, "line_spacing", 1)},
+                {"box", true},
+                {"x0", 0},
+                {"y0", 0},
+                {"x1", area.size.width},
+                {"y1", area.size.height}};
+    return text_fit(box, all_lines);
+  }
+  if (kind != "text") {
     return fit;
   }
   const std::string text = jget<std::string>(o, "text", "");

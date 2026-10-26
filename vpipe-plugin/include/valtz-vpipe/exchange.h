@@ -109,13 +109,16 @@ inline constexpr char kSummaryType[] = "valtz-video-summary";
 // Config: the model (as text-chat takes it: its directory, a drafter
 // shipped apart, a DFlash drafter and its bits -- the same as the helper's
 // chat, so a model kept warm by one is handed to the other), how long it
-// stays loaded after (s), its buffers wired as they load.
+// stays loaded after (s), its buffers wired as they load, the most it may
+// hold (MB, 0 none: vpipe's load_spec::kMemoryLimitMb -- the agent's
+// Memory, where it is the agent's model).
 inline constexpr char kSummaryModel[] = "hf_dir";
 inline constexpr char kSummaryMtpModel[] = "mtp_model";
 inline constexpr char kSummaryDraftModel[] = "draft_model";
 inline constexpr char kSummaryDraftBits[] = "draft_bits";
 inline constexpr char kSummaryKeepLoaded[] = "keep_loaded";
 inline constexpr char kSummaryWireWeights[] = "wire_weights";
+inline constexpr char kSummaryMemoryLimitMb[] = "memory_limit_mb";
 // The K/V pages, as the chat sizes them (the cache key: shared only
 // alike).
 inline constexpr char kSummaryPageTokens[] = "page_tokens";

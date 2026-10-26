@@ -220,6 +220,12 @@ public:
   // so dependents go stale by content exactly as for any other edit.
   // Blocking (may hash a large file).
   Result<LinkCheck> refresh_link(AssetId);
+  // A clip's versions recorded before its turn was read (MediaInfo::turn
+  // -1) read again where its picture track turns it -- a phone's portrait
+  // clip was recorded at its stored, landscape size: its info alone
+  // changes, not its bytes or hash. An upright one is left as recorded.
+  // Whether any changed. Blocking (opens each file).
+  Result<bool> read_turns(AssetId);
   Result<std::string> read_text(AssetId, std::uint32_t number = 0) const;
   // Version `v` of text asset `a`'s words, as read: a blob's are kept
   // (its bytes never change) up to a few megabytes, so a list read again

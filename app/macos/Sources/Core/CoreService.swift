@@ -173,6 +173,10 @@ final class CoreService: @unchecked Sendable {
     func setVideoEvery(_ seconds: Double) -> CoreReply {
         send(core.choose_assistant, ["video_every": seconds])
     }
+    /// A video summary's frame size: "standard", "high" or "highest".
+    func setVideoSize(_ level: String) -> CoreReply {
+        send(core.choose_assistant, ["video_size": level])
+    }
     /// The Log view's rows after `seq` (any thread):
     /// {"rows", "next", "first"}.
     func logSinceJSON(_ seq: UInt64, max: Int = 4096) -> Data {
@@ -189,6 +193,15 @@ final class CoreService: @unchecked Sendable {
     /// memory_held_json): the RAM popover's.
     func memoryHeldJSON() -> Data {
         Data(String(core.memory_held_json()).utf8)
+    }
+    /// Settings › General › Memory's wired limit (bridge
+    /// wired_limit_json).
+    func wiredLimitJSON() -> Data {
+        Data(String(core.wired_limit_json()).utf8)
+    }
+    /// A wired limit set, in bytes -- 0 Automatic (bridge set_wired_limit).
+    func setWiredLimit(_ bytes: Int64) -> CoreReply {
+        reply(core.set_wired_limit(UInt64(Swift.max(0, bytes))))
     }
     /// Whether the GPU is held back: blocks for `windowMs`, so never on
     /// the main thread.
@@ -769,9 +782,18 @@ final class CoreService: @unchecked Sendable {
     }
 
     /// `token`: a gated model's Hugging Face access token, "" none --
-    /// handed through for this download, kept nowhere.
-    func downloadModel(_ id: String, token: String = "") -> CoreReply {
-        reply(core.download_model(std.string(id), std.string(token)))
+    /// handed through for this download, kept nowhere. `source`: where
+    /// from, a download source's name ("" the one chosen).
+    func downloadModel(_ id: String, token: String = "",
+                       source: String = "") -> CoreReply {
+        reply(core.download_model(std.string(id), std.string(token),
+                                  std.string(source)))
+    }
+
+    /// The source every download comes from after (bridge
+    /// set_download_source): Settings › Capabilities' Download From.
+    func setDownloadSource(_ name: String) -> CoreReply {
+        reply(core.set_download_source(std.string(name)))
     }
 
     /// A model's download stopped (bridge stop_download): PAUSED, what

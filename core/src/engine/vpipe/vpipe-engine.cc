@@ -59,6 +59,7 @@
 #include "valtz-vpipe/exchange.h"
 
 #include "common/perf-flops.h"
+#include "stages/model-source.h"
 #include "vpipe/system-monitor.h"
 #include "vpipe/vpipe.h"
 
@@ -257,6 +258,13 @@ public:
     _desc = std::format("vpipe {} ({})", vpipe::vpipe_version_number(),
                         vpipe::vpipe_build_hash());
     VALTZ_LOG_INFO("engine", "{} ready, plugin {}", _desc, plugin.string());
+    // The wired limit (DESIGN §15 0zzc): vpipe's own first -- what
+    // Automatic is here -- then the one chosen, before any graph runs.
+    _wired_auto_mb = _session->wired_pool_mb();
+    if (cfg.wired_limit_mb > 0) {
+      _wired_asked = cfg.wired_limit_mb;
+      apply_wired_();
+    }
     for (Lane* l : lanes_()) {
       l->worker = std::thread([this, l] { run_loop_(*l); });
     }
@@ -289,6 +297,76 @@ public:
       return Json::object();
     }
     return vp::from_flex(_session->memory_report());
+  }
+
+  void
+  set_wired_limit_mb(std::uint64_t mb) override
+  {
+    std::lock_guard lk(_mu);
+    if (_stop || _session == nullptr) {
+      return;
+    }
+    _wired_asked = mb;
+    apply_wired_();
+  }
+
+  Json
+  wired_limit() const override
+  {
+    std::lock_guard lk(_mu);
+    if (_stop || _session == nullptr) {
+      return Json::object();
+    }
+    return {{"asked_mb", _wired_asked},
+            {"auto_mb", _wired_auto_mb},
+            {"limit_mb", _session->wired_pool_mb()},
+            {"pending", _wired_pending}};
+  }
+
+  // vpipe's own tables (stages/model-source.h, model-sources/1): no
+  // session asked. Weak imports: a libvpipe without them offers none, and
+  // its fetch reads from Hugging Face.
+  Json
+  download_sources() const override
+  {
+    Json out = Json::array();
+    if (!vpipe::model_sources_available()) {
+      return out;
+    }
+    const auto names = vpipe::model_source_names();
+    // The one vpipe fetches from unless told: $VPIPE_MODEL_SOURCE where
+    // it names one, else Hugging Face -- model-fetch's own rule, which
+    // the installed header does not export.
+    std::string fallback = "huggingface";
+    if (const char* env = std::getenv("VPIPE_MODEL_SOURCE");
+        env && std::ranges::find(names, env) != names.end()) {
+      fallback = env;
+    }
+    for (const auto& name : names) {
+      out.push_back({{"name", name},
+                     {"label", vpipe::model_source_label(name)},
+                     {"default", name == fallback}});
+    }
+    return out;
+  }
+
+  std::string
+  source_path(std::string_view source, std::string_view repo) const override
+  {
+    if (!vpipe::model_sources_available()) {
+      return std::string(repo);
+    }
+    std::string there;
+    switch (vpipe::mirror_repo(std::string(source), std::string(repo),
+                               there)) {
+    case vpipe::MirrorStatus::Absent:
+      return {};
+    case vpipe::MirrorStatus::Renamed:
+      return there.empty() ? std::string(repo) : there;
+    default:
+      // Same -- or a value a later vpipe adds, read as Same.
+      return std::string(repo);
+    }
   }
 
   Json
@@ -538,6 +616,14 @@ private:
       std::lock_guard lk(_mu);
       lane.running = JobId{};
       lane.busy.store(false);
+      // A lower wired limit waited for the work under way: the last lane
+      // done, nothing runs to hold more than it.
+      if (_wired_pending &&
+          std::ranges::none_of(lanes_(), [](const Lane* l) {
+            return l->busy.load();
+          })) {
+        apply_wired_();
+      }
     }
     // Fail whatever is still queued.
     std::deque<Queued> rest;
@@ -563,6 +649,37 @@ private:
     ev.text = std::move(msg);
     ev.data = std::move(data);
     q.sink(ev);
+  }
+
+  // The wired limit asked made vpipe's (SessionIntf::set_wired_pool_mb),
+  // or left waiting: vpipe refuses to LOWER it while a graph runs (its
+  // Status 3) -- the bytes wired already would have to be unwired under
+  // the model reading them. Raised, or with nothing running, it is made
+  // at once. Under _mu.
+  void
+  apply_wired_()
+  {
+    const bool was = _wired_pending;
+    // Lower while a lane works: waiting, unasked -- vpipe would refuse it
+    // with a warning in the Log at every change.
+    const std::uint64_t next =
+        _wired_asked == 0 ? _wired_auto_mb : _wired_asked;
+    const bool busy = std::ranges::any_of(lanes_(), [](const Lane* l) {
+      return l->busy.load();
+    });
+    _wired_pending =
+        (busy && next < _session->wired_pool_mb()) ||
+        _session->set_wired_pool_mb(_wired_asked).code == 3;
+    if (_wired_pending) {
+      if (!was) {
+        VALTZ_LOG_INFO("engine", "wired limit {} MB waits for the work "
+                       "under way", _wired_asked);
+      }
+      return;
+    }
+    VALTZ_LOG_INFO("engine", "wired limit {} MB{}",
+                   _session->wired_pool_mb(),
+                   _wired_asked == 0 ? " (vpipe's own)" : "");
   }
 
   // A job's graph let go -- and with it every model checkpoint nothing
@@ -2065,7 +2182,7 @@ private:
   cache::CacheStore*      _cache = nullptr;  // kept encodings; may be null
   double                  _keep_models = 0;   // s a job's models are kept
   Json                    _backends = Json::array();  // backends()
-  std::mutex              _mu;
+  mutable std::mutex      _mu;
   std::condition_variable _cv;
   bool                    _stop = false;
   Lane                    _work{"work"};
@@ -2078,6 +2195,11 @@ private:
   std::mutex                            _flops_mu;
   double                                _flops_peak = 0;
   std::uint64_t                         _flops_scanned = 0;
+  // The wired limit (set_wired_limit_mb), under _mu: the one asked (0
+  // vpipe's own), vpipe's own here, and whether a lower one waits.
+  std::uint64_t                         _wired_asked = 0;
+  std::uint64_t                         _wired_auto_mb = 0;
+  bool                                  _wired_pending = false;
 };
 
 }

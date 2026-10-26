@@ -5,6 +5,7 @@
 
 #include "valtz/controller/controller.h"
 
+#include "valtz/base/hash.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
 #include "valtz/media/layers.h"
@@ -2456,6 +2457,47 @@ Controller::rendered_(ProjectId pid, AssetId id, std::uint32_t version,
     return media::encode_movie_stack(stack, rate_of_(*p, a), size, sound,
                                      out, prores);
   });
+}
+
+Status
+Controller::upright_input_(ProjectId pid, engine::JobInput& in, bool copy)
+{
+  if (in.info.type != media::MediaType::Video) {
+    return ok_status();
+  }
+  if (in.info.turn < 0) {
+    in.info.turn = media::movie_turn(in.path);
+    if (in.info.turn != 0) {
+      VALTZ_ASSIGN(in.info, media::probe_file(in.path));
+    }
+  }
+  if (!copy || in.info.turn == 0) {
+    return ok_status();
+  }
+  const media::MediaInfo info = in.info;
+  const fs::path clip = in.path;
+  VALTZ_ASSIGN(fs::path up,
+               cached_(pid, cache::CacheStore::key_for(in.hash,
+                                                       "upright-709.mov"),
+                       [&](const fs::path& out) -> Status {
+    // A stack of the clip alone: its frames framed by it, upright.
+    media::MovieStack stack;
+    media::MovieLayer l;
+    l.file = clip;
+    l.video = true;
+    stack.layers.push_back(std::move(l));
+    stack.frames = info.frame_count;
+    stack.rate = info.frame_rate;
+    return media::encode_movie_stack(
+        stack, info.frame_rate, {info.frame.width, info.frame.height},
+        info.has_audio ? clip : fs::path(), out);
+  }));
+  VALTZ_LOG_INFO("build", "{} drawn upright ({} degrees) for the model",
+                 clip.filename().string(), info.turn);
+  VALTZ_ASSIGN(in.info, media::probe_file(up));
+  VALTZ_ASSIGN(in.hash, hash_file(up));
+  in.path = up;
+  return ok_status();
 }
 
 Result<fs::path>

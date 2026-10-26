@@ -4739,9 +4739,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // "cancel:<id>" (its cancel button: the alert open),
         // "answer:delete|pause|keep" (that alert's buttons),
         // "discard:<id>" (cancelled unasked); "wait:<s>" waits for
-        // them too -- each printing `snapshot: models <step>
-        // row=state/source/bits/why bytes= check=<notes>
-        // compress=<note> job=<phase> stopping= ask=`.
+        // them too; "download:<id>@<source>" from that source (the row's
+        // menu), "source:<name>" Download From -- each printing
+        // `snapshot: models <step> row=state/source/bits/why bytes=
+        // check=<notes> compress=<note> job=<phase> stopping= ask=
+        // source=<chosen> sources=<the row's: name, or name:path there>`.
         if settings, let spec = env["VALTZ_SNAPSHOT_MODELS"],
            let m = model {
             try? await Task.sleep(for: .milliseconds(1200))
@@ -4810,8 +4812,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     m.downloadCancelAsk = nil
                 case "download":
-                    last = arg
-                    m.download(model: arg)
+                    // `<id>@<source>`: from that source, as the row's
+                    // menu picks it; else the one chosen, as a click.
+                    let at = arg.split(separator: "@", maxSplits: 1)
+                        .map(String.init)
+                    last = at[0]
+                    if let mm = member(at[0]) {
+                        m.startDownload(mm, from: at.count == 2
+                            ? at[1]
+                            : (m.capabilityTree?.downloadSource
+                               ?? "huggingface"))
+                    } else {
+                        m.download(model: at[0])
+                    }
+                case "source":
+                    // Download From, as its pop-up sets it.
+                    m.setDownloadSource(arg)
                 case "pause":
                     last = arg
                     m.pauseDownload(model: arg)
@@ -4891,7 +4907,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 line += "bytes=\(bytes) ask=\(ask) "
                 line += "cancelAsk=\(cancelAsk) check=\(check) "
                 line += "compress=\(note) job=\(job) "
-                line += "stopping=\(stopping)\n"
+                line += "stopping=\(stopping) "
+                // Download From, and where the row says it comes from.
+                let from = (r?.sources ?? []).map { s in
+                    s.path == r?.hfPath ? s.name : "\(s.name):\(s.path)"
+                }
+                line += "source=\(m.capabilityTree?.downloadSource ?? "-") "
+                line += "sources=\(from.isEmpty ? "-" : from.joined(separator: ","))\n"
                 FileHandle.standardError.write(Data(line.utf8))
             }
         }
@@ -4986,9 +5008,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // "key:back" / "key:forward" (⌘[ / ⌘] posted to its window),
         // "search:<text>", "clear", "pick:<n>" (the n-th row the
         // sidebar lists, as its click does), "offload:<task|model>=
-        // <policy|default>", "share:<task|model>=on|off" -- each
-        // printing `snapshot: settings-nav <step> at= history= back=
-        // forward= search= rows= title= policies=`.
+        // <policy|default>", "share:<task|model>=on|off", "wired:<GB>|
+        // auto" (General › Memory's wired limit), "agent-model:<id>|same"
+        // and "agent-memory:<GB>|none" (Experimental › Agent's Model and
+        // Memory) -- each printing `snapshot: settings-nav <step> at=
+        // history= back= forward= search= rows= title= policies=
+        // wired=chosen/inForce/used` (GB, `+pending` a lower one waiting)
+        // `agent=model>using@GB`.
         if settings, let spec = env["VALTZ_SNAPSHOT_SETTINGS_NAV"],
            let m = model {
             try? await Task.sleep(for: .milliseconds(1500))
@@ -5075,6 +5101,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 (m.settingsReveal?.serial ?? 0) + 1)
                         }
                     }
+                case "wired":
+                    let gb = Double(arg) ?? 0
+                    m.setWiredLimit(arg == "auto" ? 0
+                                    : Int64(gb * Double(1 << 30)))
+                // The Agent's Model and Memory (Experimental › Agent).
+                case "agent-model":
+                    m.setAgentSettings(["model": arg == "same" ? "" : arg])
+                case "agent-memory":
+                    m.setAgentSettings(["memory_gb":
+                                        arg == "none" ? 0 : Int(arg) ?? 0])
                 case "offload", "share":
                     let kv2 = arg.split(separator: "=").map(String.init)
                     guard kv2.count == 2 else { break }
@@ -5142,6 +5178,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     line += " scroll=\(ys.isEmpty ? "-" : ys.joined(separator: ","))"
                 }
                 line += " title=\(title) policies=\(pol) withheld=\(held)"
+                m.refreshWiredLimit()
+                if let w = m.wiredLimit {
+                    func g(_ b: Int64) -> String {
+                        String(format: "%.1f", Double(b) / Double(1 << 30))
+                    }
+                    line += " wired=\(g(w.chosen))/\(g(w.inForce))/\(g(w.used))"
+                    line += w.pending ? "+pending" : ""
+                }
+                if let a = m.agentSettings {
+                    let chosen = (a.model ?? "").isEmpty ? "same" : a.model!
+                    line += " agent=\(chosen)>\(a.using ?? "-")"
+                    line += "@\(a.memoryGb ?? 0)"
+                }
                 // Where it is: open, its frame and the editor's (the
                 // screen's points), and whether it is centred on it.
                 let sw = NSApp.windows.first(where: {
@@ -5620,7 +5669,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "promptText=\(m.prompt.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "\n", with: "|")) "
                 + "immersive=\(m.promptImmersive) editorEdited=\(m.editorEdited) tabs=\(m.promptTabs.count) activeTab=\(m.activePromptTab) tabTitles=\(m.promptTabs.indices.map { m.promptTabTitle($0).replacingOccurrences(of: " ", with: "_") }.joined(separator: "|")) markdown=\(m.promptMarkdown) "
                 + "promptAsset=\(m.promptAssetId ?? "-") unbound=\(m.unboundRefTags.joined(separator: ",")) refTags=\(AppModel.refTags(in: m.prompt).count) prompts=\(m.assets.filter(\.isPrompt).count) "
-                + "references=\(m.usesReferences) badges=\(m.promptAttachments.map { (m.referenceBadge($0) ?? "-") + ($0.continues ? ">" : "") }.joined(separator: ",")) canContinue=\(m.canContinueClip) guides=\(m.guideLengths.map { "\($0.asked):\($0.frames)" }.joined(separator: ",")) running=\(m.runningModel) "
+                + "references=\(m.usesReferences) badges=\(m.promptAttachments.map { (m.referenceBadge($0) ?? "-") + ($0.continues ? ">" : "") }.joined(separator: ",")) canContinue=\(m.canContinueClip) guides=\(m.guideLengths.map { "\($0.asked):\($0.frames)" }.joined(separator: ",")) running=\(m.runningModel) clipRows=\(m.activeModality == .video && m.modalityRuns) canStart=\(m.canStart) "
                 + "trayLead=\(trayLead) keyframes=\(keyframes) preset=\(preset) "
                 + "songPlan=\(m.songPlan.rawValue) songLength=\(m.songSeconds.map(String.init) ?? "auto") "
                 + "lyrics=\(m.songWords.sections)s/\(m.songWords.lines)l style=\(m.songWords.style.replacingOccurrences(of: " ", with: "_")) "

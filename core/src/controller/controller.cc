@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <format>
@@ -445,6 +446,10 @@ Controller::create(ControllerConfig cfg)
     c->_assistant_drafter_bits =
         jget(helper, "drafter_bits", 8) == 4 ? 4 : 8;
     c->_video_every = std::max(0.0, jget(helper, "video_every", 0.0));
+    if (const auto vs = jget<std::string>(helper, "video_size", "");
+        vs == "high" || vs == "highest") {
+      c->_video_size = vs;
+    }
     c->_assistant_context = std::max<std::int64_t>(
         0, jget<std::int64_t>(helper, "context", 0));
   }
@@ -498,6 +503,9 @@ Controller::create(ControllerConfig cfg)
                          "vpipe", text);
     };
     ecfg.language = cfg.language;
+    // The wired limit chosen (Settings › General › Memory, DESIGN §10a).
+    ecfg.wired_limit_mb = jget<std::uint64_t>(
+        read_settings(paths.support / "memory.json"), "wired_limit_mb", 0);
     // A generation's encodings kept between jobs (DESIGN §4l): the cache
     // outlives the engine (declared before it).
     ecfg.cache = c->_cache.get();
@@ -876,6 +884,83 @@ Controller::memory_held()
   return j;
 }
 
+namespace {
+
+constexpr std::uint64_t kMB = std::uint64_t{1} << 20;
+constexpr std::uint64_t kGB = std::uint64_t{1} << 30;
+// The least a limit set may be: below it a model's scratch alone goes
+// unprotected, and nothing it runs from stays wired.
+constexpr std::uint64_t kWiredLimitMin = kGB;
+
+// A size in GB as a person reads it in a message: "17.8 GB", "8 GB".
+std::string
+gb_words(std::uint64_t bytes)
+{
+  const double gb = static_cast<double>(bytes) / static_cast<double>(kGB);
+  return std::abs(gb - std::round(gb)) < 0.05
+             ? std::format("{:.0f} GB", gb)
+             : std::format("{:.1f} GB", gb);
+}
+
+}  // namespace
+
+std::uint64_t
+Controller::wired_limit_max_() const
+{
+  // What the GPU keeps resident: vpipe caps its pool there -- wiring past
+  // it buys a working set the driver pages against.
+  return _hw.gpu_working_set_bytes > 0 ? _hw.gpu_working_set_bytes
+                                       : _hw.ram_bytes;
+}
+
+Json
+Controller::wired_limit() const
+{
+  const std::uint64_t max = wired_limit_max_();
+  const std::uint64_t chosen = jget<std::uint64_t>(
+      read_settings(_paths.support / "memory.json"), "wired_limit_mb", 0) *
+      kMB;
+  const Json e = _engine->wired_limit();
+  // Automatic is vpipe's own (its wired_pool_pct, 75% of the memory),
+  // capped where vpipe caps it; without an engine, its rule.
+  std::uint64_t automatic = jget<std::uint64_t>(e, "auto_mb", 0) * kMB;
+  if (automatic == 0) {
+    automatic = _hw.ram_bytes / 4 * 3;
+  }
+  automatic = std::min(automatic, max);
+  const Json held = _engine->memory_held();
+  return {{"chosen", chosen},
+          {"automatic", automatic},
+          {"min", std::min(kWiredLimitMin, max)},
+          {"max", max},
+          {"in_force", std::min(jget<std::uint64_t>(e, "limit_mb", 0) * kMB,
+                                max)},
+          {"used", jget<std::uint64_t>(held, "wired_used", 0)},
+          {"pending", jget(e, "pending", false)}};
+}
+
+Status
+Controller::set_wired_limit(std::uint64_t bytes)
+{
+  const std::uint64_t max = wired_limit_max_();
+  const std::uint64_t min = std::min(kWiredLimitMin, max);
+  if (bytes != 0 && (bytes < min || bytes > max)) {
+    return make_error(Code::InvalidArgument, msg::kWiredLimitRange,
+                      {{"min", gb_words(min)}, {"max", gb_words(max)}});
+  }
+  const std::uint64_t mb = bytes / kMB;
+  const fs::path file = _paths.support / "memory.json";
+  Json all = read_settings(file);
+  if (mb == 0) {
+    all.erase("wired_limit_mb");
+  } else {
+    all["wired_limit_mb"] = mb;
+  }
+  VALTZ_TRY(write_settings(file, all));
+  _engine->set_wired_limit_mb(mb);
+  return ok_status();
+}
+
 Json
 Controller::gpu_thermal(int window_ms)
 {
@@ -1199,6 +1284,7 @@ Controller::capability_tree() const
     return !_store->own_root_of(p).empty();
   };
   Json families = Json::array();
+  const Json sources = _engine->download_sources();
   for (const auto& f : _catalog.families()) {
     Json members = Json::array();
     for (const auto& mem : f.members) {
@@ -1241,6 +1327,19 @@ Controller::capability_tree() const
       for (const auto& [part, l] : info.parts) {
         members.back()["parts"][part] = {{"path", l.file.string()},
                                          {"present", l.present}};
+      }
+      // Where it can be downloaded from: each source that carries its
+      // repo, under its path there (a mirror may name it otherwise).
+      if (e->quantize_from.empty() && !e->hf_path.empty()) {
+        Json from = Json::array();
+        for (const auto& s : sources) {
+          const auto name = jget<std::string>(s, "name", "");
+          if (auto there = _engine->source_path(name, e->hf_path);
+              !there.empty()) {
+            from.push_back({{"name", name}, {"path", there}});
+          }
+        }
+        members.back()["sources"] = std::move(from);
       }
       // A quantized variant: made here from its source (no download),
       // which must be here first; no page of its own on Hugging Face.
@@ -1338,7 +1437,9 @@ Controller::capability_tree() const
                         {"members", std::move(members)}});
   }
   return {{"families", std::move(families)},
-          {"download_root", valtz_root.string()}};
+          {"download_root", valtz_root.string()},
+          {"download_sources", sources},
+          {"download_source", download_source_()}};
 }
 
 namespace {
@@ -1860,6 +1961,19 @@ task_of(const models::ModelEntry& m, std::string_view modality,
                                                  : engine::kOpGenerateAudio;
 }
 
+// A model of clips from references that also makes one from the prompt
+// alone, given an empty reference list (catalog `references.prompt_only`:
+// MiniMax H3 Ref2VA, vpipe's prompt-only request). It cannot open on a
+// picture: that sequence has no keyframe.
+bool
+prompt_only_references(const models::ModelEntry& m)
+{
+  const Json rv = jget(jget(m.engine, "vpipe", Json::object()), "references",
+                       Json());
+  return m.has(models::Capability::ReferenceToVideo) && rv.is_object() &&
+         jget(rv, "prompt_only", false);
+}
+
 }  // namespace
 
 bool
@@ -1918,8 +2032,13 @@ Controller::runs_here_(const models::ModelEntry& m, std::string_view modality,
   if (modality == "image" && op == "edit") {
     return can_edit_(m, false);
   }
+  // A clip from words: a text-to-video model's, or a reference model
+  // that takes an empty reference list (catalog `references.prompt_only`:
+  // vpipe runs Ref2VA's weights from the prompt alone) -- Auto's last
+  // resort, where FL2VA is not here.
   if (modality == "video" && op == "generate") {
-    return m.has(models::Capability::TextToVideo) &&
+    return (m.has(models::Capability::TextToVideo) ||
+            prompt_only_references(m)) &&
            _engine->supports(engine::kOpGenerateVideo);
   }
   if (modality == "audio" && (op == "generate" || op == "edit")) {
@@ -2475,6 +2594,34 @@ Controller::assistant_model() const
   return models::pick_assistant(_catalog, *_store, _hw);
 }
 
+const models::ModelEntry*
+Controller::agent_model() const
+{
+  // A helper for this run (VALTZ_ASSISTANT, valtzctl --assistant) is the
+  // agent's too: the 9B on a 24 GB Mac whatever is chosen.
+  if (_agent && _assistant.empty()) {
+    if (const auto* m = _catalog.find(_agent->model_choice());
+        m && m->role == "assistant" &&
+        _store->info(*m).state == models::InstallState::Installed) {
+      return m;
+    }
+  }
+  return assistant_model();
+}
+
+std::uint64_t
+Controller::agent_memory_limit_(const models::ModelEntry& m) const
+{
+  if (!_agent) {
+    return 0;
+  }
+  const int gb = _agent->memory_gb();
+  const auto* a = gb > 0 ? agent_model() : nullptr;
+  return a != nullptr && a->id == m.id
+             ? static_cast<std::uint64_t>(gb) << 30
+             : 0;
+}
+
 void
 Controller::rescan_models()
 {
@@ -2511,9 +2658,55 @@ Controller::resolve_model_(const models::ModelEntry& e,
   return ref;
 }
 
+Json
+Controller::download_sources() const
+{
+  return {{"sources", _engine->download_sources()},
+          {"chosen", download_source_()}};
+}
+
+std::string
+Controller::download_source_() const
+{
+  const Json offered = _engine->download_sources();
+  const auto chosen = jget<std::string>(
+      read_settings(_paths.support / "downloads.json"), "source", "");
+  std::string fallback = "huggingface";
+  for (const auto& s : offered) {
+    const auto name = jget<std::string>(s, "name", "");
+    if (name == chosen) {
+      return name;
+    }
+    if (jget(s, "default", false)) {
+      fallback = name;
+    }
+  }
+  return fallback;
+}
+
+Status
+Controller::set_download_source(const std::string& name)
+{
+  bool offered = false;
+  for (const auto& s : _engine->download_sources()) {
+    offered = offered || jget<std::string>(s, "name", "") == name;
+  }
+  if (!offered) {
+    return make_error(Code::InvalidArgument, msg::kUnknownDownloadSource,
+                      {{"source", name}});
+  }
+  const fs::path file = _paths.support / "downloads.json";
+  Json all = read_settings(file);
+  all["source"] = name;
+  VALTZ_TRY(write_settings(file, all));
+  post_("models.changed", JobId{});
+  return ok_status();
+}
+
 Result<JobId>
 Controller::download_model(const std::string& model_id,
-                           const std::string& hf_token)
+                           const std::string& hf_token,
+                           const std::string& source_in)
 {
   const auto* e = _catalog.find(model_id);
   if (!e) {
@@ -2522,6 +2715,30 @@ Controller::download_model(const std::string& model_id,
   }
   if (!_engine->supports(engine::kOpFetchModel)) {
     return make_error(Code::Unsupported, msg::kNoEngineForDownload);
+  }
+  // Where from: the one named, else the one chosen -- passed over for
+  // Hugging Face where vpipe knows it not to carry the repo.
+  std::string source = source_in.empty() ? download_source_() : source_in;
+  std::string label = source;
+  bool offered = false;
+  for (const auto& s : _engine->download_sources()) {
+    if (jget<std::string>(s, "name", "") == source) {
+      offered = true;
+      label = jget<std::string>(s, "label", source);
+    }
+  }
+  if (!offered && !source_in.empty()) {
+    return make_error(Code::InvalidArgument, msg::kUnknownDownloadSource,
+                      {{"source", source_in}});
+  }
+  if (offered && _engine->source_path(source, e->hf_path).empty()) {
+    if (!source_in.empty()) {
+      return make_error(Code::NotFound, msg::kNotOnDownloadSource,
+                        {{"model", e->name}, {"source", label}});
+    }
+    VALTZ_LOG_INFO("models", "{} is not on {}: downloaded from Hugging "
+                   "Face", e->name, label);
+    source = "huggingface";
   }
   if (models_moving_()) {
     return make_error(Code::Busy, msg::kModelsMoving);
@@ -2549,6 +2766,10 @@ Controller::download_model(const std::string& model_id,
   if (!hf_token.empty()) {
     spec.params["hf_token"] = hf_token;
   }
+  // Said always: Valtz's choice, not vpipe's $VPIPE_MODEL_SOURCE.
+  if (offered || source == "huggingface") {
+    spec.params["source"] = source;
+  }
 
   JobRecord rec;
   rec.id = spec.id;
@@ -2567,7 +2788,8 @@ Controller::download_model(const std::string& model_id,
                                 {"purpose", rec.purpose},
                                 {"model", e->id}});
 
-  const bool gated = e->gated;
+  // Hugging Face's gate: another source answers in its own terms.
+  const bool gated = e->gated && source == "huggingface";
   const std::string name = e->name;
   const std::string id = e->id;
   // Cancelled to be deleted (stop_download): its files go once the job
@@ -2665,7 +2887,9 @@ Controller::download_model(const std::string& model_id,
   }
   if (const auto* d = _catalog.find(drafter);
       d && _store->info(*d).state != models::InstallState::Installed) {
-    (void)download_model(d->id);
+    // From where the model came, where that carries it.
+    const bool there = !_engine->source_path(source, d->hf_path).empty();
+    (void)download_model(d->id, "", there ? source : "");
   }
   return rec.id;
 }
@@ -4038,13 +4262,20 @@ Controller::refresh_links(ProjectId pid)
   }
   VALTZ_ASSIGN(auto assets, p->assets());
   std::vector<AssetId> linked;
+  // Clips, their turn read where a record from before does not say it
+  // (2026-10-24): a phone's portrait clip was recorded landscape.
+  std::vector<AssetId> clips;
   for (const auto& a : assets) {
     if (a.linked) {
       linked.push_back(a.id);
     }
+    if (a.kind == project::AssetKind::Video &&
+        a.cls == project::AssetClass::Flat) {
+      clips.push_back(a.id);
+    }
   }
   JobId jid = JobId::make();
-  if (linked.empty()) {
+  if (linked.empty() && clips.empty()) {
     return jid;  // nothing to do; no events
   }
   JobRecord rec;
@@ -4058,7 +4289,7 @@ Controller::refresh_links(ProjectId pid)
   _jobs.add(rec);
 
   std::lock_guard lk(_bg_mu);
-  _bg.emplace_back([this, p, pid, jid, linked] {
+  _bg.emplace_back([this, p, pid, jid, linked, clips] {
     int missing = 0;
     for (const auto& id : linked) {
       if (_shutting_down.load()) {
@@ -4076,6 +4307,17 @@ Controller::refresh_links(ProjectId pid)
         post_("assets.changed", jid,
               {{"project", pid}, {"asset", id},
                {"reason", std::string("link-") + to_str(r->state)}});
+      }
+    }
+    for (const auto& id : clips) {
+      if (_shutting_down.load()) {
+        break;
+      }
+      if (auto r = p->read_turns(id); !r.ok()) {
+        VALTZ_LOG_WARN("link", "{}: {}", id.str(), r.error().message);
+      } else if (*r) {
+        post_("assets.changed", jid,
+              {{"project", pid}, {"asset", id}, {"reason", "turn"}});
       }
     }
     finish_job_(jid, JobState::Finished,
@@ -4378,7 +4620,7 @@ Controller::set_assistant_drafter(const std::string& kind, int bits)
 Status
 Controller::set_video_every(double seconds)
 {
-  seconds = std::clamp(seconds, 0.0, 60.0);
+  seconds = seconds > 0 ? std::clamp(seconds, 0.125, 60.0) : 0.0;
   const fs::path file = _paths.support / "assistant.json";
   Json j = read_settings(file);
   if (!j.is_object()) {
@@ -4392,15 +4634,57 @@ Controller::set_video_every(double seconds)
 }
 
 double
-Controller::video_every() const
+Controller::video_every(double clip_seconds) const
 {
   if (_video_every > 0) {
     return _video_every;
   }
-  return _hw.memory_bandwidth_gbs > 0 &&
-                 _hw.memory_bandwidth_gbs < kFastMemoryGbs
-             ? 2.0
-             : 1.0;
+  const bool slow = _hw.memory_bandwidth_gbs > 0 &&
+                    _hw.memory_bandwidth_gbs < kFastMemoryGbs;
+  const double floor = slow ? 2.0 : 1.0;
+  // The densest of the offered rates that reads the clip in about its
+  // frames (a tenth over: a "10 s" clip runs 10.04).
+  const double frames = (slow ? 0.5 : 1.0) * kSummaryFrames * 1.1;
+  if (clip_seconds > 0) {
+    for (const double every : {0.125, 0.25, 0.5, 1.0}) {
+      if (every < floor && clip_seconds / every <= frames) {
+        return every;
+      }
+    }
+  }
+  return floor;
+}
+
+media::PixelSize
+Controller::video_frame_most(std::string_view level)
+{
+  if (level == "highest") {
+    return {1152, 640};
+  }
+  if (level == "high") {
+    return {864, 480};
+  }
+  return {576, 320};
+}
+
+Status
+Controller::set_video_size(const std::string& level)
+{
+  if (level != "standard" && level != "high" && level != "highest") {
+    return make_error(Code::InvalidArgument, std::format(
+        "a video summary's frame size is standard, high or highest, not "
+        "'{}'", level));
+  }
+  const fs::path file = _paths.support / "assistant.json";
+  Json j = read_settings(file);
+  if (!j.is_object()) {
+    j = Json::object();
+  }
+  j["video_size"] = level;
+  VALTZ_TRY(write_settings(file, j));
+  _video_size = level;
+  post_("assistant.changed", JobId{}, {{"video_size", level}});
+  return ok_status();
 }
 
 Json
@@ -4464,6 +4748,7 @@ Controller::assistants() const
           {"context", _assistant_context},
           {"video_every", _video_every},
           {"video_every_now", video_every()},
+          {"video_size", _video_size},
           {"memory_bandwidth_gbs", _hw.memory_bandwidth_gbs},
           {"models", std::move(list)}};
 }
@@ -4525,6 +4810,13 @@ Controller::helper_params_(const models::ModelEntry& m) const
   // i8_prefill: Flash-Next's): a prefill of 1,024 rows or more, lossy as
   // a prefill may be; a decode step and a verify untouched.
   if (jget(vp, "i8_prefill", false)) { p["i8_prefill"] = true; }
+  // The agent's model held within the agent's Memory (vpipe's
+  // memory_limit_mb, DESIGN §15 0zzd): its expert cache what the limit
+  // leaves, every use of it alike -- a model kept warm is handed over at
+  // the size it loaded at.
+  if (const auto lim = agent_memory_limit_(m); lim > 0) {
+    p["memory_limit_mb"] = lim >> 20;
+  }
   // Its whole context where this Mac holds it (Qwen3.5's and 3.8's
   // 262,144): an agent's long session runs to the model's limit, not
   // ours. Its K/V grows as it fills.
@@ -4556,9 +4848,20 @@ Controller::helper_params_(const models::ModelEntry& m) const
 int
 Controller::helper_context_(const models::ModelEntry& m, bool chosen) const
 {
+  // The memory it is counted in: the Mac's, or the agent's Memory.
+  std::uint64_t ram = _hw.ram_bytes;
+  if (const auto lim = agent_memory_limit_(m); lim > 0) {
+    ram = std::min(ram, lim);
+  }
+  const auto lc = models::language_context(_store->info(m).path());
   int n = models::helper_context(
-      models::language_context(_store->info(m).path()), _hw.ram_bytes,
-      static_cast<std::uint64_t>(std::max(0.0, m.disk_gb) * 1e9));
+      lc, ram, static_cast<std::uint64_t>(std::max(0.0, m.disk_gb) * 1e9));
+  // The catalog's, where its state is small and its experts take the
+  // rest (DeepSeek V4.1 Flash): no more than its own.
+  if (m.context_tokens > 0) {
+    n = lc.tokens > 0 ? std::min(m.context_tokens, lc.tokens)
+                      : m.context_tokens;
+  }
   // Settings' Context, no more than Auto's.
   if (chosen && _assistant_context > 0 && n > 0) {
     n = static_cast<int>(std::min<std::int64_t>(n, _assistant_context));
@@ -6319,7 +6622,28 @@ Controller::summarize_(const AssetOpRequest& req, project::Project& p,
   if (!m) {
     return make_error(Code::NotFound, msg::kNoVideoWatcher);
   }
-  const double every = jget(req.options, "every", 0.0);
+  // How often: as asked, else the setting -- Auto by the clip's length,
+  // a timeline's by its own frames.
+  double every = jget(req.options, "every", 0.0);
+  if (every > 0) {
+    every = std::clamp(every, 0.125, 60.0);
+  } else {
+    double seconds = 0;
+    if (auto n = clip_frames_(p, src); n.ok() && n->second.num > 0) {
+      seconds = static_cast<double>(n->first) / n->second.to_double();
+    }
+    if (seconds <= 0 && !drawn) {
+      if (auto v = p.version(src.id);
+          v.ok() && v->info.duration.valid()) {
+        seconds = v->info.duration.seconds();
+      }
+    }
+    every = video_every(seconds);
+  }
+  // How large: as asked, else the setting; the long edge and the short,
+  // a portrait clip's turned.
+  const auto level = jget<std::string>(req.options, "size", _video_size);
+  const media::PixelSize most = video_frame_most(level);
   project::Recipe r;
   r.op = std::string(engine::kOpSummarizeVideo);
   r.model = m->id;
@@ -6327,10 +6651,9 @@ Controller::summarize_(const AssetOpRequest& req, project::Project& p,
   // otherwise.
   r.deterministic = false;
   r.params = {{"name", src.name},
-              {"every", every > 0 ? std::clamp(every, 0.25, 60.0)
-                                  : video_every()},
-              {"max_width", 576},
-              {"max_height", 320},
+              {"every", every},
+              {"max_width", most.width},
+              {"max_height", most.height},
               {"language", assist::language_name(_cfg.language)}};
   r.inputs.push_back({"source", src.id, drawn ? 0 : src.head});
   stamp_origin(r, *m);
@@ -7349,6 +7672,11 @@ Controller::submit_build_(
     VALTZ_ASSIGN(fs::path path, p->media_path(in.asset, in.version));
     VALTZ_ASSIGN(project::AssetVersion v, p->version(in.asset, in.version));
     engine::JobInput ji{in.role, path, in.hash, v.info};
+    if (ia.kind == project::AssetKind::Video) {
+      // A clip's references and the clip it continues are vpipe's to
+      // read: a turned one is handed over upright.
+      VALTZ_TRY(upright_input_(pid, ji, r.op == engine::kOpGenerateVideo));
+    }
     if (picture_in && ia.kind == project::AssetKind::Image) {
       // A clip's reference picture is read by vpipe itself, which takes
       // a PNG, a JPEG, a TIFF as they are: a RAW or a HEIC is drawn
@@ -8155,10 +8483,12 @@ Controller::export_asset(ExportRequest req)
     }
     spec.params["pdf"] = media::to_json(doc);
   } else if (!drawn) {
-    // A flat or generated asset: its file, as it is.
+    // A flat or generated asset: its file, as it is (a turned clip drawn
+    // upright on its way: the graph's).
     VALTZ_ASSIGN(fs::path path, p->media_path(req.asset));
     VALTZ_ASSIGN(project::AssetVersion v, p->version(req.asset));
     spec.inputs.push_back({"source", path, v.content, v.info});
+    VALTZ_TRY(upright_input_(req.project, spec.inputs.back(), false));
   } else if (a.cls == project::AssetClass::Still && a.pages > 1) {
     // A still's PAGES: each one's rendering, a file a page.
     for (std::int64_t i = 0; i < a.pages; ++i) {
@@ -8623,9 +8953,17 @@ Controller::fleet_self_() const
           {"runs", runs},
           {"features", features},
           {"assistant", chat ? a->id : std::string()},
-          // Its context as this Mac's memory gives it: a sender's agent
-          // compacts its conversations to it (DESIGN §9b).
+          // Its context as this Mac's memory gives it -- and its agent
+          // model's, which serves a member's agent turns: a sender's
+          // agent compacts its conversations to it (DESIGN §9b).
           {"assistant_context", chat ? helper_context_(*a) : 0},
+          {"agent_context", [&] {
+             const auto* m = up ? agent_model() : nullptr;
+             return m && _store->info(*m).state ==
+                             models::InstallState::Installed
+                        ? helper_context_(*m)
+                        : 0;
+           }()},
           {"busy", busy_here_()},
           {"machine", {{"chip", _hw.chip},
                        {"ram_gb", _hw.ram_gb()},

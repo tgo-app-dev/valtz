@@ -205,6 +205,10 @@ extension AppModel {
         if !r.ok { flash(r.message, level: .error) }
         agentSettings = DTO.decode(AgentSettings.self,
                                    core.agentSettingsJSON())
+        // The helpers' contexts are counted in the agent's Memory.
+        if s["model"] != nil || s["memory_gb"] != nil {
+            helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+        }
     }
 
     /// The key into the Keychain ("" removes it); never kept here.

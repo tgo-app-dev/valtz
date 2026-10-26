@@ -7,6 +7,7 @@
 #include "valtz/media/markup.h"
 #include "valtz/media/model-input.h"
 #include "valtz/media/probe.h"
+#include "valtz/project/project.h"
 
 #import <AVFoundation/AVFoundation.h>
 #import <CoreGraphics/CoreGraphics.h>
@@ -16,6 +17,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <vector>
 
 using namespace valtz;
@@ -496,4 +498,423 @@ TEST(model_input, a_movie_is_counted_by_its_last_frame)
   CHECK(info->frame_count == 48);
   CHECK(media::last_picture_frame(path, {24, 1}) == 47);
   CHECK(media::last_picture_frame(path) == 47);
+}
+
+namespace {
+
+// A clip as a phone keeps one: stored `w` x `h`, its top half red and its
+// bottom half blue, turned upright by the track's transform `t`.
+std::filesystem::path
+turned_movie(const std::string& name, int w, int h, CGAffineTransform t)
+{
+  const auto path = test::temp_dir("turned") / name;
+  NSURL* url = [NSURL fileURLWithPath:@(path.c_str())];
+  NSError* err = nil;
+  AVAssetWriter* wr = [AVAssetWriter
+      assetWriterWithURL:url fileType:AVFileTypeQuickTimeMovie error:&err];
+  if (!wr) {
+    return {};
+  }
+  AVAssetWriterInput* in = [AVAssetWriterInput
+      assetWriterInputWithMediaType:AVMediaTypeVideo
+                     outputSettings:@{
+                       AVVideoCodecKey : AVVideoCodecTypeH264,
+                       AVVideoWidthKey : @(w),
+                       AVVideoHeightKey : @(h),
+                     }];
+  in.expectsMediaDataInRealTime = NO;
+  in.transform = t;
+  AVAssetWriterInputPixelBufferAdaptor* ad =
+      [AVAssetWriterInputPixelBufferAdaptor
+          assetWriterInputPixelBufferAdaptorWithAssetWriterInput:in
+                                     sourcePixelBufferAttributes:@{
+            (id)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_32BGRA),
+            (id)kCVPixelBufferWidthKey : @(w),
+            (id)kCVPixelBufferHeightKey : @(h),
+          }];
+  [wr addInput:in];
+  if (![wr startWriting]) {
+    return {};
+  }
+  [wr startSessionAtSourceTime:kCMTimeZero];
+  for (int i = 0; i < 24; ++i) {
+    while (!in.readyForMoreMediaData) {
+      [NSThread sleepForTimeInterval:0.002];
+    }
+    CVPixelBufferRef pb = nullptr;
+    CVPixelBufferPoolCreatePixelBuffer(nullptr, ad.pixelBufferPool, &pb);
+    if (!pb) {
+      return {};
+    }
+    CVPixelBufferLockBaseAddress(pb, 0);
+    auto* base = static_cast<std::uint8_t*>(CVPixelBufferGetBaseAddress(pb));
+    const std::size_t row = CVPixelBufferGetBytesPerRow(pb);
+    for (int y = 0; y < h; ++y) {
+      for (int x = 0; x < w; ++x) {
+        std::uint8_t* p = base + y * row + static_cast<std::size_t>(x) * 4;
+        const bool top = y < h / 2;
+        p[0] = top ? 0 : 255;   // B
+        p[1] = 0;               // G
+        p[2] = top ? 255 : 0;   // R
+        p[3] = 255;
+      }
+    }
+    CVPixelBufferUnlockBaseAddress(pb, 0);
+    [ad appendPixelBuffer:pb withPresentationTime:CMTimeMake(i, 24)];
+    CVPixelBufferRelease(pb);
+  }
+  [in markAsFinished];
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  [wr finishWritingWithCompletionHandler:^{
+    dispatch_semaphore_signal(done);
+  }];
+  dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+  return wr.status == AVAssetWriterStatusCompleted
+             ? path
+             : std::filesystem::path();
+}
+
+}
+
+// A clip read for a summary is UPRIGHT, its size turned with it: a
+// phone's portrait clip -- stored landscape, a quarter turn in its track
+// -- came out upside down (AVFoundation's transform is y-down, Core
+// Image's y-up).
+TEST(model_input, a_turned_clip_is_read_upright)
+{
+  struct Case {
+    const char*       name;
+    CGAffineTransform turn;
+    int               w, h;          // upright, as sampled
+    const char*       red;           // where the stored top half lands
+  };
+  // Stored 96 x 64: a quarter turn clockwise (a phone held upright), one
+  // the other way, a half turn, none.
+  const Case cases[] = {
+    {"cw.mov", CGAffineTransformMake(0, 1, -1, 0, 64, 0), 64, 96, "right"},
+    {"ccw.mov", CGAffineTransformMake(0, -1, 1, 0, 0, 96), 64, 96, "left"},
+    {"half.mov", CGAffineTransformMake(-1, 0, 0, -1, 96, 64), 96, 64,
+     "bottom"},
+    {"none.mov", CGAffineTransformIdentity, 96, 64, "top"},
+  };
+  for (const Case& c : cases) {
+    const auto path = turned_movie(c.name, 96, 64, c.turn);
+    REQUIRE(!path.empty());
+    // Within the most: its long edge the long, its short the short.
+    auto size = media::sampled_size(path, {576, 320}, 32);
+    REQUIRE_OK(size);
+    CHECK(size->width == c.w);
+    CHECK(size->height == c.h);
+    std::vector<std::uint8_t> buf(
+        static_cast<std::size_t>(size->width) * size->height * 3);
+    std::vector<std::uint8_t> first;
+    auto st = media::sample_movie(
+        path, 0.5, *size,
+        [&](std::int64_t, double) -> Result<media::FrameBuffer> {
+          return media::FrameBuffer{buf.data(), buf.size(), {}};
+        },
+        [&](std::int64_t n) -> Status {
+          if (n == 0) {
+            first = buf;
+          }
+          return ok_status();
+        });
+    REQUIRE_OK(st);
+    REQUIRE(!first.empty());
+    const int w = size->width;
+    const int h = size->height;
+    const std::size_t plane = static_cast<std::size_t>(w) * h;
+    // Red at x, y: the red plane high, the blue low.
+    const auto red_at = [&](int x, int y) {
+      const std::size_t i = static_cast<std::size_t>(y) * w + x;
+      return first[i] > 180 && first[2 * plane + i] < 80;
+    };
+    const auto blue_at = [&](int x, int y) {
+      const std::size_t i = static_cast<std::size_t>(y) * w + x;
+      return first[2 * plane + i] > 180 && first[i] < 80;
+    };
+    const std::string red = c.red;
+    const int l = w / 4, r = w * 3 / 4, t = h / 4, b = h * 3 / 4;
+    if (red == "right") {
+      CHECK(red_at(r, h / 2) && blue_at(l, h / 2));
+    } else if (red == "left") {
+      CHECK(red_at(l, h / 2) && blue_at(r, h / 2));
+    } else if (red == "bottom") {
+      CHECK(red_at(w / 2, b) && blue_at(w / 2, t));
+    } else {
+      CHECK(red_at(w / 2, t) && blue_at(w / 2, b));
+    }
+  }
+}
+
+namespace {
+
+// Where a picture's red half lies -- right, left, bottom or top -- by
+// `red` and `blue`, each a pixel's channel at x, y; "" when it is none.
+std::string
+red_side(int w, int h, const std::function<int(int, int)>& red,
+         const std::function<int(int, int)>& blue)
+{
+  const auto is_red = [&](int x, int y) {
+    return red(x, y) > 180 && blue(x, y) < 80;
+  };
+  const auto is_blue = [&](int x, int y) {
+    return blue(x, y) > 180 && red(x, y) < 80;
+  };
+  const int l = w / 4, r = w * 3 / 4, t = h / 4, b = h * 3 / 4;
+  if (is_red(r, h / 2) && is_blue(l, h / 2)) {
+    return "right";
+  }
+  if (is_red(l, h / 2) && is_blue(r, h / 2)) {
+    return "left";
+  }
+  if (is_red(w / 2, b) && is_blue(w / 2, t)) {
+    return "bottom";
+  }
+  if (is_red(w / 2, t) && is_blue(w / 2, b)) {
+    return "top";
+  }
+  return "";
+}
+
+// `img` as 8-bit sRGB RGBA, row 0 at the top.
+std::vector<std::uint8_t>
+image_pixels(CGImageRef img, int& w, int& h)
+{
+  w = static_cast<int>(CGImageGetWidth(img));
+  h = static_cast<int>(CGImageGetHeight(img));
+  std::vector<std::uint8_t> px(static_cast<std::size_t>(w) * h * 4);
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(
+      px.data(), w, h, 8, static_cast<size_t>(w) * 4, cs,
+      static_cast<std::uint32_t>(kCGImageAlphaPremultipliedLast));
+  CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), img);
+  CGContextRelease(ctx);
+  CGColorSpaceRelease(cs);
+  return px;
+}
+
+std::string
+rgba_red_side(const std::vector<std::uint8_t>& px, int w, int h)
+{
+  const auto at = [&](int c) {
+    return [&, c](int x, int y) {
+      return static_cast<int>(
+          px[(static_cast<std::size_t>(y) * w + x) * 4 + c]);
+    };
+  };
+  return red_side(w, h, at(0), at(2));
+}
+
+}
+
+// A turned clip is UPRIGHT wherever Valtz reads it -- its recorded size,
+// a model's input decoded, a timeline's frames, the player's, a frame
+// written, a movie drawn of it -- not only in a summary: Valtz's info,
+// the frames generation models were handed and the timeline's frames all
+// had a phone's portrait clip stored landscape (2026-10-24).
+TEST(model_input, a_turned_clip_is_upright_everywhere)
+{
+  struct Case {
+    const char*       name;
+    CGAffineTransform turn;
+    int               degrees;
+    int               w, h;
+    const char*       red;
+  };
+  const Case cases[] = {
+    {"cw.mov", CGAffineTransformMake(0, 1, -1, 0, 64, 0), 90, 64, 96,
+     "right"},
+    {"ccw.mov", CGAffineTransformMake(0, -1, 1, 0, 0, 96), 270, 64, 96,
+     "left"},
+    {"half.mov", CGAffineTransformMake(-1, 0, 0, -1, 96, 64), 180, 96, 64,
+     "bottom"},
+    {"none.mov", CGAffineTransformIdentity, 0, 96, 64, "top"},
+  };
+  for (const Case& c : cases) {
+    std::fprintf(stderr, "[turned] %s\n", c.name);
+    const auto path = turned_movie(c.name, 96, 64, c.turn);
+    REQUIRE(!path.empty());
+    // Recorded as it shows.
+    auto info = media::probe_file(path);
+    REQUIRE_OK(info);
+    CHECK(info->frame.width == c.w);
+    CHECK(info->frame.height == c.h);
+    CHECK(info->turn == c.degrees);
+    CHECK(media::movie_turn(path) == c.degrees);
+
+    // A model's input: decoded at its upright size.
+    const std::size_t plane = static_cast<std::size_t>(c.w) * c.h;
+    std::vector<std::uint8_t> buf(plane * 3), first;
+    auto st = media::decode_movie(
+        path, {}, {}, Rational{24, 1}, 0, 2, {c.w, c.h},
+        [&](std::int64_t) -> Result<media::FrameBuffer> {
+          return media::FrameBuffer{buf.data(), buf.size(), {}};
+        },
+        [&](std::int64_t n) -> Status {
+          if (n == 0) {
+            first = buf;
+          }
+          return ok_status();
+        },
+        nullptr, media::Sample::U8);
+    REQUIRE_OK(st);
+    REQUIRE(!first.empty());
+    CHECK(red_side(
+              c.w, c.h,
+              [&](int x, int y) { return first[y * c.w + x]; },
+              [&](int x, int y) {
+                return first[2 * plane + y * c.w + x];
+              }) == c.red);
+
+    // A frame written (a still's layer showing it, a grab).
+    const auto png = test::temp_dir("turned") /
+                     (std::string(c.name) + ".png");
+    REQUIRE_OK(media::write_movie_frame(path, 0.1, png));
+    int w = 0, h = 0;
+    auto px = file_pixels(png, w, h);
+    CHECK(w == c.w);
+    CHECK(h == c.h);
+    CHECK(rgba_red_side(px, w, h) == c.red);
+
+    // On a timeline: drawn alone, and as the player hands its frames
+    // over -- as stored.
+    media::MovieStack stack;
+    media::MovieLayer l;
+    l.file = path;
+    l.video = true;
+    stack.layers.push_back(l);
+    stack.rate = Rational{24, 1};
+    auto r = media::StackRenderer::make(stack, Rational{24, 1});
+    REQUIRE_OK(r);
+    CHECK((*r)->size().width == c.w);
+    CHECK((*r)->size().height == c.h);
+    auto still = (*r)->still(3);
+    REQUIRE_OK(still);
+    px = image_pixels(*still, w, h);
+    CGImageRelease(*still);
+    CHECK(w == c.w);
+    CHECK(rgba_red_side(px, w, h) == c.red);
+    @autoreleasepool {
+      AVURLAsset* asset = [AVURLAsset
+          URLAssetWithURL:[NSURL fileURLWithPath:@(path.c_str())]
+                  options:nil];
+      __block AVAssetTrack* track = nil;
+      dispatch_semaphore_t got = dispatch_semaphore_create(0);
+      [asset loadTracksWithMediaType:AVMediaTypeVideo
+                   completionHandler:^(NSArray<AVAssetTrack*>* t, NSError*) {
+                     track = t.firstObject;
+                     dispatch_semaphore_signal(got);
+                   }];
+      dispatch_semaphore_wait(got, DISPATCH_TIME_FOREVER);
+      REQUIRE(track != nil);
+      AVAssetReader* reader = [AVAssetReader assetReaderWithAsset:asset
+                                                            error:nil];
+      AVAssetReaderTrackOutput* out = [AVAssetReaderTrackOutput
+          assetReaderTrackOutputWithTrack:track
+                           outputSettings:@{
+        (id)kCVPixelBufferPixelFormatTypeKey :
+            @(kCVPixelFormatType_32BGRA),
+      }];
+      [reader addOutput:out];
+      REQUIRE([reader startReading]);
+      CMSampleBufferRef sb = [out copyNextSampleBuffer];
+      REQUIRE(sb != nullptr);
+      CVPixelBufferRef raw = CMSampleBufferGetImageBuffer(sb);
+      CHECK(static_cast<int>(CVPixelBufferGetWidth(raw)) == 96);
+      CVPixelBufferRef drawn = nullptr;
+      CVPixelBufferCreate(nullptr, c.w, c.h, kCVPixelFormatType_32BGRA,
+                          (__bridge CFDictionaryRef)@{
+                            (id)kCVPixelBufferIOSurfacePropertiesKey : @{},
+                          },
+                          &drawn);
+      REQUIRE(drawn != nullptr);
+      REQUIRE_OK((*r)->render(0, {raw}, drawn));
+      CVPixelBufferLockBaseAddress(drawn, kCVPixelBufferLock_ReadOnly);
+      const auto* base = static_cast<const std::uint8_t*>(
+          CVPixelBufferGetBaseAddress(drawn));
+      const std::size_t row = CVPixelBufferGetBytesPerRow(drawn);
+      const auto ch = [&](int k) {
+        return [&, k](int x, int y) {
+          return static_cast<int>(base[y * row + x * 4 + k]);
+        };
+      };
+      CHECK(red_side(c.w, c.h, ch(2), ch(0)) == c.red);
+      CVPixelBufferUnlockBaseAddress(drawn, kCVPixelBufferLock_ReadOnly);
+      CVPixelBufferRelease(drawn);
+      CFRelease(sb);
+      [reader cancelReading];
+    }
+
+    // A movie of it (a reference handed to vpipe, a nested timeline's
+    // rendering): upright in its pixels, no turn left.
+    const auto mov = test::temp_dir("turned") /
+                     (std::string("upright-") + c.name);
+    stack.frames = 12;
+    REQUIRE_OK(media::encode_movie_stack(stack, Rational{24, 1},
+                                         {c.w, c.h}, {}, mov));
+    auto made = media::probe_file(mov);
+    REQUIRE_OK(made);
+    CHECK(made->frame.width == c.w);
+    CHECK(made->turn == 0);
+    REQUIRE_OK(media::write_movie_frame(mov, 0.1, png));
+    px = file_pixels(png, w, h);
+    CHECK(rgba_red_side(px, w, h) == c.red);
+  }
+}
+
+// A clip recorded before the turn was read (2026-10-24) is read again:
+// turned, its version's info is its upright size; upright, it is left as
+// recorded.
+TEST(model_input, an_old_record_of_a_turned_clip_is_read_again)
+{
+  const auto cw = turned_movie("old-cw.mov", 96, 64,
+                               CGAffineTransformMake(0, 1, -1, 0, 64, 0));
+  const auto none = turned_movie("old-none.mov", 96, 64,
+                                 CGAffineTransformIdentity);
+  REQUIRE(!cw.empty());
+  REQUIRE(!none.empty());
+  auto pkg = test::temp_dir("turned") / "Old.valtz";
+  auto pr = project::Project::create(pkg, "Old");
+  REQUIRE_OK(pr);
+  project::Project& p = **pr;
+  auto a = p.import_file(cw, {});
+  auto b = p.import_file(none, {});
+  REQUIRE_OK(a);
+  REQUIRE_OK(b);
+  auto v = p.version(a->id);
+  REQUIRE_OK(v);
+  CHECK(v->info.frame.width == 64);
+  CHECK(v->info.turn == 90);
+  // As one before kept them: the stored size, no turn.
+  auto doc = p.dump();
+  REQUIRE_OK(doc);
+  for (auto& ver : (*doc)["tables"]["versions"]) {
+    ver["info"].erase("turn");
+    ver["info"]["frame"]["w"] = 96;
+    ver["info"]["frame"]["h"] = 64;
+  }
+  REQUIRE_OK(p.load(*doc));
+  v = p.version(a->id);
+  REQUIRE_OK(v);
+  CHECK(v->info.turn == -1);
+  CHECK(v->info.frame.width == 96);
+  auto turned = p.read_turns(a->id);
+  REQUIRE_OK(turned);
+  CHECK(*turned);
+  v = p.version(a->id);
+  REQUIRE_OK(v);
+  CHECK(v->info.frame.width == 64);
+  CHECK(v->info.frame.height == 96);
+  CHECK(v->info.turn == 90);
+  turned = p.read_turns(a->id);
+  REQUIRE_OK(turned);
+  CHECK(!*turned);
+  turned = p.read_turns(b->id);
+  REQUIRE_OK(turned);
+  CHECK(!*turned);
+  v = p.version(b->id);
+  REQUIRE_OK(v);
+  CHECK(v->info.turn == -1);
+  CHECK(v->info.frame.width == 96);
 }

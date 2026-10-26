@@ -115,6 +115,9 @@ const ConfigKey kAttrs[] = {
    .doc = "seconds the model stays loaded after the graph (0: unloaded)"},
   {.key = ex::kSummaryWireWeights, .type = ConfigType::Bool,
    .doc = "wire the model's buffers as they load", .def_bool = true},
+  {.key = ex::kSummaryMemoryLimitMb, .type = ConfigType::Int,
+   .doc = "the most the model may hold, MB: an expert cache sized within "
+          "it (0: the box's memory)", .def_int = 0},
   {.key = ex::kSummaryScenePrompt, .type = ConfigType::Text,
    .doc = "said after a scene's frames; {start} {end} {every} {language}",
    .def_str = kScenePrompt},
@@ -215,6 +218,8 @@ public:
     _max_pages = static_cast<int>(attr_int(ex::kSummaryMaxPages));
     _keep_loaded = attr_real(ex::kSummaryKeepLoaded);
     _wire = attr_bool(ex::kSummaryWireWeights);
+    _memory_limit_mb = std::max<std::int64_t>(
+        0, attr_int(ex::kSummaryMemoryLimitMb));
     _scene_prompt = attr_str(ex::kSummaryScenePrompt);
     _overall_prompt = attr_str(ex::kSummaryOverallPrompt);
     _language = attr_str(ex::kSummaryLanguage);
@@ -298,6 +303,10 @@ public:
     }
     if (_wire) {
       vpipe::bag::set_flag(spec.extra, genai::load_spec::kWireWeights, true);
+    }
+    if (_memory_limit_mb > 0) {
+      vpipe::bag::set_integer(spec.extra, genai::load_spec::kMemoryLimitMb,
+                              _memory_limit_mb);
     }
     _lm = mgr->load(spec);
     if (!_lm || !_lm->valid()) {
@@ -518,6 +527,7 @@ private:
   int         _max_pages = 2048;
   double      _keep_loaded = 0;
   bool        _wire = true;
+  std::int64_t _memory_limit_mb = 0;
   std::string _scene_prompt;
   std::string _overall_prompt;
   std::string _language;

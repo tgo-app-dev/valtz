@@ -23,7 +23,9 @@
 //                    [--seconds s]] [--partial]   the suggestion as it
 //                    is written
 //   valtzctl intent <text> [--image name]...
-//   valtzctl download <model-id>
+//   valtzctl download <model-id> [--from huggingface|modelscope]
+//   valtzctl sources [<name>]       where downloads come from
+//   valtzctl wired [auto|<GB>]      the wired memory limit
 //   valtzctl ext [list] | enable <id> | disable <id>
 //   valtzctl ext pack <manifest.json> <package.valtzext> | show <pkg>
 //                | check <pkg>      extension packages (DESIGN §8a)
@@ -93,16 +95,22 @@ usage()
       "         deleted)\n"
       "  assistant [<model-id>|auto] [--keep <seconds>]\n"
       "            [--drafter mtp|dflash] [--bits 8|4]\n"
-      "            [--video-every <seconds>|auto] [--context <tokens>|auto]\n"
+      "            [--video-every <seconds>|<n>/s|auto]\n"
+      "            [--video-size standard|high|highest]\n"
+      "            [--context <tokens>|auto]\n"
       "         (Settings > Agentic Helper: the helpers, which is chosen\n"
       "         and which runs, each one's sampler; with an id, that one\n"
       "         chosen -- kept for the app and every later run; --keep:\n"
       "         how long it stays loaded after a request, 0 not at all;\n"
       "         --drafter: what it drafts with -- its MTP head, or a\n"
       "         DFlash 2 drafter held at --bits; --video-every: a video\n"
-      "         summary's seconds a frame, auto: 1, or 2 where memory\n"
-      "         moves under 200 GB/s; --context: its context at most --\n"
-      "         auto, its own as this Mac's memory holds it)\n"
+      "         summary's seconds a frame (0.125-60, or 8/s, 4/s, ...),\n"
+      "         auto: by the clip's length, about 80 frames of a short\n"
+      "         one -- 40 where memory moves under 200 GB/s -- one a\n"
+      "         second (every 2) of a long one; --video-size: its\n"
+      "         frames' size, standard 576x320, high 864x480, highest\n"
+      "         1152x640 (portrait: turned); --context: its context at\n"
+      "         most -- auto, its own as this Mac's memory holds it)\n"
       "  status [--thermal]   (the machine's load, as the app's status bar\n"
       "         shows it: ANE, GPU, memory; --thermal adds whether the GPU\n"
       "         is held back, from a 600 ms sample)\n"
@@ -328,10 +336,11 @@ usage()
       "  transcribe <project.valtz> <sound|clip-id> [--model ID]\n"
       "         [--language L]  (its speech line by line, the sound\n"
       "         events heard: a text asset made from it, printed)\n"
-      "  summarize <project.valtz> <clip-id> [--model ID] [--every S]\n"
-      "         (watched by the helper -- a frame every S seconds, the\n"
-      "         setting's by default -- scene by scene, then whole: a\n"
-      "         text asset made from it, printed)\n"
+      "  summarize <project.valtz> <clip-id> [--model ID]\n"
+      "         [--every S|<n>/s] [--size standard|high|highest]\n"
+      "         (watched by the helper -- a frame every S seconds, at\n"
+      "         that size, the settings' by default -- scene by scene,\n"
+      "         then whole: a text asset made from it, printed)\n"
       "  separate <project.valtz> <sound-id> [--model ID]  (a song split\n"
       "         into its vocals and its accompaniment: two sounds made\n"
       "         from it, their files printed)\n"
@@ -494,6 +503,7 @@ usage()
       "        [--composition <id>] [--ref <file|asset-id>]... [--speed]\n"
       "        [--assistant <id>]\n"
       "        | agent tools | agent settings [backend=helper|cloud]\n"
+      "            [helper=<id>|same] [memory=64|128|192|<GB>|none]\n"
       "            [review=on|off] [lease=<s>] [provider=anthropic|openai|\n"
       "            openai-compatible] [model=<id>] [base_url=<url>]\n"
       "            [max_tokens=<n>] [context=<tokens>] [compact=on|off]\n"
@@ -501,17 +511,30 @@ usage()
       "         (the AGENT: the request worked on in the project by the\n"
       "         helper -- or a fleet member's, or a cloud model -- calling\n"
       "         the editor's tools; each step asked for at the terminal\n"
-      "         unless --auto. key: a cloud provider's API key, asked for\n"
-      "         unechoed, kept in the Keychain)\n"
-      "  download <model-id> [--hf-token] [--pause-after <s> |\n"
-      "          --cancel-after <s>] | download <model-id> --cancel\n"
+      "         unless --auto. settings helper: the model it thinks with\n"
+      "         here -- DeepSeek V4.1 Flash, a Qwen -- same: the Agentic\n"
+      "         Helper's; memory: the most that model may hold, its expert\n"
+      "         cache sized within it. key: a cloud provider's API key,\n"
+      "         asked for unechoed, kept in the Keychain)\n"
+      "  download <model-id> [--hf-token] [--from <source>]\n"
+      "          [--pause-after <s> | --cancel-after <s>]\n"
+      "        | download <model-id> --cancel\n"
       "          (--hf-token: asks for a Hugging Face access token, not\n"
       "          echoed, for a GATED model -- used for this download only,\n"
       "          kept nowhere; without it, $HF_TOKEN, or vpipe asks when\n"
       "          Hugging Face refuses. --pause-after: stopped s in, what\n"
       "          came down kept -- `download` again goes on from there;\n"
       "          --cancel-after: stopped and deleted; --cancel alone: what\n"
-      "          a paused download left, deleted)\n",
+      "          a paused download left, deleted. --from: where from,\n"
+      "          one of `sources` -- the one chosen without it)\n"
+      "  sources [<name>]   where downloads come from -- vpipe's sources,\n"
+      "          the one chosen (Settings > Capabilities' Download From);\n"
+      "          a name chooses it for later downloads, the app's too\n"
+      "  wired [auto|<GB>]  the WIRED memory local models may hold -- the\n"
+      "          helper, the agent, picture, clip and sound models\n"
+      "          (Settings > General > Memory): Automatic, the limit in\n"
+      "          force, what is wired now; GB sets one (8, 12.5), auto\n"
+      "          gives it back to vpipe, the app's too\n",
       stderr);
   return 2;
 }
@@ -1160,6 +1183,21 @@ reference_asset(Controller& c, ProjectId pid, const std::string& ref,
 
 namespace {
 
+// A video summary's frame interval as typed: seconds a frame ("2",
+// "0.25"), or frames a second ("8/s"); "auto" 0.
+double
+every_arg(const std::string& arg)
+{
+  if (arg == "auto") {
+    return 0;
+  }
+  if (arg.ends_with("/s")) {
+    const double rate = std::atof(arg.c_str());
+    return rate > 0 ? 1.0 / rate : 0.0;
+  }
+  return std::atof(arg.c_str());
+}
+
 // "@<prompt-id>" in place of a prompt: that prompt's words, and the
 // prompt reused (the result made from it). Anything else is the words.
 Status
@@ -1622,6 +1660,13 @@ agent_command(Controller& c, std::vector<std::string> args)
       const std::string v = args[i].substr(eq + 1);
       if (k == "backend") {
         set["backend"] = v;
+      } else if (k == "helper") {
+        set["model"] = v == "same" ? std::string() : v;
+      } else if (k == "memory") {
+        if (v != "none" && std::atoi(v.c_str()) <= 0) {
+          return usage();
+        }
+        set["memory_gb"] = v == "none" ? 0 : std::atoi(v.c_str());
       } else if (k == "review") {
         set["review"] = v == "on" || v == "true";
       } else if (k == "compact") {
@@ -1988,6 +2033,7 @@ main(int argc, char** argv)
                     cmd == "status" || cmd == "families" ||
                     cmd == "enhance" ||
                     cmd == "intent" || cmd == "download" || cmd == "caps" ||
+                    cmd == "sources" || cmd == "wired" ||
                     cmd == "auto" || cmd == "agent" ||
                     (cmd == "export" &&
                      !(args.size() == 1 && args[0] == "--formats"));
@@ -2104,6 +2150,26 @@ main(int argc, char** argv)
                     ")";
           }
         }
+        // Where it downloads from, where that differs: a source that
+        // does not carry it, a mirror's own name for it.
+        if (state != "installed" && m.contains("sources")) {
+          const auto hf = jget<std::string>(m, "hf_path", "");
+          for (const auto& s : jget(t, "download_sources", Json::array())) {
+            const auto name = jget<std::string>(s, "name", "");
+            std::string there;
+            for (const auto& ms : m["sources"]) {
+              if (jget<std::string>(ms, "name", "") == name) {
+                there = jget<std::string>(ms, "path", "");
+              }
+            }
+            const auto label = jget<std::string>(s, "label", name);
+            if (there.empty()) {
+              small += "  (not on " + label + ")";
+            } else if (there != hf) {
+              small += "  (" + label + ": " + there + ")";
+            }
+          }
+        }
         std::printf("  %-9s %-6s %-40s %s%s\n", state.c_str(),
                     src.empty() ? "-" : src.c_str(),
                     m["label"].get<std::string>().c_str(),
@@ -2206,10 +2272,9 @@ main(int argc, char** argv)
       if (args[i] == "--keep" && i + 1 < args.size()) {
         st = c.set_assistant_keep_loaded(std::atof(args[++i].c_str()));
       } else if (args[i] == "--video-every" && i + 1 < args.size()) {
-        ++i;
-        st = c.set_video_every(args[i] == "auto"
-                                   ? 0.0
-                                   : std::atof(args[i].c_str()));
+        st = c.set_video_every(every_arg(args[++i]));
+      } else if (args[i] == "--video-size" && i + 1 < args.size()) {
+        st = c.set_video_size(args[++i]);
       } else if (args[i] == "--bits" && i + 1 < args.size()) {
         ++i;
         st = c.set_assistant_drafter(
@@ -2236,8 +2301,7 @@ main(int argc, char** argv)
       std::printf("context  auto: each helper's own, as memory holds it\n");
     }
     std::printf("chosen   %s\nauto     %s\nusing    %s\nkept     %g s "
-                "after a request\ndrafter  %s%s\nvideo    a frame every "
-                "%g s%s (memory %g GB/s)\n",
+                "after a request\ndrafter  %s%s\n",
                 choice.empty() ? "auto" : choice.c_str(),
                 a["auto"].get<std::string>().c_str(),
                 a["using"].get<std::string>().c_str(),
@@ -2246,9 +2310,18 @@ main(int argc, char** argv)
                 jget<std::string>(a, "drafter", "") == "dflash"
                     ? std::format(" ({}-bit)", jget(a, "drafter_bits", 8))
                           .c_str()
-                    : "",
-                jget(a, "video_every_now", 1.0),
-                jget(a, "video_every", 0.0) > 0 ? "" : " (auto)",
+                    : "");
+    const double every = jget(a, "video_every", 0.0);
+    const std::string video_every =
+        every > 0 ? std::format("a frame every {:g} s", every)
+        : c.video_every(10) < 0.2
+            ? std::string("auto: 8 a second up to 10 s, 4 up to 20, 2 up "
+                          "to 40, then one a second")
+            : std::string("auto: 8 a second up to 5 s, 4 up to 10, 2 up "
+                          "to 20, 1 up to 40, then one every 2 s");
+    std::printf("video    %s; frames %s (memory %g GB/s)\n",
+                video_every.c_str(),
+                jget<std::string>(a, "video_size", "standard").c_str(),
                 jget(a, "memory_bandwidth_gbs", 0.0));
     for (const auto& m : a["models"]) {
       std::string drafter;
@@ -4071,7 +4144,9 @@ main(int argc, char** argv)
       } else if (args[i] == "--language") {
         req.options["language"] = args[++i];
       } else if (args[i] == "--every") {
-        req.options["every"] = std::atof(args[++i].c_str());
+        req.options["every"] = every_arg(args[++i]);
+      } else if (args[i] == "--size") {
+        req.options["size"] = args[++i];
       } else if (args[i] == "--seed") {
         req.options["seed"] = std::atoll(args[++i].c_str());
       } else if (args[i] == "--split") {
@@ -5066,6 +5141,61 @@ main(int argc, char** argv)
   if (cmd == "agent") {
     return agent_command(c, args);
   }
+  if (cmd == "sources") {
+    // Settings › Capabilities' Download From: vpipe's sources, the one
+    // chosen -- and a name, chosen for every download after.
+    if (!args.empty()) {
+      if (Status st = c.set_download_source(args[0]); !st.ok()) {
+        return fail(st.error());
+      }
+    }
+    const Json d = c.download_sources();
+    const auto chosen = jget<std::string>(d, "chosen", "");
+    for (const auto& s : jget(d, "sources", Json::array())) {
+      const auto name = jget<std::string>(s, "name", "");
+      std::printf("%s %-12s %s%s\n", name == chosen ? "*" : " ",
+                  name.c_str(), jget<std::string>(s, "label", "").c_str(),
+                  jget(s, "default", false) ? "  (vpipe's default)" : "");
+    }
+    return 0;
+  }
+  if (cmd == "wired") {
+    // Settings › General › Memory: the wired limit -- set, or Automatic.
+    if (!args.empty()) {
+      std::uint64_t bytes = 0;
+      if (args[0] != "auto") {
+        char* end = nullptr;
+        const double gb = std::strtod(args[0].c_str(), &end);
+        if (end == args[0].c_str() || *end != '\0' || gb <= 0) {
+          return usage();
+        }
+        bytes = static_cast<std::uint64_t>(gb * (1ull << 30));
+      }
+      if (Status st = c.set_wired_limit(bytes); !st.ok()) {
+        return fail(st.error());
+      }
+    }
+    const Json w = c.wired_limit();
+    auto gb = [](const Json& j, const char* k) {
+      return static_cast<double>(jget<std::uint64_t>(j, k, 0)) /
+             static_cast<double>(1ull << 30);
+    };
+    if (jget<std::uint64_t>(w, "chosen", 0) == 0) {
+      std::printf("limit     Automatic (%.1f GB here)\n",
+                  gb(w, "automatic"));
+    } else {
+      std::printf("limit     %.1f GB (Automatic: %.1f GB)\n",
+                  gb(w, "chosen"), gb(w, "automatic"));
+    }
+    std::printf("in force  %.1f GB%s\n", gb(w, "in_force"),
+                jget(w, "pending", false)
+                    ? "  (the lower one waits for the work under way)"
+                    : "");
+    std::printf("wired     %.1f GB now\n", gb(w, "used"));
+    std::printf("range     %.1f-%.1f GB (the most the GPU keeps "
+                "resident)\n", gb(w, "min"), gb(w, "max"));
+    return 0;
+  }
   if (cmd == "download") {
     // A gated model's token, asked for at the terminal without echo --
     // never an argument, which the shell's history would keep.
@@ -5087,8 +5217,13 @@ main(int argc, char** argv)
     const bool discard = std::erase(args, std::string("--cancel")) > 0;
     double pause_after = -1;
     double cancel_after = -1;
+    std::string from;  // a download source, "" the one chosen
     for (std::size_t i = 0; i + 1 < args.size();) {
-      if (args[i] == "--pause-after" || args[i] == "--cancel-after") {
+      if (args[i] == "--from") {
+        from = args[i + 1];
+        args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
+                   args.begin() + static_cast<std::ptrdiff_t>(i) + 2);
+      } else if (args[i] == "--pause-after" || args[i] == "--cancel-after") {
         (args[i] == "--pause-after" ? pause_after : cancel_after) =
             std::atof(args[i + 1].c_str());
         args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
@@ -5122,7 +5257,7 @@ main(int argc, char** argv)
       left();
       return 0;
     }
-    auto j = c.download_model(id, token);
+    auto j = c.download_model(id, token, from);
     std::fill(token.begin(), token.end(), '\0');
     if (!j.ok()) {
       return fail(j.error());

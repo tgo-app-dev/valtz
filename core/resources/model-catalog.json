@@ -61,7 +61,7 @@
                "flux2-klein-9b", "fibo2-edit-turbo"]
     },
     "video": {
-      "generate": ["minimax-h3-fl2va"],
+      "generate": ["minimax-h3-fl2va", "minimax-h3-ref2va"],
       "edit": ["minimax-h3-ref2va"]
     },
     "audio": {
@@ -177,7 +177,9 @@
         {"model": "qwen3.8-flash-next", "label": "Qwen3.8 Flash-Next (uncensored)"},
         {"model": "qwen3.8-27b-mtp-4bit", "label": "Qwen3.8 27B MTP drafter"},
         {"model": "qwen3.8-27b-dflash2", "label": "Qwen3.8 27B DFlash 2 drafter"},
-        {"model": "qwen3.8-flash-next-dflash2", "label": "Qwen3.8 Flash-Next DFlash 2 drafter"}
+        {"model": "qwen3.8-flash-next-dflash2", "label": "Qwen3.8 Flash-Next DFlash 2 drafter"},
+        {"model": "deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash"},
+        {"model": "deepseek-v4.1-flash-2bit", "label": "DeepSeek V4.1 Flash (2-bit)"}
       ]
     },
     {
@@ -330,6 +332,42 @@
       "engine": {"vpipe": {"held_gb": {"8": 0.6, "4": 0.35}}},
       "license": "apache-2.0",
       "notes": "Inco AI's DFlash 2 block drafter for Qwen3.8-Flash-Next (five layers at its 2560 width, every layer a 2048-token window, bf16 on disk): it reads five of the model's layers -- 5, 15, 25, 35, 45, each averaged over its four residual streams -- drafts a block, and the model checks the block in one pass, keeping the tokens it agrees with: the model's own tokens, faster (vpipe 8d005eca, text-chat draft_model). Held at 8 bits (~0.55 GB and its window caches) or 4 in memory. On vpipe's M4 Pro, the experts cached: 20 tok/s plain, ~31 with it (3.2 tokens a round); a fresh conversation 9.4 against the MTP head's 7.3. On the M5 Ultra (2026-10-21, every expert loaded): 45 tok/s warm, 2.8 a round, against the MTP head's 38-40 (2.5). An option, not the default (Settings > Agentic Helper > Drafter). Apache-2.0."
+    },
+    {
+      "id": "deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash",
+      "family": "deepseek-v4.1",
+      "role": "assistant",
+      "hf_path": "mlx-community/DeepSeek-V4.1-Flash-1017-oQ4e-mtp",
+      "check": {"is": {"config.json": "deepseek_v41"}},
+      "capabilities": ["prompt-enhance", "intent", "caption"],
+      "disk_gb": 432.0, "disk_measured": true,
+      "min_ram_gb": 64, "resident_gb": 26, "rank": 0, "by_name": true,
+      "context_tokens": 131072,
+      "license": "mit",
+      "engine": {"vpipe": {"mtp": true,
+                           "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 0,
+                                       "min_p": 0.0, "presence_penalty": 0.0,
+                                       "repetition_penalty": 1.0}}},
+      "notes": "DeepSeek-V4.1-Flash (the 1017 update), a sparse Mixture of Experts that sees: 552B backbone parameters, six of 384 experts a layer read a token, and a 196B-parameter n-gram memory read from disk a row at a time. oMLX's oQ4e pack keeps the release's own numbers -- its FP4 experts and FP8 projections -- and quantizes only the n-gram tables: 432 GB on disk. vpipe 6acfd227 (its tools in DSML, the release's own format: DESIGN §15 0zzd). The routed experts (289 GB) live in a cache sized to what is left -- or to the Agent's Memory (Settings > Experimental > Agent) -- the rest ~11 GB once loaded; at least 26 GB held (the rest and two layers of experts, vpipe's least). Its own DSpark head drafts only where every expert is resident (vpipe's call). From 64 GB, 128 GB for a fluent chat: on an M5 Ultra (vpipe) 15 tok/s at 64 GB, 31 at 128, 35 at 256 once warm. Its context is 131,072 tokens here, its state small (compressed latents). Chosen by name only (the Agent's Model, Settings > Agentic Helper). MIT."
+    },
+    {
+      "id": "deepseek-v4.1-flash-2bit",
+      "name": "DeepSeek V4.1 Flash (2-bit)",
+      "family": "deepseek-v4.1",
+      "role": "assistant",
+      "hf_path": "mlx-community/DeepSeek-V4.1-Flash-1017-oQ2e-mtp",
+      "check": {"is": {"config.json": "deepseek_v41"}},
+      "capabilities": ["prompt-enhance", "intent", "caption"],
+      "disk_gb": 313.3, "disk_measured": true,
+      "min_ram_gb": 64, "resident_gb": 20, "rank": 0, "by_name": true,
+      "context_tokens": 131072,
+      "license": "mit",
+      "engine": {"vpipe": {"mtp": true,
+                           "sampling": {"temperature": 1.0, "top_p": 0.95, "top_k": 0,
+                                       "min_p": 0.0, "presence_penalty": 0.0,
+                                       "repetition_penalty": 1.0}}},
+      "notes": "DeepSeek-V4.1-Flash (the 1017 update) in oMLX's oQ2e pack: the routed experts requantized to 2 bits (170 GB in memory, every one resident on a 256 GB Mac with no Memory limit), the projections to 4-8 bits, the DSpark head and the n-gram tables as the oQ4e pack keeps them: 313 GB on disk, a coarser copy of the release than the oQ4e. On an M5 Ultra with 256 GB (vpipe 6acfd227): ~55 tok/s, 88 with DSpark on maths; a 17,000-token prompt in 6-9 s. At least 20 GB held. Chosen by name only (the Agent's Model, Settings > Agentic Helper). MIT."
     },
     {
       "id": "z-image-turbo",
@@ -919,6 +957,7 @@
           "references": {
             "max_pictures": 9, "max_clips": 3, "max_sounds": 3,
             "max_total": 12, "ports": 6, "tail_frames": 90,
+            "prompt_only": true,
             "encoder": {
               "reference_image_short_edge": 1024,
               "max_prompt_tokens": 32768,

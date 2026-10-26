@@ -741,17 +741,30 @@ preview_movie_frame(const fs::path& src, double seconds, int edge)
 namespace {
 
 // The track's picture upright: its transform applied, moved back to the
-// origin.
+// origin. The transform is AVFoundation's, y DOWN; Core Image's y goes up,
+// so it is applied mirrored in y on both sides -- as it was, a phone's
+// portrait clip (a quarter turn) came out upside down.
 CIImage*
 upright(CIImage* img, CGAffineTransform t)
 {
   if (CGAffineTransformIsIdentity(t)) {
     return img;
   }
+  t = CGAffineTransformMake(t.a, -t.b, -t.c, t.d, t.tx, -t.ty);
   img = [img imageByApplyingTransform:t];
   const CGRect e = img.extent;
   return [img imageByApplyingTransform:CGAffineTransformMakeTranslation(
                                            -e.origin.x, -e.origin.y)];
+}
+
+// How `src`'s picture track turns its frames; identity without one.
+CGAffineTransform
+clip_turn(const fs::path& src)
+{
+  NSURL* url = [NSURL fileURLWithPath:@(src.c_str())];
+  AVAssetTrack* track =
+      video_track([AVURLAsset URLAssetWithURL:url options:nil]);
+  return track ? track.preferredTransform : CGAffineTransformIdentity;
 }
 
 }
@@ -943,6 +956,8 @@ decode_movie(const fs::path& src, const KeyedAdjustments& adjust,
           "cannot read {}", src.filename().string()));
     }
     const double fps = rate.to_double();
+    // Upright first: the look and the crop are the picture's as it shows.
+    const CGAffineTransform turn = track.preferredTransform;
     std::int64_t written = 0;
     Status st = ok_status();
     for (;;) {
@@ -956,7 +971,7 @@ decode_movie(const fs::path& src, const KeyedAdjustments& adjust,
         const auto frame = static_cast<std::int64_t>(
             std::llround(CMTimeGetSeconds(pts) * fps));
         if (pb && frame >= first && (count < 0 || written < count)) {
-          CIImage* img = [CIImage imageWithCVPixelBuffer:pb];
+          CIImage* img = upright([CIImage imageWithCVPixelBuffer:pb], turn);
           img = apply_chain(img, filter_chain(adjust.at(frame)));
           const Crop c = crop.at(frame);
           if (!c.identity()) {
@@ -1702,6 +1717,7 @@ public:
     }];
     c->_out.alwaysCopiesSampleData = NO;
     [c->_reader addOutput:c->_out];
+    c->_turn = track.preferredTransform;
     const float fps = track.nominalFrameRate;
     c->_frame = fps > 0 ? 1.0 / fps : 1.0 / 24;
     if (start > c->_frame) {
@@ -1717,8 +1733,8 @@ public:
     return c;
   }
 
-  // The frame showing at `t` seconds; nil before its first and past its
-  // last.
+  // The frame showing at `t` seconds, upright; nil before its first and
+  // past its last.
   CIImage*
   at(double t)
   {
@@ -1737,7 +1753,7 @@ public:
       return nil;
     }
     CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(_cur);
-    return pb ? [CIImage imageWithCVPixelBuffer:pb] : nil;
+    return pb ? upright([CIImage imageWithCVPixelBuffer:pb], _turn) : nil;
   }
 
   // The colour the frame on show declares (retained), else BT.709.
@@ -1774,6 +1790,7 @@ private:
   CMSampleBufferRef         _next = nullptr;
   double                    _next_t = INFINITY;
   double                    _frame = 1.0 / 24;
+  CGAffineTransform         _turn = CGAffineTransformIdentity;
 };
 
 }
@@ -2249,6 +2266,9 @@ struct StackRenderer::Impl {
   MovieStack            stack;
   Rational              rate;
   std::vector<CIImage*> stills;    // per layer; nil for a clip
+  // Each clip's turn, in the order of its video layers: the player hands
+  // its frames over as stored.
+  std::vector<CGAffineTransform> turns;
   PixelSize             own;       // the bottom clip's frame
   PixelSize             size;      // what it draws
   std::int64_t          frames = 0;
@@ -2324,6 +2344,9 @@ StackRenderer::make(MovieStack stack, Rational rate)
     // pictures read 16 000 files, 3.4 s of a plan (2026-10-23).
     std::map<fs::path, CIImage*> read;
     for (const auto& l : stack.layers) {
+      if (l.video) {
+        m.turns.push_back(clip_turn(l.file));
+      }
       if (l.video || l.audio_only) {
         m.stills.push_back(nil);
       } else if (const auto at = read.find(l.file);
@@ -2402,8 +2425,13 @@ StackRenderer::render(std::int64_t frame,
   @autoreleasepool {
     std::vector<CIImage*> frames;
     frames.reserve(clips.size());
-    for (CVPixelBufferRef pb : clips) {
-      frames.push_back(pb ? [CIImage imageWithCVPixelBuffer:pb] : nil);
+    for (std::size_t k = 0; k < clips.size(); ++k) {
+      CVPixelBufferRef pb = clips[k];
+      const CGAffineTransform t = k < _impl->turns.size()
+                                      ? _impl->turns[k]
+                                      : CGAffineTransformIdentity;
+      frames.push_back(pb ? upright([CIImage imageWithCVPixelBuffer:pb], t)
+                          : nil);
     }
     VALTZ_ASSIGN(CIImage* img, _impl->compose(frame, frames));
     const CGRect bounds = CGRectMake(0, 0, CVPixelBufferGetWidth(out),

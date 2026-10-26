@@ -290,6 +290,14 @@ TEST(graph_builder, a_fetch_carries_its_token)
   REQUIRE_OK(plain);
   CHECK(!find_stage(plain->spec, "model-fetch")->at("config")
              .contains("hf_token"));
+  CHECK(!find_stage(plain->spec, "model-fetch")->at("config")
+             .contains("source"));
+  // From a source named (Controller::download_model): vpipe's to read.
+  job.params["source"] = "modelscope";
+  auto mirror = vp::build_fetch_model(job);
+  REQUIRE_OK(mirror);
+  CHECK(jget<std::string>(find_stage(mirror->spec, "model-fetch")
+                              ->at("config"), "source", "") == "modelscope");
 }
 
 // A transcription (DESIGN §4h): the sound as one channel at 16 kHz, the
@@ -712,10 +720,58 @@ TEST(graph_builder, a_video_summary_reads_sparse)
     const Json tc = config_of(find_stage(tg->spec, "text-chat"));
     CHECK(jget(tc, "page_tokens", 0) == jget(cc, "page_tokens", -1));
     CHECK(jget(tc, "max_pages", 0) == 16384);
+    // No limit on what it holds unless the agent's Memory sets one; then
+    // vpipe's memory_limit_mb, a summary's stage alike (DESIGN §15 0zzd).
+    CHECK(!tc.contains("memory_limit_mb"));
+    CHECK(!cfg.contains(ex::kSummaryMemoryLimitMb));
+    turn.params["memory_limit_mb"] = 65536;
+    tg = vp::build_agent_turn(turn);
+    REQUIRE_OK(tg);
+    CHECK(jget(config_of(find_stage(tg->spec, "text-chat")),
+               "memory_limit_mb", 0) == 65536);
+    chat.params["memory_limit_mb"] = 131072;
+    cg = vp::build_chat(chat);
+    REQUIRE_OK(cg);
+    CHECK(jget(config_of(find_stage(cg->spec, "text-chat")),
+               "memory_limit_mb", 0) == 131072);
+    JobSpec held = job;
+    held.params["memory_limit_mb"] = 196608;
+    auto hg = vp::build_summarize_video(held, {544, 320});
+    REQUIRE_OK(hg);
+    CHECK(jget(config_of(find_stage(hg->spec, "summary")),
+               ex::kSummaryMemoryLimitMb, 0) == 196608);
   }
   CHECK(g->summary_sink == "summary-sink");
   REQUIRE(find_stage(g->spec, g->summary_sink));
   CHECK(src_of(find_stage(g->spec, g->summary_sink), 0) == "summary");
+
+  // A scene: 24 frames at most, two at least -- at eight a second, a
+  // second's eight; large frames on a short context, fewer a scene (two
+  // fifths of 32,768 tokens at 720 a frame: 18).
+  CHECK(jget(cfg, ex::kSummarySceneFrames, 0) == 24);
+  CHECK(jget(cfg, ex::kSummaryMinFrames, 0) == 2);
+  {
+    JobSpec dense = job;
+    dense.params["every"] = 0.125;
+    auto dg = vp::build_summarize_video(dense, {576, 320});
+    REQUIRE_OK(dg);
+    CHECK(dg->samples->every == 0.125);
+    const Json dc = config_of(find_stage(dg->spec, "summary"));
+    CHECK(jget(dc, ex::kSummaryMinFrames, 0) == 8);
+    CHECK(jget(dc, ex::kSummarySceneFrames, 0) == 24);
+    dense.params["every"] = 0.25;
+    dense.params["context_tokens"] = 32768;
+    dg = vp::build_summarize_video(dense, {1152, 640});
+    REQUIRE_OK(dg);
+    const Json hc = config_of(find_stage(dg->spec, "summary"));
+    CHECK(jget(hc, ex::kSummaryMinFrames, 0) == 4);
+    CHECK(jget(hc, ex::kSummarySceneFrames, 0) == 18);
+    // Portrait: the size as sampled.
+    dg = vp::build_summarize_video(dense, {320, 576});
+    REQUIRE_OK(dg);
+    CHECK(dg->samples->size.width == 320);
+    CHECK(dg->samples->size.height == 576);
+  }
 
   // Greedy with no sampler; no clip, no frame size: refused.
   job.params.erase("sampling");
@@ -1730,19 +1786,33 @@ TEST(graph_builder, chat_decodes_with_the_mtp_head)
   CHECK(src_of(find_stage(g->spec, "text-chat"), 0) == "text-prompt");
   CHECK(!config_of(chat).contains("mtp_model"));
   CHECK(find_stage(g->spec, "sampler") == nullptr);
-  // Every catalog assistant samples as Qwen's card recommends without
-  // thinking; the job carries it to the graph.
+  // Every catalog assistant samples as its card recommends without
+  // thinking -- a Qwen as Qwen's, DeepSeek V4.1 as DeepSeek's -- and the
+  // job carries it to the graph.
+  int qwen = 0, deepseek = 0;
   for (const auto* m : cat->serving(models::Capability::PromptEnhance)) {
     if (m->role != "assistant") {
       continue;
     }
     const Json smp = jget(jget(m->engine, "vpipe", Json::object()),
                           "sampling", Json::object());
+    if (m->family == "deepseek-v4.1") {
+      CHECK(jget(smp, "temperature", 0.0) == 1.0);
+      CHECK(jget(smp, "top_p", 0.0) == 0.95);
+      CHECK(jget(smp, "top_k", -1) == 0);
+      CHECK(jget(smp, "presence_penalty", -1.0) == 0.0);
+      ++deepseek;
+      continue;
+    }
+    CHECK(m->family.rfind("qwen", 0) == 0);
     CHECK(jget(smp, "temperature", 0.0) == 0.7);
     CHECK(jget(smp, "top_p", 0.0) == 0.8);
     CHECK(jget(smp, "top_k", 0) == 20);
     CHECK(jget(smp, "presence_penalty", 0.0) == 1.5);
+    ++qwen;
   }
+  CHECK(qwen >= 4);
+  CHECK(deepseek == 2);
   j.params["sampling"] = jget(jget(cat->find("qwen3.8-27b")->engine,
                                    "vpipe", Json::object()),
                               "sampling", Json::object());
@@ -1917,6 +1987,43 @@ TEST(graph_builder, minimax_h3_ref2va_references)
   // FL2VA reads no references.
   JobSpec f = job_for("minimax-h3-fl2va", kOpGenerateVideo);
   CHECK(!vp::build_video(f, std::nullopt, refs).ok());
+}
+
+// Ref2VA from the prompt alone (catalog `references.prompt_only`):
+// vpipe's prompt-only request -- the reference encoder with an EMPTY
+// list, never the diffusion-conditioner, whose conditioning the Ref2VA
+// weights refuse; no picture to open on. FL2VA from words as before.
+TEST(graph_builder, minimax_h3_ref2va_from_the_prompt_alone)
+{
+  JobSpec j = job_for("minimax-h3-ref2va", kOpGenerateVideo);
+  j.params = {{"prompt", "A fox trots through snow at dawn"},
+              {"width", 832}, {"height", 480}, {"frames", 39},
+              {"fps", 24.0}, {"steps", 8}, {"seed", 7}};
+  auto g = vp::build_video(j, std::nullopt, {});
+  REQUIRE_OK(g);
+  CHECK(!find_stage(g->spec, "diffusion-conditioner"));
+  const Json* enc = find_stage(g->spec, "video-ref-encoder");
+  REQUIRE(enc);
+  CHECK(src_of(enc, 0) == "text-prompt" && src_of(enc, 1) == "model-select");
+  CHECK(src_of(enc, 2) == "<none>");  // no reference port
+  const Json ec = config_of(enc);
+  CHECK(ec.contains("references") && ec["references"] == Json::array());
+  CHECK(jget(ec, "frames", 0) == 39);
+  const Json* gen = find_stage(g->spec, "generate-video");
+  REQUIRE(gen);
+  CHECK(src_of(gen, 0) == "video-ref-encoder" && oport_of(gen, 0) == 0);
+  CHECK(src_of(gen, 7) == "video-ref-encoder" && oport_of(gen, 7) == 1);
+  CHECK(src_of(gen, 5).empty());
+  CHECK(find_stage(g->spec, "audio-vae-decode"));
+  CHECK(!vp::build_video(j, vp::RefImage{"/p/first.png", {832, 480}}, {})
+             .ok());
+
+  JobSpec f = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  f.params = j.params;
+  auto fg = vp::build_video(f, std::nullopt, {});
+  REQUIRE_OK(fg);
+  CHECK(find_stage(fg->spec, "diffusion-conditioner"));
+  CHECK(!find_stage(fg->spec, "video-ref-encoder"));
 }
 
 // A continuation's seam: its decoded frames matched to the tail it was

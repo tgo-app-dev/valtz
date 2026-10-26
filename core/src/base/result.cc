@@ -41,6 +41,7 @@ all_messages()
     kPromptRefUnbound, kPromptInUse, kNotAPrompt,
     kNoEngineForDownload, kDownloadNeedsToken, kDownloadNotGranted,
     kAwaitedDownloadFailed, kAwaitedDownloadStopped, kNoDownloadRunning,
+    kUnknownDownloadSource, kNotOnDownloadSource, kWiredLimitRange,
     kAgentEmptyRequest, kAgentNoSession, kAgentStopped,
     kAgentStepNotWaiting, kAgentTooManyTurns, kAgentNoKey,
     kAgentNoCloudModel, kAgentCloudUnreachable, kAgentCloudRefused,

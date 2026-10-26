@@ -367,6 +367,16 @@ load_keys(id<AVAsynchronousKeyValueLoading> obj, NSArray<NSString*>* keys)
   dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
 }
 
+// A track's transform as the quarter turn it is, clockwise on screen
+// (AVFoundation's y goes down): 0, 90, 180 or 270.
+std::int32_t
+turn_of(CGAffineTransform t)
+{
+  const double deg = std::atan2(t.b, t.a) * 180.0 / M_PI;
+  const int q = static_cast<int>(std::lround(deg / 90.0));
+  return ((q % 4) + 4) % 4 * 90;
+}
+
 // The picture track's last frame, in its own frames from its first: the
 // sample shown last -- presented at or before the track's end -- by its
 // own time (a sample cursor reads the file's tables, nothing decoded);
@@ -420,11 +430,18 @@ probe_movie(NSURL* url)
     AVAssetTrack* t = vtracks.firstObject;
     load_keys(t, @[
       @"naturalSize", @"formatDescriptions", @"nominalFrameRate",
-      @"minFrameDuration", @"timeRange"
+      @"minFrameDuration", @"timeRange", @"preferredTransform"
     ]);
-    CGSize sz = t.naturalSize;
-    mi.frame.width = static_cast<std::int32_t>(sz.width);
-    mi.frame.height = static_cast<std::int32_t>(sz.height);
+    // As it shows: a phone's portrait clip is stored landscape, turned a
+    // quarter by its track.
+    const CGRect r = CGRectApplyAffineTransform(
+        CGRectMake(0, 0, t.naturalSize.width, t.naturalSize.height),
+        t.preferredTransform);
+    mi.frame.width = static_cast<std::int32_t>(std::lround(
+        std::abs(r.size.width)));
+    mi.frame.height = static_cast<std::int32_t>(std::lround(
+        std::abs(r.size.height)));
+    mi.turn = turn_of(t.preferredTransform);
 
     // Exact rate for constant-rate media; the float average otherwise.
     CMTime mfd = t.minFrameDuration;
@@ -622,6 +639,21 @@ probe_file(const std::filesystem::path& path)
                                     path.filename().string()));
     }
     return r;
+  }
+}
+
+std::int32_t
+movie_turn(const std::filesystem::path& file)
+{
+  @autoreleasepool {
+    NSURL* url = [NSURL fileURLWithPath:@(file.c_str())];
+    AVURLAsset* asset = [AVURLAsset URLAssetWithURL:url options:nil];
+    AVAssetTrack* t = load_tracks(asset, AVMediaTypeVideo).tracks.firstObject;
+    if (!t) {
+      return 0;
+    }
+    load_keys(t, @[ @"preferredTransform" ]);
+    return turn_of(t.preferredTransform);
   }
 }
 

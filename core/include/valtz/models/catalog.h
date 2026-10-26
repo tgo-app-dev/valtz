@@ -93,8 +93,15 @@ struct ModelEntry {
   // a cache and whose n-gram table is read from disk -- Qwen3.8
   // Flash-Next's 128.6 GB, of which 6.8 must stay.
   double                   resident_gb = 0;
+  // The context a helper is given (catalog `context_tokens`; 0: its own
+  // as far as the memory holds its K/V, models::helper_context): a model
+  // whose state is small and whose experts take the rest of the memory --
+  // DeepSeek-V4.1-Flash's compressed latents, its 1,048,576 tokens far
+  // past what a session needs, and its weights larger than the Mac.
+  int                      context_tokens = 0;
   // Never Auto's pick (catalog `by_name`): chosen by name alone -- an
-  // abliterated helper, its makers' alignment taken out.
+  // abliterated helper, its makers' alignment taken out; a model too
+  // large to be anyone's default.
   bool                     by_name = false;
   int                      rank = 0;
   // Per-capability overrides of `rank` (catalog `rank_for`): one model

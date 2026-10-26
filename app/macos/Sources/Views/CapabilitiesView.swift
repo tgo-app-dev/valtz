@@ -33,6 +33,23 @@ struct CapabilitiesView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                // Where downloads come from: vpipe's sources, when it has
+                // more than one (ModelScope mirrors most of the models,
+                // and is what mainland China reaches).
+                if let tree = model.capabilityTree,
+                   let sources = tree.downloadSources, sources.count > 1 {
+                    Picker("Download From", selection: Binding(
+                        get: { tree.downloadSource ?? "huggingface" },
+                        set: { model.setDownloadSource($0) })) {
+                        ForEach(sources) { Text($0.title).tag($0.name) }
+                    }
+                    .fixedSize()
+                    .controlSize(.small)
+                    .help("Where models are downloaded from. ModelScope mirrors most of them and can be reached from mainland China; a model it does not carry comes from Hugging Face. Either way it is the same files, in the same folder.")
+                    .settingsMark(String(localized: "Download From"),
+                                  String(localized: "Hugging Face"),
+                                  String(localized: "ModelScope"))
+                }
                 Button("Rescan") { model.rescanModels() }
                     .controlSize(.small)
                     .help("Look for models again")
@@ -537,6 +554,77 @@ private struct MemberRow: View {
         }
     }
 
+    /// The download sources offered (vpipe's), more than one for a choice.
+    private var sources: [CapabilityTree.DownloadSource] {
+        model.capabilityTree?.downloadSources ?? []
+    }
+
+    /// Where a click on Download takes it from: the source chosen --
+    /// passed over for Hugging Face where it does not carry the model.
+    private var primarySource: String {
+        let chosen = model.capabilityTree?.downloadSource ?? "huggingface"
+        if member.sources == nil || member.path(on: chosen) != nil {
+            return chosen
+        }
+        return "huggingface"
+    }
+
+    private func sourceTitle(_ name: String) -> String {
+        sources.first { $0.name == name }?.title
+            ?? String(localized: "Hugging Face")
+    }
+
+    /// Download (Resume, a paused one): from the source chosen at a
+    /// click; its menu, with a choice of sources, from any that carries
+    /// it -- each a source of the same files, into the same folder, so a
+    /// download paused on one goes on from the other.
+    @ViewBuilder
+    private var downloadButton: some View {
+        let m = member
+        let resume = m.state == "partial"
+        let from = primarySource
+        let chosen = model.capabilityTree?.downloadSource ?? "huggingface"
+        let help: String = !m.fits
+            ? String(localized: "Needs a Mac with more memory")
+            : m.isGated && from == "huggingface"
+            ? String(localized: "Gated on Hugging Face: accept its license there, then download it with your access token")
+            : from != chosen
+            ? String(localized: "Not on \(sourceTitle(chosen)): downloads from \(sourceTitle(from)) into the models folder Valtz manages")
+            : sources.count > 1
+            ? String(localized: "Download from \(sourceTitle(from)) into the models folder Valtz manages")
+            : String(localized: "Download into the models folder Valtz manages")
+        if sources.count > 1 {
+            Menu {
+                ForEach(sources) { s in
+                    if let there = m.path(on: s.name) {
+                        Button(resume ? "Resume from \(s.title)"
+                                      : "Download from \(s.title)") {
+                            model.startDownload(m, from: s.name)
+                        }
+                        .help(there == m.hfPath ? "" : String(localized: "There as \(there)"))
+                    } else {
+                        Button("Not on \(s.title)") {}
+                            .disabled(true)
+                    }
+                }
+            } label: {
+                Text(resume ? "Resume" : "Download")
+            } primaryAction: {
+                model.startDownload(m, from: from)
+            }
+            .menuStyle(.button)
+            .fixedSize()
+            .disabled(!m.fits)
+            .help(help)
+        } else {
+            Button(resume ? "Resume" : "Download") {
+                model.startDownload(m, from: from)
+            }
+            .disabled(!m.fits)
+            .help(help)
+        }
+    }
+
     /// A download of it -- or, a quantized variant, its quantizing; a
     /// download, its compressing -- still running.
     private var fetching: JobInfo? {
@@ -599,19 +687,7 @@ private struct MemberRow: View {
                           ? String(localized: "Quantize \(q.fromName) into it: \(String(q.bits))-bit, groups of \(String(q.groupSize)), in the models folder Valtz manages")
                           : String(localized: "Download \(q.fromName) first: this is quantized from it — or link a pack already made"))
             } else if m.state != "installed" {
-                Button(m.state == "partial" ? "Resume" : "Download") {
-                    // A gated one asks for its license and a token first.
-                    if m.isGated {
-                        model.gatedDownload = m
-                    } else {
-                        model.download(model: m.model)
-                    }
-                }
-                .disabled(!m.fits)
-                .help(!m.fits ? "Needs a Mac with more memory"
-                      : m.isGated
-                      ? "Gated on Hugging Face: accept its license there, then download it with your access token"
-                      : "Download into the models folder Valtz manages")
+                downloadButton
                 if m.isGated {
                     Image(systemName: "lock.fill")
                         .font(.caption)
@@ -718,11 +794,7 @@ private struct MemberRow: View {
             } else if let done = m.compressed {
                 Text("Compressed to \(String(done.bits))-bit")
                 Button("Download the Original Again (\(done.originalBytes.formatted(style)))") {
-                    if m.isGated {
-                        model.gatedDownload = m
-                    } else {
-                        model.download(model: m.model)
-                    }
+                    model.startDownload(m, from: primarySource)
                 }
             } else {
                 Text("Compress to free disk space")

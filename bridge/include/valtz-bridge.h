@@ -64,6 +64,12 @@ public:
   // "kv_bytes", "pooled_bytes", "wired_used", "wired_limit",
   // "gpu_allocated"} (Controller::memory_held; {} without an engine).
   std::string memory_held_json() const;
+  // Settings › General › Memory's wired limit (Controller::wired_limit):
+  // {"ok": true, "chosen", "automatic", "min", "max", "in_force", "used"
+  // -- bytes -- "pending"}; and one set (bytes, 0 Automatic) -> {"ok"}
+  // or an error (kWiredLimitRange).
+  std::string wired_limit_json() const;
+  std::string set_wired_limit(std::uint64_t bytes);
   // Settings > Capabilities (Controller::capability_tree): the model
   // families, their features and members, where each member is.
   std::string capability_tree_json() const;
@@ -449,9 +455,16 @@ public:
   // A catalog model downloaded -> {"ok", "job"}. `hf_token`: the
   // person's Hugging Face access token for a GATED model (the capability
   // tree's member "gated"), "" none -- passed to the job in memory, never
-  // kept (Controller::download_model).
+  // kept (Controller::download_model). `source`: where from -- a name of
+  // download_sources_json's, "" the one chosen.
   std::string download_model(const std::string& model_id,
-                             const std::string& hf_token);
+                             const std::string& hf_token,
+                             const std::string& source);
+  // Where downloads come from (Controller::download_sources) ->
+  // {"ok", "sources": [{"name", "label", "default"}], "chosen"}; and the
+  // one chosen from now on -> {"ok"}.
+  std::string download_sources_json() const;
+  std::string set_download_source(const std::string& name);
   // A model's download stopped (Controller::stop_download) -> {"ok"}:
   // PAUSED (`discard` false), what came down kept -- download_model
   // again goes on from there; CANCELLED, that deleted too (as the job

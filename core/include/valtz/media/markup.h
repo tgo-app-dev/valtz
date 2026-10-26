@@ -243,7 +243,9 @@ Result<DrawingBox> crop_drawing(const std::filesystem::path& png,
 
 // How a TEXT BOX's words lie in it, as it is drawn: the lines set, whether
 // every word is, the height all of them need at its width, and its widest
-// line -- what the agent is told, so it can size a box to its words.
+// line -- what the agent is told, so it can size a box to its words. A
+// shape's words are measured in its text area (fitting nowhere in one
+// too small for a line).
 // `shown`: the bytes of its text the box sets. With `all_lines`, each
 // line its words would take at the box's width, however tall the box:
 // where it ends in the text (bytes) and the height a box needs to show

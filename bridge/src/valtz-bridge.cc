@@ -359,8 +359,20 @@ Core::choose_assistant(const std::string& request_json)
     }
     // {"model"}: the helper chosen; {"keep_loaded"}: how long it stays;
     // {"drafter", "drafter_bits"}: what it drafts with; {"video_every"}:
-    // a video summary's seconds a frame (0 Auto); {"context"}: its
+    // a video summary's seconds a frame (0 Auto); {"video_size"}: its
+    // frames' size (standard | high | highest); {"context"}: its
     // context at most, tokens (0 Auto).
+    if (j->contains("video_size")) {
+      auto st = _impl->ctl->set_video_size(
+          jget<std::string>(*j, "video_size", "standard"));
+      if (!st.ok() || (!j->contains("model") &&
+                       !j->contains("keep_loaded") &&
+                       !j->contains("drafter") &&
+                       !j->contains("video_every") &&
+                       !j->contains("context"))) {
+        return st.ok() ? ok() : err(st.error());
+      }
+    }
     if (j->contains("context")) {
       auto st = _impl->ctl->set_assistant_context(
           jget<std::int64_t>(*j, "context", 0));
@@ -594,6 +606,21 @@ std::string
 Core::memory_held_json() const
 {
   return guarded([&] { return to_text(_impl->ctl->memory_held()); });
+}
+
+std::string
+Core::wired_limit_json() const
+{
+  return guarded([&] { return ok(_impl->ctl->wired_limit()); });
+}
+
+std::string
+Core::set_wired_limit(std::uint64_t bytes)
+{
+  return guarded([&] {
+    Status st = _impl->ctl->set_wired_limit(bytes);
+    return st.ok() ? ok() : err(st.error());
+  });
 }
 
 std::string
@@ -2664,11 +2691,26 @@ Core::detect_intent(const std::string& request_json)
 
 std::string
 Core::download_model(const std::string& model_id,
-                     const std::string& hf_token)
+                     const std::string& hf_token, const std::string& source)
 {
   return guarded([&] {
-    auto r = _impl->ctl->download_model(model_id, hf_token);
+    auto r = _impl->ctl->download_model(model_id, hf_token, source);
     return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
+  });
+}
+
+std::string
+Core::download_sources_json() const
+{
+  return guarded([&] { return ok(_impl->ctl->download_sources()); });
+}
+
+std::string
+Core::set_download_source(const std::string& name)
+{
+  return guarded([&] {
+    Status st = _impl->ctl->set_download_source(name);
+    return st.ok() ? ok() : err(st.error());
   });
 }
 

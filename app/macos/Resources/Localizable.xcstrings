@@ -135,6 +135,16 @@
         }
       }
     },
+    "%@ GB" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ GB"
+          }
+        }
+      }
+    },
     "%@ Seconds" : {
       "localizations" : {
         "zh-Hans" : {
@@ -357,6 +367,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@ 尚未下载：下载前由 %2$@ 运行。"
+          }
+        }
+      }
+    },
+    "%@ is not downloaded: %@ thinks until it is." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ is not downloaded: %2$@ thinks until it is."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ 尚未下载：下载完成前由 %2$@ 思考。"
           }
         }
       }
@@ -1336,6 +1362,16 @@
         }
       }
     },
+    "2 a second" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每秒 2 帧"
+          }
+        }
+      }
+    },
     "3-step streaming method; its cache on disk" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1352,6 +1388,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "30 分钟"
+          }
+        }
+      }
+    },
+    "4 a second" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每秒 4 帧"
           }
         }
       }
@@ -1393,6 +1439,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "512 × 512（草稿）"
+          }
+        }
+      }
+    },
+    "8 a second" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每秒 8 帧"
           }
         }
       }
@@ -1448,11 +1504,22 @@
       }
     },
     "A clip is read a frame at a time, 576 × 320 at most, cut into scenes where the picture changes, and each scene told in a few sentences, then the whole. More frames see more and take longer: each is about 180 of the model's words to read." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "视频逐帧读取，每帧至多 576 × 320，在画面变化处切分为场景，每个场景用几句话描述，最后概括全片。帧越多看得越细，也越费时：每帧约占模型 180 个词元。"
+          }
+        }
+      }
+    },
+    "A clip is read a frame at a time, landscape or portrait, upright, cut into scenes where the picture changes, and each scene told in a few sentences, then the whole. More frames, and larger ones, see more and take longer: a frame is about 180 of the model's words to read at Standard, 400 at High, 720 at Highest." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "片段逐帧读取（横向或纵向，均摆正），在画面变化处切分为场景，每个场景用几句话描述，最后概括全片。帧越多、越大，看到的越多，耗时也越长：每帧在标准尺寸下约为模型要读的 180 个词元，高约 400 个，最高约 720 个。"
           }
         }
       }
@@ -2333,6 +2400,16 @@
         }
       }
     },
+    "Agent Memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体内存"
+          }
+        }
+      }
+    },
     "Agent Prompt" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2369,6 +2446,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "智能助手"
+          }
+        }
+      }
+    },
+    "Agentic Helper (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能助手（%@）"
           }
         }
       }
@@ -3129,7 +3216,18 @@
         }
       }
     },
+    "Auto (by the clip's length)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动（按片段长度）"
+          }
+        }
+      }
+    },
     "Auto (one a second)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -3140,6 +3238,7 @@
       }
     },
     "Auto (one every 2 seconds)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -3159,7 +3258,18 @@
         }
       }
     },
+    "Auto reads about 80 frames of a short clip: 8 a second up to 10 seconds, 4 up to 20, 2 up to 40, then one a second." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动为短片段读取约 80 帧：10 秒以内每秒 8 帧，20 秒以内每秒 4 帧，40 秒以内每秒 2 帧，更长则每秒一帧。"
+          }
+        }
+      }
+    },
     "Auto reads one a second, or one every 2 seconds on a Mac whose memory moves less than 200 GB/s. This Mac's moves %@ GB/s." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -3205,6 +3315,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "自动"
+          }
+        }
+      }
+    },
+    "Automatic (%@)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动（%@）"
           }
         }
       }
@@ -5319,6 +5439,16 @@
         }
       }
     },
+    "DeepSeek" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "DeepSeek"
+          }
+        }
+      }
+    },
     "Delete" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5852,6 +5982,16 @@
         }
       }
     },
+    "Download From" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "下载来源"
+          }
+        }
+      }
+    },
     "Download Qwen3-ASR and Silero VAD in Settings › Capabilities › Listening to transcribe" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5878,6 +6018,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "请在“设置 › 能力”中下载所需的模型"
+          }
+        }
+      }
+    },
+    "Download from %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从 %@ 下载"
+          }
+        }
+      }
+    },
+    "Download from %@ into the models folder Valtz manages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从 %@ 下载到 Valtz 管理的模型文件夹"
           }
         }
       }
@@ -7260,6 +7420,16 @@
         }
       }
     },
+    "Frame Size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "帧尺寸"
+          }
+        }
+      }
+    },
     "Frame rate" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8085,12 +8255,32 @@
         }
       }
     },
+    "High (864 × 480)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "高（864 × 480）"
+          }
+        }
+      }
+    },
     "Higher keeps fewer blocks: faster, less exact" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "越高保留的块越少：更快，但不够精确"
+          }
+        }
+      }
+    },
+    "Highest (1152 × 640)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "最高（1152 × 640）"
           }
         }
       }
@@ -8313,6 +8503,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "文字各行在文本框中的对齐方式（或形状中文字的对齐方式）"
+          }
+        }
+      }
+    },
+    "Hugging Face" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Hugging Face"
           }
         }
       }
@@ -9462,6 +9662,16 @@
         }
       }
     },
+    "Limit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上限"
+          }
+        }
+      }
+    },
     "Line" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10307,6 +10517,16 @@
         }
       }
     },
+    "ModelScope" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "魔搭 ModelScope"
+          }
+        }
+      }
+    },
     "Models" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10900,6 +11120,16 @@
         }
       }
     },
+    "No Limit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不限"
+          }
+        }
+      }
+    },
     "No Results" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11258,6 +11488,32 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "未获准加入：它持有不同的密钥"
+          }
+        }
+      }
+    },
+    "Not on %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 上没有"
+          }
+        }
+      }
+    },
+    "Not on %@: downloads from %@ into the models folder Valtz manages" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Not on %1$@: downloads from %2$@ into the models folder Valtz manages"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ 上没有：从 %2$@ 下载到 Valtz 管理的模型文件夹"
           }
         }
       }
@@ -13944,6 +14200,16 @@
         }
       }
     },
+    "Resume from %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从 %@ 继续下载"
+          }
+        }
+      }
+    },
     "Return to current" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14648,6 +14914,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "设置项目"
+          }
+        }
+      }
+    },
+    "Set a Limit" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "设定上限"
           }
         }
       }
@@ -15614,6 +15890,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "标准"
+          }
+        }
+      }
+    },
+    "Standard (576 × 320)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "标准（576 × 320）"
           }
         }
       }
@@ -16786,6 +17072,16 @@
         }
       }
     },
+    "The helper, the agent and the picture, video and sound models run from wired memory, which macOS cannot compress or swap out. A lower limit leaves more memory to other apps; past it, a model reads its weights from disk as it runs, more slowly. Automatic is three quarters of this Mac's memory, at most what its GPU keeps resident." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "助手、智能体以及图片、视频和声音模型都在联动内存中运行，macOS 无法压缩或换出这部分内存。上限越低，留给其他应用的内存越多；超出上限后，模型会在运行时从磁盘读取权重，速度更慢。“自动”为这台 Mac 内存的四分之三，且不超过其 GPU 可常驻的大小。"
+          }
+        }
+      }
+    },
     "The image was made and is in the project, but could not be shown: %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16812,6 +17108,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "跳转时播放器最长需要等待多久才能遇到可起播的帧"
+          }
+        }
+      }
+    },
+    "The lower limit applies once the work under way ends." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "较低的上限会在当前工作结束后生效。"
           }
         }
       }
@@ -16903,6 +17209,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "任意一秒内最多可用的码率——留空则不设上限"
+          }
+        }
+      }
+    },
+    "The most the agent's model holds: its weights, its expert cache and its conversation. A model whose experts run from a cache -- DeepSeek V4.1 Flash, Qwen3.8 Flash-Next -- keeps what fits and reads the rest from disk, more slowly; a smaller model loads whole. The rest of the memory is left to pictures, clips and sounds. For the model's next load: one kept loaded keeps its size until it unloads." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体的模型最多占用的内存：包括权重、专家缓存和对话。专家从缓存运行的模型（DeepSeek V4.1 Flash、Qwen3.8 Flash-Next）只保留放得下的部分，其余从磁盘读取，速度较慢；较小的模型会整体载入。其余内存留给图片、视频和声音。对模型的下一次载入生效：保持载入的模型在卸载前保持原有大小。"
           }
         }
       }
@@ -17250,6 +17566,16 @@
         }
       }
     },
+    "There as %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在那里名为 %@"
+          }
+        }
+      }
+    },
     "There is no microphone." : {
       "localizations" : {
         "zh-Hans" : {
@@ -17356,6 +17682,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "这台 Mac 给它"
+          }
+        }
+      }
+    },
+    "This Mac has %@ GB, so the limit changes nothing here: the model sizes itself to the Mac." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这台 Mac 有 %@ GB，因此此限制在这里不起作用：模型会按这台 Mac 的内存自行调整。"
+          }
+        }
+      }
+    },
+    "This Mac's memory moves %@ GB/s, under 200, so Auto reads about 40 frames of a short clip: 8 a second up to 5 seconds, 4 up to 10, 2 up to 20, 1 up to 40, then one every 2 seconds." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这台 Mac 的内存带宽为 %@ GB/s，低于 200，因此自动为短片段读取约 40 帧：5 秒以内每秒 8 帧，10 秒以内每秒 4 帧，20 秒以内每秒 2 帧，40 秒以内每秒 1 帧，更长则每 2 秒一帧。"
           }
         }
       }
@@ -18705,11 +19051,22 @@
       }
     },
     "Video generation is not available yet." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "视频生成暂不可用。"
+          }
+        }
+      }
+    },
+    "Video generation needs MiniMax H3 FL2VA or Ref2VA: download one in Settings › Capabilities." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成视频需要 MiniMax H3 FL2VA 或 Ref2VA：请在“设置 › 能力”中下载其一。"
           }
         }
       }
@@ -19208,6 +19565,16 @@
         }
       }
     },
+    "Where models are downloaded from. ModelScope mirrors most of them and can be reached from mainland China; a model it does not carry comes from Hugging Face. Either way it is the same files, in the same folder." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型从哪里下载。魔搭 ModelScope 镜像了其中大多数，并且在中国大陆可以访问；它没有的模型从 Hugging Face 下载。无论从哪里下载，都是相同的文件，放在同一个文件夹中。"
+          }
+        }
+      }
+    },
     "Where new projects are saved" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19365,6 +19732,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "擦除分界线"
+          }
+        }
+      }
+    },
+    "Wired memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "联动内存"
+          }
+        }
+      }
+    },
+    "Wired memory for models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "模型的联动内存"
+          }
+        }
+      }
+    },
+    "Wired now" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "当前联动"
           }
         }
       }
@@ -22235,6 +22632,23 @@
         }
       }
     },
+    "core.not_on_download_source" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} is not on {source}: download it from another source."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{source} 上没有 {model}：请从其他来源下载。"
+          }
+        }
+      }
+    },
     "core.not_quantizable" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -22847,6 +23261,23 @@
         }
       }
     },
+    "core.unknown_download_source" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Models cannot be downloaded from {source} here."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此处无法从 {source} 下载模型。"
+          }
+        }
+      }
+    },
     "core.unknown_model" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -23149,6 +23580,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "检查点 {file} 已不存在。"
+          }
+        }
+      }
+    },
+    "core.wired_limit_range" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The wired memory limit is between {min} and {max} on this Mac."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在这台 Mac 上，联动内存上限须在 {min} 与 {max} 之间。"
           }
         }
       }

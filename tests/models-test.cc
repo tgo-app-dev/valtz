@@ -337,8 +337,10 @@ TEST(models, auto_order_is_catalog_data)
          std::vector<std::string>{"qwen-image-2.1", "qwen-image-2.1-turbo",
                                   "flux3-klein", "flux2-klein-9b",
                                   "fibo2-edit-turbo"}));
+  // A clip from words: FL2VA, the trained route; else Ref2VA from the
+  // prompt alone (vpipe's prompt-only request).
   CHECK((c->auto_order("video", "generate") ==
-         std::vector<std::string>{"minimax-h3-fl2va"}));
+         std::vector<std::string>{"minimax-h3-fl2va", "minimax-h3-ref2va"}));
   CHECK((c->auto_order("video", "edit") ==
          std::vector<std::string>{"minimax-h3-ref2va"}));
   // Songs first; speech when nothing sings -- and, with a voice in the

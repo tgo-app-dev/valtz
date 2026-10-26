@@ -316,6 +316,16 @@ inline constexpr Message kAwaitedDownloadStopped{
     "It waited for {model} to download, and the download was stopped."};
 inline constexpr Message kNoDownloadRunning{
     "core.no_download_running", "{model} is not downloading."};
+inline constexpr Message kUnknownDownloadSource{
+    "core.unknown_download_source",
+    "Models cannot be downloaded from {source} here."};
+inline constexpr Message kNotOnDownloadSource{
+    "core.not_on_download_source",
+    "{model} is not on {source}: download it from another source."};
+// The wired limit (Settings › General › Memory, DESIGN §10a).
+inline constexpr Message kWiredLimitRange{
+    "core.wired_limit_range",
+    "The wired memory limit is between {min} and {max} on this Mac."};
 // The agent (DESIGN §9b).
 inline constexpr Message kAgentEmptyRequest{
     "core.agent_empty_request", "Say what the agent should do."};
