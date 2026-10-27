@@ -100,6 +100,7 @@ extension AppModel {
     func takeIntoAssets(_ intake: DroppedMedia.Intake,
                         into folder: String? = nil, added: Bool = false,
                         words: Bool = false) {
+        guard !refusedForAgent() else { return }
         var media: [URL] = []
         var texts: [String] = []
         var names: [String?] = []
@@ -205,6 +206,8 @@ extension AppModel {
     /// makes it the active one instead.
     func viewAsset(_ a: AssetDTO) {
         guard viewedAsset != a.id else { return }
+        guard !refusedForColorTarget() else { return }
+        noteNavigation()
         // A snapshot run: how long a posted click took to get here, and
         // to be on the stage.
         let clickedAt = AppDelegate.postedClickAt
@@ -457,6 +460,7 @@ extension AppModel {
     /// files staged, what it made a file of (DroppedMedia) imported as
     /// copies and staged as their assets once they are.
     func stageDropped(_ intake: DroppedMedia.Intake) {
+        guard !refusedForAgent() else { return }
         if !intake.files.isEmpty { addReferences(intake.files) }
         guard intake.makes else { return }
         Task { @MainActor [weak self] in
@@ -533,6 +537,9 @@ extension AppModel {
               let a = asset(id: id) else {
             return false
         }
+        guard !refusedForAgent(), !refusedForColorTarget() else {
+            return false
+        }
         guard a.kind == "image" || a.kind == "video" || a.kind == "audio"
         else {
             flash(String(localized: "Text does not go on the stage: put it in the prompt."), level: .warning)
@@ -571,6 +578,9 @@ extension AppModel {
     /// Files dropped on the stage: imported, then each instantiated as an
     /// asset is (a picture, a clip or a sound; the first that is one).
     func dropFilesOnStage(_ urls: [URL]) -> Bool {
+        guard !refusedForAgent(), !refusedForColorTarget() else {
+            return false
+        }
         guard let url = urls.first(where: {
             ["image", "video", "audio"].contains(PromptTextView.kind(of: $0))
         }) else { return false }
@@ -618,6 +628,7 @@ extension AppModel {
 
     /// The capture made, its id; nil with nothing to capture.
     func captureStageAsset(selectedOnly: Bool) -> String? {
+        guard !refusedForAgent() else { return nil }
         guard let core, let projectId,
               let s = stageStack ?? assets.first(where: {
                   $0.id == stageAssetId }) else { return nil }
@@ -726,6 +737,9 @@ struct AssetsSection: View {
                     .help("Remove every generation nothing uses any more")
                 }
             }
+            // An agent at work holds the project: its assets are looked
+            // through, not added to, filed or removed.
+            .disabled(model.agentHolds)
             .padding(.horizontal, 12)
             let empty = all.isEmpty && model.projectViews.isEmpty
                 && model.assetFolders.isEmpty && model.tasks.isEmpty
@@ -960,6 +974,8 @@ private struct AssetsDrop: DropDelegate {
     private var pasteboard: NSPasteboard { NSPasteboard(name: .drag) }
 
     func validateDrop(info: DropInfo) -> Bool {
+        // An agent at work holds the project: nothing goes into it.
+        if model.agentHolds { return false }
         let pb = pasteboard
         let p = DroppedMedia.peek(pb)
         return !DroppedMedia.rows(pb).isEmpty || p.media || p.text
@@ -1254,7 +1270,7 @@ private struct AssetRow: View {
                 ForEach(model.operations(for: a)) { op in
                     let ready = op.take(a.kind)?.ready == true
                     Button(op.title) { model.perform(op, on: a) }
-                        .disabled(!ready)
+                        .disabled(!ready || model.agentHolds)
                         .help(ready ? op.help : op.needs)
                 }
                 if a.kind == "image" {
@@ -1282,8 +1298,10 @@ private struct AssetRow: View {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
             }
-            // The project itself is not named, filed or removed here.
+            // The project itself is not named, filed or removed here --
+            // nor anything while an agent at work holds the project.
             if !project && task == nil {
+                Group {
                 Button("Rename") { model.renamingAsset = a.id }
                 Menu("Move To") {
                     Button("Top of the List") { model.moveAsset(a.id, to: "") }
@@ -1297,6 +1315,8 @@ private struct AssetRow: View {
                 Divider()
                 Button("Remove from Project") { model.removeAsset(a.id) }
                     .disabled(used)
+                }
+                .disabled(model.agentHolds)
             }
         }
         .help(used ? Text("In use: on the stage, in the prompt, or a part of another asset")

@@ -1829,6 +1829,12 @@ helper_chat_config(const JobSpec& job)
       mb > 0) {
     chat_cfg["memory_limit_mb"] = mb;
   }
+  // Its experts' cache as asked (the Agent's Expert Cache: vpipe's
+  // expert_cache_mb), at most that within the Memory and the Mac.
+  if (const auto mb = jget<std::int64_t>(job.params, "expert_cache_mb", 0);
+      mb > 0) {
+    chat_cfg["expert_cache_mb"] = mb;
+  }
   // A drafter shipped apart from the model (its conversion dropped the
   // head): vpipe's text-chat loads it beside the model.
   if (auto mm = jget<std::string>(job.params, "mtp_model", "");
@@ -2771,6 +2777,10 @@ build_summarize_video(const JobSpec& job, media::PixelSize size)
   if (const auto mb = jget<std::int64_t>(job.params, "memory_limit_mb", 0);
       mb > 0) {
     cfg[ex::kSummaryMemoryLimitMb] = mb;
+  }
+  if (const auto mb = jget<std::int64_t>(job.params, "expert_cache_mb", 0);
+      mb > 0) {
+    cfg[ex::kSummaryExpertCacheMb] = mb;
   }
   // A scene's frames at most: ~180 tokens each at 576 x 320, so 24 keep a
   // prefill near 4,500 -- at one every two seconds 48 s of a shot, at

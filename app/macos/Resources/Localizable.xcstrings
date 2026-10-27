@@ -201,6 +201,16 @@
         }
       }
     },
+    "%@ by speed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "速度带来 %@"
+          }
+        }
+      }
+    },
     "%@ cached" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1177,6 +1187,16 @@
         }
       }
     },
+    "%lld points" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%lld 个点"
+          }
+        }
+      }
+    },
     "%lld s" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1732,26 +1752,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每行、每个 token 一个尺度，先旋转：最快"
-          }
-        }
-      }
-    },
-    "A semitone higher" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "升高一个半音"
-          }
-        }
-      }
-    },
-    "A semitone lower" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "降低一个半音"
           }
         }
       }
@@ -2591,6 +2591,16 @@
         }
       }
     },
+    "Alpha" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不透明度"
+          }
+        }
+      }
+    },
     "Already in Assets" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2758,6 +2768,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "应用建议"
+          }
+        }
+      }
+    },
+    "Aqua" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "青色"
           }
         }
       }
@@ -3216,12 +3236,32 @@
         }
       }
     },
+    "Auto (about %@ here)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动（在这台 Mac 上约 %@）"
+          }
+        }
+      }
+    },
     "Auto (by the clip's length)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "自动（按片段长度）"
+          }
+        }
+      }
+    },
+    "Auto (every expert)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动（全部专家）"
           }
         }
       }
@@ -3244,6 +3284,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "自动（每 2 秒一帧）"
+          }
+        }
+      }
+    },
+    "Auto (the least it runs with)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动（以最小缓存运行）"
+          }
+        }
+      }
+    },
+    "Auto gives the cache what the conversation leaves. A size holds the cache to it: smaller leaves room for a longer conversation (Agentic Helper › Context: up to %lld tokens with this cache) and for pictures and clips beside it, so it stays loaded through them; larger reads fewer experts from the SSD, so it reads prompts and writes replies faster. For the model's next load." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动：对话剩下的空间都给缓存。设定大小则将缓存限定在该值：越小，对话可以越长（智能助手 › 上下文：在此缓存下最多 %lld 个 token），身边的图片和视频也有更多空间，它便能在它们运行时保持加载；越大，从 SSD 读取的专家越少，读入提示词、写出回复都越快。在模型下次加载时生效。"
           }
         }
       }
@@ -3487,6 +3547,16 @@
         }
       }
     },
+    "Balance" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "平衡"
+          }
+        }
+      }
+    },
     "Balanced" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3533,6 +3603,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Baseline"
+          }
+        }
+      }
+    },
+    "Bass" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "低音"
           }
         }
       }
@@ -3603,6 +3683,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每通道位数：16 位保留图片的全部层次；8 位文件更小"
+          }
+        }
+      }
+    },
+    "Blend" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "混合"
+          }
+        }
+      }
+    },
+    "Blue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "蓝色"
           }
         }
       }
@@ -4217,6 +4317,16 @@
         }
       }
     },
+    "Click a disk to add a point at that hue, then drag it: out or in for its value, round for its hue (⌥ finer). Double-click a point, or drag it off the disk, to remove it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在圆盘上单击，在该色相处添加一个控制点，再拖动它：向外或向内改变数值，沿圆周改变色相（按住 ⌥ 更精细）。连按两次控制点，或把它拖出圆盘，即可移除。"
+          }
+        }
+      }
+    },
     "Click its corners; click the first to close it, or press Return. A corner placed on a shape's connector stays joined to the shape." : {
       "localizations" : {
         "zh-Hans" : {
@@ -4227,12 +4337,32 @@
         }
       }
     },
+    "Click or drag for the tint: its hue round the wheel, its strength out from the centre. ⇧ keeps the hue; double-click for none." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "点按或拖移以设置色调：沿色轮一周为色相，由中心向外为强度。按住 ⇧ 保持色相；连按两次取消色调。"
+          }
+        }
+      }
+    },
     "Click the picture to take its colour as the Color, ⌥-click as the Fill — the selected objects' too." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "点按画面，将该处颜色取为“色彩”，按住 ⌥ 点按则取为“填充”——所选对象也一并更改。"
+          }
+        }
+      }
+    },
+    "Click to add a point at that hue and drag it -- out or in for its value, round for its hue, ⌥ for finer steps; double-click a point, or drag it off the disk, to remove it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "单击在该色相处添加控制点并拖动——向外或向内改变数值，沿圆周改变色相，按住 ⌥ 更精细；连按两次控制点，或把它拖出圆盘，即可移除"
           }
         }
       }
@@ -5309,6 +5439,16 @@
         }
       }
     },
+    "Darker" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "更暗"
+          }
+        }
+      }
+    },
     "Dashed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6378,6 +6518,16 @@
         }
       }
     },
+    "EQ" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "均衡"
+          }
+        }
+      }
+    },
     "EXIF" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6404,6 +6554,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每帧的色彩保持与源一致"
+          }
+        }
+      }
+    },
+    "Each hue's own hue, saturation and luminance, as curves round the colour wheel." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每种色相自身的色相、饱和度和明亮度，画成绕色轮一周的曲线。"
           }
         }
       }
@@ -6717,6 +6877,16 @@
         }
       }
     },
+    "Equalizer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "均衡器"
+          }
+        }
+      }
+    },
     "Eraser" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6743,6 +6913,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "全部 3×3 卷积：更快，略欠精确"
+          }
+        }
+      }
+    },
+    "Every band of the equalizer back to 0 dB, in every keyframe" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "均衡器的每个频段都回到 0 dB，所有关键帧皆然"
           }
         }
       }
@@ -6824,6 +7004,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "实验性功能"
+          }
+        }
+      }
+    },
+    "Expert Cache" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "专家缓存"
           }
         }
       }
@@ -7200,6 +7390,16 @@
         }
       }
     },
+    "Flat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "平直"
+          }
+        }
+      }
+    },
     "Flatten" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7336,6 +7536,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "文件夹 %@"
+          }
+        }
+      }
+    },
+    "Follow" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跟随"
           }
         }
       }
@@ -7608,6 +7818,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "GPU 工作集"
+          }
+        }
+      }
+    },
+    "Gain" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "增益"
+          }
+        }
+      }
+    },
+    "Gain, pitch and equalizer back as the sound was, in every keyframe" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "增益、音高和均衡器恢复为声音原样，所有关键帧皆然"
           }
         }
       }
@@ -7923,6 +8153,36 @@
         }
       }
     },
+    "Grade" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "调色"
+          }
+        }
+      }
+    },
+    "Grade the clip's tones" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "为视频的各影调调色"
+          }
+        }
+      }
+    },
+    "Grade the picture's tones" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "为图片的各影调调色"
+          }
+        }
+      }
+    },
     "Gradient" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7949,6 +8209,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "贪心：每次取最可能的词"
+          }
+        }
+      }
+    },
+    "Green" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "绿色"
           }
         }
       }
@@ -8175,6 +8445,36 @@
         }
       }
     },
+    "Hide the audio panel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "隐藏音频面板"
+          }
+        }
+      }
+    },
+    "Hide the colour grade" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "隐藏调色"
+          }
+        }
+      }
+    },
+    "Hide the colour mixer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "隐藏颜色混合器"
+          }
+        }
+      }
+    },
     "Hide the compare: A alone" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8335,6 +8635,26 @@
         }
       }
     },
+    "Hold to see the picture without its colour grade" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按住可查看未调色的图片"
+          }
+        }
+      }
+    },
+    "Hold to see the picture without its colour mixer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按住可查看不含颜色混合器的画面"
+          }
+        }
+      }
+    },
     "Hold to see the picture without its crop and zoom" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8466,6 +8786,16 @@
         }
       }
     },
+    "How gradually one range gives way to the next: a clean cut at 0, the most gradual at 100. Double-click to reset." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "一个影调范围过渡到下一个的平缓程度：0 为截然分开，100 为最平缓。连按两次以复位。"
+          }
+        }
+      }
+    },
     "How it was made" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8503,6 +8833,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "文字各行在文本框中的对齐方式（或形状中文字的对齐方式）"
+          }
+        }
+      }
+    },
+    "How wide the midtones are: where they are at half strength with no blend, and the shadows and highlights take over. Double-click to reset." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "中间调的宽度：在不混合时中间调强度减半之处，即由阴影和高光接替之处。连按两次以复位。"
+          }
+        }
+      }
+    },
+    "Hue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "色相"
           }
         }
       }
@@ -8788,6 +9138,16 @@
         }
       }
     },
+    "In: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "向内：%@"
+          }
+        }
+      }
+    },
     "Incoming Connections" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8908,6 +9268,22 @@
         }
       }
     },
+    "It holds about %@: %@ always in memory, a %@ cache of its %@ of experts -- the rest read from the SSD as they are picked -- and its conversation, up to %lld tokens, about %@." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "It holds about %1$@: %2$@ always in memory, a %3$@ cache of its %4$@ of experts -- the rest read from the SSD as they are picked -- and its conversation, up to %5$lld tokens, about %6$@."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它约占用 %1$@：%2$@ 常驻内存，其 %4$@ 专家中缓存 %3$@——其余在被选中时从 SSD 读取——以及它的对话，最多 %5$lld 个 token，约 %6$@。"
+          }
+        }
+      }
+    },
     "It stops after the step it is on" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9000,16 +9376,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "第一个生成结果决定项目是静态还是时间线。也可以现在设置："
-          }
-        }
-      }
-    },
-    "Its gain: 0 dB as it is, −6 dB half the level, up to +12 dB" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "增益：0 dB 为原样，−6 dB 为一半电平，最高 +12 dB"
           }
         }
       }
@@ -9622,6 +9988,16 @@
         }
       }
     },
+    "Less" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "减少"
+          }
+        }
+      }
+    },
     "Level" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9658,6 +10034,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "浅色或深色"
+          }
+        }
+      }
+    },
+    "Lighter" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "更亮"
           }
         }
       }
@@ -10024,6 +10410,16 @@
         }
       }
     },
+    "Luminance" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "明亮度"
+          }
+        }
+      }
+    },
     "Lyrics" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10070,6 +10466,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已生成，但无法显示"
+          }
+        }
+      }
+    },
+    "Magenta" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "洋红"
           }
         }
       }
@@ -10487,6 +10893,46 @@
         }
       }
     },
+    "Midtone Width" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "中间调宽度"
+          }
+        }
+      }
+    },
+    "Midtones" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "中间调"
+          }
+        }
+      }
+    },
+    "Mix the clip's colours" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "调整片段的颜色"
+          }
+        }
+      }
+    },
+    "Mix the picture's colours" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "调整画面的颜色"
+          }
+        }
+      }
+    },
     "Mixed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10584,6 +11030,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "单声道"
+          }
+        }
+      }
+    },
+    "More" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "增加"
           }
         }
       }
@@ -11920,6 +12376,16 @@
         }
       }
     },
+    "On the stage, drag from a colour: across for its saturation, up or down for its luminance, ⌘ and up or down for its hue." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在舞台上从一种颜色开始拖动：左右调整它的饱和度，上下调整它的明亮度，按住 ⌘ 上下拖动调整它的色相。"
+          }
+        }
+      }
+    },
     "On the stage: every panel works on it" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12221,6 +12687,16 @@
         }
       }
     },
+    "Orange" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "橙色"
+          }
+        }
+      }
+    },
     "Order" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12267,6 +12743,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "其他应用与 macOS"
+          }
+        }
+      }
+    },
+    "Out: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "向外：%@"
           }
         }
       }
@@ -13447,6 +13933,16 @@
         }
       }
     },
+    "Read-only while it works: look around freely; changes wait until it is done, or stopped." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "工作期间只读：可以随意浏览；更改要等它完成或被停止之后。"
+          }
+        }
+      }
+    },
     "Reading the pictures" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13588,6 +14084,16 @@
         }
       }
     },
+    "Red" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "红色"
+          }
+        }
+      }
+    },
     "Redo" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13724,6 +14230,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "移除页面"
+          }
+        }
+      }
+    },
+    "Remove Point" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "移除控制点"
           }
         }
       }
@@ -14798,12 +15314,22 @@
         }
       }
     },
-    "Semitones up (+) or down (−)" : {
+    "Semitones" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "升高（+）或降低（−）的半音数"
+            "value" : "半音"
+          }
+        }
+      }
+    },
+    "Semitones up (+) or down (−), whole ones; ⌥ for tenths. Whether it also follows the speed is set beside the speed, in Trim. Double-click for none." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "升高（+）或降低（−）的半音数，以整半音为步进；按住 ⌥ 以十分之一为步进。是否同时随速度变化，在“修剪”中速度旁设置。连按两次取消。"
           }
         }
       }
@@ -15005,6 +15531,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "阴影"
+          }
+        }
+      }
+    },
+    "Shape the sound: gain, pitch, equalizer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "调整声音：增益、音高、均衡器"
           }
         }
       }
@@ -15376,6 +15912,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "只显示三行，带滚动条"
+          }
+        }
+      }
+    },
+    "Show what the agent is working on, and follow it again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示智能体正在处理的内容，并重新跟随它"
           }
         }
       }
@@ -16595,6 +17141,36 @@
         }
       }
     },
+    "Target" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "目标"
+          }
+        }
+      }
+    },
+    "Target Tool" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "目标工具"
+          }
+        }
+      }
+    },
+    "Target: press on a colour on the stage and drag — across for its saturation, up or down for its luminance, with ⌘ up or down for its hue" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "目标：在舞台上按住一种颜色并拖动——左右调整它的饱和度，上下调整它的明亮度，按住 ⌘ 上下拖动调整它的色相"
+          }
+        }
+      }
+    },
     "Tasks" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16781,6 +17357,26 @@
         }
       }
     },
+    "The Agent’s %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体的 %@"
+          }
+        }
+      }
+    },
+    "The Color panel's target tool is on: turn it off first (Target, at the left of the Color panel) to look at anything else." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "色彩面板的目标工具正在使用：请先将其关闭（色彩面板左侧的“目标”），再查看其他内容。"
+          }
+        }
+      }
+    },
     "The GPU is busy but running below the clock it is rated for — steps take longer, and nothing in the generation is at fault. Better airflow under the Mac helps more than anything in software." : {
       "localizations" : {
         "zh-Hans" : {
@@ -16851,6 +17447,16 @@
         }
       }
     },
+    "The agent is working on this project: look around freely; changes wait until it is done, or stopped." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体正在处理此项目：可以随意浏览；更改要等它完成或被停止之后。"
+          }
+        }
+      }
+    },
     "The agent's turns go to the provider: your requests, its steps and the names and words in the project. Pictures it looks at go too." : {
       "localizations" : {
         "zh-Hans" : {
@@ -16891,6 +17497,16 @@
         }
       }
     },
+    "The band around %@Hz, an octave wide: up to 12 dB louder or quieter. ⌥ for finer steps; double-click for 0 dB." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@Hz 附近、宽一个八度的频段：最多提高或降低 12 dB。按住 ⌥ 可更精细地调整；连按两次回到 0 dB。"
+          }
+        }
+      }
+    },
     "The cache folder “%@” is not there — is its drive connected? Valtz keeps its cache in the default folder meanwhile." : {
       "localizations" : {
         "zh-Hans" : {
@@ -16921,12 +17537,32 @@
         }
       }
     },
+    "The colour grade tints the tones" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "调色为各影调着色"
+          }
+        }
+      }
+    },
     "The colour lines, outlines, text and the brush draw with" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "直线、轮廓、文字和画笔所用的颜色"
+          }
+        }
+      }
+    },
+    "The colour mixer changes colours" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "颜色混合器正在改变颜色"
           }
         }
       }
@@ -16977,6 +17613,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "此处的引擎无法压缩模型"
+          }
+        }
+      }
+    },
+    "The equalizer's response, low to high: louder above the line, quieter below" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "均衡器的响应，由低到高：线上方更响，线下方更轻"
           }
         }
       }
@@ -17088,6 +17734,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "图像已生成并保存在项目中，但无法显示：%@"
+          }
+        }
+      }
+    },
+    "The layer's alpha: 100% as it is, lower to let what is under it show through, 0% clear. ⌥ for finer steps; double-click for 100%." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图层的不透明度：100% 为原样，调低可透出下方内容，0% 为完全透明。按住 ⌥ 可更精细地调整；连按两次回到 100%。"
           }
         }
       }
@@ -17486,6 +18142,16 @@
         }
       }
     },
+    "The sound is changed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "声音已调整"
+          }
+        }
+      }
+    },
     "The sound is trimmed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17502,6 +18168,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "与片段一起生成的声音"
+          }
+        }
+      }
+    },
+    "The sound's gain: 0 dB as it is, −6 dB half the level, up to +12 dB; at the bottom, muted. ⌥ for finer steps; double-click for 0 dB." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "声音的增益：0 dB 为原样，−6 dB 为一半电平，最高 +12 dB；推到底为静音。按住 ⌥ 可更精细地调整；连按两次回到 0 dB。"
           }
         }
       }
@@ -17886,6 +18562,16 @@
         }
       }
     },
+    "Tint the shadows, midtones and highlights: click a wheel for the hue and how strong it is." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "为阴影、中间调和高光着色：点按色轮选择色相及其强度。"
+          }
+        }
+      }
+    },
     "To" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18112,6 +18798,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "透明背景输出"
+          }
+        }
+      }
+    },
+    "Treble" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "高音"
           }
         }
       }
@@ -19525,12 +20221,12 @@
         }
       }
     },
-    "What the speed adds" : {
+    "What the speed adds, in semitones" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "速度带来的变化"
+            "value" : "速度带来的变化，以半音计"
           }
         }
       }
@@ -19585,6 +20281,16 @@
         }
       }
     },
+    "Where the midtones lie: toward the shadows, or toward the highlights. Double-click to reset." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "中间调所在的位置：偏向阴影，或偏向高光。连按两次以复位。"
+          }
+        }
+      }
+    },
     "Where the picture's centre is, across, in frame widths (+ right)" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19621,6 +20327,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "播放位置：点按或拖移以前往"
+          }
+        }
+      }
+    },
+    "Where the shadows, midtones and highlights lie across the tones, dark to light" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "阴影、中间调和高光在由暗到亮的影调上所处的范围"
           }
         }
       }
@@ -19950,6 +20666,16 @@
         }
       }
     },
+    "Yellow" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "黄色"
+          }
+        }
+      }
+    },
     "Your access token is used for this download only. Valtz sends it to Hugging Face with the download's requests and does not store it anywhere — not on disk, not in its settings, not in the log — so you paste it again for the next gated model." : {
       "localizations" : {
         "zh-Hans" : {
@@ -20197,6 +20923,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "bf16 权重"
+          }
+        }
+      }
+    },
+    "core.agent_at_work" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The agent is working on this project: it can be looked at but not changed until the agent is done, or stopped."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "智能体正在处理此项目：在它完成或被停止之前，项目只能查看，不能更改。"
           }
         }
       }
@@ -24034,16 +24777,6 @@
         }
       }
     },
-    "semitones" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "半音"
-          }
-        }
-      }
-    },
     "set aside: macOS may take it back" : {
       "localizations" : {
         "zh-Hans" : {
@@ -24206,6 +24939,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“%@”仍有工作正在进行"
+          }
+        }
+      }
+    },
+    "“%@” is in Assets: the agent is working on this project, so it was not laid on the stage." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“%@”已在素材中：智能体正在处理此项目，因此没有放到舞台上。"
           }
         }
       }

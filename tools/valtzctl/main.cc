@@ -504,6 +504,7 @@ usage()
       "        [--assistant <id>]\n"
       "        | agent tools | agent settings [backend=helper|cloud]\n"
       "            [helper=<id>|same] [memory=64|128|192|<GB>|none]\n"
+      "            [expert_cache=<GB>|auto]\n"
       "            [review=on|off] [lease=<s>] [provider=anthropic|openai|\n"
       "            openai-compatible] [model=<id>] [base_url=<url>]\n"
       "            [max_tokens=<n>] [context=<tokens>] [compact=on|off]\n"
@@ -1667,6 +1668,11 @@ agent_command(Controller& c, std::vector<std::string> args)
           return usage();
         }
         set["memory_gb"] = v == "none" ? 0 : std::atoi(v.c_str());
+      } else if (k == "expert_cache") {
+        if (v != "auto" && std::atoi(v.c_str()) <= 0) {
+          return usage();
+        }
+        set["expert_cache_gb"] = v == "auto" ? 0 : std::atoi(v.c_str());
       } else if (k == "review") {
         set["review"] = v == "on" || v == "true";
       } else if (k == "compact") {
@@ -2336,10 +2342,13 @@ main(int argc, char** argv)
                                m["dflash"]["state"].get<std::string>());
       }
       if (m.contains("context")) {
-        drafter += std::format("  context {} of {} (memory {})",
+        // Given, of the model's own (Auto's; what this Mac's memory
+        // holds, the most Settings' Context offers).
+        drafter += std::format("  context {} of {} (auto {}, fits {})",
                                jget(m["context"], "here", 0),
                                jget(m["context"], "model", 0),
-                               jget(m["context"], "auto", 0));
+                               jget(m["context"], "auto", 0),
+                               jget(m["context"], "fits", 0));
       }
       // Never Auto's: chosen by name alone (an abliterated helper).
       if (jget(m, "by_name", false)) {

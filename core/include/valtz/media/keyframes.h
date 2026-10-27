@@ -70,15 +70,31 @@ struct Speed {
 };
 
 // A composition layer's SOUND: its gain (`volume`, 0 mute to 1 as it is,
-// up to kMaxVolume) and its pitch in semitones -- kept apart from its
-// speed: a faster layer keeps its pitch.
+// up to kMaxVolume), its pitch in semitones -- kept apart from its speed:
+// a faster layer keeps its pitch -- and its EQUALIZER (DESIGN §10a
+// Audio): a gain in decibels for each of kEqBands bands an octave wide,
+// centred an octave apart on kEqFrequencies (0 flat, at most kMaxEqGain
+// either way).
 inline constexpr double kMaxVolume = 4.0;
 inline constexpr double kMaxPitch = 24.0;
+inline constexpr int kEqBands = 10;
+inline constexpr std::array<double, kEqBands> kEqFrequencies = {
+    31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
+inline constexpr double kMaxEqGain = 12.0;
 struct Sound {
+  Sound() = default;
+  Sound(double v, double p, const std::array<double, kEqBands>& e = {})
+      : volume(v), pitch(p), eq(e) {}
+
   double volume = 1;
   double pitch = 0;
+  std::array<double, kEqBands> eq{};
 
-  bool identity() const { return volume == 1 && pitch == 0; }
+  // The equalizer changes nothing.
+  bool flat() const {
+    return std::ranges::all_of(eq, [](double g) { return g == 0; });
+  }
+  bool identity() const { return volume == 1 && pitch == 0 && flat(); }
   bool operator==(const Sound&) const = default;
 };
 
@@ -184,6 +200,11 @@ struct Keyed {
           return f < static_cast<double>(k.frame);
         });
     auto a = b - 1;
+    // On a key: its own value (a mixer's curves its own points, not laid
+    // on the next key's).
+    if (frame == static_cast<double>(a->frame)) {
+      return a->value;
+    }
     const double span = static_cast<double>(b->frame - a->frame);
     const double t = (frame - static_cast<double>(a->frame)) / span;
     switch (a->interp) {
@@ -282,7 +303,8 @@ Json to_json(const KeyedCrop&);
 KeyedAdjustments keyed_adjustments_from_json(const Json&);
 KeyedCrop keyed_crop_from_json(const Json&);
 // {"keys": [{"frame", "rate"}]} and {"keys": [{"frame", "volume",
-// "pitch"}]}: the modifiers "speed" and "audio" (project::Modifier).
+// "pitch", "eq_0" ... "eq_9"}]} (a band's gain written while it is not
+// 0): the modifiers "speed" and "audio" (project::Modifier).
 Json to_json(const KeyedSpeed&);
 Json to_json(const KeyedSound&);
 KeyedSpeed keyed_speed_from_json(const Json&);

@@ -93,12 +93,33 @@ struct ModelEntry {
   // a cache and whose n-gram table is read from disk -- Qwen3.8
   // Flash-Next's 128.6 GB, of which 6.8 must stay.
   double                   resident_gb = 0;
-  // The context a helper is given (catalog `context_tokens`; 0: its own
-  // as far as the memory holds its K/V, models::helper_context): a model
-  // whose state is small and whose experts take the rest of the memory --
-  // DeepSeek-V4.1-Flash's compressed latents, its 1,048,576 tokens far
-  // past what a session needs, and its weights larger than the Mac.
+  // The context a helper is given at most (catalog `context_tokens`; 0:
+  // its own as far as the memory holds its K/V, models::helper_context).
   int                      context_tokens = 0;
+  // What a token of its context costs as vpipe books it, where its
+  // config.json cannot say (catalog `context_bytes_per_token`; 0: its K/V
+  // as the config gives it, models::language_context): DeepSeek-V4.1-
+  // Flash's compressed latents and index keys (3,200 bytes), its rotary
+  // table's 512 and its indexer's scores, which grow with the context --
+  // ~7,900, measured on the M5 Ultra between 131,072 and 1,048,576
+  // tokens, in place of the 80 KB a token its heads would read as. Its
+  // context is then counted against what it holds beside its expert
+  // cache (held_beside_cache_gb) and that cache, not its size on disk.
+  std::int64_t             context_bytes_per_token = 0;
+  // Its routed experts' bytes on disk (catalog `experts_gb`; 0: all of
+  // `disk_gb` but its resident part) and the least cache vpipe runs them
+  // with (`expert_cache_floor_gb`): DeepSeek V4.1 Flash's oQ4e 288.8 GB
+  // and two layers' 14.4 -- its n-gram tables, 122.9 GB, read by row from
+  // disk and never cached, the rest.
+  double                   experts_gb = 0;
+  double                   expert_cache_floor_gb = 0;
+  // What it holds beside its routed experts' cache: `resident_gb` is the
+  // least it holds, the cache's floor counted in it -- DeepSeek's 26 GB
+  // are ~11.6 of weights and two layers' experts.
+  double held_beside_cache_gb() const {
+    return resident_gb > expert_cache_floor_gb
+               ? resident_gb - expert_cache_floor_gb : 0;
+  }
   // Never Auto's pick (catalog `by_name`): chosen by name alone -- an
   // abliterated helper, its makers' alignment taken out; a model too
   // large to be anyone's default.

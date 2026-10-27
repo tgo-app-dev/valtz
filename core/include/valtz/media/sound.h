@@ -1,6 +1,7 @@
 // A composition's SOUND (DESIGN §6a): the mix of its layers' sounds, each
 // through where it lies in time (its marks, its start, its speed), its
-// volume and pitch (keyed), and the transitions -- at 48 kHz stereo.
+// volume, pitch and equalizer (keyed), and the transitions -- at 48 kHz
+// stereo.
 //
 // One description, two players of it:
 //   * the MIXER here (`mix_sound`) writes it to a file -- exports, a
@@ -10,13 +11,15 @@
 //     pitch kept, and an AVAudioMix's volume ramps), read out once;
 //   * the app's PLAYER builds the same composition and ramps from the
 //     plan's JSON (`time_segments`, `volume_points`) and plays it as it
-//     goes -- an hour-long timeline starts at once. Only PITCH has no
-//     real-time path there: a plan that shifts it is played from the
-//     mixer's file (`needs_render`).
-// Pitch is applied to a layer's span first (AVAudioUnitTimePitch, offline:
-// its keys read at the source time they fall on), then the span is a
-// sound like any other. A pitch that FOLLOWS the speed is shifted there
-// too: the stretch after keeps the pitch it is given.
+//     goes -- an hour-long timeline starts at once. Only PITCH and the
+//     EQUALIZER have no real-time path there: a plan that shifts a pitch
+//     or sets a band is played from the mixer's file (`needs_render`).
+// Pitch and the equalizer are applied to a layer's span first, offline
+// (AVAudioUnitTimePitch, then AVAudioUnitEQ's peaking band an octave wide
+// at each of kEqFrequencies -- their keys read at the source time each
+// block falls on), then the span is a sound like any other. A pitch that
+// FOLLOWS the speed is shifted there too: the stretch after keeps the
+// pitch it is given.
 
 #ifndef VALTZ_MEDIA_SOUND_H
 #define VALTZ_MEDIA_SOUND_H
@@ -79,7 +82,8 @@ std::vector<TimeSegment> time_segments(const LayerTiming&, double end,
 std::vector<std::pair<double, double>>
 volume_points(const SoundPlan&, std::size_t i, double step = 0.1);
 
-// Any layer's pitch shifted -- by its keys, or following a speed?
+// Any layer's pitch shifted -- by its keys, or following a speed -- or a
+// band of its equalizer set?
 bool needs_render(const SoundPlan&);
 
 // The mix written to `out` as a 24-bit WAV, `plan.seconds` long. False

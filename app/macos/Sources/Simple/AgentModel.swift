@@ -15,11 +15,17 @@ extension AppModel {
         let words = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !words.isEmpty else { return }
         if let a = agent, a.project == projectId, !a.ended {
+            // What the panels still have to write, written before it holds
+            // the project again (a session done is the person's).
+            if a.listening { flushPanels() }
             let r = core.agentSay(a.agent, words, stage: agentStage)
             guard r.ok else { flash(r.message, level: .error); return }
             clearAgentPrompt()
             return
         }
+        // The panels' last change written first: from the request on the
+        // project is the agent's, and a write after it is refused.
+        flushPanels()
         var req: [String: Any] = [
             "project": projectId,
             "prompt": words,
@@ -39,6 +45,7 @@ extension AppModel {
                                  state: "starting",
                                  review: agentSettings?.review ?? true,
                                  prompt: words, steps: [])
+            agentFollows = true
         }
         clearAgentPrompt()
         reloadAgent()
@@ -94,29 +101,73 @@ extension AppModel {
             agentWriting = next.writing ?? ""
         }
         withAnimation(Self.motion) { agent = next }
-        // The composition it works on is the one the stage shows.
-        if let c = next.composition, !c.isEmpty,
-           c != was?.composition || activeComposition?.id != c {
+        // Following it: the composition it works on is the one the stage
+        // shows. The person looking elsewhere is left there (agentFollows).
+        if agentFollows, let c = next.composition, !c.isEmpty,
+           activeComposition?.id != c, viewedAsset == nil {
             stageAgentComposition(c)
         }
-        // What it changed: the list and the stage follow, as after an
-        // undo -- and the stage goes to the page the step worked on.
+        // What it changed: the list and what the stage shows are read
+        // again, as after an undo -- wherever the person is looking.
         if next.steps.count != was?.steps.count
             || next.steps.last?.state != was?.steps.last?.state {
             syncAfterHistory()
-            if let step = next.steps.last,
-               step.state == "done" || step.state == "waiting",
+            // Following it: the page or the time its step worked on.
+            if agentFollows, let step = next.steps.last {
+                showAgentStep(step)
+            }
+        }
+    }
+
+    /// The stage on the page -- or, on a timeline, at the time -- the
+    /// step worked on, if it named one and the stage shows its
+    /// composition.
+    private func showAgentStep(_ step: AgentStep) {
+        guard activeComposition?.id == agent?.composition else { return }
+        steerForAgent {
+            if step.state == "done" || step.state == "waiting",
                let page = Self.agentStepPage(step),
                activeComposition?.isPaged == true,
                page - 1 != stagePage {
                 goToPage(page - 1)
             }
             // On a timeline: the player where the step put something.
-            if let step = next.steps.last, step.state == "done",
-               let at = Self.agentStepStart(step),
+            if step.state == "done", let at = Self.agentStepStart(step),
                activeComposition?.isTimeline == true {
                 seekVideo(to: Int((at * stageFrameRate.fps).rounded()))
             }
+        }
+    }
+
+    /// The stage moved for the agent: the following goes on.
+    private func steerForAgent(_ move: () -> Void) {
+        let was = agentSteering
+        agentSteering = true
+        move()
+        agentSteering = was
+    }
+
+    /// The person moved the stage -- another asset viewed or set active,
+    /// another page, the player sought: while an agent works, the stage
+    /// stops following it (Follow on its card brings it back).
+    func noteNavigation() {
+        guard !agentSteering, agentFollows, agentAtWork else { return }
+        withAnimation(Self.motion) { agentFollows = false }
+    }
+
+    /// Follow (the agent's card): the stage back on what the agent works
+    /// on -- an asset viewed put away -- at its last step's page or time,
+    /// and following it again.
+    func followAgent() {
+        guard let a = agent else { return }
+        withAnimation(Self.motion) { agentFollows = true }
+        steerForAgent { endViewing() }
+        if let c = a.composition, !c.isEmpty {
+            stageAgentComposition(c)
+        }
+        if let step = a.steps.last(where: {
+            $0.state == "done" || $0.state == "waiting" }) {
+            showAgentStep(step)
         }
     }
 
@@ -145,8 +196,10 @@ extension AppModel {
     /// knows it.
     private func stageAgentComposition(_ id: String, tries: Int = 0) {
         if activeComposition?.id == id { return }
+        // The person looked elsewhere meanwhile: they stay there.
+        guard agentFollows else { return }
         if let a = asset(id: id) {
-            setActive(a)
+            steerForAgent { setActive(a) }
             return
         }
         guard tries < 10 else { return }
@@ -205,8 +258,10 @@ extension AppModel {
         if !r.ok { flash(r.message, level: .error) }
         agentSettings = DTO.decode(AgentSettings.self,
                                    core.agentSettingsJSON())
-        // The helpers' contexts are counted in the agent's Memory.
-        if s["model"] != nil || s["memory_gb"] != nil {
+        // The helpers' contexts are counted in the agent's Memory, and
+        // beside its expert cache.
+        if s["model"] != nil || s["memory_gb"] != nil
+            || s["expert_cache_gb"] != nil {
             helpers = DTO.decode(HelperList.self, core.assistantsJSON())
         }
     }

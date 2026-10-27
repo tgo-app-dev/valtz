@@ -2451,6 +2451,7 @@ struct FlattenRequest {
   std::optional<std::string>           only;
   std::set<std::string>                hidden;
   std::int64_t                         page = 0;
+  double                               scale = 1;
 };
 
 Result<FlattenRequest>
@@ -2462,7 +2463,8 @@ flatten_request(const Json& j)
     return make_error(Code::InvalidArgument, "project and asset ids");
   }
   FlattenRequest r{*pid, *aid, std::nullopt, std::nullopt, {},
-                   jget<std::int64_t>(j, "page", 0)};
+                   jget<std::int64_t>(j, "page", 0),
+                   jget<double>(j, "scale", 1.0)};
   if (const Json l = jget(j, "look", Json()); l.is_object()) {
     r.look = Controller::LayerLook{
         jget<std::string>(l, "layer", ""),
@@ -2570,7 +2572,8 @@ flatten_surface(Core* core, const std::string& request_json)
       return nullptr;
     }
     auto s = core->_impl->ctl->flatten_surface(r->project, r->asset, r->look,
-                                               r->only, r->hidden, r->page);
+                                               r->only, r->hidden, r->page,
+                                               r->scale);
     if (!s.ok()) {
       VALTZ_LOG_WARN("bridge", "flatten_surface: {}", s.error().message);
       return nullptr;
@@ -2591,6 +2594,47 @@ Core::adjustment_chain(const std::string& adjustments_json) const
     }
     return ok({{"chain", media::to_json(media::filter_chain(
                              media::adjustments_from_json(*j)))}});
+  });
+}
+
+std::string
+Core::color_mix() const
+{
+  return guarded([&] {
+    Json bands = Json::array();
+    for (const auto& b : media::kMixHueBands) {
+      bands.push_back({{"key", b.key}, {"degrees", b.degrees}});
+    }
+    return ok({{"kernel", media::color_mix_kernel_source()},
+               {"kernel_name", media::kColorMixKernel},
+               {"filter", media::kColorMixFilter},
+               {"samples", media::kMixSamples},
+               {"bands", std::move(bands)},
+               {"hue_degrees", media::kMixHueDegrees},
+               {"luminance_stops", media::kMixLuminanceStops}});
+  });
+}
+
+std::string
+Core::color_grade() const
+{
+  return guarded([&] {
+    return ok({{"kernel", media::color_grade_kernel_source()},
+               {"kernel_name", media::kColorGradeKernel},
+               {"filter", media::kColorGradeFilter},
+               {"balance_reach", media::kGradeBalanceReach},
+               {"strength", media::kGradeStrength}});
+  });
+}
+
+std::string
+Core::color_mix_hue(double r, double g, double b) const
+{
+  return guarded([&] {
+    const auto h = media::mix_hue_of(r, g, b);
+    if (!h) { return ok({{"grey", true}}); }
+    return ok({{"grey", false}, {"hue", h->hue},
+               {"saturation", h->saturation}});
   });
 }
 

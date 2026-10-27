@@ -120,7 +120,8 @@ decode_context()
 // stage shows it -- ImageIO renders a RAW the same way), anything else
 // decoded with its EXIF orientation applied. A RAW is developed no larger
 // than `need` (the scale the caller will draw it at, at most 1): the
-// engine does less work, and holds less memory while it does.
+// engine does less work, and holds less memory while it does. No target
+// (0 x 0): at its own size.
 CIImage*
 source_image(const fs::path& src, PixelSize target, bool linear,
              double zoom)
@@ -140,7 +141,8 @@ source_image(const fs::path& src, PixelSize target, bool linear,
     if ((int)f.orientation >= 5) {                // a quarter turn
       n = CGSizeMake(n.height, n.width);
     }
-    if (n.width > 0 && n.height > 0) {
+    if (n.width > 0 && n.height > 0 && target.width > 0 &&
+        target.height > 0) {
       const double kx = target.width / n.width;
       const double ky = target.height / n.height;
       // Crop covers the target (the larger scale); Stretch needs each
@@ -206,11 +208,128 @@ place_by_crop(CIImage* img, const Crop& crop)
                                            m.a, m.b, m.c, m.d, m.tx, m.ty)];
 }
 
+// The color mixer's kernel (media/adjust.h), compiled once from its
+// source; nil where Core Image cannot (the step is then left out).
+CIKernel*
+color_mix_kernel()
+{
+  static CIKernel* kernel = [] {
+    NSError* err = nil;
+    NSArray<CIKernel*>* ks = [CIKernel
+        kernelsWithMetalString:@(color_mix_kernel_source())
+                         error:&err];
+    for (CIKernel* k in ks) {
+      if ([k.name isEqualToString:@(kColorMixKernel)]) { return k; }
+    }
+    VALTZ_LOG_ERROR("media", "the color mixer's kernel did not compile: {}",
+                    err ? err.localizedDescription.UTF8String : "");
+    return static_cast<CIKernel*>(nil);
+  }();
+  return kernel;
+}
+
+// The mixer's step: its three curves' samples, a table the kernel reads
+// -- (value + 1) / 2 in red, green, blue; not colour managed.
+CIImage*
+apply_color_mix(CIImage* img, const FilterStep& step)
+{
+  CIKernel* k = color_mix_kernel();
+  if (!k) { return img; }
+  constexpr std::size_t n = kMixSamples + 1;
+  std::vector<float> px(4 * n, 0.5f);
+  for (std::size_t i = 0; i < n; ++i) { px[4 * i + 3] = 1; }
+  const char* names[] = {"inputHue", "inputSaturation", "inputLuminance"};
+  for (std::size_t c = 0; c < 3; ++c) {
+    for (const auto& [key, values] : step.params) {
+      if (key != names[c]) { continue; }
+      for (std::size_t i = 0; i < values.size() && i < n; ++i) {
+        px[4 * i + c] = static_cast<float>((values[i] + 1) / 2);
+      }
+    }
+  }
+  NSData* data = [NSData dataWithBytes:px.data()
+                                length:px.size() * sizeof(float)];
+  CIImage* table =
+      [CIImage imageWithBitmapData:data
+                       bytesPerRow:4 * sizeof(float) * n
+                              size:CGSizeMake(n, 1)
+                            format:kCIFormatRGBAf
+                        colorSpace:nil];
+  const CGRect whole = table.extent;
+  CIImage* out = [k applyWithExtent:img.extent
+                        roiCallback:^CGRect(int index, CGRect rect) {
+                          return index == 0 ? rect : whole;
+                        }
+                          arguments:@[ img, table ]];
+  return out ? out : img;
+}
+
+// The color grade's kernel (media/adjust.h), compiled once; nil where
+// Core Image cannot.
+CIKernel*
+color_grade_kernel()
+{
+  static CIKernel* kernel = [] {
+    NSError* err = nil;
+    NSArray<CIKernel*>* ks = [CIKernel
+        kernelsWithMetalString:@(color_grade_kernel_source())
+                         error:&err];
+    for (CIKernel* k in ks) {
+      if ([k.name isEqualToString:@(kColorGradeKernel)]) { return k; }
+    }
+    VALTZ_LOG_ERROR("media", "the color grade's kernel did not compile: {}",
+                    err ? err.localizedDescription.UTF8String : "");
+    return static_cast<CIKernel*>(nil);
+  }();
+  return kernel;
+}
+
+// The grade's step: its three gains and the ranges' tones, as the
+// kernel's vectors.
+CIImage*
+apply_color_grade(CIImage* img, const FilterStep& step)
+{
+  CIKernel* k = color_grade_kernel();
+  if (!k) { return img; }
+  auto vec = [&](const char* name, std::size_t n) -> CIVector* {
+    std::vector<CGFloat> v(n, n == 3 ? 1 : 0);
+    for (const auto& [key, values] : step.params) {
+      if (key != name) { continue; }
+      for (std::size_t i = 0; i < n && i < values.size(); ++i) {
+        v[i] = values[i];
+      }
+    }
+    return [CIVector vectorWithValues:v.data() count:n];
+  };
+  NSArray* args = @[
+    img, vec("inputShadows", 3), vec("inputMidtones", 3),
+    vec("inputHighlights", 3), vec("inputTones", 4)
+  ];
+  CIImage* out = nil;
+  if ([k isKindOfClass:[CIColorKernel class]]) {
+    out = [static_cast<CIColorKernel*>(k) applyWithExtent:img.extent
+                                                arguments:args];
+  } else {
+    out = [k applyWithExtent:img.extent
+                 roiCallback:^CGRect(int, CGRect rect) { return rect; }
+                   arguments:args];
+  }
+  return out ? out : img;
+}
+
 // The adjustment chain (media/adjust.h) as Core Image filters.
 CIImage*
 apply_chain(CIImage* img, const std::vector<FilterStep>& chain)
 {
   for (const FilterStep& step : chain) {
+    if (step.filter == kColorMixFilter) {
+      img = apply_color_mix(img, step);
+      continue;
+    }
+    if (step.filter == kColorGradeFilter) {
+      img = apply_color_grade(img, step);
+      continue;
+    }
     CIFilter* f = [CIFilter filterWithName:@(step.filter.c_str())];
     if (!f) { continue; }
     [f setValue:img forKey:kCIInputImageKey];
@@ -1058,6 +1177,10 @@ struct ComposeLayer {
   // A dip's: how far it has gone to a flat colour (0 black, 1 white).
   double      dip = 0;
   double      dip_level = 0;
+  // `image` a smaller copy of the picture (a kept level, for a draw at
+  // the viewport's size): the size the picture is laid out at, its look
+  // drawn on the copy's pixels first. Zero: its own.
+  CGSize      laid_out = CGSizeZero;
 };
 
 // `img` gone `amount` of the way to a flat colour -- `level` 0 black, 1
@@ -1177,7 +1300,17 @@ compose_images(const std::vector<ComposeLayer>& layers,
     const CGRect e = img.extent;
     img = [img imageByApplyingTransform:CGAffineTransformMakeTranslation(
                                             -e.origin.x, -e.origin.y)];
-    return apply_chain(img, filter_chain(l.adjust));
+    img = apply_chain(img, filter_chain(l.adjust));
+    // A smaller copy: its look on its own pixels (every step of the
+    // chain is a colour's alone), then laid out at the picture's size.
+    if (l.laid_out.width > 0 && l.laid_out.height > 0 &&
+        (l.laid_out.width != e.size.width ||
+         l.laid_out.height != e.size.height)) {
+      img = [img imageByApplyingTransform:CGAffineTransformMakeScale(
+                 l.laid_out.width / e.size.width,
+                 l.laid_out.height / e.size.height)];
+    }
+    return img;
   };
   // The frame, from (0, 0): the stack's own, or the bottom layer on its
   // own crop (padded with its colour, cut to its canvas).
@@ -1319,18 +1452,56 @@ compose_images(const std::vector<ComposeLayer>& layers,
                                             -seen.origin.x, -seen.origin.y)];
 }
 
+// A picture drawn once by Core Image and kept as it came out: half floats
+// (a RAW's headroom stays), in extended sRGB; nil where it cannot.
+CIImage*
+kept_render(CIImage* img, std::size_t& bytes)
+{
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceExtendedSRGB);
+  CGImageRef cg = [decode_context() createCGImage:img
+                                         fromRect:img.extent
+                                           format:kCIFormatRGBAh
+                                       colorSpace:cs
+                                         deferred:NO];
+  CGColorSpaceRelease(cs);
+  if (!cg) { return nil; }
+  bytes = CGImageGetBytesPerRow(cg) * CGImageGetHeight(cg);
+  CIImage* out = [CIImage imageWithCGImage:cg];
+  CGImageRelease(cg);
+  return out;
+}
+
+// A picture kept for the stage (`decoded_image`): the pixels, and the
+// size it is laid out at -- its own, or, a smaller LEVEL of it, the
+// picture's.
+struct KeptPicture {
+  CIImage* image = nil;
+  CGSize   full = CGSizeZero;
+};
+
 // A file's picture DECODED once, for the stage's draws: a jog wheel's
 // every tick read the layers' PNGs from their files again -- nine 1024^2
 // 16-bit ones, 220 ms a draw of a 3072^2 still on the M5 Pro, nearly all
 // of it decoding. Kept by path, size and time on disk (a blob is never
 // rewritten; a linked file may be), the least recently drawn let go past
-// 1.5 GB; nil for a camera RAW (its engine develops it) or what ImageIO
-// cannot read -- read as ever. Upright, as `source_image` makes it.
-CIImage*
-decoded_image(const fs::path& file)
+// 1.5 GB; nil for what ImageIO cannot read -- read as ever. Upright, as
+// `source_image` makes it.
+//
+// A camera RAW is DEVELOPED once, at its own size, and kept: its engine
+// took 75-240 ms a draw of a 30 MP CR2 on the M5 Pro, every tick of a
+// slider -- and for the stage it was asked for at 1 x 1, so a RAW in a
+// stack drew as a picture of 1 x 2 pixels (2026-10-02 to -26).
+//
+// LEVEL k > 0: the picture at 1 / 2^k of its size (Lanczos, from level
+// 0), kept too -- what a draw at the viewport's size reads while a
+// slider moves (`flatten_layers_surface`'s scale): a 48 MP picture's
+// look drawn at a quarter in ~3 ms against ~20 at its size, and a
+// surface a sixteenth as large for the screen to take each tick.
+KeptPicture
+decoded_image(const fs::path& file, int level = 0)
 {
   struct Kept {
-    CIImage* image = nil;
+    KeptPicture picture;
     std::uintmax_t size = 0;
     std::int64_t written = 0;
     std::size_t bytes = 0;
@@ -1344,44 +1515,80 @@ decoded_image(const fs::path& file)
 
   std::error_code ec;
   const auto size = fs::file_size(file, ec);
-  if (ec) { return nil; }
+  if (ec) { return {}; }
   const auto written = static_cast<std::int64_t>(
       fs::last_write_time(file, ec).time_since_epoch().count());
-  if (ec) { return nil; }
-  const std::string key = file.string();
+  if (ec) { return {}; }
+  const std::string key = level == 0
+      ? file.string() : std::format("{}#{}", file.string(), level);
   {
     std::lock_guard lk(mu);
     if (auto it = kept.find(key); it != kept.end() &&
         it->second.size == size && it->second.written == written) {
       it->second.used = ++clock;
-      return it->second.image;
+      return it->second.picture;
     }
   }
-  CGImageSourceRef src = open_source(file);
-  if (!src) { return nil; }
-  CFStringRef type = CGImageSourceGetType(src);
-  UTType* t = type ? [UTType typeWithIdentifier:(__bridge NSString*)type]
-                   : nil;
-  if (!t || [t conformsToType:UTTypeRAWImage]) {
-    CFRelease(src);
-    return nil;
+  KeptPicture made;
+  std::size_t bytes = 0;
+  if (level > 0) {
+    const KeptPicture full = decoded_image(file, 0);
+    if (!full.image) { return {}; }
+    const CGRect e = full.image.extent;
+    const double f = std::ldexp(1.0, -level);
+    const double pw = std::max(1.0, std::round(e.size.width * f));
+    const double ph = std::max(1.0, std::round(e.size.height * f));
+    CIImage* at0 = [full.image imageByApplyingTransform:
+        CGAffineTransformMakeTranslation(-e.origin.x, -e.origin.y)];
+    CIFilter* scale = [CIFilter filterWithName:@"CILanczosScaleTransform"];
+    [scale setValue:[at0 imageByClampingToExtent] forKey:kCIInputImageKey];
+    [scale setValue:@(ph / e.size.height) forKey:kCIInputScaleKey];
+    [scale setValue:@((pw / e.size.width) / (ph / e.size.height))
+             forKey:kCIInputAspectRatioKey];
+    made.image = kept_render(
+        [scale.outputImage imageByCroppingToRect:CGRectMake(0, 0, pw, ph)],
+        bytes);
+    made.full = full.full;
+  } else {
+    CGImageSourceRef src = open_source(file);
+    if (!src) { return {}; }
+    CFStringRef type = CGImageSourceGetType(src);
+    UTType* t = type ? [UTType typeWithIdentifier:(__bridge NSString*)type]
+                     : nil;
+    if (!t) {
+      CFRelease(src);
+      return {};
+    }
+    if ([t conformsToType:UTTypeRAWImage]) {
+      CFRelease(src);
+      CIImage* developed = source_image(file, {0, 0}, /*linear=*/false, 1);
+      if (!developed || CGRectIsEmpty(developed.extent) ||
+          CGRectIsInfinite(developed.extent)) {
+        return {};
+      }
+      made.image = kept_render(developed, bytes);
+    } else {
+      NSDictionary* props = CFBridgingRelease(
+          CGImageSourceCopyPropertiesAtIndex(src, 0, nullptr));
+      CGImageRef cg = CGImageSourceCreateImageAtIndex(
+          src, 0, (__bridge CFDictionaryRef)@{
+            (id)kCGImageSourceShouldCacheImmediately : @YES,
+          });
+      CFRelease(src);
+      if (!cg) { return {}; }
+      bytes = CGImageGetBytesPerRow(cg) * CGImageGetHeight(cg);
+      CIImage* img = [CIImage imageWithCGImage:cg];
+      CGImageRelease(cg);
+      if (NSNumber* o = props[(id)kCGImagePropertyOrientation];
+          o && o.intValue > 1 && o.intValue <= 8) {
+        img = [img imageByApplyingCGOrientation:
+                       (CGImagePropertyOrientation)o.intValue];
+      }
+      made.image = img;
+    }
+    if (made.image) { made.full = made.image.extent.size; }
   }
-  NSDictionary* props = CFBridgingRelease(
-      CGImageSourceCopyPropertiesAtIndex(src, 0, nullptr));
-  CGImageRef cg = CGImageSourceCreateImageAtIndex(
-      src, 0, (__bridge CFDictionaryRef)@{
-        (id)kCGImageSourceShouldCacheImmediately : @YES,
-      });
-  CFRelease(src);
-  if (!cg) { return nil; }
-  const std::size_t bytes = CGImageGetBytesPerRow(cg) * CGImageGetHeight(cg);
-  CIImage* img = [CIImage imageWithCGImage:cg];
-  CGImageRelease(cg);
-  if (NSNumber* o = props[(id)kCGImagePropertyOrientation];
-      o && o.intValue > 1 && o.intValue <= 8) {
-    img = [img imageByApplyingCGOrientation:
-                   (CGImagePropertyOrientation)o.intValue];
-  }
+  if (!made.image) { return {}; }
   std::lock_guard lk(mu);
   if (auto it = kept.find(key); it != kept.end()) {
     held -= it->second.bytes;
@@ -1393,17 +1600,29 @@ decoded_image(const fs::path& file)
     held -= oldest->second.bytes;
     kept.erase(oldest);
   }
-  kept[key] = Kept{img, size, written, bytes, ++clock};
+  kept[key] = Kept{made, size, written, bytes, ++clock};
   held += bytes;
-  return img;
+  return made;
+}
+
+// The level a draw at `scale` of a picture's size reads: the smallest
+// kept copy no smaller than it (1 / 2^k >= scale), at most a 32nd.
+int
+level_for(double scale)
+{
+  if (!(scale > 0) || scale >= 1) { return 0; }
+  return std::clamp(static_cast<int>(std::floor(std::log2(1 / scale))), 0,
+                    5);
 }
 
 // A still layer's picture, as Core Image reads it: drawn in memory, or a
-// file read (a RAW developed, upright) -- for the screen, decoded once
-// and kept (`decoded_image`); nil with nothing on it.
+// file read (a RAW developed at its own size, upright) -- for the screen,
+// decoded once and kept (`decoded_image`), at the level `scale` reads
+// (`full` then the size it is laid out at); nil with nothing on it.
 Result<CIImage*>
 layer_image(const fs::path& file, const DrawnPicture& drawn,
-            bool screen = false)
+            bool screen = false, double scale = 1,
+            CGSize* full = nullptr)
 {
   if (drawn) {
     return [CIImage imageWithCGImage:drawn.get()];
@@ -1412,11 +1631,13 @@ layer_image(const fs::path& file, const DrawnPicture& drawn,
     return static_cast<CIImage*>(nil);
   }
   if (screen) {
-    if (CIImage* kept = decoded_image(file)) {
-      return kept;
+    if (KeptPicture kept = decoded_image(file, level_for(scale));
+        kept.image) {
+      if (full) { *full = kept.full; }
+      return kept.image;
     }
   }
-  CIImage* img = source_image(file, {1, 1}, /*linear=*/false, 1);
+  CIImage* img = source_image(file, {0, 0}, /*linear=*/false, 1);
   if (!img || CGRectIsEmpty(img.extent) || CGRectIsInfinite(img.extent)) {
     return make_error(Code::Corrupt, std::format("cannot decode {}",
                                                  file.string()));
@@ -1425,16 +1646,22 @@ layer_image(const fs::path& file, const DrawnPicture& drawn,
 }
 
 // The stack as one Core Image picture, on its canvas from (0, 0);
-// `screen`: its files' pictures kept decoded between draws.
+// `screen`: its files' pictures kept decoded between draws, read at the
+// level a draw at `scale` of its size needs.
 Result<CIImage*>
 compose_layers(const std::vector<LayerPicture>& layers,
-               const StackCanvas& canvas, bool screen = false)
+               const StackCanvas& canvas, bool screen = false,
+               double scale = 1)
 {
   std::vector<ComposeLayer> in;
   in.reserve(layers.size());
   for (const auto& l : layers) {
-    VALTZ_ASSIGN(CIImage* img, layer_image(l.file, l.drawn, screen));
-    in.push_back({img, l.adjust, l.crop, l.visible, l.mask});
+    CGSize full = CGSizeZero;
+    VALTZ_ASSIGN(CIImage* img,
+                 layer_image(l.file, l.drawn, screen, scale, &full));
+    ComposeLayer c{img, l.adjust, l.crop, l.visible, l.mask};
+    c.laid_out = full;
+    in.push_back(c);
   }
   return compose_images(in, canvas);
 }
@@ -1533,13 +1760,21 @@ look_picture(const fs::path& file, const DrawnPicture& drawn,
 
 Result<IOSurfaceRef>
 flatten_layers_surface(const std::vector<LayerPicture>& layers,
-                       const StackCanvas& canvas)
+                       const StackCanvas& canvas, double scale)
 {
   @autoreleasepool {
-    VALTZ_ASSIGN(CIImage* base, compose_layers(layers, canvas, true));
+    const double s = scale > 0 && scale < 1 ? scale : 1;
+    VALTZ_ASSIGN(CIImage* base, compose_layers(layers, canvas, true, s));
+    if (s < 1) {
+      base = [base imageByApplyingTransform:CGAffineTransformMakeScale(s, s)];
+    }
     const CGRect canvas = base.extent;
-    const auto w = static_cast<int>(canvas.size.width);
-    const auto h = static_cast<int>(canvas.size.height);
+    const auto w = s < 1 ? std::max(1, static_cast<int>(
+                               std::lround(canvas.size.width)))
+                         : static_cast<int>(canvas.size.width);
+    const auto h = s < 1 ? std::max(1, static_cast<int>(
+                               std::lround(canvas.size.height)))
+                         : static_cast<int>(canvas.size.height);
     if (w <= 0 || h <= 0) {
       return make_error(Code::InvalidArgument, "the stack has no canvas");
     }

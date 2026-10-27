@@ -158,10 +158,19 @@ struct ComposerStack: View {
         // The Adjust and Crop tabs go when the stage has nothing for them;
         // their cards go with them.
         .onChange(of: model.showsAdjust) { _, shows in
-            if !shows && model.openPanel == .adjust {
+            if !shows && (model.openPanel == .adjust
+                          || model.openPanel == .color
+                          || model.openPanel == .grade) {
                 withAnimation(AppModel.motion) { model.openPanel = nil }
             }
-            if !shows && lastPanel == .adjust { lastPanel = .generate }
+            if !shows && (lastPanel == .adjust || lastPanel == .color
+                          || lastPanel == .grade) {
+                lastPanel = .generate
+            }
+        }
+        // The target tool works while its panel is open.
+        .onChange(of: model.openPanel) { _, p in
+            if p != .color { model.colorTargeting = false }
         }
         .onChange(of: model.showsCrop) { _, shows in
             if !shows && model.openPanel == .crop {
@@ -174,6 +183,12 @@ struct ComposerStack: View {
                 withAnimation(AppModel.motion) { model.openPanel = nil }
             }
             if !shows && lastPanel == .trim { lastPanel = .generate }
+        }
+        .onChange(of: model.showsAudio) { _, shows in
+            if !shows && model.openPanel == .audio {
+                withAnimation(AppModel.motion) { model.openPanel = nil }
+            }
+            if !shows && lastPanel == .audio { lastPanel = .generate }
         }
         // A new base brings its size and takes the stage; none gives the
         // stage back. Run from here, not from a didSet on the attachments:
@@ -596,19 +611,37 @@ struct ComposerStack: View {
                 // The row keeps room on its left; the brief gives way
                 // first when the window is narrow.
                 Spacer(minLength: 72)
-                // Only once the stage has a picture of its own to adjust.
-                if model.showsAdjust {
+                // Only once the stage has a picture of its own to adjust
+                // -- and not while an agent at work holds the project.
+                if model.showsAdjust && !model.agentHolds {
                     adjustTab
                         .fixedSize()
                         .transition(.opacity)
                 }
-                if model.showsCrop {
+                // The color mixer: a picture's or a clip's, as Adjust is.
+                if model.showsAdjust && !model.agentHolds
+                    && !model.stageIsAudio {
+                    colorTab
+                        .fixedSize()
+                        .transition(.opacity)
+                    // The color grade: the same.
+                    gradeTab
+                        .fixedSize()
+                        .transition(.opacity)
+                }
+                if model.showsCrop && !model.agentHolds {
                     cropTab
                         .fixedSize()
                         .transition(.opacity)
                 }
-                if model.showsTrim {
+                if model.showsTrim && !model.agentHolds {
                     trimTab
+                        .fixedSize()
+                        .transition(.opacity)
+                }
+                // The sound of the selected layer, when it has one.
+                if model.showsAudio && !model.agentHolds {
+                    audioTab
                         .fixedSize()
                         .transition(.opacity)
                 }
@@ -635,8 +668,11 @@ struct ComposerStack: View {
     private var drawer: some View {
         VStack(spacing: 0) {
             drawerPanel(.adjust)
+            drawerPanel(.color)
+            drawerPanel(.grade)
             drawerPanel(.crop)
             drawerPanel(.trim)
+            drawerPanel(.audio)
             drawerPanel(.generate)
         }
         .padding(.top, tuck)
@@ -709,6 +745,13 @@ struct ComposerStack: View {
             .foregroundStyle(.tertiary)
     }
 
+    /// The Adjust panel's own sliders change something.
+    private var adjustChanged: Bool {
+        model.keyedStage
+            ? model.clipAdjustKeys.keys.contains { !$0.value.toneIsIdentity }
+            : !model.adjustments.toneIsIdentity
+    }
+
     private var adjustTab: some View {
         let open = model.openPanel == .adjust
         return Button {
@@ -719,11 +762,14 @@ struct ComposerStack: View {
                     .padding(.trailing, 2)
                 Image(systemName: "slider.horizontal.3")
                     .accessibilityLabel(Text("Adjust"))
-                if model.keyedStage ? !model.clipAdjustKeys.isIdentity
-                                     : !model.adjustments.isIdentity {
-                    Circle().fill(Color.accentColor).frame(width: 6, height: 6)
-                        .help("Adjustments are applied")
-                }
+                    // Its own sliders (the mixer and the grade have tabs
+                    // of their own).
+                    .overlay(alignment: .bottom) {
+                        if adjustChanged {
+                            Self.changedDot
+                                .help("Adjustments are applied")
+                        }
+                    }
             }
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -744,6 +790,32 @@ struct ComposerStack: View {
 
     /// Crop and rotate (a picture, or a clip -- keyed). A dot while it
     /// changes what the picture or clip gives.
+    /// The color mixer's: its curves of hue, saturation, luminance.
+    private var colorTab: some View {
+        let changed = model.keyedStage
+            ? model.clipAdjustKeys.keys.contains { !$0.value.mix.isIdentity }
+            : !model.adjustments.mix.isIdentity
+        return iconTab(.color, symbol: "paintpalette", name: "Color",
+                       changed: changed,
+                       dot: "The colour mixer changes colours",
+                       show: model.clipOnStage ? "Mix the clip's colours"
+                                               : "Mix the picture's colours",
+                       hide: "Hide the colour mixer")
+    }
+
+    /// The color grade's: its tints of the shadows, midtones, highlights.
+    private var gradeTab: some View {
+        let changed = model.keyedStage
+            ? model.clipAdjustKeys.keys.contains { !$0.value.grade.isIdentity }
+            : !model.adjustments.grade.isIdentity
+        return iconTab(.grade, symbol: "camera.filters", name: "Grade",
+                       changed: changed,
+                       dot: "The colour grade tints the tones",
+                       show: model.clipOnStage ? "Grade the clip's tones"
+                                               : "Grade the picture's tones",
+                       hide: "Hide the colour grade")
+    }
+
     private var cropTab: some View {
         let changed = model.keyedStage ? !model.clipCropKeys.isIdentity
                                         : !model.crop.isIdentity
@@ -765,6 +837,24 @@ struct ComposerStack: View {
                        hide: "Hide the trim")
     }
 
+    /// The selected layer's sound: its gain, pitch and equalizer.
+    private var audioTab: some View {
+        iconTab(.audio, symbol: "speaker.wave.2", name: "Audio",
+                changed: !model.layerSound.isIdentity,
+                dot: "The sound is changed",
+                show: "Shape the sound: gain, pitch, equalizer",
+                hide: "Hide the audio panel")
+    }
+
+    /// A header's dot while its card changes something: under its icon,
+    /// at the header's foot -- out of its row, so a card does not widen
+    /// as one comes or goes.
+    static var changedDot: some View {
+        Circle().fill(Color.accentColor)
+            .frame(width: 5, height: 5)
+            .offset(y: 10)
+    }
+
     /// A card's header that is its icon alone (its name is its help and
     /// what VoiceOver says), and a dot while it changes something.
     private func iconTab(_ p: ComposerPanel, symbol: String,
@@ -780,10 +870,9 @@ struct ComposerStack: View {
                     .padding(.trailing, 2)
                 Image(systemName: symbol)
                     .accessibilityLabel(Text(name))
-                if changed {
-                    Circle().fill(Color.accentColor).frame(width: 6, height: 6)
-                        .help(dot)
-                }
+                    .overlay(alignment: .bottom) {
+                        if changed { Self.changedDot.help(dot) }
+                    }
             }
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -842,12 +931,17 @@ struct ComposerStack: View {
         switch p {
         case .generate: DrawerSettings(model: model)
         case .adjust: AdjustPanel(model: model)
+        case .color: ColorPanel(model: model)
+        case .grade: GradePanel(model: model)
         case .crop: CropPanel(model: model)
         case .trim: TrimPanel(model: model)
+        case .audio: AudioPanel(model: model)
         }
     }
 
     private func toggle(_ p: ComposerPanel) {
+        // An agent at work: its own settings only.
+        if p != .generate && model.agentHolds { return }
         withAnimation(AppModel.motion) {
             model.openPanel = model.openPanel == p ? nil : p
         }
@@ -994,7 +1088,8 @@ struct AttachMenu: View {
         .fixedSize()
         // File › Attach Media…: its Browse….
         .shortcutHint("⇧⌘I")
-        .disabled(model.attachCapture != nil)
+        // An agent at work: nothing imported into the project it holds.
+        .disabled(model.attachCapture != nil || model.agentHolds)
         .help("Attach: a file, a sound recorded, a photo or a video from the camera")
     }
 }
@@ -1113,6 +1208,9 @@ private struct ModalityTab: View {
         .accessibilityAddTraits(on ? .isSelected : [])
         .shortcutHint(m.shortcut)
         .help(help(m))
+        // An agent at work holds the project: its box alone, the others'
+        // making waits.
+        .disabled(model.agentHolds && m != .agent)
     }
 
     private func help(_ m: Modality) -> LocalizedStringKey {
@@ -1271,24 +1369,42 @@ private struct AdjustPanel: View {
                 Spacer()
                 BypassButton(model: model, part: .adjust,
                              help: "Hold to see the picture without its adjustments")
+                // Its own sliders: the mixer is the Color panel's.
                 Button("Reset", action: model.resetAdjustments)
                     .disabled((model.keyedStage
-                              ? model.clipAdjustKeys
-                                  == Keyframes(start: ImageAdjustments())
+                              ? !model.clipAdjustKeys.keys.contains {
+                                  !$0.value.toneIsIdentity }
                                   || model.layerOffStage != nil
-                              : model.adjustments.isIdentity)
+                              : model.adjustments.toneIsIdentity)
                               || model.selectedLayerLocked)
             }
-            HStack(alignment: .top, spacing: 28) {
-                ForEach(columns.indices, id: \.self) { c in
-                    Grid(alignment: .leading, horizontalSpacing: 10,
-                         verticalSpacing: 8) {
-                        ForEach(columns[c]) { key in row(key) }
+            HStack(alignment: .top, spacing: 18) {
+                // The layer's master alpha, up and down, as tall as the
+                // sliders beside it.
+                FaderColumn(
+                    id: "alpha", name: ImageAdjustments.Key.alpha.label,
+                    shown: ImageAdjustments.Key.alpha.display(
+                        model.adjustments.alpha),
+                    value: model.adjustments.alpha,
+                    range: ImageAdjustments.Key.alpha.range, rest: 1,
+                    step: 0.01, fine: 0.001, width: 34,
+                    help: String(localized: "The layer's alpha: 100% as it is, lower to let what is under it show through, 0% clear. ⌥ for finer steps; double-click for 100%."),
+                    onChange: { model.setAdjustment(.alpha, $0) })
+                    .searchMark(model.searchHits.contains(
+                        ImageAdjustments.Key.alpha.rawValue))
+                Divider()
+                HStack(alignment: .top, spacing: 28) {
+                    ForEach(columns.indices, id: \.self) { c in
+                        Grid(alignment: .leading, horizontalSpacing: 10,
+                             verticalSpacing: 8) {
+                            ForEach(columns[c]) { key in row(key) }
+                        }
+                        // Tab goes down a column, then on to the next.
+                        .focusSection()
                     }
-                    // Tab goes down a column, then on to the next.
-                    .focusSection()
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
             // Greyed while the playhead is off the selected layer -- its
             // values would change unseen -- or it is locked.
             .disabled(!model.canEditLayerHere)

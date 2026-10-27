@@ -17,7 +17,8 @@ struct SettingsRow: Identifiable, Sendable {
     static let cropRotate = "crop-rotate"
     static let trimNow = "trim-now", markIn = "mark-in", markOut = "mark-out"
     static let trimStart = "trim-start", speed = "speed"
-    static let pitch = "pitch", volume = "volume"
+    static let pitch = "pitch"
+    static let audioGain = "audio-gain", audioEq = "audio-eq"
 
     let id: String
     /// The card it is on; none for what is always in view (the modality
@@ -116,18 +117,13 @@ struct SettingsRow: Identifiable, Sendable {
                             terms: [String(localized: "Mark Out")]),
                 SettingsRow(id: speed, panel: .trim,
                             terms: [String(localized: "Speed"),
-                                    String(localized: "Playback speed")]),
-                SettingsRow(id: pitch, panel: .trim,
-                            terms: [String(localized: "Pitch"),
+                                    String(localized: "Playback speed"),
                                     String(localized: "Follow Speed"),
                                     String(localized: "Hold Pitch")]),
-                SettingsRow(id: volume, panel: .trim,
-                            terms: [String(localized: "Volume"),
-                                    String(localized: "Mute")]),
                 SettingsRow(id: trimStart, panel: .trim,
                             terms: [String(localized: "Starts on the timeline at"),
                                     String(localized: "Offset")]),
-            ] : [])
+            ] : []) + audioRows(m)
         }
         var rows = [
             SettingsRow(id: modality, panel: nil,
@@ -190,14 +186,9 @@ struct SettingsRow: Identifiable, Sendable {
                             terms: [String(localized: "Mark Out")]),
                 SettingsRow(id: speed, panel: .trim,
                             terms: [String(localized: "Speed"),
-                                    String(localized: "Playback speed")]),
-                SettingsRow(id: pitch, panel: .trim,
-                            terms: [String(localized: "Pitch"),
+                                    String(localized: "Playback speed"),
                                     String(localized: "Follow Speed"),
                                     String(localized: "Hold Pitch")]),
-                SettingsRow(id: volume, panel: .trim,
-                            terms: [String(localized: "Volume"),
-                                    String(localized: "Mute")]),
                 SettingsRow(id: trimStart, panel: .trim,
                             terms: [String(localized: "Starts on the timeline at"),
                                     String(localized: "Offset")]),
@@ -222,6 +213,26 @@ struct SettingsRow: Identifiable, Sendable {
                             terms: [key.label])
             }
         }
-        return rows
+        return rows + audioRows(m)
+    }
+
+    /// The Audio card's rows, while the selected layer has a sound.
+    @MainActor
+    private static func audioRows(_ m: AppModel) -> [SettingsRow] {
+        guard m.showsAudio else { return [] }
+        return [
+            SettingsRow(id: audioGain, panel: .audio,
+                        terms: [String(localized: "Gain"),
+                                String(localized: "Volume"),
+                                String(localized: "Mute")]),
+            SettingsRow(id: pitch, panel: .audio,
+                        terms: [String(localized: "Pitch"),
+                                String(localized: "Semitones")]),
+            SettingsRow(id: audioEq, panel: .audio,
+                        terms: [String(localized: "Equalizer"),
+                                String(localized: "EQ"),
+                                String(localized: "Bass"),
+                                String(localized: "Treble")]),
+        ]
     }
 }

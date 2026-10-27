@@ -15,9 +15,11 @@
 #import <Metal/Metal.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <tuple>
 #include <vector>
 
 using namespace valtz;
@@ -220,6 +222,72 @@ TEST(model_input, stack_surface_bench)
   }
 }
 
+// The stage drawing a large picture with a look (VALTZ_TEST_BENCH=1):
+// each slider tick is one such draw -- none, the Adjust panel's
+// exposure, then the colour mixer over it -- at the picture's size.
+TEST(model_input, large_look_bench)
+{
+  if (!std::getenv("VALTZ_TEST_BENCH")) {
+    SKIP("set VALTZ_TEST_BENCH=1 to time it");
+  }
+  const int W = 8000, H = 6000;
+  media::LayerPicture pic;
+  pic.file = test_picture(W, H);
+  auto ms = [](auto t0) {
+    return std::chrono::duration<double, std::milli>(
+               std::chrono::steady_clock::now() - t0).count();
+  };
+  for (int look = 0; look < 4; ++look) {
+    pic.adjust = {};
+    if (look == 1 || look == 2) { pic.adjust.exposure = 0.3; }
+    if (look >= 2) {
+      pic.adjust.mix.hue.points = {{0, 0}, {120, 0}, {240, 0.5}};
+      pic.adjust.mix.saturation.points = {{0, -0.4}, {120, 0}, {240, 0}};
+      pic.adjust.mix.luminance.points = {{0, 0}, {120, 0.3}, {240, 0}};
+    }
+    for (int round = 0; round < 4; ++round) {
+      // A new look each tick.
+      if (look == 3) {
+        pic.adjust.mix.hue.points[2].value = 0.5 + 0.01 * round;
+      } else {
+        pic.adjust.exposure += 0.01 * round;
+      }
+      for (const double scale : {1.0, 0.25}) {
+        const auto t0 = std::chrono::steady_clock::now();
+        auto surf = media::flatten_layers_surface({pic}, {}, scale);
+        REQUIRE_OK(surf);
+        const double t = ms(t0);
+        CFRelease(*surf);
+        std::fprintf(stderr, "[look] %dx%d %s at %.2f: %.1f ms\n", W, H,
+                     look == 0   ? "none"
+                     : look == 1 ? "exposure"
+                     : look == 2 ? "+mixer"
+                                 : "mixer alone",
+                     scale, t);
+      }
+    }
+  }
+  // A camera RAW (VALTZ_TEST_RAW), as the stage draws one.
+  if (const char* raw = std::getenv("VALTZ_TEST_RAW")) {
+    media::LayerPicture r;
+    r.file = raw;
+    for (int round = 0; round < 4; ++round) {
+      r.adjust.exposure = 0.1 * round;
+      r.adjust.mix.hue.points = {{0, 0}, {120, 0}, {240, 0.2 * round}};
+      for (const double scale : {1.0, 0.25}) {
+        const auto t0 = std::chrono::steady_clock::now();
+        auto surf = media::flatten_layers_surface({r}, {}, scale);
+        REQUIRE_OK(surf);
+        const double t = ms(t0);
+        std::fprintf(stderr, "[look] RAW %zux%zu +mixer at %.2f: %.1f ms\n",
+                     IOSurfaceGetWidth(*surf), IOSurfaceGetHeight(*surf),
+                     scale, t);
+        CFRelease(*surf);
+      }
+    }
+  }
+}
+
 namespace {
 
 // An asymmetric picture with a clear and a half-clear part, `turn`
@@ -342,6 +410,161 @@ TEST(model_input, a_kept_picture_draws_as_its_file)
   // Rewritten (a linked file may be): read again.
   write_pattern(b, 120, 90, 160);
   check("rewritten");
+}
+
+namespace {
+
+// A picture of slow gradients, opaque: drawn smaller by any good filter,
+// the same picture.
+void
+write_smooth(const std::filesystem::path& path, int w, int h)
+{
+  std::vector<std::uint8_t> px(static_cast<std::size_t>(w) * h * 4);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      std::uint8_t* p = &px[(static_cast<std::size_t>(y) * w + x) * 4];
+      p[0] = static_cast<std::uint8_t>(255 * x / (w - 1));
+      p[1] = static_cast<std::uint8_t>(255 * y / (h - 1));
+      p[2] = static_cast<std::uint8_t>(
+          128 + 100 * std::sin(6.28 * x / w) * std::cos(3.14 * y / h));
+      p[3] = 255;
+    }
+  }
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(
+      px.data(), w, h, 8, static_cast<size_t>(w) * 4, cs,
+      static_cast<std::uint32_t>(kCGImageAlphaPremultipliedLast));
+  CGImageRef img = CGBitmapContextCreateImage(ctx);
+  NSURL* url = [NSURL fileURLWithPath:@(path.c_str())];
+  CGImageDestinationRef d = CGImageDestinationCreateWithURL(
+      (__bridge CFURLRef)url, CFSTR("public.png"), 1, nullptr);
+  CGImageDestinationAddImage(d, img, nullptr);
+  CGImageDestinationFinalize(d);
+  CFRelease(d);
+  CGImageRelease(img);
+  CGContextRelease(ctx);
+  CGColorSpaceRelease(cs);
+}
+
+// A surface's pixels, BGRA rows as they lie.
+std::vector<std::uint8_t>
+surface_bytes(IOSurfaceRef surf)
+{
+  const int w = static_cast<int>(IOSurfaceGetWidth(surf));
+  const int h = static_cast<int>(IOSurfaceGetHeight(surf));
+  std::vector<std::uint8_t> px(static_cast<std::size_t>(w) * h * 4);
+  IOSurfaceLock(surf, kIOSurfaceLockReadOnly, nullptr);
+  const auto* base = static_cast<const std::uint8_t*>(
+      IOSurfaceGetBaseAddress(surf));
+  const std::size_t bpr = IOSurfaceGetBytesPerRow(surf);
+  for (int y = 0; y < h; ++y) {
+    std::memcpy(&px[static_cast<std::size_t>(y) * w * 4], base + y * bpr,
+                static_cast<std::size_t>(w) * 4);
+  }
+  IOSurfaceUnlock(surf, kIOSurfaceLockReadOnly, nullptr);
+  return px;
+}
+
+}  // namespace
+
+// The stage drawn at the viewport's size while a slider moves: each
+// picture read from a kept copy a power of two smaller, its look on those
+// pixels, the stack laid out at its own size and drawn scaled -- the
+// full-size draw's picture, made smaller (its 4 x 4 or 2 x 2 blocks
+// averaged): a look with the colour mixer over a smooth picture, alone
+// and with a second picture placed, turned and half clear over it.
+TEST(model_input, a_stack_is_drawn_at_the_viewports_size)
+{
+  const auto dir = test::temp_dir("viewport");
+  const auto a = dir / "a.png", b = dir / "b.png";
+  write_smooth(a, 800, 600);
+  write_smooth(b, 400, 240);
+  media::LayerPicture bottom;
+  bottom.file = a;
+  bottom.adjust.exposure = 0.4;
+  bottom.adjust.mix.hue.points = {{0, 0.5}, {120, 0}, {240, 0}};
+  bottom.adjust.mix.saturation.points = {{0, 0}, {120, 0}, {240, -0.6}};
+  bottom.adjust.mix.luminance.points = {{0, 0}, {120, 0.4}, {240, 0}};
+  media::LayerPicture top;
+  top.file = b;
+  top.adjust.mix.hue.points = {{60, 0}, {180, -0.5}, {300, 0}};
+  top.crop.scale_x = top.crop.scale_y = 0.7;
+  top.crop.offset_x = 0.15;
+  top.crop.rotate = 10;
+  for (const auto& [stack, scale, mean_max] :
+       {std::tuple{std::vector{bottom}, 0.25, 1.0},
+        std::tuple{std::vector{bottom, top}, 0.5, 2.5}}) {
+    auto full = media::flatten_layers_surface(stack);
+    REQUIRE_OK(full);
+    auto small = media::flatten_layers_surface(stack, {}, scale);
+    REQUIRE_OK(small);
+    const int k = static_cast<int>(std::lround(1 / scale));
+    const int w = static_cast<int>(IOSurfaceGetWidth(*full));
+    const int h = static_cast<int>(IOSurfaceGetHeight(*full));
+    CHECK(static_cast<int>(IOSurfaceGetWidth(*small)) == w / k);
+    CHECK(static_cast<int>(IOSurfaceGetHeight(*small)) == h / k);
+    const auto big = surface_bytes(*full);
+    const auto got = surface_bytes(*small);
+    const int sw = w / k, sh = h / k;
+    double sum = 0;
+    for (int y = 0; y < sh; ++y) {
+      for (int x = 0; x < sw; ++x) {
+        for (int c = 0; c < 4; ++c) {
+          int acc = 0;
+          for (int dy = 0; dy < k; ++dy) {
+            for (int dx = 0; dx < k; ++dx) {
+              acc += big[((static_cast<std::size_t>(y) * k + dy) * w +
+                          x * k + dx) * 4 + c];
+            }
+          }
+          const double want = static_cast<double>(acc) / (k * k);
+          sum += std::abs(want - got[(static_cast<std::size_t>(y) * sw +
+                                      x) * 4 + c]);
+        }
+      }
+    }
+    const double mean = sum / (static_cast<double>(sw) * sh * 4);
+    std::fprintf(stderr, "[viewport] %zu layers at %.2f: %dx%d, %.2f off "
+                 "on average\n", stack.size(), scale, sw, sh, mean);
+    CHECK(mean <= mean_max);
+    CFRelease(*full);
+    CFRelease(*small);
+  }
+}
+
+// A camera RAW in a stack is drawn at its own size -- on the screen, in
+// an export, and a quarter as large while a slider moves. It was asked
+// of its engine at 1 x 1 and drew as 1 x 2 pixels (2026-10-02 to -26).
+// Gated on VALTZ_TEST_RAW (a camera RAW file).
+TEST(model_input, a_camera_raw_in_a_stack_is_drawn_whole)
+{
+  const char* path = std::getenv("VALTZ_TEST_RAW");
+  if (path == nullptr) {
+    SKIP("set VALTZ_TEST_RAW to a camera RAW");
+  }
+  auto sz = media::oriented_size(path);
+  REQUIRE_OK(sz);
+  media::LayerPicture raw;
+  raw.file = path;
+  raw.adjust.mix.hue.points = {{0, 0}, {120, 0}, {240, 0.3}};
+  auto surf = media::flatten_layers_surface({raw});
+  REQUIRE_OK(surf);
+  CHECK(static_cast<int>(IOSurfaceGetWidth(*surf)) == sz->width);
+  CHECK(static_cast<int>(IOSurfaceGetHeight(*surf)) == sz->height);
+  CFRelease(*surf);
+  auto small = media::flatten_layers_surface({raw}, {}, 0.25);
+  REQUIRE_OK(small);
+  CHECK(std::abs(static_cast<int>(IOSurfaceGetWidth(*small)) -
+                 sz->width / 4) <= 1);
+  CFRelease(*small);
+  const auto png = test::temp_dir("raw-stack") / "raw.png";
+  REQUIRE_OK(media::flatten_layers({raw}, png));
+  int w = 0, h = 0;
+  file_pixels(png, w, h);
+  CHECK(w == sz->width);
+  CHECK(h == sz->height);
+  std::fprintf(stderr, "[raw-stack] %dx%d drawn and exported whole\n", w,
+               h);
 }
 
 // A stack of many layers -- past 64 drawn, composed in groups, each drawn

@@ -7359,6 +7359,99 @@ TEST(composition, a_pitch_follows_the_speed_or_is_held)
   CHECK(std::abs(pitch() - 440) < 15);
 }
 
+// A layer's EQUALIZER (DESIGN §10a Audio): a band an octave wide raised
+// or cut where it is centred, the others' tones left; keyed, it eases
+// from one key to the next; written and read with the keys.
+TEST(composition, a_layers_equalizer_shapes_its_bands)
+{
+  Bench b("comp-eq");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  REQUIRE(write_tone(b.root / "tone.wav", 2, 1000, 0.1));
+  auto tone = import_and_wait(ctl, pid, b.root / "tone.wav");
+  REQUIRE(tone);
+  auto snd = ctl.create_composition(pid, project::AssetClass::Composition,
+                                    {0, 0}, {}, "sound");
+  REQUIRE_OK(snd);
+  REQUIRE_OK(ctl.instantiate(pid, *tone, *snd));
+  auto rms = [](const std::vector<float>& s, double from, double to) {
+    double sum = 0;
+    std::size_t n = 0;
+    for (auto i = static_cast<std::size_t>(from * 48000);
+         i < static_cast<std::size_t>(to * 48000) && i < s.size(); ++i) {
+      sum += double(s[i]) * s[i];
+      ++n;
+    }
+    return n ? std::sqrt(sum / static_cast<double>(n)) : 0.0;
+  };
+  auto mixed = [&] {
+    auto mix = ctl.sound_mix(pid, *snd);
+    return mix.ok() && !mix->empty() ? read_sound(*mix)
+                                     : std::vector<float>{};
+  };
+  const auto flat = mixed();
+  REQUIRE(flat.size() > 48000);
+  const double level = rms(flat, 0.2, 1.8);
+  CHECK(std::abs(level - 0.1 / std::sqrt(2.0)) < 0.005);
+  auto plan = ctl.sound_plan(pid, *snd);
+  REQUIRE_OK(plan);
+  CHECK(!media::needs_render(*plan));
+
+  // 1 kHz raised 12 dB: four times as loud; 125 Hz cut 12 dB, three
+  // octaves off: about as it was.
+  std::array<double, media::kEqBands> up{};
+  up[5] = 12;
+  media::KeyedSound k;
+  k.keys = {{0, media::Sound{1, 0, up}}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  plan = ctl.sound_plan(pid, *snd);
+  REQUIRE_OK(plan);
+  CHECK(media::needs_render(*plan));
+  const auto raised = mixed();
+  const double gain = 20 * std::log10(rms(raised, 0.2, 1.8) / level);
+  std::array<double, media::kEqBands> low{};
+  low[2] = -12;
+  k.keys = {{0, media::Sound{1, 0, low}}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  const double other = 20 * std::log10(rms(mixed(), 0.2, 1.8) / level);
+  std::printf("[composition] eq: 1 kHz +12 dB -> %+.2f dB, 125 Hz -12 dB "
+              "-> %+.2f dB at 1 kHz\n", gain, other);
+  CHECK(std::abs(gain - 12) < 0.5);
+  CHECK(std::abs(other) < 0.5);
+
+  // Keyed: flat at the start, 1 kHz up 12 dB a second in -- keys in the
+  // layer's own frames (a composition of sound counts milliseconds).
+  const Rational r = plan->layers[0].timing.rate;
+  const auto second = static_cast<std::int64_t>(std::llround(
+      r.to_double() > 0 ? r.to_double() : 24.0));
+  k.keys = {{0, media::Sound{}}, {second, media::Sound{1, 0, up}}};
+  k.rate = r;
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  const auto eased = mixed();
+  const double start = 20 * std::log10(rms(eased, 0.05, 0.15) / level);
+  const double end = 20 * std::log10(rms(eased, 1.2, 1.8) / level);
+  std::printf("[composition] eq keyed: %+.2f dB at the start, %+.2f at the "
+              "end\n", start, end);
+  CHECK(std::abs(start) < 1.5);
+  CHECK(std::abs(end - 12) < 0.5);
+
+  // The keys as the modifier holds them: a band written while it is set.
+  const Json j = media::to_json(k);
+  CHECK(!j["keys"][0].contains("eq_5"));
+  CHECK(j["keys"][1]["eq_5"].get<double>() == 12);
+  CHECK(media::keyed_sound_from_json(j) == k);
+  media::Sound loud{1, 0, {}};
+  loud.eq[0] = 40;   // held to its range
+  media::KeyedSound held;
+  held.keys = {{0, loud}};
+  CHECK(media::keyed_sound_from_json(media::to_json(held)).keys[0]
+            .value.eq[0] == media::kMaxEqGain);
+  const media::Sound half = media::lerp(media::Sound{}, media::Sound{1, 0, up},
+                                        0.5);
+  CHECK(half.eq[5] == 6 && half.eq[4] == 0);
+}
+
 // MIGRATION (project/migrate.h): a schema-1 project brought over -- its
 // classes, the look on a flat picture moved to a composition of its own,
 // a markup layer's content made an asset, the project's composition
@@ -8018,8 +8111,9 @@ TEST(controller, the_chosen_helper_is_kept_and_falls_back_to_auto)
 // here, the helper's meanwhile; and the most that model may hold goes to
 // vpipe with every load of it (vpipe's memory_limit_mb, §15 0zzd: an
 // Enhance too, where the helper is the agent's) and with no other
-// model's. DeepSeek's context is the catalog's, not the 1,048,576 tokens
-// its config says. Both kept for a later run.
+// model's. DeepSeek's context under Auto is the catalog's, not the
+// 1,048,576 tokens its config says -- which fit, on a Mac that runs it,
+// for Settings' Context to ask for. Both kept for a later run.
 TEST(controller, the_agent_thinks_on_a_model_of_its_own_within_its_memory)
 {
   auto root = test::temp_dir("ctl-agent-model");
@@ -8048,7 +8142,13 @@ TEST(controller, the_agent_thinks_on_a_model_of_its_own_within_its_memory)
     engine = e.get();
     return std::unique_ptr<engine::Engine>(std::move(e));
   };
+  // A Mac that runs DeepSeek (128 GB, its GPU keeping 96 resident): its
+  // context is counted in that.
+  ::setenv("VALTZ_RAM_LIMIT_GB", "128", 1);
+  ::setenv("VALTZ_GPU_WORKING_SET_GB", "96", 1);
   auto made = Controller::create(cfg);
+  ::unsetenv("VALTZ_RAM_LIMIT_GB");
+  ::unsetenv("VALTZ_GPU_WORKING_SET_GB");
   REQUIRE_OK(made);
   REQUIRE(engine != nullptr);
   Controller& ctl = **made;
@@ -8106,7 +8206,8 @@ TEST(controller, the_agent_thinks_on_a_model_of_its_own_within_its_memory)
   p = enhance();
   CHECK(jget<std::int64_t>(p, "memory_limit_mb", 0) == 65536);
 
-  // DeepSeek's context: the catalog's 131,072 of its own 1,048,576.
+  // DeepSeek's context: the catalog's 131,072 of its own 1,048,576 --
+  // Auto's, more fitting here (asked for in Settings › Context).
   const Json helpers = ctl.assistants();
   int seen = 0;
   for (const auto& m : helpers["models"]) {
@@ -8115,6 +8216,8 @@ TEST(controller, the_agent_thinks_on_a_model_of_its_own_within_its_memory)
       CHECK(m["by_name"] == true);
       CHECK(m["context"]["model"] == 1048576);
       CHECK(m["context"]["here"] == 131072);
+      CHECK(m["context"]["auto"] == 131072);
+      CHECK(m["context"]["fits"] == 1048576);
       ++seen;
     }
   }
@@ -8130,6 +8233,186 @@ TEST(controller, the_agent_thinks_on_a_model_of_its_own_within_its_memory)
   REQUIRE_OK(later);
   CHECK((*later)->agent_settings()["model"] == "");
   CHECK((*later)->agent_settings()["memory_gb"] == 64);
+}
+
+// THE AGENT'S EXPERT CACHE (Settings › Experimental › Agent, DESIGN §9b,
+// §15 0zzg): a Mixture of Experts whose routed experts stream from disk
+// trades a conversation's room, the room left beside it and decode speed
+// on one figure -- its cache. Auto: what the memory leaves (vpipe's
+// sizing); a size: at most that (vpipe's expert_cache_mb), with every
+// load of the agent's model and with no other model's. Its context is
+// counted against what it holds -- the weights beside its cache and the
+// cache it is given, a token as the catalog says vpipe books it
+// (DeepSeek's ~7,900 bytes) -- in the memory vpipe sizes it in (the Mac's
+// less 8 GB, 85% of the GPU's working set): DeepSeek's whole 1,048,576
+// tokens fit a 64 GB Mac with Auto's cache (it shrinks for them, to its
+// floor at most) and a 128 GB one with 32 GB, and are given when the
+// person asks (Auto keeps the catalog's 131,072); a cache asked for is
+// kept whole, so a larger one leaves less.
+TEST(controller, the_agents_expert_cache_trades_its_context)
+{
+  auto root = test::temp_dir("ctl-expert-cache");
+  const fs::path helper =
+      root / "models" / "mlx-community" / "Qwen3.5-9B-OptiQ-4bit";
+  const fs::path dsv41 = root / "models" / "mlx-community" /
+                         "DeepSeek-V4.1-Flash-1017-oQ2e-mtp";
+  for (const auto& d : {helper, dsv41}) {
+    fs::create_directories(d);
+    std::ofstream(d / "model.safetensors") << "w";
+  }
+  std::ofstream(helper / "config.json") << "{}";
+  std::ofstream(dsv41 / "config.json")
+      << R"({"model_type": "deepseek_v41", "text_config": {)"
+         R"("max_position_embeddings": 1048576, "num_hidden_layers": 40,)"
+         R"("num_attention_heads": 64, "num_key_value_heads": 1,)"
+         R"("head_dim": 512}})";
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  // A Mac of `gb`, its GPU keeping `ws` resident (VALTZ_RAM_LIMIT_GB,
+  // VALTZ_GPU_WORKING_SET_GB).
+  auto mac = [&](const char* gb, const char* ws) {
+    ::setenv("VALTZ_RAM_LIMIT_GB", gb, 1);
+    ::setenv("VALTZ_GPU_WORKING_SET_GB", ws, 1);
+    auto made = Controller::create(cfg);
+    ::unsetenv("VALTZ_RAM_LIMIT_GB");
+    ::unsetenv("VALTZ_GPU_WORKING_SET_GB");
+    return made;
+  };
+  auto plan = [](Controller& c) {
+    return c.agent_settings()["plan"];
+  };
+  auto fits = [&](Controller& c) {
+    return plan(c)["context"]["fits"].get<int>();
+  };
+  int auto_fits_64 = 0;
+  {
+    auto made = mac("64", "48");
+    REQUIRE_OK(made);
+    Controller& ctl = **made;
+    REQUIRE_OK(
+        ctl.set_agent_settings({{"model", "deepseek-v4.1-flash-2bit"}}));
+    Json p = plan(ctl);
+    REQUIRE(p.is_object());
+    CHECK(p["model"] == "deepseek-v4.1-flash-2bit");
+    CHECK(p["streams"] == true);
+    CHECK(p["context"]["kv_bytes"] == 7900);
+    CHECK(p["context"]["model"] == 1048576);
+    // Auto: the catalog's; the most this Mac holds: all of it, Auto's
+    // cache shrinking for it -- 85% of 48 GB less the 11.5 GB beside the
+    // cache, the 8.5 GB floor and 7 GB of working memory: 16.8 GB, room
+    // for 2.1 million tokens.
+    CHECK(p["context"]["auto"] == 131072);
+    CHECK(p["context"]["here"] == 131072);
+    auto_fits_64 = fits(ctl);
+    CHECK(auto_fits_64 == 1048576);
+    // Its experts and the least cache it runs with: the catalog's.
+    CHECK(std::abs(p["experts_gb"].get<double>() - 169.9) < 1e-6);
+    CHECK(std::abs(p["floor_gb"].get<double>() - 8.5) < 1e-6);
+    CHECK(std::abs(p["ssd_gb"].get<double>() - (313.3 - 20.0)) < 1e-6);
+    // Auto's cache: what the budget leaves after the run and the 11.5
+    // GB beside the cache -- the 20 GB it holds at the least, less the
+    // floor counted in it: 85% of 48 GB, less 19.5 -- above the floor.
+    CHECK(std::abs(p["rest_gb"].get<double>() - 11.5) < 1e-6);
+    CHECK(std::abs(p["working_gb"].get<double>() - 7.0) < 1e-6);
+    const double budget = 48.0 * (1ull << 30) * 0.85 / 1e9;
+    CHECK(std::abs(p["memory_gb"].get<double>() - budget) < 0.01);
+    CHECK(std::abs(p["cache_auto_gb"].get<double>() -
+                   (budget - 11.5 - 7.0 - p["context_gb"].get<double>())) <
+          0.01);
+    CHECK(p["cache_gb"].get<double>() == p["cache_auto_gb"].get<double>());
+    CHECK(std::abs(p["holds_gb"].get<double>() -
+                   (11.5 + p["cache_gb"].get<double>() +
+                    p["context_gb"].get<double>() + 7.0)) < 1e-6);
+    // The person asks for all of it: what fits.
+    REQUIRE_OK(ctl.set_assistant_context(1048576));
+    p = plan(ctl);
+    CHECK(p["context"]["here"] == auto_fits_64);
+    CHECK(p["context"]["auto"] == 131072);
+    // A 32 GB cache on 64 GB: given what the budget leaves it (25 GB),
+    // and kept whole it leaves no room: the least context.
+    REQUIRE_OK(ctl.set_agent_settings({{"expert_cache_gb", 32}}));
+    p = plan(ctl);
+    CHECK(ctl.agent_settings()["expert_cache_gb"] == 32);
+    CHECK(std::abs(p["cache_gb"].get<double>() -
+                   p["cache_auto_gb"].get<double>()) < 1e-6);
+    const int f = p["context"]["fits"].get<int>();
+    CHECK(f == 32768);
+    // A 16 GB one leaves 9.3 GB: about 1.2 million tokens, all of it.
+    REQUIRE_OK(ctl.set_agent_settings({{"expert_cache_gb", 16}}));
+    CHECK(fits(ctl) == 1048576);
+    REQUIRE_OK(ctl.set_agent_settings({{"expert_cache_gb", 32}}));
+    CHECK(p["context"]["here"] == f);
+    // Refused: under 8 GB, below 0.
+    CHECK(ctl.set_agent_settings({{"expert_cache_gb", 4}}).code() ==
+          Code::InvalidArgument);
+    CHECK(ctl.set_agent_settings({{"expert_cache_gb", -1}}).code() ==
+          Code::InvalidArgument);
+    CHECK(ctl.agent_settings()["expert_cache_gb"] == 32);
+
+    // It goes with the agent's model alone: an Enhance on the helper while
+    // the agent thinks on DeepSeek carries none...
+    REQUIRE(engine != nullptr);
+    auto enhance = [&]() -> Json {
+      EnhancePromptRequest req;
+      req.prompt = "a fox in snow";
+      auto job = ctl.enhance_prompt(req);
+      CHECK(job.ok());
+      const auto chats = engine->held_of(engine::kOpChat);
+      CHECK(chats.size() == 1);
+      const engine::JobSpec* spec =
+          chats.size() == 1 ? engine->spec(chats[0]) : nullptr;
+      if (spec == nullptr) {
+        return Json();
+      }
+      Json q = spec->params;
+      engine->turn(chats[0], {{"text", R"({"prompt": "A fox."})"}});
+      return q;
+    };
+    Json q = enhance();
+    CHECK(!q.contains("expert_cache_mb"));
+    // ...and DeepSeek as the Agentic Helper, the agent's too, carries it
+    // and the context it is given.
+    REQUIRE_OK(ctl.set_agent_settings({{"model", ""}}));
+    REQUIRE_OK(ctl.choose_assistant("deepseek-v4.1-flash-2bit"));
+    q = enhance();
+    CHECK(jget<std::int64_t>(q, "expert_cache_mb", 0) ==
+          (std::int64_t)(32'000'000'000 >> 20));
+    CHECK(jget<std::int64_t>(q, "context_tokens", 0) == f);
+    CHECK(!q.contains("memory_limit_mb"));
+    // Auto again: none asked, Auto's room again.
+    REQUIRE_OK(ctl.set_agent_settings({{"expert_cache_gb", 0}}));
+    q = enhance();
+    CHECK(!q.contains("expert_cache_mb"));
+    CHECK(jget<std::int64_t>(q, "context_tokens", 0) == auto_fits_64);
+    REQUIRE_OK(ctl.set_agent_settings({{"expert_cache_gb", 32}}));
+  }
+  // 128 GB: all of it fits with the 32 GB cache -- and is given, asked
+  // for before -- and with a 64 GB one, less (5.1 GB: ~650,000 tokens).
+  {
+    auto made = mac("128", "96");
+    REQUIRE_OK(made);
+    Controller& ctl = **made;
+    CHECK(ctl.agent_settings()["expert_cache_gb"] == 32);
+    Json p = plan(ctl);
+    REQUIRE(p.is_object());
+    CHECK(p["context"]["fits"] == 1048576);
+    CHECK(p["context"]["here"] == 1048576);
+    CHECK(std::abs(p["context_gb"].get<double>() -
+                   1048576.0 * 7900 / 1e9) < 1e-6);
+    REQUIRE_OK(ctl.set_agent_settings({{"expert_cache_gb", 64}}));
+    CHECK(fits(ctl) > 524288 && fits(ctl) < 1048576);
+    REQUIRE_OK(ctl.set_agent_settings({{"expert_cache_gb", 0}}));
+    CHECK(fits(ctl) == 1048576);
+  }
 }
 
 // THE UPSCALERS' OPTIONS (Settings › Upscaling, DESIGN §4f): an upscale
@@ -10078,6 +10361,84 @@ TEST(agent, it_is_told_where_the_person_is)
   CHECK(said.find("and this one") == 0);
   CHECK(said.find("on page 3") != std::string::npos);
   REQUIRE_OK(ctl.agent_stop(*again));
+}
+
+// While a session works on a project -- here, its step waiting for the
+// person's word -- the project is the agent's: the person's changes are
+// refused, undo too, while what only looks goes on (the view state); the
+// step approved runs. Done, the project is the person's again -- and
+// words said to the agent then tell it that it was changed meanwhile.
+TEST(agent, a_project_is_read_only_while_the_agent_works)
+{
+  auto root = test::temp_dir("agent-hold");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "H.valtz", "held");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 160, 90, {0xff, 0, 0, 0xff}));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  REQUIRE(red.has_value());
+  using J = Json;
+  const auto holds = [&] {
+    return jget(ctl.project_state(*pid), "agent", false);
+  };
+  CHECK(!holds());
+  script->replies = {{call("create_composition", {{"name", "Deck"},
+                                                  {"width", 400},
+                                                  {"height", 300}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A deck";
+  req.review = true;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "review");
+  REQUIRE(jget<std::string>(st, "state", "") == "review");
+  CHECK(holds());
+  // The person's change and undo refused, said so.
+  Status renamed = ctl.rename_asset(*pid, *red, "Mine");
+  REQUIRE(!renamed.ok());
+  CHECK(renamed.error().key == "core.agent_at_work");
+  CHECK(ctl.project(*pid)->asset(*red)->name != "Mine");
+  Status undone = ctl.undo(*pid);
+  REQUIRE(!undone.ok());
+  CHECK(undone.error().key == "core.agent_at_work");
+  // Looking goes on: the view state is written.
+  REQUIRE_OK(ctl.set_view_state(*pid, J{{"zoom", 2}}));
+  // Its step, approved, is written.
+  REQUIRE_OK(ctl.agent_review(*id, 1, "approve"));
+  st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  const Json steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 1);
+  CHECK(jget<std::string>(steps[0], "state", "") == "done");
+  CHECK(!jget<std::string>(st, "composition", "").empty());
+  // Done: the person's again.
+  CHECK(!holds());
+  REQUIRE_OK(ctl.rename_asset(*pid, *red, "Mine"));
+  const std::size_t turns = script->seen.size();
+  REQUIRE_OK(ctl.agent_say(*id, "and a title"));
+  for (int i = 0; i < 200 && script->seen.size() <= turns; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  REQUIRE(script->seen.size() > turns);
+  const std::string said = script->seen.back().back().content;
+  CHECK(said.find("and a title") == 0);
+  CHECK(said.find("The person changed the project since you finished") !=
+        std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+  agent_wait(ctl, *id, "stopped");
 }
 
 // THE PROMPT ENHANCER for the agent (enhance_prompt, DESIGN §9b): the

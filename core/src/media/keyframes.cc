@@ -109,8 +109,12 @@ template <class F>
 Sound
 zip(const Sound& p, const Sound& a, const Sound& b, const Sound& n, F f)
 {
-  return {f(p.volume, a.volume, b.volume, n.volume),
+  Sound o{f(p.volume, a.volume, b.volume, n.volume),
           f(p.pitch, a.pitch, b.pitch, n.pitch)};
+  for (std::size_t i = 0; i < o.eq.size(); ++i) {
+    o.eq[i] = f(p.eq[i], a.eq[i], b.eq[i], n.eq[i]);
+  }
+  return o;
 }
 
 template <class F>
@@ -123,9 +127,16 @@ zip(const Adjustments& p, const Adjustments& a, const Adjustments& b,
        {&Adjustments::exposure, &Adjustments::contrast,
         &Adjustments::highlights, &Adjustments::shadows,
         &Adjustments::vibrance, &Adjustments::saturation,
-        &Adjustments::temperature, &Adjustments::tint}) {
+        &Adjustments::temperature, &Adjustments::tint,
+        &Adjustments::alpha}) {
     o.*m = f(p.*m, a.*m, b.*m, n.*m);
   }
+  // The color mixer's curves, laid on one another's points: each value
+  // and slope there on its own.
+  o.mix = zip_mix(p.mix, a.mix, b.mix, n.mix, f);
+  // The grade's tints as points on the wheel's disk, its ranges as
+  // numbers.
+  o.grade = zip_grade(p.grade, a.grade, b.grade, n.grade, f);
   return o;
 }
 
@@ -264,7 +275,11 @@ lerp(const Speed& a, const Speed& b, double t)
 Sound
 lerp(const Sound& a, const Sound& b, double t)
 {
-  return {mix(a.volume, b.volume, t), mix(a.pitch, b.pitch, t)};
+  Sound o{mix(a.volume, b.volume, t), mix(a.pitch, b.pitch, t)};
+  for (std::size_t i = 0; i < o.eq.size(); ++i) {
+    o.eq[i] = mix(a.eq[i], b.eq[i], t);
+  }
+  return o;
 }
 
 Json
@@ -277,7 +292,11 @@ Json
 to_json(const KeyedSound& k)
 {
   return track_json(k, [](const Sound& v) {
-    return Json{{"volume", v.volume}, {"pitch", v.pitch}};
+    Json j{{"volume", v.volume}, {"pitch", v.pitch}};
+    for (std::size_t i = 0; i < v.eq.size(); ++i) {
+      if (v.eq[i] != 0) { j["eq_" + std::to_string(i)] = v.eq[i]; }
+    }
+    return j;
   });
 }
 
@@ -300,9 +319,14 @@ keyed_sound_from_json(const Json& j)
   return track_from_json<Sound>(
       j,
       [](const Json& v) {
-        return Sound{
-            std::clamp(jget(v, "volume", 1.0), 0.0, kMaxVolume),
-            std::clamp(jget(v, "pitch", 0.0), -kMaxPitch, kMaxPitch)};
+        Sound s{std::clamp(jget(v, "volume", 1.0), 0.0, kMaxVolume),
+                std::clamp(jget(v, "pitch", 0.0), -kMaxPitch, kMaxPitch)};
+        for (std::size_t i = 0; i < s.eq.size(); ++i) {
+          const std::string key = "eq_" + std::to_string(i);
+          s.eq[i] = std::clamp(jget(v, key.c_str(), 0.0), -kMaxEqGain,
+                               kMaxEqGain);
+        }
+        return s;
       },
       false);
 }
@@ -319,6 +343,12 @@ lerp(const Adjustments& a, const Adjustments& b, double t)
   o.saturation = mix(a.saturation, b.saturation, t);
   o.temperature = mix(a.temperature, b.temperature, t);
   o.tint = mix(a.tint, b.tint, t);
+  o.alpha = mix(a.alpha, b.alpha, t);
+  auto eased = [t](double, double av, double bv, double) {
+    return mix(av, bv, t);
+  };
+  o.mix = zip_mix(a.mix, a.mix, b.mix, b.mix, eased);
+  o.grade = zip_grade(a.grade, a.grade, b.grade, b.grade, eased);
   return o;
 }
 

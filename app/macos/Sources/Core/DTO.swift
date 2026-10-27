@@ -820,11 +820,8 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
         if m.keys != nil {
             return adjustKeys(layer: layer).value(at: 0) ?? ImageAdjustments()
         }
-        var a = ImageAdjustments()
-        for key in ImageAdjustments.Key.allCases {
-            if let v = m.params[key.rawValue] { a[key] = v }
-        }
-        return a
+        // Whole: the sliders, the mixer's points, the grade, the alpha.
+        return ImageAdjustments(m.params)
     }
 
     func crop(layer: String) -> CropSpec {
@@ -910,7 +907,7 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
     static func soundKeys(_ m: ModifierDTO?) -> Keyframes<LayerSound> {
         guard let m else { return Keyframes() }
         return Keyframes(m.keys ?? []) {
-            LayerSound(volume: $0["volume"] ?? 1, pitch: $0["pitch"] ?? 0)
+            LayerSound($0)
         }
     }
 
@@ -928,11 +925,7 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
         guard let m = modifiers?.first(where: {
             $0.kind == "adjust" && $0.layer.isEmpty
         }) else { return ImageAdjustments() }
-        var a = ImageAdjustments()
-        for key in ImageAdjustments.Key.allCases {
-            if let v = m.params[key.rawValue] { a[key] = v }
-        }
-        return a
+        return ImageAdjustments(m.params)
     }
 
     var linkProblem: Bool {
@@ -1751,6 +1744,34 @@ struct AgentCloudSettings: Decodable, Sendable, Equatable {
     var contextTokens: Int?
 }
 
+/// What the agent's model holds on this Mac (the core's
+/// agent_memory_plan_): its resident part, its experts, the cache asked
+/// for and Auto's, its context -- the model's own, Auto's, the most that
+/// fits, what it is given -- and what that holds. GB are decimal.
+struct AgentMemoryPlan: Decodable, Sendable, Equatable {
+    var model: String
+    var name: String
+    var streams: Bool
+    var diskGb: Double
+    var residentGb: Double
+    var context: HelperList.Context
+    var contextGb: Double
+    /// What it reads from the SSD, and its experts alone (the cache's
+    /// share of it); the least cache it runs with; what it holds beside
+    /// the cache (its resident part less that floor, which it counts),
+    /// and the working memory vpipe books beside its context.
+    var ssdGb: Double?
+    var expertsGb: Double?
+    var floorGb: Double?
+    var restGb: Double?
+    var workingGb: Double?
+    var memoryGb: Double?
+    var cacheAutoGb: Double?
+    var cacheGb: Double?
+    var allResident: Bool?
+    var holdsGb: Double?
+}
+
 struct AgentSettings: Decodable, Sendable, Equatable {
     var backend: String     // helper | cloud
     /// The model it thinks with here: a helper's id, "" the Agentic
@@ -1761,6 +1782,12 @@ struct AgentSettings: Decodable, Sendable, Equatable {
     /// The most that model may hold, GB: its expert cache sized within it,
     /// its context counted in it. 0: no limit but the Mac's memory.
     var memoryGb: Int?
+    /// Its routed experts' cache, GB, where they stream from disk
+    /// (DeepSeek V4.1 Flash, Qwen3.8 Flash-Next): at most this. 0 Auto,
+    /// what the memory leaves it.
+    var expertCacheGb: Int?
+    /// What that model holds here, as the core works it out.
+    var plan: AgentMemoryPlan?
     var review: Bool
     var lease: Double
     /// A long conversation compacted past its model's context (DESIGN

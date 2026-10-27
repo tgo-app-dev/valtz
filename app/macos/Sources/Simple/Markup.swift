@@ -1354,7 +1354,7 @@ extension AppModel {
     }
 
     /// The clip's frame drawn (once a frame) and the colour at `p`.
-    private func clipSample(at p: CGPoint) async -> RGBA? {
+    func clipSample(at p: CGPoint) async -> RGBA? {
         let m = markup
         let key = clipSampleKey
         if m.sampleFrame?.key != key {
@@ -1374,6 +1374,41 @@ extension AppModel {
             }
         }
         return m.sampleFrame?.image.flatMap { clipPixel($0, at: p) }
+    }
+
+    /// The clip's frame at the player's, drawn without the selected
+    /// layer's colour mixer, and the colour at `p`: a stack's by a plan of
+    /// its own (let go once it has drawn), a plain clip's through its look.
+    func unmixedClipSample(at p: CGPoint) async -> RGBA? {
+        guard let core, var look = stageClipLook else { return nil }
+        // The grade comes after the mixer: left out with it.
+        look.adjust = look.adjust.mapValues {
+            var a = $0
+            a.mix = ColorMix()
+            a.grade = ColorGrade()
+            return a
+        }
+        var img: CGImage?
+        if let plan = stackPlayback, !plan.soundOnly {
+            guard let projectId, let clip = currentClip else { return nil }
+            let rate = stageFrameRate, layer = activeLayer, id = clip.id
+            let hidden = markupHiddenIds, frame = videoFrame
+            img = await Task.detached { () -> CGImage? in
+                let live = (layer: layer,
+                            adjust: look.adjust.json(rate: rate) { $0.json }
+                                as Any,
+                            crop: look.crop.json(rate: rate) as Any)
+                guard let made = core.stackPlan(project: projectId, asset: id,
+                                                live: live, hidden: hidden)
+                else { return nil }
+                defer { core.releaseStackPlan(made.plan) }
+                return core.stackStill(plan: made.plan, frame: frame)
+            }.value
+        } else if let url = stage.video {
+            img = await VideoPlayerView.frame(url, videoFrame, look: look,
+                                              core: core)
+        }
+        return img.flatMap { clipPixel($0, at: p) }
     }
 
     /// The pixel of a clip's frame under markup's pixel `p`: on its canvas
@@ -2701,6 +2736,7 @@ extension AppModel {
 
     /// A layer clicked with ⌘: in or out of the selection.
     func toggleLayerSelection(_ id: String) {
+        guard !refusedForColorTarget() else { return }
         if selectedLayers.contains(id) && selectedLayers.count > 1 {
             selectedLayers.remove(id)
             if activeLayer == id, let other = selectedLayers.first {

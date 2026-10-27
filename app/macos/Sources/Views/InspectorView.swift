@@ -37,9 +37,9 @@ struct InspectorView: View {
             : InspectorTab.allCases
     }
 
-    /// Nothing in Information to edit (AppModel.viewOnly): what is shown
-    /// is read, not set.
-    private var readOnly: Bool { model.viewOnly }
+    /// Nothing in Information to edit (AppModel.viewOnly, or an agent at
+    /// work holding the project): what is shown is read, not set.
+    private var readOnly: Bool { model.viewOnly || model.agentHolds }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1136,7 +1136,7 @@ struct LayersSection: View {
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
                     .fixedSize()
-                    .disabled(model.isGenerating)
+                    .disabled(model.isGenerating || model.agentHolds)
                     .help("Capture the layers as an asset: their looks and what they show, frozen. Dragged back onto the stage, they are editable again.")
                     tool("minus", "Remove the selected layer",
                          disabled: !model.canRemoveLayer(model.activeLayer)) {
@@ -1256,7 +1256,8 @@ struct LayersSection: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .disabled(disabled || model.isGenerating)
+        // An agent at work holds the project: its layers are looked at.
+        .disabled(disabled || model.isGenerating || model.agentHolds)
         .help(help)
     }
 }
@@ -1497,8 +1498,11 @@ private struct LayerFolderRow: View {
         }
         .contentShape(Rectangle())
         .contextMenu {
-            Button("Rename Folder") { startRenaming() }
-            Button("Ungroup") { model.ungroupLayers(folder.id) }
+            Group {
+                Button("Rename Folder") { startRenaming() }
+                Button("Ungroup") { model.ungroupLayers(folder.id) }
+            }
+            .disabled(model.agentHolds)
         }
         .dropDestination(for: String.self) { items, _ in
             put(items.compactMap { model.draggedLayer(text: $0) }.first)
@@ -1582,6 +1586,8 @@ private struct PageBar: View {
             }
             .help(n > 1 ? "Add a page after this one: layers running across it continue there"
                         : "Add a page: the picture becomes a page, and layers on it continue on the next")
+            // An agent at work: its pages are looked through, not changed.
+            .disabled(model.agentHolds)
             if n > 1 {
                 Button {
                     model.removePage()
@@ -1592,6 +1598,7 @@ private struct PageBar: View {
                         .contentShape(Rectangle())
                 }
                 .help("Remove this page, and the layers only it has")
+                .disabled(model.agentHolds)
             }
         }
         .buttonStyle(.borderless)
@@ -1685,6 +1692,7 @@ private struct LayerRow: View {
                     .frame(width: 18)
             }
             .buttonStyle(.borderless)
+            .disabled(model.agentHolds)
             .help(layer.visible ? "Hide this layer" : "Show this layer")
             // Locked, nothing changes it until it is unlocked; faintly
             // open while it is not.
@@ -1696,6 +1704,7 @@ private struct LayerRow: View {
                     .frame(width: 14)
             }
             .buttonStyle(.borderless)
+            .disabled(model.agentHolds)
             .help(layer.locked ? "Unlock this layer, to change it"
                                : "Lock this layer: nothing changes it until it is unlocked")
             .accessibilityLabel(layer.locked ? Text("Unlock Layer")
@@ -1777,12 +1786,14 @@ private struct LayerRow: View {
             let mods = NSEvent.modifierFlags
             if mods.contains(.command) || mods.contains(.shift) {
                 model.toggleLayerSelection(layer.id)
-            } else {
+            } else if layer.id == model.activeLayer
+                        || !model.refusedForColorTarget() {
                 model.selectLayer(layer.id)
             }
         } double: {
             let mods = NSEvent.modifierFlags
-            guard !mods.contains(.command), !mods.contains(.shift) else {
+            guard !mods.contains(.command), !mods.contains(.shift),
+                  !model.agentHolds else {
                 return
             }
             name = layer.name.isEmpty ? layer.title : layer.name
@@ -1790,6 +1801,8 @@ private struct LayerRow: View {
             nameFocused = true
         }
         .contextMenu {
+            // An agent at work holds the project: nothing here changes it.
+            Group {
             Button(layer.locked ? "Unlock Layer" : "Lock Layer") {
                 model.setLayerLocked(layer.id, !layer.locked)
             }
@@ -1852,6 +1865,8 @@ private struct LayerRow: View {
                 }
                 .disabled(layer.locked)
             }
+            }
+            .disabled(model.agentHolds)
         }
         // A picture or a clip dropped on it -- a file, or an asset of the
         // list (which arrives as a URL too): what it shows.

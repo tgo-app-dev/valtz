@@ -450,16 +450,28 @@ Controller::AgentHost::memory_gb() const
   return std::max(0, jget(_settings, "memory_gb", 0));
 }
 
+int
+Controller::AgentHost::expert_cache_gb() const
+{
+  std::lock_guard lk(_mu);
+  return std::max(0, jget(_settings, "expert_cache_gb", 0));
+}
+
 Json
 Controller::AgentHost::settings() const
 {
-  // The model that runs asked first: agent_model takes this lock.
+  // The model that runs asked first, and what it holds: agent_model and
+  // the plan's sizes take this lock.
   const auto* using_ = _c.agent_model();
+  Json plan = _c.agent_memory_plan_();
   std::lock_guard lk(_mu);
   Json s = {{"backend", jget<std::string>(_settings, "backend", "helper")},
             {"model", jget<std::string>(_settings, "model", "")},
             {"using", using_ ? using_->id : std::string()},
             {"memory_gb", std::max(0, jget(_settings, "memory_gb", 0))},
+            {"expert_cache_gb",
+             std::max(0, jget(_settings, "expert_cache_gb", 0))},
+            {"plan", std::move(plan)},
             {"review", jget(_settings, "review", true)},
             {"lease", jget(_settings, "lease", kDefaultLease)},
             {"compact", jget(_settings, "compact", true)}};
@@ -501,6 +513,16 @@ Controller::AgentHost::set_settings(const Json& j)
           to_text(j["memory_gb"])));
     }
   }
+  // Its expert cache: Auto, or a size -- under vpipe's floor (two layers'
+  // experts, ~15 GB for DeepSeek) it runs at the floor.
+  if (j.contains("expert_cache_gb")) {
+    const int gb = jget(j, "expert_cache_gb", -1);
+    if (gb != 0 && (gb < 8 || gb > 4096)) {
+      return make_error(Code::InvalidArgument, std::format(
+          "the agent's expert cache is 0 (Auto) or 8 to 4096 GB, not {}",
+          to_text(j["expert_cache_gb"])));
+    }
+  }
   std::lock_guard lk(_mu);
   Json next = _settings;
   if (j.contains("model")) {
@@ -508,6 +530,9 @@ Controller::AgentHost::set_settings(const Json& j)
   }
   if (j.contains("memory_gb")) {
     next["memory_gb"] = jget(j, "memory_gb", 0);
+  }
+  if (j.contains("expert_cache_gb")) {
+    next["expert_cache_gb"] = jget(j, "expert_cache_gb", 0);
   }
   if (j.contains("backend")) {
     const std::string b = jget<std::string>(j, "backend", "helper");
@@ -763,7 +788,16 @@ Controller::AgentHost::start(AgentRequest req)
   }
   VALTZ_LOG_INFO("agent", "session {} started ({})", s->id,
                  to_text(s->backend->describe()));
-  s->thread = std::thread([this, s] { run_(*s); });
+  // Held from the request: read-only to the person until it is done.
+  s->working = true;
+  _c.agent_hold_(s->project, s->id, true);
+  s->thread = std::thread([this, s] {
+    // Its writes are the agent's own: never refused by its hold.
+    CoreWrites own;
+    run_(*s);
+    // Over: the project the person's again.
+    _c.agent_hold_(s->project, s->id, false);
+  });
   return s->id;
 }
 
@@ -781,14 +815,43 @@ void
 Controller::AgentHost::post_(Session& s, std::optional<int> step)
 {
   Json d;
+  bool working = false;
   {
     std::lock_guard lk(s.mu);
     d = {{"agent", s.id}, {"project", s.project.str()}, {"state", s.state}};
+    working = s.state != "done" && s.state != "failed" &&
+              s.state != "stopped";
   }
   if (step) {
     d["step"] = *step;
   }
+  // At work -- paused, asking, waiting for a word too -- it holds the
+  // project: read-only to the person (Controller::agent_hold_). Its last
+  // command noted as it stops working, for the next words said to it.
+  bool stopped_working = false;
+  {
+    std::lock_guard lk(s.mu);
+    stopped_working = s.working && !working;
+    s.working = working;
+  }
+  if (stopped_working) {
+    const std::uint64_t last = last_command_(s.project);
+    std::lock_guard lk(s.mu);
+    s.seen_seq = last;
+  }
+  _c.agent_hold_(s.project, s.id, working);
   _c.post_("agent.changed", JobId{}, std::move(d));
+}
+
+std::uint64_t
+Controller::AgentHost::last_command_(ProjectId pid) const
+{
+  project::Workspace* w = _c.workspace_(pid);
+  if (!w) {
+    return 0;
+  }
+  const auto c = w->undo().next_undo();
+  return c ? c->seq : 0;
 }
 
 Json
@@ -1527,7 +1590,18 @@ Controller::AgentHost::say(const std::string& id, const std::string& words,
   if (one_line(words).empty()) {
     return make_error(Code::InvalidArgument, msg::kAgentEmptyRequest);
   }
-  const std::string text = with_stage_(s->project, words, stage);
+  std::string text = with_stage_(s->project, words, stage);
+  // Done and spoken to again: what the person changed since -- it held
+  // nothing meanwhile -- makes what it last saw out of date.
+  const std::uint64_t last = last_command_(s->project);
+  {
+    std::lock_guard lk(s->mu);
+    if (!s->working && last != s->seen_seq) {
+      text += "\n[Valtz] The person changed the project since you "
+              "finished: look again at what you work on before you "
+              "change it.";
+    }
+  }
   {
     std::lock_guard lk(s->mu);
     if (s->state == "stopped") {
@@ -1865,6 +1939,8 @@ Controller::AgentHost::land_(JobId job, const std::string& kind,
 void
 Controller::AgentHost::housekeeping_()
 {
+  // What lands here is the agent's own: never refused by its hold.
+  CoreWrites own;
   std::unique_lock lk(_mu);
   while (!_stop) {
     _cv.wait_for(lk, std::chrono::seconds(15),

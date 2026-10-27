@@ -160,6 +160,9 @@ struct Keyframes<T: Keyable>: Equatable, Sendable {
         if frame >= Double(last.frame) { return last.value }
         let b = keys.firstIndex { Double($0.frame) > frame }!
         let ka = keys[b - 1], kb = keys[b]
+        // On a key: its own value (a mixer's curves its own points, not
+        // laid on the next key's).
+        if frame == Double(ka.frame) { return ka.value }
         let h = Double(kb.frame - ka.frame)
         let t = (frame - Double(ka.frame)) / h
         switch ka.interp {
@@ -226,6 +229,22 @@ struct Keyframes<T: Keyable>: Equatable, Sendable {
         keys.removeAll { $0.frame == frame }
     }
 
+    /// Every key's value made by `f`, the keys where they were.
+    func mapValues(_ f: (T) -> T) -> Self {
+        var o = self
+        for i in o.keys.indices { o.keys[i].value = f(o.keys[i].value) }
+        return o
+    }
+
+    /// The same, with keys made alike by it merged: a track whose keys all
+    /// hold one value is that value, one key at its first frame.
+    func collapsingValues(_ f: (T) -> T) -> Self {
+        let o = mapValues(f)
+        guard let first = o.keys.first,
+              o.keys.allSatisfy({ $0.value == first.value }) else { return o }
+        return Self(start: first.value)
+    }
+
     /// An edit of the value shown at `frame`. With one key the clip is not
     /// animated yet: the edit changes that key, wherever the clip is. With
     /// more, it changes the key at `frame` -- or makes one there.
@@ -242,15 +261,19 @@ struct Keyframes<T: Keyable>: Equatable, Sendable {
 
 extension ImageAdjustments: Keyable {
     static func lerp(_ a: Self, _ b: Self, _ t: Double) -> Self {
-        var o = a
-        for k in Key.allCases { o[k] = a[k] + (b[k] - a[k]) * t }
-        return o
+        Self.zip(a, a, b, b) { _, x, y, _ in x + (y - x) * t }
     }
 
     static func zip(_ p: Self, _ a: Self, _ b: Self, _ n: Self,
                     _ f: (Double, Double, Double, Double) -> Double) -> Self {
         var o = a
         for k in Key.allCases { o[k] = f(p[k], a[k], b[k], n[k]) }
+        // The color mixer's curves, laid on one another's points: each
+        // value and slope there on its own (the core's zip_mix).
+        o.mix = ColorMix.zip(p.mix, a.mix, b.mix, n.mix, f)
+        // The grade's tints across the wheel's disk (the core's
+        // zip_grade).
+        o.grade = ColorGrade.zip(p.grade, a.grade, b.grade, n.grade, f)
         return o
     }
 }
@@ -298,17 +321,52 @@ struct LayerSpeed: Keyable {
 struct LayerSound: Keyable {
     var volume = 1.0
     var pitch = 0.0
+    /// The equalizer (the core's media::Sound::eq): a gain in decibels
+    /// for each band, an octave wide, centred on `eqFrequencies`.
+    var eq = [Double](repeating: 0, count: LayerSound.eqFrequencies.count)
     static let volumeRange = 0.0...4.0
     static let pitchRange = -24.0...24.0
-    var isIdentity: Bool { volume == 1 && pitch == 0 }
+    static let eqRange = -12.0...12.0
+    /// The bands' centres, Hz (media::kEqFrequencies).
+    static let eqFrequencies: [Double] = [31.25, 62.5, 125, 250, 500, 1000,
+                                          2000, 4000, 8000, 16000]
+    var isFlat: Bool { eq.allSatisfy { $0 == 0 } }
+    var isIdentity: Bool { volume == 1 && pitch == 0 && isFlat }
+
+    init(volume: Double = 1, pitch: Double = 0, eq: [Double]? = nil) {
+        self.volume = volume
+        self.pitch = pitch
+        if let eq, eq.count == Self.eqFrequencies.count { self.eq = eq }
+    }
+
+    /// From a key's numbers, as the core keeps them: "volume", "pitch",
+    /// "eq_0" ... "eq_9".
+    init(_ p: [String: Double]) {
+        self.init(volume: p["volume"] ?? 1, pitch: p["pitch"] ?? 0)
+        for i in eq.indices {
+            if let g = p["eq_\(i)"], g.isFinite {
+                eq[i] = min(Self.eqRange.upperBound,
+                            max(Self.eqRange.lowerBound, g))
+            }
+        }
+    }
+
+    /// Its numbers as the core reads a key's: a band while it is set.
+    var json: [String: Double] {
+        var j = ["volume": volume, "pitch": pitch]
+        for (i, g) in eq.enumerated() where g != 0 { j["eq_\(i)"] = g }
+        return j
+    }
+
     static func lerp(_ a: Self, _ b: Self, _ t: Double) -> Self {
-        LayerSound(volume: a.volume + (b.volume - a.volume) * t,
-                   pitch: a.pitch + (b.pitch - a.pitch) * t)
+        Self.zip(a, a, b, b) { _, x, y, _ in x + (y - x) * t }
     }
     static func zip(_ p: Self, _ a: Self, _ b: Self, _ n: Self,
                     _ f: (Double, Double, Double, Double) -> Double) -> Self {
         LayerSound(volume: f(p.volume, a.volume, b.volume, n.volume),
-                   pitch: f(p.pitch, a.pitch, b.pitch, n.pitch))
+                   pitch: f(p.pitch, a.pitch, b.pitch, n.pitch),
+                   eq: a.eq.indices.map { f(p.eq[$0], a.eq[$0], b.eq[$0],
+                                            n.eq[$0]) })
     }
 }
 
@@ -332,6 +390,9 @@ struct Turn: Keyable {
 /// leaves out of what the stage shows.
 enum KeyTrack: Hashable, Sendable {
     case adjust, place, turn
+    /// The selected layer's sound (`AppModel.layerSound`): the Audio
+    /// panel's -- its keys linear, as the core reads them.
+    case sound
 }
 
 /// A clip's crop (core media/keyframes.h KeyedCrop): where its frames lie
@@ -430,15 +491,29 @@ struct ClipLook: Equatable, Sendable {
 
     var isIdentity: Bool { adjust.isIdentity && crop.isIdentity }
 
+    /// The largest frame a look is placed in, a side: a 16K picture's.
+    static let largestFrame: CGFloat = 16_384
+
     /// `image` (a frame, extent at the origin) with the look at `frame`.
     func apply(_ image: CIImage, frame: Int, core: CoreService) -> CIImage {
         var img = image
         if let a = adjust.value(at: frame), !a.isIdentity {
             img = ImageAdjustments.applyChain(core.adjustmentChain(a), to: img)
         }
+        // A time with no picture -- a composition's gap, past its last
+        // frame -- comes as Core Image's empty frame: an extent INFINITE
+        // (CGRect.infinite's width is finite, and no Int holds it) or
+        // null. Its crop has no size to be placed in: it is left as it
+        // is. Converted, it trapped on AVFoundation's thread (Valtz 95 on
+        // the M5 Ultra, twice: a clip with a look on the stage while an
+        // agent worked).
+        let ext = image.extent
+        guard ext.width >= 1, ext.height >= 1,
+              ext.width <= Self.largestFrame,
+              ext.height <= Self.largestFrame else { return img }
         if case let c = crop.value(at: frame), !c.isIdentity,
-           let p = core.cropPlacement(c, width: Int(image.extent.width),
-                                      height: Int(image.extent.height)) {
+           let p = core.cropPlacement(c, width: Int(ext.width),
+                                      height: Int(ext.height)) {
             let canvas = CGRect(origin: .zero, size: p.canvas)
             img = img.transformed(by: p.transform)
                 .composited(over: CIImage(color: CIColor(cgColor: p.pad))
@@ -488,7 +563,8 @@ struct KeyframeBar: View {
             }
             .disabled(!keys.contains { $0 > f })
             .help("Next keyframe")
-            interpMenu
+            // A sound's keys go on in a straight line (the core's).
+            if track != .sound { interpMenu }
             Image(systemName: here ? "diamond.fill" : "diamond")
                 .font(.caption)
                 .foregroundStyle(here ? Color.accentColor : .secondary)

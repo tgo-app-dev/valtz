@@ -66,9 +66,18 @@ Status flatten_layers(const std::vector<LayerPicture>& layers,
 // show as it is -- no PNG encoded, written, read and decoded each time
 // the stage composes the stack. Returned retained: the caller releases
 // it.
+//
+// `scale` < 1 draws it that much smaller -- the size the viewport shows
+// it at, while a slider moves: each file's picture read from a kept copy
+// a power of two smaller (no smaller than `scale`), its look drawn on
+// those pixels, the stack laid out at its own size and drawn scaled. A
+// 48 MP picture's look a quarter as large took ~3 ms against ~20, and
+// the screen takes a sixteenth of the surface each tick. Every step of
+// the look is a colour's own, so the pixels are the picture's at that
+// size; a markup drawn at the canvas's size is sampled down.
 Result<IOSurfaceRef> flatten_layers_surface(
     const std::vector<LayerPicture>& layers,
-    const StackCanvas& canvas = {});
+    const StackCanvas& canvas = {}, double scale = 1);
 
 // A layer's picture as a stack lays it -- a file read upright (a RAW
 // developed), or one drawn in memory -- before it is placed: its size

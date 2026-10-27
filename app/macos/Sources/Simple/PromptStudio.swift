@@ -320,6 +320,7 @@ extension AppModel {
     /// stage goes small: no markup, no crop editing, fitted; the
     /// inspector offers Layers and Assets (Assets, if it showed another).
     func enterImmersivePrompt() {
+        guard !refusedForColorTarget() else { return }
         if promptTabs.isEmpty {
             promptTabs = [PromptTab()]
             activePromptTab = 0

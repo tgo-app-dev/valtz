@@ -318,8 +318,9 @@ struct StageDrop: DropDelegate {
         let pb = pasteboard
         if DroppedMedia.isStage(pb) { return false }
         let p = DroppedMedia.peek(pb)
-        // View only: a project still opens; nothing else is taken.
-        if model.viewOnly {
+        // View only, or an agent at work holding the project: a project
+        // still opens; nothing else is taken.
+        if model.viewOnly || model.agentHolds {
             return p.files.contains(where: AppModel.isProjectFile)
         }
         if !DroppedMedia.rows(pb).isEmpty { return true }
@@ -335,7 +336,7 @@ struct StageDrop: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         targeted = false
         let pb = pasteboard
-        if model.viewOnly {
+        if model.viewOnly || model.agentHolds {
             let p = DroppedMedia.peek(pb)
             guard let project = p.files.first(where: AppModel.isProjectFile)
             else { return false }
@@ -690,13 +691,15 @@ private struct ResultStage: View {
                             transport: model.timelineOpen
                                 ? nil : StageTransport(model: model),
                             // View only: nothing made from it.
+                            // View only, or an agent at work holding the
+                            // project: nothing made from it.
                             canContinue: model.canContinueClip
-                                && !model.viewOnly,
+                                && !model.viewOnly && !model.agentHolds,
                             guides: model.guideLengths,
                             continueClip: { model.continueClip(seconds: $0) },
                             menuRequest: model.continueMenuRequest,
                             canGrab: model.clipOnStage && !model.isGenerating
-                                && !model.viewOnly,
+                                && !model.viewOnly && !model.agentHolds,
                             grabFrame: model.grabFrame)
                 }
                 .transition(.opacity)
@@ -796,19 +799,31 @@ private struct ResultStage: View {
                 }
                 // Markup on the clip (DESIGN §10a Markup): drawn at the
                 // player's frame, the pointer in its canvas's pixels.
+                // The Color panel's target tool takes the clip's pointer
+                // the same way.
                 .overlay {
-                    if !small && model.markupReady && model.markupOnClip {
+                    let target = model.colorTargetReady
+                    if !small && model.markupOnClip
+                        && (model.markupReady || target) {
                         ClipMarkupView(
                             canvas: model.clipMarkupCanvas,
                             origin: model.clipMarkupOrigin,
                             shown: model.stageVideoRect,
                             overlay: model.markupOverlay,
-                            cursor: model.markup.tool.cursor,
-                            brushRadius: model.markup.tool == .brush
-                                || model.markup.tool == .eraser
+                            cursor: target ? .crosshair
+                                : model.markup.tool.cursor,
+                            brushRadius: !target
+                                && (model.markup.tool == .brush
+                                    || model.markup.tool == .eraser)
                                 ? model.markup.radius : 0,
                             brushSoftness: model.markup.softness,
-                            onPointer: { model.markupPointer($0) },
+                            onPointer: { e in
+                                if model.colorTargetReady {
+                                    model.colorTargetPointer(e)
+                                } else {
+                                    model.markupPointer(e)
+                                }
+                            },
                             onKey: { model.markupKey($0) },
                             canKey: { model.markupCan($0) })
                     }
@@ -840,16 +855,27 @@ private struct ResultStage: View {
                 guides: model.showsGuides && !small,
                 guidesAt: model.stageGuideFractions,
                 onCanvasRect: { model.stageCanvasRect = $0 },
-                markupActive: !small && model.markupReady,
-                brushRadius: model.markup.tool == .brush
-                    || model.markup.tool == .eraser ? model.markup.radius : 0,
+                // Markup's pointer -- or the Color panel's target tool's.
+                markupActive: !small
+                    && (model.markupReady || model.colorTargetReady),
+                brushRadius: !model.colorTargetReady
+                    && (model.markup.tool == .brush
+                        || model.markup.tool == .eraser)
+                    ? model.markup.radius : 0,
                 brushSoftness: model.markup.softness,
-                markupCursor: model.markup.tool.cursor,
+                markupCursor: model.colorTargetReady ? .crosshair
+                    : model.markup.tool.cursor,
                 markupOverlay: model.markupOverlay,
                 markupOrigin: model.stagePicture?.canvas.map {
                     CGPoint(x: $0.x, y: $0.y)
                 } ?? .zero,
-                onMarkupPointer: { model.markupPointer($0) },
+                onMarkupPointer: { e in
+                    if model.colorTargetReady {
+                        model.colorTargetPointer(e)
+                    } else {
+                        model.markupPointer(e)
+                    }
+                },
                 onMarkupKey: { model.markupKey($0) },
                 canMarkupKey: { model.markupCan($0) },
                 onViewport: { model.stage.setViewport($0) },

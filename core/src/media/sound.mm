@@ -129,6 +129,22 @@ shifts_pitch(const SoundLayer& l)
          (l.follow_speed && !l.timing.speed.identity());
 }
 
+// Layer `l`'s equalizer sets a band in some key.
+bool
+equalizes(const SoundLayer& l)
+{
+  return std::ranges::any_of(l.sound.keys, [](const auto& key) {
+    return !key.value.flat();
+  });
+}
+
+// Layer `l` goes through the offline pass: its pitch or its equalizer.
+bool
+shaped(const SoundLayer& l)
+{
+  return shifts_pitch(l) || equalizes(l);
+}
+
 // Layer `l`'s pitch, in semitones, `u` seconds after its start: its keys',
 // and -- following its speed -- the octaves the speed makes.
 double
@@ -252,13 +268,13 @@ bool
 needs_render(const SoundPlan& p)
 {
   return std::ranges::any_of(p.layers, [](const SoundLayer& l) {
-    return shifts_pitch(l);
+    return shaped(l);
   });
 }
 
 namespace {
 
-// The standard format the mixer and the pitch pass work in.
+// The standard format the mixer and the offline pass work in.
 AVAudioFormat*
 mix_format()
 {
@@ -267,7 +283,7 @@ mix_format()
 }
 
 // `file`'s sound from `in` to `out` seconds, as float PCM at the mix's
-// rate: what the pitch pass shifts.
+// rate: what the offline pass shapes.
 Result<AVAudioPCMBuffer*>
 read_span(const fs::path& file, double in, double out)
 {
@@ -340,22 +356,38 @@ read_span(const fs::path& file, double in, double out)
   return buf;
 }
 
-// Layer `l`'s span with its pitch shifted -- each block at the pitch its
-// keys give where it falls -- written to `out` (CAF). Its timing then
-// starts the span from 0.
+// Layer `l`'s span with its pitch shifted and its equalizer on it --
+// each block at what its keys give where it falls -- written to `out`
+// (CAF). Its timing then starts the span from 0.
 Status
-render_pitch(const SoundLayer& l, const fs::path& out)
+render_shaped(const SoundLayer& l, const fs::path& out)
 {
   VALTZ_ASSIGN(AVAudioPCMBuffer* src,
                read_span(l.file, l.timing.in, l.timing.out));
   AVAudioEngine* engine = [[AVAudioEngine alloc] init];
   AVAudioPlayerNode* player = [[AVAudioPlayerNode alloc] init];
   AVAudioUnitTimePitch* tp = [[AVAudioUnitTimePitch alloc] init];
+  AVAudioUnitEQ* eq = [[AVAudioUnitEQ alloc] initWithNumberOfBands:kEqBands];
+  // What does nothing here is passed by as it is.
+  tp.bypass = !shifts_pitch(l);
+  const bool bands = equalizes(l);
+  eq.bypass = !bands;
+  eq.globalGain = 0;
+  for (std::size_t i = 0; i < kEqFrequencies.size(); ++i) {
+    AVAudioUnitEQFilterParameters* b = eq.bands[i];
+    b.filterType = AVAudioUnitEQFilterTypeParametric;
+    b.frequency = static_cast<float>(kEqFrequencies[i]);
+    b.bandwidth = 1;   // octaves
+    b.gain = 0;
+    b.bypass = NO;
+  }
   [engine attachNode:player];
   [engine attachNode:tp];
+  [engine attachNode:eq];
   AVAudioFormat* fmt = mix_format();
   [engine connect:player to:tp format:fmt];
-  [engine connect:tp to:engine.mainMixerNode format:fmt];
+  [engine connect:tp to:eq format:fmt];
+  [engine connect:eq to:engine.mainMixerNode format:fmt];
   NSError* err = nil;
   constexpr AVAudioFrameCount kBlock = 2048;
   if (![engine enableManualRenderingMode:AVAudioEngineManualRenderingModeOffline
@@ -387,8 +419,15 @@ render_pitch(const SoundLayer& l, const fs::path& out)
   while (engine.manualRenderingSampleTime < total) {
     const double s = l.timing.in +
         static_cast<double>(engine.manualRenderingSampleTime) / kMixRate;
-    tp.pitch = static_cast<float>(
-        pitch_at(l, l.timing.local_at_source(s)) * 100.0);
+    const double u = l.timing.local_at_source(s);
+    tp.pitch = static_cast<float>(pitch_at(l, u) * 100.0);
+    if (bands) {
+      const auto g = l.sound.at(u * fps_of(l.timing.rate)).eq;
+      for (std::size_t i = 0; i < g.size(); ++i) {
+        eq.bands[i].gain = static_cast<float>(
+            std::clamp(g[i], -kMaxEqGain, kMaxEqGain));
+      }
+    }
     const auto n = static_cast<AVAudioFrameCount>(std::min<std::int64_t>(
         kBlock, total - engine.manualRenderingSampleTime));
     const AVAudioEngineManualRenderingStatus rs =
@@ -427,12 +466,12 @@ mix_sound(const SoundPlan& plan, const fs::path& out)
       if (l.file.empty() || !has_sound(l.file)) {
         continue;
       }
-      if (shifts_pitch(l)) {
-        // The span shifted first; then it is a sound from 0.
+      if (shaped(l)) {
+        // The span shaped first; then it is a sound from 0.
         const fs::path shifted = fs::temp_directory_path() /
-            std::format("valtz-pitch-{}-{}.caf", ::getpid(),
+            std::format("valtz-shaped-{}-{}.caf", ::getpid(),
                         reinterpret_cast<std::uintptr_t>(&l) + i);
-        VALTZ_TRY(render_pitch(l, shifted));
+        VALTZ_TRY(render_shaped(l, shifted));
         scratch.push_back(shifted);
         const double span = l.timing.out - l.timing.in;
         l.file = shifted;

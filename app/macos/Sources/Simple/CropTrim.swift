@@ -201,7 +201,11 @@ struct FrameRate: Equatable, Sendable {
     /// The frame shown at `seconds`: the last that has begun (a hair of
     /// slack for times that land on a frame's start).
     func frame(at seconds: Double) -> Int {
-        max(0, Int((seconds * fps + 1e-3).rounded(.down)))
+        // An invalid time (NaN, a composition's indefinite one): frame 0,
+        // not a trap in the Int conversion.
+        let f = (seconds * fps + 1e-3).rounded(.down)
+        guard f.isFinite else { return 0 }
+        return max(0, Int(min(f, Double(Int32.max))))
     }
 
     /// When frame `n` starts, exactly: n × den / num seconds.
@@ -687,15 +691,15 @@ private struct RotateField: View {
 ///
 ///   kept length          00:00:01:23 #47                     Reset
 ///   in ⇤ [I]   { |<, rewind, back, a frame back, pause, on, play, ffwd, >| }   [O] ⇥ out
-///   Speed [1×]                 (its frames resampled: nearest)
-///   Pitch [−] [+0] [+] semitones  [Hold | Follow Speed]     (a sound)
-///   Volume 🔈 ────●── [0.0 dB]                               (a sound)
+///   Speed [1×]  Pitch [Hold | Follow Speed]   (its frames resampled)
+///
+/// (The pitch itself, the gain and the equalizer: the Audio panel.)
 ///   Starts on the timeline at [00:00:02:00] ⇥ ↩
 ///
 /// Every time around the transport is the CLIP's own -- where the player
 /// is in it (hours, minutes and seconds, the frame within that second,
 /// the frame's number), its marks, what they keep -- and every row down
-/// to the volume changes the clip as instantiated (its layer). The last
+/// to the speed changes the clip as instantiated (its layer). The last
 /// row alone is the composition's timeline: where the clip lies on it.
 /// Past the clip's end (or before its start) the time says so, and the
 /// stage shows a film's torn edge.
@@ -742,14 +746,8 @@ struct TrimPanel: View {
                 }
             }
             if model.layerIsTimed {
-                Group {
-                    SpeedRow(model: model)
-                    if model.layerHasSound {
-                        PitchRow(model: model)
-                        VolumeRow(model: model)
-                    }
-                }
-                .disabled(off)
+                SpeedRow(model: model)
+                    .disabled(off)
             }
             start(rate: rate)
         }

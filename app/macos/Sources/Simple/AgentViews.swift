@@ -11,6 +11,7 @@ struct AgentCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             AgentHeader(model: model, session: session)
+            AgentHoldNote(model: model)
             let words = model.agentWriting.trimmingCharacters(
                 in: .whitespacesAndNewlines)
             if !words.isEmpty {
@@ -94,6 +95,36 @@ struct AgentHeader: View {
             }
         }
         .controlSize(.small)
+    }
+}
+
+/// While it works the project is the agent's (AppModel.agentHolds):
+/// said, and -- the person looking elsewhere -- Follow, the stage back on
+/// what it works on (AppModel.followAgent).
+struct AgentHoldNote: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        if model.agentHolds {
+            HStack(spacing: 8) {
+                Label("Read-only while it works: look around freely; changes wait until it is done, or stopped.",
+                      systemImage: "lock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                if !model.agentFollows {
+                    Button {
+                        model.followAgent()
+                    } label: {
+                        Label("Follow", systemImage: "eye")
+                    }
+                    .controlSize(.small)
+                    .help("Show what the agent is working on, and follow it again")
+                }
+            }
+            .transition(.opacity)
+        }
     }
 }
 
@@ -199,6 +230,10 @@ struct AgentPane: View {
                 .padding(.leading, PromptEditor.inset.width + 5)
                 .padding(.trailing, 12)
                 .frame(height: PaneHeader.height)
+            AgentHoldNote(model: model)
+                .padding(.leading, PromptEditor.inset.width + 5)
+                .padding(.trailing, 12)
+                .padding(.bottom, 6)
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {

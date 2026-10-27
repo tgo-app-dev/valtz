@@ -76,6 +76,9 @@ struct Change {
 };
 
 using Journal = std::function<void(std::vector<Change>&&)>;
+// Asked before a journaled transaction that changed a watched table
+// commits; an error aborts it, and write() returns that error.
+using WriteGuard = std::function<Status()>;
 
 class Env {
 public:
@@ -126,6 +129,11 @@ public:
   // What write transactions change in `watched`, told when each commits
   // (on the committing thread). Set during setup; none: no journal.
   void set_journal(Journal journal, std::vector<Dbi> watched);
+  // Who may change the watched tables, asked as each such write commits
+  // (on the committing thread, its transaction still open: the guard
+  // must not use this env). A project an agent works on refuses the
+  // person's writes so (Controller::write_guard_). Set during setup.
+  void set_guard(WriteGuard guard) { _guard = std::move(guard); }
   // While one lives, this thread's writes go unjournaled (an undo
   // writing back what was, a project read in whole).
   class Unjournaled {
@@ -141,6 +149,7 @@ private:
   Status grow_map_();
 
   Journal               _journal;
+  WriteGuard            _guard;
   std::vector<bool>     _watched;  // by dbi handle
 
   MDB_env*              _env = nullptr;

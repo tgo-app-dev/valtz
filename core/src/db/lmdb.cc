@@ -237,6 +237,9 @@ Env::write(const std::function<Status(Txn&)>& fn)
         txn._changes = &changes;
       }
       st = fn(txn);
+      if (st.ok() && journaled && !changes.empty() && _guard) {
+        st = _guard();
+      }
       if (st.ok()) {
         st = txn.commit_();
         if (st.ok() && journaled && !changes.empty()) {

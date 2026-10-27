@@ -811,7 +811,7 @@ struct ValtzApp: App {
                               || model.closingTasks != nil)
                 Button("Revert to Saved") { model.revertDocument() }
                     .disabled(!model.document.dirty || model.document.untitled
-                              || model.isAnonymous
+                              || model.isAnonymous || model.agentHolds
                               || model.closingTasks != nil)
             }
             // ⌘Z: the text being typed while it has typing to undo, else
@@ -827,7 +827,7 @@ struct ValtzApp: App {
             CommandGroup(after: .importExport) {
                 Button("Attach Media…") { attachMedia() }
                     .keyboardShortcut("i", modifiers: [.command, .shift])
-                    .disabled(model.closingTasks != nil)
+                    .disabled(model.closingTasks != nil || model.agentHolds)
             }
             // The image, video or sound on screen, as the share menu's Save…
             // writes it: a format, its quality.
@@ -900,7 +900,8 @@ struct ValtzApp: App {
                     withAnimation(AppModel.motion) { model.markupOpen.toggle() }
                 }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
-                .disabled(model.promptImmersive || model.viewOnly)
+                .disabled(model.promptImmersive || model.viewOnly
+                          || model.agentHolds)
                 // The prompt the window's height, several open as tabs
                 // (PromptStudio).
                 Toggle("Prompt Editor", isOn: Binding(
@@ -921,7 +922,8 @@ struct ValtzApp: App {
                     Button(promptItemTitle(m)) { model.focusPrompt(m) }
                         .keyboardShortcut(m.key)
                         .disabled(model.closingTasks != nil
-                                  || model.fleetServing != nil)
+                                  || model.fleetServing != nil
+                                  || (model.agentHolds && m != .agent))
                 }
                 Divider()
                 // The timeline in the prompt's place, while the stage
@@ -2960,6 +2962,409 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     print("snapshot: crop-jog \(step) crop=\(v) locked=\(m.cropZoomLocked)")
                 }
             }
+            // The COLOR panel (ColorMixer.swift), opened: "set:hue@0=0.5,
+            // hue@60=0,sat@240=-1" its curves' points (each curve named
+            // given those points alone; "set:none" none -- at the frame
+            // shown, on a clip), "target:on|off", "tdrag:x,y>x,y" a target-
+            // tool drag in canvas pixels (pressed, eight steps, let go) and
+            // "ctdrag:" the same with ⌘ held; on the DISKS, posted through
+            // the window as a hand's would be -- "pdrag:hue:0.5,0.3>0.8,0.3"
+            // a drag, at fractions of the disk's view from its top left
+            // (24 points past its rim: off it), "pclick:hue:0.5,0.3" a
+            // click, "pdclick:" a double-click, "podrag:" a drag with ⌥
+            // held; "bypass:on|off", "reset", "frame:<n>" the player there,
+            // "sweep:hue@0=0>1@60" a point's value dragged (60 values 16 ms
+            // apart, then rest: printing `snapshot: color-sweep steps= took=
+            // during=<small>small+<full>full lastDuring= after= settled=
+            // surface= image=` -- the live draws, how far the last trailed
+            // the drag, when the draw at the picture's size came), "key" a
+            // key of the look toggled there (a clip), "curves" the curves
+            // as this draws them against the kernel's table from the core
+            // (`snapshot: color-curves worst=`); away from the picture, as a
+            // person goes -- refused while the target tool is on --
+            // "view:<id>|newest-image", "active:<id>", "layer:<n>" (its
+            // place, bottom first), "page:<n>" (from 0), "compare",
+            // "start" -- each printing `snapshot: color <step> target=
+            // ready= hue=<the target's> mix=hue:0.0@+0.50,...|sat:-|lum:-
+            // tone= bypass= canBypass= keys=` (the look's keys) `viewed=
+            // active= layer= page= banner= disks=hue@x,y,wxh,...`.
+            if let spec = env["VALTZ_SNAPSHOT_COLOR"] {
+                withAnimation(AppModel.motion) { m.openPanel = .color }
+                try? await Task.sleep(for: .milliseconds(500))
+                for step in spec.split(separator: ";").map(String.init) {
+                    let kv = step.split(separator: ":", maxSplits: 1)
+                        .map(String.init)
+                    let arg = kv.count > 1 ? kv[1] : ""
+                    switch kv[0] {
+                    case "set":
+                        if arg == "none" {
+                            m.setMix(ColorMix())
+                            break
+                        }
+                        // "hue@30=0.5": the curves named, those points.
+                        var given: [String: Double] = [:]
+                        for part in arg.split(separator: ",") {
+                            let p = part.split(separator: "=")
+                            if p.count == 2, let v = Double(p[1]) {
+                                given[String(p[0])] = v
+                            }
+                        }
+                        let read = ColorMix(given)
+                        var mix = m.adjustments.mix
+                        for c in MixChannel.allCases
+                        where given.keys.contains(where: {
+                            $0.hasPrefix(c.key + "@") }) {
+                            mix[c] = read[c]
+                        }
+                        m.setMix(mix)
+                    case "target": m.colorTargeting = arg != "off"
+                    case "tdrag", "ctdrag":
+                        let ends = arg.split(separator: ">").map {
+                            $0.split(separator: ",").compactMap {
+                                Double($0) }
+                        }
+                        guard ends.count == 2, ends[0].count == 2,
+                              ends[1].count == 2 else { break }
+                        let a = CGPoint(x: ends[0][0], y: ends[0][1])
+                        let b = CGPoint(x: ends[1][0], y: ends[1][1])
+                        let cmd = kv[0] == "ctdrag"
+                        m.colorTargetPointer(MarkupPointer(
+                            phase: .down, point: a, command: cmd))
+                        // A clip's frame read first.
+                        try? await Task.sleep(for: .milliseconds(600))
+                        for i in 1...8 {
+                            let t = Double(i) / 8
+                            // The hue it read, before it is let go.
+                            if i == 8 {
+                                print("snapshot: color-target read=\(m.colorTargetHue.map { String(format: "%.1f", $0) } ?? "-") unmixed=\(m.colorTargetDrag?.unmixed ?? false)")
+                            }
+                            m.colorTargetPointer(MarkupPointer(
+                                phase: i == 8 ? .up : .drag,
+                                point: CGPoint(x: a.x + (b.x - a.x) * t,
+                                               y: a.y + (b.y - a.y) * t),
+                                command: cmd))
+                            try? await Task.sleep(for: .milliseconds(40))
+                        }
+                    case "pdrag", "podrag", "pclick", "pdclick":
+                        // "hue:0.5,0.3>0.8,0.3": the disk, then where.
+                        let pp = arg.split(separator: ":", maxSplits: 1)
+                        guard pp.count == 2,
+                              let c = MixChannel.allCases.first(where: {
+                                  $0.rawValue.hasPrefix(String(pp[0])) })
+                        else { break }
+                        let at = pp[1].split(separator: ">").map {
+                            $0.split(separator: ",").compactMap { Double($0) }
+                        }.filter { $0.count == 2 }
+                            .map { CGPoint(x: $0[0], y: $0[1]) }
+                        guard let a = at.first else { break }
+                        let drag = kv[0] == "pdrag" || kv[0] == "podrag"
+                        await Self.postDisk(
+                            c, a, drag ? at.last : nil,
+                            clicks: kv[0] == "pdclick" ? 2 : 1,
+                            flags: kv[0] == "podrag" ? .option : [])
+                    // A point's value dragged as a hand drags it:
+                    // "hue@0=0>1@60" -- 60 values from 0 to 1, one every
+                    // 16 ms -- then the look let rest; how its draws kept up.
+                    case "sweep":
+                        let kv = arg.split(separator: "=")
+                        let spec = kv.count == 2 ? kv[1] : ""
+                        let parts = spec.split(separator: "@")
+                        let ends = (parts.first ?? "").split(separator: ">")
+                            .compactMap { Double($0) }
+                        let n = parts.count > 1 ? Int(parts[1]) ?? 60 : 60
+                        let at = kv.first?.split(separator: "@") ?? []
+                        guard kv.count == 2, ends.count == 2, n > 1,
+                              at.count == 2, let hue = Double(at[1]),
+                              let ch = MixChannel.allCases.first(where: {
+                                  $0.key == String(at[0]) })
+                        else { break }
+                        m.lookDraws = (0, 0, 0)
+                        let t0 = CACurrentMediaTime()
+                        for i in 0..<n {
+                            var c = m.adjustments.mix[ch].placed()
+                            c.points.removeAll {
+                                MixCurve.distance($0.hue, hue) < 1e-6 }
+                            c.points.append(MixPoint(
+                                hue: hue, value: ends[0] + (ends[1] - ends[0])
+                                    * Double(i) / Double(n - 1)))
+                            c.tidy()
+                            m.setMix(ch, c)
+                            try? await Task.sleep(for: .milliseconds(16))
+                        }
+                        let moved = CACurrentMediaTime()
+                        let during = m.lookDraws
+                        var waited = 0
+                        while !m.lookResting && waited < 400 {
+                            try? await Task.sleep(for: .milliseconds(5))
+                            waited += 1
+                        }
+                        let ms = { (t: CFTimeInterval) in
+                            Int(((t - moved) * 1000).rounded()) }
+                        print("snapshot: color-sweep steps=\(n) "
+                              + "took=\(Int(((moved - t0) * 1000).rounded()))ms "
+                              + "during=\(during.small)small+\(during.full)full "
+                              + "lastDuring=\(during.shownAt > 0 ? ms(during.shownAt) : 0)ms "
+                              + "after=\(m.lookDraws.small)small+\(m.lookDraws.full)full "
+                              + "settled=\(ms(m.lookDraws.shownAt))ms "
+                              + "surface=\(m.stage.aSurface.map { "\($0.width)x\($0.height)" } ?? "-") "
+                              + "image=\(m.stage.a.map { "\($0.width)x\($0.height)" } ?? "-") "
+                              + "composed=\(m.stageComposed)")
+                    case "curves":
+                        // What this draws against the core's table.
+                        let chain = m.core?.adjustmentChain(m.adjustments) ?? []
+                        let step = chain.first { $0.filter == ColorMixKernel.filter }
+                        var worst = 0.0
+                        for (c, name) in zip(MixChannel.allCases,
+                                             ["inputHue", "inputSaturation",
+                                              "inputLuminance"]) {
+                            let table = step?.params[name] ?? []
+                            for (i, v) in table.enumerated() {
+                                let mine = min(1, max(-1, m.adjustments.mix[c]
+                                    .value(at: Double(i))))
+                                worst = max(worst, abs(mine - v))
+                            }
+                        }
+                        print("snapshot: color-curves step=\(step != nil) worst=\(String(format: "%.2e", worst))")
+                    case "bypass": m.setMixBypass(arg != "off")
+                    case "reset": m.resetColorMix()
+                    // A key of the look here (a clip), as the key bar's.
+                    case "key": m.toggleKey(.adjust)
+                    case "frame":
+                        m.seekVideo(to: Int(arg) ?? 0)
+                        try? await Task.sleep(for: .milliseconds(600))
+                    // Away from the picture, as a person would go: each
+                    // refused while the target tool is on (`banner=`).
+                    case "view":
+                        let a = arg == "newest-image"
+                            ? m.assets.filter { $0.kind == "image"
+                                && $0.head > 0 && $0.op != "project" }
+                                .max { $0.created < $1.created }
+                            : m.asset(id: arg)
+                        if let a { m.viewAsset(a) }
+                    case "active":
+                        if let a = m.asset(id: arg) { m.setActive(a) }
+                    case "layer":
+                        // Its place in the stack, bottom first.
+                        if let n = Int(arg), let st = m.stageStack,
+                           st.layerStack.indices.contains(n) {
+                            m.goToLayer(st.layerStack[n].id)
+                        }
+                    case "page": m.goToPage(Int(arg) ?? 1)
+                    case "compare": m.toggleCompare()
+                    case "start": m.start()
+                    default: break
+                    }
+                    try? await Task.sleep(for: .milliseconds(500))
+                    print("snapshot: color \(step) stack=\(m.stackPlayback != nil) target=\(m.colorTargeting) ready=\(m.colorTargetReady) hue=\(m.colorTargetHue.map { String(format: "%.1f", $0) } ?? "-") mix=\(Self.mixSummary(m.adjustments.mix)) tone=\(m.adjustments.toneIsIdentity ? "-" : "set") bypass=\(m.mixBypassed) canBypass=\(m.canBypassMix) keys=\(m.keyedStage ? "\(m.clipAdjustKeys.keys.count)" : "-") panel=\(m.openPanel.map { "\($0)" } ?? "-") viewed=\(m.viewedAsset ?? "-") active=\(m.stageStack?.id ?? "-") layer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) page=\(m.stagePage) banner=\(m.banner ?? "-") disks=\(Self.disksSummary())")
+                }
+            }
+            // The GRADE panel (ColorGrading.swift), opened: "set:shadows=
+            // 240@0.5,highlights=30@0.4,balance=0.2,width=0.4,blend=0.7"
+            // (the parts named, the rest kept; "set:none" all at rest -- at
+            // the frame shown, on a clip); on the WHEELS, posted through the
+            // window as a hand's would be -- "wclick:shadows:0.8,0.5" a
+            // click at fractions of the wheel's view from its top left,
+            // "wdrag:shadows:0.5,0.5>0.9,0.2" a drag, "wsdrag:" one with ⇧
+            // held, "wdclick:" a double-click; "num:balance=0.3" a slider as
+            // its binding sets it; "bypass:on|off", "reset" ("reset:shadows"
+            // a wheel's menu's), "key" a key of the look there (a clip),
+            // "frame:<n>" the player there, "params" the ranges as this
+            // works them out against the core's step (`snapshot:
+            // grade-params step= worst= tones=`), "pixel:x,y" a still
+            // drawn as the stage draws it, read at that pixel (`snapshot:
+            // grade-pixel x,y composed= rgb=`, 0...255) -- each printing
+            // `snapshot: grade <step>
+            // grade=sh:240@0.50|mid:-|hi:30@0.40|bal:+0.20|w:0.40|bl:0.70
+            // tone= mix= bypass= canBypass= keys= panel= banner=
+            // wheels=shadows@x,y,wxh,...` (points from the window's top
+            // left).
+            if let spec = env["VALTZ_SNAPSHOT_GRADE"] {
+                withAnimation(AppModel.motion) { m.openPanel = .grade }
+                try? await Task.sleep(for: .milliseconds(500))
+                for step in spec.split(separator: ";").map(String.init) {
+                    let kv = step.split(separator: ":", maxSplits: 1)
+                        .map(String.init)
+                    let arg = kv.count > 1 ? kv[1] : ""
+                    switch kv[0] {
+                    case "set":
+                        if arg == "none" {
+                            m.setGrade(ColorGrade())
+                            break
+                        }
+                        var g = m.adjustments.grade
+                        for part in arg.split(separator: ",") {
+                            let p = part.split(separator: "=")
+                                .map(String.init)
+                            guard p.count == 2 else { continue }
+                            if let r = GradeRange(rawValue: p[0]) {
+                                let hs = p[1].split(separator: "@")
+                                    .compactMap { Double($0) }
+                                if hs.count == 2 {
+                                    g[r] = GradeTint(hue: hs[0],
+                                                     saturation: hs[1])
+                                }
+                            } else if let n = ColorGrade.Number(
+                                        rawValue: p[0]),
+                                      let v = Double(p[1]) {
+                                g[n] = v
+                            }
+                        }
+                        m.setGrade(g)
+                    case "num":
+                        let p = arg.split(separator: "=").map(String.init)
+                        if p.count == 2,
+                           let n = ColorGrade.Number(rawValue: p[0]),
+                           let v = Double(p[1]) {
+                            m.setGradeNumber(n, v)
+                        }
+                    case "wclick", "wdrag", "wsdrag", "wdclick":
+                        // "shadows:0.5,0.5>0.9,0.2": the wheel, then where.
+                        let pp = arg.split(separator: ":", maxSplits: 1)
+                        guard pp.count == 2,
+                              let r = GradeRange.allCases.first(where: {
+                                  $0.rawValue.hasPrefix(String(pp[0])) }),
+                              let v = GradeWheelNSView.view(r) else {
+                            print("snapshot: wheel \(arg) not shown")
+                            break
+                        }
+                        let at = pp[1].split(separator: ">").map {
+                            $0.split(separator: ",").compactMap { Double($0) }
+                        }.filter { $0.count == 2 }
+                            .map { CGPoint(x: $0[0], y: $0[1]) }
+                        guard let a = at.first else { break }
+                        let drag = kv[0] == "wdrag" || kv[0] == "wsdrag"
+                        await Self.postInView(
+                            v, a, drag ? at.last : nil,
+                            clicks: kv[0] == "wdclick" ? 2 : 1,
+                            flags: kv[0] == "wsdrag" ? .shift : [])
+                    case "bypass": m.setGradeBypass(arg != "off")
+                    case "reset": m.resetColorGrade(GradeRange(rawValue: arg))
+                    // A key of the look here (a clip), as the key bar's.
+                    case "key": m.toggleKey(.adjust)
+                    case "frame":
+                        m.seekVideo(to: Int(arg) ?? 0)
+                        try? await Task.sleep(for: .milliseconds(600))
+                    case "params":
+                        // What this works out against the core's step.
+                        let chain = m.core?.adjustmentChain(m.adjustments)
+                            ?? []
+                        let st = chain.first {
+                            $0.filter == ColorGradeKernel.filter }
+                        let k = m.adjustments.grade.tones
+                        let theirs = st?.params["inputTones"] ?? []
+                        var worst = theirs.count == 4 ? 0.0 : Double.infinity
+                        for (a, b) in zip([k.s, k.sReach, k.u, k.uReach],
+                                          theirs) {
+                            worst = max(worst, abs(a - b))
+                        }
+                        print("snapshot: grade-params step=\(st != nil) worst=\(String(format: "%.2e", worst)) tones=\(theirs.map { String(format: "%.4f", $0) }.joined(separator: ","))")
+                    case "pixel":
+                        // The still drawn as the stage draws it (its
+                        // Bypass held or not), read at that pixel of it.
+                        let xy = arg.split(separator: ",")
+                            .compactMap { Double($0) }
+                        let img = await m.drawnStill(
+                            m.shownAdjustments(m.adjustments))
+                        let c = xy.count == 2 ? img.flatMap {
+                            CompareCanvas.pixel($0, at: CGPoint(
+                                x: xy[0], y: xy[1])) } : nil
+                        print("snapshot: grade-pixel \(arg) composed=\(m.stageComposed) rgb=\(c.map { String(format: "%.0f,%.0f,%.0f", $0.r * 255, $0.g * 255, $0.b * 255) } ?? "-")")
+                    default: break
+                    }
+                    try? await Task.sleep(for: .milliseconds(500))
+                    print("snapshot: grade \(step) grade=\(Self.gradeSummary(m.adjustments.grade)) tone=\(m.adjustments.toneIsIdentity ? "-" : "set") mix=\(m.adjustments.mix.isEmpty ? "-" : "set") bypass=\(m.gradeBypassed) canBypass=\(m.canBypassGrade) keys=\(m.keyedStage ? "\(m.clipAdjustKeys.keys.count)" : "-") panel=\(m.openPanel.map { "\($0)" } ?? "-") banner=\(m.banner ?? "-") wheels=\(Self.wheelsSummary())")
+                }
+            }
+            // The AUDIO panel (AudioPanel.swift), opened: "set:volume=0.5,
+            // pitch=2,eq5=6" the selected layer's sound at the frame shown
+            // (the model's setters); on the FADERS, posted through the
+            // window as a hand's would be -- "fdrag:eq5:0.5,0.5>0.5,0.2"
+            // a drag at fractions of the fader's view from its top left
+            // ("gain", "pitch", "eq0" ... "eq9"), "fodrag:" one with ⌥
+            // held, "fclick:" a click, "fdclick:" a double-click; "key" a
+            // key of the sound here, "frame:<n>" the player there, "flat",
+            // "reset", "follow:on|off" (the Trim panel's), "panel:trim"
+            // (any card by name) open, "draw:<file.png>" the window drawn,
+            // "persist" the values written and the plan made again
+            // (waited for) --
+            // each printing `snapshot: audio <step> here=v1.00,p+0,eq:0,..
+            // keys=0:v1.00/p+0/eq-,40:... follow= frozen= tab= panel=
+            // mix=<the plan's mixer file|-> audio=<its spans> faders=
+            // gain@x,y,wxh,...` (points from the window's top left).
+            if let spec = env["VALTZ_SNAPSHOT_AUDIO"] {
+                withAnimation(AppModel.motion) { m.openPanel = .audio }
+                try? await Task.sleep(for: .milliseconds(500))
+                for step in spec.split(separator: ";").map(String.init) {
+                    let kv = step.split(separator: ":", maxSplits: 1)
+                        .map(String.init)
+                    let arg = kv.count > 1 ? kv[1] : ""
+                    switch kv[0] {
+                    case "set":
+                        for part in arg.split(separator: ",") {
+                            let p = part.split(separator: "=")
+                                .map(String.init)
+                            guard p.count == 2, let v = Double(p[1]) else {
+                                continue
+                            }
+                            if p[0] == "volume" {
+                                m.setLayerVolume(v)
+                            } else if p[0] == "pitch" {
+                                m.setLayerPitch(v)
+                            } else if p[0].hasPrefix("eq"),
+                                      let i = Int(p[0].dropFirst(2)) {
+                                m.setLayerEq(i, v)
+                            }
+                        }
+                    case "fdrag", "fodrag", "fclick", "fdclick":
+                        // "eq5:0.5,0.5>0.5,0.2": the fader, then where.
+                        let pp = arg.split(separator: ":", maxSplits: 1)
+                        guard pp.count == 2,
+                              let v = FaderNSView.view(String(pp[0])) else {
+                            print("snapshot: fader \(arg) not shown")
+                            break
+                        }
+                        let at = pp[1].split(separator: ">").map {
+                            $0.split(separator: ",").compactMap { Double($0) }
+                        }.filter { $0.count == 2 }
+                            .map { CGPoint(x: $0[0], y: $0[1]) }
+                        guard let a = at.first else { break }
+                        let drag = kv[0] == "fdrag" || kv[0] == "fodrag"
+                        await Self.postInView(
+                            v, a, drag ? at.last : nil,
+                            clicks: kv[0] == "fdclick" ? 2 : 1,
+                            flags: kv[0] == "fodrag" ? .option : [])
+                    case "key": m.toggleKey(.sound)
+                    case "frame":
+                        m.seekVideo(to: Int(arg) ?? 0)
+                        try? await Task.sleep(for: .milliseconds(600))
+                    case "flat": m.flattenLayerEq()
+                    case "reset": m.resetLayerSound()
+                    case "follow": m.pitchFollowsSpeed = arg != "off"
+                    // Another card open ("trim", "adjust" ...), and the
+                    // window drawn.
+                    case "panel":
+                        let named = ComposerPanel.allCases.first {
+                            "\($0)" == arg }
+                        withAnimation(AppModel.motion) {
+                            m.openPanel = named ?? .audio
+                        }
+                        try? await Task.sleep(for: .milliseconds(600))
+                    case "draw": Self.drawWindow(to: arg)
+                    case "persist":
+                        m.persistTrim()
+                        // The plan made again -- its mix rendered.
+                        var waited = 0
+                        repeat {
+                            try? await Task.sleep(for: .milliseconds(100))
+                            waited += 1
+                        } while m.stackPlanning && waited < 300
+                        try? await Task.sleep(for: .milliseconds(300))
+                    default: break
+                    }
+                    try? await Task.sleep(for: .milliseconds(500))
+                    print("snapshot: audio \(step) here=\(Self.soundSummary(m.layerSoundHere)) keys=\(m.layerSound.keys.map { "\($0.frame):\(Self.soundSummary($0.value))" }.joined(separator: ";")) follow=\(m.pitchFollowsSpeed) alpha=\(String(format: "%.3f", m.adjustments.alpha)) frozen=\(m.layerFrozen) tab=\(m.showsAudio) panel=\(m.openPanel.map { "\($0)" } ?? "-") mix=\(m.stackPlayback?.mix?.path ?? "-") audio=\(m.stackPlayback?.audio.count ?? 0) faders=\(Self.fadersSummary())")
+                }
+            }
             if let g = env["VALTZ_SNAPSHOT_GUIDES"] {
                 m.showsGuides = g != "0"
             }
@@ -3514,6 +3919,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case .turn:
                         (keys(m.clipCropKeys.turn),
                          curve(m.clipCropKeys.turn) { $0.degrees })
+                    case .sound:
+                        (keys(m.layerSound),
+                         curve(m.layerSound) { $0.volume })
                     }
                     let shown = m.keyInterp(track).map {
                         "\($0.frame):\($0.interp.rawValue)" } ?? "-"
@@ -4094,6 +4502,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // in that state, at most <s> seconds), "approve",
             // "skip:<note>", "all", "pause", "resume", "stop",
             // "close", "sleep:<s>", "editor" (the Prompt Editor).
+            // While it holds the project (AppModel.agentHolds): "try:<edit>"
+            // a change asked as the person would -- rename, undo, layer,
+            // markup, prompt (another target), import:<file> -- printing
+            // `snapshot: agent-try <edit> holds= took= banner=`; "nav:view:
+            // newest-image|<id>", "nav:page:<n>", "nav:seek:<frame>",
+            // "nav:active:<id>" the person looking elsewhere, and "follow"
+            // the card's Follow (each step's line: holds=, follows=).
             if let spec = env["VALTZ_SNAPSHOT_AGENT"] {
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
@@ -4148,6 +4563,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "editor": m.enterImmersivePrompt()
                     case "sleep":
                         try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
+                    case "try":
+                        // What changed, read back: the stage's layers, the
+                        // assets, the names, the box's target, the markup.
+                        let shape = {
+                            "\(m.stageStack?.layerStack.count ?? 0)L/\(m.assets.count)A/\(m.assets.map(\.name).sorted().joined().hashValue)/\(m.modality.rawValue)/\(m.markupOpen)"
+                        }
+                        let before = shape()
+                        switch arg.split(separator: ":").first.map(String.init) {
+                        case "rename":
+                            if let a = m.assets.first(where: { !$0.isPrompt }) {
+                                m.renameAsset(a.id, "Renamed by the person")
+                            }
+                        case "undo": m.undoProject()
+                        case "layer": m.addLayer()
+                        case "markup":
+                            // As its button: off while the agent holds.
+                            if !m.agentHolds { m.markupOpen = true }
+                        case "prompt": m.setModality(.image)
+                        case "import":
+                            let f = String(arg.dropFirst("import:".count))
+                            m.importFiles([URL(fileURLWithPath: f)])
+                        default: break
+                        }
+                        try? await Task.sleep(for: .milliseconds(600))
+                        m.reloadAssets()
+                        FileHandle.standardError.write(Data(
+                            "snapshot: agent-try \(arg) holds=\(m.agentHolds) took=\(before != shape()) banner=\(m.banner?.replacingOccurrences(of: " ", with: "_") ?? "-")\n".utf8))
+                    case "nav":
+                        let nv = arg.split(separator: ":", maxSplits: 1)
+                            .map(String.init)
+                        let what = nv.count > 1 ? nv[1] : ""
+                        switch nv.first ?? "" {
+                        case "view":
+                            let a = what == "newest-image"
+                                ? m.assets.last { $0.kind == "image"
+                                                  && !$0.isComposition }
+                                : m.asset(id: what)
+                            if let a { m.viewAsset(a) }
+                        case "page": m.goToPage((Int(what) ?? 1) - 1)
+                        case "seek": m.seekVideo(to: Int(what) ?? 0)
+                        case "active":
+                            if let a = m.asset(id: what) { m.setActive(a) }
+                        default: break
+                        }
+                    case "follow": m.followAgent()
+                    // The window as the screen shows it, now.
+                    case "shot": await Self.shootWindow(to: arg)
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(400))
@@ -4162,7 +4624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     FileHandle.standardError.write(Data(
                         "snapshot: agent-box box=\(box) prompt=\(m.prompt.count) hint=\(hint) immersive=\(m.promptImmersive) boxRect=\(Self.promptBoxRect())\n".utf8))
                     FileHandle.standardError.write(Data(
-                        "snapshot: agent \(step.replacingOccurrences(of: " ", with: "_").prefix(40)) state=\(a?.state ?? "-") steps=\(a?.steps.count ?? 0) proposed=\(a?.proposed?.tool ?? "-") last=\(a?.steps.last.map { "\($0.tool):\($0.state)" } ?? "-") review=\(a?.review ?? false) backend=\(a?.backend?.kind ?? "-") composition=\(m.activeComposition?.name.replacingOccurrences(of: " ", with: "_") ?? "-") pages=\(m.activeComposition?.pages ?? 0) writing=\(m.agentWriting.count) error=\(a?.errorText?.replacingOccurrences(of: " ", with: "_").prefix(60) ?? "-") speed=\(a?.stats.flatMap { $0.isEmpty ? nil : $0.line.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
+                        "snapshot: agent \(step.replacingOccurrences(of: " ", with: "_").prefix(40)) state=\(a?.state ?? "-") steps=\(a?.steps.count ?? 0) proposed=\(a?.proposed?.tool ?? "-") last=\(a?.steps.last.map { "\($0.tool):\($0.state)" } ?? "-") review=\(a?.review ?? false) backend=\(a?.backend?.kind ?? "-") composition=\(m.activeComposition?.name.replacingOccurrences(of: " ", with: "_") ?? "-") pages=\(m.activeComposition?.pages ?? 0) writing=\(m.agentWriting.count) holds=\(m.agentHolds) follows=\(m.agentFollows) viewed=\(m.viewedAsset.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") page=\(m.stagePage + 1) error=\(a?.errorText?.replacingOccurrences(of: " ", with: "_").prefix(60) ?? "-") speed=\(a?.stats.flatMap { $0.isEmpty ? nil : $0.line.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
                 }
             }
             // Stop the generation after some seconds, as the Stop
@@ -4205,7 +4667,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 // As the panel sets them (a clip's go to its keys).
                 let a = Self.adjustments(spec)
-                for key in ImageAdjustments.Key.allCases where a[key] != 0 {
+                for key in ImageAdjustments.Key.allCases
+                where a[key] != key.rest {
                     m.setAdjustment(key, a[key])
                 }
                 withAnimation(AppModel.motion) { m.openPanel = .adjust }
@@ -5010,11 +5473,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // sidebar lists, as its click does), "offload:<task|model>=
         // <policy|default>", "share:<task|model>=on|off", "wired:<GB>|
         // auto" (General › Memory's wired limit), "agent-model:<id>|same"
-        // and "agent-memory:<GB>|none" (Experimental › Agent's Model and
-        // Memory) -- each printing `snapshot: settings-nav <step> at=
+        // "agent-memory:<GB>|none" and "agent-cache:<GB>|auto"
+        // (Experimental › Agent's Model, Memory and Expert Cache) -- each
+        // printing `snapshot: settings-nav <step> at=
         // history= back= forward= search= rows= title= policies=
         // wired=chosen/inForce/used` (GB, `+pending` a lower one waiting)
-        // `agent=model>using@GB`.
+        // `agent=model>using@GB` and `cache=asked:here/auto,context=here/
+        // fits/model` (the plan's GB and tokens, where its experts
+        // stream).
         if settings, let spec = env["VALTZ_SNAPSHOT_SETTINGS_NAV"],
            let m = model {
             try? await Task.sleep(for: .milliseconds(1500))
@@ -5111,6 +5577,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "agent-memory":
                     m.setAgentSettings(["memory_gb":
                                         arg == "none" ? 0 : Int(arg) ?? 0])
+                case "agent-cache":
+                    m.setAgentSettings(["expert_cache_gb":
+                                        arg == "auto" ? 0 : Int(arg) ?? 0])
                 case "offload", "share":
                     let kv2 = arg.split(separator: "=").map(String.init)
                     guard kv2.count == 2 else { break }
@@ -5190,6 +5659,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let chosen = (a.model ?? "").isEmpty ? "same" : a.model!
                     line += " agent=\(chosen)>\(a.using ?? "-")"
                     line += "@\(a.memoryGb ?? 0)"
+                    if let p = a.plan, p.streams {
+                        line += " cache=\(a.expertCacheGb ?? 0):"
+                        line += String(format: "%.1f/%.1f", p.cacheGb ?? 0,
+                                       p.cacheAutoGb ?? 0)
+                        line += ",context=\(p.context.here)/"
+                        line += "\(p.context.fits ?? 0)/\(p.context.model)"
+                    }
                 }
                 // Where it is: open, its frame and the editor's (the
                 // screen's points), and whether it is centred on it.
@@ -5745,6 +6221,143 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         postedClickAt = CACurrentMediaTime()
         // Held: the drag as it is for the capture.
         if release { post(.leftMouseUp, b.0, b.1) }
+    }
+
+    /// Events posted to a Color panel disk (ColorMixer.swift), at
+    /// fractions of its view from its top left, `flags` held: a press at
+    /// `a` -- `clicks` of them -- dragged to `b` in eight steps, or let go
+    /// there.
+    @MainActor
+    static func postDisk(_ c: MixChannel, _ a: CGPoint, _ b: CGPoint?,
+                         clicks: Int,
+                         flags: NSEvent.ModifierFlags = []) async {
+        guard let v = MixDiskNSView.view(c) else {
+            print("snapshot: disk \(c.rawValue) not shown")
+            return
+        }
+        await postInView(v, a, b, clicks: clicks, flags: flags)
+    }
+
+    /// Events posted through the window to an AppKit view -- a Color
+    /// panel plane, a Grade panel wheel -- at fractions of it from its
+    /// top left, `flags` held: a press at `a` -- `clicks` of them --
+    /// dragged to `b` in eight steps, or let go there.
+    @MainActor
+    static func postInView(_ v: NSView, _ a: CGPoint, _ b: CGPoint?,
+                           clicks: Int,
+                           flags: NSEvent.ModifierFlags = []) async {
+        guard let win = v.window else { return }
+        func at(_ f: CGPoint) -> NSPoint {
+            v.convert(NSPoint(x: f.x * v.bounds.width,
+                              y: f.y * v.bounds.height), to: nil)
+        }
+        func post(_ type: NSEvent.EventType, _ p: NSPoint, _ n: Int) {
+            if let ev = NSEvent.mouseEvent(
+                with: type, location: p, modifierFlags: flags,
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: win.windowNumber, context: nil,
+                eventNumber: 0, clickCount: n, pressure: 1) {
+                win.sendEvent(ev)
+            }
+        }
+        let pa = at(a)
+        post(.mouseMoved, pa, 0)
+        try? await Task.sleep(for: .milliseconds(60))
+        for n in 1...max(1, clicks) {
+            post(.leftMouseDown, pa, n)
+            if n == clicks, let b {
+                let pb = at(b)
+                for i in 1...8 {
+                    let t = CGFloat(i) / 8
+                    post(.leftMouseDragged,
+                         NSPoint(x: pa.x + (pb.x - pa.x) * t,
+                                 y: pa.y + (pb.y - pa.y) * t), n)
+                    try? await Task.sleep(for: .milliseconds(30))
+                }
+                post(.leftMouseUp, pb, n)
+            } else {
+                try? await Task.sleep(for: .milliseconds(40))
+                post(.leftMouseUp, pa, n)
+            }
+            try? await Task.sleep(for: .milliseconds(60))
+        }
+    }
+
+    /// The mixer's curves, point by point: "hue:0.0@+0.50,60.0@+0.00|
+    /// sat:-|lum:-" (a slope given: "~").
+    static func mixSummary(_ m: ColorMix) -> String {
+        MixChannel.allCases.map { c in
+            let pts = m[c].points
+            return "\(c.key):" + (pts.isEmpty ? "-" : pts.map {
+                String(format: "%.1f@%+.2f", $0.hue, $0.value)
+                    + ($0.slope == nil ? "" : "~")
+            }.joined(separator: ","))
+        }.joined(separator: "|")
+    }
+
+    /// The grade, part by part: "sh:240@0.50|mid:-|hi:30@0.40|bal:+0.20|
+    /// w:0.40|bl:0.70".
+    static func gradeSummary(_ g: ColorGrade) -> String {
+        let tints = [("sh", GradeRange.shadows), ("mid", .midtones),
+                     ("hi", .highlights)].map { name, r in
+            "\(name):" + (g[r].saturation > 0
+                ? String(format: "%.0f@%.2f", g[r].hue, g[r].saturation)
+                : "-")
+        }
+        return (tints + [String(format: "bal:%+.2f", g.balance),
+                         String(format: "w:%.2f", g.width),
+                         String(format: "bl:%.2f", g.blend)])
+            .joined(separator: "|")
+    }
+
+    /// A sound's values: "v0.50,p+2,eq:0,0,0,0,0,+6,0,0,0,0".
+    static func soundSummary(_ s: LayerSound) -> String {
+        String(format: "v%.2f,p%@,eq:", s.volume,
+               AudioPanel.pitchText(s.pitch))
+            + s.eq.map { AudioPanel.decibels($0) }.joined(separator: ",")
+    }
+
+    /// The Audio panel's faders in the window, points from its top left:
+    /// "gain@40,600,58x116,...".
+    @MainActor
+    static func fadersSummary() -> String {
+        let ids = ["gain", "pitch"] + (0..<10).map { "eq\($0)" }
+        let shown = ids.compactMap { id -> String? in
+            guard let v = FaderNSView.view(id), let w = v.window,
+                  !v.isHiddenOrHasHiddenAncestor else { return nil }
+            let f = v.convert(v.bounds, to: nil)
+            let top = w.frame.height - f.maxY
+            return "\(id)@\(Int(f.minX)),\(Int(top)),\(Int(f.width))x\(Int(f.height))"
+        }
+        return shown.isEmpty ? "-" : shown.joined(separator: ",")
+    }
+
+    /// The wheels in the window, points from its top left:
+    /// "shadows@40,600,132x132,...".
+    @MainActor
+    static func wheelsSummary() -> String {
+        let shown = GradeRange.allCases.compactMap { r -> String? in
+            guard let v = GradeWheelNSView.view(r), let w = v.window,
+                  !v.isHiddenOrHasHiddenAncestor else { return nil }
+            let f = v.convert(v.bounds, to: nil)
+            let top = w.frame.height - f.maxY
+            return "\(r.rawValue)@\(Int(f.minX)),\(Int(top)),\(Int(f.width))x\(Int(f.height))"
+        }
+        return shown.isEmpty ? "-" : shown.joined(separator: ",")
+    }
+
+    /// The disks in the window, points from its top left:
+    /// "hue@40,600,168x168,...".
+    @MainActor
+    static func disksSummary() -> String {
+        let shown = MixChannel.allCases.compactMap { c -> String? in
+            guard let v = MixDiskNSView.view(c), let w = v.window,
+                  !v.isHiddenOrHasHiddenAncestor else { return nil }
+            let r = v.convert(v.bounds, to: nil)
+            let top = w.frame.height - r.maxY
+            return "\(c.rawValue)@\(Int(r.minX)),\(Int(top)),\(Int(r.width))x\(Int(r.height))"
+        }
+        return shown.isEmpty ? "-" : shown.joined(separator: ",")
     }
 
     /// The guides as they are: "set=h:120,240|v:213.3 byHand=true

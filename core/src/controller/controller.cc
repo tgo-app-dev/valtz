@@ -2622,6 +2622,100 @@ Controller::agent_memory_limit_(const models::ModelEntry& m) const
              : 0;
 }
 
+std::uint64_t
+Controller::agent_expert_cache_(const models::ModelEntry& m) const
+{
+  if (!_agent || m.resident_gb <= 0) {
+    return 0;
+  }
+  // GB as Settings shows them, and as the catalog sizes the model:
+  // decimal (32 GB, not 34.4).
+  const int gb = _agent->expert_cache_gb();
+  const auto* a = gb > 0 ? agent_model() : nullptr;
+  return a != nullptr && a->id == m.id
+             ? static_cast<std::uint64_t>(gb) * 1'000'000'000
+             : 0;
+}
+
+namespace {
+
+// The working memory vpipe books beside a streamed model's context --
+// a long prompt's piece, its picture encoder's scratch: DeepSeek's, ~7
+// GB, read off its loads on the M5 Ultra (its run less its context at
+// 131,072 and 1,048,576 tokens). A figure to size by, vpipe deciding at
+// the load.
+constexpr std::uint64_t kStreamedWorking = 7'000'000'000;
+
+}  // namespace
+
+Json
+Controller::agent_memory_plan_() const
+{
+  const auto* m = agent_model();
+  if (m == nullptr) {
+    return nullptr;
+  }
+  const auto info = _store->info(*m);
+  if (info.state != models::InstallState::Installed) {
+    return nullptr;
+  }
+  auto lc = models::language_context(info.path());
+  if (m->context_bytes_per_token > 0) {
+    lc.kv_bytes = static_cast<std::uint64_t>(m->context_bytes_per_token);
+  }
+  const double disk = std::max(0.0, m->disk_gb);
+  const bool streams = m->resident_gb > 0 && m->resident_gb < disk;
+  const int here = helper_context_(*m);
+  const double context_gb =
+      static_cast<double>(here) * static_cast<double>(lc.kv_bytes) / 1e9;
+  Json p = {{"model", m->id},
+            {"name", m->name},
+            {"streams", streams},
+            {"disk_gb", disk},
+            {"resident_gb", m->resident_gb},
+            {"context", {{"model", lc.tokens},
+                         {"auto", helper_context_(*m, false)},
+                         {"fits", helper_context_fits_(*m)},
+                         {"here", here},
+                         {"kv_bytes", lc.kv_bytes}}},
+            {"context_gb", context_gb}};
+  if (!streams) {
+    return p;
+  }
+  // Auto's cache as vpipe sizes it with nothing planned beside it: the
+  // memory it sizes in (streamed_budget_) less its run -- its context and
+  // the working memory of a long prompt's piece -- and its resident part.
+  // A figure to choose by: vpipe decides at the load, beside what else its
+  // plan holds then, and never under its floor (two layers' experts).
+  const double mem = static_cast<double>(streamed_budget_(*m)) / 1e9;
+  const double run =
+      context_gb + static_cast<double>(kStreamedWorking) / 1e9;
+  // What it reads from the SSD (its experts, and DeepSeek's n-gram rows,
+  // which are never cached) and its experts alone, where the catalog says;
+  // what it holds beside them.
+  const double ssd = disk - m->resident_gb;
+  const double experts = m->experts_gb > 0 ? m->experts_gb : ssd;
+  const double floor = m->expert_cache_floor_gb;
+  const double rest = m->held_beside_cache_gb();
+  const double auto_cache =
+      std::min(experts, std::max(floor, mem - run - rest));
+  const double asked =
+      static_cast<double>(agent_expert_cache_(*m)) / 1e9;
+  const double cache =
+      asked > 0 ? std::max(floor, std::min(asked, auto_cache)) : auto_cache;
+  p["ssd_gb"] = ssd;
+  p["rest_gb"] = rest;
+  p["working_gb"] = static_cast<double>(kStreamedWorking) / 1e9;
+  p["experts_gb"] = experts;
+  p["floor_gb"] = floor;
+  p["memory_gb"] = std::max(0.0, mem);
+  p["cache_auto_gb"] = auto_cache;
+  p["cache_gb"] = cache;
+  p["all_resident"] = cache >= experts;
+  p["holds_gb"] = rest + cache + run;
+  return p;
+}
+
 void
 Controller::rescan_models()
 {
@@ -3815,6 +3909,9 @@ Controller::adopt_(std::unique_ptr<project::Workspace> ws,
   }
   data["missing_extensions"] = std::move(missing);
   w->undo().on_change([this, id] { post_state_(id); });
+  // An agent at work on it: the person's writes refused (agent_hold_).
+  w->project().env().set_guard(
+      [this, id, w] { return write_guard_(id, *w); });
   {
     std::lock_guard lk(_projects_mu);
     _projects[id] = OpenProject{std::move(ws), false, data};
@@ -3885,6 +3982,60 @@ Controller::command_(ProjectId pid, std::string kind, AssetId asset,
   return w->undo().command(std::move(kind), std::move(args),
                            asset.is_nil() ? "" : asset.str(),
                            std::move(layer));
+}
+
+namespace {
+
+// The core's own writes on this thread (Controller::CoreWrites).
+thread_local int t_core_writes = 0;
+
+}  // namespace
+
+Controller::CoreWrites::CoreWrites() { ++t_core_writes; }
+Controller::CoreWrites::~CoreWrites() { --t_core_writes; }
+
+void
+Controller::agent_hold_(ProjectId pid, const std::string& session,
+                        bool held)
+{
+  bool changed = false;
+  {
+    std::lock_guard lk(_agent_holds_mu);
+    auto& sessions = _agent_holds[pid];
+    const bool was = !sessions.empty();
+    if (held) {
+      sessions.insert(session);
+    } else {
+      sessions.erase(session);
+    }
+    changed = was != !sessions.empty();
+    if (sessions.empty()) {
+      _agent_holds.erase(pid);
+    }
+  }
+  // The app's read-only state follows project.changed's "agent".
+  if (changed) {
+    post_state_(pid);
+  }
+}
+
+bool
+Controller::agent_holds_(ProjectId pid) const
+{
+  std::lock_guard lk(_agent_holds_mu);
+  auto it = _agent_holds.find(pid);
+  return it != _agent_holds.end() && !it->second.empty();
+}
+
+Status
+Controller::write_guard_(ProjectId pid, project::Workspace& w) const
+{
+  // The core's own, or in no command (a view, the playhead, the guides).
+  if (t_core_writes > 0 || w.undo().recording() == 0 ||
+      !agent_holds_(pid)) {
+    return ok_status();
+  }
+  return make_error(Code::Busy, msg::kAgentAtWork);
 }
 
 project::UndoLog::Scope
@@ -3973,6 +4124,8 @@ Controller::project_state(ProjectId pid) const
           {"package", w->package() ? w->package()->string() : ""},
           {"name", w->project().name()},
           {"busy", project_busy_(pid)},
+          // An agent at work on it: read-only to the person.
+          {"agent", agent_holds_(pid)},
           {"undo", brief(w->undo().next_undo())},
           {"redo", brief(w->undo().next_redo())}};
 }
@@ -4069,6 +4222,9 @@ Controller::revert_project(ProjectId pid)
   if (!w) {
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
+  if (agent_holds_(pid)) {
+    return make_error(Code::Busy, msg::kAgentAtWork);
+  }
   if (project_busy_(pid)) {
     return make_error(Code::Busy, msg::kProjectBusy);
   }
@@ -4085,6 +4241,11 @@ Controller::undo(ProjectId pid)
   project::Workspace* w = workspace_(pid);
   if (!w) {
     return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  // An agent at work: its steps are not taken back under it (undo
+  // writes unjournaled, so the write guard does not see it).
+  if (agent_holds_(pid)) {
+    return make_error(Code::Busy, msg::kAgentAtWork);
   }
   // Taking back a task's request withdraws the task.
   if (const auto next = w->undo().next_undo()) {
@@ -4104,6 +4265,9 @@ Controller::redo(ProjectId pid)
   project::Workspace* w = workspace_(pid);
   if (!w) {
     return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  if (agent_holds_(pid)) {
+    return make_error(Code::Busy, msg::kAgentAtWork);
   }
   VALTZ_ASSIGN(auto c, w->undo().redo());
   post_("assets.changed", JobId{}, {{"project", pid},
@@ -4716,8 +4880,12 @@ Controller::assistants() const
         lc.tokens > 0) {
       row["context"] = {{"model", lc.tokens},
                         {"auto", helper_context_(*e, false)},
+                        {"fits", helper_context_fits_(*e)},
                         {"here", helper_context_(*e)},
-                        {"kv_bytes", lc.kv_bytes}};
+                        {"kv_bytes", e->context_bytes_per_token > 0
+                                         ? static_cast<std::uint64_t>(
+                                               e->context_bytes_per_token)
+                                         : lc.kv_bytes}};
     }
     if (const auto* d = _catalog.find(
             jget<std::string>(vp, "mtp_drafter", ""))) {
@@ -4817,6 +4985,11 @@ Controller::helper_params_(const models::ModelEntry& m) const
   if (const auto lim = agent_memory_limit_(m); lim > 0) {
     p["memory_limit_mb"] = lim >> 20;
   }
+  // And its experts' cache as the Agent's Expert Cache asks (vpipe's
+  // expert_cache_mb): at most that, within the Memory and the Mac.
+  if (const auto c = agent_expert_cache_(m); c > 0) {
+    p["expert_cache_mb"] = c >> 20;
+  }
   // Its whole context where this Mac holds it (Qwen3.5's and 3.8's
   // 262,144): an agent's long session runs to the model's limit, not
   // ours. Its K/V grows as it fills.
@@ -4845,26 +5018,93 @@ Controller::helper_params_(const models::ModelEntry& m) const
   return p;
 }
 
+std::uint64_t
+Controller::streamed_budget_(const models::ModelEntry& m) const
+{
+  constexpr std::uint64_t kHeldBack = std::uint64_t{8} << 30;
+  std::uint64_t b = _hw.ram_bytes > kHeldBack ? _hw.ram_bytes - kHeldBack
+                                              : 0;
+  if (_hw.gpu_working_set_bytes > 0) {
+    b = std::min(b, _hw.gpu_working_set_bytes / 100 * 85);
+  }
+  if (const auto lim = agent_memory_limit_(m); lim > 0) {
+    b = std::min(b, lim);
+  }
+  return b;
+}
+
 int
-Controller::helper_context_(const models::ModelEntry& m, bool chosen) const
+Controller::helper_context_fits_(const models::ModelEntry& m) const
 {
   // The memory it is counted in: the Mac's, or the agent's Memory.
   std::uint64_t ram = _hw.ram_bytes;
   if (const auto lim = agent_memory_limit_(m); lim > 0) {
     ram = std::min(ram, lim);
   }
-  const auto lc = models::language_context(_store->info(m).path());
-  int n = models::helper_context(
-      lc, ram, static_cast<std::uint64_t>(std::max(0.0, m.disk_gb) * 1e9));
-  // The catalog's, where its state is small and its experts take the
-  // rest (DeepSeek V4.1 Flash): no more than its own.
-  if (m.context_tokens > 0) {
-    n = lc.tokens > 0 ? std::min(m.context_tokens, lc.tokens)
-                      : m.context_tokens;
+  auto lc = models::language_context(_store->info(m).path());
+  // A token as vpipe books it where its config cannot say (DeepSeek's
+  // ~7.9 KB -- its compressed latents and its indexer's scores -- not the
+  // 80 KB its heads read as).
+  if (m.context_bytes_per_token > 0) {
+    lc.kv_bytes = static_cast<std::uint64_t>(m.context_bytes_per_token);
   }
-  // Settings' Context, no more than Auto's.
-  if (chosen && _assistant_context > 0 && n > 0) {
-    n = static_cast<int>(std::min<std::int64_t>(n, _assistant_context));
+  const std::uint64_t asked = agent_expert_cache_(m);
+  const auto rest =
+      static_cast<std::uint64_t>(m.held_beside_cache_gb() * 1e9);
+  const auto floor =
+      static_cast<std::uint64_t>(m.expert_cache_floor_gb * 1e9);
+  // A context booked as the catalog says (DeepSeek's): vpipe books it
+  // whole at the load, before its cache, and takes it from the cache --
+  // never under the floor. So the most that fits is what the memory it
+  // sizes in leaves past what it holds beside its cache, the cache (the
+  // one asked for, kept whole; Auto's, down to its floor) and the working
+  // memory: no share held back, the trade being the cache's.
+  if (m.resident_gb > 0 && m.context_bytes_per_token > 0) {
+    constexpr std::uint64_t kPage = 16;
+    constexpr std::uint64_t kLeast = 32768;
+    if (lc.tokens <= 0) {
+      return 0;
+    }
+    const std::uint64_t budget = streamed_budget_(m);
+    const std::uint64_t used =
+        rest + std::max(floor, asked) + kStreamedWorking;
+    const std::uint64_t left = budget > used ? budget - used : 0;
+    const std::uint64_t n = left / lc.kv_bytes / kPage * kPage;
+    return static_cast<int>(std::min<std::uint64_t>(
+        static_cast<std::uint64_t>(lc.tokens), std::max(n, kLeast)));
+  }
+  // Else what it holds beside its context: its size on disk -- a Mixture
+  // of Experts streaming its experts keeps its cache first, sized after
+  // the context (Flash-Next, whose K/V is a dense model's) -- or, with a
+  // cache asked for, what it holds beside the cache and the cache, in the
+  // memory vpipe sizes it in (as much of it as the budget leaves). The
+  // context gets its share of what they leave.
+  std::uint64_t held =
+      static_cast<std::uint64_t>(std::max(0.0, m.disk_gb) * 1e9);
+  if (m.resident_gb > 0 && asked > 0) {
+    ram = streamed_budget_(m);
+    const std::uint64_t used = rest + kStreamedWorking;
+    const std::uint64_t room = ram > used ? ram - used : 0;
+    held = rest + std::max(floor, std::min(asked, room));
+  }
+  return models::helper_context(lc, ram, held);
+}
+
+int
+Controller::helper_context_(const models::ModelEntry& m, bool chosen) const
+{
+  const int fits = helper_context_fits_(m);
+  int n = fits;
+  // Auto's, where the model's own is far past what a session needs and
+  // the room it takes is the cache's (DeepSeek V4.1 Flash's 131,072 of
+  // 1,048,576): no more than the catalog's. Chosen, up to what fits.
+  if (m.context_tokens > 0) {
+    n = n > 0 ? std::min(m.context_tokens, n) : m.context_tokens;
+  }
+  // Settings' Context: what fits at most -- more than Auto's where Auto
+  // is held below it.
+  if (chosen && _assistant_context > 0 && fits > 0) {
+    n = static_cast<int>(std::min<std::int64_t>(fits, _assistant_context));
   }
   // VALTZ_HELPER_CONTEXT=<tokens>: less for this run -- an agent's
   // compaction reached by a short session.
@@ -7991,6 +8231,9 @@ Controller::timing_prior_(project::Project& p, const project::Recipe& r)
 void
 Controller::on_build_event_(const engine::JobEvent& ev)
 {
+  // A result committed is the job's, asked for before any hold an agent
+  // took since: never refused by it.
+  CoreWrites own;
   switch (ev.kind) {
   case engine::JobEventKind::Started:
     _jobs.update(ev.job, [](JobRecord& r) { r.state = JobState::Running; });

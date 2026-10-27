@@ -49,10 +49,12 @@ public:
 
   Json settings() const;
   Status set_settings(const Json&);
-  // Its settings' "model" ("" the Agentic Helper's) and "memory_gb" (0
-  // none): Controller::agent_model, agent_memory_limit_.
+  // Its settings' "model" ("" the Agentic Helper's), "memory_gb" (0
+  // none) and "expert_cache_gb" (0 Auto): Controller::agent_model,
+  // agent_memory_limit_, agent_expert_cache_.
   std::string model_choice() const;
   int memory_gb() const;
+  int expert_cache_gb() const;
   Json tools_json() const;
 
   // A job's event as the controller posts it: an agent's picture landing
@@ -163,6 +165,12 @@ public:
     // Its message as the app words it: {message, key, args}.
     Json                                error_fields = Json::object();
     int                                 turns = 0;
+    // At work: holding its project (AgentHost::post_). The project's last
+    // command as it stopped working (done, failed): the person's own
+    // changes since are told with the next words said to it -- what it
+    // last saw is out of date.
+    bool                                working = false;
+    std::uint64_t                       seen_seq = 0;
     Json                                usage = Json::object();
     // The last turn's cost and speed (agent::turn_stats).
     Json                                stats = Json::object();
@@ -214,7 +222,10 @@ private:
   // The person's next words (done, failed): false when stopped.
   bool wait_words_(Session& s);
   void set_state_(Session& s, std::string state);
+  // agent.changed posted -- and the project held while it works.
   void post_(Session& s, std::optional<int> step = std::nullopt);
+  // The project's last command done (0: none).
+  std::uint64_t last_command_(ProjectId) const;
   Json state_json_(const Session& s, bool messages) const;
   void save_(Session& s);
   std::shared_ptr<Session> find_(const std::string& id) const;

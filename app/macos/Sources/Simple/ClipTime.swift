@@ -272,6 +272,10 @@ extension AppModel {
     var layerVolumeHere: Double {
         layerSound.value(at: keyFrame)?.volume ?? 1
     }
+    /// Its sound at the frame on screen: the Audio panel's faders.
+    var layerSoundHere: LayerSound {
+        layerSound.value(at: keyFrame) ?? LayerSound()
+    }
 
     /// The semitones its speed adds while its pitch follows it, as a
     /// tape's: twice as fast, an octave up.
@@ -298,6 +302,32 @@ extension AppModel {
         let v = min(LayerSound.volumeRange.upperBound,
                     max(LayerSound.volumeRange.lowerBound, volume))
         editSound { $0.volume = v }
+    }
+
+    /// An equalizer band's gain there, decibels (held to 12 either way).
+    func setLayerEq(_ band: Int, _ db: Double) {
+        guard LayerSound.eqFrequencies.indices.contains(band) else { return }
+        let g = min(LayerSound.eqRange.upperBound,
+                    max(LayerSound.eqRange.lowerBound, db))
+        editSound { $0.eq[band] = g }
+    }
+
+    /// The Audio panel's Reset: gain, pitch and equalizer at rest, in
+    /// every key (whether the pitch follows the speed is the Trim
+    /// panel's, kept).
+    func resetLayerSound() {
+        guard !layerFrozen, !layerSound.isEmpty else { return }
+        layerSound = layerSound.collapsingValues { _ in LayerSound() }
+    }
+
+    /// Its Flat: every band at 0 dB, in every key.
+    func flattenLayerEq() {
+        guard !layerFrozen, !layerSound.isEmpty else { return }
+        layerSound = layerSound.collapsingValues {
+            var o = $0
+            o.eq = LayerSound().eq
+            return o
+        }
     }
 
     /// A gain in decibels ("-6.0 dB"; mute "-∞ dB").
@@ -396,6 +426,27 @@ struct SpeedRow: View {
                            },
                            reset: { model.setLayerSpeed(1) })
                 .help("How fast the clip plays: 2× (or 200%) twice as fast, 0.5× half -- the clip then takes less, or more, of the timeline")
+            // Whether its pitch goes with the speed: the speed's matter
+            // (the pitch itself is the Audio panel's).
+            if model.layerHasSound {
+                Text("Pitch")
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 8)
+                Picker("Pitch and speed", selection: $model.pitchFollowsSpeed) {
+                    Text("Hold").tag(false)
+                    Text("Follow Speed").tag(true)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .fixedSize()
+                .help("Hold: the pitch stays as the speed changes. Follow Speed: it rises and falls with the speed, as a tape's -- twice as fast, an octave up")
+                if model.pitchFromSpeed != 0 {
+                    Text(verbatim: AudioPanel.pitchText(model.pitchFromSpeed))
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .help("What the speed adds, in semitones")
+                }
+            }
             if model.layerResampled {
                 resampled
             }
@@ -435,159 +486,6 @@ struct SpeedRow: View {
         t = t.trimmingCharacters(in: CharacterSet(charactersIn: "x×% "))
         guard let v = Double(t), v.isFinite, v > 0 else { return nil }
         return percent ? v / 100 : v
-    }
-}
-
-/// The selected clip's PITCH, centred: a semitone down or up, typed, and
-/// whether it is HELD while the speed changes (stretched, its pitch kept)
-/// or FOLLOWS the speed as a tape's does.
-struct PitchRow: View {
-    @Bindable var model: AppModel
-
-    var body: some View {
-        let here = model.layerPitchHere
-        HStack(spacing: 6) {
-            Text("Pitch")
-                .foregroundStyle(.secondary)
-            Button {
-                model.setLayerPitch(here - 1)
-            } label: {
-                Image(systemName: "minus")
-                    .frame(width: 12, height: 12)
-            }
-            .help("A semitone lower")
-            .disabled(here <= LayerSound.pitchRange.lowerBound)
-            TrimValueField(name: "Pitch", shown: Self.display(here),
-                           width: 44, isReset: here == 0,
-                           commit: { t in
-                               guard let v = Self.parse(t) else { return false }
-                               model.setLayerPitch(v)
-                               return true
-                           },
-                           reset: { model.setLayerPitch(0) })
-                .help("Semitones up (+) or down (−)")
-            Button {
-                model.setLayerPitch(here + 1)
-            } label: {
-                Image(systemName: "plus")
-                    .frame(width: 12, height: 12)
-            }
-            .help("A semitone higher")
-            .disabled(here >= LayerSound.pitchRange.upperBound)
-            Text("semitones")
-                .foregroundStyle(.tertiary)
-                .padding(.trailing, 6)
-            Picker("Pitch and speed", selection: $model.pitchFollowsSpeed) {
-                Text("Hold").tag(false)
-                Text("Follow Speed").tag(true)
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .fixedSize()
-            .help("Hold: the pitch stays as the speed changes. Follow Speed: it rises and falls with the speed, as a tape's -- twice as fast, an octave up")
-            if model.pitchFromSpeed != 0 {
-                Text(verbatim: Self.display(model.pitchFromSpeed))
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .help("What the speed adds")
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .searchMark(model.searchHits.contains(SettingsRow.pitch))
-    }
-
-    /// "+2", "0", "−1.5".
-    static func display(_ v: Double) -> String {
-        let t = CropField.display((v * 10).rounded() / 10)
-        return (v >= 0.05 ? "+" : "") + t.replacingOccurrences(of: "-",
-                                                               with: "−")
-    }
-
-    /// "+3", "-1.5", "−2", "2 st"; nil for anything else.
-    static func parse(_ text: String) -> Double? {
-        var t = text.trimmingCharacters(in: .whitespaces)
-            .replacingOccurrences(of: ",", with: ".")
-            .replacingOccurrences(of: "−", with: "-")
-            .lowercased()
-        t = t.trimmingCharacters(in: CharacterSet(charactersIn: "st +"))
-        guard let v = Double(t), v.isFinite else { return nil }
-        return v
-    }
-}
-
-/// The selected clip's VOLUME, centred: muted, a slider in decibels
-/// (-60 to +12; its far left mutes), and the gain typed -- "-6", "-6 dB"
-/// or "50%".
-struct VolumeRow: View {
-    @Bindable var model: AppModel
-    /// What a mute goes back to.
-    @State private var unmuted = 1.0
-    private static let floor = -60.0
-    private static let ceiling = 12.0
-
-    var body: some View {
-        let v = model.layerVolumeHere
-        HStack(spacing: 6) {
-            Text("Volume")
-                .foregroundStyle(.secondary)
-            Button {
-                if v > 0 {
-                    unmuted = v
-                    model.setLayerVolume(0)
-                } else {
-                    model.setLayerVolume(unmuted)
-                }
-            } label: {
-                Image(systemName: v > 0 ? "speaker.wave.2" : "speaker.slash")
-                    .frame(width: 18)
-            }
-            .buttonStyle(.borderless)
-            .help(v > 0 ? "Mute" : "Unmute")
-            Slider(value: Binding(get: { Self.position(v) },
-                                  set: { model.setLayerVolume(Self.gain($0)) }),
-                   in: Self.floor...Self.ceiling)
-                .frame(width: 160)
-                .accessibilityLabel(Text("Volume"))
-            TrimValueField(name: "Volume", shown: AppModel.decibelText(v),
-                           width: 62, isReset: v == 1,
-                           commit: { t in
-                               guard let g = Self.parse(t) else { return false }
-                               model.setLayerVolume(g)
-                               return true
-                           },
-                           reset: { model.setLayerVolume(1) })
-                .help("Its gain: 0 dB as it is, −6 dB half the level, up to +12 dB")
-        }
-        .frame(maxWidth: .infinity)
-        .searchMark(model.searchHits.contains(SettingsRow.volume))
-    }
-
-    /// The slider's place for a gain: decibels, mute at its far left.
-    static func position(_ volume: Double) -> Double {
-        guard volume > 0 else { return floor }
-        return min(ceiling, max(floor, 20 * log10(volume)))
-    }
-
-    static func gain(_ db: Double) -> Double {
-        db <= floor + 0.5 ? 0 : pow(10, db / 20)
-    }
-
-    /// "-6", "-6 dB", "+3dB", "50%", "-inf"; nil for anything else.
-    static func parse(_ text: String) -> Double? {
-        var t = text.trimmingCharacters(in: .whitespaces)
-            .replacingOccurrences(of: ",", with: ".")
-            .replacingOccurrences(of: "−", with: "-")
-            .lowercased()
-        if t.contains("∞") || t.contains("inf") { return 0 }
-        if t.hasSuffix("%") {
-            t = t.trimmingCharacters(in: CharacterSet(charactersIn: "% "))
-            guard let p = Double(t), p.isFinite, p >= 0 else { return nil }
-            return p / 100
-        }
-        t = t.replacingOccurrences(of: "db", with: "")
-            .trimmingCharacters(in: CharacterSet(charactersIn: " +"))
-        guard let db = Double(t), db.isFinite else { return nil }
-        return pow(10, db / 20)
     }
 }
 

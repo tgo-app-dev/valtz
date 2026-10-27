@@ -72,7 +72,10 @@ struct WindowTitleField: View {
     @Environment(\.controlActiveState) private var active
 
     private let font = Font.system(size: 15, weight: .semibold)
-    private var renamable: Bool { model.isAnonymous && !model.viewOnly }
+    // An agent at work holds the project: not renamed meanwhile.
+    private var renamable: Bool {
+        model.isAnonymous && !model.viewOnly && !model.agentHolds
+    }
 
     var body: some View {
         Group {
@@ -279,6 +282,8 @@ struct TitleBarControls: View {
                         }
                     }
                     .shortcutHint("⇧⌘A")
+                    // An agent at work: nothing drawn on the project.
+                    .disabled(model.agentHolds)
                     .titleBarCapsule()
                 }
 

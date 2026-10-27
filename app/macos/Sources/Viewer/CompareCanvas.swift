@@ -713,6 +713,7 @@ final class CompareCanvas: NSView {
             phase: phase, point: canvasPoint(p),
             shift: event.modifierFlags.contains(.shift),
             option: event.modifierFlags.contains(.option),
+            command: event.modifierFlags.contains(.command),
             clickCount: MarkupPointer.clicks(event),
             pixelsPerPoint: Double(1 / max(0.0001, pointsPerPixel))))
     }
@@ -720,8 +721,17 @@ final class CompareCanvas: NSView {
     /// The colour A shows at markup's canvas pixel `c` -- its picture as
     /// laid here: placed on its crop's canvas over the pad, or at its fit
     /// -- sRGB, straight alpha; nil off it. What the eyedropper takes.
-    func sampleColor(atCanvas c: CGPoint) -> RGBA? {
+    /// `other`: the same picture drawn otherwise -- at any size, A's
+    /// pixels scaled to it (the Color panel's target tool reads A without
+    /// its mixer so).
+    func sampleColor(atCanvas c: CGPoint, from other: CGImage? = nil) -> RGBA? {
         guard let img = imageA else { return nil }
+        let read = { (q: CGPoint) -> RGBA? in
+            guard let other else { return Self.pixel(img, at: q) }
+            return Self.pixel(other, at: CGPoint(
+                x: q.x * CGFloat(other.width) / CGFloat(max(1, img.width)),
+                y: q.y * CGFloat(other.height) / CGFloat(max(1, img.height))))
+        }
         let p = CGPoint(x: c.x + markupOrigin.x, y: c.y + markupOrigin.y)
         if let crop = cropA {
             guard CGRect(origin: .zero, size: crop.canvas).contains(p) else {
@@ -734,13 +744,12 @@ final class CompareCanvas: NSView {
                   q.y < CGFloat(img.height) else {
                 return RGBA(cgColor: crop.pad)
             }
-            return Self.pixel(img, at: CGPoint(
-                x: q.x, y: CGFloat(img.height) - q.y))
+            return read(CGPoint(x: q.x, y: CGFloat(img.height) - q.y))
         }
         let e = extent(img, fitA)
         guard e.contains(p), fitA.scale > 0 else { return nil }
-        return Self.pixel(img, at: CGPoint(x: (p.x - e.minX) / fitA.scale,
-                                           y: (p.y - e.minY) / fitA.scale))
+        return read(CGPoint(x: (p.x - e.minX) / fitA.scale,
+                            y: (p.y - e.minY) / fitA.scale))
     }
 
     /// `img`'s pixel at `q` (its pixels, from the top left) in sRGB,

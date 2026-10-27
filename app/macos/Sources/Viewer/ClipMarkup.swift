@@ -176,6 +176,7 @@ final class ClipMarkupNSView: NSView {
             phase: phase, point: canvasPoint(p),
             shift: e.modifierFlags.contains(.shift),
             option: e.modifierFlags.contains(.option),
+            command: e.modifierFlags.contains(.command),
             clickCount: MarkupPointer.clicks(e),
             pixelsPerPoint: Double(1 / max(0.0001, pointsPerPixel))))
     }

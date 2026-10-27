@@ -289,9 +289,13 @@ struct HelperList: Decodable, Sendable {
         var context: Context?
     }
 
-    struct Context: Decodable, Sendable {
+    struct Context: Decodable, Sendable, Equatable {
         var model: Int
         var auto: Int
+        /// The most of it this Mac's memory holds beside what the model
+        /// holds -- more than Auto's where Auto is held below it
+        /// (DeepSeek V4.1 Flash: 131,072 of 1,048,576).
+        var fits: Int?
         var here: Int
     }
 

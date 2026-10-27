@@ -127,6 +127,9 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/AgentViews.swift
   Sources/Simple/ReferenceRow.swift
   Sources/Simple/Adjustments.swift
+  Sources/Simple/ColorMixer.swift
+  Sources/Simple/ColorGrading.swift
+  Sources/Simple/AudioPanel.swift
   Sources/Simple/SettingsSearch.swift
   Sources/Simple/AttachCapture.swift
   Sources/Simple/Capture.swift

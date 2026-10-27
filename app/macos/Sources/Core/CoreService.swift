@@ -41,6 +41,10 @@ final class CoreService: @unchecked Sendable {
             return nil
         }
         core = c
+        // The color mixer's kernel, as the core defines it: compiled once,
+        // for every chain drawn here.
+        ColorMixKernel.install(colorMix())
+        ColorGradeKernel.install(colorGrade())
     }
 
     static var defaultConfig: String {
@@ -616,10 +620,13 @@ final class CoreService: @unchecked Sendable {
                         look: (layer: String, adjust: ImageAdjustments,
                                crop: CropSpec)? = nil,
                         hidden: Set<String> = [],
-                        page: Int = 0) -> IOSurface? {
-        // `page`: a still's page (DESIGN §6a).
+                        page: Int = 0,
+                        scale: Double = 1) -> IOSurface? {
+        // `page`: a still's page (DESIGN §6a); `scale` < 1: drawn that
+        // much smaller (the viewport's size while a slider moves).
         var req: [String: Any] = ["project": project, "asset": asset,
                                   "page": page]
+        if scale < 1 { req["scale"] = scale }
         if let look {
             req["look"] = ["layer": look.layer, "adjust": look.adjust.json,
                            "crop": look.crop.json]
@@ -743,6 +750,28 @@ final class CoreService: @unchecked Sendable {
               let s = String(data: d, encoding: .utf8) else { return "" }
         let r = reply(core.checkpoint_kind(std.string(s)))
         return r["kind"] as? String ?? ""
+    }
+
+    /// The color mixer as the core defines it (media/adjust.h): its
+    /// kernel's source, its step's name, its curves' samples, the hues
+    /// named, how far a hue turns and a luminance goes.
+    func colorMix() -> CoreReply { reply(core.color_mix()) }
+
+    /// The color grade as the core defines it (media/adjust.h): its
+    /// kernel's source, its step's name, how far the balance moves the
+    /// midtones.
+    func colorGrade() -> CoreReply { reply(core.color_grade()) }
+
+    /// A colour's hue as the mixer reads it (sRGB as encoded, straight,
+    /// 0...1), degrees, and its saturation: the target tool's colour
+    /// pressed on -- nil for a grey.
+    func colorMixHue(r: Double, g: Double,
+                     b: Double) -> (hue: Double, saturation: Double)? {
+        let p = reply(core.color_mix_hue(r, g, b))
+        guard p.ok, p["grey"] as? Bool != true,
+              let h = p["hue"] as? Double, let s = p["saturation"] as? Double
+        else { return nil }
+        return (h, s)
     }
 
     func adjustmentChain(_ a: ImageAdjustments) -> [ImageAdjustments.Step] {

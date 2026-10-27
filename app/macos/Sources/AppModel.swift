@@ -507,8 +507,11 @@ struct OutputShape: Sendable {
 /// prompt card.
 enum ComposerPanel: Sendable, CaseIterable {
     case adjust     // adjustments: a picture's, or a clip's (keyed)
+    case color      // the color mixer: the same look's, keyed with it
+    case grade      // the color grade: the same look's, keyed with it
     case crop       // crop and rotation: a picture's, or a clip's (keyed)
     case trim       // a clip's mark-in and mark-out
+    case audio      // the selected layer's sound: gain, pitch, equalizer
     case generate   // the generation settings
 }
 
@@ -1153,6 +1156,16 @@ final class AppModel {
     var agentWriting = ""
     /// A step's note, typed before it is skipped (told to the model).
     var agentNote = ""
+    /// The stage FOLLOWS the agent's work (its composition, the page or
+    /// the time its last step was on) until the person looks elsewhere --
+    /// another asset, page or frame: the agent works on in what it was
+    /// asked about, the person looks where they like, and Follow on its
+    /// card brings the stage back to it (followAgent). The agent never
+    /// follows the stage: what it works on was taken as it was asked.
+    var agentFollows = true
+    /// The stage moved by following the agent, not by the person: it does
+    /// not stop the following.
+    @ObservationIgnored var agentSteering = false
     /// The fleet (DESIGN §11): this Mac's place in one, the job it serves
     /// for a member (its window given over to it, the mark in blue), the
     /// offers waiting for an answer.
@@ -1731,6 +1744,23 @@ final class AppModel {
     /// stage shows -- only the showing: nothing recorded changes, and
     /// letting go shows them again.
     var bypassed: Set<KeyTrack> = []
+    /// The Color panel's Bypass held: the stage shows the selected layer
+    /// without its color mixer, the Adjust panel's values kept (and
+    /// Adjust's Bypass keeps the mixer).
+    var mixBypassed = false
+    /// The Grade panel's Bypass held: the stage shows the selected layer
+    /// without its color grade, the other panels' values kept.
+    var gradeBypassed = false
+    /// The Color panel's TARGET tool (ColorMixer.swift): a press on the
+    /// stage reads the colour there and puts its hue's points on the
+    /// curves, a drag moves them -- across its saturation, up and down its
+    /// luminance, with ⌘ its hue.
+    var colorTargeting = false
+    /// The hue the target tool's drag works on, marked across the planes
+    /// while it lasts.
+    var colorTargetHue: Double?
+    /// The target tool's drag under way.
+    @ObservationIgnored var colorTargetDrag: ColorTargetDrag?
     /// The layer of the picture on the stage that the panels and a
     /// generation work on ("" is the bottom one; core project::Layer).
     var selectedLayer = ""
@@ -1745,6 +1775,30 @@ final class AppModel {
     var showsCanvasSize = false
     @ObservationIgnored private var compositing = false
     @ObservationIgnored private var compositeAgain = false
+    /// The scale the next draw asked for meanwhile is made at: the
+    /// largest asked (a draw at the picture's size wins over a live one).
+    @ObservationIgnored private var compositeAgainScale = 0.0
+    /// THE LOOK MOVING -- a slider dragged, the target tool: when it last
+    /// changed; whether the stage shows a draw at the viewport's size,
+    /// which one at the picture's own replaces once the look rests; and
+    /// that rest's wait.
+    @ObservationIgnored private var lookMovedAt: CFTimeInterval = 0
+    @ObservationIgnored private var stageDrawnSmall = false
+    @ObservationIgnored private var lookRestTask: Task<Void, Never>?
+    /// A picture without a stack (the Adjust and Color panels' own draw):
+    /// one draw at a time, the next at the scale asked meanwhile; and its
+    /// picture kept smaller -- by powers of two -- for its live draws.
+    @ObservationIgnored private var adjustRendering = false
+    @ObservationIgnored private var adjustAgainScale = 0.0
+    @ObservationIgnored private var originalLevels:
+        (of: ObjectIdentifier, levels: [Int: CGImage])?
+    /// A snapshot run's count of the look's draws shown: live ones, ones
+    /// at the picture's size, and when the last came (VALTZ_SNAPSHOT_COLOR
+    /// `sweep:`).
+    @ObservationIgnored var lookDraws = (small: 0, full: 0,
+                                         shownAt: CFTimeInterval(0))
+    var lookResting: Bool { !stageDrawnSmall && !compositing
+                            && !adjustRendering }
     private var clipKeysPersistTask: Task<Void, Never>?
     /// The GUIDES over what the stage shows -- a picture, a clip, a
     /// preview (View › Show Guides). Kept between launches.
@@ -2750,6 +2804,8 @@ final class AppModel {
     /// to Auto.
     func setModality(_ m: Modality) {
         guard m != modality, m != .agent || agentEnabled else { return }
+        // An agent at work holds the project: the box is its alone.
+        guard m == .agent || !agentHolds else { return }
         swapPromptWords(from: modality, to: m)
         otherShapes[modality] = outputShape
         outputShape = otherShapes[m] ?? OutputShape.defaults(for: m)
@@ -3175,6 +3231,8 @@ final class AppModel {
             selectedLayers = [id]
             loadClipTracks(pic, layer: activeLayer)
             bypassed = []
+            mixBypassed = false
+            gradeBypassed = false
             recomposite()
             return
         }
@@ -3186,6 +3244,8 @@ final class AppModel {
             loadClipTracks(clip, layer: activeLayer)
             loadTrim(clip)
             bypassed = []
+            mixBypassed = false
+            gradeBypassed = false
             refreshStackPlan()
             return
         }
@@ -3197,6 +3257,8 @@ final class AppModel {
         adjustments = pic.adjustments(layer: id)
         crop = pic.crop(layer: id)
         bypassed = []
+        mixBypassed = false
+        gradeBypassed = false
     }
 
     /// A clip layer's tracks into the panels: as recorded, or one key at
@@ -3333,6 +3395,7 @@ final class AppModel {
     private func layerOp(_ op: String, _ id: String,
                          _ extra: [String: Any] = [:]) {
         guard let core, let projectId, let pic = stageStack else { return }
+        guard !refusedForAgent() else { return }
         let r = core.layerOp(project: projectId,
                              asset: composedTarget(pic.id), op,
                              layer: id, extra: extra)
@@ -3413,6 +3476,7 @@ final class AppModel {
     func goToLayer(_ id: String) {
         guard let l = stageStack?.layerStack.first(where: { $0.id == id })
         else { return }
+        guard id == activeLayer || !refusedForColorTarget() else { return }
         if let f = l.folder, isFolderFolded(f) { toggleFolderFolded(f) }
         selectLayer(id)
         layerFindOpen = false
@@ -3530,6 +3594,8 @@ final class AppModel {
         guard pagedOnStage else { return }
         let to = min(max(0, n), stagePages - 1)
         guard to != stagePage else { return }
+        guard !refusedForColorTarget() else { return }
+        noteNavigation()
         persistClipTracks()
         stagePage = to
         refreshClipValues()
@@ -3540,6 +3606,7 @@ final class AppModel {
     /// runs across it continues there (core Controller::add_page).
     func addPage() {
         guard let core, let projectId, let pic = stagePicture else { return }
+        guard !refusedForColorTarget() else { return }
         flushPanels()
         let was = pic.isPaged
         let r = core.layerOp(project: projectId, asset: composedTarget(pic.id),
@@ -3555,6 +3622,7 @@ final class AppModel {
     func removePage() {
         guard let core, let projectId, let pic = stagePicture,
               pic.isPaged else { return }
+        guard !refusedForColorTarget() else { return }
         flushPanels()
         let r = core.layerOp(project: projectId, asset: composedTarget(pic.id),
                              "page-remove", extra: ["page": stagePage])
@@ -3631,7 +3699,7 @@ final class AppModel {
     /// (media::StackRenderer), made again when a layer, the canvas, the
     /// timeline or the selected layer's tracks change.
     var stackPlayback: StackPlayback?
-    @ObservationIgnored private var stackPlanning = false
+    @ObservationIgnored private(set) var stackPlanning = false
     @ObservationIgnored private var stackPlanAgain = false
     /// The source frame the player goes to once the plan of the marks
     /// just set lands (holdPlayer(onSource:)).
@@ -3771,18 +3839,19 @@ final class AppModel {
     /// The stage drawn again from the stack -- by the core, as a file is
     /// made of it, with the selected layer's values as the panels hold
     /// them (less what a held Bypass leaves out). One draw at a time;
-    /// changes meanwhile make one more, the newest.
-    func recomposite() {
+    /// changes meanwhile make one more, the newest. `scale` < 1: at the
+    /// size the viewport shows it, while the look moves (`liveScale`).
+    func recomposite(scale: Double = 1) {
         guard let core, let projectId, let pic = stagePicture,
               stageComposed else { return }
         if compositing {
             compositeAgain = true
+            compositeAgainScale = max(compositeAgainScale, scale)
             return
         }
         compositing = true
         let look = (layer: activeLayer,
-                    adjust: bypassed.contains(.adjust)
-                        ? ImageAdjustments() : adjustments,
+                    adjust: shownAdjustments(adjustments),
                     crop: shownCrop)
         let id = pic.id
         // The markup objects being changed are drawn live, over it.
@@ -3797,7 +3866,7 @@ final class AppModel {
                 let t0 = CACurrentMediaTime()
                 guard let s = core.flattenSurface(
                           project: projectId, asset: id, look: look,
-                          hidden: hidden, page: page),
+                          hidden: hidden, page: page, scale: scale),
                       let img = GPUPicture.cgImage(
                           over: s,
                           colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
@@ -3809,7 +3878,15 @@ final class AppModel {
             self.compositing = false
             if let (made, drew) = made, self.stagePicture?.id == id,
                self.stageComposed {
-                self.showCurrent(made.image, surface: made.surface)
+                if scale >= 1 {
+                    self.showCurrent(made.image, surface: made.surface)
+                    self.lookDraws.full += 1
+                    self.lookDraws.shownAt = CACurrentMediaTime()
+                } else if !self.showSmall(made.surface) {
+                    // Not the picture it was made for: one at its size.
+                    self.compositeAgain = true
+                    self.compositeAgainScale = 1
+                }
                 self.markupComposited(painted: painted)
                 // A snapshot run: each draw's time -- the core's, and
                 // from the change until it is on the stage.
@@ -3821,9 +3898,91 @@ final class AppModel {
             }
             if self.compositeAgain {
                 self.compositeAgain = false
-                self.recomposite()
+                let next = self.compositeAgainScale
+                self.compositeAgainScale = 0
+                self.recomposite(scale: next)
             }
         }
+    }
+
+    /// A change soon after the last -- a slider dragged, the target tool
+    /// -- is drawn at the size the viewport shows the picture (a 48 MP
+    /// picture shown at a quarter: a sixteenth of its pixels drawn, and
+    /// of the surface the screen takes); once the look rests, at its
+    /// own. A change alone (a click, Reset) is drawn at its own at once.
+    static let lookRest = 0.25
+    /// VALTZ_LIVE_DRAWS=0: every draw at the picture's size (a run timed
+    /// without the live draws).
+    static let liveDrawsOff =
+        ProcessInfo.processInfo.environment["VALTZ_LIVE_DRAWS"] == "0"
+
+    /// What the stage's picture is shown at -- screen pixels a picture
+    /// pixel -- when under three quarters: a live draw's scale; else 1.
+    /// Only for the current state in A, laid out without a crop of the
+    /// stage's own.
+    private var liveScale: Double {
+        guard !Self.liveDrawsOff, currentSlot == .a,
+              stageCropPlacement == nil,
+              let r = stageCanvasRect, let img = stage.a,
+              img.width > 0, img.height > 0 else { return 1 }
+        let backing = NSApp.keyWindow?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor ?? 2
+        let s = Double(max(r.width / CGFloat(img.width),
+                           r.height / CGFloat(img.height)) * backing)
+        return s > 0 && s < 0.75 ? max(s, 1.0 / 32) : 1
+    }
+
+    /// The look changed: the scale to draw it at now, and -- moving -- the
+    /// draw at the picture's own size waited for as it rests.
+    private func lookChanged() -> Double {
+        let now = CACurrentMediaTime()
+        let moving = now - lookMovedAt < Self.lookRest
+        lookMovedAt = now
+        guard moving else { return 1 }
+        lookRestTask?.cancel()
+        lookRestTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(
+                Int(Self.lookRest * 1000) + 50))
+            guard !Task.isCancelled, let self, self.stageDrawnSmall else {
+                return
+            }
+            self.redrawAdjusted()
+        }
+        return liveScale
+    }
+
+    /// A live draw shown in the current state's place: its surface alone,
+    /// laid out by the current picture's own pixels (the canvas stretches
+    /// it to them) until the draw at its size replaces both. False when
+    /// the current picture is not the one it was drawn for (another
+    /// shape): nothing shown.
+    private func showSmall(_ surface: IOSurface) -> Bool {
+        guard currentSlot == .a, let img = stage.a, img.width > 0
+        else { return false }
+        let k = Double(surface.width) / Double(img.width)
+        guard k < 1, abs(Double(surface.height)
+                         - Double(img.height) * k) <= 1.5 else {
+            return false
+        }
+        stage.aSurface = surface
+        stageDrawnSmall = true
+        lookDraws.small += 1
+        lookDraws.shownAt = CACurrentMediaTime()
+        return true
+    }
+
+    /// `original` a power of two smaller (1 / 2^level), kept while it is
+    /// the picture drawn -- made once, the first live draw that needs it.
+    private func keptLevel(_ level: Int, of original: CGImage) -> CGImage? {
+        guard let kept = originalLevels,
+              kept.of == ObjectIdentifier(original) else { return nil }
+        return kept.levels[level]
+    }
+    private func keepLevel(_ img: CGImage, _ level: Int,
+                           of original: CGImage) {
+        let id = ObjectIdentifier(original)
+        if originalLevels?.of != id { originalLevels = (id, [:]) }
+        originalLevels?.levels[level] = img
     }
 
     /// The stack flattened to a file -- what a drag from the stage
@@ -4275,6 +4434,7 @@ final class AppModel {
                       regrows: CGFloat = 0) {
         promptSizeChosen = false
         let stageWork = p == .adjust || p == .crop || p == .trim
+            || p == .audio
         let needs = grows + (compactForPanel && promptCompact ? regrows : 0)
         let shortOfRoom = p == .generate && !promptImmersive
             && editorRoom > 0
@@ -4614,6 +4774,7 @@ final class AppModel {
         let r = core.chooseAssistant(id)
         if !r.ok { flash(r.message, level: .error) }
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+        refreshAgentPlan()
     }
 
     /// What the helper drafts with: "mtp", or "dflash" at `bits`.
@@ -4631,6 +4792,17 @@ final class AppModel {
         let r = core.setAssistantContext(tokens)
         if !r.ok { flash(r.message, level: .error) }
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+        // What the agent's model holds counts its context.
+        refreshAgentPlan()
+    }
+
+    /// The agent's settings read again -- what its model holds (`plan`)
+    /// follows the helper chosen and its Context.
+    func refreshAgentPlan() {
+        guard let core, agentSettings != nil else { return }
+        agentSettings = DTO.decode(AgentSettings.self,
+                                   core.agentSettingsJSON())
+            ?? agentSettings
     }
 
     /// How long the helper stays loaded after a request, in seconds.
@@ -4694,6 +4866,7 @@ final class AppModel {
     /// The editor or the log, from the ☰ column -- the editor to edit:
     /// view-only ends.
     func show(_ s: AppScreen) {
+        guard s == screen || !refusedForColorTarget() else { return }
         if s == .editor { setViewOnly(false) }
         withAnimation(Self.motion) {
             screen = s
@@ -4719,7 +4892,8 @@ final class AppModel {
     /// as it appears.
     func focusPrompt(_ m: Modality) {
         guard m != .agent || agentEnabled, closingTasks == nil,
-              fleetServing == nil else { return }
+              fleetServing == nil, m == .agent || !agentHolds
+        else { return }
         if screen != .editor { show(.editor) }
         setViewOnly(false)
         viewOnlyEnded = nil
@@ -5125,6 +5299,7 @@ final class AppModel {
         // prompt -- is that asset already: nothing to import.
         let fresh = urls.filter { asset(forFile: $0) == nil }
         guard let core, let projectId, !fresh.isEmpty else { return nil }
+        guard !refusedForAgent() else { return nil }
         var req: [String: Any] = ["project": projectId,
                                   "paths": fresh.map { $0.path }]
         if let placement { req["placement"] = placement }
@@ -5463,6 +5638,9 @@ final class AppModel {
     /// Simple mode's Start.
     func start() {
         guard canStart else { return }
+        // The target tool on: what Start makes would take the stage.
+        guard !refusedForColorTarget() else { return }
+
         if memoryFailure != nil {
             withAnimation(Self.motion) { memoryFailure = nil }
         }
@@ -5706,6 +5884,7 @@ final class AppModel {
     /// A task's row clicked (Show on Stage): the stage watches it -- a
     /// generation running, and the queue after it; one queued, it alone.
     func showTask(_ job: String) {
+        guard !refusedForColorTarget() else { return }
         followsQueue = taskContexts[job] != nil
             && jobs[job]?.state == "running"
         watchTask(job)
@@ -6221,6 +6400,7 @@ final class AppModel {
     /// A click on a thumbnail (released on it): it becomes the ACTIVE
     /// media -- or, active, it lets go.
     func toggleReferenceFocus(_ id: UUID) {
+        guard !refusedForColorTarget() else { return }
         if focusedReference == id {
             endActivation(restore: true)
         } else {
@@ -6404,6 +6584,8 @@ final class AppModel {
     /// composition too: on the stage, what every panel works on, changed
     /// in place.
     func setActive(_ a: AssetDTO) {
+        guard !refusedForColorTarget() else { return }
+        noteNavigation()
         if focusedReference != nil { endActivation(restore: false) }
         stageReturn = nil
         putOnStage(a)
@@ -7139,6 +7321,7 @@ final class AppModel {
     /// or aside -- with the GPU surface it was drawn into, which the
     /// canvas shows as it is.
     private func showCurrent(_ img: CGImage, surface: IOSurface? = nil) {
+        stageDrawnSmall = false
         // What the stage shows is what the next result is compared with:
         // the project as composed, not the file of its layer 0.
         if !isGenerating {
@@ -7200,6 +7383,7 @@ final class AppModel {
     /// its file, or with layers or a look of its own, the core's
     /// flattening of it.
     func compareAsset(_ a: AssetDTO, in slot: StageSlot) {
+        guard !refusedForColorTarget() else { return }
         guard stageTakesCompare, a.kind == "image",
               let img = compareImage(a) else { return }
         let name = a.op == "project" ? (projectName ?? a.name) : a.name
@@ -7226,6 +7410,7 @@ final class AppModel {
 
     /// A base as the model got it takes one side of the compare.
     func compare(_ entry: HistoryEntryDTO, in slot: StageSlot) {
+        guard !refusedForColorTarget() else { return }
         guard stageTakesCompare, entry.isPicture,
               let img = Self.loadImage(entry.url) else { return }
         compare(img, label: entry.caption, id: entry.id, in: slot)
@@ -7327,6 +7512,8 @@ final class AppModel {
     /// back in A, B set aside for next time.
     func toggleCompare() {
         guard canToggleCompare else { return }
+        guard !refusedForColorTarget() else { return }
+
         if compareOn {
             endCompare()
             return
@@ -7402,6 +7589,10 @@ final class AppModel {
     /// The Trim tab: a finished clip on the stage.
     var showsTrim: Bool { clipOnStage }
 
+    /// The Audio tab is there while the selected layer has a sound to
+    /// shape: a sound, a clip with one, a timeline's mix.
+    var showsAudio: Bool { clipOnStage && layerIsTimed && layerHasSound }
+
     /// A finished clip is on the simple stage (not a preview).
     var clipOnStage: Bool {
         stage.video != nil && stage.clip == nil
@@ -7416,6 +7607,8 @@ final class AppModel {
         case .adjust: clipAdjustKeys.keys.map(\.frame)
         case .place: clipCropKeys.place.keys.map(\.frame)
         case .turn: clipCropKeys.turn.keys.map(\.frame)
+        // No keys yet: the layer's sound as it is, from its start.
+        case .sound: layerSound.isEmpty ? [0] : layerSound.keys.map(\.frame)
         }
     }
 
@@ -7452,6 +7645,13 @@ final class AppModel {
         case .adjust: toggle(&clipAdjustKeys)
         case .place: toggle(&clipCropKeys.place)
         case .turn: toggle(&clipCropKeys.turn)
+        case .sound:
+            // Written with the Trim panel's values (its didSet).
+            var k = layerSound.isEmpty ? Keyframes(start: LayerSound())
+                                       : layerSound
+            toggle(&k)
+            layerSound = k
+            return
         }
         clipTracksChanged()
     }
@@ -7468,6 +7668,7 @@ final class AppModel {
         case .adjust: return of(clipAdjustKeys)
         case .place: return of(clipCropKeys.place)
         case .turn: return of(clipCropKeys.turn)
+        case .sound: return nil
         }
     }
 
@@ -7481,6 +7682,8 @@ final class AppModel {
         case .adjust: clipAdjustKeys.setInterp(how, at: f)
         case .place: clipCropKeys.place.setInterp(how, at: f)
         case .turn: clipCropKeys.turn.setInterp(how, at: f)
+        // Linear, as the core reads a sound's keys.
+        case .sound: return
         }
         clipTracksChanged()
     }
@@ -7503,10 +7706,12 @@ final class AppModel {
 
     /// A track changed: the panels and the player follow, and it is
     /// recorded on the clip a moment later.
-    private func clipTracksChanged() {
+    func clipTracksChanged() {
         refreshClipValues()
         if clipComposed { refreshStackPlan() }
-        if pagedOnStage { recomposite() }
+        // A still with pages keys its look as a clip does: drawn live at
+        // the viewport's size while it moves.
+        if pagedOnStage { recomposite(scale: lookChanged()) }
         clipKeysPersistTask?.cancel()
         clipKeysPersistTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
@@ -7571,8 +7776,9 @@ final class AppModel {
         var crop = clipCropKeys
         if bypassed.contains(.place) { crop.place = Keyframes(start: CropSpec()) }
         if bypassed.contains(.turn) { crop.turn = Keyframes(start: Turn()) }
-        return ClipLook(adjust: bypassed.contains(.adjust)
-                            ? Keyframes(start: ImageAdjustments())
+        return ClipLook(adjust: bypassed.contains(.adjust) || mixBypassed
+                                || gradeBypassed
+                            ? clipAdjustKeys.mapValues(shownAdjustments)
                             : clipAdjustKeys,
                         crop: crop, rate: stageFrameRate)
     }
@@ -7589,14 +7795,114 @@ final class AppModel {
         else if stageComposed { recomposite() }
     }
 
+    /// The Color panel's Bypass, held or let go: the stage shows the
+    /// selected layer without its color mixer, or with it again.
+    func setMixBypass(_ on: Bool) {
+        guard mixBypassed != on else { return }
+        mixBypassed = on
+        if !keyedStage { redrawAdjusted() }
+        else if clipComposed { refreshStackPlan() }
+        else if stageComposed { recomposite() }
+    }
+
+    /// The Grade panel's Bypass, held or let go: the stage shows the
+    /// selected layer without its color grade, or with it again.
+    func setGradeBypass(_ on: Bool) {
+        guard gradeBypassed != on else { return }
+        gradeBypassed = on
+        if !keyedStage { redrawAdjusted() }
+        else if clipComposed { refreshStackPlan() }
+        else if stageComposed { recomposite() }
+    }
+
+    /// The mixer changes something to leave out.
+    var canBypassMix: Bool {
+        guard layerOffStage == nil else { return false }
+        return keyedStage
+            ? clipAdjustKeys.keys.contains { !$0.value.mix.isIdentity }
+            : !adjustments.mix.isIdentity
+    }
+
+    /// Adjustments as the stage shows them: less what a held Bypass leaves
+    /// out -- the Adjust panel's sliders (its Bypass), the mixer (the Color
+    /// panel's), the grade (the Grade panel's).
+    func shownAdjustments(_ a: ImageAdjustments) -> ImageAdjustments {
+        var o = a
+        if bypassed.contains(.adjust) {
+            o = ImageAdjustments()
+            o.mix = a.mix
+            o.grade = a.grade
+        }
+        if mixBypassed { o.mix = ColorMix() }
+        if gradeBypassed { o.grade = ColorGrade() }
+        return o
+    }
+
+    /// The colour the stage would show at `p` (markup's canvas pixels)
+    /// without the selected layer's colour mixer -- what the Color
+    /// panel's target tool reads, so a hue it moved is found at its own
+    /// points again: drawn for the press -- a still small (2048 pixels a
+    /// side at most), a clip's frame. nil where it cannot be drawn.
+    func unmixedColor(at p: CGPoint) async -> RGBA? {
+        if markupOnClip { return await unmixedClipSample(at: p) }
+        var look = shownAdjustments(adjustments)
+        // The grade comes after the mixer: left out with it.
+        look.mix = ColorMix()
+        look.grade = ColorGrade()
+        guard let drawn = await drawnStill(look) else { return nil }
+        return CompareCanvas.shown?.sampleColor(atCanvas: p, from: drawn)
+    }
+
+    /// The still on the stage drawn once more, small (2048 pixels a side
+    /// at most), the selected layer's look `look`: a stack by the core, a
+    /// picture alone by the app's own chain -- as the stage draws each.
+    /// nil where it cannot be drawn.
+    func drawnStill(_ look: ImageAdjustments) async -> CGImage? {
+        guard let core, let shown = stage.a else { return nil }
+        let scale = min(1, 2048 / Double(max(1, max(shown.width,
+                                                    shown.height))))
+        var drawn: CGImage?
+        if stageComposed && !adjustsBase {
+            guard let projectId, let pic = stagePicture else { return nil }
+            let l = (layer: activeLayer, adjust: look, crop: shownCrop)
+            let id = pic.id, hidden = markupHiddenIds
+            let page = pic.isPaged ? stagePage : 0
+            drawn = await Task.detached { () -> CGImage? in
+                guard let s = core.flattenSurface(
+                          project: projectId, asset: id, look: l,
+                          hidden: hidden, page: page, scale: scale)
+                else { return nil }
+                return GPUPicture.cgImage(
+                    over: s, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+            }.value
+        } else {
+            guard let original = adjustsBase ? stageBaseOriginal
+                    : stageOriginal else { return nil }
+            let chain = core.adjustmentChain(look)
+            let level = scale < 1
+                ? min(5, max(0, Int(floor(log2(1 / scale))))) : 0
+            let kept = level > 0 ? keptLevel(level, of: original) : nil
+            drawn = await Task.detached { () -> CGImage? in
+                let source = kept ?? (level > 0
+                    ? ImageAdjustments.level(level, of: original) : nil)
+                    ?? original
+                return chain.isEmpty ? source
+                    : ImageAdjustments.render(chain, to: source)?.image
+            }.value
+        }
+        return drawn
+    }
+
     /// There is something of `part` to leave out.
     func canBypass(_ part: KeyTrack) -> Bool {
         // The layer not on the stage: nothing of it to see without.
         guard layerOffStage == nil else { return false }
         switch part {
         case .adjust:
-            return keyedStage ? !clipAdjustKeys.isIdentity
-                : !adjustments.isIdentity
+            // The Adjust panel's own: the mixer is the Color panel's.
+            return keyedStage
+                ? clipAdjustKeys.keys.contains { !$0.value.toneIsIdentity }
+                : !adjustments.toneIsIdentity
         case .place:
             if keyedStage { return !clipCropKeys.place.isIdentity }
             return crop.offsetX != 0 || crop.offsetY != 0
@@ -7604,6 +7910,8 @@ final class AppModel {
         case .turn:
             return keyedStage ? !clipCropKeys.turn.isIdentity
                 : crop.rotate != 0
+        // Nothing to hear without: the sound has no Bypass.
+        case .sound: return false
         }
     }
 
@@ -7857,7 +8165,7 @@ final class AppModel {
         if adjustsBase, let url = stageBaseURL {
             baseCrops[Self.fileKey(url)] = crop
         }
-        if stageComposed && !adjustsBase { recomposite() }
+        if stageComposed && !adjustsBase { recomposite(scale: lookChanged()) }
         cropPersistTask?.cancel()
         cropPersistTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
@@ -8157,6 +8465,7 @@ final class AppModel {
     /// Show frame `n` of the clip on the stage, exactly (paused): one it
     /// has.
     func seekVideo(to n: Int) {
+        noteNavigation()
         let last = stageClipLength.map { $0 - 1 }
         sendVideo(.seek(max(0, min(n, last ?? n))))
     }
@@ -8164,6 +8473,7 @@ final class AppModel {
     /// The scrubber let go at frame `n`: there, playing on at `resume`
     /// (the rate it had when pressed; 0, paused).
     func scrubbed(to n: Int, resume: Float) {
+        noteNavigation()
         let last = stageClipLength.map { $0 - 1 }
         sendVideo(.scrubbed(max(0, min(n, last ?? n)), resume: resume))
     }
@@ -8339,9 +8649,7 @@ final class AppModel {
             if !r.ok { flash(r.message, level: .error) }
         }
         if soundChanged {
-            let keys = layerSound.json(rate: rate) {
-                ["volume": $0.volume, "pitch": $0.pitch]
-            }
+            let keys = layerSound.json(rate: rate) { $0.json }
             let r = core.layerOp(project: projectId, asset: id, "sound",
                                  layer: layer,
                                  extra: ["keys": keys,
@@ -8405,13 +8713,22 @@ final class AppModel {
 
     /// Reset: a still's adjustments; a clip's whole track, back to one
     /// key at its first frame.
+    /// The Adjust panel's Reset: its sliders at rest -- on a clip, in every
+    /// key -- the color mixer's and the grade's kept (the Color and Grade
+    /// panels').
     func resetAdjustments() {
+        let rest = { (a: ImageAdjustments) -> ImageAdjustments in
+            var o = ImageAdjustments()
+            o.mix = a.mix
+            o.grade = a.grade
+            return o
+        }
         if keyedStage {
-            clipAdjustKeys = Keyframes(start: ImageAdjustments())
+            clipAdjustKeys = clipAdjustKeys.collapsingValues(rest)
             clipTracksChanged()
             return
         }
-        adjustments = ImageAdjustments()
+        adjustments = rest(adjustments)
     }
 
     /// The asset the Adjust panel is working on: the picture to edit, or
@@ -8509,40 +8826,79 @@ final class AppModel {
             guard !Task.isCancelled else { return }
             self?.persistAdjustments()
         }
-        redrawAdjusted()
+        redrawAdjusted(scale: lookChanged())
     }
 
     /// The stage's picture drawn again with the adjustments it shows --
-    /// none while Bypass is held.
-    private func redrawAdjusted() {
-        adjustTask?.cancel()
+    /// none while Bypass is held -- at `scale` of its size (a live draw,
+    /// `lookChanged`). A picture without a stack is drawn here, on the
+    /// GPU, one draw at a time: each tick of a slider had started one,
+    /// and they queued on the GPU, the picture falling further behind
+    /// the slider the longer it moved (a 48 MP one ~22 ms a draw).
+    private func redrawAdjusted(scale: Double = 1) {
         // A picture with a stack is drawn whole: every layer's look.
         if stageComposed && !adjustsBase {
-            recomposite()
+            recomposite(scale: scale)
             return
         }
         let onBase = adjustsBase
         guard let original = onBase ? stageBaseOriginal : stageOriginal,
               let core else { return }
-        let chain = core.adjustmentChain(bypassed.contains(.adjust)
-                                         ? ImageAdjustments() : adjustments)
+        let chain = core.adjustmentChain(shownAdjustments(adjustments))
         // Nothing to draw: the picture as read.
         if chain.isEmpty {
+            adjustTask?.cancel()
             showCurrent(original)
             return
         }
+        if adjustRendering {
+            adjustAgainScale = max(adjustAgainScale, scale)
+            return
+        }
+        adjustRendering = true
+        // A live draw reads the picture a power of two smaller -- no
+        // smaller than the scale -- kept once made.
+        let level = scale < 1
+            ? min(5, max(0, Int(floor(log2(1 / scale))))) : 0
+        let kept = level > 0 ? keptLevel(level, of: original) : nil
         adjustTask = Task { [weak self] in
             // Drawn on the GPU into a surface the canvas shows as it is.
-            let out = await Task.detached(priority: .userInitiated) {
-                ImageAdjustments.render(chain, to: original)
+            let (out, made) = await Task.detached(priority: .userInitiated) {
+                () -> (GPUPicture?, CGImage?) in
+                var source = original
+                var made: CGImage?
+                if level > 0 {
+                    if let kept {
+                        source = kept
+                    } else if let l = ImageAdjustments.level(level,
+                                                             of: original) {
+                        source = l
+                        made = l
+                    }
+                }
+                return (ImageAdjustments.render(chain, to: source), made)
             }.value
-            guard !Task.isCancelled, let self, let out else { return }
-            if onBase {
-                guard self.stageBaseOriginal === original else { return }
-            } else {
-                guard self.stageOriginal === original else { return }
+            guard let self else { return }
+            self.adjustRendering = false
+            if let made { self.keepLevel(made, level, of: original) }
+            // A newer picture on the stage, or the stage cleared: not
+            // shown; what was asked meanwhile is drawn next.
+            if !Task.isCancelled, let out,
+               (onBase ? self.stageBaseOriginal : self.stageOriginal)
+                   === original {
+                if level == 0 {
+                    self.showCurrent(out.image, surface: out.surface)
+                    self.lookDraws.full += 1
+                    self.lookDraws.shownAt = CACurrentMediaTime()
+                } else if !self.showSmall(out.surface) {
+                    self.adjustAgainScale = 1
+                }
             }
-            self.showCurrent(out.image, surface: out.surface)
+            if self.adjustAgainScale > 0 {
+                let next = self.adjustAgainScale
+                self.adjustAgainScale = 0
+                self.redrawAdjusted(scale: next)
+            }
         }
     }
 
@@ -8565,8 +8921,42 @@ final class AppModel {
         var untitled = false
         var undo: String?
         var redo: String?
+        /// An agent at work on it holds it: read-only to the person.
+        var agent = false
     }
     var document = DocumentState()
+
+    /// THE AGENT AT WORK on the project (DESIGN §9b): a session of its --
+    /// thinking, acting, waiting for its pictures or the person's word,
+    /// paused -- holds it, and the core refuses the person's changes
+    /// until it is done or stopped (kAgentAtWork). The editor is
+    /// READ-ONLY meanwhile: what would change the project is put away or
+    /// greyed -- markup, the panels, the other prompts, undo, drops,
+    /// edits in Layers, Assets, the timeline and Information -- while
+    /// what only looks goes on: the stage, its pages and transport, zoom,
+    /// the compare, Assets and Layers to look through, the agent's own
+    /// box and card.
+    var agentHolds: Bool { document.agent }
+
+    /// Something would change the project: refused before the core is
+    /// asked while an agent holds it, said once in a notice.
+    func refusedForAgent() -> Bool {
+        guard agentHolds else { return false }
+        flash(String(localized: "The agent is working on this project: look around freely; changes wait until it is done, or stopped."), level: .warning)
+        return true
+    }
+
+    /// The agent took the project: what was open to change it goes -- the
+    /// markup toolbar, the panels, the timeline's scissors -- and the box
+    /// is the agent's.
+    private func agentTookProject() {
+        withAnimation(Self.motion) {
+            if markupOpen { markupOpen = false }
+            openPanel = nil
+            timelineCutting = false
+            if modality != .agent { setModality(.agent) }
+        }
+    }
     /// "Don't Save" chosen for the project going: its working copy, with
     /// its unsaved changes, goes with it.
     @ObservationIgnored private var discardOnClose = false
@@ -8578,8 +8968,11 @@ final class AppModel {
             dirty: p["dirty"] as? Bool ?? false,
             untitled: p["untitled"] as? Bool ?? false,
             undo: Self.commandKind(p["undo"]),
-            redo: Self.commandKind(p["redo"]))
+            redo: Self.commandKind(p["redo"]),
+            agent: p["agent"] as? Bool ?? false)
+        let took = next.agent && !document.agent
         if next != document { document = next }
+        if took { agentTookProject() }
     }
 
     /// The state asked for (after an open, a save).
@@ -8613,6 +9006,7 @@ final class AppModel {
 
     private func stepHistory(forward: Bool) {
         guard let core, let projectId else { return }
+        guard !refusedForAgent() else { return }
         guard !historyBusy else {
             flash(String(localized: "Wait for the work in progress to finish."), level: .warning)
             return
@@ -8753,6 +9147,7 @@ final class AppModel {
     func revertDocument(confirm: Bool = true) {
         guard let core, let projectId, !document.untitled, !isAnonymous
         else { return }
+        guard !refusedForAgent() else { return }
         if confirm {
             let alert = NSAlert()
             alert.messageText = String(localized: "Revert to the saved version of “\(projectName)”?")
@@ -8877,8 +9272,9 @@ final class AppModel {
 
     enum CloseOutcome { case proceed, cancelled, waiting }
 
-    /// An agent session at work in the project: it stops with it.
-    private var agentAtWork: Bool {
+    /// An agent session at work in the project: it stops with it, and
+    /// the stage follows it until the person looks elsewhere.
+    var agentAtWork: Bool {
         guard let a = agent, a.project == projectId else { return false }
         return !a.ended && !a.listening
     }
@@ -9583,6 +9979,8 @@ final class AppModel {
     }
 
     private func resetSession() {
+        // Another project: the target tool's work is done.
+        colorTargeting = false
         // An anonymous session's attachment and export folders go with it.
         sessionPanelFolders = [:]
         // The prompt, with its inline media, and the prompt asset it was.
@@ -9694,12 +10092,16 @@ final class AppModel {
         return String(localized: "Redo \(Self.commandName(kind))")
     }
 
+    // An agent at work: the text's typing still, the project's history
+    // not (it holds the project).
     var canUndoAny: Bool {
-        textUndo?.canUndo == true || (document.undo != nil && !historyBusy)
+        textUndo?.canUndo == true
+            || (document.undo != nil && !historyBusy && !agentHolds)
     }
 
     var canRedoAny: Bool {
-        textUndo?.canRedo == true || (document.redo != nil && !historyBusy)
+        textUndo?.canRedo == true
+            || (document.redo != nil && !historyBusy && !agentHolds)
     }
 
     /// ⌘Z: the text's typing, else the project's history.
@@ -10110,7 +10512,8 @@ final class AppModel {
         // The card with the most matches; the generation card on a tie.
         // A row always in view (the modality tab) opens none.
         let want: ComposerPanel? = !hits.contains { $0.panel != nil } ? nil
-            : [ComposerPanel.generate, .adjust, .crop, .trim].max { a, b in
+            : [ComposerPanel.generate, .adjust, .crop, .trim,
+               .audio].max { a, b in
                 hits.filter { $0.panel == a }.count
                     < hits.filter { $0.panel == b }.count
             }
@@ -10510,7 +10913,11 @@ final class AppModel {
         // (the project's when there is none) -- one command with it, and
         // that composition is what the stage shows.
         var placed: (doc: AssetDTO, layer: String)?
-        if state == "finished", let asset, let core, let projectId,
+        // An agent at work holds the project: the result stays in Assets,
+        // laid nowhere (Use it once the agent is done).
+        if state == "finished", let asset, agentHolds {
+            flash(String(localized: "“\(asset.name)” is in Assets: the agent is working on this project, so it was not laid on the stage."))
+        } else if state == "finished", let asset, let core, let projectId,
            asset.kind == "image" || asset.kind == "video"
                || asset.kind == "audio" {
             var req: [String: Any] = ["asset": asset.id, "join": job]
@@ -10811,6 +11218,8 @@ final class AppModel {
         guard a.kind == "video" || a.kind == "audio", let url = a.url else {
             return
         }
+        guard !refusedForColorTarget() else { return }
+
         finishClip(a, url)
     }
 
@@ -10903,6 +11312,17 @@ final class AppModel {
             clipCropKeys.place.set(c, at: frame)
         case .turn:
             clipCropKeys.turn.set(Turn(degrees: kv["rotate"] ?? 0), at: frame)
+        case .sound:
+            // "volume", "pitch", "eq_0" ... by the core's names.
+            var v = layerSound.value(at: frame) ?? LayerSound()
+            var p = v.json
+            for (k, x) in kv { p[k] = x }
+            v = LayerSound(p)
+            var k = layerSound.isEmpty ? Keyframes(start: LayerSound())
+                                       : layerSound
+            k.set(v, at: frame)
+            layerSound = k
+            return
         }
         clipTracksChanged()
     }

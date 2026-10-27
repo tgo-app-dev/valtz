@@ -104,13 +104,19 @@ struct HelperView: View {
     @ViewBuilder
     private func contextSection(_ list: HelperList) -> some View {
         let c = list.helper(list.using)?.context
+        // The agent's own model, where it is another (DeepSeek V4.1
+        // Flash): the same Context, given as far as it fits there.
+        let agent = model.agentSettings?.plan.flatMap { p in
+            p.model == list.using ? nil : p
+        }
+        let most = max(Self.fits(c), Self.fits(agent?.context))
         Section {
             Picker("Context", selection: Binding(
-                get: { Self.contextChoice(list.context ?? 0, c) },
+                get: { Self.contextChoice(list.context ?? 0, c, most) },
                 set: { model.setHelperContext($0) })) {
                 Text(autoContextLabel(c)).tag(0)
                 Divider()
-                ForEach(Self.contextSizes(c), id: \.self) { n in
+                ForEach(Self.contextSizes(c, most), id: \.self) { n in
                     Text(tokens(n)).tag(n)
                 }
             }
@@ -120,6 +126,11 @@ struct HelperView: View {
                     Text("\(c.here) of its \(c.model) tokens")
                 }
                 .settingsMark(String(localized: "This Mac Gives It"))
+            }
+            if let agent {
+                LabeledContent("The Agent’s \(agent.name)") {
+                    Text("\(agent.context.here) of its \(agent.context.model) tokens")
+                }
             }
             if let s = model.agentSettings {
                 Toggle("Compact Long Conversations", isOn: Binding(
@@ -179,20 +190,30 @@ struct HelperView: View {
         String(localized: "\(n) tokens")
     }
 
-    /// The sizes offered under Auto: less than this Mac's memory holds.
-    private static func contextSizes(_ c: HelperList.Context?) -> [Int] {
-        let all = [32_768, 65_536, 131_072, 262_144]
-        guard let c else { return all }
-        return all.filter { $0 < c.auto }
+    /// The most a context fits here: what the memory holds beside the
+    /// model (Auto's where the core gives no more).
+    private static func fits(_ c: HelperList.Context?) -> Int {
+        guard let c else { return 0 }
+        return c.fits ?? c.auto
+    }
+
+    /// The sizes offered beside Auto: as far as `most` -- the most either
+    /// the helper or the agent's own model fits here -- less than Auto's
+    /// and, where Auto is held below what fits (DeepSeek V4.1 Flash), more.
+    private static func contextSizes(_ c: HelperList.Context?,
+                                     _ most: Int) -> [Int] {
+        let all = [32_768, 65_536, 131_072, 262_144, 524_288, 1_048_576]
+        guard c != nil || most > 0 else { return Array(all.prefix(4)) }
+        return all.filter { $0 <= most && $0 != c?.auto }
     }
 
     /// The offered size nearest to what is set; Auto for none, or for one
-    /// no less than Auto (valtzctl may set any).
-    private static func contextChoice(_ set: Int,
-                                      _ c: HelperList.Context?) -> Int {
+    /// past what anything fits here (valtzctl may set any).
+    private static func contextChoice(_ set: Int, _ c: HelperList.Context?,
+                                      _ most: Int) -> Int {
         guard set > 0 else { return 0 }
-        if let c, set >= c.auto { return 0 }
-        let offered = contextSizes(c)
+        if most > 0, set > most { return 0 }
+        let offered = contextSizes(c, most)
         return offered.min { abs($0 - set) < abs($1 - set) } ?? 0
     }
 
@@ -504,9 +525,84 @@ struct AgentSettingsSection: View {
         Text(memoryNote(s))
             .font(.caption)
             .foregroundStyle(.secondary)
+        if let p = s.plan, p.streams {
+            expertCacheRows(s, p)
+        }
     }
 
     private static let memorySizes = [64, 128, 192]
+
+    /// THE EXPERT CACHE: how much of its routed experts the agent's
+    /// model keeps in memory, the rest read from the SSD as they are
+    /// picked. One figure trades three things -- the room its
+    /// conversation has, the room left beside it (for the pictures and
+    /// clips, so it stays loaded through them) and how fast it decodes --
+    /// so it is the person's: Auto, what the memory leaves it, or less.
+    @ViewBuilder
+    private func expertCacheRows(_ s: AgentSettings, _ p: AgentMemoryPlan)
+        -> some View {
+        let sizes = Self.cacheSizes(p)
+        Picker("Expert Cache", selection: Binding(
+            get: { s.expertCacheGb ?? 0 },
+            set: { model.setAgentSettings(["expert_cache_gb": $0]) })) {
+            Text(autoCacheLabel(p)).tag(0)
+            Divider()
+            ForEach(sizes, id: \.self) { gb in
+                Text("\(String(gb)) GB").tag(gb)
+            }
+            if let gb = s.expertCacheGb, gb > 0, !sizes.contains(gb) {
+                Text("\(String(gb)) GB").tag(gb)
+            }
+        }
+        .settingsMark(String(localized: "Expert Cache"))
+        Text(cacheNote(p))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    /// The sizes offered: above vpipe's least (two layers' experts:
+    /// 14.4 GB of DeepSeek's) and less than all of them, within what the
+    /// memory leaves beside the rest of the model and its working memory.
+    private static func cacheSizes(_ p: AgentMemoryPlan) -> [Int] {
+        let room = (p.memoryGb ?? 0) - (p.restGb ?? p.residentGb)
+            - (p.workingGb ?? 7)
+        let experts = p.expertsGb ?? 0
+        let floor = p.floorGb ?? 0
+        return [16, 24, 32, 48, 64, 96, 128, 192, 256, 384].filter {
+            Double($0) > floor && Double($0) < experts
+                && Double($0) <= room
+        }
+    }
+
+    /// "Auto (about 44 GB here)" -- what vpipe would size it at, alone on
+    /// this Mac; "Auto (every expert)" where they all fit.
+    private func autoCacheLabel(_ p: AgentMemoryPlan) -> String {
+        let gb = p.cacheAutoGb ?? 0
+        if gb >= (p.expertsGb ?? .infinity) {
+            return String(localized: "Auto (every expert)")
+        }
+        // At vpipe's floor (two layers' experts): this Mac leaves it
+        // little.
+        if gb <= (p.floorGb ?? 0) + 0.5 {
+            return String(localized: "Auto (the least it runs with)")
+        }
+        return String(localized: "Auto (about \(Self.gb(gb)) here)")
+    }
+
+    /// What it holds with the cache set as it is, and what the choice
+    /// trades.
+    private func cacheNote(_ p: AgentMemoryPlan) -> String {
+        let held = String(localized: "It holds about \(Self.gb(p.holdsGb ?? 0)): \(Self.gb(p.restGb ?? p.residentGb)) always in memory, a \(Self.gb(p.cacheGb ?? 0)) cache of its \(Self.gb(p.expertsGb ?? 0)) of experts -- the rest read from the SSD as they are picked -- and its conversation, up to \(p.context.here) tokens, about \(Self.gb(p.contextGb)).")
+        let trade = String(localized: "Auto gives the cache what the conversation leaves. A size holds the cache to it: smaller leaves room for a longer conversation (Agentic Helper › Context: up to \(p.context.fits ?? p.context.auto) tokens with this cache) and for pictures and clips beside it, so it stays loaded through them; larger reads fewer experts from the SSD, so it reads prompts and writes replies faster. For the model's next load.")
+        return held + " " + trade
+    }
+
+    /// "44 GB", "3.9 GB": a size as the person reads it (decimal).
+    private static func gb(_ v: Double) -> String {
+        let r = v >= 10 ? (v.rounded()) : (v * 10).rounded() / 10
+        return r >= 10 || r == r.rounded()
+            ? "\(String(Int(r))) GB" : "\(String(r)) GB"
+    }
 
     private func sameLabel(_ list: HelperList?) -> String {
         guard let list, let h = list.helper(list.using) else {

@@ -103,6 +103,10 @@ struct TimelineModel: Equatable {
     var zoom = 1.0
     var events: [Int] = []
     var transitions: [TimelineTransition] = []
+    /// An agent at work holds the project (AppModel.agentHolds): a press
+    /// selects, folds and scrubs; nothing is moved, cut, named, shown,
+    /// hidden, joined or dropped.
+    var readOnly = false
 }
 
 extension AppModel {
@@ -131,7 +135,7 @@ extension AppModel {
             || fr is NSCollectionView || fr is NSControl { return false }
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.capsLock, .numericPad, .function])
-        guard mods.isEmpty else { return false }
+        guard mods.isEmpty, !agentHolds else { return false }
         if e.keyCode == 53 {
             guard timelineCutting else { return false }
             timelineCutting = false
@@ -224,8 +228,9 @@ extension AppModel {
         m.playhead = a.isPaged ? stagePage : videoFrame
         m.selected = activeLayer
         if selectedLayers.count > 1 { m.chosen = selectedLayers }
-        m.cutting = timelineCutting
+        m.cutting = timelineCutting && !agentHolds
         m.zoom = timelineZoom
+        m.readOnly = agentHolds
         return m
     }
 
@@ -738,7 +743,11 @@ struct TimelineCard: View {
         TimelineActions(
             seek: { model.timelineSeek($0) },
             select: { id in
-                if id != model.activeLayer { model.selectLayer(id) }
+                // The target tool on: the stage stays on its layer.
+                if id != model.activeLayer,
+                   !model.refusedForColorTarget() {
+                    model.selectLayer(id)
+                }
             },
             slide: { model.slideTimelineLayer($0, to: $1) },
             stretch: { model.stretchTimelineLayer($0, length: $1) },
@@ -800,7 +809,7 @@ struct TimelineCard: View {
                 model.timelineCutting.toggle()
             }
             .shortcutHint("S")
-            .disabled(m.paged)
+            .disabled(m.paged || m.readOnly)
             Spacer(minLength: 4)
             TimelineTool(symbol: "minus.magnifyingglass", on: false,
                          help: "Zoom out") {
@@ -849,11 +858,13 @@ struct TimelineCard: View {
                              help: "Add a blank layer on top") {
                     model.addLayer()
                 }
+                .disabled(m.readOnly)
                 TimelineTool(symbol: "rectangle.stack.badge.minus", on: false,
                              help: "Remove the selected layer") {
                     model.removeLayer(model.activeLayer)
                 }
-                .disabled(!model.canRemoveLayer(model.activeLayer))
+                .disabled(!model.canRemoveLayer(model.activeLayer)
+                          || m.readOnly)
                 Text(verbatim: place(m.playhead, m))
                     .font(.callout.monospacedDigit())
                     .padding(.leading, 10)
@@ -2163,6 +2174,16 @@ final class TimelineNSView: NSView {
             // folder's fold folds it; elsewhere a press selects a layer
             // (⌘ or ⇧: in or out of the selection), and a drag moves it --
             // a folder with its layers -- up or down the stack.
+            // Read-only: selected and folded, nothing more.
+            if model.readOnly {
+                if r.isFolder, let f = r.folder,
+                   Self.foldRect(top: rowTop(i)).contains(p) {
+                    actions.toggleFolded(f)
+                } else if let id = r.layer {
+                    actions.select(id)
+                }
+                return
+            }
             if Self.eyeRect(top: rowTop(i)).contains(p) {
                 if let f = r.folder, r.isFolder {
                     actions.toggleFolderVisible(f)
@@ -2200,13 +2221,14 @@ final class TimelineNSView: NSView {
             return
         }
         // A transition's arrow: its ways, in a menu.
-        if let n = transition(at: p), let m = transitionMenu(n) {
+        if !model.readOnly, let n = transition(at: p),
+           let m = transitionMenu(n) {
             m.popUp(positioning: nil, at: p, in: self)
             return
         }
         // ⌘ held over an overlap the selected layer has with another: a
         // transition between them -- a cross dissolve to start.
-        if !model.cutting,
+        if !model.cutting, !model.readOnly,
            let o = overlap(at: p, held: e.modifierFlags.contains(.command)) {
             actions.setTransition(o.from, o.to, "dissolve")
             return
@@ -2222,9 +2244,9 @@ final class TimelineNSView: NSView {
             scrub(p.x)
             return
         }
-        // A locked layer: selected, the player where it was pressed --
-        // nothing of it moves.
-        if r.locked {
+        // A locked layer -- or every one, read-only: selected, the
+        // player where it was pressed -- nothing of it moves.
+        if r.locked || model.readOnly {
             actions.select(r.id)
             drag = .scrub
             scrub(p.x)
@@ -2417,6 +2439,8 @@ final class TimelineNSView: NSView {
     /// A layer's menu, on its header or its row: a blank layer above it,
     /// shown or hidden, removed.
     override func menu(for event: NSEvent) -> NSMenu? {
+        // Read-only: every item of it would change the project.
+        if model.readOnly { return nil }
         let p = convert(event.locationInWindow, from: nil)
         if p.x >= Self.nameWidth, p.y >= Self.rulerHeight,
            let n = transition(at: p) {
@@ -2685,7 +2709,9 @@ final class TimelineNSView: NSView {
     }
 
     override func draggingUpdated(_ s: NSDraggingInfo) -> NSDragOperation {
-        guard carries(s.draggingPasteboard) else { return [] }
+        guard !model.readOnly, carries(s.draggingPasteboard) else {
+            return []
+        }
         let at = place(of: s)
         if dropAt?.row != at.row || dropAt?.frame != at.frame {
             dropAt = at

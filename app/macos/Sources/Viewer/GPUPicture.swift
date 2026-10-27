@@ -28,6 +28,12 @@ struct GPUPicture: @unchecked Sendable {
     /// costs ~3 ms; Core Image keeps its compiled kernels across them.
     nonisolated static func render(_ image: CIImage, extent: CGRect,
                                    colorSpace: CGColorSpace) -> GPUPicture? {
+        // Infinite or null (Core Image's empty frame): no surface -- and
+        // no Int holds CGRect.infinite's width.
+        guard extent.width >= 1, extent.height >= 1,
+              extent.width <= 65_536, extent.height <= 65_536 else {
+            return nil
+        }
         let w = Int(extent.width.rounded()), h = Int(extent.height.rounded())
         guard w > 0, h > 0,
               let surface = IOSurface(properties: [

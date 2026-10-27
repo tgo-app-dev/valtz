@@ -348,6 +348,21 @@ public:
   // renders its preview from this, so the stage shows what the engine
   // will hand the model.
   std::string adjustment_chain(const std::string& adjustments_json) const;
+  // The COLOR MIXER as the core defines it (media/adjust.h): {"ok",
+  // "kernel" (its Core Image kernel's Metal source, compiled by the app
+  // as the engine compiles it), "kernel_name", "filter" (its step's name
+  // in a chain), "samples" (its curves' samples in a step: one more),
+  // "bands": [{"key", "degrees"}] (the hues named), "hue_degrees",
+  // "luminance_stops"}.
+  std::string color_mix() const;
+  // A colour's hue as the mixer reads it (sRGB as encoded, straight,
+  // 0...1) -- the target tool's colour pressed on: {"ok", "grey",
+  // "hue" (degrees), "saturation"}.
+  std::string color_mix_hue(double r, double g, double b) const;
+  // The COLOR GRADE as the core defines it (media/adjust.h): {"ok",
+  // "kernel" (its Core Image colour kernel's Metal source), "kernel_name",
+  // "filter" (its step's name in a chain), "balance_reach", "strength"}.
+  std::string color_grade() const;
   // {"model", "preference", "edit"?, "tuning"?: {Custom's values},
   // "continues"?: a clip continued} -> {"ok", "family", "preference",
   // "values", "options": [...]}: Favor's options for the model
@@ -544,8 +559,10 @@ CFArrayRef take_preview_clip(Core* core, std::uint64_t token)
 // A picture's stack, as Core::flatten takes it ({"project", "asset",
 // "look"?, "only"?, "hidden"?, "page"?}; no "path"), drawn by the GPU into an
 // 8-bit sRGB surface the stage's layer shows as it is: no file made and
-// read back each time the stage composes it. Null on a failure (the log
-// says why). Caller owns the result.
+// read back each time the stage composes it. "scale" (< 1): drawn that
+// much smaller -- the viewport's size, while a slider moves
+// (media::flatten_layers_surface). Null on a failure (the log says why).
+// Caller owns the result.
 IOSurfaceRef flatten_surface(Core* core, const std::string& request_json)
     CF_RETURNS_RETAINED;
 

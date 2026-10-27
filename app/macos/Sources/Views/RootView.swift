@@ -434,7 +434,9 @@ struct ProjectDropDelegate: DropDelegate {
             model.openDropped(url)
             return true
         }
-        if model.viewOnly { return false }
+        // View only, or an agent at work holding the project: nothing
+        // goes into it.
+        if model.viewOnly || model.agentHolds { return false }
         // Not the stage's own drag (its picture flattened, let go beside
         // it: nothing), nor a row of Assets.
         intake.files.removeAll { model.isStageDrag($0) }
@@ -452,8 +454,8 @@ struct ProjectDropDelegate: DropDelegate {
     private func holds(_ pb: NSPasteboard) -> ProjectDrag.Holds {
         let p = DroppedMedia.peek(pb)
         if p.files.contains(where: AppModel.isProjectFile) { return .project }
-        // View only: nothing goes into the project.
-        if model.viewOnly || DroppedMedia.isStage(pb)
+        // View only, or an agent at work: nothing goes into the project.
+        if model.viewOnly || model.agentHolds || DroppedMedia.isStage(pb)
             || !DroppedMedia.rows(pb).isEmpty {
             return .nothing
         }

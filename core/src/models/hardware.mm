@@ -212,7 +212,21 @@ probe_hardware()
   }
   if (const char* lim = std::getenv("VALTZ_RAM_LIMIT_GB")) {
     if (auto gb = std::strtoull(lim, nullptr, 10); gb > 0) {
+      // the GPU's working set the same share of it: a 24 GB Mac's 17.8
+      // GB would cap what a simulated 256 GB one holds
+      if (hw.ram_bytes > 0 && hw.gpu_working_set_bytes > 0) {
+        hw.gpu_working_set_bytes = static_cast<std::uint64_t>(
+            static_cast<double>(hw.gpu_working_set_bytes) /
+            static_cast<double>(hw.ram_bytes) *
+            static_cast<double>(gb << 30));
+      }
       hw.ram_bytes = gb << 30;
+    }
+  }
+  // ...or set: a Mac's own share (a 64 GB one's ~48 GB, an Ultra's more).
+  if (const char* ws = std::getenv("VALTZ_GPU_WORKING_SET_GB")) {
+    if (auto gb = std::strtoull(ws, nullptr, 10); gb > 0) {
+      hw.gpu_working_set_bytes = gb << 30;
     }
   }
   hw.memory_bandwidth_gbs = memory_bandwidth_of_chip(hw.chip, hw.gpu_cores);

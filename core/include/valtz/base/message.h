@@ -333,6 +333,11 @@ inline constexpr Message kAgentNoSession{
     "core.agent_no_session", "That agent session is not here any more."};
 inline constexpr Message kAgentStopped{
     "core.agent_stopped", "That agent session has stopped: start another."};
+// A change refused while an agent works on the project (its hold).
+inline constexpr Message kAgentAtWork{
+    "core.agent_at_work",
+    "The agent is working on this project: it can be looked at but not "
+    "changed until the agent is done, or stopped."};
 inline constexpr Message kAgentStepNotWaiting{
     "core.agent_step_not_waiting",
     "That step is not waiting for your word any more."};

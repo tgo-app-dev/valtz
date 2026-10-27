@@ -2914,11 +2914,12 @@ Controller::flatten_surface(ProjectId pid, AssetId aid,
                             const std::optional<LayerLook>& look,
                             const std::optional<std::string>& only,
                             const std::set<std::string>& hidden,
-                            std::int64_t page)
+                            std::int64_t page, double scale)
 {
   VALTZ_ASSIGN(auto pics, stack_pictures_(pid, aid, look, only, hidden, 0,
                                           page));
-  return media::flatten_layers_surface(pics, canvas_setting_(pid, aid));
+  return media::flatten_layers_surface(pics, canvas_setting_(pid, aid),
+                                       scale);
 }
 
 Result<media::MovieStack>

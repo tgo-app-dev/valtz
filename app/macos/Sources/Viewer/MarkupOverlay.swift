@@ -67,6 +67,8 @@ struct MarkupPointer {
     var shift = false
     /// ⌥ held: the pen's corner, the eyedropper's Fill.
     var option = false
+    /// ⌘ held: the Color panel's target tool turns the hue.
+    var command = false
     var clickCount = 1
     var pixelsPerPoint: Double = 1
 
