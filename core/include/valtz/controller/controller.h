@@ -666,6 +666,20 @@ public:
   // command, "layer.lock" / "layer.unlock".
   Status set_layer_locked(ProjectId, AssetId, const std::string& layer,
                           bool locked);
+  // Several layers -- a track of the timeline's track view -- shown or
+  // hidden, locked or unlocked, in ONE command.
+  Status set_layers_visible(ProjectId, AssetId,
+                            const std::vector<std::string>& layers,
+                            bool visible);
+  Status set_layers_locked(ProjectId, AssetId,
+                           const std::vector<std::string>& layers,
+                           bool locked);
+  // A layer made a TRACK SEPARATOR of the timeline's track view, or not
+  // (project::Layer::track_separator): how the timeline shows its layers,
+  // nothing drawn or heard -- so a locked layer takes it too. One command,
+  // "layer.separator".
+  Status set_layer_separator(ProjectId, AssetId, const std::string& layer,
+                             bool on);
   Status rename_layer(ProjectId, AssetId, const std::string& layer,
                       std::string name);
   // What a layer shows -- the content made on it, an asset dropped on its
@@ -853,10 +867,16 @@ public:
   // (a job names files); else drawn in memory, less the `hidden` objects
   // (being edited: the app draws those itself). `live`: a layer's tracks
   // as the panels hold them, in place of what is recorded.
+  // A layer's tracks as the panels hold them, in place of its record:
+  // its look (`adjust` and `crop`, while `look`) and, given, its sound --
+  // of which the player takes the VOLUME live (its pitch and bands are
+  // the record's: a shaped span is made once a change is written).
   struct LiveTracks {
     std::string              layer;
     media::KeyedAdjustments  adjust;
     media::KeyedCrop         crop;
+    bool                     look = true;
+    std::optional<media::KeyedSound> sound;
   };
   Result<media::MovieStack> movie_stack(
       ProjectId, AssetId, bool for_job = false,
@@ -866,6 +886,16 @@ public:
   // WAV, cached; empty when nothing sounds); its length in its frames.
   Result<media::SoundPlan> sound_plan(ProjectId, AssetId);
   Result<std::filesystem::path> sound_mix(ProjectId, AssetId);
+  // What the PLAYER plays: the sound plan with each layer its pitch or
+  // equalizer shapes replaced by its shaped span (media::as_shaped; made
+  // and cached by what makes it -- its file, its span, its keys -- so a
+  // band changed on one layer makes that span alone, a gain or a look
+  // none), every layer then a plain sound played with its volume ramps;
+  // `live`'s volume in place of its layer's record. Blocking while a
+  // span is shaped.
+  Result<media::SoundPlan> playable_sound_plan(
+      ProjectId, AssetId,
+      const std::optional<LiveTracks>& live = std::nullopt);
   Result<std::int64_t> composition_length(ProjectId, AssetId);
   // A timeline's length, in its frames; 0: its layers' latest end.
   Status set_timeline(ProjectId, AssetId, std::int64_t frames);
@@ -949,9 +979,31 @@ public:
   // ("<source> <time>") and put on the composition, if any -- in a blank
   // layer, else a new one from its start -- one command. Cancelled,
   // nothing stays.
+  //
+  // A VOICE-OVER (DESIGN §7b, `voice_over_at`): recorded onto a composition
+  // in time -- a timeline, or one of sound -- as the person watches it
+  // play from its frame `voice_over_at`. Stopped, it lands as a NEW layer
+  // on top, lined up with the picture: the player's start CUED by its
+  // host time (cue_capture), the recording's head before it trimmed off
+  // (its mark-in, milliseconds) -- or, cued before the first sample came,
+  // the layer starting that much later. Uncued, it starts at the frame.
   Json capture_sources() const;
   Status start_capture(ProjectId, std::optional<AssetId> composition,
-                       const std::string& source);
+                       const std::string& source,
+                       std::optional<std::int64_t> voice_over_at = {});
+  // The player began at `host_seconds` (the host clock's): a voice-over's
+  // picture and its sound lined up by it.
+  Status cue_capture(double host_seconds);
+  // Where a voice-over lies: its first sample `lead` seconds before the
+  // picture's frame `at` (of `fps` a second) began -- the layer from the
+  // first frame at or after it, the head before that trimmed off in
+  // milliseconds, so each sound lies where it was heard.
+  struct VoiceOverPlace {
+    std::int64_t offset = 0;
+    std::int64_t in_ms = 0;
+  };
+  static VoiceOverPlace voice_over_place(std::int64_t at, double fps,
+                                         double lead);
   Json capture_state() const;
   Result<AssetId> stop_capture();
   Status cancel_capture();
@@ -981,6 +1033,20 @@ public:
   // until the first generation, or one set up.
   std::optional<AssetId> project_composition(ProjectId);
   Status set_project_composition(ProjectId, AssetId);
+  // The ATLAS (DESIGN §10a Atlas, controller/atlas.cc): the project as a
+  // graph, left to right -- every asset a node; what made one an OP node
+  // between it and what it was made from (its recipe: a generation, an
+  // enhanced prompt, a transcript, an upscale; a flat copy's original,
+  // a note); each layer of a composition an op -- its look and its place
+  // -- between what it shows and the composition, a DESTINATION (a
+  // timeline, a still, a sound). Laid out: each node's column (an asset's
+  // even, the op making it the one before) and its row and height in
+  // slots (an asset two, an op one), the graph's parts one under another,
+  // the assets made from nothing and used by nothing in a grid under
+  // them. A LEAF -- nothing made from it (any of its versions), on no
+  // layer, not the project's composition -- may be removed, as
+  // remove_asset allows. {"nodes", "edges", "columns", "height"}.
+  Result<Json> atlas(ProjectId);
   // A result placed in the project's composition (DESIGN §6a). None yet:
   // made of it -- a picture makes a still at its size, a clip a timeline
   // at its size and rate, a song a timeline of sound. A result of the
@@ -1597,11 +1663,20 @@ public:
   // 24 fps), down again where the clip is shorter -- on a timeline of
   // their own at the model's rate. A continuation reads a composition
   // WHOLE, so this is exactly what it carries on from (<Video 1>).
-  // `model` as for video_reference_tags; `name` "" the clip's. One
-  // command: {"asset", "frames", "seconds", "fps"}.
+  // A TIMELINE is never nested in its guide: its continuation lands
+  // back on it, and a guide of it would make the clip depend on the
+  // timeline that shows it -- a cycle, the clip's own input changed by
+  // its landing. The guide shows the clip its tail is, when one plain
+  // clip (no look, no speed, no mask) shows it alone, else a CAPTURE of
+  // the timeline (its layers frozen, named `capture_name`, "" the
+  // timeline's); {"composition", "end"} say where the continuation goes
+  // on: the timeline, from its last frame. `model` as for
+  // video_reference_tags; `name` "" the clip's. One command: {"asset",
+  // "shows", "frames", "seconds", "fps"}.
   Result<Json> continuation_guide(ProjectId, AssetId clip, double seconds,
                                   const std::string& model = "",
-                                  std::string name = {});
+                                  std::string name = {},
+                                  std::string capture_name = {});
   // A FRAME grabbed from a clip or a timeline: a still composition at its
   // size, one layer showing it from `frame` (its mark-in, in its own
   // frames: the frame a still shows of a clip). One command.
@@ -2006,6 +2081,17 @@ private:
   // A clip's or a timeline's length in its own frames, and its rate.
   Result<std::pair<std::int64_t, Rational>> clip_frames_(project::Project&,
                                                          const project::Asset&);
+  // The clip a timeline's last `seconds` are, when one plain clip shows
+  // them alone (continuation_guide): it, and its frame where they begin
+  // at its rate; none when the tail is more than that.
+  struct ContinuedTail {
+    AssetId      clip;
+    std::int64_t in = 0;
+    Rational     rate{24, 1};
+  };
+  Result<std::optional<ContinuedTail>>
+  continued_tail_(ProjectId, project::Project&, const project::Asset& tl,
+                  std::int64_t frames, double rate, double seconds);
   // `images`: pictures the assistant is shown ahead of the text.
   // `song`: a song's request, whose own sectioned lyrics the reply
   // keeps (assist::keep_song_lyrics); "" for anything else.
@@ -2038,6 +2124,9 @@ private:
   ProjectId                            _capture_project;
   AssetId                              _capture_asset;
   std::string                          _capture_name;
+  // A voice-over's frame on its composition, and the player's start.
+  std::optional<std::int64_t>          _capture_at;
+  std::optional<double>                _capture_cue;
   void apply_upscale_(ProjectId, AssetId made, JobId);
   // How a suggestion is put in the box, in what the person watches and
   // what lands: after a line Valtz writes itself (`lead`: H3's I2VA
@@ -2247,6 +2336,9 @@ private:
   // it runs.
   static std::int64_t second_of_(Rational rate);
   Result<media::SoundPlan> sound_plan_(ProjectId, AssetId, int depth);
+  // `plan` with its shaped layers' spans made (cached) and played as
+  // such (playable_sound_plan).
+  Result<media::SoundPlan> shaped_plan_(ProjectId, media::SoundPlan plan);
   // A CoreML package a helper model unpacked into (catalog `package`).
   Result<std::filesystem::path> coreml_package_(
       const models::ModelEntry&, const models::InstallInfo&) const;

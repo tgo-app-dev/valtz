@@ -204,6 +204,11 @@ struct Layer {
   // not changed -- nor is it removed -- until it is unlocked. Shown or
   // hidden, renamed, moved in the stack all the same.
   bool                   locked = false;
+  // A TRACK SEPARATOR (DESIGN §10a Timeline, its track view): it starts a
+  // track of its own -- it is not laid in the track of the layers below
+  // it, though the layers above it may join its own. A way of showing the
+  // timeline alone: nothing drawn or heard changes.
+  bool                   track_separator = false;
   LayerTime              time;
   // The FOLDER it is in (Asset::layer_folders); "" none.
   std::string            folder;

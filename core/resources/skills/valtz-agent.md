@@ -21,7 +21,8 @@ the note into account and go on.
   -- and pictures are then moved into the new room (rule 9).
 - A composition has LAYERS, listed bottom first. A layer shows an asset
   (a picture, another composition) placed in a BOX on the canvas, or it
-  is a MARKUP layer holding TEXT boxes and SHAPES. A layer lies on one
+  is a MARKUP layer holding TEXT boxes and SHAPES -- or a MASK, which
+  cuts the layer under it to what it draws (Masks, below). A layer lies on one
   page, or runs across several (`set_layer_pages`).
 - A TIMELINE is a composition of clips in TIME (a video): a canvas at a
   frame rate, each layer a clip, a picture, a title or a sound, from its
@@ -44,7 +45,9 @@ the note into account and go on.
 2. Start from `get_project` when you need to know what is there --
    it gives each asset's name and size, not what it shows: look at a
    picture (an import, a result) with `view_asset` before you use it,
-   or draw from it. Work on
+   or draw from it; `get_exif` reads what a photo's file says of itself
+   -- camera, lens, exposure, when and where it was taken -- for a
+   caption, a date, a place, a layout by when. Work on
    the composition the person has open when they name none (the project
    says which is ACTIVE); make a new one with `create_composition` when
    the request is for a new thing (a 16:9 deck: 1920 x 1080; a video: a
@@ -171,6 +174,40 @@ shapes that hold their words and lines JOINED to them:
   shape's `connectors` and each line's `from_object` / `to_object`.
 - Lay the shapes out first -- even gaps, one row or column per level --
   then the lines between them.
+
+## Masks: a picture cut to a shape
+
+A MASK is a markup layer right above another layer; it is not seen
+itself, and the layer under it shows only WHERE THE MASK IS DRAWN --
+fully where it is white and opaque, not at all where it is clear,
+partly where it is grey or half clear. `add_mask` makes one for a layer
+(it answers its `mask_layer`); draw the shape on it with `add_shape`,
+`draw_strokes` or `add_text` naming that `layer`, in WHITE (`fill`
+"#ffffff", no `stroke`). Everything drawn on one mask adds up: the
+picture shows wherever any of it is -- so a shape no tool draws is made
+of several that do. Until something is drawn on it the layer is hidden.
+
+- ROUNDED CORNERS (a card, a photo, an app icon), radius r on a box
+  x, y, w, h: two rects -- x + r, y, w - 2r, h and x, y + r, w, h - 2r --
+  and four ellipses 2r across at the corners (x, y), (x + w - 2r, y),
+  (x, y + h - 2r), (x + w - 2r, y + h - 2r). A rounded TRIANGLE (or any
+  rounded polygon): a circle at each corner, the polygon through the
+  circles' outer edges, one `add_shape` polygon -- or a polygon with
+  `smooth` and the corners left out of `corners`.
+- A CIRCLE, an oval, a star, a heart, a speech bubble, a country's
+  outline: one ellipse or polygon (`smooth` for curves).
+- A SOFT EDGE, a vignette, a fade to nothing: an ellipse or rect with a
+  `gradient` from "#ffffffff" to "#ffffff00" (radial: the middle kept,
+  the edges gone); or `draw_strokes` with `softness`.
+- A picture SEEN THROUGH WORDS: `add_text` on the mask, big and bold, in
+  white -- the picture shows only in the letters.
+- The person's own mask: `set_layer_mask` makes a layer the mask of the
+  one beneath it (or not). `get_composition` marks a mask
+  `mask_of_layer_below`; its shapes are listed as any markup's, and
+  moved, restyled or removed as any.
+
+A mask goes with its layer: `set_layer_box` moves the picture, not the
+mask -- move the mask's shapes (`move_objects`) the same way.
 
 ## A long text on pages
 

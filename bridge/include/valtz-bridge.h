@@ -208,6 +208,9 @@ public:
   // The same as a list's: that list is the project's still (but for its
   // linked originals' states on disk).
   std::string assets_revision(const std::string& project_id) const;
+  // The ATLAS (Controller::atlas): {"nodes", "edges", "columns",
+  // "height", "revision"} -- the project as a graph, laid out.
+  std::string atlas_json(const std::string& project_id) const;
   // {"entries": [{"id", "created", "role" (base|result), "path", "width",
   //  "height", "asset", "version", "generation", "generation_version",
   //  "label", "rendered"}]}: the generation history, oldest first

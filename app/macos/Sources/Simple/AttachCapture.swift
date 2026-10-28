@@ -8,6 +8,9 @@ import SwiftUI
 enum AttachCapture: Equatable, Sendable {
     case sound
     case camera
+    /// A VOICE-OVER: takes recorded onto the timeline on the stage as it
+    /// plays (VoiceOver.swift).
+    case voiceOver
 }
 
 /// The camera as the core reports it (Controller::camera_state).
@@ -170,6 +173,7 @@ extension AppModel {
         switch attachCapture {
         case .camera: closeCamera()
         case .sound: cancelAttachSound()
+        case .voiceOver: closeVoiceOver()
         case nil: break
         }
     }
@@ -221,6 +225,7 @@ struct AttachCaptureCard: View {
             switch model.attachCapture {
             case .sound: sound
             case .camera: cameraView
+            case .voiceOver: VoiceOverRow(model: model)
             case nil: EmptyView()
             }
             abort
@@ -245,11 +250,26 @@ struct AttachCaptureCard: View {
         .buttonStyle(.borderless)
         .foregroundStyle(.tertiary)
         .keyboardShortcut(.cancelAction)
-        .help(model.attachCapture == .camera
-              ? "Close the camera: nothing is kept"
-              : "Stop recording: nothing is kept")
-        .accessibilityLabel(Text(model.attachCapture == .camera
-                                 ? "Close the camera" : "Stop recording"))
+        .help(abortHelp)
+        .accessibilityLabel(abortLabel)
+    }
+
+    private var abortHelp: LocalizedStringKey {
+        switch model.attachCapture {
+        case .camera: "Close the camera: nothing is kept"
+        case .voiceOver: model.voiceOverRecording
+            ? "Leave the voice-over: the take being recorded is not kept"
+            : "Leave the voice-over: its takes stay on the timeline"
+        default: "Stop recording: nothing is kept"
+        }
+    }
+
+    private var abortLabel: Text {
+        switch model.attachCapture {
+        case .camera: Text("Close the camera")
+        case .voiceOver: Text("Leave the voice-over")
+        default: Text("Stop recording")
+        }
     }
 
     private var sound: some View {
@@ -330,7 +350,7 @@ struct AttachCaptureCard: View {
 }
 
 /// A sound's level, 0...1: a bar that fills.
-private struct LevelBar: View {
+struct LevelBar: View {
     let level: Double
 
     var body: some View {

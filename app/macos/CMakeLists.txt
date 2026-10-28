@@ -102,6 +102,8 @@ set(VALTZ_APP_SOURCES
   Sources/Views/CanvasSize.swift
   Sources/Views/ProjectOutput.swift
   Sources/Views/AssetsSection.swift
+  Sources/Views/AtlasView.swift
+  Sources/Views/AtlasPlayback.swift
   Sources/Views/DroppedMedia.swift
   Sources/Views/MemoryPopover.swift
   Sources/Views/StatusBar.swift
@@ -132,6 +134,7 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/AudioPanel.swift
   Sources/Simple/SettingsSearch.swift
   Sources/Simple/AttachCapture.swift
+  Sources/Simple/VoiceOver.swift
   Sources/Simple/Capture.swift
   Sources/Simple/ClipTime.swift
   Sources/Viewer/CompareBar.swift

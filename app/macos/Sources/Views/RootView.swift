@@ -72,7 +72,7 @@ struct RootView: View {
         // under it.
         .overlay(alignment: .top) {
             let editor = model.screen == .editor
-            let shown = model.titlebarHover || model.screen == .log
+            let shown = model.titlebarHover || model.screen != .editor
                 || (editor && (model.inspectorOpen || model.markupOpen
                                || model.promptImmersive))
             Rectangle()
@@ -145,6 +145,9 @@ struct RootView: View {
                     SimpleView(model: model)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+            case .atlas:
+                AtlasView(model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .log:
                 LogView(model: model)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -194,9 +197,9 @@ extension Color {
 }
 
 /// The ☰ column: a narrow glass strip of icons -- the screens (the
-/// editor; the editor VIEW ONLY, its eye -- Tab too; the log) at the
-/// top, Settings (⌘,) at the foot -- set well below the title bar's
-/// hairline.
+/// editor; the editor VIEW ONLY, its eye -- Tab too; the atlas; the log)
+/// at the top, Settings (⌘,) at the foot -- set well below the title
+/// bar's hairline.
 struct NavPanel: View {
     @Bindable var model: AppModel
     @Environment(\.openSettings) private var openSettings

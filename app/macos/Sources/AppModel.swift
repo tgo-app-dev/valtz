@@ -8,14 +8,16 @@ import UniformTypeIdentifiers
 
 /// What the window shows, picked in the ☰ column: the editor (the prompt,
 /// its cards and the stage -- or the stage alone, VIEW ONLY: AppModel
-/// .viewOnly) or the log of what the engine reports.
+/// .viewOnly), the ATLAS -- the project as a graph of what each asset is
+/// made from (Views/AtlasView) -- or the log of what the engine reports.
 enum AppScreen: String, CaseIterable, Identifiable, Sendable {
-    case editor, log
+    case editor, atlas, log
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .editor: String(localized: "Editor")
+        case .atlas: String(localized: "Atlas")
         case .log: String(localized: "Log")
         }
     }
@@ -23,6 +25,7 @@ enum AppScreen: String, CaseIterable, Identifiable, Sendable {
     var symbol: String {
         switch self {
         case .editor: "square.and.pencil"
+        case .atlas: "point.3.connected.trianglepath.dotted"
         case .log: "text.alignleft"
         }
     }
@@ -533,6 +536,10 @@ struct VideoCommand: Equatable, Sendable {
         case step(Int)
         /// Its sound off, or on again.
         case mute(Bool)
+        /// Muted or not, then at a rate -- from a moment ahead on the
+        /// host's clock, prerolled, the time said back (onCue): a
+        /// voice-over's take lined up by it. 0: paused there.
+        case cued(Float, muted: Bool)
     }
     var kind: Kind
     var token: Int
@@ -895,6 +902,30 @@ final class AppModel {
     // Navigation
     var navOpen = false
     var screen: AppScreen = .editor
+    /// The ATLAS (Views/AtlasView): the project's graph as the core laid
+    /// it out, read while the screen shows it -- and what was read.
+    var atlas: AtlasLayout?
+    @ObservationIgnored var atlasRead: String?
+    /// Its node selected (its edges lit), the asset opened large, the one
+    /// playing in place -- its player, or its rendering being made -- and
+    /// its zoom.
+    var atlasSelected: String?
+    var atlasExpanded: String?
+    var atlasPlaying: String?
+    var atlasPlayer: AVPlayer?
+    var atlasPreparing = false
+    var atlasZoom: CGFloat = 1
+    /// Where its scroll view is: what is in sight (zoomed points) and the
+    /// viewport -- a zoom keeps the graph's point under the pointer, or
+    /// the middle, where it was (setAtlasZoom).
+    var atlasPosition = ScrollPosition()
+    var atlasVisible = CGRect(x: 0, y: 0, width: 1000, height: 700)
+    var atlasViewport = CGSize(width: 1000, height: 700)
+    /// The asset opened large, playing: the editor's controls drive it.
+    var atlasPlayback: AtlasPlayback?
+    @ObservationIgnored var atlasEndWatch: (any NSObjectProtocol)?
+    /// Its cards' pictures, kept as they scroll out of sight and back.
+    @ObservationIgnored var atlasPictures: [String: CGImage] = [:]
     /// VIEW ONLY (DESIGN §10a): the editor as a viewer -- the ☰ column's
     /// eye, or Tab where nothing in the window takes keys. The stage
     /// alone: the prompt or the timeline, the cards over them, the panels
@@ -1392,8 +1423,21 @@ final class AppModel {
     var capture = CaptureStateDTO()
     @ObservationIgnored var capturePoll: Task<Void, Never>?
     /// What the attach menu is capturing for the prompt's row: a sound,
-    /// or the camera (AttachCapture.swift).
+    /// or the camera (AttachCapture.swift) -- or a VOICE-OVER recorded
+    /// onto the timeline on the stage (VoiceOver.swift).
     var attachCapture: AttachCapture?
+    /// The voice-over's: the composition it records onto, the microphone,
+    /// the frame a take under way started at (nil: none is), the player's
+    /// mute before it, the takes landed and where the last one went.
+    var voiceOverComposition: String?
+    var voiceOverSource = ""
+    var voiceOverFrom: Int?
+    @ObservationIgnored var voiceOverMutedBefore = false
+    var voiceOverTakes = 0
+    var voiceOverLast: Int?
+    /// The host time the player last said a cued start began at (the
+    /// snapshot hooks print it).
+    @ObservationIgnored var lastCue: Double?
     /// The row item a capture just became, while the card flies into its
     /// thumbnail (ComposerStack's ghost): hidden until it lands there.
     var capturedItem: UUID?
@@ -1431,6 +1475,9 @@ final class AppModel {
     var openPanel: ComposerPanel?
     /// The Crop card's zoom: X and Y together, their ratio kept (the
     /// lock between them), or apart. Remembered between launches.
+    /// Information's W and H held to their ratio (its lock): a typed or
+    /// jogged one scales the other.
+    var selectionAspectLocked = false
     var cropZoomLocked = !AppModel.keepsViewState || UserDefaults.standard
         .object(forKey: AppModel.cropZoomLockKey) as? Bool ?? true {
         didSet {
@@ -1551,6 +1598,21 @@ final class AppModel {
                                           forKey: Self.timelineRowsKey)
             }
         }
+    }
+    /// The TRACK VIEW (DESIGN §10a Timeline): the layers laid in tracks,
+    /// as a traditional editor shows them -- remembered as the rows are.
+    var timelineTracks = AppModel.storedTimelineTracks {
+        didSet {
+            if Self.keepsViewState {
+                UserDefaults.standard.set(timelineTracks,
+                                          forKey: Self.timelineTracksKey)
+            }
+        }
+    }
+    private static let timelineTracksKey = "view.timelineTracks"
+    private static var storedTimelineTracks: Bool {
+        keepsViewState
+            && UserDefaults.standard.bool(forKey: timelineTracksKey)
     }
     static let timelineRowRange = 1...12
     private static let timelineRowsKey = "view.timelineRows"
@@ -1764,6 +1826,11 @@ final class AppModel {
     /// The layer of the picture on the stage that the panels and a
     /// generation work on ("" is the bottom one; core project::Layer).
     var selectedLayer = ""
+    /// NO layer selected -- ⌘D on a timeline (deselectLayer) -- on the
+    /// composition with this id: nothing marked on the stage before or
+    /// after a clip, the panels waiting, a result landing on top. Lapses
+    /// when another is on the stage; a layer chosen ends it.
+    var layerDeselectedOn: String?
     /// The layers selected in the layer editor (⌘-click adds one): the
     /// selected one among them; two can be merged.
     var selectedLayers: Set<String> = []
@@ -2703,26 +2770,51 @@ final class AppModel {
         return out
     }
 
-    /// Carry the clip on the stage on (Ref2VA) from its last `seconds`:
-    /// a GUIDE is made of them -- a timeline of their own, as long as the
-    /// model takes (core continuation_guide), in Assets -- and goes into
-    /// the prompt's row as the clip to CONTINUE, picture and sound; the
-    /// card makes a clip, and an empty prompt opens as the model's
-    /// continuations do.
+    /// Where a timeline's continuation lands, by its guide: on that
+    /// timeline, from its last frame as it was continued.
+    struct ContinuationLanding {
+        var onto: String
+        var offset: Int
+    }
+    @ObservationIgnored var continuationLandings: [String: ContinuationLanding] = [:]
+
+    /// Carry the clip on the stage on (Ref2VA) from its last `seconds`
+    /// (0: the length the model's continuations take): a GUIDE is made
+    /// of them -- a timeline of their own, as long as the model takes
+    /// (core continuation_guide), in Assets -- and goes into the prompt's
+    /// row as the clip to CONTINUE, picture and sound; the card makes a
+    /// clip, and an empty prompt opens as the model's continuations do.
+    /// A timeline's guide shows the clip its end is -- or a capture of
+    /// it, frozen -- never the timeline, which the continuation lands on
+    /// after its last frame: no cycle of the clip made from the timeline
+    /// that shows it.
     func continueClip(seconds: Int) {
         guard let core, let projectId, let clip = currentClip,
               clip.kind == "video" else { return }
         flushPanels()
-        let shown = guideLengths.first { $0.asked == seconds }
-        let len = String(format: "%.1f", shown?.seconds ?? Double(seconds))
+        let name: String
+        if seconds > 0 {
+            let shown = guideLengths.first { $0.asked == seconds }
+            let len = String(format: "%.1f",
+                             shown?.seconds ?? Double(seconds))
+            name = String(localized: "\(clip.name), last \(len) s")
+        } else {
+            name = String(localized: "\(clip.name), its end")
+        }
         let r = core.assetOp(project: projectId, "guide", [
             "asset": clip.id, "seconds": Double(seconds),
             "model": videoReferenceModel,
-            "name": String(localized: "\(clip.name), last \(len) s"),
+            "name": name,
+            "capture_name": String(localized: "\(clip.name), as continued"),
         ])
         guard r.ok, let guide = r["asset"] as? String else {
             flash(r.message, level: .error)
             return
+        }
+        if let tl = r["composition"] as? String,
+           let end = (r["end"] as? NSNumber)?.intValue {
+            continuationLandings[guide] = ContinuationLanding(onto: tl,
+                                                              offset: end)
         }
         reloadAssets()
         continueWith(guide)
@@ -2756,9 +2848,14 @@ final class AppModel {
     }
 
     /// The clip on the stage carried on as it is: its tail, up to its
-    /// mark-out (the catalog's length).
+    /// mark-out (the catalog's length). A timeline through a guide of
+    /// its end, as the menu's lengths are: never itself.
     func continueClip() {
         guard let clip = currentClip, clip.kind == "video" else { return }
+        if clip.isComposition {
+            continueClip(seconds: 0)
+            return
+        }
         continueWith(clip.id)
     }
 
@@ -3215,9 +3312,54 @@ final class AppModel {
         stagePicture?.layerStack.contains { !$0.visible } == true
     }
 
+    /// No layer of the composition on the stage selected (deselectLayer).
+    var layerNoneSelected: Bool {
+        guard let d = layerDeselectedOn else { return false }
+        return d == stageStack?.id
+    }
+
+    /// `id` is the layer selected -- not while none is.
+    func isSelectedLayer(_ id: String) -> Bool {
+        !layerNoneSelected && activeLayer == id
+    }
+
+    /// A layer of a timeline -- or of a still's pages -- can be let go.
+    var canDeselectLayer: Bool {
+        !layerNoneSelected && stageStack != nil
+            && (clipOnStage || (pagedOnStage && timelineOpen))
+    }
+
+    /// ⌘D on a timeline: no layer selected, its panels' values kept --
+    /// the stage no longer marked "before the clip" or "after" where the
+    /// playhead is off it (DESIGN §10a Timeline).
+    func deselectLayer() {
+        guard canDeselectLayer, let s = stageStack else { return }
+        if clipOnStage {
+            persistClipTracks()
+            persistTrim()
+        } else {
+            persistClipTracks()
+        }
+        layerDeselectedOn = s.id
+        selectedLayers = []
+    }
+
+    /// ⌘D, Edit › Deselect: the markup's selection first, else the
+    /// timeline's layer.
+    var canDeselect: Bool { markupCanDeselect || canDeselectLayer }
+
+    func deselect() {
+        if markupCanDeselect {
+            deselectMarkup()
+        } else {
+            deselectLayer()
+        }
+    }
+
     /// A layer chosen: the panels show and change its values -- on a
     /// clip, its tracks.
     func selectLayer(_ id: String) {
+        layerDeselectedOn = nil
         // A snapshot run: how long a posted click took to get here.
         if AppDelegate.postedClickAt > 0 {
             print("snapshot: select-layer \(id.isEmpty ? "0" : id) after-click="
@@ -3339,6 +3481,32 @@ final class AppModel {
     func setLayerLocked(_ id: String, _ locked: Bool) {
         if locked, markup.selectionLayer == id { deselectMarkup() }
         layerOp(locked ? "lock" : "unlock", id)
+    }
+
+    /// A layer made a TRACK SEPARATOR of the timeline's track view, or
+    /// not (DESIGN §10a Timeline): a track of its own, never laid in the
+    /// track below it. Only how the timeline shows the layers -- a locked
+    /// layer takes it too.
+    func setLayerSeparator(_ id: String, _ on: Bool) {
+        layerOp("separator", id, ["on": on])
+    }
+
+    /// Several layers -- a track of the timeline's track view -- shown or
+    /// hidden, locked or unlocked: one command.
+    func setLayersVisible(_ ids: [String], _ visible: Bool) {
+        layerOp(visible ? "show" : "hide", "", ["layers": ids])
+    }
+
+    func setLayersLocked(_ ids: [String], _ locked: Bool) {
+        if locked, let s = markup.selectionLayer, ids.contains(s) {
+            deselectMarkup()
+        }
+        layerOp(locked ? "lock" : "unlock", "", ["layers": ids])
+    }
+
+    func isLayerSeparator(_ id: String) -> Bool {
+        stageStack?.layerStack.first { $0.id == id }?.trackSeparator
+            ?? false
     }
 
     /// A layer of the stack on the stage, locked.
@@ -3701,6 +3869,14 @@ final class AppModel {
     var stackPlayback: StackPlayback?
     @ObservationIgnored private(set) var stackPlanning = false
     @ObservationIgnored private var stackPlanAgain = false
+    /// A sound's values were written: its poster (a composition of sound
+    /// alone: its mix's waveform) drawn again with the next plan.
+    @ObservationIgnored var stackPosterAgain = false
+    /// Dev and snapshot aid: the stack plans made, the last one's making
+    /// (ms, its mix's or shaped sound's included) and when one was last
+    /// put on the stage.
+    @ObservationIgnored var stackPlanStats = (made: 0, lastMs: 0.0,
+                                              appliedAt: 0.0)
     /// The source frame the player goes to once the plan of the marks
     /// just set lands (holdPlayer(onSource:)).
     @ObservationIgnored private var trimSeekSource: Int?
@@ -3729,6 +3905,10 @@ final class AppModel {
         // The markup objects being changed are drawn live, over it.
         let hidden = markupHiddenIds
         let painted = markup.painted
+        // The selected layer's sound as the Audio panel holds it.
+        let sound: Keyframes<LayerSound>? = trimLayer == layer
+            && !layerSound.isEmpty ? layerSound : nil
+        let started = CACurrentMediaTime()
         Task { @MainActor [weak self] in
             let made = await Task.detached {
                 let live = look.map {
@@ -3736,17 +3916,30 @@ final class AppModel {
                      adjust: $0.adjust.json(rate: rate) { $0.json } as Any,
                      crop: $0.crop.json(rate: rate) as Any)
                 }
+                let liveSound = sound.map {
+                    (layer: layer,
+                     sound: $0.json(rate: rate) { $0.json } as Any)
+                }
                 return core.stackPlan(project: projectId, asset: id,
-                                      live: live, hidden: hidden)
+                                      live: live, liveSound: liveSound,
+                                      hidden: hidden)
             }.value
             guard let self else {
                 if let made { core.releaseStackPlan(made.plan) }
                 return
             }
             self.stackPlanning = false
+            self.stackPlanStats.made += 1
+            self.stackPlanStats.lastMs = (CACurrentMediaTime() - started) * 1000
             if let made, self.currentClip?.id == id, self.clipComposed {
+                self.stackPlanStats.appliedAt = CACurrentMediaTime()
                 let old = self.stackPlayback
-                let reshaped = old?.shape != made.shape
+                // A sound's waveform drawn again for what changes it
+                // (not each live volume: its mix made each time), and
+                // once its values are written.
+                let reshaped = old?.soundlessShape != made.soundlessShape
+                    || self.stackPosterAgain
+                self.stackPosterAgain = false
                 self.stackPlayback = made
                 if let old { self.releaseLater(old.plan) }
                 if firstPoster || reshaped { self.stackPoster(made, id) }
@@ -4492,6 +4685,9 @@ final class AppModel {
     /// clip's action and sound, a picture's description -- by what that
     /// model does, not only the tab.
     var promptHint: String {
+        if inVoiceOver {
+            return String(localized: "Voice-over: press Record and speak as the timeline plays. No prompt is used.")
+        }
         let caps = catalog.first { $0.id == runningModel }?.capabilities
             ?? []
         switch activeModality {
@@ -4868,14 +5064,17 @@ final class AppModel {
     func show(_ s: AppScreen) {
         guard s == screen || !refusedForColorTarget() else { return }
         if s == .editor { setViewOnly(false) }
+        if s != .atlas { leaveAtlas() }
         withAnimation(Self.motion) {
             screen = s
             navOpen = false
         }
+        if s == .atlas { reloadAtlas(force: true) }
     }
 
     /// The ☰ column's eye: the editor, view-only.
     func showViewOnly() {
+        leaveAtlas()
         withAnimation(Self.motion) {
             screen = .editor
             navOpen = false
@@ -4907,17 +5106,23 @@ final class AppModel {
         }
     }
 
-    /// ⇧⌘P: the Agent's prompt box, as ⌘4 (View › Agent Prompt) -- the
-    /// key monitor's, a menu item taking one key.
-    func agentPromptKey(_ e: NSEvent) -> Bool {
+    /// ⇧⌘P: the PROMPT box, the keyboard in it to type. With the timeline
+    /// in its place, the prompt back as it was -- its target kept -- (the
+    /// key of the timeline's switch back, shown on it under ⌘?); else the
+    /// Agent's box while the Agent is on, as ⌘4 (View › Agent Prompt), or
+    /// the box as it is. The key monitor's: a menu item takes one key.
+    func promptKey(_ e: NSEvent) -> Bool {
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
         guard mods == [.command, .shift],
               e.keyCode == 35
                 || e.charactersIgnoringModifiers?.lowercased() == "p",
-              agentEnabled, closingTasks == nil, fleetServing == nil
+              closingTasks == nil, fleetServing == nil
         else { return false }
-        if !e.isARepeat { focusPrompt(.agent) }
+        if !e.isARepeat {
+            focusPrompt(composerShowsTimeline || !agentEnabled
+                        ? modality : .agent)
+        }
         return true
     }
 
@@ -5227,6 +5432,7 @@ final class AppModel {
         assetFolders = got.folders
         reloadHistory()
         reloadOutput()
+        if screen == .atlas { reloadAtlas() }
         // A picture to edit adjusted before its import finished: record
         // it now that it is an asset.
         if adjustsBase, let url = stageBaseURL,
@@ -5609,6 +5815,8 @@ final class AppModel {
     }
 
     var canStart: Bool {
+        // A voice-over's box takes no prompt.
+        if inVoiceOver { return false }
         let words =
             !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if activeModality == .agent {
@@ -5786,7 +5994,8 @@ final class AppModel {
             flash(r.message, level: .error)
             return
         }
-        began(job: job, kind: .video)
+        began(job: job, kind: .video,
+              continues: req["continue"] as? String)
     }
 
     /// Start, for a song. The prompt is its words -- the style, then the
@@ -5829,17 +6038,25 @@ final class AppModel {
     /// A job Start began: the light sweeps once, before its first preview,
     /// and a long prompt shrinks to its three rows (the box's own toggle
     /// grows it again) -- the stage takes the height.
-    private func began(job: String, kind: Modality = .image) {
+    private func began(job: String, kind: Modality = .image,
+                       continues: String? = nil) {
         markSweep += 1
         // It lands in the ACTIVE composition, as a new layer: above its
         // selected layer -- in it, when blank -- at the frame or page
-        // shown, when it is the one on the stage; else on top.
+        // shown, when it is the one on the stage; else on top. A
+        // timeline's continuation, on that timeline after what it
+        // carries on, on top -- not where the player stood at Start.
         var ctx = TaskContext(kind: kind, base: generationBase,
                               stageAtStart: stageAtStart)
-        if let onto = activeComposition {
+        if let c = continues, let land = continuationLandings[c],
+           asset(id: land.onto)?.isTimeline == true {
+            ctx.onto = land.onto
+            ctx.offset = land.offset
+        } else if let onto = activeComposition {
             ctx.onto = onto.id
             if generationJob == nil, stageStack?.id == onto.id {
-                ctx.at = activeLayer
+                // None selected (⌘D): on top.
+                ctx.at = layerNoneSelected ? nil : activeLayer
                 if clipOnStage { ctx.offset = videoFrame }
                 if pagedOnStage { ctx.offset = stagePage }
             } else if let w = watchedTask, w.onto == onto.id {
@@ -6987,7 +7204,8 @@ final class AppModel {
 
     var assistantEnabled: Bool {
         // The Agent tab's prompt is a request: nothing to enhance.
-        guard enhanceJob == nil, activeModality != .agent else { return false }
+        guard enhanceJob == nil, activeModality != .agent, !inVoiceOver
+        else { return false }
         return prompt.isEmpty ? outlineModel != nil : assistantReady
     }
 
@@ -7536,7 +7754,7 @@ final class AppModel {
 
     /// The compare off, as its button turns it off: the current state
     /// back in A, B set aside for next time.
-    private func endCompare() {
+    func endCompare() {
         guard compareOn else { return }
         if currentSlot == nil { returnToCurrent() }
         if currentSlot == .b { swapStage() }
@@ -8332,7 +8550,12 @@ final class AppModel {
         return true
     }
 
-    private func sendVideo(_ kind: VideoCommand.Kind) {
+    func sendVideo(_ kind: VideoCommand.Kind) {
+        // A voice-over's take under way: the player held as it plays --
+        // no seek, step, scrub or rate of anyone's but the take's own.
+        if voiceOverRecording, case .cued = kind {} else if voiceOverRecording {
+            return
+        }
         videoCommand = VideoCommand(kind: kind,
                                     token: (videoCommand?.token ?? 0) + 1)
     }
@@ -8416,6 +8639,11 @@ final class AppModel {
             }
             return true
         }
+        // A voice-over's take under way: the player held, its keys taken
+        // and let go.
+        if voiceOverRecording && [115, 119, 123, 124].contains(e.keyCode) {
+            return true
+        }
         // Home, End.
         if e.keyCode == 115 || e.keyCode == 119 {
             guard clipOnStage, mods.isEmpty else { return false }
@@ -8456,7 +8684,8 @@ final class AppModel {
         let fr = w.firstResponder
         if fr is NSText || fr is NSTableView || fr is NSOutlineView
             || fr is NSCollectionView || fr is NSControl { return false }
-        if !e.isARepeat {
+        // A voice-over's take under way: the player plays on as it is.
+        if !e.isARepeat && !voiceOverRecording {
             playVideo(rate: videoRate == 0 ? 1 : 0)
         }
         return true
@@ -8649,6 +8878,7 @@ final class AppModel {
             if !r.ok { flash(r.message, level: .error) }
         }
         if soundChanged {
+            stackPosterAgain = true
             let keys = layerSound.json(rate: rate) { $0.json }
             let r = core.layerOp(project: projectId, asset: id, "sound",
                                  layer: layer,
@@ -9705,8 +9935,8 @@ final class AppModel {
         }
         // ⌘? held: the buttons' keys shown. The brush's [ ] and ⇧[ ⇧] and
         // the markup tools' keys, wherever the keyboard is in the window
-        // but text; ⌘D, the markup's selection let go; ⇧⌘P, the Agent's
-        // prompt; the timeline's scissors (S, Escape); the Trim panel's
+        // but text; ⌘D, the markup's selection let go; ⇧⌘P, the prompt
+        // (the Agent's while it is on); the timeline's scissors (S, Escape); the Trim panel's
         // ← →; Space, play / pause.
         if let m = NSEvent.addLocalMonitorForEvents(
             matching: .keyDown, handler: { [weak self] event in
@@ -9719,8 +9949,14 @@ final class AppModel {
                     }
                     if ShortcutHints.shared.handle(event) { return true }
                     guard let self else { return false }
+                    // Off the editor -- the Atlas, the Log -- nothing of
+                    // the stage's, out of sight, takes a key.
+                    if self.screen != .editor {
+                        return self.promptKey(event)
+                            || self.atlasKey(event)
+                    }
                     return self.deselectKey(event) || self.brushKey(event)
-                        || self.agentPromptKey(event)
+                        || self.promptKey(event)
                         || self.scissorsKey(event)
                         || self.markupToolKey(event)
                         || self.viewOnlyKey(event)
@@ -9981,6 +10217,10 @@ final class AppModel {
     private func resetSession() {
         // Another project: the target tool's work is done.
         colorTargeting = false
+        // Its atlas is the last project's.
+        leaveAtlas()
+        atlas = nil
+        atlasRead = nil
         // An anonymous session's attachment and export folders go with it.
         sessionPanelFolders = [:]
         // The prompt, with its inline media, and the prompt asset it was.
@@ -10172,6 +10412,7 @@ final class AppModel {
         case "layer.hide": String(localized: "Hide Layer")
         case "layer.lock": String(localized: "Lock Layer")
         case "layer.unlock": String(localized: "Unlock Layer")
+        case "layer.separator": String(localized: "Track Separator")
         case "layer.rename": String(localized: "Rename Layer")
         case "layer.source": String(localized: "Layer Content")
         case "layer.merge": String(localized: "Merge Layers")

@@ -1142,6 +1142,30 @@ Core::assets_json(const std::string& project_id) const
 }
 
 std::string
+Core::atlas_json(const std::string& project_id) const
+{
+  return guarded([&] {
+    auto id = parse_id<ProjectId>(project_id);
+    if (!id.ok()) {
+      return err(id.error());
+    }
+    auto* p = _impl->ctl->project(*id);
+    if (!p) {
+      return err(Code::NotFound, "project is not open");
+    }
+    // Before the records, as the asset list's.
+    const std::string revision = p->revision();
+    auto graph = _impl->ctl->atlas(*id);
+    if (!graph.ok()) {
+      return err(graph.error());
+    }
+    Json j = std::move(*graph);
+    j["revision"] = revision;
+    return ok(std::move(j));
+  });
+}
+
+std::string
 Core::assets_revision(const std::string& project_id) const
 {
   return guarded([&] {
@@ -1346,9 +1370,10 @@ Core::asset_op(const std::string& request_json)
                       : err(put.error());
     }
     if (op == "guide") {
-      auto g = c.continuation_guide(*pid, *aid,
-                                    jget(*j, "seconds", 0.0),
-                                    jget<std::string>(*j, "model", ""), name);
+      auto g = c.continuation_guide(
+          *pid, *aid, jget(*j, "seconds", 0.0),
+          jget<std::string>(*j, "model", ""), name,
+          jget<std::string>(*j, "capture_name", ""));
       return g.ok() ? ok(*g) : err(g.error());
     }
     Result<AssetId> made = make_error(Code::InvalidArgument,
@@ -1907,11 +1932,17 @@ Core::stack_plan(const std::string& request_json)
     // The layer being edited, as the panels hold its tracks now.
     std::optional<Controller::LiveTracks> live;
     if (const Json l = jget(*j, "live", Json()); l.is_object()) {
-      live = Controller::LiveTracks{
-          jget<std::string>(l, "layer", ""),
-          media::keyed_adjustments_from_json(jget(l, "adjust",
-                                                  Json::object())),
-          media::keyed_crop_from_json(jget(l, "crop", Json::object()))};
+      live.emplace();
+      live->layer = jget<std::string>(l, "layer", "");
+      live->adjust = media::keyed_adjustments_from_json(
+          jget(l, "adjust", Json::object()));
+      live->crop = media::keyed_crop_from_json(
+          jget(l, "crop", Json::object()));
+      // Its look given, or its sound alone (a composition of sound).
+      live->look = l.contains("adjust") || l.contains("crop");
+      if (const Json snd = jget(l, "sound", Json()); snd.is_object()) {
+        live->sound = media::keyed_sound_from_json(snd);
+      }
     }
     // The markup objects being edited: drawn by the app, over it.
     std::set<std::string> hidden;
@@ -1927,9 +1958,10 @@ Core::stack_plan(const std::string& request_json)
     const Rational rate = stack->rate.num > 0 ? stack->rate
                                               : Rational{24, 1};
     // Where each clip plays on the timeline (its segments), and what the
-    // player sounds: the layers' spans with their volume ramps -- or,
-    // when a pitch is shifted, the mixer's file (media/sound.h).
-    auto sound = _impl->ctl->sound_plan(*pid, *aid);
+    // player sounds: the layers' spans with their volume ramps, a layer
+    // its pitch or equalizer shapes as its shaped span (media/sound.h) --
+    // never the whole mix, which a gain or a band would make again.
+    auto sound = _impl->ctl->playable_sound_plan(*pid, *aid, live);
     if (!sound.ok()) {
       return err(sound.error());
     }
@@ -1966,11 +1998,7 @@ Core::stack_plan(const std::string& request_json)
     }
     Json audio = Json::array();
     std::string mix;
-    if (media::needs_render(*sound)) {
-      if (auto m = _impl->ctl->sound_mix(*pid, *aid); m.ok()) {
-        mix = m->string();
-      }
-    } else {
+    {
       for (std::size_t i = 0; i < sound->layers.size(); ++i) {
         const auto& sl = sound->layers[i];
         if (sl.file.empty()) {
@@ -2345,9 +2373,21 @@ Core::layer_op(const std::string& request_json)
     if (op == "move") {
       st = c.move_layer(*pid, *aid, layer, jget(*j, "by", 0));
     } else if (op == "show" || op == "hide") {
-      st = c.set_layer_visible(*pid, *aid, layer, op == "show");
+      // "layers": several at once -- a track of the track view's -- one
+      // command.
+      st = j->contains("layers")
+               ? c.set_layers_visible(*pid, *aid,
+                                      strings(jget(*j, "layers", Json())),
+                                      op == "show")
+               : c.set_layer_visible(*pid, *aid, layer, op == "show");
     } else if (op == "lock" || op == "unlock") {
-      st = c.set_layer_locked(*pid, *aid, layer, op == "lock");
+      st = j->contains("layers")
+               ? c.set_layers_locked(*pid, *aid,
+                                     strings(jget(*j, "layers", Json())),
+                                     op == "lock")
+               : c.set_layer_locked(*pid, *aid, layer, op == "lock");
+    } else if (op == "separator") {
+      st = c.set_layer_separator(*pid, *aid, layer, jget(*j, "on", true));
     } else if (op == "rename") {
       st = c.rename_layer(*pid, *aid, layer,
                           jget<std::string>(*j, "name", ""));
@@ -2801,8 +2841,17 @@ Core::capture_op(const std::string& request_json)
         }
         into = *aid;
       }
+      // A voice-over: onto `asset`, from its frame "voice_over_at".
+      std::optional<std::int64_t> at;
+      if (j->contains("voice_over_at")) {
+        at = jget<std::int64_t>(*j, "voice_over_at", 0);
+      }
       auto st = c.start_capture(*pid, into,
-                                jget<std::string>(*j, "source", ""));
+                                jget<std::string>(*j, "source", ""), at);
+      return st.ok() ? ok() : err(st.error());
+    }
+    if (op == "cue") {
+      auto st = c.cue_capture(jget(*j, "host", 0.0));
       return st.ok() ? ok() : err(st.error());
     }
     if (op == "stop") {

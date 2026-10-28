@@ -33,6 +33,18 @@ namespace valtz::media {
 // none.
 Json exif_fields(const std::filesystem::path&);
 
+// EVERYTHING the file says of itself, as ImageIO reads it: its EXIF, TIFF,
+// GPS, IPTC, ExifAux and maker-note dictionaries -- under their names,
+// braces dropped ("Exif", "TIFF", "MakerCanon") -- and its own fields
+// (PixelWidth, Orientation, ProfileName, ...). Values as recorded:
+// strings, numbers, true / false, arrays (at most kExifAllItems), a
+// date's ISO 8601, raw data as "<n bytes>"; a string past kExifAllChars
+// cut. An empty object when it has none or is no picture ImageIO reads.
+// What the agent's get_exif hands over (DESIGN §9b).
+inline constexpr std::size_t kExifAllItems = 64;
+inline constexpr std::size_t kExifAllChars = 512;
+Json exif_all(const std::filesystem::path&);
+
 // `src`'s EXIF as a raw TIFF block (what JPEG's APP1 "Exif" segment and
 // PNG's eXIf chunk hold) for a picture made from it: `size` pixels and
 // upright -- Orientation is 1, because the pixels were turned as they

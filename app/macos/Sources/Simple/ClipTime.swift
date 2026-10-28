@@ -78,7 +78,9 @@ struct LayerClock: Equatable {
 extension AppModel {
     /// The frame on screen lies outside the selected layer's clip: before
     /// it starts, or after it ends.
-    enum ClipEdge: String { case before, after }
+    /// Where the stage is against the selected layer -- before it, after
+    /// it -- or that no layer is selected (⌘D on a timeline).
+    enum ClipEdge: String { case before, after, unselected }
 
     /// How long `a` runs, in seconds: a clip's (its picture's frames, as
     /// the core times its layer; its whole sound `asSound`), a sound's, a
@@ -144,7 +146,9 @@ extension AppModel {
     /// be started right after a clip ends), so the stage marks it as a
     /// film's torn end, and the panel's times say so.
     var clipEdge: ClipEdge? {
-        guard clipOnStage, let k = layerClock, k.timed else { return nil }
+        // None selected: nothing to be before or after.
+        guard clipOnStage, !layerNoneSelected, let k = layerClock, k.timed
+        else { return nil }
         let t = Double(videoFrame) / k.fps
         if t < k.start - 1e-6 { return .before }
         if t >= k.end - 1e-6 { return .after }
@@ -158,6 +162,8 @@ extension AppModel {
     /// the panels that change it wait, greyed, and no key is made out of
     /// its range (DESIGN §10a): its values would change unseen.
     var layerOffStage: ClipEdge? {
+        // None selected: the panels have no layer to change.
+        if layerNoneSelected { return .unselected }
         if pagedOnStage && !clipOnStage {
             guard let pic = stagePicture,
                   let l = pic.layerStack.first(where: { $0.id == activeLayer })
@@ -288,6 +294,9 @@ extension AppModel {
         var k = layerSound.isEmpty ? Keyframes(start: LayerSound()) : layerSound
         k.edit(at: keyFrame, change)
         layerSound = k
+        // Its volume heard as it changes (the plan's ramps, laid on the
+        // playing item); its pitch and bands once written.
+        if clipComposed { refreshStackPlan() }
     }
 
     /// Its pitch there, in semitones (held to two octaves either way).

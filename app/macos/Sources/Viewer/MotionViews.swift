@@ -101,6 +101,9 @@ struct VideoPlayerView: NSViewRepresentable {
     /// Its sound off or on, as the player has it (a clip started muted,
     /// the transport's mute).
     var onMuted: (Bool) -> Void = { _ in }
+    /// A cued start's host time (VideoCommand.cued), seconds of the host
+    /// clock: where a voice-over's take is lined up with the picture.
+    var onCue: (Double) -> Void = { _ in }
     /// The title bar's zoom asked so far (ClipZoomView); nil, no zoom:
     /// the Prompt Editor's small stage.
     var zoom: ZoomRequests? = nil
@@ -142,6 +145,7 @@ struct VideoPlayerView: NSViewRepresentable {
         var onRate: (Float) -> Void = { _ in }
         var muteObservation: NSKeyValueObservation?
         var onMuted: (Bool) -> Void = { _ in }
+        var onCue: (Double) -> Void = { _ in }
         var ended: NSObjectProtocol?
         var timeObserver: Any?
         var onFrame: (Int) -> Void = { _ in }
@@ -162,7 +166,11 @@ struct VideoPlayerView: NSViewRepresentable {
         var recomposeAgain = false
         /// The stack on show: what its composition is made of, and the
         /// plan its frames are drawn with.
-        var stackShape: [String]?
+        var stackShape: Int?
+        /// Its shape but the sound's volumes, and each sound's track: a
+        /// gain changed alone is laid on the item (its audio mix).
+        var stackSoundless: Int?
+        var audioTracks: [Int: CMPersistentTrackID] = [:]
         var stackPlan: UInt64 = 0
         let stackBox = StackBox()
         /// The stack on show, and the view it plays in: its frames are
@@ -355,6 +363,16 @@ struct VideoPlayerView: NSViewRepresentable {
         /// A step's sound, apart from the player.
         let scrubber = AudioScrubber()
 
+        /// At rate `r` from a tenth of a second ahead on the host's clock
+        /// -- AVFoundation keeps to it -- the time said (onCue).
+        func startCued(_ r: Float) {
+            guard let p = player else { return }
+            let at = CMTimeAdd(CMClockGetTime(CMClockGetHostTimeClock()),
+                               CMTime(value: 1, timescale: 10))
+            p.setRate(r, time: .invalid, atHostTime: at)
+            onCue(at.seconds)
+        }
+
         func stop() {
             scrubber.stop()
             stackBox.set(clock: nil)
@@ -460,6 +478,7 @@ struct VideoPlayerView: NSViewRepresentable {
         c.onLastFrame = onLastFrame
         c.onRate = onRate
         c.onMuted = onMuted
+        c.onCue = onCue
         defer { applyCommand(c) }
         let lookChanged = !c.lookKnown || c.look != look
         if lookChanged {
@@ -485,15 +504,33 @@ struct VideoPlayerView: NSViewRepresentable {
                 }
                 return
             }
+            // Its sound's volumes alone changed (a gain, live): new ramps
+            // on the playing item -- the player kept, playing on.
+            if c.url == url, c.stackSoundless == stack.soundlessShape,
+               let item = c.player?.currentItem, stack.mix == nil {
+                item.audioMix = StackCompositor.audioMix(
+                    stack, tracks: c.audioTracks)
+                c.stackShape = stack.shape
+                StackStats.relaid += 1
+                if c.stackPlan != stack.plan {
+                    c.stackPlan = stack.plan
+                    c.stackBox.set(core: core, plan: stack.plan,
+                                   rate: stack.rate)
+                }
+                return
+            }
             // The same clip made again (a canvas, a length): it stays
             // where it was, playing or paused.
             let resume = c.url == url ? c.player?.currentTime() : nil
             let playing = (c.player?.rate ?? 0) != 0
             // Muted it stays so (a generated clip started muted).
             let wasMuted = c.player?.isMuted ?? false
+            StackStats.rebuilds += 1
             c.stop()
             c.url = url
             c.stackShape = stack.shape
+            c.stackSoundless = stack.soundlessShape
+            c.audioTracks = [:]
             c.stackPlan = stack.plan
             c.stackBox.set(core: core, plan: stack.plan, rate: stack.rate)
             c.hasLook = false
@@ -504,12 +541,15 @@ struct VideoPlayerView: NSViewRepresentable {
             let autoplay = resume == nil ? autoplay : playing
             let room = c.room
             Task { @MainActor [weak c] in
-                guard let item = await StackCompositor.item(stack, box,
+                guard let made = await StackCompositor.item(stack, box,
                                                             room: room),
                       let c, c.stackShape == stack.shape else { return }
+                c.audioTracks = made.audioTracks
+                let item = made.item
                 attach(item, to: v, c, rate: stack.rate, autoplay: autoplay,
                        muted: resume == nil ? muted : wasMuted,
                        lastIndex: max(0, stack.frames - 1), at: resume)
+                StackStats.attachedAt = CACurrentMediaTime()
                 // A request that came with the new stack -- the player
                 // was being made: it goes to the new one, not lost.
                 applyCommand(c)
@@ -534,6 +574,7 @@ struct VideoPlayerView: NSViewRepresentable {
                 playing = (c.player?.rate ?? 0) != 0
             }
             c.stackShape = nil
+            c.stackSoundless = nil
             c.url = nil
         }
         guard c.url != url else {
@@ -744,6 +785,22 @@ struct VideoPlayerView: NSViewRepresentable {
             c.seek(to: c.clamp(n))
         case .mute(let on):
             p.isMuted = on
+        case .cued(let asked, let muted):
+            p.isMuted = muted
+            p.pause()
+            guard asked != 0 else { return }
+            let r = Self.playable(asked, item)
+            // A host time is the player's to keep only when it does not
+            // wait to fill its buffers itself; prerolled first, so the
+            // first frames are there when the moment comes.
+            p.automaticallyWaitsToMinimizeStalling = false
+            if p.status == .readyToPlay {
+                p.preroll(atRate: r) { [weak c] _ in
+                    Task { @MainActor in c?.startCued(r) }
+                }
+            } else {
+                c.startCued(r)
+            }
         case .step(let n):
             // From the frame on screen, to one that exists: a step past
             // either end stays on it -- and its sound heard, a frame's (at
@@ -807,4 +864,14 @@ struct VideoPlayerView: NSViewRepresentable {
         coordinator.resizeTask?.cancel()
         v.player = nil
     }
+}
+
+/// Dev and snapshot aid: the stack player made again (its item rebuilt:
+/// stopped, laid out, attached, resumed) and when one was last attached.
+@MainActor
+enum StackStats {
+    static var rebuilds = 0
+    static var attachedAt: CFTimeInterval = 0
+    /// A gain's new ramps laid on the playing item, the player kept.
+    static var relaid = 0
 }

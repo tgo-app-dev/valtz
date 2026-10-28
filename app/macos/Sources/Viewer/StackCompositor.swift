@@ -335,14 +335,44 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
         }
     }
 
+    /// A stack's player item and, for each of its sounds (by its place in
+    /// `stack.audio`), the track it plays on -- what a gain changed alone
+    /// lays new ramps on (`audioMix`).
+    struct Made {
+        let item: AVPlayerItem
+        let audioTracks: [Int: CMPersistentTrackID]
+    }
+
+    /// The sounds' volume ramps, on their tracks.
+    static func audioMix(_ stack: StackPlayback,
+                         tracks: [Int: CMPersistentTrackID]) -> AVAudioMix {
+        let mix = AVMutableAudioMix()
+        var params: [AVMutableAudioMixInputParameters] = []
+        for (i, s) in stack.audio.enumerated() where s.volume.count > 1 {
+            guard let id = tracks[i] else { continue }
+            let p = AVMutableAudioMixInputParameters()
+            p.trackID = id
+            for (a, b) in zip(s.volume, s.volume.dropFirst())
+                where a.count == 2 && b.count == 2 && b[0] > a[0] {
+                p.setVolumeRamp(fromStartVolume: Float(a[1]),
+                                toEndVolume: Float(b[1]),
+                                timeRange: CMTimeRange(start: time(a[0]),
+                                                       end: time(b[0])))
+            }
+            params.append(p)
+        }
+        mix.inputParameters = params
+        return mix
+    }
+
     /// The player's item for `stack`: a composition of its clips -- each
     /// where it plays on the timeline -- and its sound: every layer's, at
-    /// its volume (or, with a pitch shifted, the mixer's file), as long as
-    /// its timeline; every frame drawn by the core with `box`'s plan, at
+    /// its volume (a layer its pitch or equalizer shapes, its shaped span),
+    /// as long as its timeline; every frame drawn by the core with `box`'s plan, at
     /// most `room` pixels. Sound alone: no frames.
     @MainActor
     static func item(_ stack: StackPlayback, _ box: StackBox,
-                     room: CGSize? = nil) async -> AVPlayerItem? {
+                     room: CGSize? = nil) async -> Made? {
         let comp = AVMutableComposition()
         let duration = CMTime(value: Int64(stack.frames) * Int64(stack.rate.den),
                               timescale: Int32(stack.rate.num))
@@ -367,14 +397,13 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
                       start: range.start, limit: duration)
             ids.append(track.trackID)
         }
-        // The sound: the mixer's file whole, or each layer's spans with
-        // its ramps.
-        let mix = AVMutableAudioMix()
-        var params: [AVMutableAudioMixInputParameters] = []
+        // The sound: each layer's spans with its ramps (or the mixer's
+        // file whole).
+        var tracks: [Int: CMPersistentTrackID] = [:]
         let sounds: [StackAudio] = stack.mix.map {
             [StackAudio(file: $0, segments: [], volume: [])]
         } ?? stack.audio
-        for s in sounds {
+        for (i, s) in sounds.enumerated() {
             let asset = AVURLAsset(url: s.file)
             guard let at = try? await asset.loadTracks(withMediaType: .audio)
                       .first,
@@ -385,20 +414,10 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
             else { continue }
             await lay(at, into: track, segments: s.segments, start: ar.start,
                       limit: duration)
-            if s.volume.count > 1 {
-                let p = AVMutableAudioMixInputParameters(track: track)
-                for (a, b) in zip(s.volume, s.volume.dropFirst())
-                    where a.count == 2 && b.count == 2 && b[0] > a[0] {
-                    p.setVolumeRamp(fromStartVolume: Float(a[1]),
-                                    toEndVolume: Float(b[1]),
-                                    timeRange: CMTimeRange(
-                                        start: time(a[0]),
-                                        end: time(b[0])))
-                }
-                params.append(p)
-            }
+            tracks[i] = track.trackID
         }
-        mix.inputParameters = params
+        let mix = stack.mix == nil ? audioMix(stack, tracks: tracks)
+                                   : AVMutableAudioMix()
         // A timeline longer than its clips -- where they show nothing,
         // black past a clip's end, a frame to start a layer at -- runs to
         // its own end: a track of silence over the rest. (An empty range
@@ -411,7 +430,9 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
         item.audioMix = mix
         // A layer played faster keeps its pitch.
         item.audioTimePitchAlgorithm = .spectral
-        guard !stack.soundOnly else { return item }
+        let made = Made(item: item,
+                        audioTracks: stack.mix == nil ? tracks : [:])
+        guard !stack.soundOnly else { return made }
         let vc = AVMutableVideoComposition()
         vc.customVideoCompositorClass = alpha ? StackCompositorAlpha.self
                                               : StackCompositor.self
@@ -425,7 +446,7 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
             timeRange: CMTimeRange(start: .zero, duration: duration),
             trackIDs: ids, box: box)]
         item.videoComposition = vc
-        return item
+        return made
     }
 }
 

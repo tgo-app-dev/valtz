@@ -54,6 +54,20 @@ enum SettingsPlace: Hashable, Sendable {
             .flatMap(SettingsPlace.init(raw:)) ?? .page(.general)
     }
 
+    /// The Agent's settings (AgentSettingsSection), on Agentic Helper
+    /// while Experimental has it on.
+    @MainActor
+    static var agentKeywords: [String] {
+        [String(localized: "Agent"), String(localized: "Thinks On"),
+         String(localized: "Cloud"),
+         String(localized: "Ask before each step"),
+         String(localized: "DeepSeek"), String(localized: "Agent Memory"),
+         String(localized: "Expert Cache"),
+         String(localized: "A member keeps its context"),
+         String(localized: "Provider"), String(localized: "Model"),
+         String(localized: "Server"), String(localized: "API Key")]
+    }
+
     /// What its page holds, as a search finds it: the names of its
     /// sections and settings, in the UI's language.
     @MainActor
@@ -102,6 +116,8 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "Cloud Context"),
              String(localized: "Debugging"),
              String(localized: "Show the Helper's Speed")]
+                // The agent's, while it is switched on: on this page.
+                + (model.agentEnabled ? Self.agentKeywords : [])
         case .page(.upscaling):
             // Its upscalers and their options are the core's: named as
             // the page names them.
@@ -112,14 +128,7 @@ enum SettingsPlace: Hashable, Sendable {
                 + model.upscalers.map(\.name)
                 + model.upscalers.flatMap { $0.options.map(TuningPanel.title) }
         case .page(.experimental):
-            [String(localized: "Agent"), String(localized: "Thinks On"),
-             String(localized: "Cloud"),
-             String(localized: "Ask before each step"),
-             String(localized: "DeepSeek"), String(localized: "Memory"),
-             String(localized: "Agent Memory"),
-             String(localized: "A member keeps its context"),
-             String(localized: "Provider"), String(localized: "Model"),
-             String(localized: "Server"), String(localized: "API Key")]
+            [String(localized: "Agent")]
         case .page(.fleet):
             [String(localized: "This Mac"), String(localized: "Name"),
              String(localized: "Discoverable"), String(localized: "Fleet"),

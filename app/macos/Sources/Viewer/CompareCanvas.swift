@@ -726,30 +726,106 @@ final class CompareCanvas: NSView {
     /// its mixer so).
     func sampleColor(atCanvas c: CGPoint, from other: CGImage? = nil) -> RGBA? {
         guard let img = imageA else { return nil }
-        let read = { (q: CGPoint) -> RGBA? in
+        switch hit(atCanvas: c, img) {
+        case .off: return nil
+        case .pad(let color): return color
+        case .at(let q):
             guard let other else { return Self.pixel(img, at: q) }
             return Self.pixel(other, at: CGPoint(
                 x: q.x * CGFloat(other.width) / CGFloat(max(1, img.width)),
                 y: q.y * CGFloat(other.height) / CGFloat(max(1, img.height))))
         }
+    }
+
+    /// The colours at canvas pixels `cs`, as sampleColor reads one -- A
+    /// drawn once for them all: the target tool's loupe, a square of
+    /// them at each move of the pointer.
+    func sampleColors(atCanvas cs: [CGPoint]) -> [RGBA?] {
+        guard let img = imageA else { return cs.map { _ in nil } }
+        let hits = cs.map { hit(atCanvas: $0, img) }
+        let read = Self.pixels(img, at: hits.map {
+            if case .at(let q) = $0 { return q }
+            return nil
+        })
+        return zip(hits, read).map { h, r in
+            switch h {
+            case .off: nil
+            case .pad(let color): color
+            case .at: r
+            }
+        }
+    }
+
+    /// Where canvas pixel `c` falls in A: a pixel of it (its pixels, from
+    /// the top left), the pad's colour round a crop, or off it.
+    private enum CanvasHit {
+        case off
+        case pad(RGBA?)
+        case at(CGPoint)
+    }
+
+    private func hit(atCanvas c: CGPoint, _ img: CGImage) -> CanvasHit {
         let p = CGPoint(x: c.x + markupOrigin.x, y: c.y + markupOrigin.y)
         if let crop = cropA {
             guard CGRect(origin: .zero, size: crop.canvas).contains(p) else {
-                return nil
+                return .off
             }
             // Its content pixels from canvas pixels, both y up.
             let q = CGPoint(x: p.x, y: crop.canvas.height - p.y)
                 .applying(crop.transform.inverted())
             guard q.x >= 0, q.y >= 0, q.x < CGFloat(img.width),
                   q.y < CGFloat(img.height) else {
-                return RGBA(cgColor: crop.pad)
+                return .pad(RGBA(cgColor: crop.pad))
             }
-            return read(CGPoint(x: q.x, y: CGFloat(img.height) - q.y))
+            return .at(CGPoint(x: q.x, y: CGFloat(img.height) - q.y))
         }
         let e = extent(img, fitA)
-        guard e.contains(p), fitA.scale > 0 else { return nil }
-        return read(CGPoint(x: (p.x - e.minX) / fitA.scale,
-                            y: (p.y - e.minY) / fitA.scale))
+        guard e.contains(p), fitA.scale > 0 else { return .off }
+        return .at(CGPoint(x: (p.x - e.minX) / fitA.scale,
+                           y: (p.y - e.minY) / fitA.scale))
+    }
+
+    /// `img`'s pixels at `qs` (nil: none there), as `pixel` reads one --
+    /// the box holding them cut out and drawn once.
+    static func pixels(_ img: CGImage, at qs: [CGPoint?]) -> [RGBA?] {
+        let none = qs.map { _ -> RGBA? in nil }
+        let at = qs.map { q -> (x: Int, y: Int)? in
+            guard let q else { return nil }
+            let x = Int(q.x.rounded(.down)), y = Int(q.y.rounded(.down))
+            guard x >= 0, y >= 0, x < img.width, y < img.height else {
+                return nil
+            }
+            return (x, y)
+        }
+        let inside = at.compactMap { $0 }
+        guard let x0 = inside.map(\.x).min(), let x1 = inside.map(\.x).max(),
+              let y0 = inside.map(\.y).min(), let y1 = inside.map(\.y).max()
+        else { return none }
+        let w = x1 - x0 + 1, h = y1 - y0 + 1
+        guard let part = img.cropping(to: CGRect(x: x0, y: y0, width: w,
+                                                 height: h))
+        else { return none }
+        var px = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = px.withUnsafeMutableBytes { buf -> Bool in
+            guard let ctx = CGContext(
+                data: buf.baseAddress, width: w, height: h,
+                bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            ctx.draw(part, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { return none }
+        // The buffer's first row is the box's top.
+        return at.map { xy -> RGBA? in
+            guard let xy else { return nil }
+            let o = ((xy.y - y0) * w + (xy.x - x0)) * 4
+            let a = Double(px[o + 3]) / 255
+            guard a > 0 else { return .clear }
+            func c(_ v: UInt8) -> Double { min(1, Double(v) / 255 / a) }
+            return RGBA(r: c(px[o]), g: c(px[o + 1]), b: c(px[o + 2]), a: a)
+        }
     }
 
     /// `img`'s pixel at `q` (its pixels, from the top left) in sRGB,

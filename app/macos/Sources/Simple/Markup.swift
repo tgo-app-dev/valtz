@@ -256,6 +256,11 @@ final class MarkupState {
     var sampleColor: RGBA?
     /// ⌥ held: the colour taken would be the Fill.
     var sampleFill = false
+    /// The Color panel's target tool over the picture: where the pointer
+    /// is (canvas pixels) and the pixels about it, a LOUPE's (rows from
+    /// the top; nil off the picture).
+    var loupeAt: CGPoint?
+    var loupe: [RGBA?] = []
     /// A clip's frame as the player draws it, for the eyedropper: drawn
     /// once a frame (by its key: the clip, its plan, the frame).
     @ObservationIgnored var sampleFrame: (key: String, image: CGImage?)?
@@ -315,6 +320,8 @@ final class MarkupState {
         /// A selected object's connector (object, connector) slid along
         /// its outline.
         case connector(String, String)
+        /// A MARQUEE dragged from a press on nothing (where).
+        case marquee(CGPoint)
     }
 
     /// A connector found under the pointer: whose, which, where (canvas
@@ -330,6 +337,8 @@ final class MarkupState {
     /// that touch): a point of it, and its box -- canvas pixels.
     @ObservationIgnored var drawingAt: CGPoint?
     var drawingBox: CGRect?
+    /// The select tool's marquee being dragged (canvas pixels).
+    var marquee: CGRect?
     @ObservationIgnored var drag = Drag.none
     @ObservationIgnored var last = CGPoint.zero
     @ObservationIgnored var moved = false
@@ -420,9 +429,26 @@ extension AppModel {
             && (t.duration <= 0 || videoFrame < t.offset + t.duration)
     }
 
-    /// What the stage draws over the picture for markup.
+    /// What the stage draws over the picture: markup's, and the Color
+    /// panel's target tool's loupe.
     var markupOverlay: MarkupOverlay {
-        guard markupOpen else { return MarkupOverlay() }
+        var o = markupOpen ? markupItems : MarkupOverlay()
+        // Off the picture -- nothing under the pointer -- none.
+        if colorTargetReady, let at = markup.loupeAt,
+           markup.loupe.count == Self.loupeSide * Self.loupeSide,
+           markup.loupe[markup.loupe.count / 2] != nil {
+            o.loupeAt = at
+            o.loupe = markup.loupe
+            o.loupeSide = Self.loupeSide
+        }
+        return o
+    }
+
+    /// The canvas pixels a side of the target tool's loupe.
+    static let loupeSide = 11
+
+    /// What the stage draws over the picture for markup.
+    private var markupItems: MarkupOverlay {
         let m = markup
         var o = MarkupOverlay()
         o.strokes = m.pending.filter { $0.asset == markupAsset?.id }
@@ -461,6 +487,7 @@ extension AppModel {
         o.editing = m.editingText
         o.connectors = markupConnectorsShown
         o.hotConnector = m.hotConnector?.at
+        o.marquee = m.marquee
         if m.drawing, let layer = m.selectionLayer {
             o.drawingBounds = m.drawingBox ?? drawingBounds(layer)
         }
@@ -853,6 +880,11 @@ extension AppModel {
         case (.drag, .select):
             selectDrag(e)
         case (.up, .select):
+            if case .marquee = m.drag {
+                m.drag = .none
+                finishMarquee(shift: e.shift)
+                return
+            }
             if case .handle(let id, let i) = m.drag {
                 anchorDragged(id, handle: i)
             }
@@ -1414,12 +1446,47 @@ extension AppModel {
     /// The pixel of a clip's frame under markup's pixel `p`: on its canvas
     /// where markup's frame lies, at the frame's own scale.
     private func clipPixel(_ img: CGImage, at p: CGPoint) -> RGBA? {
+        clipPoint(img, at: p).flatMap { CompareCanvas.pixel(img, at: $0) }
+    }
+
+    /// Canvas pixel `p` in a clip's frame drawn as `img` (its pixels).
+    private func clipPoint(_ img: CGImage, at p: CGPoint) -> CGPoint? {
         let canvas = clipMarkupCanvas
         guard canvas.width > 0, canvas.height > 0 else { return nil }
         let o = clipMarkupOrigin
-        return CompareCanvas.pixel(img, at: CGPoint(
-            x: (p.x + o.x) * CGFloat(img.width) / canvas.width,
-            y: (p.y + o.y) * CGFloat(img.height) / canvas.height))
+        return CGPoint(x: (p.x + o.x) * CGFloat(img.width) / canvas.width,
+                       y: (p.y + o.y) * CGFloat(img.height) / canvas.height)
+    }
+
+    /// The canvas pixels about `p` -- `side` a side, rows from the top --
+    /// as the stage shows them: the target tool's loupe. A clip's from
+    /// its frame as the player draws it: nil while that is drawn (the
+    /// loupe filled once it is).
+    func sampledGrid(at p: CGPoint, side: Int) -> [RGBA?]? {
+        let h = side / 2
+        let x0 = p.x.rounded(.down), y0 = p.y.rounded(.down)
+        let points = (0..<side * side).map { k in
+            CGPoint(x: x0 + CGFloat(k % side - h) + 0.5,
+                    y: y0 + CGFloat(k / side - h) + 0.5)
+        }
+        guard markupOnClip else {
+            return CompareCanvas.shown?.sampleColors(atCanvas: points)
+        }
+        if let f = markup.sampleFrame, f.key == clipSampleKey {
+            guard let img = f.image else { return nil }
+            return CompareCanvas.pixels(img, at: points.map {
+                clipPoint(img, at: $0)
+            })
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.clipSample(at: p)
+            if let at = self.markup.loupeAt,
+               let g = self.sampledGrid(at: at, side: side) {
+                self.markup.loupe = g
+            }
+        }
+        return nil
     }
 
     /// A colour the eyedropper took: the Color -- or the Fill -- as its
@@ -1864,6 +1931,38 @@ extension AppModel {
 
     /// The selection: `objects` on `layer`, drawn live and left out of
     /// the picture; the layer selected in the editor.
+    /// The MARQUEE let go: the objects lying wholly inside it -- as they
+    /// are shown, turned and flipped -- selected, of ONE layer: the
+    /// topmost (shown, unlocked) that has any. ⇧: added to the selection
+    /// when that is its layer. A press with no drag selects nothing.
+    private func finishMarquee(shift: Bool) {
+        let m = markup
+        let r = m.marquee
+        m.marquee = nil
+        guard let r, r.width >= 2 || r.height >= 2,
+              let a = markupAsset else { return }
+        for l in a.layerStack.reversed()
+        where l.visible && !l.locked && markupShows(l, in: a) {
+            let inside = (l.markup?.objects ?? []).map { o in
+                m.selection.first { $0.id == o.id } ?? o
+            }.filter { o in
+                MarkupRender.shownFrame([o]).map {
+                    r.contains($0.standardized)
+                } ?? false
+            }
+            guard !inside.isEmpty else { continue }
+            if shift && m.selectionLayer == l.id {
+                let have = m.selectedIds
+                select(m.selection + inside.filter { !have.contains($0.id) },
+                       on: l.id)
+            } else {
+                commitSelection()
+                select(inside, on: l.id)
+            }
+            return
+        }
+    }
+
     private func select(_ objects: [MarkupObject], on layer: String) {
         let m = markup
         if m.selectionLayer != layer { m.drawing = false }
@@ -1872,7 +1971,7 @@ extension AppModel {
             m.selection = objects
             m.selectionLayer = layer
             m.selectionAsset = markupAsset?.id
-            if activeLayer != layer { selectLayer(layer) }
+            if !isSelectedLayer(layer) { selectLayer(layer) }
             markupChanged()
         }
     }
@@ -2044,7 +2143,7 @@ extension AppModel {
     /// -- a layout of other letters -- by the key. Handled -- true -- or
     /// left to go on.
     func deselectKey(_ e: NSEvent) -> Bool {
-        guard markupCanDeselect, !e.isARepeat,
+        guard canDeselect, !e.isARepeat,
               let w = e.window, !(w is NSPanel),
               editorWindow == nil || w === editorWindow else { return false }
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
@@ -2054,7 +2153,7 @@ extension AppModel {
         let latin = ch.count == 1 && ch.first.map {
             $0.isASCII && $0.isLetter } == true
         guard latin ? ch == "d" : e.keyCode == 2 else { return false }
-        deselectMarkup()
+        deselect()
         return true
     }
 
@@ -2121,7 +2220,7 @@ extension AppModel {
     /// Information's position and size typed: moved, or scaled from their
     /// frame's top left, together. The Crop panel places the whole
     /// layer; this its objects alone. One command.
-    func setSelectionFrame(_ frame: CGRect) {
+    func setSelectionFrame(_ frame: CGRect, commit: Bool = true) {
         guard let f = MarkupRender.frame(markup.selection) else { return }
         let o = markupStageOrigin
         let to = frame.standardized.offsetBy(dx: -o.x, dy: -o.y)
@@ -2131,7 +2230,7 @@ extension AppModel {
         liveSelection()
         // Moved whole: free of the shapes it is not moved with.
         let ids = markup.selectedIds
-        editSelection {
+        editSelection(commit: commit) {
             $0 = MarkupRender.detached(
                 MarkupRender.reframed($0, from: f, to: to), keeping: ids)
         }
@@ -2156,7 +2255,8 @@ extension AppModel {
     /// object flipped about its own centre (its turn kept), theirs laid
     /// mirrored in their frame; then scaled from the frame's top left.
     /// One command.
-    func setSelectionSize(width: Double? = nil, height: Double? = nil) {
+    func setSelectionSize(width: Double? = nil, height: Double? = nil,
+                          commit: Bool = true) {
         guard let f = MarkupRender.frame(markup.selection) else { return }
         let shown = selectionFlipped
         let flipX = width.map { ($0 < 0) != shown.x } ?? false
@@ -2167,7 +2267,7 @@ extension AppModel {
         guard flipX || flipY || to != f else { return }
         liveSelection()
         let ids = markup.selectedIds
-        editSelection { o in
+        editSelection(commit: commit) { o in
             o = MarkupRender.detached(o, keeping: ids)
             let c = MarkupRender.centre(o)
             if flipX {
@@ -2182,6 +2282,71 @@ extension AppModel {
             }
             o = MarkupRender.reframed(o, from: f, to: to)
         }
+    }
+
+    /// Information's width or height typed with its ASPECT LOCKED
+    /// (selectionAspectLocked): the other scaled with it, its sign -- its
+    /// flip -- kept.
+    func setSelectionSizeKeepingAspect(width: Double? = nil,
+                                       height: Double? = nil) {
+        guard selectionAspectLocked,
+              let f = MarkupRender.frame(markup.selection),
+              f.width > 0, f.height > 0 else {
+            setSelectionSize(width: width, height: height)
+            return
+        }
+        let flipped = selectionFlipped
+        if let width {
+            let h = f.height * abs(width) / f.width
+            setSelectionSize(width: width, height: flipped.y ? -h : h)
+        } else if let height {
+            let w = f.width * abs(height) / f.height
+            setSelectionSize(width: flipped.x ? -w : w, height: height)
+        }
+    }
+
+    /// What a jog wheel of Information's turns: the place, the size, the
+    /// turn.
+    enum SelectionJog { case x, y, width, height, rotation }
+
+    /// A jog wheel turned: the selection moved, grown or turned by `d`
+    /// (pixels; degrees) -- drawn live, kept as the drag ends
+    /// (endSelectionJog): one command a drag. The aspect lock holds the
+    /// size's ratio; a turn adds to each object's own.
+    func jogSelection(_ what: SelectionJog, by d: Double) {
+        guard let f = selectionFrame, d.isFinite else { return }
+        switch what {
+        case .x: setSelectionFrame(f.offsetBy(dx: d, dy: 0), commit: false)
+        case .y: setSelectionFrame(f.offsetBy(dx: 0, dy: d), commit: false)
+        case .width, .height:
+            var w = f.width, h = f.height
+            if what == .width { w = max(1, w + d) } else { h = max(1, h + d) }
+            if selectionAspectLocked, f.width > 0, f.height > 0 {
+                if what == .width {
+                    h = max(1, f.height * w / f.width)
+                } else {
+                    w = max(1, f.width * h / f.height)
+                }
+            }
+            let flipped = selectionFlipped
+            setSelectionSize(width: flipped.x ? -w : w,
+                             height: flipped.y ? -h : h, commit: false)
+        case .rotation:
+            liveSelection()
+            let ids = markup.selectedIds
+            editSelection(commit: false) {
+                $0 = MarkupRender.detached($0, keeping: ids)
+                var r = fmod($0.rotate + d, 360)
+                if r > 180 { r -= 360 } else if r <= -180 { r += 360 }
+                $0.rotate = abs(r) < 1e-9 ? 0 : r
+            }
+        }
+    }
+
+    /// A jog wheel let go: what it changed kept, one command.
+    func endSelectionJog() {
+        guard markup.live, !markup.selection.isEmpty else { return }
+        commitSelection(keep: true)
     }
 
     /// Information's rotation typed: each selected object turned to it
@@ -2412,7 +2577,7 @@ extension AppModel {
                     m.selection = []
                     m.selectionLayer = layer
                     m.selectionAsset = markupAsset?.id
-                    if activeLayer != layer { selectLayer(layer) }
+                    if !isSelectedLayer(layer) { selectLayer(layer) }
                 }
                 m.drawingAt = p
                 m.drawingBox = drawingBox(at: p, on: layer, reach: reach)
@@ -2420,8 +2585,11 @@ extension AppModel {
                 m.drag = .lift(p)
                 return
             }
-            commitSelection()
-            m.drag = .none
+            // On nothing: a MARQUEE from here -- what lies wholly inside
+            // it selected as it is let go (⇧: added to the selection).
+            if !e.shift { commitSelection() }
+            m.drag = .marquee(p)
+            m.marquee = CGRect(origin: p, size: .zero)
             return
         }
         // A double-click on a text -- or a shape -- types its words.
@@ -2447,6 +2615,12 @@ extension AppModel {
     private func selectDrag(_ e: MarkupPointer) {
         let m = markup
         let p = e.point
+        if case .marquee(let from) = m.drag {
+            m.marquee = CGRect(x: min(from.x, p.x), y: min(from.y, p.y),
+                               width: abs(p.x - from.x),
+                               height: abs(p.y - from.y))
+            return
+        }
         // The selected objects dragged with a DRAWING selected beside
         // them: it is lifted too and goes with them (it stayed behind).
         if case .move = m.drag, m.drawing, let at = m.drawingAt,

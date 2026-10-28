@@ -133,6 +133,31 @@ struct ValtzApp: App {
     /// One VALTZ_SNAPSHOT_MARKUP_OPS step, as the toolbar and the
     /// stage's pointer would do it.
     @MainActor
+    /// Information's box "X", "Y", "W", "H", "R" (the rotation): its
+    /// AppKit field, by the identifier PixelField gives it.
+    static func infoField(_ axis: String, in win: NSWindow?) -> NSTextField? {
+        guard let win, let content = win.contentView,
+              let root = content.superview,
+              let r = InfoFieldFrames.frames["info-" + axis] else {
+            return nil
+        }
+        // Its middle, from the content's top left to the window's points.
+        let p = content.convert(NSPoint(x: r.midX,
+                                        y: content.isFlipped ? r.midY
+                                            : content.bounds.height - r.midY),
+                                to: nil)
+        var v = root.hitTest(p)
+        while let x = v {
+            if let f = x as? NSTextField { return f }
+            // A field being edited: its field editor's field.
+            if let t = x as? NSTextView, let f = t.delegate as? NSTextField {
+                return f
+            }
+            v = x.superview
+        }
+        return nil
+    }
+
     static func markupStep(_ m: AppModel, _ step: String) async {
         let kv = step.split(separator: "=", maxSplits: 1).map(String.init)
         let arg = kv.count > 1 ? kv[1] : ""
@@ -251,6 +276,64 @@ struct ValtzApp: App {
                 }.joined(separator: ";")
             }.joined(separator: "|")
             print("snapshot: \(kv[0]) \(arg) selection=\(f) turn=\(turn) handles=\(shown) objects=\(mk.selection.count) undo=\(m.document.undo ?? "-")")
+        // Information's boxes and wheels as a hand works them: "ifield=W"
+        // (X, Y, W, H, R the rotation) its box clicked into -- focused,
+        // its words selected -- "itype=300" typed there, "ienter" Return,
+        // "iundo" ⌘Z (the Edit menu's), "iblur" a click away; "jog=w:40"
+        // a wheel (x, y, w, h, r) dragged 40 points, then let go;
+        // "aspect=on|off" the lock -- each printing the selection's frame
+        // and turn, each box's words, the focus, the undo's next.
+        case "ifield", "itype", "ienter", "iundo", "iblur", "jog", "aspect":
+            let win = m.editorWindow ?? NSApp.windows.first { $0.isVisible }
+            switch kv[0] {
+            case "ifield":
+                if let f = Self.infoField(arg, in: win) {
+                    win?.makeFirstResponder(f)
+                    f.currentEditor()?.selectAll(nil)
+                }
+            case "itype":
+                (win?.firstResponder as? NSTextView)?.insertText(
+                    arg, replacementRange: NSRange(location: NSNotFound,
+                                                   length: 0))
+            case "ienter":
+                (win?.firstResponder as? NSTextView)?.insertNewline(nil)
+            case "iundo":
+                m.refreshTextUndo()
+                m.undoAny()
+            case "iblur":
+                win?.makeFirstResponder(nil)
+            case "aspect":
+                m.selectionAspectLocked = arg != "off"
+            default:
+                let p = arg.split(separator: ":")
+                let jog: AppModel.SelectionJog? = switch p.first ?? "" {
+                case "x": .x
+                case "y": .y
+                case "w": .width
+                case "h": .height
+                case "r": .rotation
+                default: nil
+                }
+                if let jog, p.count > 1, let n = Int(p[1]) {
+                    for _ in 0..<abs(n) {
+                        m.jogSelection(jog, by: n < 0 ? -1 : 1)
+                    }
+                    m.endSelectionJog()
+                }
+            }
+            let fl = m.selectionFlipped
+            let f = m.selectionFrame.map {
+                String(format: "%.1f,%.1f,%.1fx%.1f", $0.minX, $0.minY,
+                       $0.width * (fl.x ? -1 : 1),
+                       $0.height * (fl.y ? -1 : 1))
+            } ?? "-"
+            let boxes = ["X", "Y", "W", "H", "R"].map {
+                "\($0)=\(Self.infoField($0, in: win)?.stringValue ?? "?")"
+            }.joined(separator: ",")
+            let focus = (win?.firstResponder as? NSTextView).flatMap {
+                ($0.delegate as? NSTextField)?.accessibilityIdentifier()
+            } ?? "-"
+            print("snapshot: info \(kv[0]) \(arg) selection=\(f) turn=\(m.selectionRotation.map { String(format: "%.1f", $0) } ?? "mixed") boxes=\(boxes) focus=\(focus) aspect=\(m.selectionAspectLocked) live=\(mk.live) undo=\(m.document.undo ?? "-")")
         case "tool":
             if let t = MarkupTool(rawValue: arg) {
                 mk.tool = t
@@ -841,11 +924,12 @@ struct ValtzApp: App {
                               || model.closingTasks != nil)
             }
             // The markup's selection let go, as Photoshop's ⌘D (the
-            // markup toolbar's button beside Select).
+            // markup toolbar's button beside Select) -- else the
+            // timeline's layer.
             CommandGroup(after: .pasteboard) {
-                Button("Deselect") { model.deselectMarkup() }
+                Button("Deselect") { model.deselect() }
                     .keyboardShortcut("d")
-                    .disabled(!model.markupCanDeselect
+                    .disabled(!model.canDeselect
                               || model.closingTasks != nil)
             }
             CommandGroup(after: .textEditing) {
@@ -928,9 +1012,12 @@ struct ValtzApp: App {
                 Divider()
                 // The timeline in the prompt's place, while the stage
                 // works on a timeline or a still with pages.
+                // ⇧⌘T: in and out again (⇧⌘P back to the prompt with the
+                // keyboard in it).
                 Toggle("Timeline", isOn: Binding(
                     get: { model.timelineOpen },
                     set: { model.showTimeline($0) }))
+                .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(!model.timelineAvailable)
                 Toggle("Markdown as It Reads", isOn: Binding(
                     get: { model.promptMarkdown },
@@ -3018,6 +3105,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                         m.setMix(mix)
                     case "target": m.colorTargeting = arg != "off"
+                    // "thover:x,y": the pointer over canvas pixel x,y
+                    // with the target tool on -- its loupe: `snapshot:
+                    // color-loupe at= cells=<read>/<all> mid=#rrggbb`
+                    // (a clip's frame drawn first).
+                    case "thover":
+                        let xy = arg.split(separator: ",").compactMap {
+                            Double($0) }
+                        guard xy.count == 2 else { break }
+                        let at = CGPoint(x: xy[0], y: xy[1])
+                        m.colorTargetPointer(MarkupPointer(phase: .hover,
+                                                           point: at))
+                        try? await Task.sleep(for: .milliseconds(600))
+                        let cells = m.markup.loupe
+                        let mid = cells.count == AppModel.loupeSide
+                            * AppModel.loupeSide ? cells[cells.count / 2]
+                            : nil
+                        let hex = mid.map { String(format: "#%02x%02x%02x",
+                            Int($0.r * 255), Int($0.g * 255),
+                            Int($0.b * 255)) } ?? "-"
+                        print("snapshot: color-loupe at=\(m.markup.loupeAt.map { "\(Int($0.x)),\(Int($0.y))" } ?? "-") cells=\(cells.compactMap { $0 }.count)/\(cells.count) mid=\(hex) shown=\(m.markupOverlay.loupeAt != nil)")
+                    case "draw": Self.drawWindow(to: arg)
                     case "tdrag", "ctdrag":
                         let ends = arg.split(separator: ">").map {
                             $0.split(separator: ",").compactMap {
@@ -3170,7 +3278,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // a wheel's menu's), "key" a key of the look there (a clip),
             // "frame:<n>" the player there, "params" the ranges as this
             // works them out against the core's step (`snapshot:
-            // grade-params step= worst= tones=`), "pixel:x,y" a still
+            // grade-params step= worst= tones=`), "active:<id>" another
+            // asset active, "sweep:shadows=0>1@60" a tint's strength
+            // dragged and how the stage kept up (`snapshot: grade-sweep
+            // ...`, Self.sweep), "profile:6:<file>" the system's sampler
+            // on this process meanwhile, "pixel:x,y" a still
             // drawn as the stage draws it, read at that pixel (`snapshot:
             // grade-pixel x,y composed= rgb=`, 0...255) -- each printing
             // `snapshot: grade <step>
@@ -3239,6 +3351,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             flags: kv[0] == "wsdrag" ? .shift : [])
                     case "bypass": m.setGradeBypass(arg != "off")
                     case "reset": m.resetColorGrade(GradeRange(rawValue: arg))
+                    // "6:/tmp/s.txt": the system's sampler on this
+                    // process for 6 s, its call trees into that file --
+                    // started, not waited for (the steps after it run in
+                    // it).
+                    case "profile":
+                        let pp = arg.split(separator: ":", maxSplits: 1)
+                        guard pp.count == 2 else { break }
+                        let pr = Process()
+                        pr.executableURL = URL(fileURLWithPath: "/usr/bin/sample")
+                        pr.arguments = [
+                            String(ProcessInfo.processInfo.processIdentifier),
+                            String(pp[0]), "1", "-file", String(pp[1])]
+                        try? pr.run()
+                        try? await Task.sleep(for: .milliseconds(400))
+                    // Another asset active (as Assets' Set Active), let
+                    // settle: a picture, a clip.
+                    case "active":
+                        if let a = m.asset(id: arg) { m.setActive(a) }
+                        try? await Task.sleep(for: .milliseconds(2500))
+                    // A tint's strength dragged as a hand drags a wheel:
+                    // "shadows=0>1@60" -- 60 values 16 ms apart, its hue
+                    // kept (220 while untinted) -- then rest; how the
+                    // stage kept up (Self.sweep).
+                    case "sweep":
+                        let sv = arg.split(separator: "=")
+                        let parts = (sv.count == 2 ? sv[1] : "")
+                            .split(separator: "@")
+                        let ends = (parts.first ?? "").split(separator: ">")
+                            .compactMap { Double($0) }
+                        let n = parts.count > 1 ? Int(parts[1]) ?? 60 : 60
+                        guard sv.count == 2, ends.count == 2, n > 1,
+                              let r = GradeRange(rawValue: String(sv[0]))
+                        else { break }
+                        let t = m.adjustments.grade[r]
+                        let hue = t.saturation > 0 ? t.hue : 220
+                        let line = await Self.sweep(m, n) { i in
+                            m.setGradeTint(r, GradeTint(
+                                hue: hue, saturation: ends[0]
+                                    + (ends[1] - ends[0]) * Double(i)
+                                    / Double(n - 1)))
+                        }
+                        print("snapshot: grade-sweep \(line)")
                     // A key of the look here (a clip), as the key bar's.
                     case "key": m.toggleKey(.adjust)
                     case "frame":
@@ -3339,6 +3493,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         try? await Task.sleep(for: .milliseconds(600))
                     case "flat": m.flattenLayerEq()
                     case "reset": m.resetLayerSound()
+                    case "active":
+                        if let a = m.asset(id: arg) { m.setActive(a) }
+                        try? await Task.sleep(for: .milliseconds(2500))
+                    // A fader dragged as a hand drags it: "gain=0>-12@30"
+                    // (dB), "pitch=0>4@30", "eq5=0>6@30" -- n values 16 ms
+                    // apart -- then rest; how the player kept up.
+                    case "sweep":
+                        let sv = arg.split(separator: "=")
+                        let parts = (sv.count == 2 ? sv[1] : "")
+                            .split(separator: "@")
+                        let ends = (parts.first ?? "").split(separator: ">")
+                            .compactMap { Double($0) }
+                        let n = parts.count > 1 ? Int(parts[1]) ?? 30 : 30
+                        guard sv.count == 2, ends.count == 2, n > 1 else {
+                            break
+                        }
+                        let what = String(sv[0])
+                        let line = await Self.sweep(m, n) { i in
+                            let v = ends[0] + (ends[1] - ends[0]) * Double(i)
+                                / Double(n - 1)
+                            if what == "gain" {
+                                m.setLayerVolume(AudioPanel.gain(atPosition: v))
+                            } else if what == "pitch" {
+                                m.setLayerPitch(v)
+                            } else if what.hasPrefix("eq"),
+                                      let b = Int(what.dropFirst(2)) {
+                                m.setLayerEq(b, v)
+                            }
+                        }
+                        print("snapshot: audio-sweep \(what) \(line)")
                     case "follow": m.pitchFollowsSpeed = arg != "off"
                     // Another card open ("trim", "adjust" ...), and the
                     // window drawn.
@@ -3547,6 +3731,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         Self.postSpace(m)
                     // "s" / "esc": the scissors' keys, posted through the
                     // app's event path as a real key's.
+                    // "draw=<file.png>": the window drawn (AppKit's).
+                    case "draw": Self.drawWindow(to: arg)
+                    // "cd": ⌘D, Edit › Deselect -- the layer let go (no
+                    // markup selected): `selected=-`, `clipEdge=`.
+                    case "key" where arg == "cd":
+                        if let w = m.editorWindow,
+                           let ev = NSEvent.keyEvent(
+                               with: .keyDown, location: .zero,
+                               modifierFlags: [.command], timestamp: 0,
+                               windowNumber: w.windowNumber, context: nil,
+                               characters: "d",
+                               charactersIgnoringModifiers: "d",
+                               isARepeat: false, keyCode: 2) {
+                            NSApp.postEvent(ev, atStart: false)
+                        }
                     case "key" where arg == "s" || arg == "esc":
                         let esc = arg == "esc"
                         if let w = m.editorWindow,
@@ -3594,7 +3793,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         }
                         wait = 1.5
-                    case "drop":
+                    case "drop", "vdrop":
                         let p = arg.split(separator: "@")
                         let made = m.assets.filter {
                             $0.head > 0 && !$0.isDrawn
@@ -3615,7 +3814,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                         let at = p.count > 1
                             ? p[1].split(separator: ":") : []
-                        if let a, at.count == 2, let f = Int(at[1]) {
+                        // `vdrop=<asset>@<row>:<frame>`: through the
+                        // view's own placing (the track view's: above
+                        // the track's top layer).
+                        if key == "vdrop", let a, at.count == 2,
+                           let r = Int(at[0]), let f = Int(at[1]) {
+                            _ = TimelineNSView.shown?.drop(asset: a.id,
+                                                           row: r, frame: f)
+                        } else if let a, at.count == 2, let f = Int(at[1]) {
                             m.dropOnTimeline(
                                 asset: a.id,
                                 above: at[0] == "top" ? nil
@@ -3639,6 +3845,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "type", "enter", "esc":
                         Self.sendKeys(m, key == "enter" ? "\r"
                                       : key == "esc" ? "\u{1b}" : arg)
+                    // The player's line dragged past the tracks' edge
+                    // and held there: "scrubpast=60:left:1.5" -- pressed
+                    // on the ruler at frame 60 ("here": the player's), 30
+                    // points past the left
+                    // edge (right: past the right), 1.5 s, let go --
+                    // printing `snapshot: timeline-scrub scroll=x/max
+                    // frame= inSight=`: the line in the tracks shown.
+                    case "scrubpast":
+                        let q = arg.split(separator: ":").map(String.init)
+                        // "here": where the player is.
+                        let start = q.first == "here" ? m.videoFrame
+                            : q.first.flatMap { Int($0) }
+                        if q.count == 3, let f = start,
+                           let hold = Double(q[2]),
+                           let v = TimelineNSView.shown,
+                           let a = v.windowPoint(ruler: f),
+                           let b = v.windowPoint(pastSide: q[1] == "right",
+                                                 by: 30) {
+                            await Self.postDrag(from: (a.x, a.y),
+                                                to: (b.x, b.y),
+                                                release: false)
+                            try? await Task.sleep(for: .seconds(hold))
+                            let at = m.videoFrame
+                            let seen = v.windowPoint(ruler: at).map {
+                                p -> Bool in
+                                let l = v.windowPoint(pastSide: false,
+                                                      by: 0)?.x ?? 0
+                                let r = v.windowPoint(pastSide: true,
+                                                      by: 0)?.x ?? 0
+                                return p.x >= l && p.x <= r
+                            } ?? false
+                            FileHandle.standardError.write(Data(
+                                "snapshot: timeline-scrub scroll=\(v.scrollXSummary) frame=\(at) inSight=\(seen)\n".utf8))
+                            await Self.postDrag(from: (b.x, b.y),
+                                                to: (b.x, b.y), up: true)
+                        }
+                        wait = 1.5
                     // A header dragged past the rows' edge and held
                     // there: "hdragpast=0:bottom:2" -- row 0's, 20
                     // points below the rows, 2 s, then let go.
@@ -3726,6 +3969,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             if p.count == 2, let at = menu.items
                                 .firstIndex(where: {
                                     $0.identifier?.rawValue == String(p[1])
+                                }) {
+                                menu.performActionForItem(at: at)
+                            }
+                        }
+                        wait = 1.5
+                    // TRACK VIEW: on or off; a layer's (a row's, top
+                    // first) track separator set or not; a row's menu
+                    // -- its header's, `bmenu` its block's -- printed
+                    // ("+" checked), an item picked by its title or
+                    // "separator".
+                    case "tracks":
+                        m.timelineTracks = arg != "off"
+                    case "separator":
+                        let p = arg.split(separator: ":")
+                        let rows = m.timelineModel.rows
+                        if let i = Int(p.first ?? ""),
+                           rows.indices.contains(i) {
+                            m.setLayerSeparator(rows[i].id,
+                                                p.count < 2 || p[1] != "off")
+                        }
+                        wait = 1.5
+                    case "hmenu", "bmenu":
+                        let p = arg.split(separator: ":", maxSplits: 1)
+                        if let i = Int(p.first ?? ""),
+                           let menu = TimelineNSView.shown?.layerMenu(
+                               row: i, header: key == "hmenu") {
+                            let items = menu.items.filter {
+                                !$0.isSeparatorItem
+                            }.map {
+                                $0.title.replacingOccurrences(of: " ",
+                                                              with: "_")
+                                    + ($0.state == .on ? "+" : "")
+                            }
+                            print("snapshot: timeline-\(key) \(i) items=\(items.joined(separator: ","))")
+                            if p.count == 2, let at = menu.items
+                                .firstIndex(where: {
+                                    $0.identifier?.rawValue == String(p[1])
+                                        || $0.title == String(p[1])
                                 }) {
                                 menu.performActionForItem(at: at)
                             }
@@ -3853,7 +4134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     default: break
                     }
                     try? await Task.sleep(for: .seconds(wait))
-                    print("snapshot: timeline \(step) \(Self.timelineSummary(m)) naming=\(TimelineNSView.shown?.isNaming ?? false) titles=\(m.timelineModel.rows.map(\.title).joined(separator: "|").replacingOccurrences(of: " ", with: "_"))")
+                    print("snapshot: timeline \(step) \(Self.timelineSummary(m)) edge=\(m.clipEdge?.rawValue ?? "-") offStage=\(m.layerOffStage?.rawValue ?? "-") layersLit=\(m.stageStack?.layerStack.filter { m.isSelectedLayer($0.id) }.count ?? 0) naming=\(TimelineNSView.shown?.isNaming ?? false) titles=\(m.timelineModel.rows.map(\.title).joined(separator: "|").replacingOccurrences(of: " ", with: "_"))")
                 }
             }
             // A clip's keys: "adjust:55:exposure=1.5;crop:55:scale=0.6;
@@ -4023,7 +4304,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // a recording or the camera shows it (no device:
                     // what it looks like).
                     case "card":
-                        if kv.count > 1 && kv[1] == "camera" {
+                        if kv.count > 1 && kv[1] == "voiceover" {
+                            // As a take shows it, nothing recorded.
+                            m.capture = CaptureStateDTO(
+                                recording: true, name: "MacBook Pro Microphone",
+                                seconds: 3.2, level: 0.5)
+                            m.voiceOverComposition = m.voiceOverTarget?.id
+                            m.attachCapture = .voiceOver
+                            m.voiceOverFrom = m.videoFrame
+                        } else if kv.count > 1 && kv[1] == "camera" {
                             m.camera = CameraStateDTO(
                                 on: true, name: "MacBook Pro Camera",
                                 width: 1920, height: 1080)
@@ -4043,6 +4332,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         m.capture = CaptureStateDTO()
                         m.camera = CameraStateDTO()
                         m.landCapture(kv[1])
+                    // The VOICE-OVER: its mode ("voiceover:system" the
+                    // system's audio its source), a take, its stop, its
+                    // (x).
+                    case "voiceover":
+                        m.openVoiceOver()
+                        if kv.count > 1, kv[1] == "system" {
+                            m.voiceOverSource = "system"
+                        }
+                    case "vorecord": m.voiceOverRecord()
+                    // The player's cued start alone (no recording):
+                    // "vocue" played so, muted; "vocue:0" paused, heard.
+                    case "vocue":
+                        let asked = CACurrentMediaTime()
+                        m.lastCue = nil
+                        m.sendVideo(.cued(kv.count > 1 ? 0 : 1,
+                                          muted: kv.count == 1))
+                        try? await Task.sleep(for: .milliseconds(900))
+                        FileHandle.standardError.write(Data(
+                            "snapshot: vocue asked=\(String(format: "%.3f", asked)) cue=\(m.lastCue.map { String(format: "%.3f", $0) } ?? "-") ahead=\(m.lastCue.map { String(format: "%.3f", $0 - asked) } ?? "-") frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted)\n".utf8))
+                    case "vostop": m.voiceOverStop()
+                    case "voclose": m.abortAttachCapture()
                     case "stop": m.finishAttachSound()
                     case "snap": m.cameraSnap()
                     case "record": m.cameraRecord()
@@ -4056,8 +4366,159 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(1200))
+                    if m.attachCapture == .voiceOver
+                        || step.hasPrefix("vo") || step.hasPrefix("voice") {
+                        FileHandle.standardError.write(Data(
+                            "snapshot: voiceover \(step) \(Self.voiceOverSummary(m))\n".utf8))
+                    }
                     FileHandle.standardError.write(Data(
                         "snapshot: attach \(step) capture=\(m.attachCapture.map { "\($0)" } ?? "-") recording=\(m.capture.recording || m.camera.recording) seconds=\(String(format: "%.1f", max(m.capture.seconds, m.camera.seconds))) frames=\(m.camera.frames) refs=\(m.promptAttachments.map { $0.kind + ":" + $0.url.lastPathComponent }.joined(separator: ",").replacingOccurrences(of: " ", with: "_"))\n".utf8))
+                }
+            }
+            // The ATLAS (DESIGN §10a Atlas), in turn: "open" (the ☰
+            // column's Atlas), "select:<asset>" (by id or name; a
+            // layer's "select:<comp>/<layer>"), "expand:<asset>",
+            // "collapse", "play:<asset>", "stop", "disconnect:<comp>/
+            // <layer>" ("0" layer 0), "place:<asset>@<comp>",
+            // "remove:<asset>", "zoom:in|out|fit|<scale>",
+            // "editor:<asset>" (Open in Editor), "wait:<s>",
+            // "shot:<file.png>" (the window as the screen shows it),
+            // "draw:<file.png>" (as AppKit draws it: no players) -- each
+            // printing `snapshot: atlas <step> ...` (Self.atlasSummary).
+            if let spec = env["VALTZ_SNAPSHOT_ATLAS"] {
+                for step in spec.split(separator: ";").map(String.init) {
+                    let kv = step.split(separator: ":", maxSplits: 1)
+                        .map(String.init)
+                    let arg = kv.count > 1 ? kv[1] : ""
+                    let named = { (s: String) -> String? in
+                        (m.assets.first { $0.id == s }
+                            ?? m.assets.first { $0.name == s })?.id
+                    }
+                    // "<comp>/<layer>": that layer's node.
+                    let layerNode = { (s: String) -> AtlasNodeDTO? in
+                        let p = s.split(separator: "/").map(String.init)
+                        guard p.count == 2, let c = named(p[0]) else {
+                            return nil
+                        }
+                        let l = p[1] == "0" ? "" : p[1]
+                        return m.atlas?.graph.nodes.first {
+                            $0.type == "layer" && $0.into == c
+                                && $0.layer == l
+                        }
+                    }
+                    switch kv[0] {
+                    case "open": m.show(.atlas)
+                    case "wait":
+                        try? await Task.sleep(for: .seconds(
+                            Double(arg) ?? 1))
+                    case "select":
+                        if arg.contains("/"), let n = layerNode(arg) {
+                            m.atlasSelected = n.id
+                        } else if let id = named(arg),
+                                  let i = m.atlas?.assetNode[id] {
+                            m.atlasSelected = m.atlas?.graph.nodes[i].id
+                        }
+                    case "expand": m.atlasExpanded = named(arg)
+                    case "collapse": m.atlasExpanded = nil
+                    case "play": if let id = named(arg) { m.atlasPlay(id) }
+                    case "stop": m.atlasStop()
+                    case "disconnect":
+                        if let n = layerNode(arg) { m.atlasDisconnect(n) }
+                    case "place":
+                        let p = arg.split(separator: "@").map(String.init)
+                        if p.count == 2, let a = named(p[0]),
+                           let c = named(p[1]) {
+                            m.atlasPlace(a, onto: c)
+                        }
+                    case "remove":
+                        if let id = named(arg) { m.atlasRemove(id) }
+                    case "zoom":
+                        switch arg {
+                        case "in": m.atlasZoom(by: 1.25)
+                        case "out": m.atlasZoom(by: 1 / 1.25)
+                        case "fit": m.atlasFit()
+                        default:
+                            if let z = Double(arg) { m.setAtlasZoom(z) }
+                        }
+                    // "zoomat:1.5@300,200": as a pinch there (the scroll
+                    // view's points, from the window's top left), the
+                    // graph's point under it kept.
+                    case "zoomat":
+                        let p = arg.split(separator: "@").map(String.init)
+                        let xy = p.count == 2
+                            ? p[1].split(separator: ",").compactMap {
+                                Double($0) } : []
+                        if let z = Double(p[0]), xy.count == 2 {
+                            let at = m.atlasViewportPoint(
+                                CGPoint(x: xy[0], y: xy[1]))
+                            let before = m.atlasGraphPoint(at: at)
+                            m.setAtlasZoom(z, at: at)
+                            try? await Task.sleep(for: .milliseconds(800))
+                            let after = m.atlasGraphPoint(at: at)
+                            FileHandle.standardError.write(Data(String(
+                                format: "snapshot: atlas-zoomat before=%.1f,%.1f after=%.1f,%.1f\n",
+                                before.x, before.y, after.x, after.y).utf8))
+                        }
+                    // "scroll:x,y": scrolled there (ScrollPosition's
+                    // points: from the top, past the title bar).
+                    case "scroll":
+                        let xy = arg.split(separator: ",").compactMap {
+                            Double($0) }
+                        if xy.count == 2 {
+                            m.atlasPosition.scrollTo(
+                                point: CGPoint(x: xy[0], y: xy[1]))
+                        }
+                    // The player opened large, as its controls drive it.
+                    case "pplay": m.atlasPlayback?.play(rate: 1)
+                    case "ppause": m.atlasPlayback?.play(rate: 0)
+                    case "pstep": m.atlasPlayback?.step(Int(arg) ?? 1)
+                    case "pseek": m.atlasPlayback?.seek(to: Int(arg) ?? 0)
+                    case "pstart": m.atlasPlayback?.toEnd(false)
+                    case "pend": m.atlasPlayback?.toEnd(true)
+                    case "pff": m.atlasPlayback?.fastForward()
+                    case "pmute": m.atlasPlayback?.toggleMute()
+                    case "ploop": m.atlasPlayback?.loops.toggle()
+                    case "markdown": m.promptMarkdown = arg != "off"
+                    // A key posted through the app's event path:
+                    // space, left, right, home, end -- "c" ⌘, "s" ⇧
+                    // ("space" itself, before: its "s" is no ⇧).
+                    case "key" where arg == "space":
+                        Self.postSpace(m)
+                    case "key":
+                        let name = arg.drop(while: { "cs".contains($0) })
+                        let pre = arg.prefix(arg.count - name.count)
+                        let keys: [Substring: (UInt16, String)] = [
+                            "left": (123, "\u{F702}"),
+                            "right": (124, "\u{F703}"),
+                            "home": (115, "\u{F729}"),
+                            "end": (119, "\u{F72B}"),
+                        ]
+                        var mods: NSEvent.ModifierFlags = [.function]
+                        if name == "left" || name == "right" {
+                            mods.insert(.numericPad)
+                        }
+                        if pre.contains("c") { mods.insert(.command) }
+                        if pre.contains("s") { mods.insert(.shift) }
+                        if let (code, ch) = keys[name],
+                           let w = m.editorWindow,
+                           let ev = NSEvent.keyEvent(
+                               with: .keyDown, location: .zero,
+                               modifierFlags: mods, timestamp: 0,
+                               windowNumber: w.windowNumber, context: nil,
+                               characters: ch,
+                               charactersIgnoringModifiers: ch,
+                               isARepeat: false, keyCode: code) {
+                            NSApp.postEvent(ev, atStart: false)
+                        }
+                    case "editor":
+                        if let id = named(arg) { m.atlasOpenInEditor(id) }
+                    case "shot": await Self.shootWindow(to: arg)
+                    case "draw": Self.drawWindow(to: arg)
+                    default: break
+                    }
+                    try? await Task.sleep(for: .milliseconds(1200))
+                    FileHandle.standardError.write(Data(
+                        "snapshot: atlas \(step) \(Self.atlasSummary(m))\n".utf8))
                 }
             }
             // File › New Anonymous Project.
@@ -4209,14 +4670,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             "end": (119, "\u{F72B}"),
                             "tab": (48, "\t"),
                             "p": (35, "P"),
+                            "t": (17, "T"),
                             "return": (36, "\r"),
                         ]
                         // "tab" (⇧ "stab"): view only toggled where
                         // nothing takes keys (AppModel.viewOnlyKey).
-                        // "csp" ⇧⌘P, the Agent's prompt; "creturn" ⌘↩,
-                        // Start (the line's `startFlash=` counting it).
+                        // "csp" ⇧⌘P, the prompt (back from the timeline,
+                        // the keyboard in it; the Agent's while it is on);
+                        // "cst" ⇧⌘T, View › Timeline (a menu's: taken only
+                        // in front); "creturn" ⌘↩, Start (the line's
+                        // `startFlash=` counting it).
                         var mods: NSEvent.ModifierFlags =
-                            ["tab", "p", "return"].contains(name)
+                            ["tab", "p", "t", "return"].contains(name)
                                 ? [] : [.function]
                         if name == "left" || name == "right" {
                             mods.insert(.numericPad)
@@ -4237,7 +4702,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // "viewonly:on|off|toggle|eye": VIEW ONLY, as View ›
                     // View Only sets it -- "eye" the ☰ column's (the
                     // editor shown so).
-                    // "screen:log|editor": the ☰ column's Log or Editor.
+                    // "menukey:<title>": the menu item so titled -- its
+                    // key, whether it is on and checked.
+                    case "menukey":
+                        func find(_ menu: NSMenu?) -> NSMenuItem? {
+                            for it in menu?.items ?? [] {
+                                if it.title == arg { return it }
+                                if let f = find(it.submenu) { return f }
+                            }
+                            return nil
+                        }
+                        let it = find(NSApp.mainMenu)
+                        let mk = it.map { i -> String in
+                            var k = ""
+                            if i.keyEquivalentModifierMask.contains(.shift) {
+                                k += "⇧"
+                            }
+                            if i.keyEquivalentModifierMask.contains(.command) {
+                                k += "⌘"
+                            }
+                            return k + i.keyEquivalent.uppercased()
+                        } ?? "-"
+                        FileHandle.standardError.write(Data(
+                            "snapshot: menukey \(arg) key=\(mk) enabled=\(it?.isEnabled ?? false) on=\(it?.state == .on)\n".utf8))
+                    // "screen:log|atlas|editor": the ☰ column's Log, Atlas
+                    // or Editor.
                     case "screen":
                         if let s = AppScreen(rawValue: arg) { m.show(s) }
                     // "prompt:video|image|audio|agent": View › Video
@@ -5030,12 +5519,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     m.returnToCurrent()
                     continue
                 }
+                // "draw:<file.png>": the window drawn (AppKit's).
+                if step.hasPrefix("draw:") {
+                    Self.drawWindow(to: String(step.dropFirst(5)))
+                    continue
+                }
                 let p = step.split(separator: ":").map(String.init)
                 guard p.count >= 2, let a = pick(p.last ?? "") else {
                     continue
                 }
                 if p[0] == "stage" {
                     m.showMadeOnStage(a)
+                    continue
+                }
+                // The list's click while comparing ("view:<id>": not
+                // viewed but one of the sides, said), and a composition
+                // made active from it ("listactive:<id>": the compare
+                // ended) -- printing `compareOn= stage= viewed= banner=`.
+                if p[0] == "view" || p[0] == "listactive" {
+                    if p[0] == "view" {
+                        if !m.refusedForCompare(a) { m.viewAsset(a) }
+                    } else {
+                        m.activateFromList(a)
+                    }
+                    try? await Task.sleep(for: .milliseconds(900))
+                    let stage = m.stageAssetId.flatMap { m.asset(id: $0)?.name }
+                        ?? "-"
+                    let viewed = m.viewedAsset.flatMap { m.asset(id: $0)?.name }
+                        ?? "-"
+                    FileHandle.standardError.write(Data(
+                        "snapshot: compare \(step) compareOn=\(m.compareOn) b=\(m.stage.b != nil) stage=\(stage.replacingOccurrences(of: " ", with: "_")) viewed=\(viewed) banner=\((m.banner ?? "-").replacingOccurrences(of: " ", with: "_"))\n".utf8))
                     continue
                 }
                 let slot: StageSlot = p[0] == "a" ? .a : .b
@@ -5474,7 +5987,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // <policy|default>", "share:<task|model>=on|off", "wired:<GB>|
         // auto" (General › Memory's wired limit), "agent-model:<id>|same"
         // "agent-memory:<GB>|none" and "agent-cache:<GB>|auto"
-        // (Experimental › Agent's Model, Memory and Expert Cache) -- each
+        // (Agentic Helper › Agent's Model, Memory and Expert Cache),
+        // "draw:<file.png>" the window drawn -- each
         // printing `snapshot: settings-nav <step> at=
         // history= back= forward= search= rows= title= policies=
         // wired=chosen/inForce/used` (GB, `+pending` a lower one waiting)
@@ -5558,6 +6072,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                 // A listed row clicked: its place -- a setting found on
                 // it scrolled to and pulsing.
+                // "draw:<file.png>": Settings' window drawn as it is now
+                // (AppKit's: its sidebar's vibrancy drawn empty).
+                case "draw":
+                    if let v = win?.contentView?.superview
+                        ?? win?.contentView,
+                       let rep = v.bitmapImageRepForCachingDisplay(
+                           in: v.bounds) {
+                        v.cacheDisplay(in: v.bounds, to: rep)
+                        try? rep.representation(using: .png, properties: [:])?
+                            .write(to: URL(fileURLWithPath: arg))
+                    }
                 case "pick":
                     let r = rows()
                     if let i = Int(arg), r.indices.contains(i) {
@@ -5571,7 +6096,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let gb = Double(arg) ?? 0
                     m.setWiredLimit(arg == "auto" ? 0
                                     : Int64(gb * Double(1 << 30)))
-                // The Agent's Model and Memory (Experimental › Agent).
+                // The Agent's Model and Memory (Agentic Helper › Agent).
                 case "agent-model":
                     m.setAgentSettings(["model": arg == "same" ? "" : arg])
                 case "agent-memory":
@@ -6310,6 +6835,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .joined(separator: "|")
     }
 
+    /// A control dragged as a hand drags it -- `n` steps 16 ms apart --
+    /// then let rest, and how the stage kept up: "steps= took= draws=
+    /// <small>+<full during>/<small>+<full in all> settled=" (a still's
+    /// look: when its own-size draw showed after the last step) "plans=
+    /// <during>/<in all> planMs=" (a clip's stack plans, the last one's
+    /// making) "planAt= rebuilds=<during>/<in all> rebuiltAt=" (the
+    /// player made again) -- times in ms from the last step; it waits
+    /// until nothing has happened for 1.5 s (30 s at most).
+    @MainActor
+    static func sweep(_ m: AppModel, _ n: Int,
+                      _ step: (Int) -> Void) async -> String {
+        m.lookDraws = (0, 0, 0)
+        let plans0 = m.stackPlanStats.made
+        let rebuilds0 = StackStats.rebuilds
+        let relaid0 = StackStats.relaid
+        // The main thread meanwhile: a tick asked for every 4 ms, how late
+        // each came -- its longest stall, and how many passed 20 ms.
+        let stalls = StallWatch()
+        let watcher = Task { @MainActor in
+            var last = CACurrentMediaTime()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(4))
+                let now = CACurrentMediaTime()
+                stalls.note(now - last - 0.004)
+                last = now
+            }
+        }
+        let t0 = CACurrentMediaTime()
+        for i in 0..<n {
+            step(i)
+            try? await Task.sleep(for: .milliseconds(16))
+        }
+        let moved = CACurrentMediaTime()
+        watcher.cancel()
+        let during = m.lookDraws
+        let plansDuring = m.stackPlanStats.made - plans0
+        let rebuildsDuring = StackStats.rebuilds - rebuilds0
+        for _ in 0..<600 {
+            try? await Task.sleep(for: .milliseconds(50))
+            let last = max(m.stackPlanStats.appliedAt, StackStats.attachedAt,
+                           m.lookDraws.shownAt, moved)
+            if m.lookResting && !m.stackPlanning
+                && CACurrentMediaTime() - last > 1.5 { break }
+        }
+        let ms = { (t: CFTimeInterval) -> Int in
+            t > moved ? Int(((t - moved) * 1000).rounded()) : 0
+        }
+        return "steps=\(n) took=\(Int(((moved - t0) * 1000).rounded()))ms "
+            + "draws=\(during.small)+\(during.full)/"
+            + "\(m.lookDraws.small)+\(m.lookDraws.full) "
+            + "settled=\(ms(m.lookDraws.shownAt))ms "
+            + "plans=\(plansDuring)/\(m.stackPlanStats.made - plans0) "
+            + "planMs=\(Int(m.stackPlanStats.lastMs.rounded())) "
+            + "planAt=\(ms(m.stackPlanStats.appliedAt))ms "
+            + "rebuilds=\(rebuildsDuring)/\(StackStats.rebuilds - rebuilds0) "
+            + "rebuiltAt=\(ms(StackStats.attachedAt))ms "
+            + "relaid=\(StackStats.relaid - relaid0) "
+            + "stall=\(Int((stalls.longest * 1000).rounded()))ms/\(stalls.over20) "
+            + "composed=\(m.stageComposed) clip=\(m.clipOnStage)"
+    }
+
+    /// The main thread's stalls during a sweep (Self.sweep).
+    @MainActor
+    final class StallWatch {
+        var longest = 0.0
+        var over20 = 0
+        func note(_ late: Double) {
+            longest = max(longest, late)
+            if late > 0.02 { over20 += 1 }
+        }
+    }
+
     /// A sound's values: "v0.50,p+2,eq:0,0,0,0,0,+6,0,0,0,0".
     static func soundSummary(_ s: LayerSound) -> String {
         String(format: "v%.2f,p%@,eq:", s.volume,
@@ -6467,6 +7064,91 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    /// The voice-over as a step leaves it: the mode, the take under way,
+    /// the takes landed; the player (frame, rate, mute), whether the
+    /// scrubber and transport take a hand, the box (Start, typing), and
+    /// the composition's layers -- each id:start+mark-in.
+    @MainActor
+    static func voiceOverSummary(_ m: AppModel) -> String {
+        let a = "on=\(m.inVoiceOver) can=\(m.canVoiceOver) source=\(m.voiceOverSource) recording=\(m.voiceOverRecording) captured=\(m.capture.recording) from=\(m.voiceOverFrom.map(String.init) ?? "-") takes=\(m.voiceOverTakes)"
+        let b = "frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) held=\(m.voiceOverRecording) timeline=\(m.timelineAvailable)"
+        let c = "canStart=\(m.canStart) assistant=\(m.assistantEnabled) hint=\(m.promptHint.prefix(24).replacingOccurrences(of: " ", with: "_"))"
+        let ls = (m.stageStack?.layerStack ?? []).map { l -> String in
+            let t = l.time ?? LayerTimeDTO()
+            return "\(l.id.isEmpty ? "0" : l.id):\(t.offset)+\(t.in)"
+        }.joined(separator: ",")
+        let d = "banner=\((m.banner ?? "-").replacingOccurrences(of: " ", with: "_"))"
+        return [a, b, c, "layers=\(ls)", d].joined(separator: " ")
+    }
+
+    /// The atlas as it is: its nodes and edges, the asset nodes by name
+    /// column:row (destinations "[timeline]", leaves "~", removable "-"),
+    /// the ops "op>into" and the layers "layer>into:look", what is
+    /// selected, opened, played.
+    @MainActor
+    static func atlasSummary(_ m: AppModel) -> String {
+        let name = { (id: String?) -> String in
+            (id.flatMap { m.asset(id: $0)?.name } ?? "-")
+                .replacingOccurrences(of: " ", with: "_")
+        }
+        guard let g = m.atlas else {
+            return "screen=\(m.screen.rawValue) atlas=- banner=\((m.banner ?? "-").replacingOccurrences(of: " ", with: "_"))"
+        }
+        var assets: [String] = []
+        var ops: [String] = []
+        for n in g.graph.nodes {
+            let at = "\(n.column):\(String(format: "%.2f", n.row))"
+            if n.isAsset {
+                var s = "\(name(n.asset))@\(at)"
+                if let d = n.destination { s += "[\(d)]" }
+                if n.leaf == true { s += "~" }
+                if m.atlasRemovable(n) { s += "-" }
+                assets.append(s)
+            } else if n.type == "layer" {
+                let look = (n.look ?? []).joined(separator: "+")
+                ops.append("L\(n.layer.map { $0.isEmpty ? "0" : $0 } ?? "?")>\(name(n.into)):\(look.isEmpty ? "-" : look)@\(at)\(m.atlasCanDisconnect(n) ? "" : "!")")
+            } else {
+                ops.append("\(n.op ?? "?")>\(name(n.into))@\(at)")
+            }
+        }
+        let sel = m.atlasSelected.map { s -> String in
+            guard let i = g.index[s] else { return s }
+            let n = g.graph.nodes[i]
+            return n.isAsset ? name(n.asset) : "\(n.type):\(name(n.into))/\(n.layer ?? n.op ?? "")"
+        } ?? "-"
+        let a = "screen=\(m.screen.rawValue) nodes=\(g.graph.nodes.count) edges=\(g.graph.edges.count) columns=\(g.graph.columns) size=\(Int(g.size.width))x\(Int(g.size.height)) zoom=\(String(format: "%.2f", m.atlasZoom))"
+        let b = "selected=\(sel) expanded=\(name(m.atlasExpanded)) playing=\(name(m.atlasPlaying)) preparing=\(m.atlasPreparing) player=\(m.atlasPlayer.map { String(format: "%.2f@%.1f", $0.currentTime().seconds, $0.rate) } ?? "-")"
+        // What is in sight, and the graph's point at its middle: a zoom
+        // keeps it where it was.
+        let v = m.atlasVisible
+        let mid = m.atlasGraphPoint(at: CGPoint(x: m.atlasViewport.width / 2,
+                                                y: m.atlasViewport.height / 2))
+        let view = String(format: "view=%.0f,%.0f,%.0fx%.0f mid=%.1f,%.1f",
+                          v.minX, v.minY, v.width, v.height, mid.x, mid.y)
+        let pop = m.atlasPlayback.map {
+            "popup=\($0.frame)/\($0.length)@\(String(format: "%.1f", $0.rate))\($0.muted ? ":muted" : "")\($0.loops ? ":loop" : "") at=\(String(format: "%.3f", $0.player.currentTime().seconds))"
+        } ?? "popup=-"
+        // The scroll view's own offset, as AppKit has it: what a zoom
+        // asked for, done or not.
+        var ns = "-"
+        var area: CGFloat = 0
+        func walk(_ v: NSView) {
+            if let sv = v as? NSScrollView, let d = sv.documentView,
+               d.frame.width * d.frame.height > area {
+                area = d.frame.width * d.frame.height
+                let o = sv.contentView.bounds.origin
+                ns = String(format: "%.0f,%.0f/%.0fx%.0f", o.x, o.y,
+                            d.frame.width, d.frame.height)
+            }
+            v.subviews.forEach(walk)
+        }
+        if let root = m.editorWindow?.contentView { walk(root) }
+        let b2 = "\(view) ns=\(ns) \(pop) markdown=\(m.promptMarkdown)"
+        let c = "assets=\(assets.joined(separator: ",")) ops=\(ops.joined(separator: ","))"
+        let d = "stage=\(name(m.stageAssetId)) banner=\((m.banner ?? "-").replacingOccurrences(of: " ", with: "_"))"
+        return [a, b, b2, c, d].joined(separator: " ")
+    }
+
     /// The timeline as it is: "open=true rows=3 zoom=1.00 frame=48/120
     /// selected=1 layers=1:30-54:clip:k30,0:12-30:clip events=0,12,30"
     /// -- each row top first, its id ("0" layer 0), start, end, kind,
@@ -6489,6 +7171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let wave = r.wave != nil ? ":wave" : ""
             let shown = (r.visible ? "" : ":hidden")
                 + (r.locked ? ":locked" : "")
+                + (r.separator ? ":sep" : "")
             // A folder's header: its id and its layers' spans together;
             // a layer in one set in by ">".
             if r.isFolder {
@@ -6499,7 +7182,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let inset = r.depth > 0 ? ">" : ""
             return "\(inset)\(id):\(r.start)-\(end):\(r.kind)\(keys)\(wave)\(shown)"
         }.joined(separator: ",")
-        let sel = t.selected.isEmpty ? "0" : t.selected
+        let sel = t.selected == TimelineModel.noLayer ? "-"
+            : t.selected.isEmpty ? "0" : t.selected
         let zoom = String(format: "%.2f", t.zoom)
         let events = t.events.map(String.init).joined(separator: ",")
         // In parts: one chain of + took the type checker past its limit.
@@ -6517,7 +7201,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "\($0.from.isEmpty ? "0" : $0.from)>\($0.to.isEmpty ? "0" : $0.to):\($0.kind)"
         }.joined(separator: ",")
         let g = "transitions=\(tr.isEmpty ? "-" : tr) highlights=\(TimelineNSView.shown?.overlapSummary ?? "-")"
-        return [a, b, c, d, e, f, g].joined(separator: " ")
+        // The track view's tracks, top first, each its rows' ids -- a
+        // folder's header "[f1]" -- joined by "+"; "-" in the layer view.
+        let lanes = t.lanes.map { ls in
+            ls.map { l in
+                l.map { i -> String in
+                    let r = t.rows[i]
+                    return r.isFolder ? "[\(r.folder ?? "")]"
+                        : r.id.isEmpty ? "0" : r.id
+                }.joined(separator: "+")
+            }.joined(separator: "|")
+        } ?? "-"
+        let h = "tracks=\(m.timelineTracks) lanes=\(lanes)"
+        return [a, b, c, d, e, f, g, h].joined(separator: " ")
     }
 
     /// The downloads: "z-image-turbo:running:0.42" -- each one's model,

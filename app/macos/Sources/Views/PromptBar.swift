@@ -116,25 +116,7 @@ struct PromptBar: View {
     }
 
     /// Markdown drawn as it reads, or the text as typed.
-    private var markdownToggle: some View {
-        let on = model.promptMarkdown
-        return Button {
-            model.promptMarkdown.toggle()
-        } label: {
-            Label("Markdown", systemImage: on ? "eye"
-                  : "chevron.left.forwardslash.chevron.right")
-                .labelStyle(.titleAndIcon)
-                .padding(.horizontal, 6)
-                .frame(height: 22)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .background(RoundedRectangle(cornerRadius: 5)
-            .fill(on ? Color.accentColor.opacity(0.22) : .clear))
-        .foregroundStyle(on ? Color.accentColor : Color.primary)
-        .help(on ? "Markdown drawn as it reads: click to see it as typed"
-                 : "Markdown as typed: click to draw it as it reads")
-    }
+    private var markdownToggle: some View { MarkdownToggle(model: model) }
 
     /// Start (⌘↩) -- queued behind the tasks before it -- and Stop (⌘.)
     /// beside it while the stage watches a task.
@@ -162,5 +144,32 @@ struct PromptBar: View {
             .help(model.tasks.isEmpty
                   ? "Start (⌘↩)"
                   : "Start (⌘↩): queued after the tasks before it")
+    }
+}
+
+/// Markdown drawn as it reads, or the text as typed: the Prompt Editor's
+/// switch, and a text's opened large in the Atlas -- one setting, kept
+/// between launches (AppModel.promptMarkdown).
+struct MarkdownToggle: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        let on = model.promptMarkdown
+        Button {
+            model.promptMarkdown.toggle()
+        } label: {
+            Label("Markdown", systemImage: on ? "eye"
+                  : "chevron.left.forwardslash.chevron.right")
+                .labelStyle(.titleAndIcon)
+                .padding(.horizontal, 6)
+                .frame(height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .background(RoundedRectangle(cornerRadius: 5)
+            .fill(on ? Color.accentColor.opacity(0.22) : .clear))
+        .foregroundStyle(on ? Color.accentColor : Color.primary)
+        .help(on ? "Markdown drawn as it reads: click to see it as typed"
+                 : "Markdown as typed: click to draw it as it reads")
     }
 }

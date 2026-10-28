@@ -333,6 +333,16 @@ final class CoreService: @unchecked Sendable {
                                payload: obj))
     }
 
+    /// The ATLAS (bridge atlas_json): the project's graph as the core
+    /// laid it out; else why not.
+    func atlas(project: String) -> (graph: AtlasDTO?, message: String?) {
+        let data = Data(String(core.atlas_json(std.string(project))).utf8)
+        if let g = DTO.decode(AtlasDTO.self, data) { return (g, nil) }
+        let obj = (try? JSONSerialization.jsonObject(with: data)
+            as? [String: Any]) ?? [:]
+        return (nil, obj["message"] as? String ?? obj["error"] as? String)
+    }
+
     /// Canvas Size: the picture or clip on a `width` x `height` canvas,
     /// anchored (0, 0.5, 1 across and down).
     func setCanvas(project: String, asset: String, width: Int, height: Int,
@@ -347,13 +357,22 @@ final class CoreService: @unchecked Sendable {
     /// `hidden` the markup objects being edited (drawn by the app).
     func stackPlan(project: String, asset: String,
                    live: (layer: String, adjust: Any, crop: Any)?,
+                   liveSound: (layer: String, sound: Any)? = nil,
                    hidden: Set<String> = [])
         -> StackPlayback? {
         var req: [String: Any] = ["project": project, "asset": asset]
+        var l: [String: Any] = [:]
         if let live {
-            req["live"] = ["layer": live.layer, "adjust": live.adjust,
-                           "crop": live.crop]
+            l = ["layer": live.layer, "adjust": live.adjust,
+                 "crop": live.crop]
         }
+        // A layer's sound as the Audio panel holds it: its volume played
+        // live (its pitch and bands once written).
+        if let liveSound, live == nil || live?.layer == liveSound.layer {
+            l["layer"] = liveSound.layer
+            l["sound"] = liveSound.sound
+        }
+        if !l.isEmpty { req["live"] = l }
         if !hidden.isEmpty { req["hidden"] = Array(hidden) }
         let r = send(core.stack_plan, req)
         let planValue = r["plan"] as? NSNumber
@@ -405,7 +424,7 @@ final class CoreService: @unchecked Sendable {
                              mix: mix,
                              seconds: (r["seconds"] as? NSNumber)?
                                  .doubleValue ?? 0,
-                             layers: spans)
+                             layers: spans).keyed()
     }
 
     func releaseStackPlan(_ plan: UInt64) {

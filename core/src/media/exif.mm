@@ -1,11 +1,14 @@
 #include "valtz/media/exif.h"
 
+#include "valtz/base/text.h"
+
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <array>
+#include <format>
 #include <optional>
 #include <string_view>
 
@@ -50,6 +53,66 @@ to_json_value(id v)
   if ([v isKindOfClass:[NSArray class]]) {
     NSArray* a = v;
     return a.count ? to_json_value(a[0]) : Json();
+  }
+  return Json();
+}
+
+// Any property value as JSON, whole (exif_all): held to its caps.
+Json
+whole_value(id v, int depth)
+{
+  if (depth > 8) {
+    return Json();
+  }
+  if ([v isKindOfClass:[NSString class]]) {
+    std::string s = [(NSString*)v UTF8String] ?: "";
+    if (s.size() > kExifAllChars) {
+      s = std::string(utf8_prefix(s, kExifAllChars)) + "...";
+    }
+    return s;
+  }
+  if ([v isKindOfClass:[NSNumber class]]) {
+    NSNumber* n = v;
+    const char* t = n.objCType;
+    if (n == (id)kCFBooleanTrue || n == (id)kCFBooleanFalse) {
+      return n.boolValue;
+    }
+    if (t[0] == 'f' || t[0] == 'd') {
+      return n.doubleValue;
+    }
+    return n.longLongValue;
+  }
+  if ([v isKindOfClass:[NSArray class]]) {
+    Json a = Json::array();
+    for (id x in (NSArray*)v) {
+      if (a.size() == kExifAllItems) {
+        break;
+      }
+      a.push_back(whole_value(x, depth + 1));
+    }
+    return a;
+  }
+  if ([v isKindOfClass:[NSDictionary class]]) {
+    Json o = Json::object();
+    NSDictionary* d = v;
+    for (id k in d) {
+      if (![k isKindOfClass:[NSString class]]) {
+        continue;
+      }
+      std::string key = [(NSString*)k UTF8String] ?: "";
+      if (key.size() > 2 && key.front() == '{' && key.back() == '}') {
+        key = key.substr(1, key.size() - 2);
+      }
+      o[key] = whole_value(d[k], depth + 1);
+    }
+    return o;
+  }
+  if ([v isKindOfClass:[NSData class]]) {
+    return std::format("<{} bytes>", [(NSData*)v length]);
+  }
+  if ([v isKindOfClass:[NSDate class]]) {
+    NSISO8601DateFormatter* f = [[NSISO8601DateFormatter alloc] init];
+    return std::string([f stringFromDate:v].UTF8String);
   }
   return Json();
 }
@@ -216,6 +279,19 @@ exif_fields(const fs::path& src)
     }
   }
   return out;
+}
+
+Json
+exif_all(const fs::path& src)
+{
+  @autoreleasepool {
+    NSDictionary* p = image_properties(src);
+    if (!p) {
+      return Json::object();
+    }
+    Json out = whole_value(p, 0);
+    return out.is_object() ? out : Json::object();
+  }
 }
 
 std::vector<std::uint8_t>

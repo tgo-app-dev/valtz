@@ -406,6 +406,9 @@ inline constexpr Message kQuantizeNeedsSource{
 inline constexpr Message kCaptureNeedsSound{
     "core.capture_needs_sound",
     "Sound is recorded into a composition of sound alone."};
+inline constexpr Message kVoiceOverNeedsTime{
+    "core.voice_over_needs_time",
+    "A voice-over is recorded onto a timeline or a composition of sound."};
 inline constexpr Message kCaptureRunning{
     "core.capture_running", "A recording is running already."};
 inline constexpr Message kNoCapture{

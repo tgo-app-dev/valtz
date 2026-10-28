@@ -531,6 +531,33 @@ TEST(media, probe_reads_exif_fields)
   CHECK(!j.contains("exif"));
 }
 
+// Everything a file says of itself (the agent's get_exif): each
+// dictionary under its name, values as recorded.
+TEST(media, exif_all_reads_a_files_metadata_whole)
+{
+  auto p = test::temp_dir("media") / "camera.jpg";
+  REQUIRE(write_camera_jpeg(p));
+  const Json e = media::exif_all(p);
+  CHECK(jget<std::string>(jget(e, "TIFF", Json()), "Make", "") == "Canon");
+  CHECK(jget<std::string>(jget(e, "TIFF", Json()), "Model", "") ==
+        "Canon EOS R5");
+  CHECK(jget(jget(e, "Exif", Json()), "FNumber", 0.0) == 8.0);
+  const Json iso = jget(jget(e, "Exif", Json()), "ISOSpeedRatings", Json());
+  CHECK(iso.is_array() && iso.size() == 1 && iso[0].get<int>() == 200);
+  const Json gps = jget(e, "GPS", Json());
+  CHECK(std::abs(jget(gps, "Latitude", 0.0) - 37.8) < 1e-6);
+  CHECK(jget<std::string>(gps, "LongitudeRef", "") == "W");
+  CHECK(jget(e, "PixelWidth", 0) == 8);
+  CHECK(jget<std::string>(e, "ProfileName", "") != "");
+  // Nothing for a file that is no picture.
+  auto txt = test::temp_dir("media") / "words.txt";
+  {
+    std::ofstream f(txt);
+    f << "no picture";
+  }
+  CHECK(media::exif_all(txt).empty());
+}
+
 // The block carried to an edit's result: the camera's tags, upright, at
 // the result's size. Spliced into a JPEG as its APP1 segment, ImageIO
 // reads it back as such.

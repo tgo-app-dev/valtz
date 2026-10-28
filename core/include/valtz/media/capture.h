@@ -52,6 +52,11 @@ public:
   // (0..1, linear).
   double seconds() const;
   double level() const;
+  // When its FIRST SAMPLE was heard, as its source stamped it: seconds of
+  // the host clock (CMClockGetHostTimeClock, CACurrentMediaTime's) -- NaN
+  // until one has come. What a voice-over's recording is lined up with
+  // the picture by: the player started at a host time it names.
+  double started_at() const;
   const std::string& source() const;
   const std::filesystem::path& file() const;
   // Stopped: the file whole and closed (an error when nothing came).

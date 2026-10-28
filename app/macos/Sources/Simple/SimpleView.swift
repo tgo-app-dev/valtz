@@ -556,6 +556,47 @@ private struct HeroMark: View {
 /// or, `small` (the Prompt Editor's top left), what it shows alone: A, a
 /// player with its own controls, a thin progress bar; no compare, no
 /// zoom.
+/// The stage's player: a view of its own, so what changes with each
+/// step of a look or a sound -- the clip's look, its stack's plan -- is
+/// read here alone. Read in the stage's body, a grade wheel's drag on a
+/// clip evaluated and laid out the whole stage again at every step.
+private struct StagePlayer: View {
+    @Bindable var model: AppModel
+    let url: URL
+    let small: Bool
+    let growth: StageGrowth?
+
+    var body: some View {
+        // A voice-over's take plays once to the end, never over again.
+        VideoPlayerView(url: url,
+                        loops: model.loopClips && !model.voiceOverRecording,
+                        // Not as a project opens: still, where saved.
+                        autoplay: model.stageAutoplay,
+                        muted: model.stageMuted,
+                        rate: model.stageFrameRate,
+                        command: model.videoCommand,
+                        look: model.stackPlayback == nil
+                            ? model.stageClipLook : nil,
+                        stack: model.stackPlayback,
+                        artwork: model.stageIsAudio ? model.stage.a : nil,
+                        // None over the picture: the stage's transport
+                        // is in the row under it (StageTransport), the
+                        // small stage's under it too.
+                        controls: false,
+                        core: model.core,
+                        onFrame: { model.videoFrameChanged($0) },
+                        onLastFrame: { model.videoLastFrame = $0 },
+                        onRate: { model.videoRate = $0 },
+                        onMuted: { model.videoMuted = $0 },
+                        onCue: { model.voiceOverCued($0) },
+                        // The title bar's zoom (not the small stage's).
+                        zoom: small ? nil : model.stage.zoomRequests,
+                        growth: growth,
+                        onViewport: { model.stage.setViewport($0) },
+                        onShown: { model.stageVideoRect = $0 })
+    }
+}
+
 private struct ResultStage: View {
     @Bindable var model: AppModel
     /// The editor's own area, in the window (SimpleView): the drag ring
@@ -764,30 +805,8 @@ private struct ResultStage: View {
                     StageLabel(text: model.stage.aLabel)
                 }
         } else if let url = model.stage.video {
-            VideoPlayerView(url: url, loops: model.loopClips,
-                            // Not as a project opens: still, where saved.
-                            autoplay: model.stageAutoplay,
-                            muted: model.stageMuted,
-                            rate: model.stageFrameRate,
-                            command: model.videoCommand,
-                            look: model.stackPlayback == nil
-                                ? model.stageClipLook : nil,
-                            stack: model.stackPlayback,
-                            artwork: model.stageIsAudio ? model.stage.a : nil,
-                            // None over the picture: the stage's transport
-                            // is in the row under it (StageTransport), the
-                            // small stage's under it too.
-                            controls: false,
-                            core: model.core,
-                            onFrame: { model.videoFrameChanged($0) },
-                            onLastFrame: { model.videoLastFrame = $0 },
-                            onRate: { model.videoRate = $0 },
-                            onMuted: { model.videoMuted = $0 },
-                            // The title bar's zoom (not the small stage's).
-                            zoom: small ? nil : model.stage.zoomRequests,
-                            growth: growth,
-                            onViewport: { model.stage.setViewport($0) },
-                            onShown: { model.stageVideoRect = $0 })
+            StagePlayer(model: model, url: url, small: small,
+                        growth: growth)
                 // The guides over the clip (View › Show Guides): the clip
                 // fills the card, or lies where it is zoomed. Not over a
                 // sound's waveform.
@@ -1137,23 +1156,25 @@ struct StageTransport: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        let r = model.videoRate
-        let sound = model.stageIsAudio
-        let events = model.timelineAsset != nil
-        let muted = model.videoMuted
-        HStack(spacing: 10) {
-            // The player's sound, off or on: what plays on the stage
-            // heard or not, its layers' own volumes as they are.
-            TitleBarButton(
-                symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                title: muted ? "Unmute" : "Mute",
-                help: muted ? "Turn the sound on" : "Turn the sound off",
-                on: muted, action: act(muted ? "unmute" : "mute",
-                                       model.toggleMute))
-                .titleBarCapsule()
-            buttons(rate: r, sound: sound, events: events)
-                .titleBarCapsule()
-        }
+        TransportButtons(
+            rate: model.videoRate, muted: model.videoMuted,
+            sound: model.stageIsAudio, events: model.timelineAsset != nil,
+            act: .init(
+                mute: act(model.videoMuted ? "unmute" : "mute",
+                          model.toggleMute),
+                previous: act("previous event") {
+                    model.stageEvent(next: false)
+                },
+                rewind: act("fast rewind", model.fastRewind),
+                stepBack: act("step back") { model.stepVideo(-1) },
+                playPause: act(model.videoRate != 0 ? "pause" : "play") {
+                    model.playVideo(rate: model.videoRate != 0 ? 0 : 1)
+                },
+                stepForward: act("step forward") { model.stepVideo(1) },
+                forward: act("fast forward", model.fastForward),
+                next: act("next event") { model.stageEvent(next: true) }))
+        // A voice-over's take under way: the player plays on, muted.
+        .disabled(model.voiceOverRecording)
     }
 
     /// A button's action, said in the system log as it runs (stage-bar).
@@ -1164,49 +1185,82 @@ struct StageTransport: View {
             f()
         }
     }
+}
 
-    private func buttons(rate r: Float, sound: Bool,
-                         events: Bool) -> some View {
-        HStack(spacing: 0) {
+/// The transport's buttons, as the stage's row and the Atlas's player
+/// show them: the sound off or on, then |< << ◁| ▶/‖ |▷ >> >| -- |< >|
+/// from event to event (`events`), else the start and the end; a sound
+/// steps 10 ms. Their keys are the ⌘? labels' (AppModel.trimKey,
+/// playerKey; atlasKey).
+struct TransportButtons: View {
+    struct Actions {
+        var mute: () -> Void
+        var previous: () -> Void
+        var rewind: () -> Void
+        var stepBack: () -> Void
+        var playPause: () -> Void
+        var stepForward: () -> Void
+        var forward: () -> Void
+        var next: () -> Void
+    }
+    let rate: Float
+    let muted: Bool
+    let sound: Bool
+    let events: Bool
+    let act: Actions
+
+    var body: some View {
+        HStack(spacing: 10) {
+            // The player's sound, off or on: what plays heard or not, its
+            // layers' own volumes as they are.
+            TitleBarButton(
+                symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                title: muted ? "Unmute" : "Mute",
+                help: muted ? "Turn the sound on" : "Turn the sound off",
+                on: muted, action: act.mute)
+                .titleBarCapsule()
+            buttons.titleBarCapsule()
+        }
+    }
+
+    private var buttons: some View {
+        let r = rate
+        return HStack(spacing: 0) {
             TitleBarButton(
                 symbol: "backward.end.fill", title: "Previous Event",
                 help: events
                     ? "Previous event: a key, where a layer begins or ends, the start"
                     : "Go to the start",
-                action: act("previous event") {
-                    model.stageEvent(next: false)
-                })
+                action: act.previous)
                 .shortcutHint("⌘←")
             TitleBarButton(symbol: "backward.fill", title: "Fast Rewind",
                            help: "Fast rewind", on: r < -1,
-                           action: act("fast rewind", model.fastRewind))
+                           action: act.rewind)
             TitleBarButton(
                 symbol: "backward.frame.fill", title: "Step Back",
                 help: sound ? "Back 10 ms (with ⌥, 1 ms)" : "Back one frame",
-                action: act("step back") { model.stepVideo(-1) })
+                action: act.stepBack)
                 .shortcutHint("←")
             TitleBarButton(
                 symbol: r != 0 ? "pause.fill" : "play.fill",
                 title: r != 0 ? "Pause" : "Play",
                 help: r != 0 ? "Pause (Space)" : "Play (Space)",
-                action: act(r != 0 ? "pause" : "play") {
-                    model.playVideo(rate: r != 0 ? 0 : 1)
-                })
+                action: act.playPause)
                 .shortcutHint(String(localized: "Space"))
             TitleBarButton(
                 symbol: "forward.frame.fill", title: "Step Forward",
                 help: sound ? "On 10 ms (with ⌥, 1 ms)" : "On one frame",
-                action: act("step forward") { model.stepVideo(1) })
+                action: act.stepForward)
                 .shortcutHint("→")
             TitleBarButton(symbol: "forward.fill", title: "Fast Forward",
                            help: "Fast forward", on: r > 1,
-                           action: act("fast forward", model.fastForward))
+                           action: act.forward)
             TitleBarButton(
                 symbol: "forward.end.fill", title: "Next Event",
                 help: events
                     ? "Next event: a key, where a layer begins or ends, the end"
                     : "Go to the end",
-                action: act("next event") { model.stageEvent(next: true) })
+                action: act.next)
                 .shortcutHint("⌘→")
         }
     }

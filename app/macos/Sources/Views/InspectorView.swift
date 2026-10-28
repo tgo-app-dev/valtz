@@ -334,22 +334,9 @@ struct InspectorView: View {
                 recipe(r, timing: a.timing, score: a.score)
             }
             toldIn(a)
-            if !model.adjustments.isIdentity {
-                section("Adjustments") {
-                    ForEach(ImageAdjustments.Key.allCases.filter {
-                        model.adjustments[$0] != 0
-                    }) { k in
-                        row(Text(verbatim: k.label)) {
-                            Text(verbatim: k.display(model.adjustments[k]))
-                                .monospacedDigit()
-                        }
-                    }
-                }
-                Text("Shown on the stage, and included when you share or save. The original is kept.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // A view of its own: the look changes with each step of a
+            // drag, and read here the whole inspector was evaluated again.
+            AdjustmentsInfo(model: model)
             if let url = a.url, a.standIn != true {
                 section("File") {
                     row("Name") {
@@ -930,6 +917,38 @@ private struct PanelWeight: LayoutValueKey {
 /// lower one's header: dragged, the one above takes height from the one
 /// below (or gives it), neither under `least`; double-clicked, every
 /// section's share is even again.
+/// Information's Adjustments: the Adjust panel's values not at rest.
+private struct AdjustmentsInfo: View {
+    let model: AppModel
+
+    var body: some View {
+        let a = model.adjustments
+        let moved = ImageAdjustments.Key.allCases.filter { a[$0] != $0.rest }
+        if !moved.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Adjustments").font(.system(size: 11, weight: .semibold))
+                Grid(alignment: .leadingFirstTextBaseline,
+                     horizontalSpacing: 8, verticalSpacing: 4) {
+                    ForEach(moved) { k in
+                        GridRow {
+                            Text(verbatim: k.label)
+                                .foregroundStyle(.secondary)
+                                .gridColumnAlignment(.trailing)
+                                .frame(minWidth: 72, alignment: .trailing)
+                            Text(verbatim: k.display(a[k]))
+                                .monospacedDigit()
+                        }
+                    }
+                }
+            }
+            Text("Shown on the stage, and included when you share or save. The original is kept.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
 private struct PanelDivider: View {
     let model: AppModel
     let above: InspectorTab
@@ -1073,17 +1092,20 @@ struct LayersSection: View {
     var body: some View {
         if let pic = model.stageStack {
             let stack = pic.layerStack
+            // None selected (⌘D on a timeline): nothing to move, mask or
+            // remove -- layer 0 is not taken for it.
+            let none = model.layerNoneSelected
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 2) {
                     tool("plus", "Add a blank layer on top") {
                         model.addLayer()
                     }
                     tool("arrow.up", "Move the selected layer up",
-                         disabled: !canMove(stack, up: true)) {
+                         disabled: none || !canMove(stack, up: true)) {
                         model.moveLayer(model.activeLayer, by: 1)
                     }
                     tool("arrow.down", "Move the selected layer down",
-                         disabled: !canMove(stack, up: false)) {
+                         disabled: none || !canMove(stack, up: false)) {
                         model.moveLayer(model.activeLayer, by: -1)
                     }
                     tool("square.stack.3d.down.right",
@@ -1101,7 +1123,8 @@ struct LayersSection: View {
                     tool(isMask ? "theatermasks.fill" : "theatermasks",
                          isMask ? "Release the mask: a layer again"
                                 : "Use as the mask of the layer below: it shows where this layer is bright",
-                         disabled: model.isBottomLayer(model.activeLayer)) {
+                         disabled: none
+                            || model.isBottomLayer(model.activeLayer)) {
                         model.setLayerMask(model.activeLayer, !isMask)
                     }
                     Spacer()
@@ -1139,7 +1162,8 @@ struct LayersSection: View {
                     .disabled(model.isGenerating || model.agentHolds)
                     .help("Capture the layers as an asset: their looks and what they show, frozen. Dragged back onto the stage, they are editable again.")
                     tool("minus", "Remove the selected layer",
-                         disabled: !model.canRemoveLayer(model.activeLayer)) {
+                         disabled: none
+                            || !model.canRemoveLayer(model.activeLayer)) {
                         model.removeLayer(model.activeLayer)
                     }
                 }
@@ -1671,7 +1695,7 @@ private struct LayerRow: View {
     }
 
     var body: some View {
-        let selected = model.activeLayer == layer.id
+        let selected = model.isSelectedLayer(layer.id)
         let inSelection = model.selectedLayers.contains(layer.id)
         // A still's page shows some layers: the others are set back.
         let here = model.isLayerOnPage(layer)
@@ -1805,6 +1829,13 @@ private struct LayerRow: View {
             Group {
             Button(layer.locked ? "Unlock Layer" : "Lock Layer") {
                 model.setLayerLocked(layer.id, !layer.locked)
+            }
+            // The timeline's track view: a track of its own from here up.
+            if model.timelineAsset != nil {
+                Toggle("Track Separator", isOn: Binding(
+                    get: { layer.trackSeparator },
+                    set: { model.setLayerSeparator(layer.id, $0) }))
+                    .help("In the timeline's track view, this layer starts a track of its own: it is not laid in the track below it, though the layers above it may join its track.")
             }
             // A copy right above it: a markup's drawing and objects its
             // own, anything else shown by both (unlocked: one to change).
@@ -2097,62 +2128,56 @@ private struct ClickOrDouble: ViewModifier {
 private struct SelectionFrameSection: View {
     @Bindable var model: AppModel
     let frame: CGRect
+    /// Every row's label, these grids' and the line style's alike: their
+    /// boxes start in one column.
+    static let labelWidth: CGFloat = 64
 
     var body: some View {
         let n = model.markup.selection.count
         VStack(alignment: .leading, spacing: 6) {
             Text(n == 1 ? "Selected Object" : "Selected Objects")
                 .font(.system(size: 11, weight: .semibold))
-            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8,
+            // X, W and the rotation in one column, Y and H in the next,
+            // each box a wheel after it; the aspect lock after H.
+            Grid(alignment: .leading, horizontalSpacing: 6,
                  verticalSpacing: 6) {
                 GridRow {
-                    Text("Position")
-                        .foregroundStyle(.secondary)
-                        .gridColumnAlignment(.trailing)
-                        .frame(minWidth: 72, alignment: .trailing)
-                    HStack(spacing: 8) {
-                        PixelField(axis: "X", value: frame.minX) { v in
-                            set(frame.offsetBy(dx: v - frame.minX, dy: 0))
-                        }
-                        PixelField(axis: "Y", value: frame.minY) { v in
-                            set(frame.offsetBy(dx: 0, dy: v - frame.minY))
-                        }
+                    rowLabel("Position")
+                    axisBox("X", frame.minX, jog: .x,
+                            help: "Drag the dot left or right to move them across (⌥ finer, ⇧ faster)") { v in
+                        set(frame.offsetBy(dx: v - frame.minX, dy: 0))
+                    }
+                    axisBox("Y", frame.minY, jog: .y,
+                            help: "Drag the dot left or right to move them up or down (⌥ finer, ⇧ faster)") { v in
+                        set(frame.offsetBy(dx: 0, dy: v - frame.minY))
                     }
                 }
                 GridRow {
-                    Text("Size")
-                        .foregroundStyle(.secondary)
-                        .gridColumnAlignment(.trailing)
-                        .frame(minWidth: 72, alignment: .trailing)
+                    rowLabel("Size")
                     // Signed: a negative one flipped that way.
                     let flipped = model.selectionFlipped
-                    HStack(spacing: 8) {
-                        PixelField(axis: "W",
-                                   value: frame.width * (flipped.x ? -1 : 1))
-                        { v in
-                            model.setSelectionSize(width: v)
-                        }
-                        PixelField(axis: "H",
-                                   value: frame.height * (flipped.y ? -1 : 1))
-                        { v in
-                            model.setSelectionSize(height: v)
-                        }
+                    axisBox("W", frame.width * (flipped.x ? -1 : 1),
+                            jog: .width,
+                            help: "Drag the dot left or right to make them narrower or wider (⌥ finer, ⇧ faster)") { v in
+                        model.setSelectionSizeKeepingAspect(width: v)
                     }
+                    axisBox("H", frame.height * (flipped.y ? -1 : 1),
+                            jog: .height,
+                            help: "Drag the dot left or right to make them shorter or taller (⌥ finer, ⇧ faster)") { v in
+                        model.setSelectionSizeKeepingAspect(height: v)
+                    }
+                    aspectLock
                 }
                 GridRow {
-                    Text("Rotation")
-                        .foregroundStyle(.secondary)
-                        .gridColumnAlignment(.trailing)
-                        .frame(minWidth: 72, alignment: .trailing)
-                    HStack(spacing: 3) {
-                        PixelField(axis: "", value: model.selectionRotation,
-                                   accessibility: "Rotation") { v in
-                            model.setSelectionRotation(v)
-                        }
-                        Text(verbatim: "°")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                    rowLabel("Rotation")
+                    axisBox("", model.selectionRotation, jog: .rotation,
+                            perPoint: 0.5, accessibility: "Rotation",
+                            help: "Drag the dot left or right to turn them (⌥ finer, ⇧ faster)") { v in
+                        model.setSelectionRotation(v)
                     }
+                    Text(verbatim: "°")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
             }
             Text("In pixels. A negative width or height flips; the rotation turns each object about its centre. The Crop panel places the whole layer; these change the selected objects.")
@@ -2178,7 +2203,7 @@ private struct SelectionFrameSection: View {
                     Text("Line Style")
                         .foregroundStyle(.secondary)
                         .gridColumnAlignment(.trailing)
-                        .frame(minWidth: 72, alignment: .trailing)
+                        .frame(minWidth: Self.labelWidth, alignment: .trailing)
                     Picker("Line Style", selection: Binding(
                         get: { Self.common(dashed.map { $0.dash ?? "solid" }) },
                         set: { model.setSelectionDash($0 == "solid" ? nil : $0) }
@@ -2200,7 +2225,7 @@ private struct SelectionFrameSection: View {
                         Text("Arrows")
                             .foregroundStyle(.secondary)
                             .gridColumnAlignment(.trailing)
-                            .frame(minWidth: 72, alignment: .trailing)
+                            .frame(minWidth: Self.labelWidth, alignment: .trailing)
                         Picker("Arrows", selection: Binding(
                             get: {
                                 Self.common(lines.map { $0.arrows ?? "none" })
@@ -2235,6 +2260,66 @@ private struct SelectionFrameSection: View {
     private func set(_ f: CGRect) {
         model.setSelectionFrame(f)
     }
+
+    private func rowLabel(_ title: LocalizedStringKey) -> some View {
+        Text(title)
+            .foregroundStyle(.secondary)
+            .frame(minWidth: Self.labelWidth, alignment: .trailing)
+            .gridColumnAlignment(.trailing)
+    }
+
+    /// An axis's letter, its box -- each the same width, so the columns
+    /// line up -- and its JOG WHEEL, as the Crop panel's: dragged, the
+    /// selection drawn live, kept once let go.
+    private func axisBox(_ axis: String, _ value: Double?,
+                         jog: AppModel.SelectionJog, perPoint: Double = 1,
+                         accessibility: LocalizedStringKey? = nil,
+                         help: LocalizedStringKey,
+                         set: @escaping (Double) -> Void) -> some View {
+        HStack(spacing: 3) {
+            Text(verbatim: axis)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .frame(width: 10, alignment: .leading)
+            PixelField(axis: "", value: value, width: 50,
+                       accessibility: accessibility
+                           ?? LocalizedStringKey(axis),
+                       ident: "info-" + (axis.isEmpty ? "R" : axis),
+                       set: set)
+            JogWheel(perPoint: perPoint, help: help) {
+                model.jogSelection(jog, by: $0)
+            } ended: {
+                model.endSelectionJog()
+            }
+        }
+    }
+
+    /// The aspect lock: W and H held to their ratio, a typed or jogged
+    /// one scaling the other.
+    private var aspectLock: some View {
+        let locked = model.selectionAspectLocked
+        return Button {
+            model.selectionAspectLocked.toggle()
+        } label: {
+            Image(systemName: locked ? "lock.fill" : "lock.open")
+                .frame(width: 18, height: 20)
+                .contentShape(Rectangle())
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(locked ? Color.primary : Color.secondary)
+        .help(locked
+              ? "Width and height keep their ratio: click to size them apart"
+              : "Width and height are sized apart: click to keep their ratio")
+        .accessibilityLabel(Text("Keep the width and height in ratio"))
+    }
+}
+
+/// Where Information's boxes lie in the window (SwiftUI's global space),
+/// by their identifier: the snapshot hooks click into them there.
+@MainActor
+enum InfoFieldFrames {
+    static var frames: [String: CGRect] = [:]
 }
 
 /// A number of pixels typed: taken at Return or as the field is left;
@@ -2243,10 +2328,18 @@ private struct PixelField: View {
     let axis: String
     /// nil: the selected differ -- shown empty, "Mixed" in grey.
     let value: Double?
+    var width: CGFloat = 60
     var least: Double = -.infinity
     var accessibility: LocalizedStringKey?
+    /// Its AppKit field's identifier (the snapshot hooks find it by it).
+    var ident = ""
     let set: (Double) -> Void
     @State private var text = ""
+    /// What the box was last given (the value, or what was typed and
+    /// taken): while its words are still those, it follows the value --
+    /// an undo, a jog, a drag on the stage -- and taking it changes
+    /// nothing.
+    @State private var shown = ""
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -2261,28 +2354,51 @@ private struct PixelField: View {
                 .controlSize(.small)
                 .multilineTextAlignment(.trailing)
                 .monospacedDigit()
-                .frame(width: 60)
+                .frame(width: width)
                 .focused($focused)
                 .onSubmit(take)
                 .onChange(of: focused) { _, now in if !now { take() } }
                 .accessibilityLabel(accessibility.map { Text($0) }
                                     ?? Text(verbatim: axis))
+                .accessibilityIdentifier(ident)
+                .onGeometryChange(for: CGRect.self) {
+                    $0.frame(in: .global)
+                } action: { f in
+                    if !ident.isEmpty { InfoFieldFrames.frames[ident] = f }
+                }
         }
-        .onAppear { text = Self.label(value) }
+        .onAppear { show(Self.label(value)) }
+        // Not typed into since it was given its words: the value's now,
+        // focused or not. (Kept while focused, a value taken at Return
+        // was shown as the one before it -- and leaving the box took that
+        // one back.)
         .onChange(of: value) { _, v in
-            if !focused { text = Self.label(v) }
+            if !focused || text == shown { show(Self.label(v)) }
         }
     }
 
+    private func show(_ words: String) {
+        text = words
+        shown = words
+    }
+
+    /// Return, or the box left: what was typed taken -- nothing when it
+    /// is as it was given (its words rounded: taken, they would move it).
     private func take() {
+        guard text != shown else { return }
         let typed = text.trimmingCharacters(in: .whitespaces)
             .replacingOccurrences(of: ",", with: ".")
             .replacingOccurrences(of: "\u{2212}", with: "-")
-        if let v = Double(typed), v.isFinite,
-           value.map({ abs(v - $0) > 1e-3 }) ?? true {
-            set(max(least, v))
+        guard let v = Double(typed), v.isFinite else {
+            show(Self.label(value))
+            return
         }
-        text = Self.label(value)
+        let to = max(least, v)
+        // Shown as taken until the value comes back (onChange).
+        show(Self.label(to))
+        if value.map({ abs(to - $0) > 1e-3 }) ?? true {
+            set(to)
+        }
     }
 
     static func label(_ v: Double?) -> String {

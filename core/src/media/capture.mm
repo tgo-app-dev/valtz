@@ -45,6 +45,11 @@ struct Writer {
   // The peak of the last tenth of a second, decayed to it.
   std::atomic<double>       level{0};
   std::atomic<double>       peak_at{0};
+  // The first sample's host time (SoundCapture::started_at), and the
+  // clock its source stamps buffers by (null: the host's own -- a
+  // ScreenCaptureKit stream's).
+  std::atomic<double>       first_host{std::nan("")};
+  CMClockRef                clock = nullptr;
   std::string               error;
 
   void
@@ -111,6 +116,15 @@ struct Writer {
       return;
     }
     const auto n = static_cast<UInt32>(CMSampleBufferGetNumSamples(sb));
+    if (frames == 0) {
+      const CMTime pts = CMSampleBufferGetPresentationTimeStamp(sb);
+      if (CMTIME_IS_NUMERIC(pts)) {
+        const CMTime host =
+            clock ? CMSyncConvertTime(pts, clock, CMClockGetHostTimeClock())
+                  : pts;
+        first_host = CMTimeGetSeconds(host);
+      }
+    }
     ExtAudioFileWrite(file, n, abl);
     // The meter: float samples' peak (integer ones scaled).
     double peak = 0;
@@ -276,6 +290,12 @@ SoundCapture::seconds() const
 }
 
 double
+SoundCapture::started_at() const
+{
+  return _impl->writer.first_host;
+}
+
+double
 SoundCapture::level() const
 {
   // Fallen silent: the meter falls with it.
@@ -342,6 +362,11 @@ SoundCapture::start(const std::string& source, const fs::path& out)
       [m.session startRunning];
       if (!m.session.running) {
         return make_error(Code::Io, "the microphone did not start");
+      }
+      {
+        // Its buffers are stamped by the session's clock.
+        std::lock_guard lk(m.writer.mu);
+        m.writer.clock = m.session.synchronizationClock;
       }
       VALTZ_LOG_INFO("capture", "recording {} into {}",
                      dev.localizedName.UTF8String ?: "", out.string());

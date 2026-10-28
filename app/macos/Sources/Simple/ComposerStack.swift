@@ -62,6 +62,8 @@ struct ComposerStack: View {
     static let cardSpace = "promptCard"
     /// The card last opened: it stays in front while it closes.
     @State private var lastPanel: ComposerPanel = .generate
+    /// The card closing: kept built while its drawer shuts.
+    @State private var closingPanel: ComposerPanel?
 
     private let radius: CGFloat = 20
     private let tabRadius: CGFloat = 18
@@ -169,8 +171,14 @@ struct ComposerStack: View {
             }
         }
         // The target tool works while its panel is open.
-        .onChange(of: model.openPanel) { _, p in
+        .onChange(of: model.openPanel) { was, p in
             if p != .color { model.colorTargeting = false }
+            // The card shutting stays built for its drawer's animation.
+            closingPanel = was
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(0.6 * AppModel.animationScale))
+                if closingPanel == was { closingPanel = nil }
+            }
         }
         .onChange(of: model.showsCrop) { _, shows in
             if !shows && model.openPanel == .crop {
@@ -401,6 +409,10 @@ struct ComposerStack: View {
                      maxHeight: maxPromptHeight,
                      fullHeight: $promptFullHeight,
                      highlight: model.searchText)
+            // A voice-over takes no prompt: its words greyed, not typed
+            // into or dropped on.
+            .opacity(model.inVoiceOver ? 0.35 : 1)
+            .allowsHitTesting(!model.inVoiceOver)
             .frame(height: immersive ? nil : promptHeight)
             .frame(maxHeight: immersive ? .infinity : nil)
             // Text scrolled into the padding fades out at the card's edge.
@@ -680,17 +692,30 @@ struct ComposerStack: View {
 
     private func drawerPanel(_ p: ComposerPanel) -> some View {
         let open = model.openPanel == p
-        return panel(p)
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-                model.drawerWidths["\(p)"] = $0
+        // Built while it shows or closes -- and the generation card, whose
+        // height decides how the prompt makes room for it: a shut card was
+        // evaluated and laid out (at no height) at every step of a drag on
+        // another, its values reading the same look.
+        let built = open || p == closingPanel || p == .generate
+        return Group {
+            if built {
+                panel(p)
+                    .onGeometryChange(for: CGFloat.self) {
+                        $0.size.width
+                    } action: {
+                        model.drawerWidths["\(p)"] = $0
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 18)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onGeometryChange(for: CGFloat.self) {
+                        $0.size.height
+                    } action: {
+                        panelHeights[p] = $0
+                    }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 18)
-            .fixedSize(horizontal: false, vertical: true)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
-                panelHeights[p] = $0
-            }
+        }
             .frame(height: open ? nil : 0, alignment: .bottom)
             .clipped()
             .allowsHitTesting(open)
@@ -746,10 +771,10 @@ struct ComposerStack: View {
     }
 
     /// The Adjust panel's own sliders change something.
-    private var adjustChanged: Bool {
-        model.keyedStage
-            ? model.clipAdjustKeys.keys.contains { !$0.value.toneIsIdentity }
-            : !model.adjustments.toneIsIdentity
+    private static func adjustChanged(_ m: AppModel) -> Bool {
+        m.keyedStage
+            ? m.clipAdjustKeys.keys.contains { !$0.value.toneIsIdentity }
+            : !m.adjustments.toneIsIdentity
     }
 
     private var adjustTab: some View {
@@ -765,10 +790,8 @@ struct ComposerStack: View {
                     // Its own sliders (the mixer and the grade have tabs
                     // of their own).
                     .overlay(alignment: .bottom) {
-                        if adjustChanged {
-                            Self.changedDot
-                                .help("Adjustments are applied")
-                        }
+                        TabDot(model: model, changed: Self.adjustChanged,
+                               help: "Adjustments are applied")
                     }
             }
             .font(.callout)
@@ -792,11 +815,13 @@ struct ComposerStack: View {
     /// changes what the picture or clip gives.
     /// The color mixer's: its curves of hue, saturation, luminance.
     private var colorTab: some View {
-        let changed = model.keyedStage
-            ? model.clipAdjustKeys.keys.contains { !$0.value.mix.isIdentity }
-            : !model.adjustments.mix.isIdentity
-        return iconTab(.color, symbol: "paintpalette", name: "Color",
-                       changed: changed,
+        iconTab(.color, symbol: "paintpalette", name: "Color",
+                       changed: { m in
+                           m.keyedStage
+                               ? m.clipAdjustKeys.keys.contains {
+                                   !$0.value.mix.isIdentity }
+                               : !m.adjustments.mix.isIdentity
+                       },
                        dot: "The colour mixer changes colours",
                        show: model.clipOnStage ? "Mix the clip's colours"
                                                : "Mix the picture's colours",
@@ -805,11 +830,13 @@ struct ComposerStack: View {
 
     /// The color grade's: its tints of the shadows, midtones, highlights.
     private var gradeTab: some View {
-        let changed = model.keyedStage
-            ? model.clipAdjustKeys.keys.contains { !$0.value.grade.isIdentity }
-            : !model.adjustments.grade.isIdentity
-        return iconTab(.grade, symbol: "camera.filters", name: "Grade",
-                       changed: changed,
+        iconTab(.grade, symbol: "camera.filters", name: "Grade",
+                       changed: { m in
+                           m.keyedStage
+                               ? m.clipAdjustKeys.keys.contains {
+                                   !$0.value.grade.isIdentity }
+                               : !m.adjustments.grade.isIdentity
+                       },
                        dot: "The colour grade tints the tones",
                        show: model.clipOnStage ? "Grade the clip's tones"
                                                : "Grade the picture's tones",
@@ -817,9 +844,11 @@ struct ComposerStack: View {
     }
 
     private var cropTab: some View {
-        let changed = model.keyedStage ? !model.clipCropKeys.isIdentity
-                                        : !model.crop.isIdentity
-        return iconTab(.crop, symbol: "crop", name: "Crop", changed: changed,
+        iconTab(.crop, symbol: "crop", name: "Crop",
+                       changed: { m in
+                           m.keyedStage ? !m.clipCropKeys.isIdentity
+                                        : !m.crop.isIdentity
+                       },
                        dot: "The picture is cropped or turned",
                        show: model.clipOnStage ? "Crop and rotate the clip"
                                                : "Crop and rotate the picture",
@@ -830,7 +859,7 @@ struct ComposerStack: View {
     private var trimTab: some View {
         let sound = model.stageIsAudio
         return iconTab(.trim, symbol: "timeline.selection", name: "Trim",
-                       changed: !model.trim.isIdentity,
+                       changed: { !$0.trim.isIdentity },
                        dot: sound ? "The sound is trimmed"
                                   : "The clip is trimmed",
                        show: sound ? "Trim the sound" : "Trim the clip",
@@ -840,10 +869,24 @@ struct ComposerStack: View {
     /// The selected layer's sound: its gain, pitch and equalizer.
     private var audioTab: some View {
         iconTab(.audio, symbol: "speaker.wave.2", name: "Audio",
-                changed: !model.layerSound.isIdentity,
+                changed: { !$0.layerSound.isIdentity },
                 dot: "The sound is changed",
                 show: "Shape the sound: gain, pitch, equalizer",
                 hide: "Hide the audio panel")
+    }
+
+    /// A header's dot, a view of its own: what it reads -- a look's keys,
+    /// a sound's -- changes with every step of a drag, and read in the
+    /// composer's body it evaluated and laid out the whole prompt card and
+    /// tray again at each (the prompt's model resolved each time).
+    private struct TabDot: View {
+        let model: AppModel
+        let changed: (AppModel) -> Bool
+        let help: LocalizedStringKey
+
+        var body: some View {
+            if changed(model) { ComposerStack.changedDot.help(help) }
+        }
     }
 
     /// A header's dot while its card changes something: under its icon,
@@ -858,7 +901,8 @@ struct ComposerStack: View {
     /// A card's header that is its icon alone (its name is its help and
     /// what VoiceOver says), and a dot while it changes something.
     private func iconTab(_ p: ComposerPanel, symbol: String,
-                         name: LocalizedStringKey, changed: Bool,
+                         name: LocalizedStringKey,
+                         changed: @escaping (AppModel) -> Bool,
                          dot: LocalizedStringKey, show: LocalizedStringKey,
                          hide: LocalizedStringKey) -> some View {
         let open = model.openPanel == p
@@ -871,7 +915,7 @@ struct ComposerStack: View {
                 Image(systemName: symbol)
                     .accessibilityLabel(Text(name))
                     .overlay(alignment: .bottom) {
-                        if changed { Self.changedDot.help(dot) }
+                        TabDot(model: model, changed: changed, help: dot)
                     }
             }
             .font(.callout)
@@ -1072,6 +1116,13 @@ struct AttachMenu: View {
                 }
                 Button("From the System’s Audio") {
                     model.attachSound(system: true)
+                }
+                // Takes recorded onto the timeline on the stage as it
+                // plays (VoiceOver.swift): the audio target's alone.
+                if model.activeModality == .audio {
+                    Button("Voice-over…") { model.openVoiceOver() }
+                        .disabled(!model.canVoiceOver)
+                        .help("Record over the timeline or sound on the stage as it plays: each take goes on it where it was heard")
                 }
             }
             .disabled(model.activeModality == .image)

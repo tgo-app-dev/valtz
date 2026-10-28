@@ -591,7 +591,20 @@ extension AppModel {
     func colorTargetPointer(_ e: MarkupPointer) {
         guard colorTargetReady else { return }
         switch e.phase {
+        case .hover:
+            // A LOUPE round the pointer: the pixels about it, magnified,
+            // to press on the very one wanted.
+            markup.loupeAt = e.point
+            if let g = sampledGrid(at: e.point, side: Self.loupeSide) {
+                markup.loupe = g
+            }
+            return
+        case .exit:
+            markup.loupeAt = nil
+            return
         case .down:
+            // Pressed: the loupe goes -- the drag changes the colours.
+            markup.loupeAt = nil
             // On a clip: the frame pressed on, the player held there.
             if markupOnClip && videoRate != 0 { playVideo(rate: 0) }
             colorTargetDrag = ColorTargetDrag(
@@ -637,8 +650,6 @@ extension AppModel {
                 colorTargetDrag = nil
                 colorTargetHue = nil
             }
-        case .hover, .exit:
-            break
         }
     }
 
@@ -778,7 +789,8 @@ private struct MixDiskColumn: View {
             }
             .frame(width: Self.side)
             MixDisk(channel: channel, curve: model.adjustments.mix[channel],
-                    marked: model.colorTargetHue, enabled: enabled,
+                    marked: model.colorTargetHue,
+                    targeting: model.colorTargeting, enabled: enabled,
                     onChange: { model.setMix(channel, $0) },
                     onReset: { model.resetColorMix(channel) },
                     onReading: { reading = $0 })
@@ -857,6 +869,8 @@ private struct ColorTargetButton: View {
         // while off.
         Button {
             model.colorTargeting.toggle()
+            // Off: its loupe goes with it.
+            if !model.colorTargeting { model.markup.loupeAt = nil }
         } label: {
             Label("Target", systemImage: "scope")
                 .font(.callout.weight(.semibold))
@@ -889,6 +903,8 @@ struct MixDisk: NSViewRepresentable {
     let curve: MixCurve
     /// The target tool's hue, a line out from the centre while it drags.
     let marked: Double?
+    /// The target tool on: its keys shown at the centre.
+    let targeting: Bool
     let enabled: Bool
     let onChange: (MixCurve) -> Void
     let onReset: () -> Void
@@ -906,19 +922,23 @@ struct MixDisk: NSViewRepresentable {
         v.onChange = onChange
         v.onReset = onReset
         v.onReading = onReading
-        v.show(curve, marked: marked, enabled: enabled)
+        v.show(curve, marked: marked, targeting: targeting, enabled: enabled)
     }
 }
 
-/// A disk: the colour wheel's hues ROUND it -- red at the right, then
-/// yellow, green, aqua, blue, magenta counter-clockwise, as the Grade
-/// panel's wheels -- and the curve's value OUT from its centre: 0 on the
-/// circle at `base` of its radius, +1 at its rim, -1 as far inside
-/// (`base` less as much); its ground what the curve does there. The hue
-/// shift's is a RING of that reach (a turned hue has no centre); the
-/// saturation's and the luminance's run on to their centres -- as grey,
-/// as dark as -1 makes them. The curve is a closed line round it, at
-/// rest the circle; no seam where the wheel comes round.
+/// A disk's RING: the colour wheel's hues ROUND it -- red at the right,
+/// then yellow, green, aqua, blue, magenta counter-clockwise, as the
+/// Grade panel's wheels -- and the curve's value OUT across it: 0 on the
+/// circle at `base` of the radius, +1 at the rim, -1 at its inner edge
+/// (`base` less as much); its ground what the curve does there -- the
+/// hue's turned, the saturation's grey at the inner edge and vivid at
+/// the rim, the luminance's nearly black inside and lit toward white at
+/// the rim. All three rings (2026-10-28: the saturation's and the
+/// luminance's had run on to a centre all of -1, drawn poorly, then were
+/// whole disks a day). The curve is a closed line round it, at rest the
+/// circle; no seam where the wheel comes round. While the target tool
+/// is on, its keys in the middle: ⌘↑↓ the hue, ←→ the saturation, ↑↓
+/// the luminance.
 final class MixDiskNSView: NSView {
     /// Of the radius: where 0 is, and how far +1 and -1 go either way.
     static let base = 0.75
@@ -936,6 +956,7 @@ final class MixDiskNSView: NSView {
     var onReading: ((MixReading?) -> Void)?
     private(set) var curve = MixCurve()
     private var marked: Double?
+    private var targeting = false
     private var enabled = true
 
     /// A point held: its place in `curve` (kept unsorted while dragged),
@@ -986,10 +1007,13 @@ final class MixDiskNSView: NSView {
 
     /// The model's curve -- not while a point is held: the drag's own is
     /// shown until it is let go.
-    func show(_ c: MixCurve, marked m: Double?, enabled e: Bool) {
-        let changed = (held == nil && c != curve) || m != marked || e != enabled
+    func show(_ c: MixCurve, marked m: Double?, targeting t: Bool,
+              enabled e: Bool) {
+        let changed = (held == nil && c != curve) || m != marked
+            || t != targeting || e != enabled
         if held == nil { curve = c }
         marked = m
+        targeting = t
         enabled = e
         setAccessibilityValue(String(localized: "\(curve.points.count) points"))
         if changed { needsDisplay = true }
@@ -1049,16 +1073,11 @@ final class MixDiskNSView: NSView {
         let c = centre, rad = radius
         let disk = CGRect(x: c.x - rad, y: c.y - rad, width: 2 * rad,
                           height: 2 * rad)
-        let ring = channel == .hue
         let inner = r(-1)
         g.saveGState()
         g.addEllipse(in: disk)
-        if ring {
-            g.addEllipse(in: disk.insetBy(dx: rad - inner, dy: rad - inner))
-            g.clip(using: .evenOdd)
-        } else {
-            g.clip()
-        }
+        g.addEllipse(in: disk.insetBy(dx: rad - inner, dy: rad - inner))
+        g.clip(using: .evenOdd)
         if let art = MixDiskArt.image(channel) {
             // Its first row at the top: the view is flipped.
             g.saveGState()
@@ -1068,8 +1087,11 @@ final class MixDiskNSView: NSView {
             g.draw(art, in: disk)
             g.restoreGState()
         }
-        // A shade over it, so the curve reads on every hue.
-        g.setFillColor(NSColor.black.withAlphaComponent(0.18).cgColor)
+        // A shade over it, so the curve reads on every hue -- lighter
+        // on the saturation's and the luminance's, their vivid and bright
+        // rims seen (the curve is edged).
+        g.setFillColor(NSColor.black
+            .withAlphaComponent(channel == .hue ? 0.18 : 0.06).cgColor)
         g.fill(disk)
         g.restoreGState()
 
@@ -1134,10 +1156,34 @@ final class MixDiskNSView: NSView {
         g.setStrokeColor(NSColor.separatorColor.cgColor)
         g.setLineWidth(1)
         g.strokeEllipse(in: disk.insetBy(dx: 0.5, dy: 0.5))
-        if ring {
-            g.strokeEllipse(in: disk.insetBy(dx: rad - inner + 0.5,
-                                             dy: rad - inner + 0.5))
+        g.strokeEllipse(in: disk.insetBy(dx: rad - inner + 0.5,
+                                         dy: rad - inner + 0.5))
+        if targeting { drawKeys(at: c) }
+    }
+
+    /// What moves this disk's points on the stage, the target tool on:
+    /// ⌘ up and down the hue, across the saturation, up and down the
+    /// luminance -- on a plate at the centre.
+    private func drawKeys(at c: CGPoint) {
+        let text = switch channel {
+        case .hue: "⌘ ↑↓"
+        case .saturation: "← →"
+        case .luminance: "↑↓"
         }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.white,
+        ]
+        let size = (text as NSString).size(withAttributes: attrs)
+        let plate = NSRect(x: c.x - size.width / 2 - 7,
+                           y: c.y - size.height / 2 - 3,
+                           width: size.width + 14, height: size.height + 6)
+        NSColor.black.withAlphaComponent(0.6).setFill()
+        NSBezierPath(roundedRect: plate, xRadius: plate.height / 2,
+                     yRadius: plate.height / 2).fill()
+        (text as NSString).draw(
+            at: CGPoint(x: c.x - size.width / 2, y: c.y - size.height / 2),
+            withAttributes: attrs)
     }
 
     // MARK: The pointer
@@ -1229,8 +1275,8 @@ final class MixDiskNSView: NSView {
         h.angle = a
         // Out: the step since the last, in values.
         let d = distance(p)
-        h.out += Double((d - h.radius) / (radius * CGFloat(Self.reach)))
-            * fine
+        h.out += Double((d - h.radius)
+                        / (radius * CGFloat(Self.reach))) * fine
         h.radius = d
         h.off = d > radius + Self.off
         held = h
@@ -1313,10 +1359,8 @@ enum MixDiskArt {
                 let rr = hypot(x, y)
                 // Softened over its last pixel, and the ring's inside.
                 var alpha = min(1, max(0, (1 - rr) * Double(n) / 2 + 0.5))
-                if c == .hue {
-                    alpha *= min(1, max(0, (rr - (base - reach))
-                                            * Double(n) / 2 + 0.5))
-                }
+                alpha *= min(1, max(0, (rr - (base - reach))
+                                        * Double(n) / 2 + 0.5))
                 guard alpha > 0 else { continue }
                 let hue = MixCurve.wrap(atan2(y, x) * 180 / .pi)
                 let u = min(1, max(-1, (rr - base) / reach))
@@ -1333,11 +1377,20 @@ enum MixDiskArt {
                            encoded(lum + (l.1 - lum) * k),
                            encoded(lum + (l.2 - lum) * k))
                 case .luminance:
+                    // Darker in -- nearly black at the inner edge -- and
+                    // lighter out: up, past what a channel holds, toward
+                    // white (multiplied alone, the strong channel clipped
+                    // and the rim hardly lightened).
                     let b = hsv(hue, 0.7, 0.9)
-                    let k = pow(2, stops * u)
-                    rgb = (encoded(linear(b.0) * k),
-                           encoded(linear(b.1) * k),
-                           encoded(linear(b.2) * k))
+                    let k = pow(2, (u < 0 ? 6 : stops) * u)
+                    let l = (linear(b.0) * k, linear(b.1) * k,
+                             linear(b.2) * k)
+                    let top = max(l.0, l.1, l.2)
+                    let w = top > 1 ? 1 - 1 / top : 0
+                    let s = top > 1 ? 1 / top : 1
+                    rgb = (encoded(l.0 * s * (1 - w) + w),
+                           encoded(l.1 * s * (1 - w) + w),
+                           encoded(l.2 * s * (1 - w) + w))
                 }
                 let o = (j * n + i) * 4
                 px[o] = UInt8((rgb.0 * alpha * 255).rounded())

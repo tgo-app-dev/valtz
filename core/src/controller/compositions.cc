@@ -29,6 +29,31 @@ using project::AssetKind;
 
 namespace {
 
+// A file as what its content is for a key: its path, size and time.
+std::string
+file_stamp(const fs::path& f)
+{
+  std::error_code ec;
+  const auto size = fs::file_size(f, ec);
+  const auto t = fs::last_write_time(f, ec);
+  return std::format("{}:{}:{}", f.string(), ec ? 0 : size,
+                     ec ? 0 : t.time_since_epoch().count());
+}
+
+// A sound plan's key: what it plays and its files as they are.
+ContentHash
+sound_key(const media::SoundPlan& plan)
+{
+  std::string s = "mix|" + to_text(media::to_json(plan));
+  for (const auto& l : plan.layers) {
+    if (!l.file.empty()) {
+      s += "|" + file_stamp(l.file);
+    }
+  }
+  return ContentHash::of(s);
+}
+
+
 bool
 is_comp(const project::Asset& a)
 {
@@ -817,6 +842,57 @@ Controller::set_layer_visible(ProjectId pid, AssetId aid,
   }
   it->visible = visible;
   VALTZ_TRY(p->set_layers(aid, std::move(ls)));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
+                                    {"reason", "layers"}});
+  return ok_status();
+}
+
+Status
+Controller::set_layers_visible(ProjectId pid, AssetId aid,
+                               const std::vector<std::string>& layers,
+                               bool visible)
+{
+  // Each layer's own command joins this one.
+  auto undo = command_(pid, visible ? "layer.show" : "layer.hide", aid,
+                       layers.empty() ? "" : layers.front());
+  for (const auto& l : layers) {
+    VALTZ_TRY(set_layer_visible(pid, aid, l, visible));
+  }
+  return ok_status();
+}
+
+Status
+Controller::set_layers_locked(ProjectId pid, AssetId aid,
+                              const std::vector<std::string>& layers,
+                              bool locked)
+{
+  auto undo = command_(pid, locked ? "layer.lock" : "layer.unlock", aid,
+                       layers.empty() ? "" : layers.front());
+  for (const auto& l : layers) {
+    VALTZ_TRY(set_layer_locked(pid, aid, l, locked));
+  }
+  return ok_status();
+}
+
+Status
+Controller::set_layer_separator(ProjectId pid, AssetId aid,
+                                const std::string& layer, bool on)
+{
+  auto undo = command_(pid, "layer.separator", aid, layer);
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  auto it = find_layer(a.layers, layer);
+  if (it == a.layers.end()) {
+    return make_error(Code::InvalidArgument, "no such layer");
+  }
+  if (it->track_separator == on) {
+    return ok_status();
+  }
+  it->track_separator = on;
+  VALTZ_TRY(p->set_layers(aid, std::move(a.layers)));
   post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
                                     {"reason", "layers"}});
   return ok_status();
@@ -2532,15 +2608,21 @@ Controller::mixed_(ProjectId pid, AssetId id, int depth)
   if (!p) {
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
-  VALTZ_ASSIGN(ContentHash key, render_key_(*p, id, 0, depth));
-  VALTZ_ASSIGN(media::SoundPlan plan, sound_plan_(pid, id, depth + 1));
+  // (Its key read for the nesting it refuses.)
+  VALTZ_TRY(render_key_(*p, id, 0, depth));
+  VALTZ_ASSIGN(media::SoundPlan raw, sound_plan_(pid, id, depth + 1));
   bool any = false;
-  for (const auto& l : plan.layers) {
+  for (const auto& l : raw.layers) {
     any = any || !l.file.empty();
   }
-  if (!any || plan.seconds <= 0) {
+  if (!any || raw.seconds <= 0) {
     return fs::path();
   }
+  // Keyed by its SOUND -- the plan, its shaped spans, its files -- not
+  // the composition's content: a look or a markup changed is the same
+  // mix (it was made again for each, the player made again with it).
+  VALTZ_ASSIGN(media::SoundPlan plan, shaped_plan_(pid, std::move(raw)));
+  const ContentHash key = sound_key(plan);
   bool silent = false;
   VALTZ_ASSIGN(fs::path out,
                cached_(pid, cache::CacheStore::key_for(key, "mix.wav"),
@@ -3150,7 +3232,7 @@ Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
     ml.id = l.id;
     ml.visible = l.visible;
     ml.mask = l.mask;
-    if (live && live->layer == l.id) {
+    if (live && live->look && live->layer == l.id) {
       ml.adjust = live->adjust;
       ml.crop = live->crop;
     } else {
@@ -3191,6 +3273,66 @@ Result<fs::path>
 Controller::sound_mix(ProjectId pid, AssetId aid)
 {
   return mixed_(pid, aid, 0);
+}
+
+Result<media::SoundPlan>
+Controller::shaped_plan_(ProjectId pid, media::SoundPlan plan)
+{
+  for (auto& l : plan.layers) {
+    if (l.file.empty() || !media::shapes(l)) {
+      continue;
+    }
+    // By what shapes it -- the keys' pitch and bands, not their volume
+    // (the player's ramps): a gain changed is the same span.
+    // Nor where the layer starts on the timeline: slid, the same span.
+    media::KeyedSound shaping = l.sound;
+    for (auto& key : shaping.keys) {
+      key.value.volume = 1;
+    }
+    media::LayerTiming span = l.timing;
+    span.start = 0;
+    const ContentHash key = ContentHash::of(std::format(
+        "shaped|{}|{}|{}|{}", file_stamp(l.file),
+        to_text(media::to_json(span)), to_text(media::to_json(shaping)),
+        l.follow_speed ? "follow" : "held"));
+    VALTZ_ASSIGN(fs::path f,
+                 cached_(pid, cache::CacheStore::key_for(key, "shaped.caf"),
+                         [&](const fs::path& out) {
+                           return media::shape_sound(l, out);
+                         }));
+    l = media::as_shaped(std::move(l), f);
+  }
+  return plan;
+}
+
+Result<media::SoundPlan>
+Controller::playable_sound_plan(ProjectId pid, AssetId aid,
+                                const std::optional<LiveTracks>& live)
+{
+  VALTZ_ASSIGN(media::SoundPlan raw, sound_plan_(pid, aid, 0));
+  VALTZ_ASSIGN(media::SoundPlan plan, shaped_plan_(pid, std::move(raw)));
+  if (!live || !live->sound) {
+    return plan;
+  }
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(aid));
+  for (std::size_t i = 0; i < a.layers.size() && i < plan.layers.size();
+       ++i) {
+    if (a.layers[i].id != live->layer) {
+      continue;
+    }
+    // Its volume as the panel holds it; what shapes it as recorded.
+    media::KeyedSound k = *live->sound;
+    for (auto& key : k.keys) {
+      key.value.pitch = 0;
+      key.value.eq = {};
+    }
+    plan.layers[i].sound = std::move(k);
+  }
+  return plan;
 }
 
 Result<std::int64_t>
@@ -3693,7 +3835,10 @@ Controller::instantiate(ProjectId pid, AssetId asset,
     ls.insert(ls.begin() + static_cast<std::ptrdiff_t>(pos), n);
   }
   VALTZ_TRY(p->set_layers(t.id, std::move(ls)));
-  if (append || still) {
+  // A set length grown to hold it, as a slide grows it: a clip put past
+  // the end -- a continuation landing after what it carries on -- would
+  // not be seen.
+  if (is_timeline(t)) {
     VALTZ_TRY(grow_to_content_(pid, *p, t.id));
   }
   post_("assets.changed", JobId{}, {{"project", pid}, {"asset", t.id},
@@ -4225,7 +4370,8 @@ Controller::clip_frames_(project::Project& p, const project::Asset& a)
 
 Result<Json>
 Controller::continuation_guide(ProjectId pid, AssetId clip, double seconds,
-                               const std::string& model, std::string name)
+                               const std::string& model, std::string name,
+                               std::string capture_name)
 {
   auto undo = command_(pid, "continue.guide", clip);
   project::Project* p = project(pid);
@@ -4287,20 +4433,97 @@ Controller::continuation_guide(ProjectId pid, AssetId clip, double seconds,
           ? Rational{static_cast<std::int64_t>(std::lround(fps)), 1}
           : Rational{static_cast<std::int64_t>(std::lround(fps * 1000)),
                      1000};
+  // What the guide shows, from which of its frames.
+  AssetId shows = clip;
+  project::LayerTime t;
+  t.in = have.first - span;
+  t.rate = have.second;
+  Json out = Json::object();
+  if (is_timeline(c)) {
+    VALTZ_ASSIGN(auto tail, continued_tail_(pid, *p, c, have.first, rate,
+                                            guide_s));
+    if (tail) {
+      shows = tail->clip;
+      t.in = tail->in;
+      t.rate = tail->rate;
+    } else {
+      VALTZ_ASSIGN(shows,
+                   capture(pid, clip, {},
+                           capture_name.empty() ? c.name
+                                                : std::move(capture_name)));
+    }
+    out["composition"] = clip.str();
+    out["end"] = have.first;
+  }
   VALTZ_ASSIGN(AssetId g,
                new_composition_(pid, *p, AssetClass::Composition, size,
                                 model_rate, name.empty() ? c.name : name,
                                 c.folder));
-  VALTZ_ASSIGN(auto placed, instantiate(pid, clip, g));
-  project::LayerTime t;
-  t.in = have.first - span;
-  t.rate = have.second;
+  VALTZ_ASSIGN(auto placed, instantiate(pid, shows, g));
   VALTZ_TRY(set_layer_time(pid, g, placed.second, t));
   VALTZ_TRY(set_timeline(pid, g, frames));
-  return Json{{"asset", g.str()},
-              {"frames", frames},
-              {"seconds", guide_s},
-              {"fps", fps}};
+  out["asset"] = g.str();
+  out["shows"] = shows.str();
+  out["frames"] = frames;
+  out["seconds"] = guide_s;
+  out["fps"] = fps;
+  return out;
+}
+
+Result<std::optional<Controller::ContinuedTail>>
+Controller::continued_tail_(ProjectId pid, project::Project& p,
+                            const project::Asset& tl, std::int64_t frames,
+                            double rate, double seconds)
+{
+  using Tail = std::optional<ContinuedTail>;
+  const double end = static_cast<double>(frames) / rate;
+  const double from = std::max(0.0, end - seconds);
+  constexpr double eps = 1e-6;
+  VALTZ_ASSIGN(media::MovieStack m,
+               movie_stack_(pid, tl.id, false, std::nullopt, 0));
+  // The layers seen or heard in the tail: one alone, or none of this.
+  const media::MovieLayer* only = nullptr;
+  for (const auto& ml : m.layers) {
+    if (!ml.visible || ml.timing.end() <= from + eps ||
+        ml.timing.start >= end - eps) {
+      continue;
+    }
+    if (only) {
+      return Tail{};
+    }
+    only = &ml;
+  }
+  if (!only || !only->video || only->audio_only || only->mask ||
+      only->timing.start > from + eps || only->timing.end() < end - eps ||
+      !only->timing.constant_speed() ||
+      std::abs(only->timing.speed_at_local(0) - 1.0) > eps) {
+    return Tail{};
+  }
+  const auto l = std::ranges::find(tl.layers, only->id,
+                                   &project::Layer::id);
+  if (l == tl.layers.end() || !l->source || l->mask) {
+    return Tail{};
+  }
+  // Plain: no look of its own (a crop, an adjustment, its sound's).
+  if (std::ranges::any_of(tl.modifiers, [&](const project::Modifier& md) {
+        return md.layer == l->id;
+      })) {
+    return Tail{};
+  }
+  VALTZ_ASSIGN(project::Asset s, p.asset(*l->source));
+  if (s.kind != AssetKind::Video ||
+      (s.cls != AssetClass::Flat && s.cls != AssetClass::Generated)) {
+    return Tail{};
+  }
+  VALTZ_ASSIGN(auto own, clip_frames_(p, s));
+  const double own_rate = own.second.to_double();
+  if (own.first <= 0 || own_rate <= 0) {
+    return Tail{};
+  }
+  const std::int64_t in = std::clamp<std::int64_t>(
+      std::llround(only->timing.source_at(from) * own_rate), 0,
+      own.first - 1);
+  return Tail{ContinuedTail{s.id, in, own.second}};
 }
 
 Result<AssetId>
@@ -4820,17 +5043,26 @@ Controller::capture_sources() const
 
 Status
 Controller::start_capture(ProjectId pid, std::optional<AssetId> into,
-                          const std::string& source)
+                          const std::string& source,
+                          std::optional<std::int64_t> voice_over_at)
 {
   project::Project* p = project(pid);
   if (!p) {
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   const AssetId aid = into.value_or(AssetId{});
+  if (voice_over_at && !into) {
+    return make_error(Code::InvalidArgument, msg::kVoiceOverNeedsTime);
+  }
   if (into) {
     VALTZ_ASSIGN(project::Asset a, p->asset(*into));
-    // Sound goes into a composition of sound alone.
-    if (a.cls != AssetClass::Composition || a.kind != AssetKind::Audio) {
+    // A voice-over goes onto any composition in time; else sound goes
+    // into a composition of sound alone.
+    if (voice_over_at && !is_timeline(a)) {
+      return make_error(Code::InvalidArgument, msg::kVoiceOverNeedsTime);
+    }
+    if (!voice_over_at &&
+        (a.cls != AssetClass::Composition || a.kind != AssetKind::Audio)) {
       return make_error(Code::InvalidArgument, msg::kCaptureNeedsSound);
     }
   }
@@ -4850,8 +5082,47 @@ Controller::start_capture(ProjectId pid, std::optional<AssetId> into,
   _capture_project = pid;
   _capture_asset = aid;
   _capture_name = name;
+  _capture_at.reset();
+  if (voice_over_at) {
+    _capture_at = std::max<std::int64_t>(0, *voice_over_at);
+  }
+  _capture_cue.reset();
   post_("capture.started", JobId{}, {{"project", pid}, {"asset", aid},
                                      {"source", source}});
+  return ok_status();
+}
+
+Controller::VoiceOverPlace
+Controller::voice_over_place(std::int64_t at, double fps, double lead)
+{
+  VoiceOverPlace out;
+  if (fps <= 0) {
+    out.offset = at;
+    return out;
+  }
+  // The recording's first sample, in the composition's seconds.
+  const double t0 = static_cast<double>(at) / fps - lead;
+  if (t0 <= 0) {
+    out.in_ms = std::llround(-t0 * 1000);
+    return out;
+  }
+  out.offset = static_cast<std::int64_t>(std::ceil(t0 * fps - 1e-6));
+  out.in_ms = std::max<std::int64_t>(
+      0, std::llround((static_cast<double>(out.offset) / fps - t0) * 1000));
+  return out;
+}
+
+Status
+Controller::cue_capture(double host_seconds)
+{
+  std::lock_guard lk(_capture_mu);
+  if (!_capture) {
+    return make_error(Code::InvalidArgument, msg::kNoCapture);
+  }
+  // The first start counts: a take is lined up by it.
+  if (!_capture_cue) {
+    _capture_cue = host_seconds;
+  }
   return ok_status();
 }
 
@@ -4869,7 +5140,9 @@ Controller::capture_state() const
           {"source", _capture->source()},
           {"name", _capture_name},
           {"seconds", _capture->seconds()},
-          {"level", _capture->level()}};
+          {"level", _capture->level()},
+          {"voice_over", _capture_at.has_value()},
+          {"at", _capture_at.value_or(0)}};
 }
 
 Result<AssetId>
@@ -4879,6 +5152,8 @@ Controller::stop_capture()
   ProjectId pid;
   AssetId comp;
   std::string name;
+  std::optional<std::int64_t> voice_at;
+  std::optional<double> cue;
   {
     std::lock_guard lk(_capture_mu);
     if (!_capture) {
@@ -4888,8 +5163,11 @@ Controller::stop_capture()
     pid = _capture_project;
     comp = _capture_asset;
     name = _capture_name;
+    voice_at = _capture_at;
+    cue = _capture_cue;
   }
   const fs::path file = c->file();
+  const double first = c->started_at();
   const Status st = c->stop();
   c.reset();
   std::error_code ec;
@@ -4915,6 +5193,25 @@ Controller::stop_capture()
                import_taken_(pid, file,
                              std::format("{} {}", name, local_time_hm()),
                              c_asset.folder));
+  if (voice_at) {
+    const double lead =
+        cue && std::isfinite(first) ? *cue - first : 0.0;
+    const auto place = voice_over_place(
+        *voice_at, rate_of_(*p, c_asset).to_double(), lead);
+    VALTZ_ASSIGN(auto placed,
+                 instantiate(pid, made, comp, std::nullopt, place.offset,
+                             false));
+    if (place.in_ms > 0) {
+      VALTZ_ASSIGN(project::Asset now, p->asset(comp));
+      auto l = find_layer(now.layers, placed.second);
+      if (l != now.layers.end()) {
+        project::LayerTime t = l->time;
+        t.in = place.in_ms;
+        VALTZ_TRY(set_layer_time(pid, comp, placed.second, t));
+      }
+    }
+    return made;
+  }
   // In its blank layer, else a new one on top.
   std::optional<std::string> at;
   for (const auto& l : c_asset.layers) {

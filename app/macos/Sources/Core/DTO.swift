@@ -478,13 +478,49 @@ struct StackPlayback: Equatable, Sendable {
     /// Sound alone: nothing drawn (no renderer).
     var soundOnly: Bool { plan == 0 }
 
-    /// What the player's composition is made of: a change rebuilds it; a
-    /// new plan alone draws the frames again.
-    var shape: [String] {
-        clips.map(\.path) + ["\(width)x\(height)", "\(frames)",
-                             "\(rate.num)/\(rate.den)",
-                             "\(segments)", "\(audio.map(\.shape))",
-                             mix?.path ?? ""]
+    /// What the player's composition is made of, hashed (`keyed`): a
+    /// change rebuilds it; a new plan alone draws the frames again. Worked
+    /// out once, as the plan is read off the main thread: spelled out, a
+    /// ten-minute clip's segments were a megabyte of text a comparison,
+    /// on the main thread, several times a plan.
+    private(set) var shape = 0
+    /// The shape but its sound's volumes: what changes with a gain alone
+    /// is laid on the playing item (its audio mix), not a player made
+    /// again.
+    private(set) var soundlessShape = 0
+
+    /// The plan with its shapes worked out.
+    func keyed() -> StackPlayback {
+        var h = Hasher()
+        for c in clips { h.combine(c.path) }
+        h.combine(width)
+        h.combine(height)
+        h.combine(frames)
+        h.combine(rate.num)
+        h.combine(rate.den)
+        func numbers(_ rows: [[Double]]) {
+            h.combine(rows.count)
+            for r in rows {
+                h.combine(r.count)
+                for v in r { h.combine(v.bitPattern) }
+            }
+        }
+        for s in segments { numbers(s) }
+        for a in audio {
+            h.combine(a.file.path)
+            numbers(a.segments)
+        }
+        h.combine(mix?.path ?? "")
+        var o = self
+        o.soundlessShape = h.finalize()
+        var v = Hasher()
+        v.combine(o.soundlessShape)
+        for a in audio {
+            v.combine(a.volume.count)
+            for r in a.volume { for x in r { v.combine(x.bitPattern) } }
+        }
+        o.shape = v.finalize()
+        return o
     }
 }
 
@@ -512,7 +548,6 @@ struct StackAudio: Equatable, Sendable {
     var segments: [[Double]]
     var volume: [[Double]]
 
-    var shape: String { "\(file.path)|\(segments)|\(volume)" }
 }
 
 /// Canvas Size (core media::StackCanvas): `w` x `h` pixels, the stack's
@@ -539,6 +574,58 @@ struct FolderDTO: Decodable, Sendable, Hashable, Identifiable {
 }
 
 /// The asset list as the core sends it (bridge assets_json).
+/// The ATLAS (core Controller::atlas): the project as a graph, laid out
+/// -- each node's column, its row and height in slots.
+struct AtlasDTO: Decodable, Sendable {
+    var nodes: [AtlasNodeDTO]
+    var edges: [AtlasEdgeDTO]
+    var columns: Int
+    var height: Double
+    /// What the project had written as it was read.
+    var revision: String?
+}
+
+/// A node: an asset ("asset"), what made one ("op": a recipe's, a flat
+/// copy's note), or a composition's layer ("layer") between what it
+/// shows and the composition.
+struct AtlasNodeDTO: Decodable, Sendable, Hashable, Identifiable {
+    var id: String
+    var type: String
+    var asset: String?
+    /// A destination's kind: "timeline", "still", "sound".
+    var destination: String?
+    var project: Bool?
+    /// Nothing made from it, on no layer, not the project's: it may go.
+    var leaf: Bool?
+    /// Joined to nothing: in the grid under the graph.
+    var loose: Bool?
+    var op: String?
+    var model: String?
+    /// The asset an op makes; a layer's composition.
+    var into: String?
+    var layer: String?
+    var source: String?
+    /// What a layer does: adjust, place, turn, keyed, speed, sound,
+    /// timed, mask, hidden, locked, pinned.
+    var look: [String]?
+    var offset: Int?
+    var duration: Int?
+    var note: Bool?
+    var column: Int
+    var row: Double
+    var height: Double
+
+    var isAsset: Bool { type == "asset" }
+}
+
+/// An edge: "input" (with its role), "made", "layer", "into", "note".
+struct AtlasEdgeDTO: Decodable, Sendable, Hashable {
+    var from: String
+    var to: String
+    var kind: String
+    var role: String?
+}
+
 struct AssetListDTO: Decodable, Sendable {
     var ok: Bool
     var assets: [AssetDTO]
@@ -1394,6 +1481,10 @@ struct LayerDTO: Decodable, Sendable, Hashable, Identifiable {
     /// LOCKED (core Controller::set_layer_locked): what it shows, its
     /// look, its time are not changed until it is unlocked.
     var locked = false
+    /// A TRACK SEPARATOR (core project::Layer::track_separator): in the
+    /// timeline's track view it starts a track of its own, never laid in
+    /// the track of the layers below it.
+    var trackSeparator = false
     var time: LayerTimeDTO? = nil
     /// The folder it is in (AssetDTO.layerFolders); nil: none.
     var folder: String? = nil
@@ -1415,6 +1506,7 @@ struct LayerDTO: Decodable, Sendable, Hashable, Identifiable {
     private enum K: String, CodingKey {
         case id, name, visible, own, source, markup, mask, locked, time
         case folder
+        case trackSeparator   // track_separator: convertFromSnakeCase
     }
 
     init(from d: Decoder) throws {
@@ -1434,6 +1526,8 @@ struct LayerDTO: Decodable, Sendable, Hashable, Identifiable {
             .flatMap { $0 } ?? false
         locked = (try? c.decodeIfPresent(Bool.self, forKey: .locked))
             .flatMap { $0 } ?? false
+        trackSeparator = (try? c.decodeIfPresent(
+            Bool.self, forKey: .trackSeparator)).flatMap { $0 } ?? false
         time = (try? c.decodeIfPresent(LayerTimeDTO.self, forKey: .time))
             .flatMap { $0 }
         folder = (try? c.decodeIfPresent(String.self, forKey: .folder))

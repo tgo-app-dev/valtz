@@ -8,49 +8,90 @@ struct AgentCard: View {
     @Bindable var model: AppModel
     let session: AgentSession
 
+    /// The rows the agent's output has: what it says and the step it is
+    /// on, however long, scroll within them.
+    static let outputHeight: CGFloat = 96
+    /// The review buttons' row.
+    static let buttonsHeight: CGFloat = 24
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             AgentHeader(model: model, session: session)
             AgentHoldNote(model: model)
-            let words = model.agentWriting.trimmingCharacters(
-                in: .whitespacesAndNewlines)
-            if !words.isEmpty {
-                Text(agentMarkdown(words))
-                    .font(.callout)
-                    .lineLimit(4)
-                    .truncationMode(.head)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+            // What it is doing -- its words as they come, the step it is on
+            // with what it was asked, an error, a question -- in rows of
+            // their own, the newest in view; longer, they scroll. Sized by
+            // what came, the card moved the stage at every word and step.
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        output
+                        Color.clear.frame(height: 1).id("end")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: Self.outputHeight)
+                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
+                .onChange(of: scrollKey) {
+                    proxy.scrollTo("end", anchor: .bottom)
+                }
             }
-            if let e = session.errorText, session.state == "failed" {
-                Label(e, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // Its buttons' row kept while it asks for a word on each step,
+            // so the card is one height as steps come and go.
             if let step = session.proposed {
-                AgentStepRow(step: step, compact: true)
                 AgentReviewButtons(model: model, step: step)
-            } else if let step = session.steps.last {
-                AgentStepRow(step: step, compact: true)
-            }
-            if session.state == "asking",
-               let q = session.steps.last?.question {
-                Label(q, systemImage: "questionmark.bubble")
-                    .font(.callout.weight(.medium))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Answer in the box below.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            // The last turn's speed, for debugging.
-            if model.agentShowsSpeed, let st = session.stats, !st.isEmpty {
-                AgentSpeedText(stats: st)
+                    .frame(height: Self.buttonsHeight)
+            } else if session.review && !session.listening {
+                Color.clear.frame(height: Self.buttonsHeight)
             }
         }
         .padding(16)
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18,
                                                     style: .continuous))
+    }
+}
+
+extension AgentCard {
+    /// The card's output, whole.
+    @ViewBuilder
+    private var output: some View {
+        let words = model.agentWriting.trimmingCharacters(
+            in: .whitespacesAndNewlines)
+        if !words.isEmpty {
+            Text(agentMarkdown(words))
+                .font(.callout)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let e = session.errorText, session.state == "failed" {
+            Label(e, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let step = session.proposed ?? session.steps.last {
+            AgentStepRow(step: step, compact: true, limited: false)
+        }
+        if session.state == "asking",
+           let q = session.steps.last?.question {
+            Label(q, systemImage: "questionmark.bubble")
+                .font(.callout.weight(.medium))
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Answer in the box below.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        // The last turn's speed, for debugging.
+        if model.agentShowsSpeed, let st = session.stats, !st.isEmpty {
+            AgentSpeedText(stats: st)
+        }
+    }
+
+    /// What changes the output: the newest is brought into view.
+    private var scrollKey: String {
+        "\(model.agentWriting.count)|\(session.steps.count)|"
+            + "\(session.steps.last?.state ?? "")|\(session.state)|"
+            + "\(session.proposed?.n ?? -1)"
     }
 }
 
@@ -156,6 +197,9 @@ struct AgentReviewButtons: View {
 struct AgentStepRow: View {
     let step: AgentStep
     var compact = false
+    /// Its texts cut to a few lines; else whole (the card's scrolling
+    /// rows).
+    var limited = true
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -169,14 +213,14 @@ struct AgentStepRow: View {
                     Text(a)
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
-                        .lineLimit(compact ? 2 : 6)
+                        .lineLimit(limited ? (compact ? 2 : 6) : nil)
                         .textSelection(.enabled)
                 }
                 if let e = step.error, !e.isEmpty {
                     Text(e)
                         .font(.caption)
                         .foregroundStyle(.orange)
-                        .lineLimit(compact ? 2 : 4)
+                        .lineLimit(limited ? (compact ? 2 : 4) : nil)
                 } else if !compact, let r = step.resultText {
                     Text(r)
                         .font(.caption.monospaced())

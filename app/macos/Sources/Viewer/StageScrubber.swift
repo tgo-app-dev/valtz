@@ -11,26 +11,47 @@ struct StageScrubber: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        let len = model.stageClipLength ?? 0
-        let rate = model.stageFrameRate
-        let at = min(max(0, model.videoFrame), max(0, len - 1))
+        ScrubberRow(frame: model.videoFrame,
+                    length: model.stageClipLength ?? 0,
+                    units: model.stageFrameRate,
+                    seek: { model.seekVideo(to: $0) },
+                    letGo: {
+                        model.noteBar("scrubber: let go at \($0)")
+                        model.scrubbed(to: $0, resume: $1)
+                    },
+                    rate: { model.videoRate },
+                    step: { model.stepVideo($0) })
+            // A voice-over's take under way: not dragged while it plays.
+            .disabled(model.voiceOverRecording)
+    }
+}
+
+/// The scrubber's row, as the stage and the Atlas's player show it: the
+/// time where it is, the track, the length -- in `units` (a clip's
+/// timecode, a sound's milliseconds).
+struct ScrubberRow: View {
+    let frame: Int
+    let length: Int
+    let units: FrameRate
+    let seek: (Int) -> Void
+    /// Let go at a frame, playing on at the rate the press found.
+    let letGo: (Int, Float) -> Void
+    let rate: () -> Float
+    let step: (Int) -> Void
+
+    var body: some View {
+        let at = min(max(0, frame), max(0, length - 1))
         HStack(spacing: 8) {
-            Text(verbatim: rate.timecode(at))
-            ScrubberBar(frame: at, length: len,
-                        value: rate.timecode(at),
-                        seek: { model.seekVideo(to: $0) },
-                        letGo: {
-                            model.noteBar("scrubber: let go at \($0)")
-                            model.scrubbed(to: $0, resume: $1)
-                        },
-                        rate: { model.videoRate },
-                        step: { model.stepVideo($0) })
-            Text(verbatim: rate.timecode(len))
+            Text(verbatim: units.timecode(at))
+            ScrubberBar(frame: at, length: length,
+                        value: units.timecode(at),
+                        seek: seek, letGo: letGo, rate: rate, step: step)
+            Text(verbatim: units.timecode(length))
                 .foregroundStyle(.secondary)
         }
         .font(.caption.monospacedDigit())
         .frame(height: 18)
-        .disabled(len < 2)
+        .disabled(length < 2)
     }
 }
 

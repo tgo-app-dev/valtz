@@ -256,6 +256,8 @@ private:
                                  std::vector<std::filesystem::path>&);
   Result<Json> t_view_page(Session&, Step&, const Json&,
                            std::vector<std::filesystem::path>&);
+  Result<Json> t_get_exif(Session&, Step&, const Json&,
+                          std::vector<std::filesystem::path>&);
   Result<Json> t_view_asset(Session&, Step&, const Json&,
                             std::vector<std::filesystem::path>&);
   Result<Json> t_create_composition(Session&, Step&, const Json&,
@@ -299,6 +301,10 @@ private:
                               std::vector<std::filesystem::path>&);
   Result<Json> t_rename_layer(Session&, Step&, const Json&,
                               std::vector<std::filesystem::path>&);
+  Result<Json> t_set_layer_mask(Session&, Step&, const Json&,
+                                std::vector<std::filesystem::path>&);
+  Result<Json> t_add_mask(Session&, Step&, const Json&,
+                          std::vector<std::filesystem::path>&);
   Result<Json> t_set_layer_visible(Session&, Step&, const Json&,
                                    std::vector<std::filesystem::path>&);
   Result<Json> t_adjust_layer(Session&, Step&, const Json&,
@@ -403,9 +409,11 @@ private:
   Result<Json> objects_(ProjectId, AssetId comp, const std::string& layer);
   // The markup words and shapes go on: a still's page's (`page`), or on
   // a timeline one from `start` for `duration` seconds -- and where, as
-  // the result tells it.
+  // the result tells it. `named`: the drawing tools', whose `layer` is
+  // the one to draw on (a mask's); move_objects' is where they are.
   Result<std::pair<std::string, Json>> markup_for_(ProjectId, AssetId comp,
-                                                   const Json& args);
+                                                   const Json& args,
+                                                   bool named = false);
   // ---- timelines (agent-tools.cc): the model speaks SECONDS -- of the
   // timeline, of a clip's own -- and these turn them into frames.
   // A timeline the session works on (or the one named): refused for a

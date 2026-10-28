@@ -20,6 +20,9 @@ struct TimelineRow: Equatable, Identifiable {
     /// LOCKED (core set_layer_locked): pressed, it is selected and the
     /// player goes there -- nothing of it is dragged, stretched or cut.
     var locked = false
+    /// A TRACK SEPARATOR (core set_layer_separator): in the track view it
+    /// starts a track of its own, never laid in the track below it.
+    var separator = false
     /// Its first frame, and the frame after its last -- nil while it runs
     /// on to the end, as a picture does.
     var start: Int
@@ -88,6 +91,7 @@ struct TimelineLayoutKey: Equatable {
     var sound: Keyframes<LayerSound>?
     var folded: Set<String>
     var rate: FrameRate
+    var tracks: Bool
 }
 
 struct TimelineModel: Equatable {
@@ -96,13 +100,19 @@ struct TimelineModel: Equatable {
     var rate = FrameRate.fallback
     var paged = false
     var playhead = 0
+    /// The selected layer's id ("" layer 0) -- `noLayer` while none is.
     var selected = ""
+    static let noLayer = "\u{0}none"
     /// Layers ⌘-clicked into the selection (several: to group, merge).
     var chosen: Set<String> = []
     var cutting = false
     var zoom = 1.0
     var events: [Int] = []
     var transitions: [TimelineTransition] = []
+    /// The TRACK VIEW's tracks (AppModel.timelineTracks): each a run of
+    /// `rows`, top first, drawn as one row; nil in the layer view, where
+    /// each row is one.
+    var lanes: [Range<Int>]?
     /// An agent at work holds the project (AppModel.agentHolds): a press
     /// selects, folds and scrubs; nothing is moved, cut, named, shown,
     /// hidden, joined or dropped.
@@ -155,6 +165,8 @@ extension AppModel {
     /// Not while VIEW ONLY: its wish kept for after (setViewOnly).
     var timelineAvailable: Bool {
         !promptImmersive && !viewOnly && timelineAsset != nil
+            // A voice-over's take: its card, and Stop, stay in sight.
+            && !voiceOverRecording
     }
 
     /// The timeline is in the prompt's place.
@@ -226,7 +238,8 @@ extension AppModel {
         guard let a = timelineAsset else { return TimelineModel() }
         var m = timelineLayout(a)
         m.playhead = a.isPaged ? stagePage : videoFrame
-        m.selected = activeLayer
+        // None selected (⌘D): no row lit.
+        m.selected = layerNoneSelected ? TimelineModel.noLayer : activeLayer
         if selectedLayers.count > 1 { m.chosen = selectedLayers }
         m.cutting = timelineCutting && !agentHolds
         m.zoom = timelineZoom
@@ -248,7 +261,8 @@ extension AppModel {
             crop: live ? clipCropKeys : nil,
             speed: live && clipOnStage ? layerSpeed : nil,
             sound: live && clipOnStage ? layerSound : nil,
-            folded: foldedLayerFolders, rate: stageFrameRate)
+            folded: foldedLayerFolders, rate: stageFrameRate,
+            tracks: timelineTracks)
         if let memo = timelineLayoutMemo, memo.key == key {
             return memo.model
         }
@@ -275,6 +289,7 @@ extension AppModel {
                                 visible: l.visible, start: 0, end: nil,
                                 keys: [], cuttable: false)
             r.locked = l.locked
+            r.separator = l.trackSeparator
             if a.isPaged {
                 let span = a.pageSpan(of: l)
                 r.start = span?.lowerBound ?? 0
@@ -325,6 +340,10 @@ extension AppModel {
             m.transitions = (a.transitions ?? []).map {
                 TimelineTransition(from: $0.from, to: $0.to, kind: $0.kind)
             }
+        }
+        if timelineTracks {
+            m.lanes = Self.timelineLanes(m.rows, frames: m.frames,
+                                         transitions: m.transitions)
         }
         // Where |< and >| stop.
         var ev: Set<Int> = [0, m.frames]
@@ -386,6 +405,53 @@ extension AppModel {
             out.append(r)
         }
         return out
+    }
+
+    /// The TRACK VIEW's tracks (DESIGN §10a Timeline): the rows laid
+    /// together as a traditional editor's tracks -- each a run of rows,
+    /// top first. Walking up from the bottom, a layer goes in the track
+    /// under it unless it is a TRACK SEPARATOR, lies in another folder
+    /// than that track's, or overlaps one of the track's layers with no
+    /// transition between the two; a folder's header and a blank layer
+    /// are a track of their own, so no track runs across a folder's edge.
+    static func timelineLanes(_ rows: [TimelineRow], frames: Int,
+                              transitions: [TimelineTransition])
+        -> [Range<Int>] {
+        var joined: Set<[String]> = []
+        for t in transitions {
+            joined.insert([t.from, t.to])
+            joined.insert([t.to, t.from])
+        }
+        var lanes: [Range<Int>] = []   // bottom first while laid
+        // The last track's layers and where they play, together: a span
+        // clear of them all joins at once -- clips laid one after another
+        // are not each compared with all the others (16 000 layers).
+        var members: [(id: String, span: Range<Int>)] = []
+        var covers = 0..<0
+        var open = false
+        var folder: String?
+        for i in rows.indices.reversed() {
+            let r = rows[i]
+            let alone = r.isFolder || r.kind == .blank
+            let s = r.start..<max(r.start + 1, r.end ?? frames)
+            if open, !alone, !r.separator, r.folder == folder,
+               s.lowerBound >= covers.upperBound
+                || s.upperBound <= covers.lowerBound
+                || members.allSatisfy({ !$0.span.overlaps(s)
+                    || joined.contains([$0.id, r.id]) }) {
+                lanes[lanes.count - 1] = i..<lanes[lanes.count - 1].upperBound
+                members.append((r.id, s))
+                covers = min(covers.lowerBound, s.lowerBound)
+                    ..< max(covers.upperBound, s.upperBound)
+                continue
+            }
+            lanes.append(i..<i + 1)
+            members = alone ? [] : [(r.id, s)]
+            covers = s
+            open = !alone
+            folder = r.folder
+        }
+        return lanes.reversed()
     }
 
     /// What a row is, by what its layer shows -- a part cut from a clip
@@ -650,7 +716,7 @@ extension AppModel {
             if clipOnStage { loadTrim(a) }
             if keyedStage { loadClipTracks(a, layer: activeLayer) }
         }
-        if let id, id != activeLayer { selectLayer(id) }
+        if let id, !isSelectedLayer(id) { selectLayer(id) }
         if clipOnStage { refreshStackPlan() } else { recomposite() }
     }
 
@@ -744,7 +810,7 @@ struct TimelineCard: View {
             seek: { model.timelineSeek($0) },
             select: { id in
                 // The target tool on: the stage stays on its layer.
-                if id != model.activeLayer,
+                if !model.isSelectedLayer(id),
                    !model.refusedForColorTarget() {
                     model.selectLayer(id)
                 }
@@ -765,6 +831,9 @@ struct TimelineCard: View {
                     model.setLayerLocked(id, !r.locked)
                 }
             },
+            setVisible: { model.setLayersVisible($0, $1) },
+            setLocked: { model.setLayersLocked($0, $1) },
+            setSeparator: { model.setLayerSeparator($0, $1) },
             moveLayer: { model.moveLayer($0, by: $1) },
             addLayer: { model.addLayer(above: $0) },
             duplicateLayer: { model.duplicateLayer($0) },
@@ -810,6 +879,17 @@ struct TimelineCard: View {
             }
             .shortcutHint("S")
             .disabled(m.paged || m.readOnly)
+            // The TRACK VIEW: the layers laid in tracks, as a traditional
+            // editor shows them -- or a row each again.
+            TimelineTool(symbol: "rectangle.compress.vertical",
+                         on: model.timelineTracks,
+                         help: model.timelineTracks
+                             ? "Layer view: a row for each layer"
+                             : "Track view: layers that follow one another, or meet in transitions, in one track") {
+                withAnimation(AppModel.motion) {
+                    model.timelineTracks.toggle()
+                }
+            }
             Spacer(minLength: 4)
             TimelineTool(symbol: "minus.magnifyingglass", on: false,
                          help: "Zoom out") {
@@ -972,13 +1052,16 @@ struct TimelineSwitch: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        // View › Timeline's key; back, ⇧⌘P -- the prompt's, the keyboard
+        // in it.
+        .shortcutHint(toTimeline ? "⇧⌘T" : "⇧⌘P")
         .onHover { hovering = $0 }
         // The timeline came by itself (AppModel.landed): the way back to
         // the prompt flashes once, when it is in.
         .onAppear { flashIfAsked() }
         .onChange(of: model.switchFlash) { _, _ in flashIfAsked() }
-        .help(toTimeline ? "Show the timeline in place of the prompt"
-                         : "Back to the prompt and its generation settings")
+        .help(toTimeline ? "Show the timeline in place of the prompt (⇧⌘T)"
+                         : "Back to the prompt and its generation settings (⇧⌘P)")
         .accessibilityLabel(Text(toTimeline ? "Timeline" : "Prompt"))
     }
 
@@ -1060,6 +1143,11 @@ struct TimelineActions {
     var stopCutting: () -> Void = {}
     var toggleVisible: (String) -> Void = { _ in }
     var toggleLocked: (String) -> Void = { _ in }
+    /// A track's layers shown or hidden, locked or unlocked, together;
+    /// a layer made a track separator or not.
+    var setVisible: ([String], Bool) -> Void = { _, _ in }
+    var setLocked: ([String], Bool) -> Void = { _, _ in }
+    var setSeparator: (String, Bool) -> Void = { _, _ in }
     var moveLayer: (String, Int) -> Void = { _, _ in }
     var addLayer: (String) -> Void = { _ in }
     var duplicateLayer: (String) -> Void = { _ in }
@@ -1126,6 +1214,15 @@ final class TimelineNSView: NSView {
                         model.rows[i].isFolder ? nil : (model.rows[i].id, i)
                     }, uniquingKeysWith: { first, _ in first })
             }
+            if model.rows != oldValue.rows || model.lanes != oldValue.lanes {
+                laneOf = []
+                if let lanes = model.lanes {
+                    laneOf = Array(repeating: 0, count: model.rows.count)
+                    for (k, l) in lanes.enumerated() {
+                        for i in l where i < laneOf.count { laneOf[i] = k }
+                    }
+                }
+            }
             modelChanged(from: oldValue)
             needsDisplay = true
         }
@@ -1134,6 +1231,9 @@ final class TimelineNSView: NSView {
     /// a search of the rows, a transition's arrows searched 16 000 of them
     /// twice at every draw (2026-10-23).
     private var rowIndex: [String: Int] = [:]
+    /// In the TRACK VIEW, each row's track (TimelineModel.lanes); empty
+    /// in the layer view, where a row is its own.
+    private var laneOf: [Int] = []
     var actions = TimelineActions()
     var peaks: [String: AudioWaveform.TimedPeaks] = [:] {
         didSet { needsDisplay = true }
@@ -1235,19 +1335,37 @@ final class TimelineNSView: NSView {
         x(Double(frame) + 0.5)
     }
 
+    // The TRACKS drawn one under another: in the track view each lays
+    // several rows side by side (TimelineModel.lanes), in the layer view
+    // each is a row.
+
+    private var laneCount: Int { model.lanes?.count ?? model.rows.count }
+
+    /// Row `i`'s track.
+    private func lane(_ i: Int) -> Int {
+        model.lanes == nil || i >= laneOf.count ? i : laneOf[i]
+    }
+
+    /// Track `k`'s rows, top first.
+    private func laneRows(_ k: Int) -> Range<Int> {
+        model.lanes?[k] ?? k..<k + 1
+    }
+
+    private func laneTop(_ k: Int) -> CGFloat {
+        Self.rulerHeight + CGFloat(k) * Self.rowHeight - scrollY
+    }
+
     private var rowsHeight: CGFloat {
-        CGFloat(model.rows.count) * Self.rowHeight
+        CGFloat(laneCount) * Self.rowHeight
     }
 
-    private func rowTop(_ i: Int) -> CGFloat {
-        Self.rulerHeight + CGFloat(i) * Self.rowHeight - scrollY
-    }
+    private func rowTop(_ i: Int) -> CGFloat { laneTop(lane(i)) }
 
-    /// The rows that can show between `area`'s top and foot: the rest are
-    /// out of sight -- a timeline of 16 000 layers was drawn whole at each
-    /// of the player's frames (2026-10-23).
-    private func rowsShown(_ area: CGRect) -> Range<Int> {
-        let n = model.rows.count
+    /// The tracks that can show between `area`'s top and foot: the rest
+    /// are out of sight -- a timeline of 16 000 layers was drawn whole at
+    /// each of the player's frames (2026-10-23).
+    private func lanesShown(_ area: CGRect) -> Range<Int> {
+        let n = laneCount
         let first = Int(((area.minY - Self.rulerHeight + scrollY)
                          / Self.rowHeight).rounded(.down))
         let last = Int(((area.maxY - Self.rulerHeight + scrollY)
@@ -1256,11 +1374,41 @@ final class TimelineNSView: NSView {
         return lo..<min(max(lo, last + 1), n)
     }
 
-    private func row(at y: CGFloat) -> Int? {
+    /// Their rows.
+    private func rowsShown(_ area: CGRect) -> Range<Int> {
+        let k = lanesShown(area)
+        guard let first = k.first, let last = k.last else { return 0..<0 }
+        return laneRows(first).lowerBound..<laneRows(last).upperBound
+    }
+
+    private func lane(at y: CGFloat) -> Int? {
         guard y >= Self.rulerHeight else { return nil }
-        let i = Int(((y - Self.rulerHeight + scrollY) / Self.rowHeight)
+        let k = Int(((y - Self.rulerHeight + scrollY) / Self.rowHeight)
             .rounded(.down))
-        return i >= 0 && i < model.rows.count ? i : nil
+        return k >= 0 && k < laneCount ? k : nil
+    }
+
+    /// The row at height `y` -- in a track of several, the one whose
+    /// block is at `x` (the topmost where two meet; else the nearest),
+    /// and over the headers -- no `x`, or left of the tracks -- the one
+    /// at the player's line, else the top one.
+    private func row(at y: CGFloat, x: CGFloat? = nil) -> Int? {
+        guard let k = lane(at: y) else { return nil }
+        let rows = laneRows(k)
+        guard rows.count > 1 else { return rows.lowerBound }
+        if let x, x >= Self.nameWidth {
+            var near: (d: CGFloat, i: Int)?
+            for i in rows {
+                guard let b = block(i) else { continue }
+                if x >= b.minX && x < b.maxX { return i }
+                let d = x < b.minX ? b.minX - x : x - b.maxX
+                if d < (near?.d ?? .infinity) { near = (d, i) }
+            }
+            if let near { return near.i }
+        }
+        return rows.first { model.rows[$0].kind != .blank
+            && model.rows[$0].start <= model.playhead
+            && model.playhead < end(of: model.rows[$0]) } ?? rows.lowerBound
     }
 
     /// How far it scrolls: past the end by a third of the view, so a clip
@@ -1428,19 +1576,21 @@ final class TimelineNSView: NSView {
     private func drawTracks(_ area: CGRect) {
         let n = model.rows.count
         let shown = rowsShown(area)
-        // Rows, every other one shaded; the selected one tinted.
-        for i in shown {
-            let r = CGRect(x: area.minX, y: rowTop(i), width: area.width,
+        let lanes = lanesShown(area)
+        // Tracks, every other one shaded; the selected one's tinted.
+        for k in lanes {
+            let r = CGRect(x: area.minX, y: laneTop(k), width: area.width,
                            height: Self.rowHeight)
             guard r.intersects(area) else { continue }
-            if model.rows[i].id == model.selected
-                || model.chosen.contains(model.rows[i].id) {
+            let rows = laneRows(k)
+            if rows.contains(where: { model.rows[$0].id == model.selected
+                || model.chosen.contains(model.rows[$0].id) }) {
                 NSColor.controlAccentColor.withAlphaComponent(0.1).setFill()
                 r.fill()
-            } else if model.rows[i].isFolder {
+            } else if model.rows[rows.lowerBound].isFolder {
                 NSColor.labelColor.withAlphaComponent(0.04).setFill()
                 r.fill()
-            } else if i % 2 == 1 {
+            } else if k % 2 == 1 {
                 NSColor.labelColor.withAlphaComponent(0.025).setFill()
                 r.fill()
             }
@@ -1465,18 +1615,28 @@ final class TimelineNSView: NSView {
             s.draw(at: CGPoint(x: area.midX - sz.width / 2,
                                y: area.minY + 10))
         }
-        for i in shown {
+        // Bottom first: in a track, a layer over the one under it where
+        // the two meet in a transition (and the selected one over both).
+        var top: Int?
+        for i in shown.reversed() {
             if model.rows[i].isFolder {
                 drawFolderSpan(i, area)
+                continue
+            }
+            if model.lanes != nil, model.rows[i].id == model.selected {
+                top = i
                 continue
             }
             guard let b = block(i), b.intersects(area) else { continue }
             drawBlock(i, b, area)
         }
-        // The rows' lines, over the blocks that fill them.
+        if let i = top, let b = block(i), b.intersects(area) {
+            drawBlock(i, b, area)
+        }
+        // The tracks' lines, over the blocks that fill them.
         NSColor.labelColor.withAlphaComponent(0.08).setFill()
-        for i in shown {
-            CGRect(x: area.minX, y: rowTop(i) + Self.rowHeight - 0.5,
+        for k in lanes {
+            CGRect(x: area.minX, y: laneTop(k) + Self.rowHeight - 0.5,
                    width: area.width, height: 0.5).fill()
         }
         drawGrid(area)
@@ -1587,8 +1747,10 @@ final class TimelineNSView: NSView {
                 .withAlphaComponent(r.visible ? 0.5 : 0.25).setStroke()
             grip.stroke()
         }
-        // Its name, from where it shows.
-        let left = max(b.minX, area.minX) + 6
+        // Its name, from where it shows -- in a track, past the arrow of
+        // a transition it begins in, which lies over its start.
+        var left = max(b.minX, area.minX) + 6
+        if let past = transitionEnd(into: i) { left = max(left, past + 4) }
         let room = b.maxX - left - (r.stretchable ? 10 : 6)
         if room > 24 {
             let dark = r.kind == .markup
@@ -1764,7 +1926,7 @@ final class TimelineNSView: NSView {
     /// The scissors over a clip: where it would cut.
     private func drawCutLine() {
         guard model.cutting, drag == nil, let h = hover,
-              let i = row(at: h.y), model.rows[i].cuttable,
+              let i = row(at: h.y, x: h.x), model.rows[i].cuttable,
               let b = block(i), b.contains(h) else { return }
         let cx = x(Double(cutFrame(h.x, row: i)))
         let line = NSBezierPath()
@@ -1882,7 +2044,13 @@ final class TimelineNSView: NSView {
         area.fill()
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: area).addClip()
-        for i in rowsShown(area) {
+        for k in lanesShown(area) {
+            let rows = laneRows(k)
+            if rows.count > 1 {
+                drawTrackHeader(rows, area)
+                continue
+            }
+            let i = rows.lowerBound
             let r = model.rows[i]
             let top = rowTop(i)
             let rr = CGRect(x: 0, y: top, width: area.width,
@@ -1949,8 +2117,69 @@ final class TimelineNSView: NSView {
             NSColor.labelColor.withAlphaComponent(0.08).setFill()
             CGRect(x: 0, y: rr.maxY - 0.5, width: area.width, height: 0.5)
                 .fill()
+            if r.separator { drawSeparatorMark(rr) }
         }
         NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// A track of several layers' header, in the track view: an eye and
+    /// a lock for them all, its layers' names in the order they play.
+    private func drawTrackHeader(_ rows: Range<Int>, _ area: CGRect) {
+        let top = rowTop(rows.lowerBound)
+        let rr = CGRect(x: 0, y: top, width: area.width,
+                        height: Self.rowHeight)
+        guard rr.intersects(area) else { return }
+        let members = rows.map { model.rows[$0] }
+        if members.contains(where: { $0.id == model.selected
+            || model.chosen.contains($0.id) }) {
+            NSColor.controlAccentColor.withAlphaComponent(0.16).setFill()
+            rr.fill()
+        }
+        let visible = members.contains(where: \.visible)
+        let locked = members.allSatisfy(\.locked)
+        if let eye = Self.image(visible ? "eye" : "eye.slash",
+                                visible ? .labelColor : .tertiaryLabelColor) {
+            Self.draw(eye, centredIn: Self.eyeRect(top: top))
+        }
+        let x = Self.iconX
+            + CGFloat(members.first?.depth ?? 0) * Self.indent
+        let tint: NSColor = visible ? .secondaryLabelColor
+                                    : .tertiaryLabelColor
+        let kinds = Set(members.map(\.kind))
+        if let img = kinds.count == 1
+            ? Self.symbol(members[0].kind, tint)
+            : Self.image("rectangle.split.3x1", tint) {
+            Self.draw(img, centredIn: CGRect(x: x, y: top, width: 14,
+                                             height: Self.rowHeight))
+        }
+        if let lock = Self.image(locked ? "lock.fill" : "lock.open",
+                                 locked ? .labelColor : .tertiaryLabelColor) {
+            Self.draw(lock, centredIn: Self.lockRect(top: top))
+        }
+        let names = members.sorted { $0.start < $1.start }.map(\.title)
+        NSAttributedString(string: names.joined(separator: " · "),
+                           attributes: [
+            .font: NSFont.systemFont(ofSize: 10.5),
+            .foregroundColor: visible ? NSColor.labelColor
+                                      : NSColor.secondaryLabelColor,
+        ]).draw(with: CGRect(x: x + 17, y: top + 4.5,
+                             width: area.width - x - 17 - Self.divider - 4
+                                 - Self.lockWidth,
+                             height: 14),
+                options: [.usesLineFragmentOrigin,
+                          .truncatesLastVisibleLine])
+        NSColor.labelColor.withAlphaComponent(0.08).setFill()
+        CGRect(x: 0, y: rr.maxY - 0.5, width: area.width, height: 0.5)
+            .fill()
+        if members.last?.separator == true { drawSeparatorMark(rr) }
+    }
+
+    /// A track separator's mark: a firm line along its header's foot, the
+    /// edge it keeps from the track below.
+    private func drawSeparatorMark(_ rr: CGRect) {
+        NSColor.labelColor.withAlphaComponent(0.45).setFill()
+        CGRect(x: 2, y: rr.maxY - 1.5,
+               width: Self.nameWidth - Self.divider - 4, height: 1.5).fill()
     }
 
     /// The headers' columns: the eye, a folder's fold, what a row is
@@ -2109,7 +2338,7 @@ final class TimelineNSView: NSView {
     /// along its block -- the nearest: its row and frame.
     private func keyHit(_ p: CGPoint) -> (row: Int, frame: Int)? {
         guard scale >= Self.keyDot, p.x >= Self.nameWidth,
-              let i = row(at: p.y), let b = block(i),
+              let i = row(at: p.y, x: p.x), let b = block(i),
               abs(p.y - keyY(b)) <= 6 else { return nil }
         let r = model.rows[i]
         var best: (d: CGFloat, k: Int)?
@@ -2157,18 +2386,24 @@ final class TimelineNSView: NSView {
         window?.makeFirstResponder(self)
         let p = convert(e.locationInWindow, from: nil)
         if Self.tracing {
-            print("snapshot: timeline-down \(Int(p.x)),\(Int(p.y)) row=\(row(at: p.y).map(String.init) ?? "-")")
+            print("snapshot: timeline-down \(Int(p.x)),\(Int(p.y)) row=\(row(at: p.y, x: p.x).map(String.init) ?? "-")")
         }
         if p.y < Self.rulerHeight {
             if p.x >= Self.nameWidth {
                 drag = .scrub
+                scrubX = p.x
                 scrub(p.x)
             }
             return
         }
-        let i = row(at: p.y)
+        let i = row(at: p.y, x: p.x)
         if p.x < Self.nameWidth {
             guard let i else { return }
+            let lanes = laneRows(lane(i))
+            if lanes.count > 1 {
+                trackHeaderDown(lanes, at: p)
+                return
+            }
             let r = model.rows[i]
             // The eye shows or hides it (a folder's, all its layers); a
             // folder's fold folds it; elsewhere a press selects a layer
@@ -2216,8 +2451,12 @@ final class TimelineNSView: NSView {
                 }
                 actions.select(id)
             }
-            drag = .reorder(row: i, downY: p.y, spot: .gap(i),
-                            moving: false)
+            // Up and down the stack in the layer view; the track view's
+            // places are its tracks, not the rows'.
+            if model.lanes == nil {
+                drag = .reorder(row: i, downY: p.y, spot: .gap(i),
+                                moving: false)
+            }
             return
         }
         // A transition's arrow: its ways, in a menu.
@@ -2287,11 +2526,37 @@ final class TimelineNSView: NSView {
         }
     }
 
+    /// A press on the header of a track of several layers (the track
+    /// view's): its eye shows or hides them all, its lock locks or
+    /// unlocks them all, each one command; elsewhere it selects the layer
+    /// at the player's line, else the top one. Its layers are moved up or
+    /// down the stack, and named, in the layer view.
+    private func trackHeaderDown(_ rows: Range<Int>, at p: CGPoint) {
+        let members = rows.map { model.rows[$0] }
+        let top = rowTop(rows.lowerBound)
+        let ids = members.map(\.id)
+        if !model.readOnly, Self.eyeRect(top: top).contains(p) {
+            actions.setVisible(ids, !members.contains(where: \.visible))
+            return
+        }
+        if !model.readOnly, Self.lockRect(top: top).contains(p) {
+            actions.setLocked(ids, !members.allSatisfy(\.locked))
+            return
+        }
+        if let i = row(at: p.y) { actions.select(model.rows[i].id) }
+    }
+
     override func mouseDragged(with e: NSEvent) {
         let p = convert(e.locationInWindow, from: nil)
         switch drag {
         case .scrub?:
+            scrubX = p.x
             scrub(p.x)
+            // At the tracks' left or right edge, or past it: they scroll,
+            // the player's line kept in sight there.
+            if scrubScroll(p.x) != 0, scrubTimer == nil {
+                startScrubScroll()
+            }
         case .slide(let i, let downX, _)?:
             drag = .slide(row: i, downX: downX,
                           to: slideStart(i, dx: p.x - downX))
@@ -2409,8 +2674,72 @@ final class TimelineNSView: NSView {
         "\(Int(scrollY))/\(Int(maxScrollY))"
     }
 
+    /// The pointer's last place across in a drag of the player's line.
+    private var scrubX: CGFloat = 0
+    private var scrubTimer: Timer?
+
+    /// Points a tick the tracks scroll for the player's line dragged to
+    /// `x`: within a band at their left or right edge, or past it, faster
+    /// the further out -- left while the start is not in sight, right
+    /// while the end is not; 0 elsewhere.
+    private func scrubScroll(_ x: CGFloat) -> CGFloat {
+        let band: CGFloat = 16
+        let left = Self.nameWidth + band
+        let right = bounds.width - band
+        let speed = { (out: CGFloat) in min(40, 2 + out / 3) }
+        let endShown = self.x(Double(model.frames)) <= bounds.width
+        if x < left, scrollX > 0 { return -speed(left - x) }
+        if x > right, !endShown, scrollX < maxScrollX {
+            return speed(x - right)
+        }
+        return 0
+    }
+
+    /// The tracks scrolled while the player's line is held at their
+    /// edge: AppKit sends no drag while the pointer stands still, so a
+    /// timer moves them -- and the line with them, to the frame at the
+    /// edge -- until the pointer comes back in, the start or the end
+    /// comes into sight, or it is let go.
+    private func startScrubScroll() {
+        let t = Timer(timeInterval: 1.0 / 60, repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.scrubTick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        scrubTimer = t
+    }
+
+    private func scrubTick() {
+        guard case .scrub? = drag else {
+            stopScrubScroll()
+            return
+        }
+        let d = scrubScroll(scrubX)
+        guard d != 0 else {
+            stopScrubScroll()
+            return
+        }
+        scrollX += d
+        clampScroll()
+        scrub(scrubX)
+        needsDisplay = true
+    }
+
+    private func stopScrubScroll() {
+        scrubTimer?.invalidate()
+        scrubTimer = nil
+    }
+
+    /// Where the tracks are scrolled across, of how far they go (the
+    /// hooks').
+    var scrollXSummary: String {
+        "\(Int(scrollX))/\(Int(maxScrollX))"
+    }
+
     override func mouseUp(with e: NSEvent) {
         stopReorderScroll()
+        stopScrubScroll()
+        scrubbed = -1
         defer {
             drag = nil
             needsDisplay = true
@@ -2439,14 +2768,34 @@ final class TimelineNSView: NSView {
     /// A layer's menu, on its header or its row: a blank layer above it,
     /// shown or hidden, removed.
     override func menu(for event: NSEvent) -> NSMenu? {
+        menu(at: convert(event.locationInWindow, from: nil))
+    }
+
+    /// For the snapshot hooks: the menu a right-click on row `i` opens --
+    /// on its header, or its block's middle.
+    func layerMenu(row i: Int, header: Bool) -> NSMenu? {
+        guard model.rows.indices.contains(i) else { return nil }
+        if header {
+            return menu(at: CGPoint(x: 100,
+                                    y: rowTop(i) + Self.rowHeight / 2))
+        }
+        guard let b = block(i) else { return nil }
+        return menu(at: CGPoint(x: max(b.midX, Self.nameWidth + 1),
+                                y: b.midY))
+    }
+
+    private func menu(at p: CGPoint) -> NSMenu? {
         // Read-only: every item of it would change the project.
         if model.readOnly { return nil }
-        let p = convert(event.locationInWindow, from: nil)
         if p.x >= Self.nameWidth, p.y >= Self.rulerHeight,
            let n = transition(at: p) {
             return transitionMenu(n)
         }
-        guard let i = row(at: p.y) else { return nil }
+        guard let i = row(at: p.y, x: p.x) else { return nil }
+        let lanes = laneRows(lane(i))
+        if p.x < Self.nameWidth, lanes.count > 1 {
+            return trackMenu(lanes)
+        }
         let r = model.rows[i]
         let m = NSMenu()
         // A folder's: every layer of it shown or hidden; undone.
@@ -2493,12 +2842,53 @@ final class TimelineNSView: NSView {
                                      : String(localized: "Lock Layer")) {
             [weak self] in self?.actions.toggleLocked(r.id)
         })
+        m.addItem(separatorItem(r))
         m.addItem(.separator())
         let remove = Self.item(String(localized: "Remove Layer")) {
             [weak self] in self?.actions.removeLayer(r.id)
         }
         remove.isEnabled = actions.canRemove(r.id)
         m.addItem(remove)
+        return m
+    }
+
+    /// Track Separator, checked while `r` is one: in the track view it
+    /// starts a track of its own, never laid in the track below it.
+    private func separatorItem(_ r: TimelineRow) -> NSMenuItem {
+        let it = Self.item(String(localized: "Track Separator")) {
+            [weak self] in self?.actions.setSeparator(r.id, !r.separator)
+        }
+        it.state = r.separator ? .on : .off
+        it.identifier = NSUserInterfaceItemIdentifier("separator")
+        it.toolTip = String(localized: "In the track view, this layer starts a track of its own: it is not laid in the track below it, though the layers above it may join its track.")
+        return it
+    }
+
+    /// A track of several layers' menu (on its header, in the track
+    /// view): its layers shown or hidden, locked or unlocked, together;
+    /// a blank layer above it; whether its bottom layer -- where it meets
+    /// the track below -- is a track separator.
+    private func trackMenu(_ rows: Range<Int>) -> NSMenu {
+        let members = rows.map { model.rows[$0] }
+        let ids = members.map(\.id)
+        let shown = members.contains(where: \.visible)
+        let locked = members.allSatisfy(\.locked)
+        let m = NSMenu()
+        m.addItem(Self.item(shown ? String(localized: "Hide Layers")
+                                  : String(localized: "Show Layers")) {
+            [weak self] in self?.actions.setVisible(ids, !shown)
+        })
+        m.addItem(Self.item(locked ? String(localized: "Unlock Layers")
+                                   : String(localized: "Lock Layers")) {
+            [weak self] in self?.actions.setLocked(ids, !locked)
+        })
+        if let bottom = members.last { m.addItem(separatorItem(bottom)) }
+        m.addItem(.separator())
+        if let top = members.first {
+            m.addItem(Self.item(String(localized: "Add Layer Above")) {
+                [weak self] in self?.actions.addLayer(top.id)
+            })
+        }
         return m
     }
 
@@ -2514,11 +2904,19 @@ final class TimelineNSView: NSView {
         return it
     }
 
+    /// The player at the frame under `px` -- held to the tracks shown,
+    /// so a pointer dragged past their edge leaves the line at the edge,
+    /// in sight, while they scroll -- once a frame.
     private func scrub(_ px: CGFloat) {
         let last = max(0, model.frames - 1)
-        let f = Int(frame(at: px).rounded(.down))
-        actions.seek(min(max(0, f), last))
+        let x = min(max(px, Self.nameWidth), bounds.width - 1)
+        let f = min(max(0, Int(frame(at: x).rounded(.down))), last)
+        guard f != scrubbed || drag == nil else { return }
+        scrubbed = f
+        actions.seek(f)
     }
+    /// The frame a drag of the line last asked for (not asked again).
+    private var scrubbed = -1
 
     // MARK: Naming a header
 
@@ -2656,7 +3054,7 @@ final class TimelineNSView: NSView {
     private func updateCursor() {
         // Over a locked layer's row: nothing to drag there.
         if drag == nil, let h = hover, h.x >= Self.nameWidth,
-           let i = row(at: h.y), model.rows[i].locked {
+           let i = row(at: h.y, x: h.x), model.rows[i].locked {
             NSCursor.arrow.set()
             return
         }
@@ -2664,12 +3062,13 @@ final class TimelineNSView: NSView {
             NSCursor.resizeLeftRight.set()
             return
         }
-        if drag == nil, !model.cutting, let h = hover, let i = row(at: h.y),
-           h.x >= Self.nameWidth, atStretchEnd(i, h) {
+        if drag == nil, !model.cutting, let h = hover,
+           let i = row(at: h.y, x: h.x), h.x >= Self.nameWidth,
+           atStretchEnd(i, h) {
             NSCursor.resizeLeftRight.set()
             return
         }
-        guard drag == nil, let h = hover, let i = row(at: h.y),
+        guard drag == nil, let h = hover, let i = row(at: h.y, x: h.x),
               h.x >= Self.nameWidth, let b = block(i), b.contains(h) else {
             NSCursor.arrow.set()
             return
@@ -2699,9 +3098,27 @@ final class TimelineNSView: NSView {
             || !PromptTextView.fileURLs(pb).isEmpty
     }
 
+    /// A drop's place: above the row -- in the track view, above the
+    /// track's topmost layer, so what is dropped goes on top of what the
+    /// track holds (in it, where nothing there overlaps it) -- from the
+    /// frame.
     private func place(of info: NSDraggingInfo) -> (row: Int?, frame: Int) {
-        let p = convert(info.draggingLocation, from: nil)
-        return (row(at: p.y), max(0, snapped(max(Self.nameWidth, p.x))))
+        place(at: convert(info.draggingLocation, from: nil))
+    }
+
+    private func place(at p: CGPoint) -> (row: Int?, frame: Int) {
+        (lane(at: p.y).map { laneRows($0).lowerBound },
+         max(0, snapped(max(Self.nameWidth, p.x))))
+    }
+
+    /// For the snapshot hooks: `asset` dropped on row `i` at frame `f`,
+    /// placed as a drop there is.
+    func drop(asset id: String, row i: Int, frame f: Int) -> Bool {
+        guard model.rows.indices.contains(i) else { return false }
+        let at = place(at: CGPoint(x: x(Double(f)),
+                                   y: rowTop(i) + Self.rowHeight / 2))
+        return actions.dropAsset(id, at.row.map { model.rows[$0].id },
+                                 at.frame)
     }
 
     override func draggingEntered(_ s: NSDraggingInfo) -> NSDragOperation {
@@ -2796,6 +3213,22 @@ final class TimelineNSView: NSView {
         let x: CGFloat = eye ? 11 : fold ? Self.iconX + 6
             : lock ? Self.lockRect(top: 0).midX : 100
         let w = convert(CGPoint(x: x, y: y), to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// For the snapshot hooks: the ruler over frame `f`, and a point `by`
+    /// points past the tracks' left (or right) edge, over the ruler --
+    /// where the player's line is held for them to scroll.
+    func windowPoint(ruler f: Int) -> CGPoint? {
+        guard let win = window else { return nil }
+        let w = convert(CGPoint(x: mid(f), y: Self.rulerHeight / 2), to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    func windowPoint(pastSide right: Bool, by: CGFloat) -> CGPoint? {
+        guard let win = window else { return nil }
+        let x = right ? bounds.width + by : Self.nameWidth - by
+        let w = convert(CGPoint(x: x, y: Self.rulerHeight / 2), to: nil)
         return CGPoint(x: w.x, y: win.frame.height - w.y)
     }
 
@@ -2957,6 +3390,21 @@ extension TimelineNSView {
         let x0 = max(bi.minX, bj.minX), x1 = min(bi.maxX, bj.maxX)
         guard x1 > x0 else { return nil }
         return (CGPoint(x: x0, y: bi.midY), CGPoint(x: x1, y: bj.midY), i, j)
+    }
+
+    /// In the track view, where the arrow ends of a transition row `i`
+    /// begins in (it the later of the two) with a layer of its own track:
+    /// the arrow lies over its block's start there.
+    fileprivate func transitionEnd(into i: Int) -> CGFloat? {
+        guard model.lanes != nil else { return nil }
+        let id = model.rows[i].id
+        var end: CGFloat?
+        for t in model.transitions where t.to == id {
+            guard let j = rowIndex[t.from], lane(j) == lane(i),
+                  let (_, b, _, _) = arrow(t) else { continue }
+            end = max(end ?? b.x, b.x)
+        }
+        return end
     }
 
     /// A badge's place: a small capsule at the arrow's middle.

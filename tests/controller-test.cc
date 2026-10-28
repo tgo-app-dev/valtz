@@ -35,6 +35,7 @@
 #include <set>
 #include <chrono>
 #include <thread>
+#include <time.h>
 #include <vector>
 
 using namespace valtz;
@@ -6417,6 +6418,93 @@ TEST(composition, a_clip_is_cut_in_two_parts)
   CHECK(std::abs(rms(samples, 0.3, 0.6) - 0.354) < 0.03);  // across it
 }
 
+// A TIMELINE continued (continuation_guide) is never nested in its
+// guide -- its continuation lands back on it, after its last frame: the
+// clip would depend on the timeline showing it. One plain clip showing
+// its tail: the guide shows that clip, from where the tail begins; a
+// picture over it too: a CAPTURE of the timeline, frozen. A clip landing
+// past the timeline's set length grows it.
+TEST(composition, a_timeline_is_continued_from_its_clip_not_itself)
+{
+  Bench b("comp-continue");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  // A raw clip: two seconds at 24, a movie imported.
+  auto shot = ctl.create_composition(pid, project::AssetClass::Composition,
+                                     {16, 16}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto in_shot = ctl.instantiate(pid, *red, *shot);
+  REQUIRE_OK(in_shot);
+  project::LayerTime two;
+  two.duration = 48;
+  REQUIRE_OK(ctl.set_layer_time(pid, *shot, in_shot->second, two));
+  auto movie = ctl.rendered(pid, *shot);
+  REQUIRE_OK(movie);
+  fs::copy_file(*movie, b.root / "shot.mov");
+  auto clip = import_and_wait(ctl, pid, b.root / "shot.mov");
+  REQUIRE(clip);
+  // On a timeline of its length, as a project's first clip makes it.
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {16, 16}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  REQUIRE_OK(ctl.instantiate(pid, *clip, *tl));
+  REQUIRE_OK(ctl.set_timeline(pid, *tl, 48));
+  // 1 s at H3's 17n + 5: 39 frames, the clip's last 39.
+  auto g = ctl.continuation_guide(pid, *tl, 1.0, "minimax-h3-ref2va",
+                                  "guide", "frozen");
+  REQUIRE_OK(g);
+  CHECK(jget<std::int64_t>(*g, "frames", 0) == 39);
+  CHECK(jget<std::string>(*g, "shows", "") == clip->str());
+  CHECK(jget<std::string>(*g, "composition", "") == tl->str());
+  CHECK(jget<std::int64_t>(*g, "end", 0) == 48);
+  auto gid = AssetId::parse(jget<std::string>(*g, "asset", ""));
+  REQUIRE(gid);
+  auto guide = b.p().asset(*gid);
+  REQUIRE_OK(guide);
+  REQUIRE(guide->layers.size() == 1);
+  CHECK(guide->layers[0].source == *clip);
+  CHECK(guide->layers[0].time.in == 48 - 39);
+  CHECK(*ctl.composition_length(pid, *gid) == 39);
+  // Its continuation (the clip again, here) landing after it: the
+  // length grown to hold it.
+  auto landed = ctl.place_result(pid, *clip, *tl, std::nullopt, 48);
+  REQUIRE_OK(landed);
+  CHECK(*ctl.composition_length(pid, *tl) == 96);
+  // A picture over the tail (a still runs a second: 90-114): a capture.
+  REQUIRE_OK(ctl.instantiate(pid, *red, *tl, std::nullopt, 90));
+  CHECK(*ctl.composition_length(pid, *tl) == 114);
+  auto g2 = ctl.continuation_guide(pid, *tl, 1.0, "minimax-h3-ref2va",
+                                   "guide 2", "frozen");
+  REQUIRE_OK(g2);
+  CHECK(jget<std::int64_t>(*g2, "end", 0) == 114);
+  auto shows = AssetId::parse(jget<std::string>(*g2, "shows", ""));
+  REQUIRE(shows);
+  CHECK(*shows != *tl);
+  CHECK(*shows != *clip);
+  auto frozen = b.p().asset(*shows);
+  REQUIRE_OK(frozen);
+  CHECK(frozen->name == "frozen");
+  REQUIRE(frozen->layers.size() == 3);
+  for (const auto& l : frozen->layers) {
+    CHECK(l.source == *clip || l.source == *red);
+    CHECK(l.source_version > 0);
+  }
+  auto g2id = AssetId::parse(jget<std::string>(*g2, "asset", ""));
+  REQUIRE(g2id);
+  auto guide2 = b.p().asset(*g2id);
+  REQUIRE_OK(guide2);
+  REQUIRE(guide2->layers.size() == 1);
+  CHECK(guide2->layers[0].source == *shows);
+  CHECK(guide2->layers[0].time.in == 114 - 39);
+  // One command: the guide and its capture undone together.
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(!b.p().asset(*g2id).ok());
+  CHECK(!b.p().asset(*shows).ok());
+}
+
 // A clip SUMMARIZED (DESIGN §4i): read sparse -- the frame at each mark,
 // upright, sRGB, 8-bit planar, at a size within 576 x 320 on a 32-pixel
 // grid, with its time -- and asked of a clip only, by a model that watches
@@ -7014,6 +7102,184 @@ TEST(composition, a_locked_layer_refuses_changes)
   CHECK(!layer(*m0).locked);
 }
 
+// The track view's TRACK SEPARATOR (DESIGN §10a Timeline): kept on the
+// layer, a command of its own -- a locked layer takes it too, as it is
+// only how the timeline shows it -- and several layers (a track's) shown
+// or hidden, locked or unlocked, each in ONE command.
+TEST(composition, a_layer_is_made_a_track_separator)
+{
+  Bench b("comp-separator");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {64, 36}, {24, 1}, "cut");
+  REQUIRE_OK(tl);
+  auto l1 = ctl.add_layer(pid, *tl);
+  REQUIRE_OK(l1);
+  auto l2 = ctl.add_layer(pid, *tl, *l1);
+  REQUIRE_OK(l2);
+  const auto layer = [&](const std::string& id) {
+    for (const auto& l : b.layers(*tl)) {
+      if (l.id == id) {
+        return l;
+      }
+    }
+    return project::Layer{};
+  };
+  CHECK(!layer(*l1).track_separator);
+  REQUIRE_OK(ctl.set_layer_locked(pid, *tl, *l1, true));
+  REQUIRE_OK(ctl.set_layer_separator(pid, *tl, *l1, true));
+  CHECK(layer(*l1).track_separator);
+  CHECK(!layer(*l2).track_separator);
+  // Again: nothing to do, no command.
+  REQUIRE_OK(ctl.set_layer_separator(pid, *tl, *l1, true));
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(!layer(*l1).track_separator);
+  CHECK(layer(*l1).locked);
+  REQUIRE_OK(ctl.redo(pid));
+  CHECK(layer(*l1).track_separator);
+  CHECK(!ctl.set_layer_separator(pid, *tl, "nine", true).ok());
+
+  // A track's layers hidden together, undone together.
+  REQUIRE_OK(ctl.set_layers_visible(pid, *tl, {*l1, *l2}, false));
+  CHECK(!layer(*l1).visible);
+  CHECK(!layer(*l2).visible);
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(layer(*l1).visible);
+  CHECK(layer(*l2).visible);
+  REQUIRE_OK(ctl.set_layers_locked(pid, *tl, {*l1, *l2}, true));
+  CHECK(layer(*l2).locked);
+  REQUIRE_OK(ctl.undo(pid));
+  CHECK(!layer(*l2).locked);
+  CHECK(layer(*l1).locked);   // locked before
+  CHECK(layer(*l1).track_separator);
+}
+
+// The ATLAS (DESIGN §10a Atlas): what each asset is made from, through
+// what -- a recipe's op between its inputs and it, a layer between what it
+// shows and its composition, a flat copy's original as a note -- laid out
+// left to right; a LEAF is what remove_asset lets go.
+TEST(composition, the_atlas_lays_out_what_each_asset_is_made_from)
+{
+  Bench b("comp-atlas");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 8, 8, {0xff, 0, 0, 0xff});
+  auto blue = b.png("blue.png", 8, 8, {0, 0, 0xff, 0xff});
+  auto alone = b.png("alone.png", 8, 8, {0, 0xff, 0, 0xff});
+  REQUIRE(red && blue && alone);
+  Controller::SuggestionApplied req;
+  req.project = pid;
+  req.before = "a fox";
+  req.enhanced = "A red fox in fresh snow";
+  auto words = ctl.apply_suggestion(req);
+  REQUIRE_OK(words);
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {64, 36}, {24, 1}, "cut");
+  REQUIRE_OK(tl);
+  auto on_red = ctl.instantiate(pid, *red, *tl);
+  auto on_blue = ctl.instantiate(pid, *blue, *tl);
+  REQUIRE_OK(on_red);
+  REQUIRE_OK(on_blue);
+  REQUIRE_OK(ctl.set_layer_locked(pid, *tl, on_blue->second, true));
+  auto copy = ctl.derive_modified(pid, *red, "");
+  REQUIRE_OK(copy);
+  auto flat = ctl.flatten_asset(pid, *copy, "flat red");
+  REQUIRE_OK(flat);
+
+  auto graph = ctl.atlas(pid);
+  REQUIRE_OK(graph);
+  std::map<std::string, Json> node;
+  for (const auto& n : (*graph)["nodes"]) {
+    node[n["id"].get<std::string>()] = n;
+  }
+  auto edge = [&](const std::string& from, const std::string& to) {
+    for (const auto& e : (*graph)["edges"]) {
+      if (e["from"] == from && e["to"] == to) {
+        return e;
+      }
+    }
+    return Json();
+  };
+  const auto a = [](AssetId id) { return "a:" + id.str(); };
+  const auto col = [&](const std::string& id) {
+    return node[id].value("column", -1);
+  };
+  // Every asset a node.
+  for (AssetId id : {*red, *blue, *alone, words->before, words->enhanced,
+                     *tl, *copy, *flat}) {
+    CHECK(node.contains(a(id)));
+  }
+  // A layer between what it shows and the timeline, the column before.
+  const auto layer = "l:" + tl->str() + ":" + on_red->second;
+  REQUIRE(node.contains(layer));
+  CHECK(node[layer]["type"] == "layer");
+  CHECK(edge(a(*red), layer)["kind"] == "layer");
+  CHECK(edge(layer, a(*tl))["kind"] == "into");
+  CHECK(col(layer) == col(a(*tl)) - 1);
+  CHECK(col(a(*red)) < col(layer));
+  CHECK(node[a(*tl)]["destination"] == "timeline");
+  const auto locked = "l:" + tl->str() + ":" + on_blue->second;
+  const auto look = node[locked]["look"];
+  CHECK(std::find(look.begin(), look.end(), "locked") != look.end());
+  // The edited copy is a still the original's layer goes into.
+  CHECK(node[a(*copy)]["destination"] == "still");
+  // An enhanced prompt: its op between the words before and it.
+  const auto enhanced = "r:" + words->enhanced.str();
+  CHECK(node[enhanced]["op"] == "enhance-prompt");
+  CHECK(edge(a(words->before), enhanced)["role"] == "prompt");
+  CHECK(col(enhanced) == col(a(words->enhanced)) - 1);
+  // A flat copy: its original a note, not a tie.
+  const auto note = "f:" + flat->str();
+  CHECK(node[note].value("note", false));
+  CHECK(edge(a(*copy), note)["kind"] == "note");
+  // Leaves: what remove_asset lets go.
+  CHECK(!node[a(*red)].value("leaf", true));          // on two layers
+  CHECK(!node[a(words->before)].value("leaf", true)); // made from
+  CHECK(node[a(words->enhanced)].value("leaf", false));
+  // The project's composition -- the first a layer went into -- stays.
+  CHECK(node[a(*tl)].value("project", false));
+  CHECK(!node[a(*tl)].value("leaf", true));
+  CHECK(node[a(*copy)].value("leaf", false));   // its flat copy a note
+  CHECK(node[a(*alone)].value("leaf", false));
+  CHECK(node[a(*alone)].value("loose", false));
+  // A column's nodes never overlap.
+  std::map<int, std::vector<std::pair<double, double>>> spans;
+  for (const auto& [id, n] : node) {
+    (void)id;
+    const double y = n["row"].get<double>();
+    spans[n["column"].get<int>()].push_back(
+        {y, y + n["height"].get<double>()});
+  }
+  for (auto& [c, s] : spans) {
+    (void)c;
+    std::sort(s.begin(), s.end());
+    for (std::size_t i = 1; i < s.size(); ++i) {
+      CHECK(s[i].first >= s[i - 1].second);
+    }
+  }
+  CHECK((*graph)["height"].get<double>() > 0);
+  // As the atlas says: a leaf goes, the rest stay.
+  CHECK(!ctl.remove_asset(pid, *red).ok());
+  CHECK(!ctl.remove_asset(pid, words->before).ok());
+  CHECK(!ctl.remove_asset(pid, *tl).ok());
+  REQUIRE_OK(ctl.remove_asset(pid, *copy));
+  REQUIRE_OK(ctl.remove_asset(pid, *alone));
+  // Off the timeline (its layer removed): the blue a leaf.
+  REQUIRE_OK(ctl.set_layer_locked(pid, *tl, on_blue->second, false));
+  REQUIRE_OK(ctl.remove_layer(pid, *tl, on_blue->second));
+  auto after = ctl.atlas(pid);
+  REQUIRE_OK(after);
+  for (const auto& n : (*after)["nodes"]) {
+    if (n["id"] == a(*blue)) {
+      CHECK(n.value("leaf", false));
+    }
+    CHECK(n["id"] != locked);
+  }
+}
+
 // A timeline of markup drawn for a model (rendered_, a reference's
 // movie) frame by frame as the player draws it: its keys between them.
 TEST(composition, a_markup_timeline_moves_between_its_keys)
@@ -7450,6 +7716,85 @@ TEST(composition, a_layers_equalizer_shapes_its_bands)
   const media::Sound half = media::lerp(media::Sound{}, media::Sound{1, 0, up},
                                         0.5);
   CHECK(half.eq[5] == 6 && half.eq[4] == 0);
+}
+
+// What the PLAYER plays (Controller::playable_sound_plan): a layer its
+// equalizer shapes as its own shaped span -- made once for what makes it,
+// kept through a gain change or a look's -- every layer then a plain
+// sound; the panel's live volume in place of the record's. The mix is
+// keyed by its sound: a look changed is the same mix.
+TEST(composition, a_shaped_layer_plays_from_its_own_span)
+{
+  Bench b("comp-shaped");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  REQUIRE(write_tone(b.root / "tone.wav", 2, 1000, 0.1));
+  auto tone = import_and_wait(ctl, pid, b.root / "tone.wav");
+  REQUIRE(tone);
+  auto snd = ctl.create_composition(pid, project::AssetClass::Composition,
+                                    {0, 0}, {}, "sound");
+  REQUIRE_OK(snd);
+  REQUIRE_OK(ctl.instantiate(pid, *tone, *snd));
+  auto plain = ctl.playable_sound_plan(pid, *snd);
+  REQUIRE_OK(plain);
+  REQUIRE(plain->layers.size() == 1);
+  const fs::path source = plain->layers[0].file;
+
+  std::array<double, media::kEqBands> up{};
+  up[5] = 12;
+  media::KeyedSound k;
+  k.keys = {{0, media::Sound{1, 0, up}}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  auto shaped = ctl.playable_sound_plan(pid, *snd);
+  REQUIRE_OK(shaped);
+  const fs::path span = shaped->layers[0].file;
+  CHECK(span != source && fs::exists(span));
+  CHECK(!media::needs_render(*shaped));
+  CHECK(shaped->layers[0].sound.keys[0].value.flat());
+  // The span is the band raised: four times as loud at 1 kHz.
+  const auto heard = read_sound(span);
+  REQUIRE(heard.size() > 48000);
+  double sum = 0;
+  for (std::size_t i = 9600; i < 86400 && i < heard.size(); ++i) {
+    sum += double(heard[i]) * heard[i];
+  }
+  const double rms = std::sqrt(sum / double(86400 - 9600));
+  CHECK(std::abs(20 * std::log10(rms / (0.1 / std::sqrt(2.0))) - 12) < 0.5);
+  auto mix = ctl.sound_mix(pid, *snd);
+  REQUIRE_OK(mix);
+
+  // A gain changed: the same span, its volume on the layer.
+  k.keys = {{0, media::Sound{0.5, 0, up}}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  auto louder = ctl.playable_sound_plan(pid, *snd);
+  REQUIRE_OK(louder);
+  CHECK(louder->layers[0].file == span);
+  CHECK(louder->layers[0].sound.keys[0].value.volume == 0.5);
+  // A look changed: the same mix.
+  auto mix2 = ctl.sound_mix(pid, *snd);
+  REQUIRE_OK(mix2);
+  media::KeyedAdjustments look;
+  media::Adjustments warm;
+  warm.temperature = 0.4;
+  look.keys = {{0, warm}};
+  REQUIRE_OK(ctl.set_adjustment_keys(pid, *snd, look, ""));
+  auto mix3 = ctl.sound_mix(pid, *snd);
+  REQUIRE_OK(mix3);
+  CHECK(*mix3 == *mix2);
+  CHECK(*mix2 != *mix);   // the gain is in the mix
+
+  // The panel's volume, live: in place of the record's, its bands the
+  // record's (in the span).
+  Controller::LiveTracks live;
+  live.look = false;
+  live.sound = media::KeyedSound{};
+  live.sound->keys = {{0, media::Sound{0.25, 3, {}}}};
+  auto lit = ctl.playable_sound_plan(pid, *snd, live);
+  REQUIRE_OK(lit);
+  CHECK(lit->layers[0].file == span);
+  CHECK(lit->layers[0].sound.keys[0].value.volume == 0.25);
+  CHECK(lit->layers[0].sound.keys[0].value.pitch == 0);
 }
 
 // MIGRATION (project/migrate.h): a schema-1 project brought over -- its
@@ -7928,6 +8273,97 @@ TEST(capture, a_recording_lands_on_its_composition)
   REQUIRE_OK(alone);
   CHECK(b.p().asset(*alone)->cls == project::AssetClass::Flat);
   CHECK(b.layers(*sound).size() == 1);
+}
+
+// A VOICE-OVER lies where it was heard: its first sample `lead` seconds
+// before the picture's frame began -- the layer from the first frame at
+// or after it, the head before that trimmed to the millisecond. Onto a
+// composition in time only.
+TEST(capture, a_voice_over_lies_where_it_was_heard)
+{
+  // 2 s in at 24 fps, heard from 0.3 s before the picture moved: from
+  // frame 41 (1.708 s), its first 8 ms trimmed.
+  auto at = Controller::voice_over_place(48, 24, 0.3);
+  CHECK(at.offset == 41);
+  CHECK(at.in_ms == 8);
+  // The picture cued before the first sample came: later.
+  at = Controller::voice_over_place(48, 24, -0.25);
+  CHECK(at.offset == 54);
+  CHECK(at.in_ms == 0);
+  // Heard from before the timeline's start: from 0, its head trimmed.
+  at = Controller::voice_over_place(6, 24, 0.5);
+  CHECK(at.offset == 0);
+  CHECK(at.in_ms == 250);
+  // A composition of sound counts milliseconds.
+  at = Controller::voice_over_place(5000, 1000, 0.1234);
+  CHECK(at.offset == 4877);
+  CHECK(at.in_ms == 0);
+  // Uncued: at the frame.
+  at = Controller::voice_over_place(48, 24, 0);
+  CHECK(at.offset == 48);
+  CHECK(at.in_ms == 0);
+
+  Bench b("voice-over-places");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const auto refused = [](const Status& st) {
+    return !st.ok() && st.error().key == msg::kVoiceOverNeedsTime.key;
+  };
+  auto still = ctl.create_composition(b.pid, project::AssetClass::Still,
+                                      {64, 64}, {0, 1}, "page");
+  REQUIRE_OK(still);
+  CHECK(refused(ctl.start_capture(b.pid, *still, "system", 0)));
+  CHECK(refused(ctl.start_capture(b.pid, std::nullopt, "system", 0)));
+  CHECK(!jget(ctl.capture_state(), "recording", true));
+  CHECK(!ctl.cue_capture(1.0).ok());
+}
+
+// A real VOICE-OVER (VALTZ_TEST_CAPTURE as above) onto a 24 fps
+// timeline from frame 48: uncued at the frame, a new layer; cued half a
+// second in, that much earlier -- the head heard before the picture moved
+// lies before frame 48.
+TEST(capture, a_real_voice_over_lands_on_the_timeline)
+{
+  const char* source = std::getenv("VALTZ_TEST_CAPTURE");
+  if (!source) {
+    SKIP("set VALTZ_TEST_CAPTURE to system or a microphone's id");
+  }
+  Bench b("voice-over-real");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  auto tl = ctl.create_composition(b.pid, project::AssetClass::Composition,
+                                   {64, 36}, {24, 1}, "cut");
+  REQUIRE_OK(tl);
+  const auto host_now = [] {
+    return static_cast<double>(clock_gettime_nsec_np(CLOCK_UPTIME_RAW))
+           / 1e9;
+  };
+  REQUIRE_OK(ctl.start_capture(b.pid, *tl, source, 48));
+  CHECK(jget(ctl.capture_state(), "voice_over", false));
+  std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+  REQUIRE_OK(ctl.stop_capture());
+  auto ls = b.layers(*tl);
+  REQUIRE(!ls.empty());
+  CHECK(ls.back().time.offset == 48);
+  CHECK(ls.back().time.in < 0);
+  const std::size_t before = ls.size();
+
+  REQUIRE_OK(ctl.start_capture(b.pid, *tl, source, 48));
+  std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  REQUIRE_OK(ctl.cue_capture(host_now()));
+  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+  REQUIRE_OK(ctl.stop_capture());
+  ls = b.layers(*tl);
+  REQUIRE(ls.size() == before + 1);
+  // Half a second (12 frames) earlier, less how long the first sample
+  // took to come.
+  CHECK(ls.back().time.offset >= 34);
+  CHECK(ls.back().time.offset <= 40);
+  CHECK(ls.back().time.in >= 0);
+  CHECK(ls.back().time.in < 42);
+  // One take one undo step.
+  REQUIRE_OK(ctl.undo(b.pid));
+  CHECK(b.layers(*tl).size() == before);
 }
 
 // The camera (VALTZ_TEST_CAMERA=1 -- macOS asks leave of the terminal
@@ -9181,6 +9617,23 @@ public:
       for (std::size_t i = 0; i < r.calls.size(); ++i) {
         r.calls[i].id = std::format("c{}-{}", n, i);
       }
+      // An argument "$key": that key of the last tool result -- an id a
+      // tool made (add_mask's mask_layer).
+      Json last;
+      for (auto it = messages.rbegin(); it != messages.rend(); ++it) {
+        if (it->role == "tool") {
+          last = Json::parse(it->content, nullptr, false);
+          break;
+        }
+      }
+      for (auto& c : r.calls) {
+        for (auto& [k, v] : c.arguments.items()) {
+          if (v.is_string() && v.get<std::string>().starts_with("$") &&
+              last.is_object()) {
+            v = last.value(v.get<std::string>().substr(1), Json());
+          }
+        }
+      }
       r.content = "Working on it.";
       r.finish = "tool_calls";
     } else {
@@ -9515,6 +9968,177 @@ TEST(agent, compaction_switched_off_stops_at_the_context)
 // no composition, and a model drew from its name and size. Each of the
 // three shows it now, the picture handed over as drawn; a model that
 // cannot see is told its name and size.
+// A photo's EXIF for the agent (get_exif): the file's own, read whole;
+// of a composition, its layers' pictures'; refused for a sound.
+TEST(agent, a_photos_exif_is_read)
+{
+  auto root = test::temp_dir("agent-exif");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "E.valtz", "exif");
+  REQUIRE_OK(pid);
+  // A camera's JPEG: its make and model, an aperture.
+  const fs::path jpg = root / "camera.jpg";
+  {
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(
+        nullptr, 16, 8, 8, 0, cs, kCGImageAlphaNoneSkipLast);
+    CGImageRef img = CGBitmapContextCreateImage(ctx);
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+        nullptr, reinterpret_cast<const UInt8*>(jpg.c_str()),
+        static_cast<CFIndex>(std::strlen(jpg.c_str())), false);
+    CGImageDestinationRef dst = CGImageDestinationCreateWithURL(
+        url, CFSTR("public.jpeg"), 1, nullptr);
+    double f = 2.8;
+    CFNumberRef fn = CFNumberCreate(nullptr, kCFNumberDoubleType, &f);
+    const void* tk[] = {kCGImagePropertyTIFFMake, kCGImagePropertyTIFFModel};
+    const void* tv[] = {CFSTR("Fujifilm"), CFSTR("X100VI")};
+    CFDictionaryRef tiff = CFDictionaryCreate(
+        nullptr, tk, tv, 2, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+    const void* ek[] = {kCGImagePropertyExifFNumber};
+    const void* ev[] = {fn};
+    CFDictionaryRef exif = CFDictionaryCreate(
+        nullptr, ek, ev, 1, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+    const void* pk[] = {kCGImagePropertyTIFFDictionary,
+                        kCGImagePropertyExifDictionary};
+    const void* pv[] = {tiff, exif};
+    CFDictionaryRef props = CFDictionaryCreate(
+        nullptr, pk, pv, 2, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+    CGImageDestinationAddImage(dst, img, props);
+    REQUIRE(CGImageDestinationFinalize(dst));
+    for (CFTypeRef r : {(CFTypeRef)props, (CFTypeRef)exif, (CFTypeRef)tiff,
+                        (CFTypeRef)fn, (CFTypeRef)dst, (CFTypeRef)url,
+                        (CFTypeRef)img}) {
+      CFRelease(r);
+    }
+    CGContextRelease(ctx);
+    CGColorSpaceRelease(cs);
+  }
+  auto photo = import_and_wait(ctl, *pid, jpg);
+  REQUIRE(photo.has_value());
+  auto copy = ctl.derive_modified(*pid, *photo, "photo, edited");
+  REQUIRE_OK(copy);
+  REQUIRE(write_tone(root / "tone.wav", 1, 440, 0.2));
+  auto tone = import_and_wait(ctl, *pid, root / "tone.wav");
+  REQUIRE(tone.has_value());
+  script->replies = {{call("get_exif", {{"asset", photo->str()}})},
+                     {call("get_exif", {{"asset", copy->str()}})},
+                     {call("get_exif", {{"asset", tone->str()}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "When and with what was my photo taken?";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  const Json st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 3);
+  const Json own = jget(steps[0], "result", Json());
+  CHECK(jget<std::string>(jget(jget(own, "exif", Json()), "TIFF", Json()),
+                          "Model", "") == "X100VI");
+  CHECK(jget(jget(jget(own, "exif", Json()), "Exif", Json()), "FNumber",
+             0.0) == 2.8);
+  const Json layers = jget(jget(steps[1], "result", Json()), "layers",
+                           Json::array());
+  REQUIRE(layers.size() == 1);
+  CHECK(jget<std::string>(layers[0], "asset", "") == photo->str());
+  CHECK(jget<std::string>(jget(jget(layers[0], "exif", Json()), "TIFF",
+                               Json()), "Make", "") == "Fujifilm");
+  CHECK(jget<std::string>(steps[2], "state", "") == "failed");
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// A MASK made by the agent: a markup layer right above a picture, the
+// picture shown only where the mask's white shape is (a circle: its
+// corners gone), and words added after going on a markup of their own,
+// not into the mask.
+TEST(agent, a_picture_is_cut_to_a_shape_by_a_mask)
+{
+  auto root = test::temp_dir("agent-mask");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "M.valtz", "mask");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 64, 64, {0xff, 0, 0, 0xff}));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  REQUIRE(red.has_value());
+  auto page = ctl.create_composition(*pid, project::AssetClass::Still,
+                                     {64, 64}, {0, 1}, "card");
+  REQUIRE_OK(page);
+  auto placed = ctl.instantiate(*pid, *red, *page);
+  REQUIRE_OK(placed);
+  // On its page alone, as the agent's own pictures are.
+  REQUIRE_OK(ctl.set_layer_pages(*pid, *page, placed->second, 0, 1));
+  const std::string pic = placed->second.empty() ? "0" : placed->second;
+  const std::string comp = page->str();
+  script->replies = {
+      {call("add_mask", {{"composition", comp}, {"layer", pic}})},
+      {call("add_shape", {{"composition", comp},
+                          {"layer", "$mask_layer"},
+                          {"shape", "ellipse"}, {"x", 0}, {"y", 0},
+                          {"width", 64}, {"height", 64},
+                          {"fill", "#ffffff"}})},
+      {call("add_text", {{"composition", comp}, {"page", 1},
+                         {"text", "Hi"}, {"x", 4}, {"y", 4},
+                         {"width", 40}, {"height", 20}})},
+      {call("get_composition", {{"composition", comp}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "Give the picture round corners";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  const Json st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 4);
+  for (const auto& step : steps) {
+    CHECK(jget<std::string>(step, "state", "") == "done");
+  }
+  const std::string mask =
+      jget<std::string>(jget(steps[0], "result", Json()), "mask_layer", "");
+  CHECK(!mask.empty());
+  // The words on a markup of their own, over the mask.
+  const Json layers = jget(jget(steps[3], "result", Json()), "layers",
+                           Json::array());
+  REQUIRE(layers.size() == 3);
+  CHECK(jget<std::string>(layers[1], "id", "") == mask);
+  CHECK(jget(layers[1], "mask_of_layer_below", false));
+  CHECK(!jget(layers[2], "mask_of_layer_below", false));
+  // Drawn: red in the middle, nothing in the corners.
+  const fs::path flat = root / "flat.png";
+  REQUIRE_OK(ctl.flatten(*pid, *page, flat));
+  CHECK(pixel_at(flat, 32, 40)[0] > 200);
+  CHECK(pixel_at(flat, 1, 62)[3] < 10);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
 TEST(agent, a_picture_in_assets_is_seen)
 {
   auto root = test::temp_dir("agent-view");

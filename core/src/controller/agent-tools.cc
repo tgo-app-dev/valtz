@@ -12,6 +12,7 @@
 
 #include "valtz/base/message.h"
 #include "valtz/base/text.h"
+#include "valtz/media/exif.h"
 #include "valtz/media/markup.h"
 #include "valtz/media/text-flow.h"
 #include "valtz/media/thumbnail.h"
@@ -714,6 +715,10 @@ runs_across(const project::LayerTime& t)
 // The markups across every page the agent writes on (front_markup_,
 // back_markup_), found again by their names.
 const char* kFrontName = "Every Page";
+// What a drawing tool's `layer` says.
+const char* kDrawOnDoc =
+    "a markup layer to draw on -- a MASK's (add_mask's mask_layer) -- "
+    "by its id; none: the page's own";
 const char* kBackName = "Every Page (Background)";
 const char* kPageBackName = "Page Background";
 // The folder of the page progress bar's layers (add_page_progress),
@@ -1637,6 +1642,17 @@ Controller::AgentHost::tools()
                  "see a picture in Assets before you use it.",
                  schema({{"asset", str("the asset's id")}}, {"asset"}),
                  &H::t_view_asset});
+    t.push_back({"get_exif", "read", "Read a photo's EXIF",
+                 "What a picture's file says of itself, as the camera or "
+                 "the editor that saved it wrote it: its EXIF -- camera "
+                 "and lens, shutter, aperture, ISO, focal length, when it "
+                 "was taken -- TIFF, GPS (where), IPTC, the maker's notes "
+                 "and its own fields (size, orientation, colour profile). "
+                 "Of an imported picture (JPEG, HEIC, TIFF, PNG, a camera "
+                 "RAW) or one made from it; of a composition -- an edited "
+                 "copy too -- each layer's picture's.",
+                 schema({{"asset", str("the asset's id")}}, {"asset"}),
+                 &H::t_get_exif});
     t.push_back(
         {"create_composition", "edit", "Make a composition",
          "A new composition, which the session then works on: a STILL -- "
@@ -1693,6 +1709,7 @@ Controller::AgentHost::tools()
                       {"page", integer(kPageDoc)},
                       {"start", num(kStartDoc)},
                       {"duration", num(kDurationDoc)},
+                      {"layer", str(kDrawOnDoc)},
                       {"text", str("the words; \\n starts a new line")},
                       {"size", num("the font's size in pixels; 48 by "
                                    "default")},
@@ -1756,6 +1773,7 @@ Controller::AgentHost::tools()
                       {"page", integer(kPageDoc)},
                       {"start", num(kStartDoc)},
                       {"duration", num(kDurationDoc)},
+                      {"layer", str(kDrawOnDoc)},
                       {"shape", one_of({"rect", "ellipse", "polygon", "line"},
                                        "which shape")},
                       {"points", {{"type", "array"},
@@ -2052,6 +2070,7 @@ Controller::AgentHost::tools()
                  {"page", integer(kPageDoc)},
                  {"start", num(kStartDoc)},
                  {"duration", num(kDurationDoc)},
+                 {"layer", str(kDrawOnDoc)},
                  {"strokes",
                   {{"type", "array"},
                    {"description",
@@ -2135,6 +2154,29 @@ Controller::AgentHost::tools()
                          {"visible", boolean("shown")}},
                         {"layer", "visible"}),
                  &H::t_set_layer_visible});
+    t.push_back(
+        {"add_mask", "edit", "Mask a layer",
+         "A MASK for a layer: a new markup layer right above it, made "
+         "its mask -- the layer then shows only where the mask is drawn "
+         "(white and opaque: all of it; clear: none; grey or half clear: "
+         "partly), and the mask itself is not seen. It starts empty, so "
+         "the layer is hidden until its shape is drawn: draw it with "
+         "add_shape, draw_strokes or add_text naming its `mask_layer` as "
+         "their `layer`, in white. Rounded corners, a circle, a star, a "
+         "soft vignette, a picture seen through words.",
+         schema({{"composition", str(kCompDoc)},
+                 {"layer", str("the layer to mask (a picture's, a "
+                               "clip's)")}},
+                {"layer"}),
+         &H::t_add_mask});
+    t.push_back({"set_layer_mask", "edit", "Use a layer as a mask",
+                 "A layer made the MASK of the layer right beneath it, or "
+                 "not (mask false: drawn as itself again).",
+                 schema({{"composition", str(kCompDoc)},
+                         {"layer", str(kLayerDoc)},
+                         {"mask", boolean("a mask of the layer beneath")}},
+                        {"layer", "mask"}),
+                 &H::t_set_layer_mask});
     t.push_back(
         {"adjust_layer", "edit", "Adjust a layer",
          "A layer's look, as the Adjust panel's sliders: each 0 is as it "
@@ -2662,6 +2704,11 @@ Controller::AgentHost::markup_on_(ProjectId pid, AssetId comp,
     if (!on_page(it->time, page) || !alone_on(it->time, page)) {
       continue;
     }
+    // A MASK (add_mask) is drawn on only when named: the page's words go
+    // over it, on a markup of their own.
+    if (it->mask) {
+      break;
+    }
     if (it->source) {
       auto src = p->asset(*it->source);
       if (src.ok() && src->cls == AssetClass::Markup) {
@@ -2855,13 +2902,37 @@ Controller::AgentHost::objects_(ProjectId pid, AssetId comp,
 
 Result<std::pair<std::string, Json>>
 Controller::AgentHost::markup_for_(ProjectId pid, AssetId comp,
-                                   const Json& args)
+                                   const Json& args, bool named)
 {
   auto* p = _c.project(pid);
   if (!p) {
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  // A layer NAMED: drawn on as it is -- a mask's (add_mask), a markup of
+  // the person's -- a blank one made a markup first.
+  if (named && args.contains("layer")) {
+    VALTZ_ASSIGN(std::string id, layer_(args));
+    for (const auto& l : a.layers) {
+      if (l.id != id) {
+        continue;
+      }
+      if (l.source) {
+        auto src = p->asset(*l.source);
+        if (src.ok() && src->cls == AssetClass::Markup) {
+          return std::pair{id, Json::object()};
+        }
+        return make_error(Code::InvalidArgument, std::format(
+            "layer {} shows a picture, not a markup: name a markup "
+            "layer -- add_mask makes a mask's", model_layer(id)));
+      }
+      VALTZ_ASSIGN(std::string made,
+                   _c.markup_layer(pid, comp, {id}, l.time.offset));
+      return std::pair{made, Json::object()};
+    }
+    return make_error(Code::NotFound,
+                      std::format("no layer {}", model_layer(id)));
+  }
   if (a.cls != AssetClass::Composition) {
     VALTZ_ASSIGN(std::int64_t page, page_(pid, comp, args, "page", true));
     VALTZ_ASSIGN(std::string layer, markup_on_(pid, comp, page));
@@ -3484,6 +3555,10 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
     if (l.locked) {
       j["locked"] = true;
     }
+    // A MASK: not drawn; the layer under it shows only where it is.
+    if (l.mask) {
+      j["mask_of_layer_below"] = true;
+    }
     if (!progress.empty() && l.folder == progress) {
       // The page progress bar's: one line each.
       j["pages"] = Json{l.time.offset + 1, l.time.offset + 1};
@@ -3716,6 +3791,79 @@ Controller::AgentHost::t_view_asset(Session& s, Step& step, const Json& args,
   return told;
 }
 
+Result<Json>
+Controller::AgentHost::t_get_exif(Session& s, Step&, const Json& args,
+                                  std::vector<fs::path>&)
+{
+  const auto t = text_arg(args, "asset");
+  const auto id = AssetId::parse(t);
+  if (!id) {
+    return make_error(Code::InvalidArgument,
+                      t.empty() ? std::string("which asset?")
+                                : std::format("'{}' is not an asset id", t));
+  }
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(*id));
+  // A picture's file, read whole (media::exif_all).
+  auto of = [&](const project::Asset& x) -> Result<Json> {
+    VALTZ_ASSIGN(fs::path f, p->media_path(x.id));
+    return Json{{"asset", x.id.str()},
+                {"name", x.name},
+                {"file", f.filename().string()},
+                {"exif", media::exif_all(f)}};
+  };
+  const bool flat = a.cls == AssetClass::Flat ||
+                    a.cls == AssetClass::Generated;
+  if (flat) {
+    if (a.kind == AssetKind::Video || a.kind == AssetKind::Audio ||
+        a.kind == AssetKind::Text) {
+      return make_error(Code::InvalidArgument, std::format(
+          "\"{}\" is no picture: EXIF is a photo's", a.name));
+    }
+    if (a.head == 0) {
+      return make_error(Code::InvalidArgument, std::format(
+          "\"{}\" is still being made: wait_for_generations first",
+          a.name));
+    }
+    VALTZ_ASSIGN(Json told, of(a));
+    if (told["exif"].empty()) {
+      told["note"] = "Its file carries no metadata ImageIO reads.";
+    }
+    return told;
+  }
+  // A composition -- a picture's edited copy, a still, a timeline: each
+  // layer's picture's (the photo carries it; its look does not).
+  Json layers = Json::array();
+  for (const auto& l : a.layers) {
+    if (!l.source) {
+      continue;
+    }
+    auto src = p->asset(*l.source);
+    if (!src.ok() || src->kind != AssetKind::Image || src->head == 0 ||
+        (src->cls != AssetClass::Flat && src->cls != AssetClass::Generated)) {
+      continue;
+    }
+    auto j = of(*src);
+    if (!j.ok() || (*j)["exif"].empty()) {
+      continue;
+    }
+    (*j)["layer"] = l.id.empty() ? "0" : l.id;
+    layers.push_back(std::move(*j));
+    if (layers.size() == 8) {
+      break;
+    }
+  }
+  Json told = {{"asset", id->str()}, {"name", a.name},
+               {"layers", std::move(layers)}};
+  if (told["layers"].empty()) {
+    told["note"] = "None of its layers shows a picture with metadata.";
+  }
+  return told;
+}
+
 // ---- compositions and pages -------------------------------------------------
 
 Result<Json>
@@ -3850,7 +3998,7 @@ Controller::AgentHost::t_add_text(Session& s, Step& step, const Json& args,
     VALTZ_ASSIGN(on.first, front_markup_(s.project, comp));
     on.second = {{"every_page", true}};
   } else {
-    VALTZ_ASSIGN(on, markup_for_(s.project, comp, args));
+    VALTZ_ASSIGN(on, markup_for_(s.project, comp, args, true));
   }
   const std::string layer = on.first;
   VALTZ_ASSIGN(Json objs, objects_(s.project, comp, layer));
@@ -3965,10 +4113,12 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
   // out of its every-page paper). A translucent one is a scrim, over.
   auto* p = _c.project(s.project);
   VALTZ_ASSIGN(project::Asset a, p->asset(comp));
-  const bool covers = a.cls == AssetClass::Still && shape != "line" &&
-                      (*fill)[3] >= 0.95 &&
+  // A layer named (a mask's) takes it as it is.
+  const bool named = args.contains("layer");
+  const bool covers = !named && a.cls == AssetClass::Still &&
+                      shape != "line" && (*fill)[3] >= 0.95 &&
                       box[2] * box[3] >= 0.9 * frame.width * frame.height;
-  const bool below = flag(args, "below_all") || covers;
+  const bool below = !named && (flag(args, "below_all") || covers);
   if (!joins.empty()) {
     // On the layer of the shapes it joins: its anchors are to objects of
     // its own markup.
@@ -4020,7 +4170,7 @@ Controller::AgentHost::t_add_shape(Session& s, Step& step, const Json& args,
                           "as its background.";
     }
   } else {
-    VALTZ_ASSIGN(on, markup_for_(s.project, comp, args));
+    VALTZ_ASSIGN(on, markup_for_(s.project, comp, args, true));
   }
   const std::string layer = on.first;
   VALTZ_ASSIGN(Json objs, objects_(s.project, comp, layer));
@@ -4671,7 +4821,7 @@ Controller::AgentHost::t_draw_strokes(Session& s, Step& step,
   }
   auto undo = _c.command_(s.project, "agent", comp, "",
                           {{"tool", step.tool}, {"title", step.title}});
-  VALTZ_ASSIGN(auto on, markup_for_(s.project, comp, args));
+  VALTZ_ASSIGN(auto on, markup_for_(s.project, comp, args, true));
   // A markup's strokes lie UNDER its words and shapes (its raster is
   // drawn first): painted on one that holds some they would be hidden --
   // the 27B's waves went under its water. On a markup of their own over
@@ -4679,7 +4829,8 @@ Controller::AgentHost::t_draw_strokes(Session& s, Step& step,
   // added after go on it, over them.
   VALTZ_ASSIGN(Json there, objects_(s.project, comp, on.first));
   bool apart = false;
-  if (!there.empty()) {
+  // A layer named (a mask's): on it, under its shapes or not.
+  if (!there.empty() && !args.contains("layer")) {
     auto* p = _c.project(s.project);
     VALTZ_ASSIGN(project::Asset a, p->asset(comp));
     const std::string top = a.layers.empty() ? "" : a.layers.back().id;
@@ -5589,6 +5740,69 @@ Controller::AgentHost::t_set_layer_visible(Session& s, Step& step,
                                  flag(args, "visible", true)));
   return Json{{"layer", model_layer(layer)},
               {"visible", flag(args, "visible", true)}};
+}
+
+Result<Json>
+Controller::AgentHost::t_set_layer_mask(Session& s, Step& step,
+                                        const Json& args,
+                                        std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, composition_(s, args));
+  VALTZ_ASSIGN(std::string layer, layer_(args));
+  auto undo = _c.command_(s.project, "agent", comp, layer,
+                          {{"tool", step.tool}, {"title", step.title}});
+  const bool on = flag(args, "mask", true);
+  VALTZ_TRY(_c.set_layer_mask(s.project, comp, layer, on));
+  return Json{{"layer", model_layer(layer)}, {"mask", on}};
+}
+
+Result<Json>
+Controller::AgentHost::t_add_mask(Session& s, Step& step, const Json& args,
+                                  std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, composition_(s, args));
+  VALTZ_ASSIGN(std::string layer, layer_(args));
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  const project::Layer* masked = nullptr;
+  for (const auto& l : a.layers) {
+    if (l.id == layer) {
+      masked = &l;
+    }
+  }
+  if (!masked) {
+    return make_error(Code::NotFound,
+                      std::format("no layer {}", model_layer(layer)));
+  }
+  const project::LayerTime when = masked->time;
+  const bool still = a.cls != AssetClass::Composition;
+  auto undo = _c.command_(s.project, "agent", comp, layer,
+                          {{"tool", step.tool}, {"title", step.title}});
+  // Right above it, on its pages (its time), a markup -- the mask.
+  VALTZ_ASSIGN(std::string blank, _c.add_layer(s.project, comp, layer));
+  VALTZ_ASSIGN(std::string mask,
+               _c.markup_layer(s.project, comp, {blank}, when.offset));
+  if (still) {
+    VALTZ_TRY(_c.set_layer_pages(s.project, comp, mask, when.offset,
+                                 when.duration));
+  } else {
+    project::LayerTime t;
+    t.offset = when.offset;
+    t.duration = when.duration;
+    VALTZ_TRY(_c.set_layer_time(s.project, comp, mask, t));
+  }
+  VALTZ_TRY(_c.rename_layer(s.project, comp, mask, "Mask"));
+  VALTZ_TRY(_c.set_layer_mask(s.project, comp, mask, true));
+  return Json{{"mask_layer", model_layer(mask)},
+              {"masks", model_layer(layer)},
+              {"note", std::format(
+                  "Layer {} is hidden until its shape is drawn: add_shape "
+                  "(or draw_strokes, add_text) with layer \"{}\", fill "
+                  "\"#ffffff\" -- where it is white the layer shows.",
+                  model_layer(layer), model_layer(mask))}};
 }
 
 Result<Json>

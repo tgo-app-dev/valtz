@@ -766,7 +766,11 @@ struct TrimPanel: View {
     private var clipTime: some View {
         let r = model.trimRate
         HStack(spacing: 6) {
-            if let edge = model.layerOffStage {
+            if model.layerOffStage == .unselected {
+                Text("No layer selected")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            } else if let edge = model.layerOffStage {
                 ZigzagStrip(teethOnLeft: edge == .after, tooth: 6)
                     .fill(Color.secondary)
                     .frame(width: 7, height: 16)

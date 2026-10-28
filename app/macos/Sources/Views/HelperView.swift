@@ -6,9 +6,11 @@ import SwiftUI
 /// by the core so valtzctl takes it too -- and how it runs: the sampler
 /// its model card recommends, and the drafter it decodes ahead with; and
 /// how often it looks when it watches a clip (a video summary, DESIGN
-/// §4i); how long a conversation it reads -- its context -- and whether
-/// the agent compacts one past it (DESIGN §9b); and, for debugging,
-/// whether the agent's turns show their speed.
+/// §4i); while the Agent is switched on (Settings › Experimental), where
+/// the agent thinks and with what (AgentSettingsSection); how long a
+/// conversation it reads -- its context -- and whether the agent compacts
+/// one past it (DESIGN §9b); and, for debugging, whether the agent's
+/// turns show their speed.
 struct HelperView: View {
     @Bindable var model: AppModel
 
@@ -71,11 +73,17 @@ struct HelperView: View {
                         .settingsMark(String(localized: "Thinking"))
                     }
                 }
+                if model.agentEnabled {
+                    AgentSettingsSection(model: model)
+                }
                 contextSection(list)
             } else {
                 Section {
                     Text("No helper is known to this build.")
                         .foregroundStyle(.secondary)
+                }
+                if model.agentEnabled {
+                    AgentSettingsSection(model: model)
                 }
             }
             Section {
@@ -87,7 +95,7 @@ struct HelperView: View {
                 Text("Debugging")
                     .settingsMark(String(localized: "Debugging"))
             } footer: {
-                Text("Under each of the agent's turns and each suggested prompt, in small type: the tokens it read (prefill) and wrote (decode), how fast, how many tokens a round of its drafter bought and how many of its drafts were kept, and how much of the conversation it went on from. The Agent is in Settings › Experimental.")
+                Text("Under each of the agent's turns and each suggested prompt, in small type: the tokens it read (prefill) and wrote (decode), how fast, how many tokens a round of its drafter bought and how many of its drafts were kept, and how much of the conversation it went on from. The Agent is switched on in Settings › Experimental.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -421,7 +429,8 @@ struct HelperView: View {
     }
 }
 
-/// Settings › Experimental › Agent (DESIGN §9b): where the agent's model
+/// Settings › Agentic Helper › Agent, while Settings › Experimental has
+/// the Agent on (DESIGN §9b): where the agent's model
 /// thinks -- the helper (this Mac's, or a fleet member's, as Offload
 /// Policies send agent turns) or a cloud API -- which model it is here
 /// (the Agentic Helper's, or one of its own: DeepSeek V4.1 Flash) and the

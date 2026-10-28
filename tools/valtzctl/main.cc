@@ -41,6 +41,7 @@
 #include <cstdio>
 #include <chrono>
 #include <thread>
+#include <time.h>
 #include <cstdlib>
 #include <cstring>
 #include <format>
@@ -182,6 +183,10 @@ usage()
       "         of it, as drawn: a picture, a movie, a sound)\n"
       "  history <project.valtz>  (the generation history: each edit's\n"
       "          base as the model got it, each result, oldest first)\n"
+      "  atlas <project.valtz> [--json]  (the project as a graph, left to\n"
+      "         right: each asset, the op that made it from its inputs,\n"
+      "         a composition's layers into it; column by column, leaves\n"
+      "         -- removable -- marked)\n"
       "  auto   (what the model field's Auto picks, per modality and op)\n"
       "  ext [list]           (extension packages found at launch: each\n"
       "         one's state, what it brings, what was withheld and why)\n"
@@ -290,7 +295,9 @@ usage()
       "        one without --source -- or the system's audio, \"system\",\n"
       "        recorded into a composition of sound alone: a flat sound,\n"
       "        on its blank layer or a new one; with none, a flat sound\n"
-      "        alone)\n"
+      "        alone; --voice-over <frame> onto any timeline as a new\n"
+      "        layer from that frame, --cue-after <s> the picture as if\n"
+      "        started s seconds in: the head before it trimmed)\n"
       "  output <project.valtz> [color=rec709|srgb|display-p3|rec2020|\n"
       "        rec2100-pq|rec2100-hlg] [fps=24|30000/1001] [channels=1|2]\n"
       "        [rate=48000]\n"
@@ -346,6 +353,8 @@ usage()
       "         from it, their files printed)\n"
       "  layers <project.valtz> <picture-id> [add [above] | move <layer> <by>\n"
       "         | show|hide <layer> | lock|unlock <layer>\n"
+      "         | separator <layer> on|off  (a track of its own in the\n"
+      "         timeline's track view)\n"
       "         | source <layer> <picture-id>\n"
       "         | rename <layer> <name> | remove <layer>\n"
       "         | markup [selected...] | merge <layer> <layer>\n"
@@ -3155,6 +3164,9 @@ main(int argc, char** argv)
       st = c.set_layer_visible(*pid, *aid, layer, op == "show");
     } else if (op == "lock" || op == "unlock") {
       st = c.set_layer_locked(*pid, *aid, layer, op == "lock");
+    } else if (op == "separator") {
+      // `separator <L> on|off`: a track of its own in the track view.
+      st = c.set_layer_separator(*pid, *aid, layer, arg != "off");
     } else if (op == "rename") {
       st = c.rename_layer(*pid, *aid, layer, arg);
     } else if (op == "source") {
@@ -3557,13 +3569,15 @@ main(int argc, char** argv)
           in = std::format("  {{{} {}}}", f.id, f.name);
         }
       }
-      std::printf("  %-3s %s%s %-12s %s%s%s%s\n",
+      // A track separator: its track of its own in the track view.
+      std::printf("  %-3s %s%s %-12s %s%s%s%s%s\n",
                   it->id.empty() ? "0" : it->id.c_str(),
                   it->visible ? "shown " : "hidden",
                   it->locked ? " locked" : "",
                   it->name.empty() ? "-" : it->name.c_str(),
                   what.c_str(), when.c_str(),
-                  it->mask ? "  -- masks the layer below" : "", in.c_str());
+                  it->mask ? "  -- masks the layer below" : "", in.c_str(),
+                  it->track_separator ? "  -- a track separator" : "");
       // A markup's objects, by id (what `style` and `arrange` name),
       // bottom first: kind, a text's words and alignment, effects, where
       // it lies (its bounds, as the stage outlines it).
@@ -4070,10 +4084,17 @@ main(int argc, char** argv)
       if (!g.ok()) {
         return fail(g.error());
       }
-      std::printf("%s  %lld frames, %.3f s at %g fps\n",
+      std::printf("%s  %lld frames, %.3f s at %g fps, showing %s\n",
                   jget<std::string>(*g, "asset", "").c_str(),
                   static_cast<long long>(jget<std::int64_t>(*g, "frames", 0)),
-                  jget(*g, "seconds", 0.0), jget(*g, "fps", 0.0));
+                  jget(*g, "seconds", 0.0), jget(*g, "fps", 0.0),
+                  jget<std::string>(*g, "shows", "").c_str());
+      // A timeline's: where its continuation goes on.
+      if (const auto tl = jget<std::string>(*g, "composition", "");
+          !tl.empty()) {
+        std::printf("continues %s from frame %lld\n", tl.c_str(),
+                    static_cast<long long>(jget<std::int64_t>(*g, "end", 0)));
+      }
       return 0;
     }
     Result<AssetId> made = make_error(Code::InvalidArgument, "");
@@ -4188,6 +4209,89 @@ main(int argc, char** argv)
       auto file = p->media_path(id);
       std::printf("%s %s %s\n", id.str().c_str(), what.c_str(),
                   file.ok() ? file->c_str() : "(not made)");
+    }
+    return 0;
+  }
+  // The ATLAS (DESIGN §10a Atlas): the graph the app draws, by column.
+  if (cmd == "atlas") {
+    const bool as_json = std::erase(args, std::string("--json")) > 0;
+    if (args.empty()) {
+      return usage();
+    }
+    auto pid = open_or_fail(c, args[0]);
+    if (!pid.ok()) {
+      return fail(pid.error());
+    }
+    auto graph = c.atlas(*pid);
+    if (!graph.ok()) {
+      return fail(graph.error());
+    }
+    if (as_json) {
+      std::printf("%s\n", to_text(*graph, 2).c_str());
+      return 0;
+    }
+    project::Project* p = c.project(*pid);
+    std::map<std::string, std::string> names;
+    if (auto all = p->assets(); all.ok()) {
+      for (const auto& a : *all) {
+        names[a.id.str()] = a.name;
+      }
+    }
+    auto name = [&](const std::string& id) {
+      const auto f = names.find(id);
+      return f == names.end() ? id : f->second;
+    };
+    auto nodes = (*graph)["nodes"];
+    std::stable_sort(nodes.begin(), nodes.end(),
+                     [](const Json& a, const Json& b) {
+                       const int ca = a["column"].get<int>();
+                       const int cb = b["column"].get<int>();
+                       if (ca != cb) {
+                         return ca < cb;
+                       }
+                       return a["row"].get<double>() < b["row"].get<double>();
+                     });
+    std::printf("%zu nodes, %zu edges, %d columns, %.2f slots high\n",
+                nodes.size(), (*graph)["edges"].size(),
+                (*graph)["columns"].get<int>(),
+                (*graph)["height"].get<double>());
+    for (const auto& n : nodes) {
+      const auto type = jget<std::string>(n, "type", "");
+      std::string what;
+      if (type == "asset") {
+        what = std::format("{}", name(jget<std::string>(n, "asset", "")));
+        if (const auto d = jget<std::string>(n, "destination", "");
+            !d.empty()) {
+          what += std::format("  [{}]", d);
+        }
+        if (jget(n, "project", false)) {
+          what += "  [project]";
+        }
+        if (jget(n, "leaf", false)) {
+          what += "  leaf";
+        }
+        if (jget(n, "loose", false)) {
+          what += "  loose";
+        }
+      } else if (type == "layer") {
+        std::string look;
+        for (const auto& l : n.value("look", Json::array())) {
+          look += (look.empty() ? "" : ",") + l.get<std::string>();
+        }
+        const auto layer = jget<std::string>(n, "layer", "");
+        what = std::format(
+            "layer {} -> {}  {}", layer.empty() ? "0" : layer,
+            name(jget<std::string>(n, "into", "")),
+            look.empty() ? "as it is" : look);
+      } else {
+        const auto model = jget<std::string>(n, "model", "");
+        what = std::format("{}{} -> {}", jget<std::string>(n, "op", ""),
+                           model.empty() ? "" : " · " + model,
+                           name(jget<std::string>(n, "into", "")));
+      }
+      std::printf("  c%-2d %6.2f  %-5s %s\n", n["column"].get<int>(),
+                  n["row"].get<double>(),
+                  type == "asset" ? "asset" : "op", what.c_str());
     }
     return 0;
   }
@@ -5041,11 +5145,19 @@ main(int argc, char** argv)
     }
     std::string source;
     double seconds = 5;
+    // A VOICE-OVER onto the composition, from its frame; the picture as
+    // if started `cue` seconds in (its head trimmed by as much).
+    std::optional<std::int64_t> voice_at;
+    std::optional<double> cue_after;
     for (std::size_t i = first; i + 1 < args.size(); ++i) {
       if (args[i] == "--source") {
         source = args[++i];
       } else if (args[i] == "--seconds") {
         seconds = std::atof(args[++i].c_str());
+      } else if (args[i] == "--voice-over") {
+        voice_at = std::atoll(args[++i].c_str());
+      } else if (args[i] == "--cue-after") {
+        cue_after = std::atof(args[++i].c_str());
       }
     }
     if (source.empty()) {
@@ -5057,10 +5169,20 @@ main(int argc, char** argv)
         }
       }
     }
-    if (auto st = c.start_capture(*pid, aid, source); !st.ok()) {
+    if (auto st = c.start_capture(*pid, aid, source, voice_at); !st.ok()) {
       return fail(st.error());
     }
+    // The host clock's seconds (mach_absolute_time's, as
+    // CACurrentMediaTime counts them).
+    const auto host_now = [] {
+      return static_cast<double>(clock_gettime_nsec_np(CLOCK_UPTIME_RAW))
+             / 1e9;
+    };
+    bool cued = false;
     for (double t = 0; t < seconds; t += 0.25) {
+      if (voice_at && cue_after && !cued && t >= *cue_after) {
+        cued = c.cue_capture(host_now()).ok();
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
       const Json s = c.capture_state();
       std::fprintf(stderr, "\r  recording %.1f s  level %-20s",

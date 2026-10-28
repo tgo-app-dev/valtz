@@ -574,7 +574,9 @@ struct KeyframeBar: View {
                                       && !model.clipOnStage))
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .help("Move the playhead onto the layer to change it")
+                    .help(off == .unselected
+                          ? "Select a layer -- on the timeline or in Layers -- to change it"
+                          : "Move the playhead onto the layer to change it")
             } else if locked {
                 Label("Layer locked", systemImage: "lock.fill")
                     .font(.callout)
@@ -622,6 +624,7 @@ struct KeyframeBar: View {
     /// Where the stage is against the layer, when it is not on it.
     static func offText(_ edge: AppModel.ClipEdge,
                         paged: Bool) -> LocalizedStringKey {
+        if edge == .unselected { return "No layer selected" }
         if paged { return "Not on this page" }
         return edge == .before ? "Before the layer starts"
                                : "After the layer ends"

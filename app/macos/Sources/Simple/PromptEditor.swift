@@ -1192,7 +1192,8 @@ struct PromptEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let tv = context.coordinator.textView else { return }
         // A text asset something was made from: read, not written.
-        let editable = !model.activeTabReadOnly
+        // A voice-over's: no prompt taken.
+        let editable = !model.activeTabReadOnly && !model.inVoiceOver
         if tv.isEditable != editable { tv.isEditable = editable }
         if context.coordinator.revision != model.promptRevision {
             context.coordinator.revision = model.promptRevision

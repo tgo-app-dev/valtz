@@ -138,12 +138,6 @@ equalizes(const SoundLayer& l)
   });
 }
 
-// Layer `l` goes through the offline pass: its pitch or its equalizer.
-bool
-shaped(const SoundLayer& l)
-{
-  return shifts_pitch(l) || equalizes(l);
-}
 
 // Layer `l`'s pitch, in semitones, `u` seconds after its start: its keys',
 // and -- following its speed -- the octaves the speed makes.
@@ -265,10 +259,16 @@ volume_points(const SoundPlan& p, std::size_t i, double step)
 }
 
 bool
+shapes(const SoundLayer& l)
+{
+  return shifts_pitch(l) || equalizes(l);
+}
+
+bool
 needs_render(const SoundPlan& p)
 {
   return std::ranges::any_of(p.layers, [](const SoundLayer& l) {
-    return shaped(l);
+    return shapes(l);
   });
 }
 
@@ -403,9 +403,22 @@ render_shaped(const SoundLayer& l, const fs::path& out)
   [player play];
   std::error_code ec;
   fs::remove(out, ec);
+  // The file interleaved (a CAF holds no other), written from the
+  // engine's planar blocks.
+  NSDictionary* settings = @{
+    AVFormatIDKey : @(kAudioFormatLinearPCM),
+    AVSampleRateKey : @(kMixRate),
+    AVNumberOfChannelsKey : @2,
+    AVLinearPCMBitDepthKey : @32,
+    AVLinearPCMIsFloatKey : @YES,
+    AVLinearPCMIsNonInterleaved : @NO,
+    AVLinearPCMIsBigEndianKey : @NO,
+  };
   AVAudioFile* file = [[AVAudioFile alloc]
       initForWriting:[NSURL fileURLWithPath:@(out.c_str())]
-            settings:fmt.settings
+            settings:settings
+        commonFormat:AVAudioPCMFormatFloat32
+         interleaved:NO
                error:&err];
   if (!file) {
     [engine stop];
@@ -451,6 +464,31 @@ render_shaped(const SoundLayer& l, const fs::path& out)
 
 }
 
+Status
+shape_sound(const SoundLayer& l, const fs::path& out)
+{
+  @autoreleasepool {
+    return render_shaped(l, out);
+  }
+}
+
+SoundLayer
+as_shaped(SoundLayer l, const fs::path& file)
+{
+  const double span = l.timing.out - l.timing.in;
+  l.file = file;
+  l.timing.out = std::isfinite(span) ? span : kForever;
+  // Keys as they were, read along the shaped span's time (from its
+  // start, as before); what they shaped is in the file now.
+  l.timing.in = 0;
+  for (auto& key : l.sound.keys) {
+    key.value.pitch = 0;
+    key.value.eq = {};
+  }
+  l.follow_speed = false;
+  return l;
+}
+
 Result<bool>
 mix_sound(const SoundPlan& plan, const fs::path& out)
 {
@@ -466,20 +504,14 @@ mix_sound(const SoundPlan& plan, const fs::path& out)
       if (l.file.empty() || !has_sound(l.file)) {
         continue;
       }
-      if (shaped(l)) {
+      if (shapes(l)) {
         // The span shaped first; then it is a sound from 0.
         const fs::path shifted = fs::temp_directory_path() /
             std::format("valtz-shaped-{}-{}.caf", ::getpid(),
                         reinterpret_cast<std::uintptr_t>(&l) + i);
         VALTZ_TRY(render_shaped(l, shifted));
         scratch.push_back(shifted);
-        const double span = l.timing.out - l.timing.in;
-        l.file = shifted;
-        l.timing.out = std::isfinite(span) ? span : kForever;
-        // Keys as they were, read along the shifted span's time.
-        const double shift = l.timing.in;
-        l.timing.in = 0;
-        (void)shift;
+        l = as_shaped(std::move(l), shifted);
       }
       NSDictionary* precise =
           @{AVURLAssetPreferPreciseDurationAndTimingKey : @YES};

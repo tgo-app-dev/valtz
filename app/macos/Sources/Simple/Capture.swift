@@ -18,6 +18,9 @@ struct CaptureStateDTO: Decodable, Sendable, Equatable {
     var name: String?
     var seconds: Double = 0
     var level: Double = 0
+    /// A voice-over's (Controller::start_capture), from its frame `at`.
+    var voiceOver: Bool?
+    var at: Int?
 }
 
 /// Sound CAPTURED (DESIGN §7b): a blank composition of sound alone on the
@@ -39,7 +42,8 @@ extension AppModel {
     /// it records.
     var showsCapture: Bool {
         captureTarget != nil
-            || (capture.recording && !(capture.asset ?? "").isEmpty)
+            || (capture.recording && capture.voiceOver != true
+                && !(capture.asset ?? "").isEmpty)
     }
 
     /// The sources there now: the microphones (the default first), then

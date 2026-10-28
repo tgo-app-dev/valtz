@@ -84,6 +84,8 @@ struct JogWheel: View {
     let help: LocalizedStringKey
     /// By how much it changes: called as the drag goes.
     let nudge: (Double) -> Void
+    /// The drag let go: what it changed kept (one command a drag).
+    var ended: () -> Void = {}
     @State private var shift: CGFloat = 0
     @State private var last: CGFloat?
     @State private var hovering = false
@@ -125,6 +127,7 @@ struct JogWheel: View {
             .onEnded { _ in
                 last = nil
                 withAnimation(.spring(duration: 0.25)) { shift = 0 }
+                ended()
             })
         .help(help)
         .accessibilityElement()

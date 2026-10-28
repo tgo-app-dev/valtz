@@ -12,8 +12,12 @@
 //   * the app's PLAYER builds the same composition and ramps from the
 //     plan's JSON (`time_segments`, `volume_points`) and plays it as it
 //     goes -- an hour-long timeline starts at once. Only PITCH and the
-//     EQUALIZER have no real-time path there: a plan that shifts a pitch
-//     or sets a band is played from the mixer's file (`needs_render`).
+//     EQUALIZER have no real-time path there: a layer they shape is
+//     played from its SHAPED span (`shape_sound`, the controller's cache
+//     keyed by what makes it), a plain sound from 0 with its volume ramps
+//     as any other (`as_shaped`) -- so a gain plays as it changes, and a
+//     band changed on one layer makes that layer's span again, not the
+//     mix.
 // Pitch and the equalizer are applied to a layer's span first, offline
 // (AVAudioUnitTimePitch, then AVAudioUnitEQ's peaking band an octave wide
 // at each of kEqFrequencies -- their keys read at the source time each
@@ -85,6 +89,20 @@ volume_points(const SoundPlan&, std::size_t i, double step = 0.1);
 // Any layer's pitch shifted -- by its keys, or following a speed -- or a
 // band of its equalizer set?
 bool needs_render(const SoundPlan&);
+
+// Layer `l`'s pitch or equalizer shapes it: its span goes through the
+// offline pass.
+bool shapes(const SoundLayer& l);
+
+// Layer `l`'s span with its pitch shifted and its equalizer on it, as
+// float PCM at the mix's rate (CAF), to `out`. Blocking.
+Status shape_sound(const SoundLayer& l, const std::filesystem::path& out);
+
+// The layer that plays `file`, `l` shaped: that file from 0 over the
+// span's length, its keys' pitch and bands cleared and its pitch no
+// longer following the speed (both made), its volume keys and its speed
+// kept (a stretch keeps the pitch it is given).
+SoundLayer as_shaped(SoundLayer l, const std::filesystem::path& file);
 
 // The mix written to `out` as a 24-bit WAV, `plan.seconds` long. False
 // when no layer has a sound (nothing written). Blocking.

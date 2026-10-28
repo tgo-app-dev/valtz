@@ -47,11 +47,19 @@ struct MarkupOverlay: Equatable {
     /// `hotConnector` the one it would take, there.
     var connectors: [CGPoint] = []
     var hotConnector: CGPoint?
+    /// The select tool's MARQUEE being dragged (canvas pixels).
+    var marquee: CGRect?
+    /// The Color panel's target tool: a LOUPE round the pointer (canvas
+    /// pixels) -- the pixels about it, `loupeSide` a side, rows from the
+    /// top (nil off the picture), magnified, the one under it outlined.
+    var loupeAt: CGPoint?
+    var loupe: [RGBA?] = []
+    var loupeSide = 0
 
     var isEmpty: Bool {
         strokes.isEmpty && objects.isEmpty && drawingBounds == nil
             && path.isEmpty && sampleAt == nil && connectors.isEmpty
-            && hotConnector == nil
+            && hotConnector == nil && marquee == nil && loupeAt == nil
     }
 }
 
@@ -153,6 +161,18 @@ final class MarkupOverlayView: NSView {
             }
         }
         ctx.restoreGState()
+        // A marquee being dragged: what lies wholly inside it is selected
+        // when it is let go.
+        if let r = overlay.marquee {
+            let box = NSBezierPath(rect: r.applying(toView)
+                .insetBy(dx: 0.5, dy: 0.5))
+            NSColor.controlAccentColor.withAlphaComponent(0.1).setFill()
+            box.fill()
+            box.lineWidth = 1
+            box.setLineDash([4, 3], count: 2, phase: 0)
+            NSColor.controlAccentColor.setStroke()
+            box.stroke()
+        }
         // The selected drawing: its outline alone (it is not reshaped).
         if let d = overlay.drawingBounds {
             let outline = NSBezierPath(rect: d.applying(toView)
@@ -260,6 +280,67 @@ final class MarkupOverlayView: NSView {
         }
         drawConnectors()
         drawSampleRing()
+        drawLoupe()
+    }
+
+    /// The target tool's LOUPE: a circle centred on the pointer, the
+    /// pixels about it magnified -- each a square, none smoothed -- the
+    /// one under the pointer outlined, edged white over dark to show on
+    /// any picture. Off the picture: nothing there, the window's grey.
+    private func drawLoupe() {
+        let n = overlay.loupeSide
+        guard let at = overlay.loupeAt, n > 0, overlay.loupe.count == n * n
+        else { return }
+        // The pointer's pixel's middle, in view points.
+        let p = CGPoint(x: at.x.rounded(.down) + 0.5,
+                        y: at.y.rounded(.down) + 0.5).applying(toView)
+        let radius: CGFloat = 62
+        let cell = 2 * radius / CGFloat(n)
+        let circle = NSBezierPath(ovalIn: NSRect(
+            x: p.x - radius, y: p.y - radius, width: 2 * radius,
+            height: 2 * radius))
+        NSGraphicsContext.saveGraphicsState()
+        circle.addClip()
+        NSColor(white: 0.5, alpha: 1).setFill()
+        circle.fill()
+        // The squares unsmoothed: at their fractional edges, smoothed,
+        // seams showed between them (the circle's own edge stays so).
+        NSGraphicsContext.current?.shouldAntialias = false
+        let h = n / 2
+        for (k, c) in overlay.loupe.enumerated() {
+            guard let c else { continue }
+            let r = NSRect(x: p.x + (CGFloat(k % n - h) - 0.5) * cell,
+                           y: p.y + (CGFloat(k / n - h) - 0.5) * cell,
+                           width: cell, height: cell)
+            if c.a < 1 {
+                NSColor(white: 0.85, alpha: 1).setFill()
+                r.fill()
+            }
+            NSColor(cgColor: c.cgColor)?.setFill()
+            r.fill(using: .sourceOver)
+        }
+        NSGraphicsContext.current?.shouldAntialias = true
+        // The pixel pressed on would be this one.
+        let mid = NSRect(x: p.x - cell / 2, y: p.y - cell / 2,
+                         width: cell, height: cell)
+        NSColor.black.withAlphaComponent(0.7).setStroke()
+        let outer = NSBezierPath(rect: mid.insetBy(dx: -1, dy: -1))
+        outer.lineWidth = 1
+        outer.stroke()
+        NSColor.white.setStroke()
+        let inner = NSBezierPath(rect: mid)
+        inner.lineWidth = 1
+        inner.stroke()
+        NSGraphicsContext.restoreGraphicsState()
+        let rim = NSBezierPath(ovalIn: NSRect(
+            x: p.x - radius, y: p.y - radius, width: 2 * radius,
+            height: 2 * radius))
+        rim.lineWidth = 4
+        NSColor.black.withAlphaComponent(0.45).setStroke()
+        rim.stroke()
+        rim.lineWidth = 2
+        NSColor.white.setStroke()
+        rim.stroke()
     }
 
     /// The connectors shown: small rings, white edged in the accent; the

@@ -66,6 +66,7 @@ set(VALTZ_CORE_SOURCES
   src/controller/agent.cc
   src/controller/agent-tools.cc
   src/controller/asset-ops.cc
+  src/controller/atlas.cc
   src/controller/compositions.cc
   src/controller/controller.cc
   src/controller/event-bus.cc

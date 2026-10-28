@@ -206,7 +206,7 @@ extension AppModel {
     /// makes it the active one instead.
     func viewAsset(_ a: AssetDTO) {
         guard viewedAsset != a.id else { return }
-        guard !refusedForColorTarget() else { return }
+        guard !refusedForColorTarget(), !refusedForCompare(a) else { return }
         noteNavigation()
         // A snapshot run: how long a posted click took to get here, and
         // to be on the stage.
@@ -230,6 +230,35 @@ extension AppModel {
                       + "\(Int((CACurrentMediaTime() - clickedAt) * 1000))ms")
             }
         }
+    }
+
+    /// The COMPARE on: an asset clicked in the list is not viewed -- it
+    /// would take the stage from the two sides. One shown there already
+    /// does nothing; another is said: compared by a drag onto A or B, or
+    /// the compare turned off first (its title bar button). It stays on
+    /// until then, or until a composition is made active from the list
+    /// (activateFromList). True: refused.
+    func refusedForCompare(_ a: AssetDTO) -> Bool {
+        guard compareOn else { return false }
+        if [stage.aCompared, stage.bCompared, stageAssetId].contains(a.id) {
+            return true
+        }
+        flash(String(localized: "Compare is on: drag “\(a.name)” onto A or B to compare it, or turn the compare off first with the title bar's Compare button."), level: .warning)
+        return true
+    }
+
+    /// A composition made ACTIVE from the list -- its double-click, its
+    /// pencil, its menu's Set Active: the compare ends with it (as its
+    /// button ends it: the current state back in A, B set aside), and the
+    /// notice a double-click's first click raised goes.
+    func activateFromList(_ a: AssetDTO) {
+        if compareOn {
+            endCompare()
+            dismissNotice()
+        }
+        viewedAsset = nil
+        viewReturn = nil
+        setActive(a)
     }
 
     /// An asset from the list on the stage, viewed (its ⓧ shown).
@@ -1147,9 +1176,7 @@ private struct AssetRow: View {
             } else if hovering && a.isComposition
                         && (!active || model.viewedAsset == a.id) {
                 Button {
-                    model.viewedAsset = nil
-                    model.viewReturn = nil
-                    model.setActive(a)
+                    model.activateFromList(a)
                 } label: {
                     Image(systemName: "pencil.circle")
                         .font(.system(size: 14))
@@ -1233,7 +1260,7 @@ private struct AssetRow: View {
                 }
             } else {
                 if a.isComposition {
-                    Button("Set Active") { model.setActive(a) }
+                    Button("Set Active") { model.activateFromList(a) }
                 } else if a.kind == "image" || a.kind == "video"
                     || a.kind == "audio" {
                     // Only a composition is edited: a flat asset through
@@ -1427,6 +1454,8 @@ private struct AssetRow: View {
             model.openTextAsset(a)
             return
         }
+        // The compare on: the stage stays the two sides' (said).
+        guard !model.refusedForCompare(a) else { return }
         if !(model.promptImmersive && model.editorEdited) {
             model.retreatFromEditor()
         }
@@ -1450,9 +1479,7 @@ private struct AssetRow: View {
         } else if a.isPrompt {
             model.usePrompt(a)
         } else if a.isComposition {
-            model.viewedAsset = nil
-            model.viewReturn = nil
-            model.setActive(a)
+            model.activateFromList(a)
         } else {
             // Only a composition is made active: a flat one is viewed.
             model.viewAsset(a)
