@@ -721,19 +721,20 @@ names_style(std::string_view name)
 }
 
 std::string
-keep_song_lyrics(std::string_view suggestion, std::string_view request)
+keep_song_lyrics(std::string_view suggestion, std::string_view request,
+                 bool caption)
 {
-  const SongText asked = split_song(request);
+  const SongText asked = split_song(request, caption);
   if (asked.sections == 0 || asked.lines == 0) {
     return std::string(suggestion);
   }
-  const std::string style = split_song(suggestion).style;
+  const std::string style = split_song(suggestion, caption).style;
   const std::string lyrics(trimmed(asked.lyrics));
   return style.empty() ? lyrics : style + "\n\n" + lyrics;
 }
 
 SongText
-split_song(std::string_view prompt)
+split_song(std::string_view prompt, bool caption)
 {
   SongText out;
   std::vector<std::string_view> style;
@@ -774,6 +775,11 @@ split_song(std::string_view prompt)
     lyrics += '\n';
   }
   for (auto s : style) {
+    // A caption's lines, one under another, as written.
+    if (caption) {
+      out.style += (out.style.empty() ? "" : "\n") + std::string(s);
+      continue;
+    }
     // One list of tags: a line's own trailing comma is the joint.
     while (!s.empty() && (s.back() == ',' || s.back() == ' ')) {
       s.remove_suffix(1);

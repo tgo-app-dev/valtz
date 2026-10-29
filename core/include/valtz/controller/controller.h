@@ -217,7 +217,7 @@ struct GenerateVideoRequest {
   std::int32_t         height = 0;   //   UP to its grid (32 for H3)
   // 0 = the model's default. Rounded UP to a length the model makes
   // (catalog `frame_grid`, 17n + 5 for H3: 124 frames is 5.2 s at 24
-  // fps), and held to its `max_frames`.
+  // fps), and held to its `max_frames` where it names one (H3: none).
   std::int32_t         frames = 0;
   double               fps = 0;      // 0 = the model's
   std::int32_t         steps = 0;    // 0 = from the preference
@@ -2139,6 +2139,10 @@ private:
     // image.h): the reply is compiled for a picture of this size; 0:
     // not one.
     std::pair<int, int>                              canvas;
+    // How a song model reads its style (catalog song.style): "caption"
+    // for a description in lines (MiniMax-Music3's), kept so when the
+    // person's lyrics are put back; "" its tags.
+    std::string                                      song_style;
     std::string apply(std::string prompt) const;
   };
   Result<JobId> submit_chat_(JobId id, std::string purpose,

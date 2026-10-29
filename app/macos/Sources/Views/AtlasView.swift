@@ -158,12 +158,13 @@ extension AppModel {
     func atlasCanDisconnect(_ node: AtlasNodeDTO) -> Bool {
         guard node.type == "layer", !agentHolds, let into = node.into,
               let comp = asset(id: into) else { return false }
-        let layers = comp.layers ?? []
-        guard layers.count > 1,
-              let l = layers.first(where: { $0.id == node.layer }) else {
+        // Its only layer too: a blank takes its place (core remove_layer).
+        guard let l = (comp.layers ?? []).first(where: {
+            $0.id == node.layer
+        }) else {
             return false
         }
-        return !l.locked
+        return !l.locked && !l.isEmpty
     }
 
     /// Cut: the layer off its composition (core remove_layer), one
@@ -172,6 +173,7 @@ extension AppModel {
         guard node.type == "layer", let into = node.into,
               let layer = node.layer, let core, let projectId else { return }
         guard !refusedForAgent() else { return }
+        let only = asset(id: into)?.layers?.count == 1
         let r = core.layerOp(project: projectId, asset: into, "remove",
                              layer: layer)
         if !r.ok {
@@ -180,8 +182,13 @@ extension AppModel {
         }
         if atlasSelected == node.id { atlasSelected = nil }
         if stageStack.map({ composedTarget($0.id) }) == into {
-            if selectedLayer == layer { selectedLayer = "" }
+            let was = selectedLayer == layer
+            if was { selectedLayer = "" }
             layersChanged()
+            // The only layer gone: the blank in its place is selected.
+            if was, only, let blank = asset(id: into)?.layers?.first {
+                selectedLayer = blank.id
+            }
         } else {
             reloadAssets()
         }
@@ -1172,7 +1179,8 @@ struct AtlasOpNode: View {
             return String(localized: "The layer is locked: unlock it to take it off")
         }
         if (composition?.layers ?? []).count <= 1 {
-            return String(localized: "Its only layer stays")
+            let name = composition?.name ?? ""
+            return String(localized: "Disconnect: Remove from \(name), an empty layer in its place")
         }
         return disconnectTitle
     }

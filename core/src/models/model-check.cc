@@ -754,13 +754,172 @@ size_text(std::uint64_t b)
   return std::format("{} bytes", b);
 }
 
+namespace {
+
+// A GGUF's header as llama.cpp writes it -- "GGUF", its version, its
+// tensor and key counts, then each key: a name, a type, a value -- read
+// for the model's architecture and its numbers, up to the first
+// tokenizer key: the vocabulary (a quarter of a million strings) comes
+// after every number a context is told by. Version 2 and later (64-bit
+// lengths); nothing for anything else.
+struct GgufHead {
+  std::string                         arch;
+  std::map<std::string, std::int64_t> numbers;
+};
+
+GgufHead
+read_gguf_head(const fs::path& file)
+{
+  GgufHead out;
+  std::ifstream in(file, std::ios::binary);
+  char magic[4] = {};
+  if (!in.read(magic, 4) || std::string_view(magic, 4) != "GGUF") {
+    return out;
+  }
+  auto num = [&]<typename T>(T* v) {
+    return static_cast<bool>(in.read(reinterpret_cast<char*>(v),
+                                     sizeof(T)));
+  };
+  std::uint32_t version = 0;
+  std::uint64_t tensors = 0, keys = 0;
+  if (!num(&version) || version < 2 || !num(&tensors) || !num(&keys)) {
+    return out;
+  }
+  // A scalar's bytes by its type (8: a string, 9: an array).
+  constexpr int kSize[] = {1, 1, 2, 2, 4, 4, 4, 1, 0, 0, 8, 8, 8};
+  constexpr std::uint64_t kLongest = 1 << 20;
+  auto text = [&](std::string* s) {
+    std::uint64_t n = 0;
+    if (!num(&n) || n > kLongest) {
+      return false;
+    }
+    s->resize(n);
+    return n == 0 || static_cast<bool>(in.read(s->data(),
+                                               static_cast<long>(n)));
+  };
+  auto skip_text = [&] {
+    std::uint64_t n = 0;
+    return num(&n) && static_cast<bool>(
+                          in.seekg(static_cast<long>(n), std::ios::cur));
+  };
+  for (std::uint64_t k = 0; k < keys && k < 4096; ++k) {
+    std::string key;
+    std::uint32_t type = 0;
+    if (!text(&key) || key.starts_with("tokenizer.") || !num(&type) ||
+        type > 12) {
+      break;
+    }
+    if (type == 8) {
+      std::string v;
+      if (key == "general.architecture" ? !text(&v) : !skip_text()) {
+        break;
+      }
+      if (!v.empty()) {
+        out.arch = v;
+      }
+    } else if (type == 9) {
+      std::uint32_t et = 0;
+      std::uint64_t n = 0;
+      if (!num(&et) || !num(&n) || et > 12 || et == 9) {
+        break;
+      }
+      bool ok = true;
+      if (et == 8) {
+        for (std::uint64_t i = 0; i < n && ok; ++i) {
+          ok = skip_text();
+        }
+      } else {
+        ok = static_cast<bool>(in.seekg(
+            static_cast<long>(n * static_cast<std::uint64_t>(kSize[et])),
+            std::ios::cur));
+      }
+      if (!ok) {
+        break;
+      }
+    } else if (type == 6 || type == 12 || type == 7) {
+      if (!in.seekg(kSize[type], std::ios::cur)) {
+        break;
+      }
+    } else {
+      std::uint64_t raw = 0;
+      if (!in.read(reinterpret_cast<char*>(&raw), kSize[type])) {
+        break;
+      }
+      // Sign-extended where the type is signed.
+      std::int64_t v = static_cast<std::int64_t>(raw);
+      if (type == 1) { v = static_cast<std::int8_t>(raw); }
+      if (type == 3) { v = static_cast<std::int16_t>(raw); }
+      if (type == 5) { v = static_cast<std::int32_t>(raw); }
+      out.numbers[key] = v;
+    }
+  }
+  return out;
+}
+
+// A language model shipped as a GGUF (Ternary-Bonsai 2's): its context
+// and a token's K/V as its header says -- the file in `dir` that is not
+// a vision projector ("mmproj"), or `dir` itself.
+LanguageContext
+gguf_context(const fs::path& dir)
+{
+  std::error_code ec;
+  std::vector<fs::path> files;
+  if (fs::is_regular_file(dir, ec)) {
+    files.push_back(dir);
+  } else {
+    for (const auto& e : fs::directory_iterator(dir, ec)) {
+      const std::string name = lower(e.path().filename().string());
+      if (name.ends_with(".gguf") &&
+          name.find("mmproj") == std::string::npos) {
+        files.push_back(e.path());
+      }
+    }
+    std::ranges::sort(files);
+  }
+  for (const auto& f : files) {
+    const GgufHead h = read_gguf_head(f);
+    if (h.arch.empty()) {
+      continue;
+    }
+    auto get = [&](const char* k) -> std::int64_t {
+      const auto it = h.numbers.find(h.arch + "." + k);
+      return it == h.numbers.end() ? 0 : std::max<std::int64_t>(
+                                             0, it->second);
+    };
+    LanguageContext c;
+    c.tokens = static_cast<int>(std::min<std::int64_t>(
+        get("context_length"), std::numeric_limits<int>::max()));
+    // A hybrid's full-attention layers (Qwen3.5's, 3.8's): one in every
+    // `full_attention_interval`; its drafting blocks not among them.
+    const std::int64_t layers =
+        get("block_count") - get("nextn_predict_layers");
+    const std::int64_t every = get("full_attention_interval");
+    const std::int64_t full = every > 0 ? layers / every : layers;
+    const std::int64_t heads = get("attention.head_count");
+    const std::int64_t kv = get("attention.head_count_kv") > 0
+                                ? get("attention.head_count_kv") : heads;
+    const std::int64_t dim =
+        get("attention.key_length") > 0
+            ? get("attention.key_length")
+            : (heads > 0 ? get("embedding_length") / heads : 0);
+    const std::int64_t vdim = get("attention.value_length") > 0
+                                  ? get("attention.value_length") : dim;
+    c.kv_bytes = static_cast<std::uint64_t>(
+        std::max<std::int64_t>(0, full * kv * (dim + vdim) * 2));
+    return c;
+  }
+  return {};
+}
+
+}  // namespace
+
 LanguageContext
 language_context(const fs::path& dir)
 {
   std::ifstream in(dir / "config.json");
   const Json root = in ? Json::parse(in, nullptr, false) : Json();
   if (!root.is_object()) {
-    return {};
+    return gguf_context(dir);
   }
   const Json t = jget(root, "text_config", root);
   const auto get = [&](const char* k) {

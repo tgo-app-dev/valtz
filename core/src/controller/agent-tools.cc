@@ -870,7 +870,9 @@ shot_frames(const models::ModelEntry& m, double seconds)
   const int goff = std::max(1, jget(grid, "offset", 1));
   int frames = static_cast<int>(
       std::lround(std::clamp(seconds, 1.0, 10.0) * fps));
-  frames = std::min(frames, jget(vp, "max_frames", 241));
+  if (const int most = jget(vp, "max_frames", 0); most > 0) {
+    frames = std::min(frames, most);
+  }
   frames = frames <= goff
                ? goff
                : goff + (frames - goff + gstep - 1) / gstep * gstep;
@@ -7139,6 +7141,19 @@ Controller::AgentHost::t_generate_music(Session& s, Step& step,
   std::string lyrics = text_arg(args, "lyrics");
   if (!one_line(lyrics).empty() && lyrics.find('[') == std::string::npos) {
     lyrics = "[Verse]\n" + lyrics;
+  }
+  // Instrumental on a model that sings only to lyrics (MiniMax-Music3,
+  // catalog song.lyrics_required): its sections without words.
+  if (one_line(lyrics).empty()) {
+    for (const auto& a : _c.auto_models()) {
+      const auto* m = a.modality == "audio" && a.op == "generate"
+                          ? _c._catalog.find(a.chosen) : nullptr;
+      if (m && jget(jget(jget(m->engine, "vpipe", Json::object()), "song",
+                         Json::object()),
+                    "lyrics_required", false)) {
+        lyrics = "[Intro]\n[Instrumental]\n[Outro]";
+      }
+    }
   }
   Landing l;
   l.session = s.id;

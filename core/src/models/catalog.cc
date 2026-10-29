@@ -737,6 +737,14 @@ to_json(Json& j, const ModelEntry& e)
   if (const double s = jget(vp, "max_seconds", 0.0); s > 0) {
     j["max_seconds"] = s;
   }
+  // How a song model reads its prompt (engine.vpipe.song): MiniMax-
+  // Music3's description in lines, its lyrics needed, no score planned
+  // -- the card shows no Score row for it. Absent: YuE2's ways.
+  if (const Json sb = jget(vp, "song", Json()); sb.is_object()) {
+    j["song_caption"] = jget<std::string>(sb, "style", "tags") == "caption";
+    j["lyrics_required"] = jget(sb, "lyrics_required", false);
+    j["plans_score"] = jget(sb, "score", true);
+  }
   // A quantized variant of another model: the app lists the two as one
   // (Favor picks the file: Controller::weights_variant_).
   if (!e.quantize_from.empty()) {

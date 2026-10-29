@@ -3074,15 +3074,27 @@ final class AppModel {
     /// The prompt as a song's words -- its style, and its lyrics under
     /// section headers -- as the core reads them.
     var songWords: SongWords {
-        core?.songText(prompt) ?? .none
+        core?.songText(prompt,
+                       caption: runningModelInfo?.songCaption == true)
+            ?? .none
+    }
+
+    /// The song model plans a score before it sings (YuE2): the card's
+    /// Score row. MiniMax-Music3 plans none.
+    var songPlansScore: Bool {
+        runningModelInfo?.plansScore ?? true
     }
 
     /// What the song will sing, as the Lyrics row says it: "3 sections ·
     /// 12 lines", or that it has no words -- the music from the
-    /// description alone.
+    /// description alone, or, for a model that sings only to lyrics,
+    /// that it needs them.
     var songLyricsText: String {
         let w = songWords
         guard !w.lyrics.isEmpty else {
+            if runningModelInfo?.lyricsRequired == true {
+                return String(localized: "None yet: this model needs lyrics — for music alone, [Instrumental]")
+            }
             return String(localized: "None: the music from the description")
         }
         // Each counted in its own plural (the String Catalog's).
@@ -3520,12 +3532,16 @@ final class AppModel {
 
     /// Any layer but the last of a picture's -- layer 0 too, with a layer
     /// above it (core Controller::remove_layer) -- and any but a clip's
-    /// own.
+    /// own. A composition's ONLY layer goes too, a blank taking its place
+    /// (a timeline's last clip), unless it is blank already.
     func canRemoveLayer(_ id: String) -> Bool {
         guard let stack = stageStack,
               let layer = stack.layerStack.first(where: { $0.id == id }),
               !layer.locked else {
             return false
+        }
+        if stack.isComposition && stack.layerStack.count == 1 {
+            return !layer.isEmpty
         }
         if stack.isComposition && (stageFramed || stack.kind == "audio") {
             return stack.layerStack.count > 1
@@ -3543,8 +3559,13 @@ final class AppModel {
            stack.count > 1, stack[1].name.isEmpty {
             renameLayer(stack[1].id, stack[1].title)
         }
+        let only = stageStack?.layerStack.count == 1
         if selectedLayer == id { selectedLayer = "" }
         layerOp("remove", id)
+        // The only layer gone: the blank in its place is the one selected.
+        if only, let blank = stageStack?.layerStack.first {
+            selectedLayer = blank.id
+        }
         if keyedStage, let clip = stageStack {
             loadClipTracks(clip, layer: activeLayer)
             return
@@ -7460,6 +7481,13 @@ final class AppModel {
         return (f?.w ?? 0, f?.h ?? 0)
     }
 
+    /// The canvas as it is: its own frame, or the size it was given --
+    /// what Information › Canvas shows and Canvas Size's ×2 doubles.
+    func canvasSize(of a: AssetDTO) -> (width: Int, height: Int) {
+        if let c = a.canvas, c.resized { return (c.w, c.h) }
+        return ownFrame(of: a)
+    }
+
     /// Canvas Size, anchored (0, 0.5, 1 across and down).
     func setCanvas(_ a: AssetDTO, width: Int, height: Int,
                    anchorX: Double, anchorY: Double) {
@@ -10225,9 +10253,19 @@ final class AppModel {
         sessionPanelFolders = [:]
         // The prompt, with its inline media, and the prompt asset it was.
         prompt = ""
+        promptMarked = ""
         promptAssetId = nil
         promptName = nil
         promptAttachments = []
+        // The words each target kept (promptHistory) and the agent's last
+        // request were the project's that went: a target switched to in
+        // this one put them back, after Start Over too.
+        promptWordsBy = [:]
+        agentWordsSent = nil
+        // Its agent's session was that project's (stopped with it).
+        agent = nil
+        agentWriting = ""
+        agentFollows = true
         referenceThumbs = [:]
         promptMentions = []
         focusedReference = nil

@@ -135,6 +135,13 @@ struct CatalogModel: Decodable, Sendable, Identifiable {
     var maxFrames: Int?
     /// A sound's longest: the model decides a song's length, up to this.
     var maxSeconds: Double?
+    /// How a song model reads its prompt (catalog engine.vpipe.song):
+    /// its description in lines (MiniMax-Music3), whether it sings only
+    /// to lyrics, and whether it plans a score first (YuE2: nil, nil,
+    /// nil -- tags, lyrics or none, a score).
+    var songCaption: Bool?
+    var lyricsRequired: Bool?
+    var plansScore: Bool?
     /// How a continuation's prompt opens, as its model was trained
     /// ("[video continuation + audio reference]"); nil for one without.
     var continuation: String?

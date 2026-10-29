@@ -84,10 +84,7 @@ struct CanvasSection: View {
     }
 
     /// The canvas as it is: its own frame, or the size it was given.
-    private var size: (width: Int, height: Int) {
-        if let c = asset.canvas, c.resized { return (c.w, c.h) }
-        return model.ownFrame(of: asset)
-    }
+    private var size: (width: Int, height: Int) { model.canvasSize(of: asset) }
 
     /// The timeline's frames: as set, or its own -- a composition's
     /// length, a clip's frames.
@@ -132,7 +129,8 @@ struct CanvasSection: View {
 
 /// Canvas Size: a width and a height, and the ANCHOR -- which of nine
 /// points of the picture stays where it is while the canvas changes
-/// around it.
+/// around it. Own Size and ×2 apply at once: its own frame again, or
+/// twice the canvas as it is, about the anchor chosen.
 struct CanvasSizePopover: View {
     let size: (width: Int, height: Int)
     let own: (width: Int, height: Int)
@@ -162,7 +160,16 @@ struct CanvasSizePopover: View {
             }
             HStack {
                 Button("Own Size") { reset() }
-                    .help("Back to its own frame: \(own.width) × \(own.height)")
+                    .help("Back to its own frame: \(Self.pixels(own))")
+                Button {
+                    apply(size.width * 2, size.height * 2,
+                          Double(anchor.x) / 2, Double(anchor.y) / 2)
+                } label: {
+                    Text(verbatim: "×2")
+                }
+                .help("Twice the canvas: \(Self.pixels((size.width * 2, size.height * 2))), about the anchor")
+                .accessibilityLabel(Text("Twice the Size"))
+                .disabled(size.width <= 0 || size.height <= 0)
                 Spacer()
                 Button("Apply") {
                     guard let w = Int(width), let h = Int(height),
@@ -179,6 +186,11 @@ struct CanvasSizePopover: View {
             width = "\(size.width)"
             height = "\(size.height)"
         }
+    }
+
+    /// "2048 × 1536": pixels as text, never grouped ("2,048").
+    private static func pixels(_ s: (Int, Int)) -> String {
+        "\(s.0) × \(s.1)"
     }
 
     private func dimension(_ text: Binding<String>) -> some View {

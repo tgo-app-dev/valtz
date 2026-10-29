@@ -94,6 +94,19 @@ TEST(assist, a_song_s_style_and_lyrics)
   SongText w = split_song("[Verse]\nsing [softly] now\n[not a] header]");
   CHECK(w.sections == 1 && w.lines == 2);
   CHECK(split_song("").style.empty());
+  // A CAPTION model's style (MiniMax-Music3's): its lines kept, one under
+  // another, commas and all; the lyrics as ever.
+  const std::string cap =
+      "Global Metadata\nBasic Attributes: bpm is 96. Acoustic Pop,\n\n"
+      "Vocal Details\nVocal Gender & Timbre: Singer A (Female).\n\n"
+      "[Verse]\nMorning light\n\n[Instrumental]\n";
+  SongText m = split_song(cap, true);
+  CHECK(m.style == "Global Metadata\nBasic Attributes: bpm is 96. "
+                   "Acoustic Pop,\nVocal Details\nVocal Gender & Timbre: "
+                   "Singer A (Female).");
+  CHECK(m.lyrics == "[Verse]\nMorning light\n\n[Instrumental]");
+  CHECK(m.sections == 2 && m.lines == 1);
+  CHECK(split_song(cap).style.find('\n') == std::string::npos);
 }
 
 // A clip's references, named as its model names them, where they are
@@ -514,6 +527,12 @@ TEST(assist, yue2_s_song_writer)
   CHECK(keep_song_lyrics(polished, "a synthwave song") == polished);
   CHECK(keep_song_lyrics(polished, "synthwave\n\n[Intro]\n[Verse]") ==
         polished);
+  // A caption's lines stay lines as the lyrics are put back.
+  CHECK(keep_song_lyrics("Global Metadata\nBasic Attributes: bpm is 90.\n\n"
+                         "[Verse]\npolished",
+                         asked, true) ==
+        "Global Metadata\nBasic Attributes: bpm is 90.\n\n[Verse]\nneon "
+        "on the water\n\n[Chorus]\nstay, stay with me");
 }
 
 // A name made from a prompt written in Markdown (the Prompt Editor's):

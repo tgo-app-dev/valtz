@@ -343,12 +343,14 @@ TEST(models, auto_order_is_catalog_data)
          std::vector<std::string>{"minimax-h3-fl2va", "minimax-h3-ref2va"}));
   CHECK((c->auto_order("video", "edit") ==
          std::vector<std::string>{"minimax-h3-ref2va"}));
-  // Songs first; speech when nothing sings -- and, with a voice in the
-  // row (a sound's `edit`), speech alone: Drama 3 (the release, then its
-  // int4), then MOSS-TTS, the 8-bit pack first.
+  // Songs first -- YuE2, then MiniMax-Music3 (far slower) -- speech when
+  // nothing sings; and, with a voice in the row (a sound's `edit`),
+  // speech alone: Drama 3 (the release, then its int4), then MOSS-TTS,
+  // the 8-bit pack first.
   CHECK((c->auto_order("audio", "generate") ==
-         std::vector<std::string>{"yue2-3b", "drama-3", "drama-3-int4",
-                                  "moss-tts-v1.5-w8g64", "moss-tts-v1.5"}));
+         std::vector<std::string>{"yue2-3b", "minimax-music3", "drama-3",
+                                  "drama-3-int4", "moss-tts-v1.5-w8g64",
+                                  "moss-tts-v1.5"}));
   CHECK((c->auto_order("audio", "edit") ==
          std::vector<std::string>{"drama-3", "drama-3-int4",
                                   "moss-tts-v1.5-w8g64", "moss-tts-v1.5"}));
@@ -633,6 +635,54 @@ TEST(models, tuning_for_a_song)
   CHECK(listed);
   CHECK(feature_capabilities("audio-gen") ==
         std::vector<Capability>{Capability::TextToAudio});
+}
+
+// MiniMax-Music3: a song from a description (in lines) and lyrics -- both
+// needed -- no score planned, decoded by its own folder's vocoder. Its
+// flow matching runs the model's 30 steps at every preference: Fast holds
+// it as int8 Per Token, Med as int8 Fast (on matrix cores), Fine 16-bit.
+// No LoRAs, no checkpoints of one's own.
+TEST(models, minimax_music3_sings_a_caption_to_lyrics)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const ModelEntry* m = c->find("minimax-music3");
+  REQUIRE(m);
+  CHECK(m->role == "audio" && m->has(Capability::TextToAudio));
+  const Json vp = jget(m->engine, "vpipe", Json::object());
+  CHECK(jget<std::string>(vp, "decoder", "") == m->id);
+  const Json sb = jget(vp, "song", Json::object());
+  CHECK(jget<std::string>(sb, "style", "") == "caption");
+  CHECK(jget(sb, "lyrics_required", false) && !jget(sb, "score", true));
+  CHECK(jget(vp, "sample_rate", 0) == 44100);
+  for (const char* p : {"speed", "balanced", "quality"}) {
+    CHECK(preset_steps(*m, p, false, false) == 30);
+  }
+  TuningContext m5;
+  m5.matrix_cores = true;
+  Json fast = resolve_tuning(*m, m5, "speed", false);
+  CHECK(fast["i8_gemm"] == true && fast["i8_gemm_tier"] == "token");
+  Json med = resolve_tuning(*m, m5, "balanced", false);
+  CHECK(med["i8_gemm"] == true && med["i8_gemm_tier"] == "fast");
+  CHECK(resolve_tuning(*m, m5, "quality", false)["i8_gemm"] == false);
+  // Before M5: no int8 at all.
+  CHECK(resolve_tuning(*m, TuningContext{}, "speed", false)["i8_gemm"] ==
+        false);
+  CHECK(!fast.contains("loras") && !fast.contains("dits"));
+  std::vector<std::string> keys;
+  const Json opts = tuning_options(*m, m5, "speed", false);
+  for (const auto& o : opts["options"]) {
+    keys.push_back(o["key"].get<std::string>());
+  }
+  CHECK(std::ranges::find(keys, "i8_gemm_tier") != keys.end());
+  CHECK(std::ranges::find(keys, "loras") == keys.end());
+  // Auto's second song model, its family listed.
+  bool listed = false;
+  for (const auto& f : c->families()) {
+    listed = listed || (f.id == "minimax-music3" &&
+                        f.features == std::vector<std::string>{"audio-gen"});
+  }
+  CHECK(listed);
 }
 
 // One repo, two models: MiniMax-H3's partitions are installed apart.
@@ -2225,3 +2275,127 @@ TEST(models, a_helpers_context_is_its_own_as_memory_holds_it)
   CHECK(language_context(none).tokens == 0);
   CHECK(language_context(root / "missing").tokens == 0);
 }
+
+// A helper shipped as a GGUF, no config.json beside it (Ternary-Bonsai 2's
+// folder): its context and a token's K/V from the GGUF's header -- the
+// model's file, not its vision projector -- read past arrays, strings and
+// floats to the architecture's numbers.
+TEST(models, a_gguf_helpers_context_is_its_headers)
+{
+  namespace fs = std::filesystem;
+  const auto root = test::temp_dir("models-gguf");
+  struct Out {
+    std::string b;
+    void u32(std::uint32_t v) { b.append(reinterpret_cast<char*>(&v), 4); }
+    void u64(std::uint64_t v) { b.append(reinterpret_cast<char*>(&v), 8); }
+    void str(const std::string& s) { u64(s.size()); b += s; }
+    void key(const std::string& k, std::uint32_t type) { str(k); u32(type); }
+  };
+  auto write = [](const fs::path& f, const std::string& arch, bool full) {
+    Out o;
+    o.b = "GGUF";
+    o.u32(3);
+    o.u64(0);
+    o.u64(full ? 14 : 2);
+    o.key("general.architecture", 8);
+    o.str(arch);
+    o.key("general.sampling.temp", 6);
+    o.u32(0x3f800000);
+    if (full) {
+      o.key("general.size_label", 8);
+      o.str("27B");
+      o.key("qwen35.block_count", 4);
+      o.u32(64);
+      o.key("qwen35.context_length", 4);
+      o.u32(262144);
+      o.key("qwen35.attention.head_count", 4);
+      o.u32(24);
+      // An array of numbers, and one of strings, before the rest.
+      o.key("qwen35.rope.dimension_sections", 9);
+      o.u32(5);
+      o.u64(4);
+      for (int i = 0; i < 4; ++i) { o.u32(11); }
+      o.key("prism.hadamard.weight_names", 9);
+      o.u32(8);
+      o.u64(2);
+      o.str("output.weight");
+      o.str("blk.0.attn_qkv.weight");
+      o.key("prism.hadamard.gdn_v_grouped", 7);
+      o.b += '\x01';
+      o.key("qwen35.attention.head_count_kv", 4);
+      o.u32(4);
+      o.key("qwen35.attention.key_length", 4);
+      o.u32(256);
+      o.key("qwen35.attention.value_length", 4);
+      o.u32(256);
+      o.key("qwen35.full_attention_interval", 4);
+      o.u32(4);
+      o.key("tokenizer.ggml.model", 8);
+      o.str("gpt2");
+      o.key("qwen35.context_length", 4);  // past the tokenizer: unread
+      o.u32(7);
+    }
+    std::ofstream(f, std::ios::binary) << o.b;
+  };
+  const fs::path dir = root / "prism-ml" / "Ternary-Bonsai-2-27B-gguf";
+  fs::create_directories(dir);
+  // The projector sorts first; it is not the model.
+  write(dir / "A-mmproj-BF16.gguf", "clip", false);
+  write(dir / "Ternary-Bonsai-2-27B-PTQ1_0.gguf", "qwen35", true);
+  const LanguageContext c = language_context(dir);
+  CHECK(c.tokens == 262144);
+  // 16 full-attention layers of 64, 4 K/V heads, 256 wide keys and
+  // values, f16: 64 KB a token, as vpipe books Bonsai's K/V.
+  CHECK(c.kv_bytes == 65536);
+  CHECK(language_context(dir / "Ternary-Bonsai-2-27B-PTQ1_0.gguf").tokens ==
+        262144);
+  // Not a GGUF, nothing to read: none.
+  const fs::path bad = root / "bad";
+  fs::create_directories(bad);
+  std::ofstream(bad / "model.gguf") << "GGML not quite";
+  CHECK(language_context(bad).tokens == 0);
+}
+
+// Ternary-Bonsai 2 27B: a helper by name only (never Auto's), its PTQ1_0
+// packing fetched from a repo of two, checked by its files, run at f16
+// with no drafter, offered from 16 GB.
+TEST(models, ternary_bonsai_is_a_helper_by_name)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const ModelEntry* b = c->find("ternary-bonsai-2-27b");
+  REQUIRE(b);
+  CHECK(b->role == "assistant" && b->by_name);
+  CHECK(b->has(Capability::PromptEnhance));
+  CHECK(b->fetch_variant == "PTQ1_0");
+  CHECK(b->license == "apache-2.0");
+  const Json vp = jget(b->engine, "vpipe", Json::object());
+  CHECK(jget(vp, "mtp", true) == false);
+  CHECK(jget<std::string>(vp, "compute_dtype", "") == "f16");
+  CHECK(jget<std::string>(vp, "mtp_drafter", "").empty() &&
+        jget<std::string>(vp, "dflash_drafter", "").empty());
+  HardwareInfo air = box(16);
+  air.gpu_working_set_bytes = std::uint64_t{11} << 30;
+  CHECK(fits_as_assistant(*b, air));
+  // Installed alone on a 24 GB Mac: still not Auto's.
+  auto root = test::temp_dir("models-bonsai");
+  const auto dir = root / b->hf_path;
+  std::filesystem::create_directories(dir);
+  for (const char* f : {"Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+                        "Ternary-Bonsai-2-27B-mmproj-BF16.gguf"}) {
+    std::ofstream(dir / f) << "GGUF";
+  }
+  ModelStore store({root});
+  CHECK(store.info(*b).state == InstallState::Installed);
+  const ModelEntry* a = pick_assistant(*c, store, box(24));
+  CHECK(!a || a->id != b->id);
+  // Listed among the helpers.
+  bool listed = false;
+  for (const auto& f : c->families()) {
+    for (const auto& m : f.members) {
+      listed = listed || (f.id == "helpers" && m.model == b->id);
+    }
+  }
+  CHECK(listed);
+}
+

@@ -4978,6 +4978,13 @@ Controller::helper_params_(const models::ModelEntry& m) const
   // i8_prefill: Flash-Next's): a prefill of 1,024 rows or more, lossy as
   // a prefill may be; a decode step and a verify untouched.
   if (jget(vp, "i8_prefill", false)) { p["i8_prefill"] = true; }
+  // The dtype it computes in (catalog engine.vpipe.compute_dtype):
+  // Ternary-Bonsai's f16, which holds its f16 scales exactly -- 0.0007
+  // from the reference's fp32 against bf16's 0.011 (vpipe f34a6ce8).
+  if (const auto d = jget<std::string>(vp, "compute_dtype", "");
+      !d.empty()) {
+    p["compute_dtype"] = d;
+  }
   // The agent's model held within the agent's Memory (vpipe's
   // memory_limit_mb, DESIGN §15 0zzd): its expert cache what the limit
   // leaves, every use of it alike -- a model kept warm is handed over at
@@ -5253,7 +5260,8 @@ Controller::on_chat_event_(const engine::JobEvent& ev,
       }
       if (r.ok()) {
         if (!song.empty()) {
-          r->prompt = assist::keep_song_lyrics(r->prompt, song);
+          r->prompt = assist::keep_song_lyrics(
+              r->prompt, song, form.song_style == "caption");
         }
         r->prompt = form.apply(std::move(r->prompt));
         Json d = Json(*r);
@@ -5413,6 +5421,13 @@ Controller::enhance_prompt(EnhancePromptRequest req)
         "compiles it as scripts/compile_prompt.py does; what it makes is "
         "MOSS-Image's prompt.",
         form.canvas.first, form.canvas.second);
+  }
+  // A song's description in lines (MiniMax-Music3's caption).
+  if (m) {
+    form.song_style = jget<std::string>(
+        jget(jget(m->engine, "vpipe", Json::object()), "song",
+             Json::object()),
+        "style", "");
   }
   const int most = m ? max_pictures(*m) : 0;
   er.prompt = assist::tag_pictures(
@@ -6265,7 +6280,11 @@ Controller::generate_video(GenerateVideoRequest req)
   }
 
   // Recorded as made: edges up to the model's grid, the length up to one
-  // it makes (17n + 5 frames for H3), so the recipe says what ran.
+  // it makes (17n + 5 frames for H3), so the recipe says what ran. A
+  // length is the model's `max_frames` at most where it names one; H3
+  // names none -- trained on 15 s, it makes longer clips, TaoMate's
+  // stream without a bound -- so only memory (vpipe's preflight) limits
+  // it.
   const Json defaults = jget(vp, "defaults", Json::object());
   const int align = std::max(16, jget(vp, "align", 16));
   auto up = [align](int v) {
@@ -6279,7 +6298,9 @@ Controller::generate_video(GenerateVideoRequest req)
   const int step = std::max(1, jget(grid, "step", 1));
   const int offset = std::max(1, jget(grid, "offset", 1));
   int frames = req.frames > 0 ? req.frames : jget(defaults, "frames", 124);
-  frames = std::min(frames, jget(vp, "max_frames", 241));
+  if (const int most = jget(vp, "max_frames", 0); most > 0) {
+    frames = std::min(frames, most);
+  }
   frames = frames <= offset
                ? offset
                : offset + (frames - offset + step - 1) / step * step;
@@ -7245,7 +7266,23 @@ Controller::generate_audio(GenerateAudioRequest req)
                                  req.prompt_asset, req.prompt_name));
     return generate_speech_(req, *m, *p, words, pin);
   }
-  assist::SongText song = assist::split_song(words);
+  // Words first, then a model to sing them.
+  if (const assist::SongText any = assist::split_song(words);
+      any.style.empty() && any.lyrics.empty() &&
+      one_line(req.lyrics).empty()) {
+    return make_error(Code::InvalidArgument, msg::kPromptEmpty);
+  }
+  if (!m || !m->has(models::Capability::TextToAudio)) {
+    return make_error(Code::NotFound, msg::kNoAudioModel);
+  }
+  const Json vp = jget(m->engine, "vpipe", Json::object());
+  // How it reads a song (catalog engine.vpipe.song): YuE2 its style as
+  // tags, lyrics or none, a score planned first; MiniMax-Music3 a
+  // description in lines, lyrics always, no score.
+  const Json sb = jget(vp, "song", Json::object());
+  const bool caption = jget<std::string>(sb, "style", "tags") == "caption";
+  const bool plans = jget(sb, "score", true);
+  assist::SongText song = assist::split_song(words, caption);
   if (!req.lyrics.empty()) {
     // Lyrics given apart -- all of them sung, headers or not -- replace
     // any the prompt holds.
@@ -7254,18 +7291,22 @@ Controller::generate_audio(GenerateAudioRequest req)
   if (song.style.empty() && song.lyrics.empty()) {
     return make_error(Code::InvalidArgument, msg::kPromptEmpty);
   }
-  if (req.plan != "full" && req.plan != "melody" && req.plan != "off") {
+  if (jget(sb, "lyrics_required", false) && song.lyrics.empty()) {
+    return make_error(Code::InvalidArgument, msg::kSongNeedsLyrics,
+                      {{"model", m->name}});
+  }
+  if (plans && req.plan != "full" && req.plan != "melody" &&
+      req.plan != "off") {
     return make_error(Code::InvalidArgument, std::format(
         "plan '{}' is not full, melody or off", req.plan));
   }
-  if (!req.score.empty() && req.plan == "off") {
+  if (!req.score.empty() && (!plans || req.plan == "off")) {
     return make_error(Code::InvalidArgument,
-                      "a score to follow needs a plan: full or melody");
+                      plans ? "a score to follow needs a plan: full or "
+                              "melody"
+                            : std::format("{} follows no score",
+                                          m->name));
   }
-  if (!m || !m->has(models::Capability::TextToAudio)) {
-    return make_error(Code::NotFound, msg::kNoAudioModel);
-  }
-  const Json vp = jget(m->engine, "vpipe", Json::object());
   const auto* decoder = _catalog.find(jget<std::string>(vp, "decoder", ""));
   if (decoder && !coming_(*decoder)) {
     return make_error(Code::NotFound, msg::kModelNotInstalled,
@@ -7287,8 +7328,11 @@ Controller::generate_audio(GenerateAudioRequest req)
   r.params = {{"prompt", words},
               {"style", song.style},
               {"lyrics", song.lyrics},
-              {"cot", req.plan},
               {"seed", req.seed >= 0 ? req.seed : random_seed()}};
+  // The score it plans first: one that plans none records no plan.
+  if (plans) {
+    r.params["cot"] = req.plan;
+  }
   stamp_origin(r, *m);
   if (cap > 0) {
     r.params["max_seconds"] = cap;

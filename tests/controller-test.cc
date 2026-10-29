@@ -750,13 +750,19 @@ TEST(composition, layers_and_flatten)
   CHECK(b.layers(*comp)[2].name == "sky");
   // Never itself.
   CHECK(!ctl.set_layer_source(pid, *comp, "2", *comp).ok());
-  // Removed with its look; the last one stays.
+  // Removed with its look; the last one too, a blank in its place --
+  // which, alone and blank, stays.
   REQUIRE_OK(ctl.remove_layer(pid, *comp, "1"));
   for (const auto& m : b.p().asset(*comp)->modifiers) {
     CHECK(m.layer != "1");
   }
   REQUIRE_OK(ctl.remove_layer(pid, *comp, "2"));
-  CHECK(!ctl.remove_layer(pid, *comp, "").ok());
+  REQUIRE_OK(ctl.remove_layer(pid, *comp, ""));
+  const auto left = b.layers(*comp);
+  REQUIRE(left.size() == 1);
+  CHECK(!left[0].id.empty() && !left[0].source);
+  CHECK((b.p().asset(*comp)->canvas.frame() == media::PixelSize{16, 16}));
+  CHECK(!ctl.remove_layer(pid, *comp, left[0].id).ok());
 }
 
 // A still's PAGES (DESIGN §6a): drawn a page at a time -- each layer on
@@ -5155,7 +5161,11 @@ TEST(composition, the_project_canvas_is_its_own)
   CHECK((frame(view) == media::PixelSize{20, 20}));
   REQUIRE_OK(ctl.flatten(pid, view, flat));
   CHECK(pixel_at(flat, 8, 8)[0] > 200);
-  CHECK(!ctl.remove_layer(pid, view, *l1).ok());
+  // The only layer goes too: a blank in its place, the canvas staying.
+  REQUIRE_OK(ctl.remove_layer(pid, view, *l1));
+  REQUIRE(b.layers(view).size() == 1);
+  CHECK(!b.layers(view)[0].source);
+  CHECK((frame(view) == media::PixelSize{20, 20}));
   // A new take puts layer 0 back, at the bottom.
   REQUIRE_OK(ctl.place_in_project(pid, *green));
   v = b.p().asset(view);
@@ -7160,6 +7170,61 @@ TEST(composition, a_layer_is_made_a_track_separator)
 // what -- a recipe's op between its inputs and it, a layer between what it
 // shows and its composition, a flat copy's original as a note -- laid out
 // left to right; a LEAF is what remove_asset lets go.
+// A timeline's ONLY layer -- its last clip, a picture here -- goes as any
+// layer does (the Layers section, the timeline, the Atlas's cut), a blank
+// put in its place first: the timeline keeps its frame and a layer, and
+// what it showed is a leaf of the Atlas, removable. One command, undone
+// whole. A blank alone stays.
+TEST(composition, a_timelines_last_layer_goes_a_blank_in_its_place)
+{
+  Bench b("comp-last-layer");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 8, 8, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {64, 36}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  auto on = ctl.instantiate(pid, *red, *tl);
+  REQUIRE_OK(on);
+  const std::string clip = on->second;
+  for (const auto& l : b.layers(*tl)) {
+    if (l.id != clip) {
+      REQUIRE_OK(ctl.remove_layer(pid, *tl, l.id));
+    }
+  }
+  REQUIRE(b.layers(*tl).size() == 1);
+
+  REQUIRE_OK(ctl.remove_layer(pid, *tl, clip));
+  auto ls = b.layers(*tl);
+  REQUIRE(ls.size() == 1);
+  CHECK(!ls[0].source && ls[0].id != clip);
+  CHECK((b.p().asset(*tl)->canvas.frame() == media::PixelSize{64, 36}));
+  auto graph = ctl.atlas(pid);
+  REQUIRE_OK(graph);
+  bool leaf = false, into = false;
+  for (const auto& n : (*graph)["nodes"]) {
+    if (n["id"] == "a:" + red->str()) {
+      leaf = n.value("leaf", false);
+    }
+    into = into || n["id"] == "l:" + tl->str() + ":" + clip;
+  }
+  CHECK(leaf && !into);
+  // Alone and blank, it stays.
+  CHECK(!ctl.remove_layer(pid, *tl, ls[0].id).ok());
+
+  // Undone: the clip on its layer again, alone; redone: the blank.
+  REQUIRE_OK(ctl.undo(pid));
+  ls = b.layers(*tl);
+  REQUIRE(ls.size() == 1);
+  CHECK(ls[0].id == clip && ls[0].source == *red);
+  REQUIRE_OK(ctl.redo(pid));
+  ls = b.layers(*tl);
+  REQUIRE(ls.size() == 1);
+  CHECK(!ls[0].source);
+}
+
 TEST(composition, the_atlas_lays_out_what_each_asset_is_made_from)
 {
   Bench b("comp-atlas");
@@ -9440,6 +9505,75 @@ TEST(controller, ref2va_alone_makes_a_clip_from_words)
   REQUIRE_OK(both);
   CHECK(pick(**both, "generate") == "minimax-h3-fl2va");
   CHECK(pick(**both, "edit") == "minimax-h3-ref2va");
+}
+
+// A clip is as long as it is asked to be: MiniMax H3 names no
+// `max_frames` (trained on 15 s, it makes longer, TaoMate's stream
+// without a bound), so 30 s and a minute are made whole -- up to the
+// next 17n + 5 frames -- where 362 frames were the most.
+TEST(controller, a_clip_is_as_long_as_asked)
+{
+  auto root = test::temp_dir("clip-long");
+  auto install = [&](const char* f) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  };
+  install("MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors");
+  install("MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors");
+  install("lightx2v/Minimax-h3-Turbo/"
+          "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors");
+  install("lightx2v/Minimax-h3-Turbo/"
+          "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  for (const char* id : {"minimax-h3-fl2va", "minimax-h3-ref2va"}) {
+    const auto* m = ctl.catalog().find(id);
+    REQUIRE(m != nullptr);
+    Json j;
+    models::to_json(j, *m);
+    CHECK(jget(j, "max_frames", -1) == 0);  // the app's: no cap
+  }
+  auto pid = ctl.create_project(root / "L.valtz", "long");
+  REQUIRE_OK(pid);
+  std::size_t seen = 0;
+  auto made_frames = [&](const char* model, int frames) {
+    GenerateVideoRequest req;
+    req.project = *pid;
+    req.model = model;
+    req.prompt = "A fox trots through snow from dawn to dusk.";
+    req.width = 832;
+    req.height = 480;
+    req.frames = frames;
+    if (!ctl.generate_video(req).ok()) {
+      return -1;
+    }
+    ++seen;
+    if (!eventually([&] {
+          return engine->held_of(engine::kOpGenerateVideo).size() == seen;
+        }, 10)) {
+      return -2;
+    }
+    const auto* spec =
+        engine->spec(engine->held_of(engine::kOpGenerateVideo).back());
+    return spec ? jget(spec->params, "frames", 0) : -3;
+  };
+  CHECK(made_frames("minimax-h3-fl2va", 362) == 362);
+  CHECK(made_frames("minimax-h3-fl2va", 30 * 24) == 736);   // 5 + 43 x 17
+  CHECK(made_frames("minimax-h3-ref2va", 60 * 24) == 1450);  // 5 + 85 x 17
 }
 
 // A continuation's GUIDE (continuation_guide): the clip's last seconds,
@@ -12512,6 +12646,136 @@ TEST(controller, an_enhances_speed_comes_with_it)
   CHECK(stats.contains("turn_ms"));
   CHECK(!stats.contains("first_ms"));   // no words were streamed
 }
+
+// MINIMAX-MUSIC3 (DESIGN §4d): a song from a description in lines and
+// lyrics -- none, refused by name -- no score planned or followed,
+// decoded by its own folder. Enhance writes it with Valtz's Music3 guide,
+// the description's lines kept when the person's lyrics are put back.
+TEST(controller, minimax_music3_sings_a_description_to_lyrics)
+{
+  auto root = test::temp_dir("ctl-music3");
+  auto install = [&](const char* dir) {
+    fs::create_directories(root / "models" / dir);
+    std::ofstream(root / "models" / dir / "config.json") << "{}";
+    std::ofstream(root / "models" / dir / "model.safetensors") << "w";
+  };
+  install("MiniMaxAI/MiniMax-Music3");
+  install("mlx-community/Qwen3.5-9B-OptiQ-4bit");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "M.valtz", "music3");
+  REQUIRE_OK(pid);
+
+  GenerateAudioRequest req;
+  req.project = *pid;
+  req.model = "minimax-music3";
+  req.prompt = "Global Metadata\nBasic Attributes: bpm is 96. Acoustic Pop.";
+  auto none = ctl.generate_audio(req);
+  REQUIRE(!none.ok());
+  CHECK(none.error().key == msg::kSongNeedsLyrics.key);
+  req.prompt += "\n\n[Verse]\nMorning light filtering through the pine";
+  req.score = "X:1\nK:C\n";
+  CHECK(!ctl.generate_audio(req).ok());
+  req.score.clear();
+  auto job = ctl.generate_audio(req);
+  REQUIRE_OK(job);
+  const auto held = engine->held_of(engine::kOpGenerateAudio);
+  REQUIRE(held.size() == 1);
+  const engine::JobSpec* spec = engine->spec(held[0]);
+  REQUIRE(spec);
+  CHECK(jget<std::string>(spec->params, "style", "") ==
+        "Global Metadata\nBasic Attributes: bpm is 96. Acoustic Pop.");
+  CHECK(jget<std::string>(spec->params, "lyrics", "") ==
+        "[Verse]\nMorning light filtering through the pine");
+  CHECK(!spec->params.contains("cot"));
+  CHECK(jget<std::string>(spec->params, "decoder", "") == "minimax-music3");
+  CHECK(spec->model.vae == spec->model.dir);
+
+  // Its own song writer; the person's lyrics put back under its lines.
+  EnhancePromptRequest er;
+  er.target = "audio";
+  er.model = "minimax-music3";
+  er.prompt = "a warm acoustic song\n\n[Verse]\nmy own words here";
+  auto ej = ctl.enhance_prompt(er);
+  REQUIRE_OK(ej);
+  const auto chats = engine->held_of(engine::kOpChat);
+  REQUIRE(chats.size() == 1);
+  CHECK(jget<std::string>(engine->spec(chats[0])->params, "text", "")
+            .find("Global Emotional Progression") != std::string::npos);
+  engine->turn(chats[0],
+               {{"text", R"({"style": "Global Metadata\nBasic Attributes: )"
+                         R"(bpm is 90.\nArrangement\nPrimary: guitar.", )"
+                         R"("lyrics": "[Verse]\nnot my words"})"}});
+  std::string prompt;
+  for (int i = 0; i < 50 && prompt.empty(); ++i) {
+    Event ev;
+    if (ctl.events().wait(ev, 100) && ev.job == *ej &&
+        ev.kind == "assist.enhanced") {
+      prompt = jget<std::string>(ev.data, "prompt", "");
+    }
+  }
+  CHECK(prompt == "Global Metadata\nBasic Attributes: bpm is 90.\n"
+                  "Arrangement\nPrimary: guitar.\n\n[Verse]\nmy own words "
+                  "here");
+}
+
+// TERNARY-BONSAI 2 as the helper (chosen by name): its chat at f16 --
+// its scales' own -- with no drafter, whatever Settings' Drafter says.
+TEST(controller, ternary_bonsai_helps_at_f16_without_a_drafter)
+{
+  auto root = test::temp_dir("ctl-bonsai");
+  const fs::path dir =
+      root / "models" / "prism-ml" / "Ternary-Bonsai-2-27B-gguf";
+  fs::create_directories(dir);
+  for (const char* f : {"Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+                        "Ternary-Bonsai-2-27B-mmproj-BF16.gguf"}) {
+    std::ofstream(dir / f) << "GGUF";
+  }
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  REQUIRE_OK(ctl.choose_assistant("ternary-bonsai-2-27b"));
+  REQUIRE_OK(ctl.set_assistant_drafter("dflash", 4));
+  CHECK(jget<std::string>(ctl.assistants(), "using", "") ==
+        "ternary-bonsai-2-27b");
+  EnhancePromptRequest req;
+  req.prompt = "a fox in snow";
+  REQUIRE_OK(ctl.enhance_prompt(req));
+  const auto chats = engine->held_of(engine::kOpChat);
+  REQUIRE(chats.size() == 1);
+  const Json p = engine->spec(chats[0])->params;
+  CHECK(jget<std::string>(p, "compute_dtype", "") == "f16");
+  CHECK(jget(p, "mtp", true) == false);
+  CHECK(!p.contains("mtp_model") && !p.contains("draft_model"));
+  CHECK(jget(jget(p, "sampling", Json::object()), "temperature", 0.0) ==
+        0.7);
+}
+
 
 // THE FOLDERS PUT ELSEWHERE (Settings › General › Storage; base/paths.h):
 // the models KEPT where they are -- still found, downloads going to the

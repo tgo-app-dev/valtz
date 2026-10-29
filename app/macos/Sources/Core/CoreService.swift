@@ -548,9 +548,10 @@ final class CoreService: @unchecked Sendable {
 
     /// The prompt as a song's words, as generate_audio reads it: its
     /// style, and its lyrics under section headers (core
-    /// assist::split_song).
-    func songText(_ text: String) -> SongWords {
-        let req: [String: Any] = ["text": text]
+    /// assist::split_song) -- the style kept in its lines for a model
+    /// that reads a description so (`caption`: MiniMax-Music3).
+    func songText(_ text: String, caption: Bool = false) -> SongWords {
+        let req: [String: Any] = ["text": text, "caption": caption]
         guard let d = try? JSONSerialization.data(withJSONObject: req),
               let s = String(data: d, encoding: .utf8) else { return .none }
         let r = reply(core.song_text(std.string(s)))

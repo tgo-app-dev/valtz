@@ -18,6 +18,7 @@ extern const char kQwenImageEditSkill[];
 extern const char kFlux3KleinT2iSkill[];
 extern const char kFlux3KleinEditSkill[];
 extern const char kYue2SongSkill[];
+extern const char kMinimaxMusic3Skill[];
 extern const char kMossTtsSkill[];
 extern const char kDrama3Skill[];
 extern const char kDrama3Guide[];
@@ -67,6 +68,9 @@ rewrite_prompt(std::string_view name)
   }
   if (name == "yue2-song") {
     return resources::kYue2SongSkill;
+  }
+  if (name == "minimax-music3") {
+    return resources::kMinimaxMusic3Skill;
   }
   if (name == "moss-tts") {
     return resources::kMossTtsSkill;

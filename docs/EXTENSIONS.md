@@ -195,7 +195,7 @@ built-in models use:
 | shape | what it builds | parameters |
 |---|---|---|
 | `diffusion-image` | text to image and image edit: model-select → text-prompt → diffusion-conditioner → generate-image → vae-decode → save-image | `config_stage` (your family's model-config stage), `scheduler`, `defaults` (`width`, `height`, `steps`), `align`, `edit` (`max_references`, `reference_area`, `reference_to_conditioner`, `defaults`, `config`), `negative` (`"conditioner"`: its conditioner's second output is the CFG's negative, wired to generate-image's), `config_shift` (the schedule's shift is your config stage's `shift`; this its default) |
-| `minimax-h3` | a clip with its soundtrack, optionally from references (MiniMax H3's contract) | `config_stage`, `config`, `generate`, `defaults` (`fps`, `frames`, `steps`), `frame_grid`, `max_frames`, `references` |
+| `minimax-h3` | a clip with its soundtrack, optionally from references (MiniMax H3's contract) | `config_stage`, `config`, `generate`, `defaults` (`fps`, `frames`, `steps`), `frame_grid`, `max_frames` (the longest clip; none: any length), `references` |
 | `yue2` | a song from a style and lyrics | `decoder`, `defaults`, `max_seconds`, `sample_rate` |
 | `chat` | the assistant (text-chat) | |
 

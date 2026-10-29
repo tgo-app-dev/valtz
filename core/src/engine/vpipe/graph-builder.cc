@@ -1402,7 +1402,10 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
 }
 
 // vpipe's YuE2 graphs, with the song written as a WAV and its score read
-// back in memory:
+// back in memory -- and MiniMax-Music3's (minimax-music3-text-to-music),
+// the same shape: its description the style, its lyrics the beat, its
+// vocoder the model's own folder (catalog `decoder`: itself), no score
+// planned, so the score sink hears nothing:
 //
 //   [text-prompt (the lyrics)] -0-> generate-audio
 //   generate-audio -0-> audio-vae-decode (the decoder) -> save-audio (WAV)
@@ -1426,14 +1429,22 @@ build_audio(const JobSpec& job)
                       "a song needs a style or lyrics");
   }
   const Json defaults = jget(vp, "defaults", Json::object());
+  // A model that plans no score (MiniMax-Music3: catalog song.score
+  // false) is given no plan; YuE2's is its `cot`.
+  const Json sb = jget(vp, "song", Json::object());
+  const bool plans = jget(sb, "score", true);
+  if (jget(sb, "lyrics_required", false) && lyrics.empty()) {
+    return make_error(Code::InvalidArgument, std::format(
+        "{} needs lyrics", job.model.id));
+  }
   const std::string cot = jget<std::string>(
       job.params, "cot", jget<std::string>(defaults, "cot", "full"));
-  if (cot != "full" && cot != "melody" && cot != "off") {
+  if (plans && cot != "full" && cot != "melody" && cot != "off") {
     return make_error(Code::InvalidArgument, std::format(
         "'{}' is not a score plan (full, melody or off)", cot));
   }
   const std::string abc = jget<std::string>(job.params, "abc", "");
-  if (!abc.empty() && cot == "off") {
+  if (!abc.empty() && (!plans || cot == "off")) {
     return make_error(Code::InvalidArgument,
                       "a score to follow needs a plan (full or melody)");
   }
@@ -1454,10 +1465,12 @@ build_audio(const JobSpec& job)
   }
   Json gen_cfg = {{"hf_dir", job.model.dir.string()},
                   {"style", style},
-                  {"cot", cot},
                   {"seed", jget<std::int64_t>(job.params, "seed", 0)},
                   {"ode_steps", jget(job.params, "steps",
                                      jget(defaults, "steps", 32))}};
+  if (plans) {
+    gen_cfg["cot"] = cot;
+  }
   if (!abc.empty()) {
     gen_cfg["abc"] = abc;
   }
@@ -1834,6 +1847,12 @@ helper_chat_config(const JobSpec& job)
   if (const auto mb = jget<std::int64_t>(job.params, "expert_cache_mb", 0);
       mb > 0) {
     chat_cfg["expert_cache_mb"] = mb;
+  }
+  // The dtype it computes in where the model wants one (Ternary-Bonsai's
+  // f16, its scales' own); else vpipe's bf16.
+  if (const auto d = jget<std::string>(job.params, "compute_dtype", "");
+      !d.empty()) {
+    chat_cfg["compute_dtype"] = d;
   }
   // A drafter shipped apart from the model (its conversion dropped the
   // head): vpipe's text-chat loads it beside the model.
@@ -2781,6 +2800,10 @@ build_summarize_video(const JobSpec& job, media::PixelSize size)
   if (const auto mb = jget<std::int64_t>(job.params, "expert_cache_mb", 0);
       mb > 0) {
     cfg[ex::kSummaryExpertCacheMb] = mb;
+  }
+  if (const auto d = jget<std::string>(job.params, "compute_dtype", "");
+      !d.empty()) {
+    cfg[ex::kSummaryComputeDtype] = d;
   }
   // A scene's frames at most: ~180 tokens each at 576 x 320, so 24 keep a
   // prefill near 4,500 -- at one every two seconds 48 s of a shot, at

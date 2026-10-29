@@ -118,8 +118,10 @@ std::string size_text(std::uint64_t bytes);
 // tokens it holds (`max_position_embeddings`; its `text_config`'s for a
 // model that also sees -- Qwen3.5's and Qwen3.8's 262,144) and a token's
 // K/V (its full-attention layers' keys and values in f16: 64 KB for
-// Qwen3.8 27B's 16 of 64 layers, 32 KB for Qwen3.5 9B's 8 of 32). 0
-// where it says none.
+// Qwen3.8 27B's 16 of 64 layers, 32 KB for Qwen3.5 9B's 8 of 32). A
+// folder of a GGUF and no config.json (Ternary-Bonsai 2's) is told by the
+// GGUF's header: its `<arch>.context_length`, block count, full-attention
+// interval, K/V heads and key / value widths. 0 where it says none.
 struct LanguageContext {
   int           tokens = 0;
   std::uint64_t kv_bytes = 0;

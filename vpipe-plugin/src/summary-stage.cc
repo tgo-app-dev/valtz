@@ -121,6 +121,9 @@ const ConfigKey kAttrs[] = {
   {.key = ex::kSummaryExpertCacheMb, .type = ConfigType::Int,
    .doc = "its experts' cache, MB, at most (0: the model's own sizing)",
    .def_int = 0},
+  {.key = ex::kSummaryComputeDtype, .type = ConfigType::String,
+   .doc = "the dtype it computes in, as the chat's: bf16 | f16",
+   .def_str = "bf16"},
   {.key = ex::kSummaryScenePrompt, .type = ConfigType::Text,
    .doc = "said after a scene's frames; {start} {end} {every} {language}",
    .def_str = kScenePrompt},
@@ -225,6 +228,10 @@ public:
         0, attr_int(ex::kSummaryMemoryLimitMb));
     _expert_cache_mb = std::max<std::int64_t>(
         0, attr_int(ex::kSummaryExpertCacheMb));
+    _compute_dtype = attr_str(ex::kSummaryComputeDtype);
+    if (_compute_dtype.empty()) {
+      _compute_dtype = "bf16";
+    }
     _scene_prompt = attr_str(ex::kSummaryScenePrompt);
     _overall_prompt = attr_str(ex::kSummaryOverallPrompt);
     _language = attr_str(ex::kSummaryLanguage);
@@ -292,7 +299,7 @@ public:
     // so one kept warm by either is handed to the other.
     genai::LoadSpec spec;
     spec.hf_dir = vpipe::resolve_model_dir(session(), _hf_dir);
-    spec.compute_dtype = "bf16";
+    spec.compute_dtype = _compute_dtype;
     spec.page_tokens = _page_tokens;
     spec.max_pages = static_cast<std::uint32_t>(_max_pages);
     if (!_mtp_model.empty()) {
@@ -538,6 +545,7 @@ private:
   bool        _wire = true;
   std::int64_t _memory_limit_mb = 0;
   std::int64_t _expert_cache_mb = 0;
+  std::string _compute_dtype = "bf16";
   std::string _scene_prompt;
   std::string _overall_prompt;
   std::string _language;

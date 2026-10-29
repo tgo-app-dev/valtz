@@ -163,7 +163,7 @@ struct SimpleView: View {
                     }
                     if !immersive, model.activeModality == .agent,
                        let a = model.agent, !model.suggesting {
-                        AgentCard(model: model, session: a)
+                        AgentCard(model: model, shown: a)
                             .frame(maxWidth: Self.columnWidth)
                             .padding(.bottom, 14)
                             .transition(.move(edge: .bottom)

@@ -111,9 +111,10 @@ inline constexpr char kSummaryType[] = "valtz-video-summary";
 // chat, so a model kept warm by one is handed to the other), how long it
 // stays loaded after (s), its buffers wired as they load, the most it may
 // hold (MB, 0 none: vpipe's load_spec::kMemoryLimitMb -- the agent's
-// Memory, where it is the agent's model) and its experts' cache (MB, 0
+// Memory, where it is the agent's model), its experts' cache (MB, 0
 // the model's own sizing: load_spec::kExpertCacheMb -- the agent's Expert
-// Cache).
+// Cache) and the dtype it computes in (bf16; Ternary-Bonsai's f16, its
+// scales' own: the catalog's engine.vpipe.compute_dtype).
 inline constexpr char kSummaryModel[] = "hf_dir";
 inline constexpr char kSummaryMtpModel[] = "mtp_model";
 inline constexpr char kSummaryDraftModel[] = "draft_model";
@@ -122,6 +123,7 @@ inline constexpr char kSummaryKeepLoaded[] = "keep_loaded";
 inline constexpr char kSummaryWireWeights[] = "wire_weights";
 inline constexpr char kSummaryMemoryLimitMb[] = "memory_limit_mb";
 inline constexpr char kSummaryExpertCacheMb[] = "expert_cache_mb";
+inline constexpr char kSummaryComputeDtype[] = "compute_dtype";
 // The K/V pages, as the chat sizes them (the cache key: shared only
 // alike).
 inline constexpr char kSummaryPageTokens[] = "page_tokens";

@@ -684,6 +684,29 @@ TEST(graph_builder, a_video_summary_reads_sparse)
   CHECK(jget<std::string>(cfg, ex::kSummaryOverallPrompt, "")
             .find("{scenes}") != std::string::npos);
   CHECK(jget(config_of(smp), "top_k", 0) == 20);
+  // bf16 unless the helper computes in another (Ternary-Bonsai's f16),
+  // as its chat does: one model warm for both.
+  CHECK(!cfg.contains(ex::kSummaryComputeDtype));
+  {
+    JobSpec f16 = job;
+    f16.params["compute_dtype"] = "f16";
+    auto fg = vp::build_summarize_video(f16, {544, 320});
+    REQUIRE_OK(fg);
+    CHECK(jget<std::string>(config_of(find_stage(fg->spec, "summary")),
+                            ex::kSummaryComputeDtype, "") == "f16");
+    JobSpec chat = f16;
+    chat.op = std::string(kOpChat);
+    chat.params["text"] = "a fox";
+    auto cg = vp::build_chat(chat);
+    REQUIRE_OK(cg);
+    CHECK(jget<std::string>(config_of(find_stage(cg->spec, "text-chat")),
+                            "compute_dtype", "") == "f16");
+    chat.params.erase("compute_dtype");
+    cg = vp::build_chat(chat);
+    REQUIRE_OK(cg);
+    CHECK(!config_of(find_stage(cg->spec, "text-chat"))
+               .contains("compute_dtype"));
+  }
   // Its pages as the helper's chat has them: one model warm for both --
   // the model's whole context (its config's, the job's), 16 tokens a
   // page; 65,536 tokens where it says none.
@@ -1536,6 +1559,50 @@ TEST(graph_builder, yue2_text_to_music_and_song_from_lyrics)
   CHECK(!vp::build_audio(j).ok());
 }
 
+// MiniMax-Music3, in the shape of vpipe's minimax-music3-text-to-music:
+// its description the style, its lyrics the beat (always: none, no graph),
+// no score planned (no cot, no abc), its own folder's vocoder, the int8
+// tier its flow matching takes (accurate left out, as elsewhere).
+TEST(graph_builder, minimax_music3_sings_a_description_to_lyrics)
+{
+  JobSpec j = job_for("minimax-music3", kOpGenerateAudio);
+  const std::string caption =
+      "Global Metadata\nBasic Attributes: bpm is 96. Acoustic Pop.";
+  j.params = {{"style", caption},
+              {"lyrics", "[verse]\nMorning light"},
+              {"seed", 7}, {"steps", 30},
+              {"tuning", {{"i8_gemm", true}, {"i8_gemm_tier", "token"},
+                          {"sage_attn", true}}}};
+  j.model.vae = j.model.dir;
+  auto g = vp::build_audio(j);
+  REQUIRE_OK(g);
+  const Json* gen = find_stage(g->spec, "generate-audio");
+  REQUIRE(gen);
+  CHECK(src_of(gen, 0) == "lyrics");
+  const Json gc = config_of(gen);
+  CHECK(jget<std::string>(gc, "style", "") == caption);
+  CHECK(!gc.contains("cot") && !gc.contains("abc"));
+  CHECK(jget(gc, "ode_steps", 0) == 30);
+  CHECK(jget(gc, "i8_gemm", false));
+  CHECK(jget<std::string>(gc, "i8_gemm_tier", "") == "token");
+  CHECK(!gc.contains("sage_attn"));  // not its stage's
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "audio-vae-decode")),
+                          "hf_dir", "") ==
+        jget<std::string>(gc, "hf_dir", ""));
+  j.params["tuning"]["i8_gemm_tier"] = "accurate";
+  auto a = vp::build_audio(j);
+  REQUIRE_OK(a);
+  CHECK(!config_of(find_stage(a->spec, "generate-audio"))
+             .contains("i8_gemm_tier"));
+  // No lyrics, no song; no score to follow.
+  j.params["lyrics"] = "";
+  CHECK(!vp::build_audio(j).ok());
+  j.params["lyrics"] = "[instrumental]";
+  CHECK(vp::build_audio(j).ok());
+  j.params["abc"] = "X:1\nK:C\n";
+  CHECK(!vp::build_audio(j).ok());
+}
+
 // SPEECH, in the shape of vpipe's moss-tts-v1.5-speak graph: the words a
 // prompt beat, the fields the stage's config, one-shot into a WAV, MOSS's
 // own sampling seeded; a voice read from its file by vpipe's stages, mono
@@ -1787,7 +1854,8 @@ TEST(graph_builder, chat_decodes_with_the_mtp_head)
   CHECK(!config_of(chat).contains("mtp_model"));
   CHECK(find_stage(g->spec, "sampler") == nullptr);
   // Every catalog assistant samples as its card recommends without
-  // thinking -- a Qwen as Qwen's, DeepSeek V4.1 as DeepSeek's -- and the
+  // thinking -- a Qwen as Qwen's (Ternary-Bonsai 2, a Qwen3.8, as its
+  // card's Instruct mode: Qwen's), DeepSeek V4.1 as DeepSeek's -- and the
   // job carries it to the graph.
   int qwen = 0, deepseek = 0;
   for (const auto* m : cat->serving(models::Capability::PromptEnhance)) {
@@ -1804,7 +1872,8 @@ TEST(graph_builder, chat_decodes_with_the_mtp_head)
       ++deepseek;
       continue;
     }
-    CHECK(m->family.rfind("qwen", 0) == 0);
+    CHECK((m->family.rfind("qwen", 0) == 0 ||
+           m->family == "ternary-bonsai"));
     CHECK(jget(smp, "temperature", 0.0) == 0.7);
     CHECK(jget(smp, "top_p", 0.0) == 0.8);
     CHECK(jget(smp, "top_k", 0) == 20);

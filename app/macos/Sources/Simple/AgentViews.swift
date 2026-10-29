@@ -6,7 +6,15 @@ import SwiftUI
 /// shows all of it (AgentPane).
 struct AgentCard: View {
     @Bindable var model: AppModel
-    let session: AgentSession
+    /// The session as the card was made with it: shown only while the
+    /// card goes (the model's let go).
+    let shown: AgentSession
+
+    /// The session as the model has it now. A copy handed down is the
+    /// parent's as it last drew, and the parent does not always draw
+    /// again when the session changes: the header read "Stopped" off the
+    /// model beside an older copy's Pause and Stop (2026-10-29).
+    var session: AgentSession { model.agent ?? shown }
 
     /// The rows the agent's output has: what it says and the step it is
     /// on, however long, scroll within them.
@@ -16,7 +24,7 @@ struct AgentCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            AgentHeader(model: model, session: session)
+            AgentHeader(model: model, shown: session)
             AgentHoldNote(model: model)
             // What it is doing -- its words as they come, the step it is on
             // with what it was asked, an error, a question -- in rows of
@@ -98,7 +106,10 @@ extension AgentCard {
 /// The session's state, where its model thinks, and its controls.
 struct AgentHeader: View {
     @Bindable var model: AppModel
-    let session: AgentSession
+    let shown: AgentSession
+
+    /// The model's, as its state label reads it (AgentCard.session).
+    var session: AgentSession { model.agent ?? shown }
 
     var body: some View {
         HStack(spacing: 8) {
@@ -266,11 +277,14 @@ struct AgentSpeedText: View {
 /// words being written last.
 struct AgentPane: View {
     @Bindable var model: AppModel
-    let session: AgentSession
+    let shown: AgentSession
+
+    /// The model's (AgentCard.session).
+    var session: AgentSession { model.agent ?? shown }
 
     var body: some View {
         VStack(spacing: 0) {
-            AgentHeader(model: model, session: session)
+            AgentHeader(model: model, shown: session)
                 .padding(.leading, PromptEditor.inset.width + 5)
                 .padding(.trailing, 12)
                 .frame(height: PaneHeader.height)

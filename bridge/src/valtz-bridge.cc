@@ -1781,7 +1781,8 @@ Core::song_text(const std::string& request_json) const
     }
     const auto words = assist::tag_pictures(
         jget<std::string>(*j, "text", ""), {}, "");
-    const auto s = assist::split_song(words);
+    const auto s = assist::split_song(words,
+                                      jget(*j, "caption", false));
     return ok({{"style", s.style}, {"lyrics", s.lyrics},
                {"sections", s.sections}, {"lines", s.lines}});
   });

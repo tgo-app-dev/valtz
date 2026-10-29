@@ -1025,8 +1025,28 @@ Controller::remove_layer(ProjectId pid, AssetId aid,
   if (it == ls.end()) {
     return make_error(Code::InvalidArgument, "no such layer to remove");
   }
+  // The ONLY layer goes too -- a timeline's last clip, from the Layers
+  // section, the timeline or the Atlas -- a blank one put in its place
+  // first, so the composition keeps a layer for what comes next. Its
+  // frame stays: one from before, which that layer set, is framed where
+  // it is. An only layer already blank stays.
   if (ls.size() < 2) {
-    return make_error(Code::InvalidArgument, msg::kRemoveLastLayer);
+    if (!it->source) {
+      return make_error(Code::InvalidArgument, msg::kRemoveLastLayer);
+    }
+    if (!a.canvas.framed() && a.kind != AssetKind::Audio) {
+      VALTZ_ASSIGN(media::PixelSize own, own_frame_(*p, a, 0));
+      if (own.width <= 0 || own.height <= 0) {
+        return make_error(Code::InvalidArgument, msg::kRemoveLastLayer);
+      }
+      a.canvas.frame_w = own.width;
+      a.canvas.frame_h = own.height;
+      VALTZ_TRY(p->set_canvas(aid, a.canvas));
+    }
+    project::Layer blank;
+    blank.id = next_layer_id(ls);
+    ls.push_back(std::move(blank));
+    it = find_layer(ls, layer);
   }
   // On a frame of its own any layer goes, and the frame stays; a stack
   // from before has its bottom one set the frame.

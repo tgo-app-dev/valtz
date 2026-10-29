@@ -95,7 +95,7 @@ inline constexpr Message kMergeOnClip{
     "A clip's layers cannot be merged: they change over time."};
 inline constexpr Message kRemoveLastLayer{
     "core.remove_last_layer",
-    "The last layer stays: a picture has at least one."};
+    "The only layer is empty already: a composition keeps one."};
 inline constexpr Message kRemoveClipOwn{
     "core.remove_clip_own",
     "A clip's own layer stays at the bottom: hide it instead."};
@@ -381,6 +381,12 @@ inline constexpr Message kNoVideoModel{
     "core.no_video_model", "No video model is installed."};
 inline constexpr Message kNoAudioModel{
     "core.no_audio_model", "No audio model is installed."};
+inline constexpr Message kSongNeedsLyrics{
+    "core.song_needs_lyrics",
+    "{model} sings lyrics, and this prompt has none: write them after "
+    "the description, under [Verse] and [Chorus] headers -- for music "
+    "without words, the headers alone ([Intro], [Instrumental], "
+    "[Outro])."};
 inline constexpr Message kNoSpeechModel{
     "core.no_speech_model",
     "No speech model is ready: Drama 3, or MOSS-TTS and its audio "

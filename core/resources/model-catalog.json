@@ -25,7 +25,15 @@
     "engine.vpipe.sampling (an assistant): the token sampler its chat",
     "decodes with -- vpipe's sampler-select config, the model card's own",
     "recommendation (Qwen's non-thinking one: Valtz runs it without",
-    "thinking); without it, greedy.",
+    "thinking); without it, greedy. engine.vpipe.compute_dtype (an",
+    "assistant): text-chat's, where the model wants one (Ternary-Bonsai's",
+    "f16, its scales' own); without it, vpipe's default.",
+    "engine.vpipe.song (a song model): how it reads a prompt -- `style`",
+    "\"tags\" (YuE2's: the lines before the first section header joined as",
+    "one list) or \"caption\" (MiniMax-Music3's: kept line by line, a",
+    "structured description); `lyrics_required` (Music3: no song without",
+    "them); `score` false for one that plans no ABC score (no Score row, no",
+    "cot). Without it: tags, lyrics optional, a score.",
     "engine.vpipe.listen (a speech model): the voice detector it needs and",
     "the tagger it lists sound events with when that is installed (DESIGN",
     "§4h). package: the folder a CoreML archive (`file`, a .tar) unpacks",
@@ -65,7 +73,7 @@
       "edit": ["minimax-h3-ref2va"]
     },
     "audio": {
-      "generate": ["yue2-3b", "drama-3", "drama-3-int4",
+      "generate": ["yue2-3b", "minimax-music3", "drama-3", "drama-3-int4",
                    "moss-tts-v1.5-w8g64", "moss-tts-v1.5"],
       "edit": ["drama-3", "drama-3-int4", "moss-tts-v1.5-w8g64",
                "moss-tts-v1.5"]
@@ -151,6 +159,13 @@
       ]
     },
     {
+      "id": "minimax-music3", "name": "MiniMax-Music3",
+      "features": ["audio-gen"],
+      "members": [
+        {"model": "minimax-music3", "label": "MiniMax-Music3 (11B, with its vocoder)"}
+      ]
+    },
+    {
       "id": "moss-tts", "name": "MOSS-TTS",
       "features": ["speech-gen"],
       "members": [
@@ -179,7 +194,8 @@
         {"model": "qwen3.8-27b-dflash2", "label": "Qwen3.8 27B DFlash 2 drafter"},
         {"model": "qwen3.8-flash-next-dflash2", "label": "Qwen3.8 Flash-Next DFlash 2 drafter"},
         {"model": "deepseek-v4.1-flash", "label": "DeepSeek V4.1 Flash"},
-        {"model": "deepseek-v4.1-flash-2bit", "label": "DeepSeek V4.1 Flash (2-bit)"}
+        {"model": "deepseek-v4.1-flash-2bit", "label": "DeepSeek V4.1 Flash (2-bit)"},
+        {"model": "ternary-bonsai-2-27b", "label": "Ternary-Bonsai 2 27B"}
       ]
     },
     {
@@ -372,6 +388,25 @@
                                        "min_p": 0.0, "presence_penalty": 0.0,
                                        "repetition_penalty": 1.0}}},
       "notes": "DeepSeek-V4.1-Flash (the 1017 update) in oMLX's oQ2e pack: the routed experts requantized to 2 bits (170 GB in memory, every one resident on a 256 GB Mac with no Memory limit), the projections to 4-8 bits, the DSpark head and the n-gram tables as the oQ4e pack keeps them: 313 GB on disk, a coarser copy of the release than the oQ4e. On an M5 Ultra with 256 GB (vpipe 6acfd227): ~55 tok/s, 88 with DSpark on maths; a 17,000-token prompt in 6-9 s. At least 20 GB held. Chosen by name only (the Agent's Model, Settings > Agentic Helper). MIT."
+    },
+    {
+      "id": "ternary-bonsai-2-27b",
+      "name": "Ternary-Bonsai 2 27B",
+      "family": "ternary-bonsai",
+      "role": "assistant",
+      "hf_path": "prism-ml/Ternary-Bonsai-2-27B-gguf",
+      "fetch_variant": "PTQ1_0",
+      "check": {"files": ["Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+                          "Ternary-Bonsai-2-27B-mmproj-BF16.gguf"]},
+      "capabilities": ["prompt-enhance", "intent", "caption"],
+      "disk_gb": 6.9, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 0, "by_name": true,
+      "license": "apache-2.0",
+      "engine": {"vpipe": {"mtp": false, "compute_dtype": "f16",
+                           "sampling": {"temperature": 0.7, "top_p": 0.8, "top_k": 20,
+                                       "min_p": 0.0, "presence_penalty": 1.5,
+                                       "repetition_penalty": 1.0}}},
+      "notes": "Prism ML's ternary training of Qwen3.8-27B: every weight of the language model -1, 0 or +1 times a 16-bit scale per 128, in a 5.9 GB GGUF (PTQ1_0) beside its 0.9 GB vision projector -- a 27B that sees, held in 7.7 GB plus 0.9 for its tower. Run at f16 (its scales are f16: 0.0007 from the reference's fp32 against bf16's 0.011) on vpipe's 2-bit kernels, each projection's input turned by the Hadamard rotation it was trained with (vpipe f34a6ce8). No draft head is published for it, so it decodes a token at a time: on a 24 GB M5 Pro ~30 tok/s, a 512-token prompt read at ~420 tok/s; on a 16 GB M5 ~16 tok/s with little else open. Its K/V 64 KB a token, its context 262,144 as the memory holds it. Chosen by name only (Settings > Agentic Helper, the Agent's Model). Apache-2.0."
     },
     {
       "id": "z-image-turbo",
@@ -813,7 +848,6 @@
           "defaults": {"width": 960, "height": 544, "frames": 124, "fps": 24},
           "align": 32,
           "frame_grid": {"step": 17, "offset": 5},
-          "max_frames": 362,
           "steps": {"speed": 8, "balanced": 12, "quality": 16},
           "turbo": {
             "lora": "minimax-h3-turbo", "scale": 1.0,
@@ -922,7 +956,6 @@
           "defaults": {"width": 960, "height": 544, "frames": 124, "fps": 24},
           "align": 32,
           "frame_grid": {"step": 17, "offset": 5},
-          "max_frames": 362,
           "steps": {"speed": 8, "balanced": 12, "quality": 16},
           "turbo": {
             "lora": "minimax-h3-ref2va-turbo-8step", "scale": 1.0,
@@ -1097,6 +1130,84 @@
         }
       },
       "notes": "A song -- vocals and accompaniment, 48 kHz stereo -- from a style prompt and sectioned lyrics. Plans an ABC score first, then sings and plays to it; the model decides the length (up to 6 min). bf16, 3.6B; the plan peaks at 11.4 GB. Weights are CC BY-NC 4.0: non-commercial use only."
+    },
+    {
+      "id": "minimax-music3",
+      "name": "MiniMax-Music3",
+      "family": "minimax-music3",
+      "role": "audio",
+      "hf_path": "MiniMaxAI/MiniMax-Music3",
+      "check": {"is": {"config.json": "minimax_music3"}},
+      "capabilities": ["text-to-audio"],
+      "disk_gb": 28.6, "disk_measured": false,
+      "min_ram_gb": 16, "rank": 1,
+      "license": "minimax-music3-community",
+      "engine": {
+        "vpipe": {
+          "decoder": "minimax-music3",
+          "accel": ["i8_gemm", "i8_gemm_tier"],
+          "defaults": {"steps": 30},
+          "presets": {
+            "speed": {"steps": 30, "i8_gemm": true, "i8_gemm_tier": "token"},
+            "balanced": {"steps": 30, "i8_gemm": true, "i8_gemm_tier": "fast"},
+            "quality": {"steps": 30, "i8_gemm": false}
+          },
+          "song": {"style": "caption", "lyrics_required": true,
+                   "score": false},
+          "max_seconds": 360,
+          "sample_rate": 44100
+        }
+      },
+      "prompting": {
+        "enhance": {"generate": "minimax-music3"},
+        "outline": {
+          "en": [
+            "Global Metadata",
+            "(Genre and subgenre, tempo, key -- e.g. Acoustic pop, bpm is 96, key is C, and scale is major)",
+            "(How the feeling moves from the first bars to the last)",
+            "(The production: the mix, its space, its dynamics)",
+            "Vocal Details",
+            "(The singer: gender and timbre, how they sing the verses and the chorus, harmonies)",
+            "Arrangement",
+            "(The instruments that carry it and those that join, section by section; the groove, the bass and drums)",
+            "",
+            "[Verse]",
+            "(The first verse, a line at a time)",
+            "",
+            "[Chorus]",
+            "(The chorus)",
+            "",
+            "[Verse]",
+            "(The second verse)",
+            "",
+            "[Chorus]",
+            "(The chorus again)"
+          ],
+          "zh-Hans": [
+            "Global Metadata",
+            "（曲风与子风格、速度、调性——例如 Acoustic pop, bpm is 96, key is C, and scale is major）",
+            "（情绪从头到尾如何变化）",
+            "（制作：混音、空间感、动态）",
+            "Vocal Details",
+            "（歌手：性别与音色，主歌与副歌怎么唱，和声）",
+            "Arrangement",
+            "（主奏乐器与逐段加入的乐器；律动、贝斯与鼓）",
+            "",
+            "[Verse]",
+            "（第一段主歌，一行一句）",
+            "",
+            "[Chorus]",
+            "（副歌）",
+            "",
+            "[Verse]",
+            "（第二段主歌）",
+            "",
+            "[Chorus]",
+            "（再唱副歌）"
+          ]
+        }
+      },
+      "notes": "A whole song -- vocals and accompaniment, 44.1 kHz stereo, up to six minutes -- from a description and lyrics, both needed: an 8B language model (from Qwen3-8B) and a depth decoder write it a 25 Hz frame at a time, a 2.4B flow-matching transformer turns that into audio, its own vocoder decodes it. A short description works; a structured one -- Global Metadata, Vocal Details, Arrangement -- steers it (Enhance writes one). 13.3 GB of weights held (the language model at 8 bits); on a 16 GB Mac its two halves take turns. Slow: a 40 s song took 6 min 50 s on an M4 Pro (vpipe), the flow matching most of it -- on an M5 its int8 tiers (Fast, Med) make that 1.4-1.7x faster. vpipe 25a17365. MiniMax-Music3 Community License: commercial use must show \"MiniMax-Music3\" in the product's interface, and above USD 20 million a year needs MiniMax's written authorization -- read its LICENSE before publishing what it makes."
     },
     {
       "id": "moss-tts-v1.5",

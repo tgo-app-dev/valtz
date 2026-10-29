@@ -365,7 +365,7 @@ struct ComposerStack: View {
     private var textArea: some View {
         VStack(spacing: 0) {
             if agentFills, let a = agentSession {
-                AgentPane(model: model, session: a)
+                AgentPane(model: model, shown: a)
                     .frame(maxHeight: .infinity)
                     .transition(.opacity)
                 Rectangle()
@@ -1858,7 +1858,7 @@ private struct DrawerSettings: View {
                 GridRow {
                     Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
                     Text(model.activeModality == .audio
-                         ? "Audio generation needs YuE2 (songs), or Drama 3 or MOSS-TTS (speech): download one in Settings › Capabilities."
+                         ? "Audio generation needs YuE2 or MiniMax-Music3 (songs), or Drama 3 or MOSS-TTS (speech): download one in Settings › Capabilities."
                          : "Video generation needs MiniMax H3 FL2VA or Ref2VA: download one in Settings › Capabilities.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -2095,16 +2095,20 @@ private struct DrawerSettings: View {
     /// what it will sing -- the prompt's lyrics, under section headers.
     @ViewBuilder
     private var audioRows: some View {
-        GridRow {
-            label("Score", row: SettingsRow.songPlan)
-            selector("Score", SongPlan.allCases.map { ($0, $0.label) },
-                     tips: SongPlan.allCases.map(\.hint),
-                     selection: optional($model.songPlan))
-            Text(model.songPlan.hint)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: 230, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+        // The score it plans first (YuE2); a model that plans none
+        // (MiniMax-Music3) has no such row.
+        if model.songPlansScore {
+            GridRow {
+                label("Score", row: SettingsRow.songPlan)
+                selector("Score", SongPlan.allCases.map { ($0, $0.label) },
+                         tips: SongPlan.allCases.map(\.hint),
+                         selection: optional($model.songPlan))
+                Text(model.songPlan.hint)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 230, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         // The model decides the length; a choice here is the most it may
         // run (a song past it is cut there).

@@ -3281,12 +3281,12 @@
         }
       }
     },
-    "Audio generation needs YuE2 (songs), or Drama 3 or MOSS-TTS (speech): download one in Settings › Capabilities." : {
+    "Audio generation needs YuE2 or MiniMax-Music3 (songs), or Drama 3 or MOSS-TTS (speech): download one in Settings › Capabilities." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "生成音频需要 YuE2（歌曲），或 Drama 3、MOSS-TTS（语音）：请在“设置 › 能力”中下载其一。"
+            "value" : "生成音频需要 YuE2 或 MiniMax-Music3（歌曲），或 Drama 3、MOSS-TTS（语音）：请在“设置 › 能力”中下载其一。"
           }
         }
       }
@@ -3617,18 +3617,12 @@
         }
       }
     },
-    "Back to its own frame: %lld × %lld" : {
+    "Back to its own frame: %@" : {
       "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Back to its own frame: %1$lld × %2$lld"
-          }
-        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "回到原本的画面：%lld × %lld"
+            "value" : "回到原本的画面：%@"
           }
         }
       }
@@ -6100,6 +6094,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "断开：从 %@ 中移除"
+          }
+        }
+      }
+    },
+    "Disconnect: Remove from %@, an empty layer in its place" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "断开：从 %@ 中移除，以一个空图层代替"
           }
         }
       }
@@ -9678,16 +9682,6 @@
         }
       }
     },
-    "Its only layer stays" : {
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "唯一的图层须保留"
-          }
-        }
-      }
-    },
     "Its own head drafts ahead" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12272,6 +12266,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无"
+          }
+        }
+      }
+    },
+    "None yet: this model needs lyrics — for music alone, [Instrumental]" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "还没有：这个模型需要歌词——纯音乐写 [Instrumental] 即可"
           }
         }
       }
@@ -19617,6 +19621,26 @@
         }
       }
     },
+    "Twice the Size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "两倍大小"
+          }
+        }
+      }
+    },
+    "Twice the canvas: %@, about the anchor" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "画布的两倍：%@，围绕定位点"
+          }
+        }
+      }
+    },
     "Two LoRAs run at a time" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -24515,13 +24539,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The last layer stays: a picture has at least one."
+            "value" : "The only layer is empty already: a composition keeps one."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "最后一个图层会保留：图片至少要有一个图层。"
+            "value" : "唯一的图层已是空的：合成至少保留一个图层。"
           }
         }
       }
@@ -24573,6 +24597,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "{model} 生成的图片每边最多 {edge} 像素，无法生成 {size}。"
+          }
+        }
+      }
+    },
+    "core.song_needs_lyrics" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} sings lyrics, and this prompt has none: write them after the description, under [Verse] and [Chorus] headers -- for music without words, the headers alone ([Intro], [Instrumental], [Outro])."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 需要歌词才能演唱，而这个提示没有歌词：请在描述之后写下歌词，放在 [Verse] 和 [Chorus] 标题下——没有人声的音乐，只写标题即可（[Intro]、[Instrumental]、[Outro]）。"
           }
         }
       }

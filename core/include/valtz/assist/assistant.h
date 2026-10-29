@@ -255,13 +255,18 @@ std::string without_markdown(std::string_view words);
 // "[Style]" or "[Tags]" section is the style wherever it is. The
 // style's lines are joined as one list of tags (", "); the lyrics are
 // kept as written, blank lines between sections and all.
+//
+// A CAPTION model's style (MiniMax-Music3's, catalog engine.vpipe.song
+// `style` "caption") is a description in lines -- Global Metadata, Vocal
+// Details, Arrangement, each a heading over lines of its own -- read by
+// the model as written: its lines are kept, one under another.
 struct SongText {
   std::string style;
   std::string lyrics;
   int         sections = 0;  // the lyrics' headers
   int         lines = 0;     // their sung lines: not headers, not blank
 };
-SongText split_song(std::string_view prompt);
+SongText split_song(std::string_view prompt, bool caption = false);
 
 // SPEECH's words, as MOSS-TTS reads them (DESIGN §4g): the prompt's
 // FIELDS -- lines "Instruction: ...", "Quality: ...", "Sound event:
@@ -292,9 +297,11 @@ std::string speech_language(std::string_view text);
 // section headers in the request are the person's words, and a small
 // assistant told to keep them word for word does not always: the
 // suggestion's style, then the request's lyrics as written. A request
-// without sectioned lyrics leaves the suggestion as it is.
+// without sectioned lyrics leaves the suggestion as it is. `caption`:
+// a caption model's style, kept in its lines (split_song).
 std::string keep_song_lyrics(std::string_view suggestion,
-                             std::string_view request);
+                             std::string_view request,
+                             bool caption = false);
 
 // `prompt` with the k-th inline item (U+FFFC) replaced by `tags[k]`, or
 // dropped where that is empty or missing -- a clip's references named
@@ -309,7 +316,9 @@ std::string tag_inline(std::string_view prompt,
 // and "minimax-h3-ref" (with the full-reference guide too) -- and
 // Valtz's own skills from core/resources/skills -- "yue2-song" (a style
 // line and sectioned lyrics, replied as {"style", "lyrics", "title"}),
-// "moss-tts", "drama3" (with Fish Audio's guide to Drama 3, from
+// "minimax-music3" (the same reply, its style a description in Music3's
+// three sections, its lyrics always there -- an instrumental's headers
+// alone), "moss-tts", "drama3" (with Fish Audio's guide to Drama 3, from
 // 3rd-party/fish-audio-drama3), "qwen-image-2.1-t2i" / "qwen-image-2.1-edit"
 // (Qwen-Image's, which QwenLM's own rewriters replace once downloaded:
 // Controller::skill_text) and "flux3-klein-t2i" / "flux3-klein-edit"

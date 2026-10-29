@@ -2572,6 +2572,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     ?? (0.5, 0.5)
                 if spec == "own" {
                     m.resetCanvas(a)
+                } else if p[0] == "x2" {
+                    // Canvas Size's ×2: twice the canvas as it is.
+                    let s = m.canvasSize(of: a)
+                    m.setCanvas(a, width: s.width * 2, height: s.height * 2,
+                                anchorX: ax, anchorY: ay)
                 } else if wh.count == 2 {
                     m.setCanvas(a, width: wh[0], height: wh[1],
                                 anchorX: ax, anchorY: ay)

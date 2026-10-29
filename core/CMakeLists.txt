@@ -110,6 +110,11 @@ valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/model-catalog.json"
 # authors' examples (DESIGN §9).
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/yue2-song.md"
   kYue2SongSkill yue2-song-skill.cc)
+# MiniMax-Music3's song writer: Valtz's own, the description in the three
+# sections the model was trained on and its lyrics' tags (DESIGN §4d).
+valtz_embed(
+  "${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/minimax-music3.md"
+  kMinimaxMusic3Skill minimax-music3-skill.cc)
 # The agent's guide to the editor's tools: Valtz's own (DESIGN §9b).
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/valtz-agent.md"
   kValtzAgentSkill valtz-agent-skill.cc)
