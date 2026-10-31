@@ -787,7 +787,7 @@ struct AtlasAssetNode: View {
             if asset.kind == "text" {
                 Color(nsColor: .textBackgroundColor)
                 Text(verbatim: String((asset.text ?? asset.name).prefix(240)))
-                    .font(.custom("Georgia", size: u(11)))
+                    .font(.system(size: u(11)))
                     .foregroundStyle(.primary)
                     .lineLimit(6)
                     .padding(u(8))

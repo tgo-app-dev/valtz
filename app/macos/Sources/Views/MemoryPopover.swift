@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// RAM's popover -- a click on the status bar's meter (DESIGN §10a): what
-/// Valtz holds in memory, drawn as Settings › Storage draws the disk. The
+/// What Valtz holds in memory (DESIGN §10a) -- the Activity popover's
+/// Memory fold, and a snapshot's picture of it (MemoryPopover): drawn as
+/// Settings › Storage draws the disk. The
 /// bar is the Mac's memory: each model the engine holds -- KEPT WARM
 /// between jobs (the helper kept loaded; a picture's DiT, text encoder
 /// and VAE kept built, DESIGN §4n), with the time it has left, or a
@@ -10,8 +11,11 @@ import SwiftUI
 /// (its footprint past Metal's), the other apps, and what is free. Read
 /// from the engine every two seconds while it is open
 /// (MachineMonitor.startMemory; vpipe's memory_report, DESIGN §15 0zz).
-struct MemoryPopover: View {
+struct MemorySection: View {
     @Bindable var model: AppModel
+    /// Off where the host names the section itself (the Activity
+    /// popover's fold).
+    var showsTitle = true
 
     private var monitor: MachineMonitor { model.monitor }
 
@@ -20,8 +24,10 @@ struct MemoryPopover: View {
         let parts = Self.parts(load: load, memory: monitor.memory)
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Memory").font(.headline)
-                Spacer()
+                if showsTitle {
+                    Text("Memory").font(.headline)
+                    Spacer()
+                }
                 if let f = load.footprint, let t = load.total {
                     Text("Valtz is using \(Self.bytes(f)) of \(Self.bytes(t))")
                         .foregroundStyle(.secondary)
@@ -43,8 +49,6 @@ struct MemoryPopover: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(16)
-        .frame(width: 400)
         .onAppear { monitor.startMemory() }
         .onDisappear { monitor.stopMemory() }
     }
@@ -152,5 +156,17 @@ struct MemoryPopover: View {
 
     static func bytes(_ v: Double) -> String {
         Int64(max(0, v)).formatted(.byteCount(style: .memory))
+    }
+}
+
+/// The section as a page of its own, at the popover's width: what a
+/// scripted snapshot draws (VALTZ_SNAPSHOT_MEMORY).
+struct MemoryPopover: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        MemorySection(model: model)
+            .padding(16)
+            .frame(width: 400)
     }
 }

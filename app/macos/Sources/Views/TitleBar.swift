@@ -6,17 +6,19 @@ import UniformTypeIdentifiers
 /// (the window title), then -- docked right -- groups of controls, each
 /// its own glass capsule (drawn here, TitleBarControls):
 ///
-///   start over (anonymous sessions) clear the session, delete its files
 ///   zoom       zoom out, actual size, the zoom level, fit, zoom in --
 ///              divided like Preview's; 1:1 and fit press in to show
 ///              the state they hold
 ///   compare    the compare under the stage, on or off (pressed in on):
 ///              a result turns it on only when it changed what was there
-///   ground     the light bulb: the app light or dark, for proofing
 ///   markup     the markup toolbar
 ///   document   the inspector; share (a menu: Save…, then the system's
 ///              Share… -- AirDrop, Messages, Mail…)
 ///   search     the search field (TitleBarSearchField)
+///
+/// Before them, its own item on every screen: activity -- what runs, and
+/// the machine's load (ActivityButton). Start Over is File's, and
+/// proofing on the other ground View's.
 struct TitleBarContent: ToolbarContent {
     @Bindable var model: AppModel
     let scheme: ColorScheme
@@ -49,6 +51,16 @@ struct TitleBarContent: ToolbarContent {
         // They act on the editor: on the log there are none (an item
         // added and removed -- a hosted item does not redraw its content
         // for a change of screen).
+        // Activity is its own item, on every screen -- the Atlas and the
+        // Log included -- and stays in reach while the window is given
+        // over: what runs, and the machine's load, are worth watching
+        // then most of all. Its popover disables its own buttons.
+        ToolbarItem(placement: .primaryAction) {
+            ActivityButton(model: model)
+                .titleBarCapsule()
+        }
+        .sharedBackgroundVisibility(.hidden)
+
         if model.screen == .editor {
             ToolbarItem(placement: .primaryAction) {
                 TitleBarControls(model: model, scheme: scheme)
@@ -192,34 +204,6 @@ struct FrameProbe: NSViewRepresentable {
     func updateNSView(_ v: NSView, context: Context) { box.view = v }
 }
 
-/// Start Over (anonymous sessions only): the session -- prompt, result,
-/// settings, adjustments -- is cleared and its files deleted from disk,
-/// and a new one begins. Asks first when there is something to lose;
-/// waits while something is running.
-struct StartOverButton: View {
-    @Bindable var model: AppModel
-    @State private var confirming = false
-
-    var body: some View {
-        TitleBarButton(symbol: "arrow.counterclockwise", title: "Start Over",
-                       help: "Start over — clear this session and delete its images") {
-            if model.sessionHasWork {
-                confirming = true
-            } else {
-                model.startOver()
-            }
-        }
-        .titleBarCapsule()
-        .disabled(model.isBusy)
-        .confirmationDialog("Start over?", isPresented: $confirming) {
-            Button("Start Over", role: .destructive) { model.startOver() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The prompt, the result and the settings are cleared, and this session's images are deleted from disk. Save anything you want to keep first.")
-        }
-    }
-}
-
 /// The groups right of the title, each its own glass capsule.
 struct TitleBarControls: View {
     @Bindable var model: AppModel
@@ -228,11 +212,8 @@ struct TitleBarControls: View {
     var body: some View {
         GlassEffectContainer(spacing: 10) {
             HStack(spacing: 10) {
-                // View only: nothing to start over or mark up (zoom, the
-                // compare, the ground, the inspector, share, search stay).
-                if model.isAnonymous && !model.viewOnly {
-                    StartOverButton(model: model)
-                }
+                // View only: nothing to mark up (zoom, the compare,
+                // the inspector, share, search stay).
                 editorGroups
             }
         }
@@ -240,7 +221,7 @@ struct TitleBarControls: View {
         .fixedSize()
     }
 
-    /// What acts on the editor: zoom, the ground, markup, the inspector
+    /// What acts on the editor: zoom, the compare, markup, the inspector
     /// and share, the search.
     /// Each out of reach while the window is given over (a fleet job, a
     /// closed project's tasks stopping): the groups are hosted apart, and
@@ -259,16 +240,6 @@ struct TitleBarControls: View {
                     model.toggleCompare()
                 }
                 .disabled(!model.canToggleCompare)
-                .titleBarCapsule()
-
-                TitleBarButton(
-                    symbol: scheme == .light ? "lightbulb.max.fill" : "lightbulb",
-                    title: "Light or Dark",
-                    help: scheme == .light ? "Proof on a dark background"
-                                           : "Proof on a light background") {
-                    model.setAppearance(dark: scheme == .light,
-                                        animated: true)
-                }
                 .titleBarCapsule()
 
                 if !model.viewOnly {
@@ -469,7 +440,7 @@ struct TitleBarButton: View {
                               weight: emphasized ? .heavy : .regular))
                 .underline(emphasized)
         } else {
-            Image(systemName: symbol).font(.system(size: 15))
+            Image(systemName: symbol).font(.system(size: VZ.Size.toolbarSymbol))
         }
     }
 }

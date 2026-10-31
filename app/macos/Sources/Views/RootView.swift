@@ -26,12 +26,13 @@ struct RootView: View {
             .onChange(of: model.showsInspectorColumn) { _, _ in
                 model.fitWindowToInspector()
             }
-            // The machine's load and thermal state, the window's width
-            // (View › Show Status Bar).
-            if model.showsStatusBar {
-                StatusBar(model: model)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
+        }
+        // File › Start Over…, with something to lose: asked first.
+        .confirmationDialog("Start over?", isPresented: $model.startOverAsked) {
+            Button("Start Over", role: .destructive) { model.startOver() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The prompt, the result and the settings are cleared, and this session's images are deleted from disk. Save anything you want to keep first.")
         }
         // A project dropped anywhere no panel takes a drop of its own:
         // opened, the one open asked about first; other media -- files,
@@ -184,16 +185,6 @@ struct InspectorColumn: View {
         }
         .transition(.move(edge: .trailing).combined(with: .opacity))
     }
-}
-
-extension Color {
-    /// The grey of Valtz's panels -- the composer's tray, the inspector:
-    /// opaque, a shade off the window in either appearance.
-    static let valtzPanel = Color(nsColor: NSColor(name: "valtz.panel") { a in
-        a.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
-            ? NSColor(srgbRed: 0.165, green: 0.165, blue: 0.175, alpha: 1)
-            : NSColor(srgbRed: 0.953, green: 0.953, blue: 0.961, alpha: 1)
-    })
 }
 
 /// The ☰ column: a narrow glass strip of icons -- the screens (the

@@ -161,7 +161,7 @@ extension AppModel {
 /// on it: a horizontal guide's triangle at its right edge, a vertical
 /// one's under its bottom edge, each where its line is -- moving with it
 /// as the picture is zoomed and panned, gone while its line is out of
-/// view -- its place in pixels after it, in Georgia. A click on a number
+/// view -- its place in pixels after it. A click on a number
 /// types over it (Return moves the guide there, Escape leaves it, ↑ / ↓ a
 /// pixel up or down -- ⇧ ten); meanwhile its triangle and number are
 /// black, the triangle is DRAGGED along the edge (locked otherwise) and
@@ -243,7 +243,7 @@ struct GuideMarks: View {
                     model.guideEditing = r
                 } label: {
                     Text(verbatim: Self.label(px))
-                        .font(.custom("Georgia", size: 10.5))
+                        .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .fixedSize()
                         .padding(.horizontal, 2)
@@ -368,7 +368,7 @@ private struct GuideField: View {
     var body: some View {
         TextField("", text: $text)
             .textFieldStyle(.plain)
-            .font(.custom("Georgia", size: 10.5))
+            .font(.caption.monospacedDigit())
             // Under a vertical guide's triangle, centred on it.
             .multilineTextAlignment(ref.horizontal ? .leading : .center)
             .padding(.horizontal, 2)

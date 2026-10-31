@@ -761,32 +761,16 @@ struct PromptEditor: NSViewRepresentable {
     /// margins.
     var inset = PromptEditor.inset
 
-    /// The prompt's type: Georgia -- a serif keeps a long prompt, as a
-    /// model's template makes it, readable -- falling back to the system's
-    /// own for what it has no glyphs for: Chinese (and Japanese, Korean)
-    /// in the system's sans, as it is.
-    static let font: NSFont = {
-        let size: CGFloat = 15
-        let system = NSFont.systemFont(ofSize: size)
-        guard let georgia = NSFont(name: "Georgia", size: size) else {
-            return system
-        }
-        // The system font's own fallbacks for these languages (PingFang
-        // for Chinese): Georgia's would pick a serif (Songti).
-        let langs = Locale.preferredLanguages
-            + ["zh-Hans", "zh-Hant", "ja", "ko"]
-        let cascade = CTFontCopyDefaultCascadeListForLanguages(
-            system as CTFont, langs as CFArray) as? [NSFontDescriptor] ?? []
-        let d = georgia.fontDescriptor.addingAttributes(
-            [.cascadeList: cascade])
-        return NSFont(descriptor: d, size: size) ?? georgia
-    }()
-    /// A paragraph of Latin text: its lines 1.1x apart, a little room
+    /// The prompt's type: the system's (SF Pro), a size up from body text
+    /// so a long prompt, as a model's template makes it, reads easily. Its
+    /// own fallbacks cover Chinese (and Japanese, Korean).
+    static let font = NSFont.systemFont(ofSize: 15)
+    /// A paragraph of Latin text: its lines a little apart, a little room
     /// after it. A paragraph with Chinese (Japanese, Korean) in it keeps
     /// the system's own spacing.
     static let latinParagraph: NSParagraphStyle = {
         let p = NSMutableParagraphStyle()
-        p.lineHeightMultiple = 1.1
+        p.lineHeightMultiple = 1.05
         p.paragraphSpacing = 5
         return p
     }()

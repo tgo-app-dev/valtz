@@ -999,32 +999,12 @@ final class AppModel {
         Self.editorMinWidth
             + (showsInspectorColumn ? InspectorColumn.width : 0)
     }
-    /// The status bar along the window's bottom (View › Show Status Bar):
-    /// the machine's load and thermal state, remembered between launches
-    /// -- except by a scripted snapshot run, which neither reads nor
-    /// writes it.
-    var showsStatusBar = AppModel.storedStatusBar {
-        didSet {
-            if Self.keepsViewState {
-                UserDefaults.standard.set(showsStatusBar,
-                                          forKey: Self.statusBarKey)
-            }
-        }
-    }
-    /// RAM's popover open (a click on its meter): what Valtz holds in
-    /// memory, model by model (MemoryPopover).
-    var memoryPopoverOpen = false
-    /// The status bar's items its context menu unchecked: remembered as
-    /// the bar is.
-    var hiddenStatusItems = AppModel.storedHiddenStatusItems {
-        didSet {
-            if Self.keepsViewState {
-                UserDefaults.standard.set(
-                    hiddenStatusItems.map(\.rawValue).sorted(),
-                    forKey: Self.statusItemsKey)
-            }
-        }
-    }
+    /// The toolbar's Activity popover open (ActivityButton): the tasks,
+    /// the machine's load, and what Valtz holds in memory.
+    var activityOpen = false
+    /// Start Over asked from the File menu, with something to lose: the
+    /// window's confirmation (RootView).
+    var startOverAsked = false
 
     /// Settings › Experimental › Agent: the prompt's Agent tab and its
     /// mode (DESIGN §9b) -- off until switched on, remembered as the
@@ -1075,45 +1055,22 @@ final class AppModel {
         Modality.allCases.filter { $0 != .agent || agentEnabled }
     }
 
-    func showsStatusItem(_ item: StatusBarItem) -> Bool {
-        !hiddenStatusItems.contains(item)
-    }
-
-    func setStatusItem(_ item: StatusBarItem, shown: Bool) {
-        withAnimation(Self.motion) {
-            if shown {
-                hiddenStatusItems.remove(item)
-            } else {
-                hiddenStatusItems.insert(item)
-            }
-        }
-    }
-    /// What the status bar shows (it polls only while the bar is shown).
+    /// The machine's load (it polls only while the Activity popover is
+    /// open).
     let monitor: MachineMonitor
     /// Auto-update (Sparkle, when built in): Check for Updates…, and
     /// Settings › General › Updates.
     let updater = Updater()
-    private static let statusBarKey = "view.statusBar"
-    private static let statusItemsKey = "view.statusBarHidden"
     private static let agentEnabledKey = "experimental.agent"
     private static let agentSpeedKey = "helper.agentSpeed"
     private static var keepsViewState: Bool {
         ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] == nil
-    }
-    private static var storedStatusBar: Bool {
-        keepsViewState && UserDefaults.standard.bool(forKey: statusBarKey)
     }
     private static var storedAgentEnabled: Bool {
         keepsViewState && UserDefaults.standard.bool(forKey: agentEnabledKey)
     }
     private static var storedAgentShowsSpeed: Bool {
         keepsViewState && UserDefaults.standard.bool(forKey: agentSpeedKey)
-    }
-    private static var storedHiddenStatusItems: Set<StatusBarItem> {
-        guard keepsViewState,
-              let raw = UserDefaults.standard.stringArray(
-                  forKey: statusItemsKey) else { return [] }
-        return Set(raw.compactMap(StatusBarItem.init(rawValue:)))
     }
     /// The pointer is over the title bar: its bottom edge shows, as in
     /// Preview.
@@ -10288,6 +10245,16 @@ final class AppModel {
     func startOver() {
         guard isAnonymous, !isBusy else { return }
         anonymousAfresh()
+    }
+
+    /// File › Start Over…: asks first when there is something to lose.
+    func startOverPressed() {
+        guard isAnonymous, !isBusy else { return }
+        if sessionHasWork {
+            startOverAsked = true
+        } else {
+            startOver()
+        }
     }
 
     /// The anonymous session deleted and a new one begun (Start Over's,

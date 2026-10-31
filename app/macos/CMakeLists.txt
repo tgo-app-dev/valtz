@@ -106,7 +106,20 @@ set(VALTZ_APP_SOURCES
   Sources/Views/AtlasPlayback.swift
   Sources/Views/DroppedMedia.swift
   Sources/Views/MemoryPopover.swift
-  Sources/Views/StatusBar.swift
+  Sources/Design/Tokens.swift
+  Sources/Design/Typography.swift
+  Sources/Design/Colors.swift
+  Sources/Design/Glass.swift
+  Sources/Design/DesignGallery.swift
+  Sources/Design/Components/ActivityRing.swift
+  Sources/Design/Components/Meter.swift
+  Sources/Design/Components/EmptyState.swift
+  Sources/Design/Components/ChipMenu.swift
+  Sources/Design/Components/ContextBar.swift
+  Sources/Design/Components/DockCard.swift
+  Sources/Design/Components/DragHandle.swift
+  Sources/Design/Components/CollapsibleSection.swift
+  Sources/Shell/ActivityItem.swift
   Sources/Views/MarkupBar.swift
   Sources/Views/PromptBar.swift
   Sources/Views/LogView.swift
@@ -176,33 +189,41 @@ target_link_libraries(valtz-icon PRIVATE
 # live by Sources/Mark, so there is no bitmap of it here.
 set(VALTZ_APP_RESOURCES)
 
-# The asset catalog -- today only the app's accent color (a near-black;
-# near-white in the dark appearance), which AppKit and SwiftUI controls
-# use for highlights instead of the system blue. Compiled with actool, as
-# Xcode would; Info.plist names it (NSAccentColorName).
-set(VALTZ_XCASSETS "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Assets.xcassets")
-set(VALTZ_ASSETS_CAR "${CMAKE_CURRENT_BINARY_DIR}/assets/Assets.car")
-file(GLOB_RECURSE VALTZ_XCASSETS_FILES CONFIGURE_DEPENDS
-     "${VALTZ_XCASSETS}/*.json")
-add_custom_command(OUTPUT "${VALTZ_ASSETS_CAR}"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/assets"
-  COMMAND xcrun actool "${VALTZ_XCASSETS}"
-          --compile "${CMAKE_CURRENT_BINARY_DIR}/assets"
+# No asset catalog: the app takes the system's accent colour, and its
+# mark is drawn live (Sources/Mark).
+
+# App icon: the Icon Composer document Resources/Valtz.icon, compiled with
+# actool as Xcode would, into the layered icon macOS draws in Liquid Glass
+# (Assets.car: light, dark, clear and tinted, at every size) and a flat
+# Valtz.icns for whatever still reads one. Info.plist names it twice --
+# CFBundleIconName for the catalog, CFBundleIconFile for the .icns.
+# VALTZ_ICON_COMPOSER=OFF keeps the older pipeline: the icon RENDERED at
+# build time by valtz-icon, from the same geometry and shaders the app
+# draws its mark with, or VALTZ_RENDER_ICON=OFF, the painted master
+# (Resources/AppIcon-1024.png) scaled, for a build machine without a GPU.
+option(VALTZ_ICON_COMPOSER "Compile the app icon from Resources/Valtz.icon" ON)
+option(VALTZ_RENDER_ICON "Render the app icon with Metal (valtz-icon)" ON)
+if(VALTZ_ICON_COMPOSER)
+set(VALTZ_ICON_NAME "Valtz")
+set(VALTZ_ICON_DOC "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Valtz.icon")
+set(VALTZ_ICON_OUT "${CMAKE_CURRENT_BINARY_DIR}/icon")
+set(VALTZ_ASSETS_CAR "${VALTZ_ICON_OUT}/Assets.car")
+set(VALTZ_ICNS "${VALTZ_ICON_OUT}/${VALTZ_ICON_NAME}.icns")
+file(GLOB_RECURSE VALTZ_ICON_DOC_FILES CONFIGURE_DEPENDS "${VALTZ_ICON_DOC}/*")
+add_custom_command(OUTPUT "${VALTZ_ASSETS_CAR}" "${VALTZ_ICNS}"
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${VALTZ_ICON_OUT}"
+  COMMAND xcrun actool "${VALTZ_ICON_DOC}"
+          --compile "${VALTZ_ICON_OUT}"
           --platform macosx
           --minimum-deployment-target ${CMAKE_OSX_DEPLOYMENT_TARGET}
-          --accent-color AccentColor
-          --output-partial-info-plist "${CMAKE_CURRENT_BINARY_DIR}/assets/partial.plist"
+          --app-icon ${VALTZ_ICON_NAME} --include-all-app-icons
+          --output-partial-info-plist "${VALTZ_ICON_OUT}/partial.plist"
           --output-format human-readable-text >/dev/null
-  DEPENDS ${VALTZ_XCASSETS_FILES}
-  COMMENT "Compiling Assets.xcassets")
+  DEPENDS ${VALTZ_ICON_DOC_FILES}
+  COMMENT "Compiling Valtz.icon")
 list(APPEND VALTZ_APP_RESOURCES "${VALTZ_ASSETS_CAR}")
-
-# App icon: RENDERED at build time by valtz-icon, from the same geometry
-# and shaders the app draws its mark with -- each size natively, at its
-# own level of detail (no sprocket holes below 64 px), on the macOS icon
-# grid. VALTZ_RENDER_ICON=OFF falls back to scaling the painted master
-# (Resources/AppIcon-1024.png), for a build machine without a GPU.
-option(VALTZ_RENDER_ICON "Render the app icon with Metal (valtz-icon)" ON)
+else()
+set(VALTZ_ICON_NAME "AppIcon")
 set(VALTZ_ICON_SRC "${CMAKE_CURRENT_SOURCE_DIR}/Resources/AppIcon-1024.png")
 set(VALTZ_ICONSET "${CMAKE_CURRENT_BINARY_DIR}/AppIcon.iconset")
 set(VALTZ_ICNS "${CMAKE_CURRENT_BINARY_DIR}/AppIcon.icns")
@@ -240,6 +261,7 @@ add_custom_command(OUTPUT "${VALTZ_ICNS}"
   COMMAND iconutil -c icns "${VALTZ_ICONSET}" -o "${VALTZ_ICNS}"
   DEPENDS ${VALTZ_ICON_DEPENDS}
   COMMENT "Generating AppIcon.icns")
+endif()
 list(APPEND VALTZ_APP_RESOURCES "${VALTZ_ICNS}")
 
 set_source_files_properties(${VALTZ_APP_RESOURCES} PROPERTIES

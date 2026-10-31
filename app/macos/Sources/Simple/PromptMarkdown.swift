@@ -110,10 +110,9 @@ enum PromptMarkdown {
 }
 
 extension PromptEditor {
-    /// The prompt's type with Markdown's styles: Georgia's own bold and
-    /// italic faces, a heading larger, code in the system's monospace --
-    /// each with the base font's fallbacks for CJK (the system's, at the
-    /// matching weight).
+    /// The prompt's type with Markdown's styles: the system font's own
+    /// semibold and italic, a heading larger, code in the system's
+    /// monospace -- the font's own fallbacks cover CJK at each weight.
     @MainActor
     static func styledFont(bold: Bool, italic: Bool, scale: CGFloat = 1,
                            code: Bool = false) -> NSFont {
@@ -125,28 +124,13 @@ extension PromptEditor {
             f = .monospacedSystemFont(ofSize: size - 1,
                                       weight: bold ? .semibold : .regular)
         } else {
-            let name = ["Georgia", "Georgia-Bold", "Georgia-Italic",
-                        "Georgia-BoldItalic"][(bold ? 1 : 0)
-                                              + (italic ? 2 : 0)]
-            let system = NSFont.systemFont(ofSize: size,
-                                           weight: bold ? .semibold
-                                                        : .regular)
-            if let g = NSFont(name: name, size: size) {
-                let langs = Locale.preferredLanguages
-                    + ["zh-Hans", "zh-Hant", "ja", "ko"]
-                // The fallbacks at the face's weight: a cascade lists
-                // families, so bold Chinese is asked for (PingFang's
-                // Semibold), or it falls back to the regular.
-                let cascade = (CTFontCopyDefaultCascadeListForLanguages(
-                    system as CTFont, langs as CFArray)
-                    as? [NSFontDescriptor] ?? []).map {
-                    bold ? $0.withSymbolicTraits(.bold) : $0
-                }
-                f = NSFont(descriptor: g.fontDescriptor.addingAttributes(
-                    [.cascadeList: cascade]), size: size) ?? g
-            } else {
-                f = system
-            }
+            let upright = NSFont.systemFont(ofSize: size,
+                                            weight: bold ? .semibold
+                                                         : .regular)
+            f = italic
+                ? NSFontManager.shared.convert(upright,
+                                               toHaveTrait: .italicFontMask)
+                : upright
         }
         styledFonts[key] = f
         return f

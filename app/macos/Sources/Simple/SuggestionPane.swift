@@ -7,8 +7,8 @@ import SwiftUI
 /// until it is done; Reject then stops it). Once done it can be edited
 /// before it is applied -- the edits are the suggestion
 /// (`AppModel.enhanced`) -- then Apply makes it the prompt, Reject lets it
-/// go; either way the half closes. Written as the prompt is: Georgia,
-/// Markdown drawn as it reads, ⌘B / ⌘I / ⌘U.
+/// go; either way the half closes. Written as the prompt is: the system's
+/// type, Markdown drawn as it reads, ⌘B / ⌘I / ⌘U.
 struct SuggestionPane: View {
     @Bindable var model: AppModel
 

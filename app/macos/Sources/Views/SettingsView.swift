@@ -20,10 +20,10 @@ import AppKit
 ///                 the Agent (ExperimentalView)
 ///
 /// The sidebar is System Settings' measure -- 32 pt rows inset 10 pt, 20
-/// pt icons, 13 pt names -- with the selection in Valtz's own accent (a
-/// near-black; near-white in the dark), as the rest of the app. A List's
-/// selection takes the system's highlight colour (blue) instead, so the
-/// rows are drawn here; ↑ and ↓ move between them.
+/// pt icons, 13 pt names -- with the selection in the system's accent,
+/// as the rest of the app. The rows are drawn here (a List would do as
+/// well now; kept until the sidebar is rebuilt); ↑ and ↓ move between
+/// them.
 struct SettingsView: View {
     @Bindable var model: AppModel
     @FocusState private var sidebarFocused: Bool
@@ -136,8 +136,6 @@ struct SettingsView: View {
                     prompt: Text("Search"))
         .frame(minWidth: 860, idealWidth: 920, minHeight: 600,
                idealHeight: 680)
-        // Controls take Valtz's accent, not the system's.
-        .tint(Color.valtzAccent)
         .background(SettingsWindowKeeper(model: model))
         .onAppear {
             sidebarFocused = true
@@ -427,12 +425,6 @@ private struct SettingsWindowKeeper: NSViewRepresentable {
     }
 }
 
-/// Valtz's accent, as its asset catalog has it: what the system's own
-/// accent colour, a person's choice in System Settings, does not replace.
-extension Color {
-    static let valtzAccent = Color("AccentColor")
-}
-
 /// A row of the sidebar: a page, its icon and name -- the selected one
 /// on the accent, its name bold; selected too while a page under it is
 /// shown -- or, found by a search, a page under one, set in under it, or
@@ -486,7 +478,7 @@ private struct SidebarRow: View {
             .background {
                 if selected {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.valtzAccent)
+                        .fill(Color.accentColor)
                 }
             }
             .contentShape(Rectangle())

@@ -385,12 +385,12 @@ render_shaped(const SoundLayer& l, const fs::path& out)
   [engine attachNode:tp];
   [engine attachNode:eq];
   AVAudioFormat* fmt = mix_format();
-  [engine connect:player to:tp format:fmt];
-  [engine connect:tp to:eq format:fmt];
-  [engine connect:eq to:engine.mainMixerNode format:fmt];
   NSError* err = nil;
   constexpr AVAudioFrameCount kBlock = 2048;
-  if (![engine enableManualRenderingMode:AVAudioEngineManualRenderingModeOffline
+  if (![engine connect:player to:tp format:fmt error:&err] ||
+      ![engine connect:tp to:eq format:fmt error:&err] ||
+      ![engine connect:eq to:engine.mainMixerNode format:fmt error:&err] ||
+      ![engine enableManualRenderingMode:AVAudioEngineManualRenderingModeOffline
                                   format:fmt
                        maximumFrameCount:kBlock
                                    error:&err] ||
@@ -400,7 +400,12 @@ render_shaped(const SoundLayer& l, const fs::path& out)
         err ? err.localizedDescription.UTF8String : "?"));
   }
   [player scheduleBuffer:src completionHandler:nil];
-  [player play];
+  if (![player playAndReturnError:&err]) {
+    [engine stop];
+    return make_error(Code::Internal, std::format(
+        "cannot shift the pitch: {}",
+        err ? err.localizedDescription.UTF8String : "?"));
+  }
   std::error_code ec;
   fs::remove(out, ec);
   // The file interleaved (a CAF holds no other), written from the

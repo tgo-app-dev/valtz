@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 struct ValtzApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model = AppModel()
+    @Environment(\.openWindow) private var openWindow
 
     /// The selection's drawings, for the hook's "dsel": the one selected
     /// on the raster (its box), the lifted ones (theirs), the core's
@@ -870,6 +871,11 @@ struct ValtzApp: App {
                 }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                     .disabled(model.closingTasks != nil)
+                // The anonymous session cleared and its files deleted;
+                // asks first when there is something to lose (RootView).
+                Button("Start Over…") { model.startOverPressed() }
+                    .disabled(!model.isAnonymous || model.isBusy
+                              || model.closingTasks != nil)
                 Button("Open Project…") { openProject() }
                     .keyboardShortcut("o")
                     .disabled(model.closingTasks != nil)
@@ -1022,15 +1028,11 @@ struct ValtzApp: App {
                 Toggle("Markdown as It Reads", isOn: Binding(
                     get: { model.promptMarkdown },
                     set: { model.promptMarkdown = $0 }))
-                // The machine's load and thermal state along the bottom:
-                // ⌘/, as Finder's status bar.
-                Button(model.showsStatusBar ? "Hide Status Bar"
-                                            : "Show Status Bar") {
-                    withAnimation(AppModel.motion) {
-                        model.showsStatusBar.toggle()
-                    }
-                }
-                .keyboardShortcut("/")
+                // The app dark (or light) for proofing a picture on the
+                // other ground, whatever the Mac is set to.
+                Toggle("Proof on Dark Background", isOn: Binding(
+                    get: { model.appearsDark },
+                    set: { model.setAppearance(dark: $0, animated: true) }))
             }
             // The selected markup objects' order, by Photoshop's keys (the
             // toolbar's Arrange panel has the rest).
@@ -1052,6 +1054,12 @@ struct ValtzApp: App {
                     ShortcutHints.shared.showLatched()
                 }
                 .keyboardShortcut("?", modifiers: .command)
+                #if DEBUG
+                Divider()
+                Button { openWindow(id: "design-gallery") } label: {
+                    Text(verbatim: "Design Gallery")
+                }
+                #endif
             }
             CommandGroup(before: .sidebar) {
                 Button(model.navOpen ? "Hide Navigation" : "Show Navigation") {
@@ -1061,6 +1069,12 @@ struct ValtzApp: App {
                 Divider()
             }
         }
+        #if DEBUG
+        Window(Text(verbatim: "Design Gallery"), id: "design-gallery") {
+            DesignGallery()
+        }
+        .defaultSize(width: 760, height: 720)
+        #endif
         Settings {
             SettingsView(model: model)
         }
@@ -1505,9 +1519,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if env["VALTZ_SNAPSHOT_INSPECTOR"] != nil {
                 m.inspectorOpen = true
-            }
-            if env["VALTZ_SNAPSHOT_STATUS_BAR"] != nil {
-                m.showsStatusBar = true
             }
             // A member's offer, asked ("Ask Each Time"), answered as
             // its alert's button would, two seconds after it comes
@@ -2764,15 +2775,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Clicks posted to the window ("x,y" in points from its top
             // left; ";" between), as the pointer's would come: each
             // prints what has the focus after it.
-            // VALTZ_SNAPSHOT_MEMORY=1|<s>: RAM's popover opened (as a
-            // click on its meter opens it), read for s seconds (3), what
-            // it shows printed -- each share, the engine's own figures --
-            // and drawn to <snapshot>-memory.png (a popover is a window
-            // of its own: the capture does not hold it).
+            // VALTZ_SNAPSHOT_MEMORY=1|<s>: the Activity popover opened
+            // (its Memory fold reads what Valtz holds), read for s
+            // seconds (3), what it shows printed -- each share, the
+            // engine's own figures -- and drawn to <snapshot>-memory.png
+            // (a popover is a window of its own: the capture does not
+            // hold it).
             if let m = model, let spec = env["VALTZ_SNAPSHOT_MEMORY"] {
-                m.memoryPopoverOpen = true
+                m.activityOpen = true
+                m.monitor.startMemory()
                 try? await Task.sleep(for: .seconds(Double(spec) ?? 3))
-                let parts = MemoryPopover.parts(load: m.monitor.load,
+                let parts = MemorySection.parts(load: m.monitor.load,
                                                 memory: m.monitor.memory)
                 func mb(_ v: Double?) -> String {
                     v.map { "\(Int($0 / 1_048_576))" } ?? "-"
@@ -2786,7 +2799,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         + ($0.seconds.map { "@\(Int($0))s" } ?? "")
                 }.joined(separator: ",")
                 FileHandle.standardError.write(Data(
-                    "snapshot: memory open=\(m.memoryPopoverOpen) read=\(m.monitor.memory != nil) items=\(items.isEmpty ? "-" : items) shares=\(shares) footprint=\(mb(m.monitor.load.footprint)) gpu=\(mb(m.monitor.memory?.gpuAllocated)) total=\(mb(m.monitor.load.total))\n".utf8))
+                    "snapshot: memory open=\(m.activityOpen) read=\(m.monitor.memory != nil) items=\(items.isEmpty ? "-" : items) shares=\(shares) footprint=\(mb(m.monitor.load.footprint)) gpu=\(mb(m.monitor.memory?.gpuAllocated)) total=\(mb(m.monitor.load.total))\n".utf8))
                 let r = ImageRenderer(content: MemoryPopover(model: m)
                     .background(Color(nsColor: .windowBackgroundColor)))
                 r.scale = 2
@@ -2797,20 +2810,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let out = (path as NSString).deletingPathExtension
                         + "-memory.png"
                     try? png.write(to: URL(fileURLWithPath: out))
-                }
-            }
-            // The status bar's context menu, opened by a right-click
-            // posted on the bar: its items printed (+ checked), then
-            // the one named picked ("-": only looked at).
-            if let m = model,
-               let spec = env["VALTZ_SNAPSHOT_STATUS_MENU"] {
-                try? await Task.sleep(for: .seconds(1))
-                for pick in spec.split(separator: ";").map(String.init) {
-                    let items = await Self.statusMenu(
-                        pick: pick == "-" ? nil : pick)
-                    try? await Task.sleep(for: .milliseconds(400))
-                    FileHandle.standardError.write(Data(
-                        "snapshot: status-menu pick=\(pick) items=\(items) shown=\(Self.statusItems(m))\n".utf8))
                 }
             }
             if let m = model, let spec = env["VALTZ_SNAPSHOT_CLICKS"] {
@@ -6706,8 +6705,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "memoryFailure=\(m.memoryFailure.map { f in "\(f.step):\(MemoryFailure.size(f.need)):\(f.gates.filter { !$0.ok }.map(\.name).joined(separator: "+")):parts=\(f.parts.map(\.name).joined(separator: "+")):plan=\(MemoryFailure.size(f.planPeak))" } ?? "-") "
                 + "suggests=\([m.suggestsShorterClip ? "length" : nil, m.suggestsSmallerSize ? "size" : nil, m.suggestsFewerReferences ? "refs" : nil].compactMap { $0 }.joined(separator: ",")) "
                 + "bypassed=\(m.bypassed.map { "\($0)" }.sorted()) "
-                + "statusBar=\(m.showsStatusBar) "
-                + "statusItems=\(Self.statusItems(m)) "
+                + "activity=\(m.activityOpen ? "open" : "-") "
                 + "createTabs=\(m.modalities.map(\.rawValue).joined(separator: ",")) "
                 + "agentSpeed=\(m.agentShowsSpeed ? "on" : "off") "
                 // The stage player's own controls: floating, or none
@@ -7396,82 +7394,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         post(.leftMouseDown, 2)
         try? await Task.sleep(for: .milliseconds(60))
         post(.leftMouseUp, 2)
-    }
-
-    /// The status bar's items shown, "gpu,ram,..." ("-": none).
-    @MainActor
-    static func statusItems(_ m: AppModel) -> String {
-        let shown = StatusBarItem.allCases.filter { m.showsStatusItem($0) }
-        return shown.isEmpty ? "-" : shown.map(\.rawValue)
-            .joined(separator: ",")
-    }
-
-    /// A right-click posted on the status bar, at its left edge: the menu
-    /// it opens read as it tracks -- "+GPU,-ANE,...,Hide_Status_Bar" --
-    /// then shut, the item titled `pick` performed. "no-menu" when none
-    /// opened in three seconds.
-    @MainActor
-    static func statusMenu(pick: String?) async -> String {
-        guard let win = NSApp.windows.first(where: { $0.isVisible }) else {
-            return "no-window"
-        }
-        // What the closures share: the observer, the menu once it opened
-        // (AppKit's, used on the main thread alone), whether it is over.
-        final class Watch: @unchecked Sendable {
-            var token: NSObjectProtocol?
-            var menu: NSMenu?
-            var done = false
-        }
-        let watch = Watch()
-        return await withCheckedContinuation { cont in
-            @MainActor func finish(_ s: String) {
-                guard !watch.done else { return }
-                watch.done = true
-                if let t = watch.token {
-                    NotificationCenter.default.removeObserver(t)
-                }
-                cont.resume(returning: s)
-            }
-            watch.token = NotificationCenter.default.addObserver(
-                forName: NSMenu.didBeginTrackingNotification, object: nil,
-                queue: .main) { note in
-                watch.menu = note.object as? NSMenu
-                MainActor.assumeIsolated {
-                    guard let menu = watch.menu else { return }
-                    let items = menu.items.map { i in
-                        i.isSeparatorItem ? "|" :
-                            (i.state == .on ? "+" : i.action == nil ? ""
-                                : "-") + i.title
-                            .replacingOccurrences(of: " ", with: "_")
-                    }.joined(separator: ",")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        MainActor.assumeIsolated {
-                            guard let menu = watch.menu else { return }
-                            menu.cancelTrackingWithoutAnimation()
-                            if let pick, let i = menu.items.firstIndex(
-                                where: { $0.title == pick }) {
-                                menu.performActionForItem(at: i)
-                            }
-                            finish(items)
-                        }
-                    }
-                }
-            }
-            // In the bar's left padding: the bar's own, no meter's.
-            let p = NSPoint(x: 6, y: StatusBar.height / 2)
-            for type in [NSEvent.EventType.rightMouseDown, .rightMouseUp] {
-                if let ev = NSEvent.mouseEvent(
-                    with: type, location: p, modifierFlags: [],
-                    timestamp: 0, windowNumber: win.windowNumber,
-                    context: nil, eventNumber: 0, clickCount: 1,
-                    pressure: 1) {
-                    NSApp.postEvent(ev, atStart: false)
-                }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                MainActor.assumeIsolated { finish("no-menu") }
-            }
-        }
     }
 
     /// The pointer moved to (x, y) points from the window's top left:

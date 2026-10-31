@@ -770,6 +770,16 @@
         }
       }
     },
+    "%@ tasks" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%@ 个任务"
+          }
+        }
+      }
+    },
     "%@ wanted" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2058,6 +2068,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "当前"
+          }
+        }
+      }
+    },
+    "Activity" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活动"
+          }
+        }
+      }
+    },
+    "Activity: nothing running; the machine's load" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活动：没有在运行的任务；这台 Mac 的负载"
+          }
+        }
+      }
+    },
+    "Activity: what is running, and the machine's load" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活动：正在运行的任务，以及这台 Mac 的负载"
           }
         }
       }
@@ -4307,6 +4347,16 @@
         }
       }
     },
+    "Choose Agent in the composer (⌘4) and ask for something to make." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在编写区选择“代理”（⌘4），告诉它要做什么。"
+          }
+        }
+      }
+    },
     "Choose a File or Folder…" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4564,6 +4614,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "点按在该处输入文本框，或点按形状在其中输入文字；完成后按 Esc。"
+          }
+        }
+      }
+    },
+    "Click to watch it on the stage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "点按以在舞台上查看"
           }
         }
       }
@@ -6238,6 +6298,16 @@
         }
       }
     },
+    "Divider between %@ and %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@ 与 %2$@ 之间的分隔条"
+          }
+        }
+      }
+    },
     "Do Nothing" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7326,6 +7396,16 @@
         }
       }
     },
+    "Everything you make or add lands here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你生成或添加的一切都会放在这里。"
+          }
+        }
+      }
+    },
     "Exact" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7422,6 +7502,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在导出"
+          }
+        }
+      }
+    },
+    "Exporting…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在导出…"
           }
         }
       }
@@ -8437,6 +8527,16 @@
         }
       }
     },
+    "Generations and exports show here as they run." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成与导出在运行时会显示在这里。"
+          }
+        }
+      }
+    },
     "Glow" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8800,6 +8900,7 @@
       }
     },
     "Hide Status Bar" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -10573,6 +10674,7 @@
       }
     },
     "Light or Dark" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -12160,6 +12262,36 @@
         }
       }
     },
+    "No Assets Yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有素材"
+          }
+        }
+      }
+    },
+    "No Conversation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有对话"
+          }
+        }
+      }
+    },
+    "No Layers" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有图层"
+          }
+        }
+      }
+    },
     "No Limit" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12698,6 +12830,16 @@
         }
       }
     },
+    "Nothing Running" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有在运行的任务"
+          }
+        }
+      }
+    },
     "Nothing has been made from it yet, so it is not in Assets: closing its tab would lose it." : {
       "localizations" : {
         "zh-Hans" : {
@@ -12724,6 +12866,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "项目中还没有内容"
+          }
+        }
+      }
+    },
+    "Nothing running" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有在运行的任务"
+          }
+        }
+      }
+    },
+    "Nothing to Inspect" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "没有可检查的内容"
           }
         }
       }
@@ -14420,7 +14582,18 @@
         }
       }
     },
+    "Proof on Dark Background" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在深色背景上校样"
+          }
+        }
+      }
+    },
     "Proof on a dark background" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -14431,6 +14604,7 @@
       }
     },
     "Proof on a light background" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -14466,6 +14640,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "收起：下一个请求将重新开始"
+          }
+        }
+      }
+    },
+    "Put something on the stage, or select a layer." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "把内容放到舞台上，或选择一个图层。"
           }
         }
       }
@@ -15748,6 +15932,16 @@
         }
       }
     },
+    "Running" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "运行中"
+          }
+        }
+      }
+    },
     "Running hot but still at full clock. A fanless Mac usually starts slowing down if the load continues." : {
       "localizations" : {
         "zh-Hans" : {
@@ -16395,6 +16589,17 @@
         }
       }
     },
+    "Shape" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "形状"
+          }
+        }
+      }
+    },
     "Shape the sound: gain, pitch, equalizer" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16587,6 +16792,7 @@
       }
     },
     "Show Status Bar" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16832,6 +17038,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示内容"
+          }
+        }
+      }
+    },
+    "Shows it on the stage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在舞台上显示它"
+          }
+        }
+      }
+    },
+    "Shows its settings" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示它的设置"
           }
         }
       }
@@ -17411,6 +17637,16 @@
         }
       }
     },
+    "Start Over…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重新开始…"
+          }
+        }
+      }
+    },
     "Start a new anonymous project?" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -17474,6 +17710,7 @@
       }
     },
     "Start over — clear this session and delete its images" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -18584,7 +18821,6 @@
       }
     },
     "The first figure and the bar in front: the memory Valtz is using, models included (its footprint, as Activity Monitor shows it). The second figure and the grey bar behind it: the memory the whole Mac is using (Activity Monitor's Memory Used), of all it has." : {
-      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -18595,6 +18831,7 @@
       }
     },
     "The first figure and the bar in front: the memory Valtz is using, models included (its footprint, as Activity Monitor shows it). The second figure and the grey bar behind it: the memory the whole Mac is using (Activity Monitor's Memory Used), of all it has. Click it for what Valtz holds, model by model." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -19249,6 +19486,7 @@
       }
     },
     "Thermal" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -21030,6 +21268,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "请等待正在进行的工作完成。"
+          }
+        }
+      }
+    },
+    "Waiting" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "等待中"
           }
         }
       }

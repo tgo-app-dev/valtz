@@ -91,7 +91,7 @@ struct SimpleView: View {
     private func column(_ immersive: Bool, size: CGSize) -> some View {
         let base = min(Self.columnWidth, size.width - 80)
         let wide = immersive && model.suggesting
-        let card = wide ? max(base, size.width - StatusBar.height
+        let card = wide ? max(base, size.width - Self.footInset
                                     - (size.width - base) / 2)
                         : base
         return VStack(spacing: 0) {
@@ -243,7 +243,7 @@ struct SimpleView: View {
         }
         .padding(.horizontal, 40)
         .padding(.top, immersive ? 0 : 12)
-        .padding(.bottom, immersive ? StatusBar.height
+        .padding(.bottom, immersive ? Self.footInset
                  : model.stageVisible ? 28 : 0)
     }
 
@@ -292,6 +292,9 @@ struct SimpleView: View {
         }
     }
 
+    /// The Prompt Editor's card: this much short of the window's foot
+    /// (and of its right edge, split).
+    static let footInset: CGFloat = 24
     /// The small stage's margin, left and top.
     static let smallInset: CGFloat = 16
     /// Its transport's row, under the picture.

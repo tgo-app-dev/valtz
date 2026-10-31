@@ -1629,7 +1629,7 @@ private struct StartButton: View {
     private func stop(shown: Bool) -> some View {
         Button(action: model.stop) {
             ZStack {
-                ProgressPie(fraction: progress, running: shown)
+                ActivityRing(fraction: progress, running: shown)
                 Image(systemName: "stop.fill")
                     .font(.system(size: 7))
             }
@@ -1664,69 +1664,6 @@ private struct StartButton: View {
         duration: 0.32 * AppModel.animationScale, bounce: 0.35)
     private static let goes = Animation.easeIn(
         duration: 0.15 * AppModel.animationScale)
-}
-
-/// A task's progress as macOS draws a small determinate circle -- a pie
-/// filling clockwise from twelve on a pale disc -- or, while nothing is
-/// counted, an arc going round. Drawn by SwiftUI, not AppKit's spinner:
-/// a platform view does not scale about its own centre, and in Stop's
-/// arrival the spinner flew in, large, from the window's lower right.
-private struct ProgressPie: View {
-    var fraction: Double?
-    var diameter: CGFloat = 16
-    /// Off: the arc stands still (Stop hidden draws nothing to move).
-    var running = true
-
-    var body: some View {
-        ZStack {
-            Circle().fill(.quaternary)
-            Circle().strokeBorder(.tertiary, lineWidth: 0.5)
-            if let f = fraction {
-                Pie(fraction: f)
-                    .fill(.secondary)
-                    .padding(1.5)
-                    .animation(.linear(duration: 0.2), value: f)
-            } else {
-                TimelineView(.animation(minimumInterval: nil,
-                                        paused: !running)) { ctx in
-                    let t = ctx.date.timeIntervalSinceReferenceDate
-                    Circle()
-                        .trim(from: 0, to: 0.28)
-                        .stroke(.secondary,
-                                style: StrokeStyle(lineWidth: 2,
-                                                   lineCap: .round))
-                        .padding(2)
-                        .rotationEffect(.degrees(
-                            t.truncatingRemainder(dividingBy: 1) * 360))
-                }
-            }
-        }
-        .frame(width: diameter, height: diameter)
-    }
-
-    /// The wedge from twelve o'clock to `fraction` of the way round.
-    private struct Pie: Shape {
-        var fraction: Double
-
-        var animatableData: Double {
-            get { fraction }
-            set { fraction = newValue }
-        }
-
-        func path(in rect: CGRect) -> Path {
-            var p = Path()
-            let f = min(max(fraction, 0), 1)
-            guard f > 0 else { return p }
-            let c = CGPoint(x: rect.midX, y: rect.midY)
-            p.move(to: c)
-            // Clockwise as seen: SwiftUI's y runs down.
-            p.addArc(center: c, radius: min(rect.width, rect.height) / 2,
-                     startAngle: .degrees(-90),
-                     endAngle: .degrees(-90 + 360 * f), clockwise: false)
-            p.closeSubpath()
-            return p
-        }
-    }
 }
 
 /// The model field: AUTO first -- the core's pick for what Start does
