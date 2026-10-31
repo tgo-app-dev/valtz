@@ -348,8 +348,12 @@ add_executable(Valtz MACOSX_BUNDLE ${VALTZ_APP_SOURCES}
   ${VALTZ_MARK_SOURCES} Sources/Mark/MarkView.swift
   ${VALTZ_APP_RESOURCES})
 target_link_libraries(Valtz PRIVATE valtz_bridge)
+# DEBUG is a convention of Xcode's templates, not of swiftc: a Debug
+# build defines it here, for the Design Gallery and anything else kept
+# out of a release (#if DEBUG).
 target_compile_options(Valtz PRIVATE
   "$<$<COMPILE_LANGUAGE:Swift>:-parse-as-library>"
+  "$<$<AND:$<COMPILE_LANGUAGE:Swift>,$<CONFIG:Debug>>:-DDEBUG>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-emit-localized-strings -emit-localized-strings-path ${VALTZ_STRINGSDATA_DIR}>")
 file(MAKE_DIRECTORY "${VALTZ_STRINGSDATA_DIR}")
 set_target_properties(Valtz PROPERTIES

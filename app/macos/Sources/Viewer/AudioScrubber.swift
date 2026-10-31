@@ -62,7 +62,7 @@ final class AudioScrubber {
         if !attached {
             engine.attach(node)
             do {
-                try engine.connect(node, to: engine.mainMixerNode,
+                try engine.connectNode(node, to: engine.mainMixerNode,
                                    format: format)
             } catch { return }
             attached = true
