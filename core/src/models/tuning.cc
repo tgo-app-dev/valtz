@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -39,6 +41,9 @@ struct Offer {
   std::string needs;
   Json        extra = Json::object();  // per-option detail for the panel
   Json        choices = Json::array();  // a Choice's values, in order
+  // A Real that takes a SCHEDULE too: a value a denoising step, written
+  // "1.0,1.5,1.75" (H3's sol_tau, vpipe's sol_tau_steps).
+  bool        schedule = false;
   // An extension's own option (catalog `engine.vpipe.options`): the text
   // the panel shows for it (the app has none of its own), read in the
   // UI's language when the catalog took it.
@@ -280,12 +285,14 @@ declared_offers(const Json& vp, const TuningContext& ctx,
                 std::string_view preference, std::vector<Offer>& out)
 {
   static const std::set<std::string> kOwn = {
-    "steps", "loras", "dits", "vaes", "hyperflow", "taomate", "vdn",
-    "sol_attn",
+    "steps", "loras", "dits", "vaes", "hyperflow", "pika_flex",
+    "taomate", "vdn",
+    "sol_attn", "sol_threshold",
     "sol_tau", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm",
     "i8_gemm_tier", "vae_i8_gemm",
     "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
-    "motion_cache", "video_shift", "audio_shift", "shift", "turbo"};
+    "motion_cache", "video_shift", "audio_shift", "shift", "turbo",
+    "fast_decoder"};
   for (const auto& d : jget(vp, "options", Json::array())) {
     const auto key = jget<std::string>(d, "key", "");
     const auto type = jget<std::string>(d, "type", "bool");
@@ -382,6 +389,25 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     o.fixes = {{"steps", jget(hf, "steps", 8)}};
     out.push_back(std::move(o));
   }
+  // Pika H3 Flex: Pika Labs' six-step post-training of the DiT, an
+  // adapter whose manifest states how it must be sampled -- its own grid
+  // at shifts 12 / 3, each step re-noised, which vpipe reads beside the
+  // file -- in the Turbo LoRA's slot (settle_loras). Custom's to turn on:
+  // no preset does. vpipe refuses it beside another sampler of its own
+  // (HyperFlow's); MotionCache has nothing to reuse in six steps.
+  if (const Json pk = jget(vp, "pika_flex", Json()); pk.is_object()) {
+    Offer o{"pika_flex", Kind::Bool};
+    o.available = ctx.pika_installed;
+    o.why = o.available ? "" : "not-installed";
+    o.preset = false;
+    o.fixes = {{"steps", jget(pk, "steps", 6)}};
+    const Json fx = jget(pk, "fixes", Json::object());
+    for (auto it = fx.begin(); it != fx.end(); ++it) {
+      o.fixes[it.key()] = it.value();
+    }
+    o.excludes = Json::array({"hyperflow", "taomate", "motion_cache"});
+    out.push_back(std::move(o));
+  }
   // TaoMate-H3: a streaming METHOD with its own adapter, not a few-step
   // LoRA -- an alternative Custom offers, which no preset picks:
   // measured slower than Fast's 4-step LoRA, and off its prompt.
@@ -399,7 +425,8 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     for (auto it = fx.begin(); it != fx.end(); ++it) {
       o.fixes[it.key()] = it.value();
     }
-    o.excludes = Json::array({"hyperflow", "vdn", "motion_cache"});
+    o.excludes = Json::array({"hyperflow", "pika_flex", "vdn",
+                              "motion_cache"});
     out.push_back(std::move(o));
     // ...or its adapter ALONE, as an ordinary few-step LoRA: three steps
     // over the whole clip, no soundtrack pass, no chunks, no cache
@@ -435,11 +462,32 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     o.why = o.available ? "" : "not-for-model";
     o.preset = false;
     out.push_back(std::move(o));
+    // Its FLAVOUR (vpipe's `sol_threshold`): how the routing estimates
+    // the spread of a query block's proxy scores, which the threshold
+    // counts in -- DIAG from the key centroids' per-channel variance
+    // (vpipe's default, as Sol always ran), EXACT from their full
+    // covariance, the published Sol-Attn's (NVlabs' sol-engine, which
+    // Open-H3-Regenerate-2K's refine runs). The two keep different
+    // fractions at one threshold. MEASURED by vpipe on that refine (2K x
+    // 39, M5 Ultra): exact ~5-10% less error than diag at an equal kept
+    // fraction. Every stage Sol runs on takes it.
+    Offer f{"sol_threshold", Kind::Choice};
+    f.available = takes(vp, "sol_attn");
+    f.why = f.available ? "" : "not-for-model";
+    f.choices = Json::array({"diag", "exact"});
+    f.preset = "diag";
+    f.needs = "sol_attn";
+    out.push_back(std::move(f));
+    // ...and the threshold itself -- where the model's stage takes one a
+    // STEP (vpipe's `sol_tau_steps`: MiniMax H3), a schedule too: a
+    // step's error under one threshold falls as the noise does, so the
+    // later steps may keep fewer blocks.
     Offer t{"sol_tau", Kind::Real, 0.0, 4.0, 0.1};
     t.available = takes(vp, "sol_attn");
     t.why = t.available ? "" : "not-for-model";
     t.preset = 1.0;
     t.needs = "sol_attn";
+    t.schedule = takes(vp, "sol_tau_steps");
     out.push_back(std::move(t));
   }
   {
@@ -611,12 +659,12 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     }
     // Its ACCELERATION LoRAs, for Custom's quick pick: the `turbo`
     // block's and every preset's candidates, each at the steps and shifts
-    // it runs with -- not HyperFlow's or TaoMate's adapter, which have
-    // switches of their own.
+    // it runs with -- not HyperFlow's, Pika H3 Flex's or TaoMate's
+    // adapter, which have switches of their own.
     Json fast = Json::array();
     {
       std::set<std::string> taken;
-      for (const char* own : {"hyperflow", "taomate"}) {
+      for (const char* own : {"hyperflow", "pika_flex", "taomate"}) {
         taken.insert(
             jget<std::string>(jget(vp, own, Json::object()), "lora", ""));
       }
@@ -721,6 +769,15 @@ offers(const ModelEntry& m, const TuningContext& ctx,
                          : jget(sched, "shift", 1.15);
     out.push_back(std::move(s));
   }
+  // A refiner's FAST DECODER (Open-H3-Regenerate-2K's StreamRender-H3
+  // decoder, DESIGN §4q; lossy): offered once its download is here.
+  if (upscale && jget(vp, "regenerate", Json()).is_object()) {
+    Offer f{"fast_decoder", Kind::Bool};
+    f.available = ctx.fast_decoder_installed;
+    f.why = f.available ? "" : "not-installed";
+    f.preset = false;
+    out.push_back(std::move(f));
+  }
   declared_offers(vp, ctx, preference, out);
   // The preset's table, by key, over the defaults above: an option this
   // Mac or install cannot have stays off.
@@ -738,6 +795,114 @@ offers(const ModelEntry& m, const TuningContext& ctx,
         o.preset = false;
       }
     }
+  }
+  // Past its trained size the model's clip is REGENERATED by its refiner
+  // (DESIGN §4q): the refine's own options, where it runs here, beside
+  // the model's under kRegeneratePrefix -- each preset at what the refine
+  // runs out of Custom (the refiner's values), what refers to another
+  // (needs, excludes, fixes) referring to it so.
+  if (ctx.refiner && ctx.refiner != &m && !ctx.continuation) {
+    TuningContext rc = ctx;
+    rc.refiner = nullptr;
+    rc.loras.clear();
+    rc.continuation = false;
+    const std::string pre(kRegeneratePrefix);
+    // An upscaler's values are Med's, as Settings › Upscaling settles
+    // them -- and over them the PREFERENCE's own refine (the refiner's
+    // `regenerate.presets.<preference>`, a model's own first: Fast's,
+    // Med's, Fine's Sol, Sage and int8), what it does not name staying
+    // Settings' (the Fast Decoder, the Neural Engine's share).
+    const auto refine_table = [&](const Json& v) {
+      return jget(jget(jget(v, "regenerate", Json::object()), "presets",
+                       Json::object()),
+                  std::string(preference).c_str(), Json());
+    };
+    Json rtable = refine_table(vp);
+    if (!rtable.is_object()) {
+      rtable = refine_table(vpipe_block(*ctx.refiner));
+    }
+    for (Offer o : offers(*ctx.refiner, rc, "balanced", false,
+                          Json::object())) {
+      // Only what the refiner takes (its catalog `accel`, its own).
+      if (o.kind == Kind::List || o.key == "steps" ||
+          (!o.available && o.why == "not-for-model")) {
+        continue;
+      }
+      if (o.available && ctx.refiner_values.is_object() &&
+          ctx.refiner_values.contains(o.key)) {
+        if (Json v = coerce(o, ctx.refiner_values[o.key]); !v.is_null()) {
+          o.preset = std::move(v);
+        }
+      }
+      // (Unavailable, a switch stays off and a choice at its default, as
+      // a model's table is laid.)
+      if (rtable.is_object() && rtable.contains(o.key)) {
+        if (Json v = coerce(o, rtable[o.key]); !v.is_null()) {
+          if (o.available || o.kind == Kind::Int || o.kind == Kind::Real) {
+            o.preset = std::move(v);
+          } else if (o.kind == Kind::Bool) {
+            o.preset = false;
+          }
+        }
+      }
+      o.key = pre + o.key;
+      if (!o.needs.empty()) {
+        o.needs = pre + o.needs;
+      }
+      Json excludes = Json::array();
+      for (const auto& x : o.excludes) {
+        excludes.push_back(pre + x.get<std::string>());
+      }
+      o.excludes = std::move(excludes);
+      Json fixes = Json::object();
+      for (auto it = o.fixes.begin(); it != o.fixes.end(); ++it) {
+        fixes[pre + it.key()] = it.value();
+      }
+      o.fixes = std::move(fixes);
+      out.push_back(std::move(o));
+    }
+  }
+  return out;
+}
+
+// A schedule's text as `o` takes it: comma-separated numbers, each held
+// to its range, written back the shortest way ("1,1.5,1.75") -- vpipe
+// reads it so; one entry is that number. Null when any entry is not a
+// number.
+Json
+schedule_of(const Offer& o, const std::string& text)
+{
+  std::vector<double> steps;
+  std::size_t at = 0;
+  while (at <= text.size()) {
+    std::size_t end = text.find(',', at);
+    if (end == std::string::npos) {
+      end = text.size();
+    }
+    std::string tok = text.substr(at, end - at);
+    const auto first = tok.find_first_not_of(" \t");
+    const auto last = tok.find_last_not_of(" \t");
+    tok = first == std::string::npos ? std::string()
+                                     : tok.substr(first, last - first + 1);
+    char* rest = nullptr;
+    const double d = std::strtod(tok.c_str(), &rest);
+    if (tok.empty() || !rest || *rest != '\0' || !std::isfinite(d)) {
+      return Json();
+    }
+    steps.push_back(std::clamp(d, o.min, o.max));
+    at = end + 1;
+  }
+  if (steps.empty()) {
+    return Json();
+  }
+  if (steps.size() == 1) {
+    return steps.front();
+  }
+  std::string out;
+  for (const double d : steps) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%g", d);
+    out += (out.empty() ? "" : ",") + std::string(buf);
   }
   return out;
 }
@@ -757,6 +922,9 @@ coerce(const Offer& o, const Json& v)
     return static_cast<int>(std::clamp(d, o.min, o.max));
   }
   case Kind::Real: {
+    if (v.is_string() && o.schedule) {
+      return schedule_of(o, v.get<std::string>());
+    }
     if (!v.is_number()) {
       return Json();
     }
@@ -841,9 +1009,10 @@ settle_loras(const Offer& o, Json& values, const Json& overrides)
     }
   }
   int slots = jget(o.extra, "slots", kLoraSlots);
-  // HyperFlow's adapter, or TaoMate's, takes the first slot -- and the
-  // Turbo LoRA's place.
+  // HyperFlow's adapter, Pika H3 Flex's or TaoMate's takes the first
+  // slot -- and the Turbo LoRA's place.
   const bool adapter = jget(values, "hyperflow", false) ||
+                       jget(values, "pika_flex", false) ||
                        jget(values, "taomate", false);
   if (adapter) {
     --slots;
@@ -1005,7 +1174,7 @@ missing_loras(const ModelEntry& m, const TuningContext& ctx,
               std::string_view preference, const Json& overrides)
 {
   // TaoMate in the Turbo LoRA's place needs none -- the preset's choice,
-  // unless Custom says otherwise.
+  // unless Custom says otherwise; nor does Pika H3 Flex, Custom's alone.
   const Json vp = vpipe_block(m);
   bool taomate = taomate_preset(vp, ctx, preference);
   if (overrides.is_object() && overrides.contains("taomate") &&
@@ -1013,7 +1182,11 @@ missing_loras(const ModelEntry& m, const TuningContext& ctx,
       jget(vp, "taomate", Json()).is_object() && ctx.taomate_installed) {
     taomate = overrides["taomate"].get<bool>();
   }
-  if (taomate) {
+  const bool pika = overrides.is_object() &&
+                    jget(overrides, "pika_flex", false) &&
+                    jget(vp, "pika_flex", Json()).is_object() &&
+                    ctx.pika_installed;
+  if (taomate || pika) {
     return Json::array();
   }
   return pick_turbo(m, ctx, preference).missing;
@@ -1046,6 +1219,9 @@ tuning_options(const ModelEntry& m, const TuningContext& ctx,
     if (o.kind == Kind::Choice) {
       j["choices"] = o.choices;
     }
+    if (o.schedule) {
+      j["schedule"] = true;
+    }
     if (!o.excludes.empty()) {
       j["excludes"] = o.excludes;
     }
@@ -1073,8 +1249,8 @@ tuning_options(const ModelEntry& m, const TuningContext& ctx,
     turbo = {{"id", pick.id}, {"name", pick.name},
              {"steps", jget(values, "steps", 0)}};
   }
-  // TaoMate in the Turbo LoRA's place needs none. (Read before `values`
-  // is moved into the result.)
+  // TaoMate or Pika H3 Flex in the Turbo LoRA's place needs none. (Read
+  // before `values` is moved into the result.)
   Json missing = missing_loras(m, ctx, preference, overrides);
   return {{"family", m.family}, {"preference", std::string(preference)},
           {"values", std::move(values)}, {"options", std::move(opts)},

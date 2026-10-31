@@ -256,7 +256,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .helper:
             String(localized: "The model that writes prompts with you, reads what you ask for and watches your clips: which one, and how it runs.")
         case .upscaling:
-            String(localized: "How Render Upscaled restores a layer at the size it is shown — FlashVSR+ or FlashVSR 1.1 for clips, VOSR for pictures: which one, and the arithmetic each runs with.")
+            String(localized: "How Render Upscaled restores a layer at the size it is shown — FlashVSR+ or FlashVSR 1.1 for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR for pictures: which one, and the arithmetic each runs with.")
         case .fleet:
             String(localized: "The Valtz Macs of this network as one: a job this Mac cannot run, or not now, goes to a member that can, and this Mac takes theirs when it is free.")
         case .storage:

@@ -146,7 +146,9 @@ struct SettingsRow: Identifiable, Sendable {
                                 String(localized: "Custom"),
                                 "\(d.width) × \(d.height)",
                                 "\(d.width)x\(d.height)"]
-                            + SizeClass.allCases.map(\.label)),
+                            + SizeClass.allCases.map {
+                                $0.label(m.activeModality)
+                            }),
             SettingsRow(id: favor, panel: .generate,
                         terms: [String(localized: "Favor")]
                             + Preference.allCases.flatMap {

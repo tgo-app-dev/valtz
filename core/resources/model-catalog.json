@@ -87,6 +87,8 @@
         {"model": "minimax-h3-fl2va", "label": "FL2VA"},
         {"model": "minimax-h3-ref2va", "label": "Ref2VA"},
         {"model": "taeh3", "label": "TAE"},
+        {"model": "minimax-h3-pika-flex", "label": "Pika H3 Flex adapter, FL2VA (6-step)"},
+        {"model": "minimax-h3-ref2va-pika-flex", "label": "Pika H3 Flex adapter, Ref2VA (6-step)"},
         {"model": "minimax-h3-turbo-3step", "label": "TaoMate adapter (3-step streaming method)"},
         {"model": "minimax-h3-turbo-4step", "label": "4-step Turbo LoRA, FL2VA (lightx2v)"},
         {"model": "minimax-h3-ref2va-turbo-4step", "label": "4-step Turbo LoRA, Ref2VA (lightx2v)"},
@@ -95,7 +97,10 @@
         {"model": "minimax-h3-ref2va-turbo-8step", "label": "8-step Turbo LoRA, Ref2VA (lightx2v)"},
         {"model": "minimax-h3-vdn", "label": "VDN linear branch"},
         {"model": "minimax-h3-hyperflow", "label": "HyperFlow (8-step)"},
-        {"model": "minimax-h3-image-vae", "label": "Image VAE (Mamad8)"}
+        {"model": "minimax-h3-image-vae", "label": "Image VAE (Mamad8)"},
+        {"model": "open-h3-regenerate-2k", "label": "Open-H3-Regenerate-2K refiner (NVIDIA): clips past 768P"},
+        {"model": "open-h3-latent-upscaler", "label": "Latent upscaler (for the refiner)"},
+        {"model": "open-h3-fast-vae", "label": "Fast decoder (for the refiner, lossy)"}
       ]
     },
     {
@@ -877,12 +882,16 @@
             }
           },
           "hyperflow": {"lora": "minimax-h3-hyperflow", "steps": 8},
+          "pika_flex": {"lora": "minimax-h3-pika-flex", "steps": 6,
+                        "fixes": {"video_shift": 12, "audio_shift": 3}},
           "taomate": {"lora": "minimax-h3-turbo-3step", "steps": 3,
                       "fixes": {"video_shift": 12, "audio_shift": 3},
                       "lora_only": {"steps": 3,
                                     "fixes": {"video_shift": 12, "audio_shift": 3}}},
           "vdn": {"branch": "minimax-h3-vdn"},
-          "accel": ["sol_attn", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "regenerate": {"with": "open-h3-regenerate-2k", "above": 768,
+                         "draft": 768},
+          "accel": ["sol_attn", "sol_tau_steps", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
           "first_frame": true,
           "last_frame": true,
@@ -963,6 +972,10 @@
             "config": {"video_shift": 6.0}
           },
           "hyperflow": {"lora": "minimax-h3-hyperflow", "steps": 8},
+          "pika_flex": {"lora": "minimax-h3-ref2va-pika-flex", "steps": 6,
+                        "fixes": {"video_shift": 12, "audio_shift": 3}},
+          "regenerate": {"with": "open-h3-regenerate-2k", "above": 768,
+                         "draft": 768},
           "presets": {
             "speed": {
               "turbo": [
@@ -989,7 +1002,7 @@
             "speed": {"turbo": [], "hyperflow": true},
             "balanced": {"turbo": [], "hyperflow": true, "sol_attn": false}
           },
-          "accel": ["sol_attn", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sol_tau_steps", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
           "references": {
             "max_pictures": 9, "max_clips": 3, "max_sounds": 3,
@@ -1574,6 +1587,30 @@
       "notes": "Mamad8's single-latent-frame decoder: H3 decodes one frame as a still with it (vpipe's vae-decode takes it for a one-frame latent)."
     },
     {
+      "id": "minimax-h3-pika-flex", "name": "MiniMax H3 Pika H3 Flex adapter (FL2VA)",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "Pika-Labs/Pika-H3-Flex",
+      "check": {"tensors": ["lora"]},
+      "file": "fl2va/adapter.safetensors",
+      "fetch_variant": "Pika-Labs/Pika-H3-Flex-fl2va",
+      "capabilities": [],
+      "disk_gb": 2.8, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "minimax",
+      "notes": "Pika Labs' six-step post-training of the FL2VA partition (rank 128, FP32): text, a first frame, a last frame or both. Its manifest.json, fetched beside it, states how it is sampled -- its own grid at shifts 12 / 3, each step re-noised -- which vpipe reads at bind (vpipe 24246ed1); the step count is its six. Takes the adapter slot the Turbo LoRA would; refused beside HyperFlow. Favor's Custom: Pika H3 Flex."
+    },
+    {
+      "id": "minimax-h3-ref2va-pika-flex", "name": "MiniMax H3 Pika H3 Flex adapter (Ref2VA)",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "Pika-Labs/Pika-H3-Flex",
+      "check": {"tensors": ["lora"]},
+      "file": "ref2va/adapter.safetensors",
+      "fetch_variant": "Pika-Labs/Pika-H3-Flex-ref2va",
+      "capabilities": [],
+      "disk_gb": 2.8, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "minimax",
+      "notes": "Pika Labs' six-step post-training of the Ref2VA partition (rank 128, FP32): up to twelve pictures, clips and sounds referenced. Sampled as its manifest.json states (its grid at shifts 12 / 3, each step re-noised; vpipe 24246ed1), six steps. Takes the adapter slot the Turbo LoRA would; refused beside HyperFlow. Favor's Custom: Pika H3 Flex."
+    },
+    {
       "id": "minimax-h3-turbo-3step", "name": "MiniMax H3 TaoMate adapter",
       "family": "minimax-h3", "role": "lora",
       "hf_path": "TaoLiveAIGC/TaoMate-H3",
@@ -1583,6 +1620,81 @@
       "disk_gb": 1.5, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
       "license": "minimax-h3-community",
       "notes": "TaoLive's 3-step adapter for the FL2VA partition (step-3000 generator EMA, rank 128, a PEFT adapter folder) -- the adapter of a streaming METHOD, not a few-step LoRA: the base model writes the soundtrack, the adapter the video in chunks against a clean K/V cache (vpipe's taomate; Favor's TaoMate). Text to clip only, in whole 5-second requests; its cache is kept on disk. An alternative method in Favor's Custom: no preset turns it on."
+    },
+    {
+      "id": "open-h3-regenerate-2k", "name": "Open-H3-Regenerate-2K",
+      "family": "minimax-h3", "role": "upscale", "by_name": true,
+      "hf_path": "Efficient-Large-Model/Open-H3-Regenerate-2K",
+      "check": {"tensors": ["lora_A", "token_refiner"]},
+      "file": "lora/open_h3_regenerate_2k_lora.safetensors",
+      "fetch_variant": "Efficient-Large-Model/Open-H3-Regenerate-2K-lora",
+      "capabilities": ["upscale-video"],
+      "requires": ["open-h3-latent-upscaler", "minimax-h3-fl2va"],
+      "engine": {
+        "vpipe": {
+          "regenerate": {
+            "base": "minimax-h3-fl2va",
+            "upscaler": "open-h3-latent-upscaler",
+            "fast_decoder": "open-h3-fast-vae",
+            "steps": 3, "encode_short_edge": 768, "posterior_seed": 42,
+            "presets": {
+              "speed": {
+                "sol_attn": true, "sol_threshold": "exact",
+                "sol_tau": 1.75, "sage_attn": true,
+                "sage_pv8": true, "sage_pv8_all_rows": false,
+                "i8_gemm": true, "i8_gemm_tier": "token"
+              },
+              "balanced": {
+                "sol_attn": true, "sol_threshold": "exact",
+                "sol_tau": "1.0,1.5,1.75", "sage_attn": true,
+                "sage_pv8": false, "i8_gemm": true,
+                "i8_gemm_tier": "fast"
+              },
+              "quality": {
+                "sol_attn": true, "sol_threshold": "exact",
+                "sol_tau": "0.75,0.75,0.75", "sage_attn": true,
+                "sage_pv8": false, "i8_gemm": true,
+                "i8_gemm_tier": "accurate"
+              }
+            }
+          },
+          "accel": ["sol_attn", "sol_tau_steps", "sage_attn", "sage_pv8",
+                    "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier",
+                    "ane_ffn", "ane_qkv"],
+          "ane_qkv_min_ram_gb": 24,
+          "steps_fixed": true,
+          "defaults": {"steps": 3}
+        }
+      },
+      "disk_gb": 12.5, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "minimax",
+      "notes": "NVIDIA's refine of a MiniMax H3 clip at a larger size (2K from 768P): the clip's latent enlarged by the latent upscaler, re-noised and denoised again in three steps by H3 FL2VA under one merged LoRA (their refiner, lightx2v's FL2VA Turbo v1.2, LMS Sharp v1.0). A clip past 768 on its short side is drafted at 768 and regenerated with it -- an FL2VA clip, or a Ref2VA one (drafted by Ref2VA, refined by FL2VA against the prompt's regenerate_prompt: segment, else words made from it); Render Upscaled runs it when chosen in Settings > Upscaling. Never Auto's upscaler: a 2K clip of 5 s is hours on most Macs."
+    },
+    {
+      "id": "open-h3-latent-upscaler",
+      "name": "MiniMax H3 latent upscaler (Open-H3-Regenerate-2K)",
+      "family": "minimax-h3", "role": "latent-upscaler",
+      "hf_path": "Efficient-Large-Model/Open-H3-Regenerate-2K",
+      "check": {"tensors": ["in_blocks", "dwconv"]},
+      "file": "latent_upsampler/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+      "fetch_variant": "Efficient-Large-Model/Open-H3-Regenerate-2K-upscaler",
+      "capabilities": [],
+      "disk_gb": 0.7, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "mit",
+      "notes": "LBH-123-AI's 3D-conv latent upscaler as Open-H3-Regenerate-2K ships it: an H3 latent enlarged without decoding it (768P to 2K), told the ratio."
+    },
+    {
+      "id": "open-h3-fast-vae",
+      "name": "MiniMax H3 fast decoder (Open-H3-Regenerate-2K)",
+      "family": "minimax-h3", "role": "vae",
+      "hf_path": "Efficient-Large-Model/Open-H3-Regenerate-2K",
+      "check": {"tensors": ["register_tokens", "x_embedder"]},
+      "file": "vae_fast/fast_h3_vae_noncausal_24l.safetensors",
+      "fetch_variant": "Efficient-Large-Model/Open-H3-Regenerate-2K-fast-vae",
+      "capabilities": [],
+      "disk_gb": 6.5, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "minimax",
+      "notes": "NVIDIA's StreamRender-H3 decoder: 24 of the released decoder's layers distilled, over the whole clip at once -- 3.6x faster on an M4 Pro, LOSSY (40 dB from the released decoder on one refine). Used by Open-H3-Regenerate-2K when its Fast Decoder is on; its working memory grows with the clip (12 GB at 2K x 121 frames)."
     },
     {
       "id": "minimax-h3-turbo-4step", "name": "MiniMax H3 FL2VA 4-step LoRA",

@@ -240,6 +240,9 @@ struct BuiltGraph {
   double                preview_start = 0;
   double                preview_fps = 24;
   std::string           preview_sink;  // live TAE previews (latest only)
+  // A regenerated clip's draft, decoded: one [F, 3, H, W] clip, shown in
+  // place of the TAE's while the refine runs (DESIGN §4q).
+  std::string           draft_sink;
   std::string           text_sink;     // streamed text chunks
   std::string           result_sink;   // the final text result
   std::string           score_sink;    // a song's score (ABC text)
@@ -302,6 +305,16 @@ Result<BuiltGraph> build_text_to_image(const JobSpec&,
 // the writer (MovieFeed::Gate). The sound, the source's own span, is
 // joined after.
 Result<BuiltGraph> build_upscale_video(const JobSpec&);
+// upscale-video by Open-H3-Regenerate-2K (DESIGN §4q; ModelRef's
+// `regenerate_lora` set, the model MiniMax H3 FL2VA): the clip -- input
+// "source", its span `first`, `count` -- fitted to `encode` {width,
+// height} (its short side at most 768), VAE-encoded whole with its
+// posterior sampled, its latent enlarged to `width` x `height`, refined
+// in three steps under the release's merged LoRA against `prompt`,
+// decoded (the fast decoder with the refiner's Fast Decoder on), cut at
+// its frames. The frames go in 8-bit through a valtz-source, not gated;
+// the sound, the source's own span, is joined after.
+Result<BuiltGraph> build_regenerate_video(const JobSpec&);
 // upscale-image (DESIGN §4f): a picture -- input "source" -- restored at
 // `width` x `height` by VOSR, as vpipe's own graph does it
 // (docs/pipelines/vosr-2-restore): resampled bicubic to its grid (16),
@@ -333,6 +346,14 @@ Result<BuiltGraph> build_image_edit(const JobSpec&,
 // 0, its reference video and audio rows to ports 7 and 8 -- and, with
 // param "reference_sound", the clip's soundtrack is the first sound
 // reference's own (joined over the clip's length), not a generated one.
+//
+// REGENERATED (param "draft" {width, height}, ModelRef's
+// `regenerate_lora`: a clip past 768P, DESIGN §4q): the model makes the
+// clip at the draft's size -- its keyframes fitted to it -- and its
+// latent, never decoded, goes straight into the latent upscaler, a
+// refine at `width` x `height` under Open-H3-Regenerate-2K's merged LoRA
+// (its arithmetic param "regenerate_tuning") and the decode; the
+// soundtrack is the draft's. Not with references.
 Result<BuiltGraph> build_video(const JobSpec&,
                                const std::optional<RefImage>& first,
                                const std::vector<RefMedia>& refs = {},

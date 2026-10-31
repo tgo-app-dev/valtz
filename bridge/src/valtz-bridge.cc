@@ -1568,6 +1568,11 @@ Core::generate_video(const std::string& request_json)
     }
     req.tail_seconds = jget(*j, "tail_seconds", 0.0);
     req.reference_sound = jget(*j, "reference_sound", false);
+    // Past 768P, drafted and regenerated (DESIGN §4q): unsaid, where it
+    // can be.
+    if (const Json rg = jget(*j, "regenerate", Json()); rg.is_boolean()) {
+      req.regenerate = rg.get<bool>();
+    }
     req.inline_media = inline_pictures(*j);
     req.row = row_of(*j);
     req.prompt_asset = prompt_asset_of(*j);

@@ -111,6 +111,11 @@ struct EnhanceRequest {
   // Ref2VA: the summary's task types as the references are used
   // ("reference generation + audio reuse").
   std::string              video_tasks;
+  // The clip is REGENERATED on another model past 768P (a Ref2VA clip's
+  // refine runs FL2VA, which reads no references; DESIGN §4q): the reply
+  // also tells it in words alone, its "regenerate_prompt" -- put after
+  // the prompt as Valtz's segment (assist/segments.h).
+  bool                     regenerate = false;
 };
 
 struct EnhanceResult {
@@ -359,6 +364,15 @@ std::string clip_sections(const std::map<std::string, std::string>&);
 // shot's parts (DESIGN §9b). The text before the first section (an
 // instruction line) is left out.
 std::map<std::string, std::string> clip_parts(std::string_view prompt);
+
+// What a clip's REGENERATE pass reads, made from the prompt its model
+// read (DESIGN §4q), where none is given: Open-H3-Regenerate-2K refines
+// on FL2VA, which reads no references -- a Ref2VA prompt's six sections
+// as the base guide's three (the subjects, then the shots; the
+// soundscape; the music), any other as it is, its labels words
+// ("<Picture 1>" -> "picture 1"). A rule standing in for a small model
+// of Valtz's own that may write these later (DESIGN §4q).
+std::string refine_prompt(std::string_view prompt);
 
 // A SHOT of a scene, its prompt put together in MiniMax H3's guide form
 // from its parts (the agent's generate_video, DESIGN §9b): the base

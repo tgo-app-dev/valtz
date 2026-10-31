@@ -52,6 +52,7 @@ set(VALTZ_CORE_SOURCES
   src/assist/drama3.cc
   src/assist/moss-image.cc
   src/assist/rewrite-prompts.cc
+  src/assist/segments.cc
   src/assist/transcript.cc
   src/assist/video-summary.cc
   src/agent/agent.cc

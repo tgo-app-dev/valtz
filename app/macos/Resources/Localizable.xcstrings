@@ -698,6 +698,16 @@
         }
       }
     },
+    "%@ runs with its latent upscaler and MiniMax H3 FL2VA beside it: get them in Settings › Capabilities." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 需要其潜空间放大器和 MiniMax H3 FL2VA 一并就位才能运行：请在“设置 › 能力”中获取。"
+          }
+        }
+      }
+    },
     "%@ s" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1448,6 +1458,16 @@
         }
       }
     },
+    "2K" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "2K"
+          }
+        }
+      }
+    },
     "3-step streaming method; its cache on disk" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1631,12 +1651,12 @@
         }
       }
     },
-    "A few-step LoRA distilled from the model: picked, it runs at the steps and shifts it was made for. HyperFlow and TaoMate have switches of their own." : {
+    "A few-step LoRA distilled from the model: picked, it runs at the steps and shifts it was made for. HyperFlow, Pika H3 Flex and TaoMate have switches of their own." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "由模型蒸馏而来的少步 LoRA：选中后按它被训练时的步数和偏移运行。HyperFlow 与 TaoMate 有各自的开关。"
+            "value" : "由模型蒸馏而来的少步 LoRA：选中后按它被训练时的步数和偏移运行。HyperFlow、Pika H3 Flex 与 TaoMate 有各自的开关。"
           }
         }
       }
@@ -1688,6 +1708,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "钥匙串中已存有密钥。"
+          }
+        }
+      }
+    },
+    "A list sets it step by step: 1.0, 1.5, 1.75 runs the first denoising step at 1.0, the second at 1.5, the third and any after at 1.75 (the last value is kept). Separate the values with commas; write decimals with a point. Later steps carry less noise, so they can keep fewer blocks for the same error." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "也可填一个列表逐步设定：1.0, 1.5, 1.75 表示第一个去噪步用 1.0，第二步用 1.5，第三步及之后各步用 1.75（沿用最后一个值）。各值用英文逗号分隔，小数用小数点。后面的步骤噪声更少，误差相同时可以保留更少的块。"
           }
         }
       }
@@ -3465,12 +3495,12 @@
         }
       }
     },
-    "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory." : {
+    "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory. Open-H3-Regenerate-2K is never Auto's: it runs when chosen here." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "“自动”运行已下载中最好的一个：先 FlashVSR+ Turbo，再 FlashVSR+ Base，再 FlashVSR 1.1。Turbo 更快，也是其作者为高分辨率推荐的版本；Base 修复质量更高，但更慢、占用内存更多。"
+            "value" : "“自动”运行已下载中最好的一个：先 FlashVSR+ Turbo，再 FlashVSR+ Base，再 FlashVSR 1.1。Turbo 更快，也是其作者为高分辨率推荐的版本；Base 修复质量更高，但更慢、占用内存更多。Open-H3-Regenerate-2K 不会被“自动”选中：只有在这里选中时才运行。"
           }
         }
       }
@@ -5665,6 +5695,16 @@
         }
       }
     },
+    "Decodes the regenerated clip with the fast decoder Open-H3-Regenerate-2K ships (NVIDIA's StreamRender-H3): 24 of MiniMax H3's decoder layers distilled, over the whole clip at once. About 3.6× faster on an M4 Pro, its frames about 40 dB from the released decoder's. Its working memory grows with the clip: about 12 GB for five seconds at 2K. Needs its download, in Settings › Capabilities › MiniMax H3." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "用 Open-H3-Regenerate-2K 附带的快速解码器（NVIDIA 的 StreamRender-H3）解码重新生成的视频：从 MiniMax H3 的解码器中蒸馏出的 24 层，一次处理整段视频。在 M4 Pro 上约快 3.6 倍，画面与原版解码器相差约 40 dB。它的工作内存随视频增长：2K 下五秒约 12 GB。需要先下载，在“设置 › 能力 › MiniMax H3”中。"
+          }
+        }
+      }
+    },
     "Decoding" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6004,6 +6044,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "DiT"
+          }
+        }
+      }
+    },
+    "Diagonal" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "对角方差"
           }
         }
       }
@@ -6426,6 +6476,38 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "草稿"
+          }
+        }
+      }
+    },
+    "Drafted at %@ from the references, then regenerated at %@ by Open-H3-Regenerate-2K on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Drafted at %1$@ from the references, then regenerated at %2$@ by Open-H3-Regenerate-2K on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "先依据参考素材以 %1$@ 生成草稿，再由 Open-H3-Regenerate-2K 在 FL2VA 上以 %2$@ 重新生成；FL2VA 不读取参考素材：它读取提示词中“regenerate_prompt:”一行之后的文字，没有时则使用由提示词生成的文字。“增强”会写出这一行。"
+          }
+        }
+      }
+    },
+    "Drafted at %@, then regenerated at %@ by Open-H3-Regenerate-2K: several times the draft's time." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Drafted at %1$@, then regenerated at %2$@ by Open-H3-Regenerate-2K: several times the draft's time."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "先以 %@ 生成草稿，再由 Open-H3-Regenerate-2K 以 %@ 重新生成：耗时是草稿的数倍。"
           }
         }
       }
@@ -7093,6 +7175,26 @@
         }
       }
     },
+    "Enlarging the draft" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放大草稿"
+          }
+        }
+      }
+    },
+    "Enlarging the draft…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在放大草稿…"
+          }
+        }
+      }
+    },
     "Entropy:" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7220,6 +7322,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "当前项目中的所有内容都将被删除。若要保留，请先使用“存储为”。"
+          }
+        }
+      }
+    },
+    "Exact" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "完整协方差"
           }
         }
       }
@@ -7381,6 +7493,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "快退"
+          }
+        }
+      }
+    },
+    "Fast decoder" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "快速解码器"
           }
         }
       }
@@ -8847,12 +8969,32 @@
         }
       }
     },
+    "High resolution pass" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "高分辨率阶段"
+          }
+        }
+      }
+    },
     "Higher keeps fewer blocks: faster, less exact" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "越高保留的块越少：更快，但不够精确"
+          }
+        }
+      }
+    },
+    "Higher keeps fewer blocks; a list sets each step's" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "越高保留的块越少；填列表则逐步设定"
           }
         }
       }
@@ -9028,12 +9170,22 @@
         }
       }
     },
-    "How Render Upscaled restores a layer at the size it is shown — FlashVSR+ or FlashVSR 1.1 for clips, VOSR for pictures: which one, and the arithmetic each runs with." : {
+    "How Render Upscaled restores a layer at the size it is shown — FlashVSR+ or FlashVSR 1.1 for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR for pictures: which one, and the arithmetic each runs with." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "“渲染放大版本”如何按图层显示的尺寸修复它——视频片段用 FlashVSR+ 或 FlashVSR 1.1，图片用 VOSR：用哪一个，以及各自运行的算法设置。"
+            "value" : "“渲染放大版本”如何按图层显示的尺寸还原它——视频片段用 FlashVSR+ 或 FlashVSR 1.1，或用 Open-H3-Regenerate-2K 重新生成；图片用 VOSR：用哪一个，以及各自运行时采用的运算方式。"
+          }
+        }
+      }
+    },
+    "How Sol-Attn estimates the spread of a block's routing scores, which its threshold counts in. Diagonal reads the key blocks' variance channel by channel, as Sol has run in Valtz until now. Exact reads their full covariance, as the published Sol-Attn does (Open-H3-Regenerate-2K's own refine runs it): about 5-10% less error at the same share of blocks kept. The two keep different shares at one threshold, so a threshold chosen for one does not carry over to the other." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Sol-Attn 如何估计一个块的路由分数的离散程度（其阈值以此为单位）。“对角方差”逐通道读取键块的方差，即 Valtz 此前运行 Sol 的方式。“完整协方差”读取它们的完整协方差，与已发表的 Sol-Attn 一致（Open-H3-Regenerate-2K 自己的精修即用它）：保留相同比例的块时，误差约低 5-10%。同一阈值下两者保留的比例不同，因此为其中一种选定的阈值不能直接用于另一种。"
           }
         }
       }
@@ -10808,6 +10960,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "循环播放"
+          }
+        }
+      }
+    },
+    "Low resolution pass" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "低分辨率阶段"
           }
         }
       }
@@ -13361,6 +13523,22 @@
         }
       }
     },
+    "Past %@ on its short side the clip is made at this size directly. Open-H3-Regenerate-2K drafts it at %@ and regenerates it: get it in Settings › Capabilities › MiniMax H3." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Past %1$@ on its short side the clip is made at this size directly. Open-H3-Regenerate-2K drafts it at %2$@ and regenerates it: get it in Settings › Capabilities › MiniMax H3."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "短边超过 %@ 时，视频会直接按此尺寸生成。Open-H3-Regenerate-2K 会先以 %@ 生成草稿再重新生成：请在“设置 › 能力 › MiniMax H3”中获取。"
+          }
+        }
+      }
+    },
     "Paste Drawing" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13597,6 +13775,46 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放入 Valtz 的图片、视频和声音，以及在这里生成的一切，都列在这里。"
+          }
+        }
+      }
+    },
+    "Pika H3 Flex" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pika H3 Flex"
+          }
+        }
+      }
+    },
+    "Pika H3 Flex runs in its place" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "由 Pika H3 Flex 代替它运行"
+          }
+        }
+      }
+    },
+    "Pika Labs' 6-step adapter, on its own schedule" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pika Labs 的 6 步适配器，按它自己的调度运行"
+          }
+        }
+      }
+    },
+    "Pika Labs' six-step post-training of MiniMax H3, an adapter for each partition (FL2VA's and Ref2VA's). Its manifest states how it must be sampled: its own grid of six steps at shifts 12 and 3, the clip's estimate put back at the next step's noise with fresh noise each step, which a plain six-step run is not. The steps and shifts are its own; it takes a LoRA slot in place of the Turbo LoRA, and HyperFlow, TaoMate and MotionCache are off with it. A clip that opens or ends on a picture shows that picture to the prompt encoder too, as Pika's release does. Made for 480p and 768p, 5 to 15 seconds; no Favor preset turns it on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Pika Labs 对 MiniMax H3 的六步后训练，每个分区各有一个适配器（FL2VA 与 Ref2VA）。它的清单规定了必须怎样采样：按它自己的六步网格、偏移 12 和 3，每一步把片段的估计放回下一步的噪声水平并加入新的噪声——普通的六步运行并非如此。步数和偏移都由它决定；它占用一个 LoRA 槽位，取代 Turbo LoRA，开启时 HyperFlow、TaoMate 和 MotionCache 都会关闭。以图片开头或结尾的片段，也会把这张图片交给提示词编码器看，与 Pika 的发布版一致。适用于 480p 和 768p、5 到 15 秒；没有哪个“偏好”预设会启用它。"
           }
         }
       }
@@ -14722,6 +14940,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "参考 · %@"
+          }
+        }
+      }
+    },
+    "Regenerates a clip at the size it is shown, as MiniMax H3 makes clips past 768 on their short side: the clip read at 768 at most, its latent enlarged, then three steps of MiniMax H3 FL2VA under NVIDIA's merged LoRA, against the words that made it (else its summary). Detail is made anew, not restored, and a 2K clip of five seconds takes hours on most Macs, so it runs only when chosen above. These also set the refine of a clip made past 768P, unless its Favor is Custom: Custom has them for the clip." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按视频显示的尺寸重新生成它，正如 MiniMax H3 生成短边超过 768 的视频时那样：视频最多以 768 读取，放大其潜空间，再用 MiniMax H3 FL2VA 在 NVIDIA 合并的 LoRA 下运行三步，依据生成它的提示词（否则用它的摘要）。细节是重新生成的，而非修复；在大多数 Mac 上，五秒的 2K 视频需要数小时，因此只有在上方选中时才运行。这些设置也用于短边超过 768 的视频的精修，除非其“偏好”为“自定义”：“自定义”为该视频单独保留这些设置。"
+          }
+        }
+      }
+    },
+    "Regenerating" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "重新生成"
+          }
+        }
+      }
+    },
+    "Regenerating at full size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在以完整尺寸重新生成"
           }
         }
       }
@@ -16760,6 +17008,26 @@
         }
       }
     },
+    "Sol exact" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Sol 完整协方差"
+          }
+        }
+      }
+    },
+    "Sol flavour" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Sol 变体"
+          }
+        }
+      }
+    },
     "Sol threshold" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18175,6 +18443,16 @@
         }
       }
     },
+    "The blocks' variance, channel by channel" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "键块的方差，逐通道"
+          }
+        }
+      }
+    },
     "The cache folder “%@” is not there — is its drive connected? Valtz keeps its cache in the default folder meanwhile." : {
       "localizations" : {
         "zh-Hans" : {
@@ -18780,6 +19058,26 @@
         }
       }
     },
+    "The refine at the size asked, after the draft: Open-H3-Regenerate-2K's three steps, its latent upscaler and its decoder. Out of Custom its Sol, Sage and int8 are Favor's preset's, the rest as Settings › Upscaling sets it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "草稿之后按所要求的尺寸进行的精修：Open-H3-Regenerate-2K 的三步、其潜空间放大器和解码器。不在“自定义”时，其 Sol、Sage 和 int8 取“侧重”预设的设置，其余按“设置 › 放大”中的设置运行。"
+          }
+        }
+      }
+    },
+    "The release's own decoder: about 3.6× faster, lossy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "该版本自带的解码器：约快 3.6 倍，有损"
+          }
+        }
+      }
+    },
     "The residual blocks' convolutions" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18916,6 +19214,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "停止后窗口将关闭。"
+          }
+        }
+      }
+    },
+    "Their full covariance, as published: less error" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "完整协方差，与已发表的一致：误差更小"
           }
         }
       }
@@ -24512,6 +24820,57 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "{name} 不能放进它自己，也不能放进它所显示的任何内容中。"
+          }
+        }
+      }
+    },
+    "core.regenerate_no_continuation" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A continuation is not regenerated: it is made at the size asked."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "续写的视频不会重新生成：它按所要求的尺寸生成。"
+          }
+        }
+      }
+    },
+    "core.regenerate_not_here" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{model} cannot regenerate clips here yet: get Open-H3-Regenerate-2K and its latent upscaler in Settings › Capabilities."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{model} 在这里还不能重新生成视频：请在“设置 › 能力”中获取 Open-H3-Regenerate-2K 及其潜空间放大器。"
+          }
+        }
+      }
+    },
+    "core.regenerate_not_past" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A clip is regenerated only at a size past {edge} pixels on its short side."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "只有短边超过 {edge} 像素的尺寸，视频才会重新生成。"
           }
         }
       }

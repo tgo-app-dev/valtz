@@ -53,6 +53,7 @@ all_messages()
     kModifyNeedsMedia,
     kPresetLoraMissing, kOutOfMemory, kUpscaleNotScaled, kUpscaleKeyed,
     kUpscaleKind, kNoUpscaler, kUpscaleFlattenFirst,
+    kRegenerateNotPast, kRegenerateNotHere, kRegenerateNoContinuation,
     kNotComposition, kLayerSourceKind, kSoundOnlyComposition,
     kClipHasNoSound, kDecomposeClipSound,
     kTransitionLayers, kDecomposeNeedsComposition, kDecomposeLook,

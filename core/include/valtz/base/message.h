@@ -138,6 +138,17 @@ inline constexpr Message kNoUpscaler{
     "core.no_upscaler",
     "No upscaler is installed for this: get one in Settings › "
     "Capabilities."};
+inline constexpr Message kRegenerateNotPast{
+    "core.regenerate_not_past",
+    "A clip is regenerated only at a size past {edge} pixels on its short "
+    "side."};
+inline constexpr Message kRegenerateNotHere{
+    "core.regenerate_not_here",
+    "{model} cannot regenerate clips here yet: get Open-H3-Regenerate-2K "
+    "and its latent upscaler in Settings › Capabilities."};
+inline constexpr Message kRegenerateNoContinuation{
+    "core.regenerate_no_continuation",
+    "A continuation is not regenerated: it is made at the size asked."};
 inline constexpr Message kOutOfMemory{
     "core.out_of_memory",
     "Not enough memory: this needs about {need}, and {have} is "

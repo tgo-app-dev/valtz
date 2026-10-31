@@ -10,6 +10,9 @@ struct PreviewClip {
     var fps: Double
     /// The step it shows; a new step is a new clip.
     var step: Int
+    /// A regenerated clip's draft, decoded (DESIGN §4q): what the low
+    /// resolution pass made, shown while the high resolution one runs.
+    var draft = false
 }
 
 /// Plays a PreviewClip by Core Animation: the frames are the keyframes of
@@ -21,6 +24,7 @@ struct ClipView: NSViewRepresentable {
     final class Coordinator {
         var step = -1
         var count = 0
+        var draft = false
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -39,9 +43,11 @@ struct ClipView: NSViewRepresentable {
         guard let layer = v.layer, !clip.frames.isEmpty,
               context.coordinator.step != clip.step
                 || context.coordinator.count != clip.frames.count
+                || context.coordinator.draft != clip.draft
         else { return }
         context.coordinator.step = clip.step
         context.coordinator.count = clip.frames.count
+        context.coordinator.draft = clip.draft
         layer.removeAnimation(forKey: "clip")
         // Underneath, when the animation is not running: the last frame.
         layer.contents = clip.frames.last

@@ -33,10 +33,21 @@ struct UpscalingView: View {
                     if u.state != "installed" {
                         LabeledContent {
                             Button("Open Capabilities") {
-                                model.openCapabilities(family: "upscalers")
+                                model.openCapabilities(family: u.family)
                             }
                         } label: {
                             Text("\(u.name) is not downloaded yet: these apply once it is.")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if !u.ready {
+                        // A refiner without its latent upscaler or its
+                        // model beside it.
+                        LabeledContent {
+                            Button("Open Capabilities") {
+                                model.openCapabilities(family: u.family)
+                            }
+                        } label: {
+                            Text("\(u.name) runs with its latent upscaler and MiniMax H3 FL2VA beside it: get them in Settings › Capabilities.")
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -63,10 +74,16 @@ struct UpscalingView: View {
                                   ? String(localized: "Clips")
                                   : String(localized: "Pictures"))
                 } footer: {
-                    Text(u.kind == "video"
-                         ? "Restores a clip a group of frames at a time, in one step each. Its attention is already sparse by its own weights, so it takes no Sol-Attn."
-                         : "Restores a picture in one step, in tiles past the size it was trained at; DINOv2 reads it first.")
-                        .foregroundStyle(.secondary)
+                    Group {
+                        if u.refines {
+                            Text("Regenerates a clip at the size it is shown, as MiniMax H3 makes clips past 768 on their short side: the clip read at 768 at most, its latent enlarged, then three steps of MiniMax H3 FL2VA under NVIDIA's merged LoRA, against the words that made it (else its summary). Detail is made anew, not restored, and a 2K clip of five seconds takes hours on most Macs, so it runs only when chosen above. These also set the refine of a clip made past 768P, unless its Favor is Custom: Custom has them for the clip.")
+                        } else if u.kind == "video" {
+                            Text("Restores a clip a group of frames at a time, in one step each. Its attention is already sparse by its own weights, so it takes no Sol-Attn.")
+                        } else {
+                            Text("Restores a picture in one step, in tiles past the size it was trained at; DINOv2 reads it first.")
+                        }
+                    }
+                    .foregroundStyle(.secondary)
                 }
             }
             Section {
@@ -99,7 +116,7 @@ struct UpscalingView: View {
                 }
                 Divider()
                 ForEach(mine) { u in
-                    if u.state == "installed" {
+                    if u.ready {
                         Text(verbatim: u.name).tag(u.id)
                     } else {
                         Text("\(u.name) (not downloaded)").tag(u.id)
@@ -137,13 +154,14 @@ struct UpscalingView: View {
             }
         } footer: {
             Text(k.kind == "video"
-                 ? "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory."
+                 ? "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory. Open-H3-Regenerate-2K is never Auto's: it runs when chosen here."
                  : "Auto runs the best one downloaded.")
                 .foregroundStyle(.secondary)
         }
     }
 
-    /// One option: a switch, or a number (Sol's threshold) -- its name
+    /// One option: a switch, a choice, or a number (Sol's threshold, a
+    /// schedule of them for the refiner) -- its name
     /// and what it does, or why it cannot be changed.
     @ViewBuilder
     private func row(_ u: UpscalerSettings, _ o: TuningOption) -> some View {
@@ -151,7 +169,10 @@ struct UpscalingView: View {
         let block = blocker(u, o)
         let label = VStack(alignment: .leading, spacing: 2) {
             Text(verbatim: TuningPanel.title(o))
-            Text(block ?? TuningPanel.note(o.key))
+            Text(block ?? (o.type == "choice"
+                           ? TuningPanel.choiceNote(
+                               o.key, t.choices[o.key] ?? "")
+                           : TuningPanel.note(o)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -162,19 +183,33 @@ struct UpscalingView: View {
                     set: { model.setUpscaleOption(u.id, o.key, $0) })) {
                     label
                 }
+            } else if o.type == "choice" {
+                // The refiner's int8 tier: a pop-up, as Custom's.
+                Picker(selection: Binding(
+                    get: { t.choices[o.key] ?? o.choices.first ?? "" },
+                    set: { model.setUpscaleOption(u.id, o.key, $0) })) {
+                    ForEach(o.choices, id: \.self) { c in
+                        Text(TuningPanel.choiceLabel(o.key, c)).tag(c)
+                    }
+                } label: {
+                    label
+                }
             } else {
                 LabeledContent {
-                    TuningNumberField(value: t.numbers[o.key] ?? 0,
-                                      option: o) {
-                        model.setUpscaleOption(u.id, o.key, $0)
-                    }
+                    TuningNumberField(
+                        value: t.numbers[o.key] ?? 0, option: o,
+                        schedule: t.schedules[o.key],
+                        commit: { model.setUpscaleOption(u.id, o.key, $0) },
+                        commitSchedule: {
+                            model.setUpscaleOption(u.id, o.key, $0)
+                        })
                 } label: {
                     label
                 }
             }
         }
         .disabled(block != nil)
-        .help(TuningPanel.help(o.key))
+        .help(TuningPanel.help(o))
         .settingsMark(TuningPanel.title(o), scope: u.id)
     }
 

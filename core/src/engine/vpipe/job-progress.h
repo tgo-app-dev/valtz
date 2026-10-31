@@ -154,6 +154,20 @@ public:
   // own then -- an older vpipe's name for it).
   void set_alone(bool alone) { _alone = alone; }
 
+  // A clip REGENERATED (DESIGN §4q): its latent enlarged, then refined.
+  // The denoise reports opened after the latent upscaler's are the
+  // refine's (kPhaseRegenerate) -- all of them with `drafted` false (an
+  // upscale by the refiner: no draft before it). Only the refine's ends
+  // the main work; between the draft and it, the latent is enlarging --
+  // and the draft decoded for the stage beside it (its "vae decode",
+  // opened before the refine's denoise) is no phase of the clip's.
+  void
+  set_regenerate(bool drafted)
+  {
+    _regen = true;
+    _drafted = drafted;
+  }
+
   // The newest report's id in a document; 0 for none. Ids only grow, so
   // every report opened later has a larger one.
   static std::uint64_t last_id(const Json& doc);
@@ -174,6 +188,11 @@ private:
   int           _passes = 0;
   std::set<std::uint64_t> _quantized;  // the quantizers' reports seen
   bool          _alone = false;
+  bool          _regen = false;
+  bool          _drafted = false;
+  std::uint64_t _enlarged = 0;  // the latent upscaler's report id, once
+  std::uint64_t _refined = 0;   // the refine's denoise report id, once
+  bool          _draft_seen = false;
   bool          _past = false;  // denoised
   std::uint64_t _followed = 0;  // its id
   std::uint64_t _total = 0;

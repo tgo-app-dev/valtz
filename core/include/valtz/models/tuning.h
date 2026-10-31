@@ -37,6 +37,15 @@
 //                          brings its own grid, so the steps are its 8
 //   vdn            bool    H3: the VDN linear attention branch; replaces
 //                          Sol-Attn on the blocks it covers
+//   pika_flex      bool    H3: Pika H3 Flex, Pika Labs' six-step
+//                          post-training of either partition -- its
+//                          adapter in the first LoRA slot, the Turbo LoRA
+//                          off -- sampled as its manifest states (its own
+//                          grid at shifts 12 / 3, each step re-noised:
+//                          vpipe reads it beside the file), so the steps
+//                          are its 6; a clip's keyframes shown to the
+//                          prompt encoder too, as its release does. No
+//                          preset runs it
 //   taomate        bool    H3: TaoMate's streaming METHOD -- the base
 //                          model writes the soundtrack, its adapter (in
 //                          the first LoRA slot, the Turbo LoRA off) the
@@ -50,7 +59,15 @@
 //                          TaoMate's own shifts (`taomate.lora_only`:
 //                          12 / 3); a clip may open on a picture
 //   sol_attn       bool    Sol-Attn block routing
-//   sol_tau        real    its threshold, in standard deviations
+//   sol_threshold  choice  its flavour: "diag" (the key centroids'
+//                          per-channel variance, vpipe's default) or
+//                          "exact" (their full covariance, the published
+//                          Sol-Attn's)
+//   sol_tau        real    its threshold, in standard deviations -- or,
+//                          where the model's stage takes one a step
+//                          (catalog `accel`: `sol_tau_steps`, MiniMax
+//                          H3), a SCHEDULE: "1,1.5,1.75", a value a
+//                          denoising step, the last for the steps after
 //   motion_cache   bool    H3: MotionCache, reused forwards
 //   sage_attn      bool    SageAttention's int8 QK (M5 matrix cores)
 //   sage_pv8       bool    ...its P*V in int8 too (needs sage_attn); off
@@ -117,12 +134,17 @@ namespace valtz::models {
 // engine's half, is held equal to it).
 inline constexpr int kLoraSlots = 8;
 
+// The options of a model's REFINER, offered beside the model's own
+// (TuningContext::refiner): each refiner option's key after this.
+inline constexpr std::string_view kRegeneratePrefix = "regenerate_";
+
 // What decides availability beyond the catalog: this install and Mac.
 struct TuningContext {
   bool turbo_installed = false;      // the catalog `turbo.lora` entry
   std::string turbo_name;            //   its name, as listed
   std::string turbo_path;            //   and its file
   bool hyperflow_installed = false;  // `hyperflow.lora`
+  bool pika_installed = false;       // `pika_flex.lora`
   bool taomate_installed = false;    // `taomate.lora`
   bool vdn_installed = false;        // `vdn.branch`
   // HardwareInfo::gpu_matrix_cores; without them a preset is its table
@@ -149,6 +171,20 @@ struct TuningContext {
     std::string label = {};
   };
   std::map<std::string, Lora> loras;
+  // The model's REFINER past the size it was trained at, where it runs
+  // here (catalog `regenerate`'s `with`: MiniMax H3 FL2VA's Open-H3-
+  // Regenerate-2K; DESIGN §4q): its options -- the refine's Sol, Sage,
+  // int8 tier, the Neural Engine's share, its Fast Decoder -- are offered
+  // beside the model's, each key after kRegeneratePrefix, preset at what
+  // the refine runs out of Custom: `refiner_values`, the refiner's own as
+  // Settings › Upscaling keeps them, with the preference's own refine
+  // laid over (the model's `regenerate.presets.<preference>`). Null: none
+  // offered.
+  const ModelEntry* refiner = nullptr;
+  Json refiner_values = Json::object();
+  // The refiner's fast decoder (its catalog `regenerate.fast_decoder`)
+  // is installed or coming: its Fast Decoder can be had.
+  bool fast_decoder_installed = false;
 };
 
 // The steps `preference` runs on `m`: with `turbo`, its turbo block's
@@ -160,9 +196,9 @@ int preset_steps(const ModelEntry& m, std::string_view preference,
 
 // The LoRAs `preference` needs on `m` and does not have: its table's
 // candidates, when none of them is installed -- [{"id", "name"}], in the
-// table's order; [] when it needs none, or has one. TaoMate in the
-// adapter's place needs none -- as the preset runs it, or as `overrides`
-// say: turned off there, the preset's LoRA is needed again.
+// table's order; [] when it needs none, or has one. TaoMate or Pika H3
+// Flex in the adapter's place needs none -- as the preset runs it, or as
+// `overrides` say: turned off there, the preset's LoRA is needed again.
 Json missing_loras(const ModelEntry& m, const TuningContext& ctx,
                    std::string_view preference,
                    const Json& overrides = Json());
@@ -178,6 +214,8 @@ Json missing_loras(const ModelEntry& m, const TuningContext& ctx,
 //                   "needs-matrix-cores" | "own-schedule",
 //                 "min", "max", "step" (numbers),
 //                 "choices": [a choice's values, in order],
+//                 "schedule": true where a real takes a value a step
+//                   too (its value then a number or "1,1.5,1.75"),
 //                 "excludes": [keys turned off with it on],
 //                 "fixes": {key: value while it is on},
 //                 "needs": key it refines (sol_tau: sol_attn),
@@ -185,8 +223,9 @@ Json missing_loras(const ModelEntry& m, const TuningContext& ctx,
 //                   catalog Turbo LoRA's file), "names" (file: name),
 //                   "steps_on", "steps_off", "shift_off", "fast": the
 //                   model's ACCELERATION LoRAs -- its `turbo` block's
-//                   and its presets' candidates, not HyperFlow's or
-//                   TaoMate's (switches of their own) -- each {"id",
+//                   and its presets' candidates, not HyperFlow's, Pika
+//                   H3 Flex's or TaoMate's (switches of their own) --
+//                   each {"id",
 //                   "name", "path" ("" not installed), "steps",
 //                   "config": the shifts it runs at}, fewest steps
 //                   first: Custom's quick pick}}, ...]}

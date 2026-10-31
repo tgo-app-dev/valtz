@@ -219,6 +219,9 @@ public:
       _session = nullptr;
       return;
     }
+    // Open-H3-Regenerate-2K's refine (DESIGN §4q) needs vpipe's latent
+    // upscaler (§15 0zzj): an older libvpipe has no such stage.
+    _regenerates = has_stage_("latent-upscale");
     // Each backend vpipe was given: loaded when every stage it says it
     // registers is there.
     for (std::size_t i = 0; i < _backends.size(); ++i) {
@@ -435,7 +438,8 @@ public:
            op == kOpExportMedia ||
            op == kOpUpscaleVideo || op == kOpUpscaleImage ||
            op == kOpTranscribeAudio || op == kOpSummarizeVideo ||
-           op == kOpSeparateAudio;
+           op == kOpSeparateAudio ||
+           (op == kOpRegenerateVideo && _regenerates);
   }
 
   Status
@@ -1029,7 +1033,10 @@ private:
     } else if (spec.op == kOpQuantizeModel) {
       built = vp::build_quantize_model(spec);
     } else if (spec.op == kOpUpscaleVideo) {
-      built = vp::build_upscale_video(spec);
+      // Open-H3-Regenerate-2K's refine (DESIGN §4q), else FlashVSR's.
+      built = spec.model.regenerate_lora.empty()
+                  ? vp::build_upscale_video(spec)
+                  : vp::build_regenerate_video(spec);
     } else if (spec.op == kOpUpscaleImage) {
       built = vp::build_upscale_image(spec);
     } else if (spec.op == kOpChat) {
@@ -1099,6 +1106,22 @@ private:
       if (ev.tensor) {
         q.sink(ev);
       }
+    };
+    // A regenerated clip's draft, decoded and stacked whole: the stage's
+    // preview while the refine runs, in place of the TAE's last step. No
+    // count of its own -- the refine's progress goes on.
+    auto on_draft = [&](vp::SinkBeat&& b) {
+      if (!b.tensor || b.tensor->shape.size() != 4) {
+        return;
+      }
+      JobEvent ev;
+      ev.job = spec.id;
+      ev.kind = JobEventKind::Preview;
+      ev.data = {{"draft", true},
+                 {"frames", b.tensor->shape[0]},
+                 {"fps", jget(b.meta, "fps", 24.0)}};
+      ev.tensor = std::move(b.tensor);
+      q.sink(ev);
     };
     auto on_text = [&](vp::SinkBeat&& b) {
       JobEvent ev;
@@ -1267,11 +1290,18 @@ private:
     // A compressed copy's passes (a pipeline's parts), counted as one.
     const Json parts = spec.op == kOpQuantizeModel
         ? jget(spec.params, "parts", Json::array()) : Json::array();
+    // A clip regenerated (the refiner's files given, DESIGN §4q): its
+    // refine is its main work -- an upscale by it too, whose frames are
+    // written as they are decoded, not restored a group at a time.
+    const bool regen = !spec.model.regenerate_lora.empty();
     vp::JobProgress progress(
         vp::JobProgress::last_id(vp::from_flex(_session->progress())),
         spec.op == kOpFetchModel, spec.op == kOpExportMedia,
-        spec.op == kOpUpscaleVideo, group,
+        spec.op == kOpUpscaleVideo && !regen, group,
         parts.is_array() ? static_cast<int>(parts.size()) : 0);
+    if (regen) {
+      progress.set_regenerate(spec.op == kOpGenerateVideo);
+    }
     std::uint64_t progress_seen = 0;
     std::optional<vp::JobPhase> phase;
     double sent = 0;
@@ -1400,6 +1430,7 @@ private:
       }
     };
     read(g.preview_sink, on_preview);
+    read(g.draft_sink, on_draft);
     read(g.text_sink, on_text);
     read(g.result_sink, on_result);
     read(g.score_sink, on_score);
@@ -2194,6 +2225,7 @@ private:
   // throughput(): the highest reading, and how far its scan has gone.
   std::mutex                            _flops_mu;
   double                                _flops_peak = 0;
+  bool                                  _regenerates = false;
   std::uint64_t                         _flops_scanned = 0;
   // The wired limit (set_wired_limit_mb), under _mu: the one asked (0
   // vpipe's own), vpipe's own here, and whether a lower one waits.

@@ -8974,7 +8974,8 @@ TEST(controller, upscalers_run_as_settings_have_them)
   };
   CHECK((offered(fv) == std::vector<std::string>{"sage_attn", "i8_gemm",
                                                  "color_fix"}));
-  CHECK((offered(vo) == std::vector<std::string>{"sol_attn", "sol_tau",
+  CHECK((offered(vo) == std::vector<std::string>{"sol_attn",
+                                                 "sol_threshold", "sol_tau",
                                                  "sage_attn", "i8_gemm"}));
   // Med's: int8 GEMMs where the GPU has matrix cores, the rest off.
   CHECK(vo["tuning"]["values"]["i8_gemm"] == m5);
@@ -9574,6 +9575,469 @@ TEST(controller, a_clip_is_as_long_as_asked)
   CHECK(made_frames("minimax-h3-fl2va", 362) == 362);
   CHECK(made_frames("minimax-h3-fl2va", 30 * 24) == 736);   // 5 + 43 x 17
   CHECK(made_frames("minimax-h3-ref2va", 60 * 24) == 1450);  // 5 + 85 x 17
+}
+
+namespace {
+
+// A Controller over stand-in files for MiniMax H3 FL2VA (its 8-step
+// Turbo LoRA, Med's) and, with `refiner`, Open-H3-Regenerate-2K's
+// merged LoRA, latent upscaler and fast decoder; a held engine.
+struct RegenBench {
+  fs::path root;
+  std::unique_ptr<Controller> ctl;
+  HeldEngine* engine = nullptr;
+  ProjectId pid;
+
+  explicit RegenBench(const char* name, bool refiner, bool pika = false,
+                      bool ref2va = false)
+      : root(test::temp_dir(name))
+  {
+    auto install = [&](const std::string& f) {
+      const fs::path file = root / "models" / f;
+      fs::create_directories(file.parent_path());
+      std::ofstream(file) << "w";
+    };
+    install("MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors");
+    install("lightx2v/Minimax-h3-Turbo/"
+            "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors");
+    // Fast's 4-step, for a clip made at each preference.
+    install("lightx2v/Minimax-h3-Turbo/"
+            "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors");
+    if (refiner) {
+      const std::string r = "Efficient-Large-Model/Open-H3-Regenerate-2K/";
+      install(r + "lora/open_h3_regenerate_2k_lora.safetensors");
+      install(r + "latent_upsampler/"
+                  "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors");
+      install(r + "vae_fast/fast_h3_vae_noncausal_24l.safetensors");
+    }
+    if (ref2va) {
+      install("MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors");
+      install("lightx2v/Minimax-h3-Turbo/"
+              "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors");
+    }
+    if (pika) {
+      // Pika H3 Flex's FL2VA adapter, its manifest beside it.
+      install("Pika-Labs/Pika-H3-Flex/fl2va/adapter.safetensors");
+      install("Pika-Labs/Pika-H3-Flex/fl2va/manifest.json");
+    }
+    ControllerConfig cfg;
+    cfg.support_root = root / "support";
+    cfg.model_roots = {root / "models"};
+    cfg.with_engine = false;
+    cfg.extensions = false;
+    cfg.engine_factory = [this] {
+      auto e = std::make_unique<HeldEngine>();
+      engine = e.get();
+      return std::unique_ptr<engine::Engine>(std::move(e));
+    };
+    auto made = Controller::create(cfg);
+    if (made.ok()) {
+      ctl = std::move(*made);
+      if (auto p = ctl->create_project(root / "R.valtz", "regen"); p.ok()) {
+        pid = *p;
+      }
+    }
+  }
+
+  // The job a request made, as the engine was handed it.
+  const engine::JobSpec*
+  job(std::string_view op, std::size_t nth)
+  {
+    if (!eventually([&] { return engine->held_of(op).size() >= nth; },
+                    10)) {
+      return nullptr;
+    }
+    return engine->spec(engine->held_of(op)[nth - 1]);
+  }
+};
+
+}
+
+// Pika H3 Flex on (Favor's Custom, DESIGN §4c): its adapter the job's
+// first LoRA, recorded by its catalog id at 1.0, at its six steps and
+// shifts 12 / 3; off, the preset's Turbo LoRA as before.
+TEST(controller, a_clip_runs_pika_h3_flex)
+{
+  RegenBench b("pika-flex", false, true);
+  REQUIRE(b.ctl && b.engine);
+  auto opts = b.ctl->tuning("minimax-h3-fl2va", "balanced", false,
+                            Json::object());
+  REQUIRE_OK(opts);
+  bool offered = false;
+  for (const auto& o : (*opts)["options"]) {
+    if (o["key"] == "pika_flex") {
+      offered = jget(o, "available", false);
+    }
+  }
+  CHECK(offered);
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-fl2va";
+  req.prompt = "A fox trotting through snow at dawn.";
+  req.width = 832;
+  req.height = 480;
+  req.frames = 39;
+  req.tuning = {{"pika_flex", true}};
+  REQUIRE_OK(b.ctl->generate_video(req));
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "lora", "") == "minimax-h3-pika-flex");
+  CHECK(jget(s->params, "lora_scale", 0.0) == 1.0);
+  CHECK(jget(s->params, "steps", 0) == 6);
+  CHECK(jget(s->params["tuning"], "pika_flex", false));
+  CHECK(jget(s->params["tuning"], "video_shift", 0) == 12);
+  CHECK(s->model.lora.filename() == "adapter.safetensors");
+  CHECK(s->model.lora.parent_path().filename() == "fl2va");
+  CHECK(!s->params.contains("lora2_file"));
+  // Off: the preset's 8-step Turbo LoRA.
+  req.tuning = Json::object();
+  REQUIRE_OK(b.ctl->generate_video(req));
+  s = b.job(engine::kOpGenerateVideo, 2);
+  REQUIRE(s != nullptr);
+  CHECK(s->model.lora.filename().string().find("8step") !=
+        std::string::npos);
+  CHECK(jget(s->params, "steps", 0) == 8);
+}
+
+// Past 768 on its short side (catalog `regenerate`), a clip from words is
+// DRAFTED at 768 and REGENERATED at the size asked where Open-H3-
+// Regenerate-2K is here (DESIGN §4q): the recipe says the draft, the
+// refiner and its arithmetic; the job carries the refiner's files.
+// Without it, the clip is made at the size, as before -- unless asked
+// for, which is refused; at 768 or less it never is.
+TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
+{
+  auto ask = [](RegenBench& b, int w, int h,
+                std::optional<bool> regen = std::nullopt) {
+    GenerateVideoRequest req;
+    req.project = b.pid;
+    req.model = "minimax-h3-fl2va";
+    req.prompt = "A lighthouse at dusk, waves below.";
+    req.width = w;
+    req.height = h;
+    req.frames = 39;
+    req.regenerate = regen;
+    return b.ctl->generate_video(req);
+  };
+  {
+    RegenBench b("regen-absent", false);
+    REQUIRE(b.ctl && b.engine);
+    REQUIRE_OK(ask(b, 2560, 1440));
+    const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+    REQUIRE(s != nullptr);
+    CHECK(jget(s->params, "width", 0) == 2560);
+    CHECK(!s->params.contains("draft"));
+    CHECK(s->model.regenerate_lora.empty());
+    const auto refused = ask(b, 2560, 1440, true);
+    CHECK(refused.code() == Code::NotFound);
+    CHECK(refused.error().key == msg::kRegenerateNotHere.key);
+  }
+  RegenBench b("regen-here", true);
+  REQUIRE(b.ctl && b.engine);
+  REQUIRE_OK(ask(b, 2560, 1440));
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s != nullptr);
+  CHECK(jget(s->params, "width", 0) == 2560);
+  CHECK(jget(s->params, "height", 0) == 1440);
+  CHECK(s->params["draft"] == Json({{"width", 1376}, {"height", 768}}));
+  CHECK(jget<std::string>(s->params, "regenerate", "") ==
+        "open-h3-regenerate-2k");
+  CHECK(s->params["regenerate_tuning"].is_object());
+  CHECK(jget(s->params["regenerate_spec"], "steps", 0) == 3);
+  CHECK(s->model.regenerate_lora.filename() ==
+        "open_h3_regenerate_2k_lora.safetensors");
+  CHECK(s->model.latent_upscaler.filename() ==
+        "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors");
+  CHECK(s->model.fast_decoder.empty());
+  // The draft's own Turbo LoRA (Med's 8-step) stays the draft's.
+  CHECK(s->model.lora.filename().string().find("8step") !=
+        std::string::npos);
+  // Portrait: 768 across.
+  REQUIRE_OK(ask(b, 1440, 2560));
+  s = b.job(engine::kOpGenerateVideo, 2);
+  REQUIRE(s != nullptr);
+  CHECK(s->params["draft"] == Json({{"width", 768}, {"height", 1376}}));
+  // Asked against: at the size. 768P itself: never; asked for, refused.
+  REQUIRE_OK(ask(b, 2560, 1440, false));
+  s = b.job(engine::kOpGenerateVideo, 3);
+  REQUIRE(s != nullptr);
+  CHECK(!s->params.contains("draft"));
+  REQUIRE_OK(ask(b, 1344, 768));
+  s = b.job(engine::kOpGenerateVideo, 4);
+  REQUIRE(s != nullptr);
+  CHECK(!s->params.contains("draft"));
+  const auto small = ask(b, 1344, 768, true);
+  CHECK(small.code() == Code::InvalidArgument);
+  CHECK(small.error().key == msg::kRegenerateNotPast.key);
+  // Its Fast Decoder on (Settings › Upscaling): the fast decoder's file.
+  REQUIRE_OK(b.ctl->set_upscale_tuning("open-h3-regenerate-2k",
+                                       {{"fast_decoder", true}}));
+  REQUIRE_OK(ask(b, 1920, 1088));
+  s = b.job(engine::kOpGenerateVideo, 5);
+  REQUIRE(s != nullptr);
+  CHECK(s->params["draft"] == Json({{"width", 1344}, {"height", 768}}));
+  CHECK(s->model.fast_decoder.filename() ==
+        "fast_h3_vae_noncausal_24l.safetensors");
+  // The refine's options in FL2VA's Custom, preset at Settings ›
+  // Upscaling's values; Custom's own sent with the request become the
+  // refine's -- out of the model's tuning.
+  auto opts = b.ctl->tuning("minimax-h3-fl2va", "balanced", false,
+                            Json::object());
+  REQUIRE_OK(opts);
+  CHECK(jget((*opts)["values"], "regenerate_fast_decoder", false));
+  const bool m5 = b.ctl->hardware().gpu_matrix_cores;
+  GenerateVideoRequest custom;
+  custom.project = b.pid;
+  custom.model = "minimax-h3-fl2va";
+  custom.prompt = "A lighthouse at dusk, waves below.";
+  custom.width = 2560;
+  custom.height = 1440;
+  custom.frames = 39;
+  custom.tuning = {{"regenerate_i8_gemm", true},
+                   {"regenerate_i8_gemm_tier", "token"},
+                   {"regenerate_fast_decoder", false}};
+  REQUIRE_OK(b.ctl->generate_video(custom));
+  s = b.job(engine::kOpGenerateVideo, 6);
+  REQUIRE(s != nullptr);
+  const Json rt = s->params["regenerate_tuning"];
+  CHECK(jget(rt, "i8_gemm", false));
+  CHECK(jget<std::string>(rt, "i8_gemm_tier", "") ==
+        (m5 ? "token" : "accurate"));
+  CHECK(!jget(rt, "fast_decoder", true));
+  CHECK(s->model.fast_decoder.empty());
+  for (const auto& [k, v] : s->params["tuning"].items()) {
+    CHECK(!k.starts_with("regenerate_"));
+  }
+  // Previews on unless asked off (valtzctl --no-preview): then no TAE
+  // step and no draft decoded for the stage.
+  CHECK(!s->params.contains("preview"));
+  GenerateVideoRequest quiet = custom;
+  quiet.preview = false;
+  REQUIRE_OK(b.ctl->generate_video(quiet));
+  s = b.job(engine::kOpGenerateVideo, 7);
+  REQUIRE(s != nullptr);
+  CHECK(s->params.contains("draft"));
+  CHECK(!jget(s->params, "preview", true));
+  // Out of Custom the refine is the PREFERENCE's (FL2VA's
+  // `regenerate.presets`): Sol exact -- 1.75 every step at Fast, 1.0,
+  // 1.5, 1.75 at Med, 0.75 each step at Fine -- with Sage (Fast's int8
+  // P·V on the video's rows alone) and int8 Per Token / Fast / Accurate;
+  // what the tables leave out Settings' (its Fast Decoder, on above).
+  int n = 7;
+  for (const char* pref : {"speed", "balanced", "quality"}) {
+    GenerateVideoRequest req = quiet;
+    req.tuning = Json::object();
+    req.preference = pref;
+    REQUIRE_OK(b.ctl->generate_video(req));
+    s = b.job(engine::kOpGenerateVideo, ++n);
+    REQUIRE(s != nullptr);
+    const Json rt = s->params["regenerate_tuning"];
+    CHECK(jget(rt, "sol_attn", false));
+    CHECK(jget<std::string>(rt, "sol_threshold", "") == "exact");
+    CHECK(jget(rt, "fast_decoder", false));
+    CHECK(jget(rt, "sage_attn", false) == m5);
+    CHECK(jget(rt, "i8_gemm", false) == m5);
+    const std::string p = pref;
+    if (p == "speed") {
+      CHECK(rt["sol_tau"] == 1.75);
+      CHECK(jget(rt, "sage_pv8", false) == m5);
+      CHECK(!jget(rt, "sage_pv8_all_rows", true));
+      CHECK(jget<std::string>(rt, "i8_gemm_tier", "") ==
+            (m5 ? "token" : "accurate"));
+    } else if (p == "balanced") {
+      CHECK(rt["sol_tau"] == "1,1.5,1.75");
+      CHECK(!jget(rt, "sage_pv8", true));
+      CHECK(jget<std::string>(rt, "i8_gemm_tier", "") ==
+            (m5 ? "fast" : "accurate"));
+    } else {
+      CHECK(rt["sol_tau"] == "0.75,0.75,0.75");
+      CHECK(!jget(rt, "sage_pv8", true));
+      CHECK(jget<std::string>(rt, "i8_gemm_tier", "") == "accurate");
+    }
+  }
+  // Without the refiner, none of it is offered.
+  RegenBench none("regen-options-absent", false);
+  REQUIRE(none.ctl);
+  auto bare = none.ctl->tuning("minimax-h3-fl2va", "balanced", false,
+                               Json::object());
+  REQUIRE_OK(bare);
+  CHECK(!(*bare)["values"].contains("regenerate_i8_gemm"));
+}
+
+// A Ref2VA clip past 768P (DESIGN §4q): drafted by Ref2VA from its
+// references, refined on FL2VA -- the refiner's base, resolved for the
+// job -- against the prompt's "regenerate_prompt:" segment, else words
+// made from the prompt; the model reads the prompt without it, the
+// prompt captured keeps it. A continuation is not regenerated. Its
+// Custom offers the refine's options at the preference's.
+TEST(controller, a_ref2va_clip_is_regenerated_on_fl2va)
+{
+  RegenBench b("regen-ref2va", true, false, true);
+  REQUIRE(b.ctl && b.engine);
+  REQUIRE(write_png(b.root / "woman.png", 16, 16, {0xc0, 0x30, 0x30, 0xff}));
+  auto pic = import_and_wait(*b.ctl, b.pid, b.root / "woman.png");
+  REQUIRE(pic);
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-ref2va";
+  req.references = {*pic};
+  req.row = {*pic};
+  req.prompt = "<valtz_ref_img_0> walks along the shore at dusk.";
+  req.width = 2560;
+  req.height = 1440;
+  req.frames = 39;
+  REQUIRE_OK(b.ctl->generate_video(req));
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s != nullptr);
+  CHECK(s->model.id == "minimax-h3-ref2va");
+  CHECK(s->params["draft"] == Json({{"width", 1376}, {"height", 768}}));
+  CHECK(jget<std::string>(s->params, "regenerate", "") ==
+        "open-h3-regenerate-2k");
+  CHECK(s->model.regenerate_base.filename() == "FL2VA");
+  CHECK(jget(s->model.regenerate_base_engine, "vpipe", Json::object())
+            .contains("conditioner"));
+  // No segment: words made from the prompt, its labels words.
+  CHECK(jget<std::string>(s->params, "regenerate_prompt_from", "") ==
+        "made");
+  CHECK(jget<std::string>(s->params, "regenerate_prompt", "")
+            .find("picture 1 walks along the shore") != std::string::npos);
+  // Its segment: the refine's words; the model's without it.
+  req.prompt = "<valtz_ref_img_0> walks along the shore at dusk.\n\n"
+               "regenerate_prompt: A woman in a red coat walks along a "
+               "grey shore at dusk.";
+  REQUIRE_OK(b.ctl->generate_video(req));
+  s = b.job(engine::kOpGenerateVideo, 2);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "prompt", "").find("regenerate") ==
+        std::string::npos);
+  CHECK(jget<std::string>(s->params, "regenerate_prompt", "") ==
+        "A woman in a red coat walks along a grey shore at dusk.");
+  CHECK(jget<std::string>(s->params, "regenerate_prompt_from", "") ==
+        "segment");
+  bool kept = false;
+  project::Project* p = b.ctl->project(b.pid);
+  REQUIRE(p != nullptr);
+  const auto all = p->assets();
+  REQUIRE_OK(all);
+  for (const auto& a : *all) {
+    if (Controller::is_prompt(a)) {
+      kept = kept || p->read_text(a.id)->find("regenerate_prompt: A "
+                                              "woman") != std::string::npos;
+    }
+  }
+  CHECK(kept);
+  // A continuation: made at its size; asked to regenerate, refused
+  // (before its clip is read).
+  GenerateVideoRequest cont_req = req;
+  cont_req.references.clear();
+  cont_req.continue_from = *pic;
+  cont_req.regenerate = true;
+  const auto refused = b.ctl->generate_video(cont_req);
+  CHECK(!refused.ok() &&
+        refused.error().key == msg::kRegenerateNoContinuation.key);
+  // Its Custom: the refine's options, at Fast's.
+  auto opts = b.ctl->tuning("minimax-h3-ref2va", "speed", false,
+                            Json::object());
+  REQUIRE_OK(opts);
+  CHECK(jget<std::string>((*opts)["values"], "regenerate_sol_threshold",
+                          "") == "exact");
+  CHECK((*opts)["values"]["regenerate_sol_tau"] == 1.75);
+  // ...but not for a continuation.
+  auto cont = b.ctl->tuning("minimax-h3-ref2va", "speed", false,
+                            Json::object(), true);
+  REQUIRE_OK(cont);
+  CHECK(!(*cont)["values"].contains("regenerate_sol_attn"));
+}
+
+// Open-H3-Regenerate-2K as an UPSCALER (Render Upscaled, DESIGN §4q):
+// never Auto's, so chosen in Settings › Upscaling; it refines the layer's
+// clip as MiniMax H3 FL2VA (its base) at the size it is shown, read at
+// 768 at most, against the words asked for -- else what made it, else a
+// neutral line.
+TEST(controller, a_clip_is_regenerated_by_its_refiner)
+{
+  RegenBench b("regen-upscale", true);
+  REQUIRE(b.ctl && b.engine);
+  Controller& ctl = *b.ctl;
+  auto video = [&] {
+    const Json all = ctl.upscale_settings();
+    for (const auto& k : all["kinds"]) {
+      if (k["kind"] == "video") {
+        return k;
+      }
+    }
+    return Json();
+  };
+  CHECK(video()["auto"] == "");
+  bool listed = false;
+  const Json all = ctl.upscale_settings();
+  for (const auto& u : all["upscalers"]) {
+    if (u["id"] == "open-h3-regenerate-2k") {
+      listed = true;
+      CHECK(u["kind"] == "video");
+      CHECK(u["state"] == "installed");
+    }
+  }
+  CHECK(listed);
+  // A clip on a timeline, shown at twice its size.
+  REQUIRE(write_png(b.root / "red.png", 48, 32, {0xff, 0x20, 0x20, 0xff}));
+  auto red = import_and_wait(ctl, b.pid, b.root / "red.png");
+  REQUIRE(red);
+  auto shot = ctl.create_composition(b.pid, project::AssetClass::Composition,
+                                     {48, 32}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto in_shot = ctl.instantiate(b.pid, *red, *shot);
+  REQUIRE_OK(in_shot);
+  project::LayerTime one;
+  one.duration = 24;
+  REQUIRE_OK(ctl.set_layer_time(b.pid, *shot, in_shot->second, one));
+  auto movie = ctl.rendered(b.pid, *shot);
+  REQUIRE_OK(movie);
+  fs::copy_file(*movie, b.root / "shot.mov");
+  auto clip = import_and_wait(ctl, b.pid, b.root / "shot.mov");
+  REQUIRE(clip);
+  auto tl = ctl.create_composition(b.pid, project::AssetClass::Composition,
+                                   {96, 64}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  auto placed = ctl.instantiate(b.pid, *clip, *tl);
+  REQUIRE_OK(placed);
+  media::Crop twice;
+  twice.scale_x = twice.scale_y = 2;
+  REQUIRE_OK(ctl.set_crop(b.pid, *tl, twice, placed->second));
+  Controller::AssetOpRequest up;
+  up.project = b.pid;
+  up.asset = *tl;
+  up.layer = placed->second;
+  up.operation = "upscale";
+  // Auto's: none (no FlashVSR here; the refiner is chosen by name).
+  CHECK(ctl.run_asset_operation(up).code() == Code::NotFound);
+  REQUIRE_OK(ctl.use_upscaler("video", "open-h3-regenerate-2k"));
+  CHECK(video()["runs"] == "open-h3-regenerate-2k");
+  auto made = ctl.run_asset_operation(up);
+  REQUIRE_OK(made);
+  const engine::JobSpec* s = b.engine->spec(made->job);
+  REQUIRE(s != nullptr);
+  CHECK(s->op == engine::kOpUpscaleVideo);
+  CHECK(s->model.id == "minimax-h3-fl2va");
+  CHECK(s->model.dir.filename() == "FL2VA");
+  CHECK(!s->model.regenerate_lora.empty());
+  CHECK(!s->model.latent_upscaler.empty());
+  CHECK(jget(s->params, "width", 0) == 96);
+  CHECK(jget(s->params, "height", 0) == 64);
+  CHECK(s->params["encode"] == Json({{"width", 64}, {"height", 32}}));
+  CHECK(jget<std::string>(s->params, "prompt", "").find("high-quality") !=
+        std::string::npos);
+  CHECK(jget<std::string>(s->params, "regenerate", "") ==
+        "open-h3-regenerate-2k");
+  CHECK(jget(s->params["regenerate_spec"], "steps", 0) == 3);
+  // The words asked for, over anything else.
+  up.options["prompt"] = "a red wall in the sun";
+  auto worded = ctl.run_asset_operation(up);
+  REQUIRE_OK(worded);
+  s = b.engine->spec(worded->job);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "prompt", "") ==
+        "a red wall in the sun");
 }
 
 // A continuation's GUIDE (continuation_guide): the clip's last seconds,

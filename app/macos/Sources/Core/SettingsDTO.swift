@@ -200,6 +200,14 @@ struct UpscalerSettings: Identifiable, Equatable, Sendable {
     let runs: Bool          // what Render Upscaled runs for its kind now
     let custom: Bool        // anything set apart from the defaults
     let info: TuningInfo
+    /// Where Settings › Capabilities lists it (its family).
+    let family: String
+    /// A REFINER (Open-H3-Regenerate-2K, DESIGN §4q): a clip regenerated
+    /// at the size shown, not restored -- and ready, with what it needs
+    /// beside it (its latent upscaler, its model) on an engine that has
+    /// the latent upscaler.
+    let refines: Bool
+    let ready: Bool
 
     init?(_ j: [String: Any]) {
         guard let id = j["id"] as? String,
@@ -212,6 +220,9 @@ struct UpscalerSettings: Identifiable, Equatable, Sendable {
         state = j["state"] as? String ?? ""
         runs = j["runs"] as? Bool ?? false
         custom = j["custom"] as? Bool ?? false
+        family = j["family"] as? String ?? "upscalers"
+        refines = j["refines"] as? Bool ?? false
+        ready = j["ready"] as? Bool ?? (j["state"] as? String == "installed")
         let options = opts.map(TuningOption.init)
         info = TuningInfo(family: t["family"] as? String ?? "",
                           tuning: Tuning(values, options), options: options)

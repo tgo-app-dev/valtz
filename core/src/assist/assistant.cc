@@ -1,5 +1,7 @@
 #include "valtz/assist/assistant.h"
 
+#include "valtz/assist/segments.h"
+
 #include "valtz/base/text.h"
 
 #include <algorithm>
@@ -1091,8 +1093,22 @@ clip_skill_prompt(const EnhanceRequest& r)
          "<d>[Language] ...</d>>\\n[Shot 2] At MM:SS.mmm, <only if a "
          "cut is wanted>\", "
          "\"overall_soundscape\": \"<1-4 sentences>\", "
-         "\"non_diegetic_music\": \"<1-3 sentences, or N/A>\", "
-         "\"title\": \"2-5 word name\"}\n\n";
+         "\"non_diegetic_music\": \"<1-3 sentences, or N/A>\", ";
+    if (r.regenerate) {
+      s += "\"regenerate_prompt\": \"<the same video told for a model "
+           "that sees no reference: 80-150 words, one paragraph -- every "
+           "subject described in words as the references show it (looks, "
+           "clothes, colours), the setting, the light, the camera, what "
+           "happens; no <Picture N>, <Video N>, <Audio N> or <Subject N> "
+           "labels, no sound>\", ";
+    }
+    s += "\"title\": \"2-5 word name\"}\n\n";
+    if (r.regenerate) {
+      s += "The video is made at a low resolution from the references, "
+           "then refined at full size by a model that reads only "
+           "regenerate_prompt: write it so that it alone describes what "
+           "is seen.\n\n";
+    }
   } else {
     s += "{\"integrated_multimodal_description\": \"[Shot 1] <no "
          "timestamp: the style and framing, then what happens; whoever "
@@ -1454,6 +1470,72 @@ clip_parts(std::string_view prompt)
     text = std::string(trimmed(text));
   }
   return found;
+}
+
+std::string
+refine_prompt(std::string_view prompt)
+{
+  std::string head;
+  auto parts = split_sections(prompt, head);
+  for (auto& [name, text] : parts) {
+    text = std::string(trimmed(text));
+  }
+  const auto part = [&](std::string_view k) {
+    const auto it = parts.find(std::string(k));
+    return it == parts.end() ? std::string() : it->second;
+  };
+  std::string out;
+  if (!part("subject_definitions").empty() ||
+      !part("detailed_description").empty()) {
+    // The full-reference six as the base guide's three: who is who, then
+    // the shots; the soundscape; the music. What the references are for
+    // (the summary's task types, the retention lines) is no picture's.
+    std::string what = part("subject_definitions");
+    if (const auto d = part("detailed_description"); !d.empty()) {
+      what += (what.empty() ? "" : "\n") + d;
+    }
+    out = clip_sections({{"integrated_multimodal_description", what},
+                         {"overall_soundscape", part("overall_soundscape")},
+                         {"non_diegetic_music",
+                          part("non_diegetic_music")}});
+  } else {
+    out = std::string(trimmed(prompt));
+  }
+  // H3's labels as words: "<Picture 1>" -> "picture 1".
+  std::string plain;
+  plain.reserve(out.size());
+  for (std::size_t i = 0; i < out.size();) {
+    bool named = false;
+    if (out[i] == '<') {
+      for (std::string_view kind : {"Picture ", "Video ", "Audio ",
+                                    "Subject "}) {
+        if (out.compare(i + 1, kind.size(), kind) != 0) {
+          continue;
+        }
+        std::size_t j = i + 1 + kind.size();
+        const std::size_t digits = j;
+        while (j < out.size() &&
+               std::isdigit(static_cast<unsigned char>(out[j]))) {
+          ++j;
+        }
+        if (j == digits || j >= out.size() || out[j] != '>') {
+          continue;
+        }
+        for (const char c : kind) {
+          plain += static_cast<char>(
+              std::tolower(static_cast<unsigned char>(c)));
+        }
+        plain.append(out, digits, j - digits);
+        i = j + 1;
+        named = true;
+        break;
+      }
+    }
+    if (!named) {
+      plain += out[i++];
+    }
+  }
+  return std::string(trimmed(plain));
 }
 
 namespace {
@@ -1819,6 +1901,14 @@ parse_enhance_reply(std::string_view reply)
           return is_section(kv.first);
         })) {
       out.prompt = clip_sections(sections);
+      // The refine's words (EnhanceRequest::regenerate), as Valtz's
+      // segment after it.
+      const auto refine = jget<std::string>(j, std::string(
+          kRegeneratePrompt).c_str(), "");
+      if (!refine.empty()) {
+        out.prompt = with_segments(
+            out.prompt, {{std::string(kRegeneratePrompt), refine}});
+      }
     }
   }
   out.negative = jget<std::string>(j, "negative", "");
@@ -1999,7 +2089,7 @@ partial_enhance_reply(std::string_view s)
     return {};
   }
   ++i;
-  std::string prompt, rewritten, style, lyrics;
+  std::string prompt, rewritten, style, lyrics, refine;
   std::map<std::string, std::string> sections;
   bool song = false;
   // Speech (the moss-tts skill): its fields and words, as they come.
@@ -2050,6 +2140,7 @@ partial_enhance_reply(std::string_view s)
                         : key == "ambient_sound"   ? &speech.ambient_sound
                         : key == "language"         ? &speech.language
                         : key == "text"             ? &speech.text
+                        : key == kRegeneratePrompt  ? &refine
                                                     : nullptr;
     song = song || key == "style" || key == "lyrics";
     speaks = speaks || key == "instruction" || key == "language";
@@ -2110,7 +2201,8 @@ partial_enhance_reply(std::string_view s)
   if (std::ranges::any_of(sections, [](const auto& kv) {
         return is_section(kv.first);
       })) {
-    return clip_sections(sections);
+    return with_segments(clip_sections(sections),
+                         {{std::string(kRegeneratePrompt), refine}});
   }
   if (speaks) {
     return speech_prompt(speech);

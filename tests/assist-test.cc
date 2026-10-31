@@ -5,6 +5,7 @@
 #include "valtz/assist/assistant.h"
 #include "valtz/assist/drama3.h"
 #include "valtz/assist/moss-image.h"
+#include "valtz/assist/segments.h"
 #include "valtz/assist/transcript.h"
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/text.h"
@@ -1117,6 +1118,91 @@ TEST(assist, a_clip_s_sections_are_put_together)
         "overall_soundscape: Ra");
   CHECK(partial_enhance_reply("{\"subject_definitions\": \"<Sub") ==
         "subject_definitions:\n<Sub");
+}
+
+// Valtz's own SEGMENTS of a prompt (DESIGN §4q): "regenerate_prompt:" at
+// a line's start, any case, to the end -- the model reads what is before.
+TEST(assist, a_prompt_s_segments_are_valtz_s)
+{
+  const auto none = prompt_segments("a fox in snow\n");
+  CHECK(none.body == "a fox in snow\n");
+  CHECK(none.segments.empty());
+  // A model's own section is no segment of Valtz's.
+  CHECK(prompt_segments("overall_soundscape: wind").segments.empty());
+  const auto one = prompt_segments(
+      "<Picture 1> walks on.\n\n  Regenerate_Prompt : a woman in red\n"
+      "walks along the shore.\n");
+  CHECK(one.body == "<Picture 1> walks on.");
+  REQUIRE(one.segments.contains("regenerate_prompt"));
+  CHECK(one.segments.at("regenerate_prompt") ==
+        "a woman in red\nwalks along the shore.");
+  // An empty one is none; the words are written back as read.
+  CHECK(prompt_segments("a fox\nregenerate_prompt:  \n").segments.empty());
+  CHECK(prompt_segments("a fox\nregenerate_prompt:").body == "a fox");
+  CHECK(with_segments("a fox ", one.segments) ==
+        "a fox\n\nregenerate_prompt: a woman in red\nwalks along the "
+        "shore.");
+  CHECK(with_segments("a fox", {}) == "a fox");
+  const auto back = prompt_segments(with_segments("a fox", one.segments));
+  CHECK(back.body == "a fox");
+  CHECK(back.segments == one.segments);
+}
+
+// What a REFINE on FL2VA reads where none is given, made from a Ref2VA
+// prompt: its six sections as the base guide's three, its labels words.
+TEST(assist, a_refine_s_words_are_made_from_the_prompt)
+{
+  CHECK(refine_prompt(
+            "subject_definitions:\n<Subject 1> is the woman in <Picture "
+            "1>.\n\nsummary:\n[reference generation] She walks.\n\n"
+            "retention_analysis:\n<Subject 1>: fully_preserved.\n\n"
+            "detailed_description:\nLive-action.\n[Shot 1] <Subject 1> "
+            "walks along the shore.\n\noverall_soundscape:\nWaves.\n\n"
+            "non_diegetic_music:\nN/A") ==
+        "integrated_multimodal_description: subject 1 is the woman in "
+        "picture 1.\nLive-action.\n[Shot 1] subject 1 walks along the "
+        "shore.\n\noverall_soundscape: Waves.\n\n"
+        "non_diegetic_music: N/A");
+  CHECK(refine_prompt("<Picture 1> sings <Audio 1> into a microphone ") ==
+        "picture 1 sings audio 1 into a microphone");
+  // Not a label: as it is.
+  CHECK(refine_prompt("a <b>bold</b> <Picture x>") ==
+        "a <b>bold</b> <Picture x>");
+  CHECK(refine_prompt("  ").empty());
+}
+
+// A Ref2VA clip refined on another model: the enhancer is asked for its
+// words too, and they land after the clip's sections as Valtz's segment
+// -- the reply whole, and as it comes.
+TEST(assist, a_regenerated_clip_s_words_are_written_by_the_enhancer)
+{
+  EnhanceRequest r;
+  r.target = "video";
+  r.system = "The skill.";
+  r.video_mode = "Ref2VA";
+  r.prompt = "she walks along the shore";
+  CHECK(build_enhance_prompt(r).find("regenerate_prompt") ==
+        std::string::npos);
+  r.regenerate = true;
+  CHECK(build_enhance_prompt(r).find("\"regenerate_prompt\"") !=
+        std::string::npos);
+  auto reply = parse_enhance_reply(
+      "{\"subject_definitions\": \"<Subject 1> is the woman in <Picture "
+      "1>.\", \"detailed_description\": \"[Shot 1] She walks.\", "
+      "\"overall_soundscape\": \"Waves.\", \"non_diegetic_music\": "
+      "\"N/A\", \"regenerate_prompt\": \"A woman in a red coat walks "
+      "along a grey shore at dusk.\", \"title\": \"Shore\"}");
+  REQUIRE_OK(reply);
+  const auto segs = prompt_segments(reply->prompt);
+  CHECK(segs.body.starts_with("subject_definitions:\n<Subject 1>"));
+  CHECK(segs.body.ends_with("non_diegetic_music:\nN/A"));
+  CHECK(segs.segments.at("regenerate_prompt") ==
+        "A woman in a red coat walks along a grey shore at dusk.");
+  CHECK(partial_enhance_reply(
+            "{\"detailed_description\": \"[Shot 1] She walks.\", "
+            "\"regenerate_prompt\": \"A woman in a red") ==
+        "detailed_description:\n[Shot 1] She walks.\n\n"
+        "regenerate_prompt: A woman in a red");
 }
 
 // The model's names in a suggestion made the row's tags, in one pass:

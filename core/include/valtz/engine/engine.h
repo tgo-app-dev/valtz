@@ -93,6 +93,11 @@ inline constexpr std::string_view kOpQuantizeModel = "quantize-model";
 // generate-video's. The output is a movie of that format, the source's
 // sound over the span (PCM with ProRes).
 inline constexpr std::string_view kOpUpscaleVideo = "upscale-video";
+// What an engine runs that is no job of its own: a clip REGENERATED at a
+// larger size (Open-H3-Regenerate-2K, DESIGN §4q) -- a generate-video
+// past 768P drafted and refined, or an upscale-video by the refiner
+// (ModelRef::regenerate_lora). supports() says whether this engine can.
+inline constexpr std::string_view kOpRegenerateVideo = "regenerate-video";
 // A picture RESTORED at a larger size (VOSR, DINOv2 its eyes:
 // ModelRef::encoder): input "source", params `width`, `height`. The
 // output is a 16-bit PNG.
@@ -226,6 +231,24 @@ struct ModelRef {
   // A vision tower the conditioner reads (VOSR's DINOv2: param "encoder",
   // a catalog id), as its folder; empty when none.
   std::filesystem::path encoder;
+  // A clip REGENERATED at a larger size (Open-H3-Regenerate-2K, param
+  // "regenerate": the refiner's catalog id; DESIGN §4q): its merged LoRA,
+  // the latent upscaler and -- with its Fast Decoder on -- the fast
+  // decoder, as their files. The DiT, encoder and VAE are this model's
+  // (MiniMax H3 FL2VA). Empty when none.
+  std::filesystem::path regenerate_lora;
+  std::filesystem::path latent_upscaler;
+  std::filesystem::path fast_decoder;
+  // ...and the model the refine runs where it is not this one (the
+  // refiner's `base`: a Ref2VA clip is refined by FL2VA, its DiT and
+  // its prompt encoder -- the VAE stays this model's, the same codec):
+  // its folder, its DiT and text encoder linked apart (Draw Things
+  // parts; empty: its own) and its catalog engine block. Empty: this
+  // model.
+  std::filesystem::path regenerate_base;
+  std::filesystem::path regenerate_base_dit;
+  std::filesystem::path regenerate_base_encoder;
+  Json                  regenerate_base_engine = Json::object();
   Json                  engine = Json::object();  // catalog engine block
 };
 
@@ -270,6 +293,11 @@ inline constexpr std::string_view kPhaseDecode = "decode";
 // A clip's soundtrack out of its latent.
 inline constexpr std::string_view kPhaseSound = "sound";
 inline constexpr std::string_view kPhaseRestore = "restore";
+// A clip REGENERATED at a larger size (DESIGN §4q): its latent ENLARGED
+// by the latent upscaler, then REGENERATED -- the refine's denoise,
+// counted per block as any. A clip made so is drafted first (DENOISE).
+inline constexpr std::string_view kPhaseEnlarge = "enlarge";
+inline constexpr std::string_view kPhaseRegenerate = "regenerate";
 // A model's files; data "label" names the one being counted (none
 // between them: vpipe counts only the big ones).
 inline constexpr std::string_view kPhaseDownload = "download";

@@ -671,6 +671,43 @@ TEST(engine_progress, an_export_beside_a_generation)
         kPhasePrepare);
 }
 
+// A clip regenerated (DESIGN §4q): the draft's denoise, its latent
+// enlarged, the refine's denoise -- the reports opened after the latent
+// upscaler's are the refine's, and between the draft and it the latent
+// is enlarging, not finishing. An upscale by the refiner has no draft:
+// every denoise is the refine's.
+TEST(engine_progress, a_regenerate_s_draft_and_refine)
+{
+  vp::JobProgress p(/*after=*/0, /*download=*/false);
+  p.set_regenerate(/*drafted=*/true);
+  CHECK(p.read(reports({report(1, "denoise", 3, 40)}), 0).phase ==
+        kPhaseDenoise);
+  CHECK(p.read(reports(Json::array()), 1).phase == kPhaseEnlarge);
+  CHECK(p.read(reports({report(2, "latent upscale", 5, 37)}), 2).phase ==
+        kPhaseEnlarge);
+  // The draft decoded for the stage beside it: still enlarging.
+  CHECK(p.read(reports({report(2, "latent upscale", 37, 37),
+                        report(3, "vae decode", 6, 56)}),
+               2.5).phase == kPhaseEnlarge);
+  const vp::JobPhase r = p.read(reports({report(3, "vae decode", 56, 56),
+                                         report(4, "denoise", 10, 150)}),
+                                3);
+  CHECK(r.phase == kPhaseRegenerate && r.done == 10 && r.total == 150);
+  CHECK(p.read(reports({report(3, "vae decode", 56, 56),
+                        report(4, "denoise", 150, 150),
+                        report(5, "vae decode", 1, 20)}),
+               4).phase == kPhaseDecode);
+  CHECK(p.read(reports(Json::array()), 5).phase == kPhaseFinish);
+  vp::JobProgress u(/*after=*/0, /*download=*/false);
+  u.set_regenerate(/*drafted=*/false);
+  CHECK(u.read(reports({report(1, "denoise", 1, 150)}), 0).phase ==
+        kPhaseRegenerate);
+  // Not a regenerate: a latent upscaler's report is its phase alone.
+  vp::JobProgress plain(/*after=*/0, /*download=*/false);
+  CHECK(plain.read(reports({report(1, "denoise", 1, 8)}), 0).phase ==
+        kPhaseDenoise);
+}
+
 // A song (generate-audio) reports its three passes under one name:
 // planning the score and writing the song uncounted, with how far each
 // has got in its detail; then the flow matching, counted -- a denoise;

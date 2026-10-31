@@ -716,6 +716,16 @@ to_json(Json& j, const ModelEntry& e)
   if (const int edge = max_edge(e); edge > 0) {
     j["max_edge"] = edge;
   }
+  // Its REFINER past the size it was trained at (MiniMax H3 FL2VA: Open-
+  // H3-Regenerate-2K past 768 on the short side, a draft at 768; DESIGN
+  // §4q): the app offers its 2K size and says the clip is regenerated.
+  if (const Json rg = jget(jget(e.engine, "vpipe", Json::object()),
+                           "regenerate", Json());
+      rg.is_object() && rg.contains("with")) {
+    j["regenerate"] = {{"with", jget<std::string>(rg, "with", "")},
+                       {"above", jget(rg, "above", 768)},
+                       {"draft", jget(rg, "draft", 768)}};
+  }
   // A clip's lengths: frames = offset + n * step (17n + 5 for H3), at the
   // model's own rate -- the app offers what will be made.
   const Json vp = jget(e.engine, "vpipe", Json::object());

@@ -249,6 +249,7 @@ usage()
       "        [--tune k=v,...]\n"
       "        [--ref <file|asset-id> [--whole]]... [--continue <clip>]\n"
       "        [--tail-seconds s] [--song-sound]\n"
+      "        [--regenerate | --no-regenerate] [--no-preview]\n"
       "        (a clip with its soundtrack, MiniMax H3; the length goes\n"
       "        up to one the model makes -- 17n+5 frames -- and the Turbo\n"
       "        LoRA, when installed, runs 4/6/8 steps; --first is a picture\n"
@@ -260,7 +261,13 @@ usage()
       "        a clip or a sound cut to the clip's length, or --whole);\n"
       "        --continue: a clip carried on from its tail (3.75 s, or\n"
       "        --tail-seconds); --song-sound: the first sound reference is\n"
-      "        the clip's soundtrack, as it is -- a music video)\n"
+      "        the clip's soundtrack, as it is -- a music video. Past 768\n"
+      "        on its short side a clip from words or pictures is drafted\n"
+      "        at 768 and regenerated at the size by Open-H3-Regenerate-\n"
+      "        2K where it is installed: --regenerate insists, --no-\n"
+      "        regenerate makes it at the size directly; the draft is\n"
+      "        decoded for the preview -- \"preview draft\" -- unless\n"
+      "        --no-preview, which shows no step either)\n"
       "  audio <project.valtz> <prompt> [--lyrics <file>] [--model id]\n"
       "        [--plan full|melody|off] [--score <file.abc>]\n"
       "        [--max-seconds s] [--steps n] [--speed|--quality]\n"
@@ -448,11 +455,14 @@ usage()
       "         ranges and what this Mac can have; --continues: as for a\n"
       "         clip continued, its continuation presets. --tune on\n"
       "         generate and video sets them: steps, hyperflow, vdn,\n"
-      "         sol_attn, sol_tau, sage_attn, sage_pv8,\n"
-      "         sage_pv8_all_rows, i8_gemm, i8_gemm_tier,\n"
+      "         sol_attn, sol_threshold, sol_tau, sage_attn,\n"
+      "         sage_pv8, sage_pv8_all_rows, i8_gemm, i8_gemm_tier,\n"
       "         motion_cache, video_shift, audio_shift, shift --\n"
       "         true/false, a number or a word (i8_gemm_tier=accurate|\n"
-      "         fast|token|token_plain); --turbo the catalog's\n"
+      "         fast|token|token_plain, sol_threshold=diag|exact); H3's\n"
+      "         sol_tau a value a step too (sol_tau=1.0,1.5,1.75); a\n"
+      "         clip past 768P its refine's after regenerate_\n"
+      "         (regenerate_sol_tau=1.75); --turbo the catalog's\n"
       "         few-step LoRA off (none) or on, or a file in its place;\n"
       "         --lora adds one -- eight run, the first on)\n"
       "  export <project.valtz> <asset-id|file> --format F -o <file>\n"
@@ -489,8 +499,10 @@ usage()
       "          FL2VA), or from references (Auto's Ref2VA) -- --frames\n"
       "          long)\n"
       "  upscale <project> <composition> [--layer L] [--model id]\n"
-      "          [--seed n]   the layer's clip rendered at its scale\n"
-      "          (FlashVSR), the layer then showing it at scale 1\n"
+      "          [--seed n] [--prompt words]   the layer's clip rendered\n"
+      "          at its scale (FlashVSR; open-h3-regenerate-2k: refined\n"
+      "          against the words -- what made it, else its summary),\n"
+      "          the layer then showing it at scale 1\n"
       "  upscaler [<model-id> [k=v,...] [--reset]]   Settings >\n"
       "          Upscaling: each upscaler's int8 GEMM, Sage, Sol (on|off),\n"
       "          kept for every later upscale\n"
@@ -567,11 +579,14 @@ fail(const Error& e)
   return 1;
 }
 
-// --tune's "sol_attn=true,steps=6,sol_tau=1.2": Favor's Custom values.
+// --tune's "sol_attn=true,steps=6,sol_tau=1.2": Favor's Custom values. A
+// number after a number's own comma continues it, a SCHEDULE -- a value
+// a step: "sol_tau=1.0,1.5,1.75" (H3's Sol threshold).
 Json
 tune_spec(const std::string& spec)
 {
   Json out = Json::object();
+  std::string last, written;  // the key a number was given last, as typed
   std::size_t at = 0;
   while (at < spec.size()) {
     std::size_t end = spec.find(',', at);
@@ -582,6 +597,12 @@ tune_spec(const std::string& spec)
     at = end + 1;
     const auto eq = kv.find('=');
     if (eq == std::string::npos) {
+      char* rest = nullptr;
+      std::strtod(kv.c_str(), &rest);
+      if (!last.empty() && !kv.empty() && rest && *rest == '\0') {
+        written += "," + kv;
+        out[last] = written;
+      }
       continue;
     }
     const std::string k = kv.substr(0, eq), v = kv.substr(eq + 1);
@@ -589,6 +610,8 @@ tune_spec(const std::string& spec)
     char* rest = nullptr;
     const double d = std::strtod(v.c_str(), &rest);
     const bool number = !v.empty() && rest && *rest == '\0';
+    last = number ? k : std::string();
+    written = v;
     if (v == "true" || v == "on" || v == "yes") {
       out[k] = true;
     } else if (v == "false" || v == "off" || v == "no") {
@@ -1126,6 +1149,10 @@ follow(Controller& c, JobId job, std::string* made = nullptr)
                      static_cast<long long>(jget<std::int64_t>(
                          ev.data, "frame", 0)),
                      shape.c_str());
+        continue;
+      }
+      if (jget(ev.data, "draft", false)) {
+        std::fprintf(stderr, "  preview draft (%s)\n", shape.c_str());
         continue;
       }
       std::fprintf(stderr, "  preview step %d/%d (%s)\n",
@@ -2060,6 +2087,9 @@ main(int argc, char** argv)
                     cmd == "intent" || cmd == "download" || cmd == "caps" ||
                     cmd == "sources" || cmd == "wired" ||
                     cmd == "auto" || cmd == "agent" ||
+                    // (Favor's options as the app has them: a refiner
+                    // runs only with its graph -- the refine's past 768P.)
+                    cmd == "tuning" ||
                     (cmd == "export" &&
                      !(args.size() == 1 && args[0] == "--formats"));
   // "--memory": what the engine holds in memory as the command ends --
@@ -3783,11 +3813,15 @@ main(int argc, char** argv)
                   runs.empty() ? "none (none installed)" : runs.c_str());
     }
     for (const auto& u : all["upscalers"]) {
-      std::printf("%-20s %-16s %-6s %s%s%s\n",
+      // Installed, but not what it needs beside it (a refiner's upscaler
+      // and model) or an engine with the latent upscaler.
+      const bool lacks = u["state"] == "installed" && !jget(u, "ready", true);
+      std::printf("%-20s %-16s %-6s %s%s%s%s\n",
                   u["id"].get<std::string>().c_str(),
                   u["name"].get<std::string>().c_str(),
                   u["kind"].get<std::string>().c_str(),
                   u["state"].get<std::string>().c_str(),
+                  lacks ? "  (not ready: what it needs is missing)" : "",
                   jget(u, "runs", false) ? "  (in use)" : "",
                   jget(u, "custom", false) ? "  (changed)" : "");
       const Json& t = u["tuning"];
@@ -4191,6 +4225,8 @@ main(int argc, char** argv)
         req.options["seed"] = std::atoll(args[++i].c_str());
       } else if (args[i] == "--split") {
         req.options["split"] = args[++i];
+      } else if (args[i] == "--prompt") {
+        req.options["prompt"] = args[++i];
       }
     }
     auto made = c.run_asset_operation(std::move(req));
@@ -4676,6 +4712,12 @@ main(int argc, char** argv)
         req.tail_seconds = std::atof(next().c_str());
       } else if (a == "--song-sound") {
         req.reference_sound = true;
+      } else if (a == "--regenerate") {
+        req.regenerate = true;
+      } else if (a == "--no-regenerate") {
+        req.regenerate = false;
+      } else if (a == "--no-preview") {
+        req.preview = false;
       } else {
         return usage();
       }

@@ -451,7 +451,9 @@ enum SizeClass: Int, CaseIterable, Identifiable, Sendable {
     case draft = 512, standard = 1024, large = 1536
     /// 4K: 4096 pixels on the LONG side (4096 x 4096 square, 4096 x 2304
     /// at 16:9) -- offered only for a model that makes them (catalog
-    /// `max_edge`: FLUX.3 Image Klein), for pictures.
+    /// `max_edge`: FLUX.3 Image Klein), for pictures. A clip's is 2K:
+    /// 2560 on the long side (2560 x 1440 at 16:9), offered where the clip
+    /// model's refiner is here (DESIGN §4q: drafted at 768, regenerated).
     case ultra = 4096
     var id: Int { rawValue }
     /// The side of the square of its area, for what is made: a picture is
@@ -463,15 +465,17 @@ enum SizeClass: Int, CaseIterable, Identifiable, Sendable {
         switch self {
         case .draft: return 632
         case .standard: return 723
-        case .large, .ultra: return 960
+        case .large: return 960
+        case .ultra: return 2560   // the long side, as a picture's 4K
         }
     }
-    var label: String {
+    func label(_ m: Modality) -> String {
         switch self {
         case .draft: String(localized: "Draft")
         case .standard: String(localized: "Standard")
         case .large: String(localized: "Large")
-        case .ultra: String(localized: "4K")
+        case .ultra: m == .video ? String(localized: "2K")
+                                 : String(localized: "4K")
         }
     }
     /// A picture's preset, as its segment's tooltip says it.
@@ -795,7 +799,8 @@ struct JobPhase: Equatable {
     /// The phases in the order a generation runs them.
     static let order = ["prepare", "references", "score", "song", "speech",
                         "transcribe", "summarize", "separate", "denoise",
-                        "decode", "sound", "restore", "finish"]
+                        "enlarge", "regenerate", "decode", "sound",
+                        "restore", "finish"]
 
     /// A phase's name, as the inspector lists how long each took -- a
     /// song's sound rendered and decoded, a clip's soundtrack.
@@ -815,6 +820,10 @@ struct JobPhase: Equatable {
         case "sound": kind == .audio ? String(localized: "Decoding")
             : String(localized: "Soundtrack")
         case "restore": String(localized: "Restoring detail")
+        // A clip regenerated (DESIGN §4q): its draft's latent enlarged,
+        // then refined at the size asked.
+        case "enlarge": String(localized: "Enlarging the draft")
+        case "regenerate": String(localized: "Regenerating")
         case "finish": String(localized: "Finishing")
         case "export": String(localized: "Exporting")
         default: phase
@@ -877,6 +886,15 @@ struct JobPhase: Equatable {
             name = kind == .audio ? String(localized: "Decoding the sound")
                 : String(localized: "Making the soundtrack")
         case "restore": name = String(localized: "Restoring detail")
+        // A clip regenerated (DESIGN §4q): the draft made (denoise), its
+        // latent enlarged -- uncounted while the upscaler loads -- then
+        // refined at the size asked.
+        case "enlarge":
+            if percent == nil {
+                return String(localized: "Enlarging the draft…")
+            }
+            name = String(localized: "Enlarging the draft")
+        case "regenerate": name = String(localized: "Regenerating at full size")
         case "export": name = String(localized: "Exporting")
         case "download": name = label.isEmpty
             ? String(localized: "Downloading")
@@ -4336,12 +4354,20 @@ final class AppModel {
     /// and its own steps; VDN replaces Sol-Attn), and that is what is
     /// kept. An option that decides the steps lets them follow it.
     func setTuning(_ key: String, flag: Bool? = nil, number: Double? = nil,
-                   choice: String? = nil) {
+                   choice: String? = nil, schedule: String? = nil) {
         guard let info = tuningInfo else { return }
         var t = info.tuning
         if let flag { t.flags[key] = flag }
-        if let number { t.numbers[key] = number }
+        if let number {
+            t.numbers[key] = number
+            t.schedules[key] = nil
+        }
         if let choice { t.choices[key] = choice }
+        // A value a step ("1,1.5,1.75") in the number's place.
+        if let schedule {
+            t.schedules[key] = schedule
+            t.numbers[key] = nil
+        }
         let o = info.options.first { $0.key == key }
         settleTuning(t, stepsFollow: o?.fixedSteps != nil)
     }
@@ -4445,12 +4471,12 @@ final class AppModel {
         return added
     }
 
-    /// How many LoRAs run at once: vpipe's slots (eight), less HyperFlow's
-    /// or TaoMate's adapter.
+    /// How many LoRAs run at once: vpipe's slots (eight), less HyperFlow's,
+    /// Pika H3 Flex's or TaoMate's adapter.
     private func loraSlots(_ t: Tuning, _ info: TuningInfo) -> Int {
         (info.loraOption?.slots ?? 8)
-            - (t.flags["hyperflow"] == true || t.flags["taomate"] == true
-                ? 1 : 0)
+            - (t.flags["hyperflow"] == true || t.flags["pika_flex"] == true
+                || t.flags["taomate"] == true ? 1 : 0)
     }
 
     /// One LoRA changed: its strength, or on. Turned on with the slots
@@ -4477,9 +4503,9 @@ final class AppModel {
     /// The ACCELERATION LoRA Custom runs (the panel's quick pick: the
     /// model's few-step adapters, as Capabilities lists them), or none:
     /// the others listed are turned off, the one picked goes first, on,
-    /// with the steps and shifts it was distilled for -- HyperFlow's and
-    /// TaoMate's adapters, which would take its slot, off. None: the
-    /// model's own steps and shifts.
+    /// with the steps and shifts it was distilled for -- HyperFlow's, Pika
+    /// H3 Flex's and TaoMate's adapters, which would take its slot, off.
+    /// None: the model's own steps and shifts.
     func setFastLoRA(_ id: String?) {
         guard let info = tuningInfo, let opt = info.loraOption else { return }
         var t = info.tuning
@@ -4496,7 +4522,7 @@ final class AppModel {
                 l.on = true
             }
             t.loras.insert(l, at: 0)
-            for k in ["hyperflow", "taomate", "taomate_lora"]
+            for k in ["hyperflow", "pika_flex", "taomate", "taomate_lora"]
                 where t.flags[k] == true {
                 t.flags[k] = false
             }
@@ -4577,6 +4603,7 @@ final class AppModel {
         }
         let names: [(String, String)] = [
             ("hyperflow", String(localized: "HyperFlow")),
+            ("pika_flex", String(localized: "Pika H3 Flex")),
             ("taomate", String(localized: "TaoMate")),
             ("taomate_lora", String(localized: "LoRA only")),
             ("vdn", String(localized: "VDN")),
@@ -4589,7 +4616,9 @@ final class AppModel {
         ]
         for (k, name) in names where t.flags[k] == true {
             // int8's tier, past its default: "int8 Per Token".
-            if k == "i8_gemm", let tier = t.choices["i8_gemm_tier"],
+            if k == "sol_attn", t.choices["sol_threshold"] == "exact" {
+                parts.append(String(localized: "Sol exact"))
+            } else if k == "i8_gemm", let tier = t.choices["i8_gemm_tier"],
                tier != "accurate" {
                 let shown = TuningPanel.choiceLabel("i8_gemm_tier", tier)
                 parts.append(String(localized: "int8 \(shown)"))
@@ -5680,15 +5709,93 @@ final class AppModel {
         return (catalog.first { $0.id == id }?.maxEdge ?? 0) >= 4096
     }
 
-    /// The Size row's presets: 4K only where the model makes it.
+    /// The REFINER of the clip model Start runs (catalog `regenerate`:
+    /// MiniMax H3's Open-H3-Regenerate-2K, for FL2VA and Ref2VA; DESIGN
+    /// §4q) -- a continuation is made at the size asked; nil for none.
+    var videoRefiner: CatalogModel.Regenerate? {
+        guard activeModality == .video, !tuningContinues else { return nil }
+        return runningModelInfo?.regenerate
+    }
+
+    /// The clip Start makes is refined on ANOTHER model than its draft's
+    /// (a Ref2VA clip's refine runs FL2VA, which reads no references):
+    /// its words are the prompt's "regenerate_prompt:" segment, else made
+    /// from the prompt (core Controller::refine_words_).
+    var refinesOnAnotherModel: Bool {
+        regenerateDraft != nil &&
+            runningModelInfo?.capabilities.contains("reference-to-video")
+            == true
+    }
+
+    /// That refiner is here: installed with its latent upscaler and its
+    /// model, on an engine that has the latent upscaler (Settings ›
+    /// Upscaling's listing says it).
+    var refinerReady: Bool {
+        guard let r = videoRefiner else { return false }
+        return upscalers.first { $0.id == r.with }?.ready ?? false
+    }
+
+    /// The clip Start makes is DRAFTED at this size and REGENERATED at
+    /// the size asked: past the model's trained size (768 on H3's short
+    /// side), its refiner here -- as the core decides it
+    /// (Controller::generate_video); nil when it is made at the size.
+    var regenerateDraft: PixelSize? {
+        guard let r = videoRefiner, refinerReady else { return nil }
+        let d = dimensions
+        guard min(d.width, d.height) > r.above else { return nil }
+        let g = max(16, runningModelInfo?.sizeAlign ?? 32)
+        func other(_ along: Int, _ across: Int) -> Int {
+            let v = Double(r.draft) * Double(along) / Double(across)
+            return max(g, Int((v / Double(g)).rounded()) * g)
+        }
+        return d.width >= d.height
+            ? PixelSize(width: other(d.width, d.height), height: r.draft)
+            : PixelSize(width: r.draft, height: other(d.height, d.width))
+    }
+
+    /// Past the clip model's trained size with its refiner NOT here: made
+    /// at the size, slowly and past what it learned -- the card says
+    /// what would regenerate it.
+    var regenerateMissing: Bool {
+        guard let r = videoRefiner, !refinerReady else { return false }
+        let d = dimensions
+        return min(d.width, d.height) > r.above
+    }
+
+    /// The generation card's word under the Size row past 768P: the
+    /// draft and the size it is regenerated at -- or, its refiner not
+    /// here, what would regenerate it. Pixel sizes as text, ungrouped.
+    var regenerateNote: String? {
+        let d = dimensions
+        if let draft = regenerateDraft {
+            let a = "\(String(draft.width)) × \(String(draft.height))"
+            let b = "\(String(d.width)) × \(String(d.height))"
+            if refinesOnAnotherModel {
+                return String(localized: "Drafted at \(a) from the references, then regenerated at \(b) by Open-H3-Regenerate-2K on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line.")
+            }
+            return String(localized: "Drafted at \(a), then regenerated at \(b) by Open-H3-Regenerate-2K: several times the draft's time.")
+        }
+        if regenerateMissing, let r = videoRefiner {
+            return String(localized: "Past \(String(r.above)) on its short side the clip is made at this size directly. Open-H3-Regenerate-2K drafts it at \(String(r.draft)) and regenerates it: get it in Settings › Capabilities › MiniMax H3.")
+        }
+        return nil
+    }
+
+    /// The Size row's largest preset: a picture's 4K where the model
+    /// makes it, a clip's 2K where its refiner is here.
+    var makesUltra: Bool {
+        activeModality == .video ? refinerReady : makes4K
+    }
+
+    /// The Size row's presets: 4K (2K) only where it is made.
     var sizeClasses: [SizeClass] {
-        SizeClass.allCases.filter { $0 != .ultra || makes4K }
+        SizeClass.allCases.filter { $0 != .ultra || makesUltra }
     }
 
     /// The preset made: 4K chosen, then another model chosen that does
     /// not make it, is Large -- and 4K again when one that does is.
     var shownSizeClass: SizeClass {
-        sizeClass == .ultra && !makes4K ? .large : sizeClass
+        sizeClass == .ultra && !makesUltra ? .large : sizeClass
     }
 
     /// The orientation shown: chosen, or read off a custom size.
@@ -10961,6 +11068,10 @@ final class AppModel {
             }
         case "job.preview":
             guard let job = ev.job else { break }
+            // A regenerated clip's decoded draft holds the stage until the
+            // result: a TAE step arriving after it is older.
+            let draft = p["draft"] as? Bool ?? false
+            if !draft, taskContexts[job]?.clip?.draft == true { break }
             if let prog = p["progress"] as? Double, prog >= 0 {
                 jobs[job]?.progress = prog
             }
@@ -10983,7 +11094,7 @@ final class AppModel {
                 } else {
                     taskContexts[job]?.clip = PreviewClip(
                         frames: ev.clip, fps: p["fps"] as? Double ?? 24,
-                        step: step)
+                        step: step, draft: draft)
                 }
             }
             if job == generationJob, let ctx = taskContexts[job] {
@@ -11067,7 +11178,9 @@ final class AppModel {
         stage.b = nil
         stage.bLabel = ""
         stage.mode = .a
-        stage.aLabel = String(localized: "Step \(liveStep) of \(liveSteps)")
+        stage.aLabel = clip.draft
+            ? String(localized: "Low resolution pass")
+            : String(localized: "Step \(liveStep) of \(liveSteps)")
         stageBaseURL = nil
         stageBaseOriginal = nil
         stageBeforeBase = nil

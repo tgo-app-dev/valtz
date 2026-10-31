@@ -1801,16 +1801,30 @@ struct GenerationSettingsPopover: View {
 
     var body: some View {
         ScrollView(.vertical) {
-            DrawerSettings(model: model, tuneInline: true)
-                .padding(16)
-                .fixedSize()
-                .onGeometryChange(for: CGSize.self) { $0.size }
-                    action: { size = $0 }
+            // As tall as it lays out at its width: measured with none
+            // proposed, Tune's wrapping notes were a line each.
+            AtIdealWidth {
+                DrawerSettings(model: model, tuneInline: true)
+                    .padding(16)
+            }
+            .onGeometryChange(for: CGSize.self) { $0.size }
+                action: { size = $0 }
         }
         .scrollBounceBehavior(.basedOnSize)
         .frame(width: size.width > 0 ? size.width : nil,
-               height: size.height > 0 ? min(size.height, 680) : nil)
+               height: size.height > 0 ? min(size.height, room) : nil)
         .animation(AppModel.motion, value: model.showsTuning)
+    }
+
+    /// 680 points at most, or what the screen leaves under the Prompt
+    /// Editor's toolbar, where it hangs from (the main window's: a
+    /// popover holding a field may be the key one).
+    private var room: CGFloat {
+        guard let w = NSApp.mainWindow, let screen = w.screen?.visibleFrame
+        else { return 680 }
+        // The toolbar under the title bar, the arrow, a margin.
+        let below = w.frame.maxY - 90 - screen.minY - 24
+        return max(320, min(680, below))
     }
 }
 
@@ -1977,11 +1991,26 @@ private struct DrawerSettings: View {
         }
         GridRow {
             label("Size", row: SettingsRow.size)
-            selector("Size", model.sizeClasses.map { ($0, $0.label) },
+            selector("Size", model.sizeClasses.map {
+                         ($0, $0.label(model.activeModality))
+                     },
                      tips: model.activeModality == .image
                         ? model.sizeClasses.map(\.tip) : [],
                      selection: sizeChoice)
             SizeField(model: model)
+        }
+        // Past 768P (DESIGN §4q): drafted there and regenerated at the
+        // size -- or, its refiner not here, what would.
+        if let note = model.regenerateNote {
+            GridRow {
+                Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                Text(note)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .gridCellColumns(2)
+            }
+            .transition(.opacity)
         }
         // A clip from references with a song among them: its soundtrack
         // is the song as it is (a music video), or the one generated with

@@ -21,6 +21,7 @@ phase_of(std::string_view desc)
   };
   static constexpr Name kNames[] = {
     {"denoise", kPhaseDenoise},
+    {"latent upscale", kPhaseEnlarge},
     {"vae decode", kPhaseDecode},
     {"audio vae decode", kPhaseSound},
     {"encoding references", kPhaseReferences},
@@ -342,6 +343,27 @@ JobProgress::read(const Json& doc, double now)
         if (p.phase == kPhaseWork) {
           p.label = desc;
         }
+        // A regenerate's: the latent upscaler's report is the line
+        // between the draft's denoise and the refine's.
+        if (_regen && p.phase == kPhaseEnlarge && _enlarged == 0) {
+          _enlarged = i.id;
+        }
+        if (_regen && p.phase == kPhaseDenoise) {
+          if (!_drafted || (_enlarged != 0 && i.id > _enlarged)) {
+            p.phase = kPhaseRegenerate;
+            if (_refined == 0) {
+              _refined = i.id;
+            }
+          } else {
+            _draft_seen = true;
+          }
+        }
+        // The draft decoded for the stage, beside the refine (DESIGN
+        // §4q): the clip's own decode opens after the refine's denoise.
+        if (_regen && _drafted && p.phase == kPhaseDecode &&
+            (_refined == 0 || i.id < _refined)) {
+          continue;
+        }
       }
       p.elapsed = jget<std::uint64_t>(it, "elapsed_ms", 0) / 1000.0;
       live.push_back(std::move(i));
@@ -357,8 +379,10 @@ JobProgress::read(const Json& doc, double now)
   }
   for (const auto& i : live) {
     // Past the main work -- a denoise, an export's frames -- what is
-    // left is finishing (a clip's soundtrack joined).
-    if (i.phase.phase == kPhaseDenoise || i.phase.phase == kPhaseExport) {
+    // left is finishing (a clip's soundtrack joined). A regenerated
+    // clip's main work is its refine.
+    const std::string_view main = _regen ? kPhaseRegenerate : kPhaseDenoise;
+    if (i.phase.phase == main || i.phase.phase == kPhaseExport) {
       _past = true;
     }
   }
@@ -403,7 +427,10 @@ JobProgress::read(const Json& doc, double now)
   JobPhase idle;
   idle.phase = _download ? kPhaseDownload
                : _past   ? kPhaseFinish
-                         : kPhasePrepare;
+               // Drafted, not yet refined: its latent on its way to the
+               // upscaler and the refine (their loads uncounted).
+               : _regen && _draft_seen ? kPhaseEnlarge
+                                       : kPhasePrepare;
   across_passes_(idle, false);
   return idle;
 }

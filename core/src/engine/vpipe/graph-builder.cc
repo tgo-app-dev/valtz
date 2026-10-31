@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <format>
 #include <limits>
+#include <set>
+#include <tuple>
 
 namespace valtz::engine::vp {
 
@@ -66,19 +68,32 @@ unwired()
   return port("", 0);
 }
 
-// Favor's acceleration options (the recipe's "tuning",
-// models/tuning.h) as the generating stage spells them -- the keys of
-// vpipe's acceleration vocabulary; a recipe from before them has none.
+// Favor's acceleration options (settled tuning, models/tuning.h) as the
+// generating stage spells them -- the keys of vpipe's acceleration
+// vocabulary; a recipe from before them has none.
 Json
-accel_of(const JobSpec& job)
+accel_from(const Json& t)
 {
-  const Json t = jget(job.params, "tuning", Json::object());
   Json out = Json::object();
   for (const char* k : {"sol_attn", "sol_tau", "sage_attn", "i8_gemm",
                         "motion_cache", "ane_ffn", "ane_qkv"}) {
     if (t.is_object() && t.contains(k)) {
       out[k] = t[k];
     }
+  }
+  // A threshold a STEP (H3's schedule, "1,1.5,1.75": tuning.h) is vpipe's
+  // `sol_tau_steps`, its first entry the `sol_tau` beside it.
+  if (t.is_object() && t.contains("sol_tau") && t["sol_tau"].is_string()) {
+    const auto steps = t["sol_tau"].get<std::string>();
+    out["sol_tau"] = std::strtod(steps.c_str(), nullptr);
+    out["sol_tau_steps"] = steps;
+  }
+  // Sol's exact flavour, only with Sol on: diag is vpipe's own, so a job
+  // without it has the graph it always had. (A vpipe from before it
+  // ignores the key -- and runs diag.)
+  if (jget(t, "sol_attn", false) &&
+      jget<std::string>(t, "sol_threshold", "diag") == "exact") {
+    out["sol_threshold"] = "exact";
   }
   // The int8 GEMMs' tier, only with them on and only when it is not the
   // one vpipe runs anyway: an Accurate job's graph is as it always was. (A
@@ -98,6 +113,13 @@ accel_of(const JobSpec& job)
     }
   }
   return out;
+}
+
+// The job's own (the recipe's "tuning").
+Json
+accel_of(const JobSpec& job)
+{
+  return accel_from(jget(job.params, "tuning", Json::object()));
 }
 
 // Favor's CODEC int8 (tuning `vae_i8_gemm`, `vae_i8_gemm_tier`) as
@@ -280,6 +302,13 @@ vae_source(const JobSpec& job, Json& stages)
 {
   if (job.model.vae.empty()) {
     return "model-select";
+  }
+  // Laid once, however many decoders read it (a regenerated clip's
+  // draft and its refine).
+  for (const Json& s : stages) {
+    if (jget<std::string>(s, "id", "") == "vae-select") {
+      return "vae-select";
+    }
   }
   stages.push_back(stage("vae-select", "model-select", Json::array(),
                          {{"hf_dir", job.model.vae.string()}}));
@@ -891,6 +920,187 @@ build_image_edit(const JobSpec& job, const std::vector<RefImage>& refs,
   return build_image(job, refs, cache);
 }
 
+namespace {
+
+// The refiner's catalog block (`engine.vpipe.regenerate` of the model
+// that names it, laid on the job by the controller as "regenerate_spec").
+Json
+regenerate_spec(const JobSpec& job)
+{
+  return jget(job.params, "regenerate_spec", Json::object());
+}
+
+// A clip REGENERATED at a larger size (Open-H3-Regenerate-2K, DESIGN §4q;
+// vpipe's minimax-h3-regenerate-2k graph): its latent enlarged by the
+// latent upscaler -- told the ratio, cut back to the size by a crop box
+// where it is not whole latent cells -- put back to the refine's first
+// sigma and denoised again by the same DiT under the release's merged
+// LoRA, then decoded:
+//
+//   <latent> -> latent-upscale -11-> generate-video (the refine)
+//   regenerate-config (the merged LoRA) -9-> generate-video
+//   <cond> -0-> generate-video -> vae-decode
+//
+// <cond> is the draft's own conditioning -- unless the job carries words
+// for the refine (param "regenerate_prompt": Controller::refine_words_),
+// read by a conditioner of their own; and where the refine runs another
+// model than the draft (ModelRef::regenerate_base: a Ref2VA draft's
+// refine is FL2VA's), that model's model-select, DiT and prompt encoder
+// take the refine (the VAE stays the job's: one codec).
+//
+// Its arithmetic `t` (the refiner's tuning: Settings › Upscaling's, or
+// a clip's Custom): the DiT's int8 GEMMs and tier, the Neural Engine's
+// share, Sol, Sage and Sage's int8 P·V -- the tiers vpipe checked under
+// the merged LoRA, Sol and Sage on its banded forward too (vpipe
+// 51273173) -- and, off Accurate, the same tier on the upscaler and the
+// fast decoder, as vpipe's -fast-m5 graph runs them. The refine writes
+// no soundtrack: it is conditioned on an encoded silence. Returns the
+// decode's id.
+std::string
+regenerate_stages(const JobSpec& job, const Json& cond, const Json& latent,
+                  int width, int height, int frames, double fps,
+                  const Json& t, Json& stages)
+{
+  const Json spec = regenerate_spec(job);
+  const std::string cfg_stage = jget<std::string>(
+      jget(job.model.engine, "vpipe", Json::object()), "config_stage",
+      "minimax-h3-model-config");
+  const bool i8 = jget(t, "i8_gemm", false);
+  const auto tier = jget<std::string>(t, "i8_gemm_tier", "accurate");
+  Json tiered = Json::object();
+  if (i8 && tier != "accurate") {
+    tiered = {{"i8_gemm", true}, {"i8_gemm_tier", tier}};
+  }
+  stages.push_back(stage("latent-upscale", "latent-upscale",
+                         Json::array({latent}),
+                         merged({{"hf_dir", job.model.latent_upscaler.string()},
+                                 {"width", width},
+                                 {"height", height},
+                                 {"frames", frames}},
+                                tiered)));
+  // The model the refine runs: the job's, or the refiner's base.
+  const bool other = !job.model.regenerate_base.empty();
+  const Json bvp = other ? jget(job.model.regenerate_base_engine, "vpipe",
+                                Json::object())
+                         : jget(job.model.engine, "vpipe", Json::object());
+  std::string model = "model-select";
+  if (other) {
+    model = "regenerate-model-select";
+    stages.push_back(stage(model, "model-select", Json::array(),
+                           {{"hf_dir", job.model.regenerate_base.string()}}));
+  }
+  // Its words, where it has its own: that model's prompt encoder.
+  Json refine_cond = cond;
+  if (const auto words = jget<std::string>(job.params, "regenerate_prompt",
+                                           "");
+      !words.empty()) {
+    stages.push_back(stage("regenerate-prompt", "text-prompt",
+                           Json::array(), {{"text", words}}));
+    Json ccfg = jget(bvp, "conditioner", Json::object());
+    const fs::path enc = other ? job.model.regenerate_base_encoder
+                               : job.model.encoder_weights;
+    if (!enc.empty()) {
+      ccfg["encoder_dir"] = enc.string();
+    }
+    stages.push_back(stage("regenerate-conditioner", "diffusion-conditioner",
+                           Json::array({port("regenerate-prompt"),
+                                        unwired(), port(model)}),
+                           std::move(ccfg)));
+    refine_cond = port("regenerate-conditioner");
+  }
+  stages.push_back(stage("regenerate-config",
+                         jget<std::string>(bvp, "config_stage", cfg_stage),
+                         Json::array(),
+                         {{"lora", job.model.regenerate_lora.string()},
+                          {"lora_scale", 1.0}}));
+  Json gen_cfg = merged({{"width", width}, {"height", height},
+                         {"frames", frames}, {"fps", fps},
+                         {"steps", jget(spec, "steps", 3)},
+                         {"seed",
+                          jget<std::int64_t>(job.params, "seed", 0)},
+                         {"unload_when_idle", "always"}},
+                        accel_from(t));
+  // A DiT of Custom's (or linked apart) is the job's model's: another's
+  // refine runs that model's own -- or its own linked apart.
+  if (const fs::path dit = other ? job.model.regenerate_base_dit
+                                 : job.model.dit;
+      !dit.empty()) {
+    gen_cfg["dit_dir"] = dit.string();
+  }
+  // generate-video: 0 cond, 2 model, 9 model_config, 11 init_latent.
+  Json gen_in = Json::array();
+  for (int k = 0; k < 12; ++k) {
+    gen_in.push_back(k == 0    ? refine_cond
+                     : k == 2  ? port(model)
+                     : k == 9  ? port("regenerate-config")
+                     : k == 11 ? port("latent-upscale")
+                               : unwired());
+  }
+  stages.push_back(stage("regenerate", "generate-video", std::move(gen_in),
+                         std::move(gen_cfg)));
+  // The released decoder, or -- its Fast Decoder on -- the release's
+  // fast one, with the tier the refine runs.
+  Json dec = with_vae({{"dtype", "f16"}}, job);
+  if (!job.model.fast_decoder.empty()) {
+    dec["fast_decoder"] = job.model.fast_decoder.string();
+    dec = merged(dec, tiered);
+    if (jget(t, "ane_ffn", false)) {
+      dec["ane_ffn"] = true;
+    }
+  }
+  const std::string vae = vae_source(job, stages);
+  stages.push_back(stage("regenerate-decode", "vae-decode",
+                         Json::array({port("regenerate"), port(vae)}),
+                         std::move(dec)));
+  return "regenerate-decode";
+}
+
+// The most a draft's preview holds, its frames 8-bit: past it they are
+// made smaller. (The TAE's preview of a 124-frame clip is 55 MB.)
+constexpr double kDraftPreviewBytes = 256.0 * 1024 * 1024;
+
+// A regenerated clip's DRAFT as the stage shows it while the refine runs
+// (DESIGN §4q), in place of the TAE's last step: its latent goes on to
+// the refine undecoded, so it is decoded here too -- by the decoder the
+// refine's decode uses, let go once done -- made small enough to hold
+// whole (kDraftPreviewBytes) and stacked into ONE clip, [F, 3, H, W],
+// for its sink. Returns the sink's id.
+std::string
+draft_preview_stages(const JobSpec& job, const Json& latent, int width,
+                     int height, int frames, Json& stages)
+{
+  Json dec = with_vae({{"unload_when_idle", "destroy"}}, job);
+  if (!job.model.fast_decoder.empty()) {
+    dec["fast_decoder"] = job.model.fast_decoder.string();
+  }
+  const std::string vae = vae_source(job, stages);
+  stages.push_back(stage("draft-decode", "vae-decode",
+                         Json::array({latent, port(vae)}), std::move(dec)));
+  std::string clip = "draft-decode";
+  const double bytes = 3.0 * width * height * std::max(frames, 1);
+  if (bytes > kDraftPreviewBytes) {
+    const double s = std::sqrt(kDraftPreviewBytes / bytes);
+    stages.push_back(stage(
+        "draft-fit", "image-resample", Json::array({port(clip)}),
+        {{"width", std::max(2, static_cast<int>(width * s) / 2 * 2)},
+         {"height", std::max(2, static_cast<int>(height * s) / 2 * 2)},
+         {"fit", "stretch"},
+         {"algorithm", "bilinear"}}));
+    clip = "draft-fit";
+  }
+  // The whole stream, however many frames the decoder makes of it.
+  stages.push_back(stage(
+      "draft-stack", "temporal-stack", Json::array({port(clip)}),
+      {{"mode", "video"},
+       {"group_size", 0},
+       {"max_mb", static_cast<int>(kDraftPreviewBytes / (1 << 20)) + 64}}));
+  stages.push_back(sink("draft-sink", port("draft-stack"),
+                        /*latest_only=*/false));
+  return "draft-sink";
+}
+
+}
+
 // The shape of vpipe's MiniMax H3 reference graphs
 // (docs/pipelines/minimax-h3-text-to-video-turbo / -preview /
 // -first-last-to-video), with the output written Apple-native:
@@ -944,6 +1154,29 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   const double fps = jget(job.params, "fps", jget(defaults, "fps", 24.0));
   const int steps = jget(job.params, "steps", jget(defaults, "steps", 8));
   const auto seed = jget<std::int64_t>(job.params, "seed", 0);
+  // Past 768P the clip is DRAFTED at 768 on its short side (param
+  // "draft") and REGENERATED at the size asked (DESIGN §4q): the draft's
+  // latent itself enlarged and refined -- never decoded -- its
+  // soundtrack the clip's.
+  const Json draft = jget(job.params, "draft", Json());
+  const bool regen = draft.is_object() && !job.model.regenerate_lora.empty();
+  if (draft.is_object() && !regen) {
+    return make_error(Code::InvalidArgument,
+                      "a draft regenerated needs the refiner's files");
+  }
+  // References (Ref2VA) are the draft's to read; the refine runs on
+  // the refiner's model against words of its own. A continuation is not
+  // regenerated: its seam is matched to a guide of the clip's own size.
+  if (regen && (job.model.latent_upscaler.empty() ||
+                std::ranges::any_of(refs, &RefMedia::continues))) {
+    return make_error(Code::InvalidArgument,
+                      "a continuation is not regenerated");
+  }
+  // The size the model makes: the draft's, or the clip's.
+  const int gen_w = regen ? ceil_to(jget(draft, "width", width), align)
+                          : width;
+  const int gen_h = regen ? ceil_to(jget(draft, "height", height), align)
+                          : height;
 
   BuiltGraph g;
   const std::string jid = job.id.str();
@@ -992,18 +1225,86 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   const RefMedia* song = nullptr;
   // The clip continued, stacked: what the new clip's seam is matched to.
   std::string seam_ref;
+
+  // The pictures the clip opens and ends on: each decoded into a lease
+  // at its own size (capped), cropped with Lanczos to fill the frame
+  // exactly -- vpipe drops an anchor of another size, and the clip
+  // silently becomes text-to-video. The first takes the look the request
+  // lays on it (as an edit's base); the last comes as its asset looks.
+  const Json keyframe_fit = {{"width", gen_w}, {"height", gen_h},
+                             {"fit", "crop"}, {"algorithm", "lanczos"}};
+  auto keyframe_feed = [&](const RefImage& pic, const std::string& id,
+                           bool opens) {
+    RefFeed f;
+    f.stage = id;
+    f.path = pic.path;
+    f.base = true;
+    f.channels = 3;
+    if (opens) {
+      f.adjust = media::adjustments_from_json(
+          jget(job.params, "base_adjust", Json::object()));
+      f.crop = media::crop_from_json(
+          jget(job.params, "base_crop", Json::object()));
+    }
+    const media::PixelSize own_size = picture_size(pic.size, f.crop);
+    const double own =
+        static_cast<double>(own_size.width) * own_size.height;
+    f.size = own > kMaxFeedArea ? fit_area(own_size, kMaxFeedArea, 1)
+                                : own_size;
+    f.fitted = {gen_w, gen_h};
+    return f;
+  };
+  // Its picture as fitted, laid once whoever reads it: the VAE that
+  // anchors the denoise on it, the prompt encoder that is shown it.
+  std::set<std::string> keyframes_laid;
+  auto keyframe_picture = [&](const RefImage& pic, const std::string& id,
+                              bool opens) {
+    if (keyframes_laid.insert(id).second) {
+      RefFeed f = keyframe_feed(pic, id, opens);
+      stages.push_back(stage(f.stage, ex::kSourceType, Json::array(),
+                             Json::object()));
+      stages.push_back(stage(id + "-fit", "image-resample",
+                             Json::array({port(f.stage)}), keyframe_fit));
+      g.references.push_back(std::move(f));
+    }
+    return port(id + "-fit");
+  };
+  // Pika H3 Flex's recipe (vpipe's pika-h3-flex graphs): the keyframes
+  // are SHOWN to the prompt encoder too, ahead of the words -- FL2VA's
+  // own presentation, "<Picture 1>: ", the picture its prompts name.
+  const bool show_keyframes =
+      refs.empty() && !prompt_only && (first || last) &&
+      jget(jget(job.params, "tuning", Json::object()), "pika_flex", false);
   if (refs.empty() && !prompt_only) {
     // The prompt encoder (Qwen3-VL-32B for H3) streams, and is dropped
     // before the denoise: the two never share the machine. KEPT
-    // (encoding-cache.h): the words and its config are all it reads.
+    // (encoding-cache.h): the words and its config are all it reads --
+    // and the keyframes, shown it.
     const Json ccfg = jget(vp, "conditioner", Json::object());
     std::string key;
     if (cache) {
-      key = encoding_key("conditioning",
-                         encoding_doc(*cache, job, "conditioning",
-                                      {{"stage", "diffusion-conditioner"},
-                                       {"config", ccfg},
-                                       {"prompt", prompt}}));
+      Json doc = {{"stage", "diffusion-conditioner"},
+                  {"config", ccfg},
+                  {"prompt", prompt}};
+      bool hashed = true;
+      if (show_keyframes) {
+        Json shown = Json::array();
+        for (const auto& [pic, id, opens] :
+             {std::tuple{first, "first", true},
+              std::tuple{last, "last", false}}) {
+          if (pic) {
+            hashed = hashed && !pic->hash.is_zero();
+            shown.push_back(picture_doc(pic->hash,
+                                        keyframe_feed(*pic, id, opens),
+                                        keyframe_fit));
+          }
+        }
+        doc["keyframes"] = std::move(shown);
+      }
+      if (hashed) {
+        key = encoding_key("conditioning",
+                           encoding_doc(*cache, job, "conditioning", doc));
+      }
     }
     if (!key.empty() && cache->kept(key)) {
       stages.push_back(stage(kKeptConditioning, ex::kSourceType,
@@ -1013,10 +1314,17 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                              {{"conditioning", kKeptConditioning}}});
     } else {
       prompt_read = true;
+      // 0 text, 1 negative, 2 model, 3 / 4 the keyframes shown.
+      Json cin = Json::array({port("text-prompt"), unwired(),
+                              port("model-select")});
+      if (show_keyframes) {
+        cin.push_back(first ? keyframe_picture(*first, "first", true)
+                            : unwired());
+        cin.push_back(last ? keyframe_picture(*last, "last", false)
+                           : unwired());
+      }
       stages.push_back(stage("diffusion-conditioner",
-                             "diffusion-conditioner",
-                             Json::array({port("text-prompt"), unwired(),
-                                          port("model-select")}),
+                             "diffusion-conditioner", std::move(cin),
                              with_encoder(ccfg, job)));
       if (!key.empty()) {
         stages.push_back(sink(kConditioningTap, cond, false));
@@ -1249,33 +1557,9 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   cfg = merged(cfg, declared_of(job, "config"));
   stages.push_back(stage(cfg_stage, cfg_stage, Json::array(), cfg));
 
-  // The pictures the clip opens and ends on: each decoded into a lease
-  // at its own size (capped), cropped with Lanczos to fill the frame
-  // exactly -- vpipe drops an anchor of another size, and the clip
-  // silently becomes text-to-video -- and VAE-encoded as a keyframe. The
-  // first takes the look the request lays on it (as an edit's base); the
-  // last comes as its asset looks.
+  // Each keyframe VAE-encoded, its latent the anchor.
   auto keyframe = [&](const RefImage& pic, const std::string& id,
                       bool opens) {
-    RefFeed f;
-    f.stage = id;
-    f.path = pic.path;
-    f.base = true;
-    f.channels = 3;
-    if (opens) {
-      f.adjust = media::adjustments_from_json(
-          jget(job.params, "base_adjust", Json::object()));
-      f.crop = media::crop_from_json(
-          jget(job.params, "base_crop", Json::object()));
-    }
-    const media::PixelSize own_size = picture_size(pic.size, f.crop);
-    const double own =
-        static_cast<double>(own_size.width) * own_size.height;
-    f.size = own > kMaxFeedArea ? fit_area(own_size, kMaxFeedArea, 1)
-                                : own_size;
-    f.fitted = {width, height};
-    const Json fit = {{"width", width}, {"height", height},
-                      {"fit", "crop"}, {"algorithm", "lanczos"}};
     // KEPT (encoding-cache.h): the picture as fitted is all it reads.
     std::string key;
     if (cache && !pic.hash.is_zero()) {
@@ -1283,7 +1567,10 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                          encoding_doc(*cache, job, "keyframe",
                                       {{"stage", "vae-encode"},
                                        {"picture",
-                                        picture_doc(pic.hash, f, fit)}}));
+                                        picture_doc(pic.hash,
+                                                    keyframe_feed(pic, id,
+                                                                  opens),
+                                                    keyframe_fit)}}));
     }
     if (!key.empty() && cache->kept(key)) {
       const std::string kept = id + "-latent-kept";
@@ -1292,15 +1579,10 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
       g.encodings.push_back({key, "keyframe", true, {{"latent", kept}}});
       return port(kept);
     }
-    stages.push_back(stage(f.stage, ex::kSourceType, Json::array(),
-                           Json::object()));
-    stages.push_back(stage(id + "-fit", "image-resample",
-                           Json::array({port(f.stage)}), fit));
     stages.push_back(stage(id + "-latent", "vae-encode",
-                           Json::array({port(id + "-fit"),
+                           Json::array({keyframe_picture(pic, id, opens),
                                         port("model-select")}),
                            with_vae({{"unload_when_idle", "always"}}, job)));
-    g.references.push_back(std::move(f));
     if (!key.empty()) {
       const std::string tap = id + "-latent-tap";
       stages.push_back(sink(tap, port(id + "-latent"), false));
@@ -1322,7 +1604,7 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   Json gen_in = Json::array({cond, unwired(), port("model-select"),
                              unwired(), unwired(), anchor, anchor_last,
                              ref_video, ref_audio, port(cfg_stage)});
-  Json gen_cfg = {{"width", width}, {"height", height}, {"frames", frames},
+  Json gen_cfg = {{"width", gen_w}, {"height", gen_h}, {"frames", frames},
                   {"fps", fps}, {"steps", steps}, {"seed", seed}};
   gen_cfg = merged(gen_cfg, jget(vp, "generate", Json::object()));
   gen_cfg = merged(gen_cfg, accel_of(job));
@@ -1344,22 +1626,38 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   // The picture: decoded in F16 and written in the project's intermediate
   // format -- ProRes (12 bits in 4444, 10 in 422) or HEVC Main10, never
   // the eight the FFmpeg path rounds to -- tagged BT.709, which is what
-  // the model's sRGB-encoded BT.709 samples are taken as in video.
-  const std::string vae = vae_source(job, stages);
-  stages.push_back(stage("vae-decode", "vae-decode",
-                         Json::array({port("generate-video"), port(vae)}),
-                         with_vae({{"dtype", "f16"}}, job)));
+  // the model's sRGB-encoded BT.709 samples are taken as in video. A
+  // draft is not decoded: its latent is regenerated at the size asked,
+  // and that is decoded.
+  std::string decoded = "vae-decode";
+  if (regen) {
+    decoded = regenerate_stages(job, cond, port("generate-video"), width,
+                                height, frames, fps,
+                                jget(job.params, "regenerate_tuning",
+                                     Json::object()),
+                                stages);
+    if (jget(job.params, "preview", true) &&
+        jget(job.params, "draft_preview", true)) {
+      g.draft_sink = draft_preview_stages(job, port("generate-video"),
+                                          gen_w, gen_h, frames, stages);
+    }
+  } else {
+    const std::string vae = vae_source(job, stages);
+    stages.push_back(stage("vae-decode", "vae-decode",
+                           Json::array({port("generate-video"), port(vae)}),
+                           with_vae({{"dtype", "f16"}}, job)));
+  }
   // A continuation's SEAM: its frames matched to the tail the model was
   // given -- the step in tone (the shadows most) and in framing it came
   // back with, measured on the frames either side and taken out of every
   // frame (vpipe's content-aware-continuation, catalog
   // `references.seam`). What does not look like one shot it leaves as
   // it is, and says so.
-  std::string picture = "vae-decode";
+  std::string picture = decoded;
   if (const Json seam = jget(rv, "seam", Json());
       !seam_ref.empty() && seam.is_object()) {
     stages.push_back(stage("seam", "content-aware-continuation",
-                           Json::array({port("vae-decode"),
+                           Json::array({port(decoded),
                                         port(seam_ref)}),
                            seam));
     picture = "seam";
@@ -1483,7 +1781,10 @@ build_audio(const JobSpec& job)
     const Json all = accel_of(job);
     const Json takes = jget(vp, "accel", Json::array());
     for (auto it = all.begin(); it != all.end(); ++it) {
-      const std::string k = it.key() == "sol_tau" ? "sol_attn" : it.key();
+      const std::string k =
+          it.key() == "sol_tau" || it.key() == "sol_threshold"
+              ? "sol_attn"
+              : it.key();
       if (std::ranges::find(takes, Json(k)) != takes.end()) {
         gen_cfg[it.key()] = it.value();
       }
@@ -2551,6 +2852,172 @@ build_upscale_video(const JobSpec& job)
                           {"alpha", "drop"},
                           {"fps", fps},
                           {"frames", count}}));
+  g.spec = {{"id", "valtz-" + jid},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+Result<BuiltGraph>
+build_regenerate_video(const JobSpec& job)
+{
+  if (job.inputs.size() != 1 ||
+      job.inputs.front().info.type != media::MediaType::Video) {
+    return make_error(Code::InvalidArgument,
+                      "a regenerate takes one clip (role \"source\")");
+  }
+  if (job.model.regenerate_lora.empty() ||
+      job.model.latent_upscaler.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "a regenerate needs the refiner's files");
+  }
+  const JobInput& in = job.inputs.front();
+  const int W = jget(job.params, "width", 0);
+  const int H = jget(job.params, "height", 0);
+  const Json enc = jget(job.params, "encode", Json::object());
+  const int ew = jget(enc, "width", 0);
+  const int eh = jget(enc, "height", 0);
+  if (W <= 0 || H <= 0 || ew <= 0 || eh <= 0) {
+    return make_error(Code::InvalidArgument,
+                      "a regenerate needs its size and the size it reads");
+  }
+  const std::string prompt = jget<std::string>(job.params, "prompt", "");
+  if (prompt.empty()) {
+    return make_error(Code::InvalidArgument, "prompt is empty");
+  }
+  const Rational rate = in.info.frame_rate.num > 0 ? in.info.frame_rate
+                                                   : Rational{24, 1};
+  const double fps = rate.to_double();
+  const std::int64_t total = in.info.frame_count;
+  const std::int64_t first = std::max<std::int64_t>(
+      0, jget<std::int64_t>(job.params, "first", 0));
+  std::int64_t count = jget<std::int64_t>(job.params, "count", -1);
+  if (count <= 0) {
+    count = total > first ? total - first : 0;
+  }
+  if (total > 0) {
+    count = std::min(count, total - first);
+  }
+  if (count <= 0) {
+    return make_error(Code::InvalidArgument, "the clip has no frames there");
+  }
+
+  BuiltGraph g;
+  const std::string jid = job.id.str();
+  const ClipFormat kept = clip_format(job);
+  g.output = job.output_dir / std::format("{}.{}", jid, kept.ext);
+  g.sound = kept.sound;
+  fs::path written = g.output;
+  if (in.info.has_audio) {
+    g.video_part = job.output_dir / std::format("{}-picture.{}", jid,
+                                                kept.ext);
+    g.audio_part = in.path;
+    g.audio_is_source = true;
+    g.audio_start = static_cast<double>(first) / fps;
+    g.audio_duration = static_cast<double>(count) / fps;
+    written = g.video_part;
+  }
+  g.width = W;
+  g.height = H;
+  g.frames = count;
+
+  // The clip whole, in 8-bit, upright, at its own size: the VAE reads it
+  // in one beat (its posterior sampled, as the release samples a draft's).
+  MovieFeed m;
+  m.stage = "read";
+  m.path = in.path;
+  m.rate = rate;
+  m.first = first;
+  m.count = count;
+  m.size = {in.info.frame.width, in.info.frame.height};
+  m.sample = media::Sample::U8;
+  const auto& c = in.info.frame.color;
+  m.tags = {{"color_primaries", static_cast<int>(c.primaries)},
+            {"color_transfer", static_cast<int>(c.transfer)},
+            {"color_matrix", static_cast<int>(c.matrix)},
+            {"color_full_range", true},
+            {"fps", fps},
+            {"fps_num", rate.num},
+            {"fps_den", rate.den}};
+  g.movie = std::move(m);
+
+  const Json vp = jget(job.model.engine, "vpipe", Json::object());
+  const Json spec = regenerate_spec(job);
+  Json stages = Json::array();
+  stages.push_back(stage("read", ex::kSourceType, Json::array(),
+                         Json::object()));
+  stages.push_back(stage("model-select", "model-select", Json::array(),
+                         {{"hf_dir", job.model.dir.string()}}));
+  // Fitted to the size it is read at -- its short side at most 768, as
+  // the release fits a draft (cover-scaled, bilinear, centre-cropped).
+  std::string fitted = "read";
+  if (ew != in.info.frame.width || eh != in.info.frame.height) {
+    stages.push_back(stage("fit", "image-resample",
+                           Json::array({port("read")}),
+                           {{"width", ew}, {"height", eh}, {"fit", "crop"},
+                            {"algorithm", "bilinear"}}));
+    fitted = "fit";
+  }
+  const std::int64_t clip_mb =
+      count * ew * eh * 3 / (1 << 20) + 64;
+  stages.push_back(stage("stack", "temporal-stack",
+                         Json::array({port(fitted)}),
+                         {{"mode", "video"}, {"group_size", 0},
+                          {"max_mb", clip_mb}}));
+  stages.push_back(stage("encode", "vae-encode",
+                         Json::array({port("stack"), port("model-select")}),
+                         with_vae({{"posterior", "sample"},
+                                   {"posterior_seed",
+                                    jget(spec, "posterior_seed", 42)},
+                                   {"unload_when_idle", "destroy"}},
+                                  job)));
+  // Its words, read by the model's own encoder (dropped before the
+  // refine: the two never share the machine).
+  stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
+                         {{"text", prompt}}));
+  stages.push_back(stage("diffusion-conditioner", "diffusion-conditioner",
+                         Json::array({port("text-prompt"), unwired(),
+                                      port("model-select")}),
+                         with_encoder(jget(vp, "conditioner",
+                                           Json::object()),
+                                      job)));
+  const std::string decoded = regenerate_stages(
+      job, port("diffusion-conditioner"), port("encode"), W, H,
+      static_cast<int>(count), fps,
+      jget(job.params, "tuning", Json::object()), stages);
+  // The upscaler makes whole 32-pixel cells, rounded as Python rounds: a
+  // size rounded up comes back cut to the size (its crop box), one
+  // rounded down is fitted to it here.
+  auto cells = [](int v) {
+    return static_cast<int>(std::nearbyint(std::nearbyint(v / 32.0) * 2)) *
+           16;
+  };
+  std::string shown = decoded;
+  if (cells(W) < W || cells(H) < H) {
+    stages.push_back(stage("fit-out", "image-resample",
+                           Json::array({port(decoded)}),
+                           {{"width", W}, {"height", H}, {"fit", "stretch"},
+                            {"algorithm", "lanczos"}}));
+    shown = "fit-out";
+  }
+  // Cut at the clip's own frames (the encoder pads a length the VAE does
+  // not take; the refine says how many are real): a guard.
+  stages.push_back(stage("tap", ex::kTapType, Json::array({port(shown)}),
+                         {{ex::kTapMaxFrames, count}}));
+  // The model's samples, tagged as a clip it makes is: BT.709.
+  Json write = {{"path", written.string()},
+                {"codec", kept.codec},
+                {"alpha", "drop"},
+                {"fps", fps},
+                {"frames", count},
+                {"color_primaries", 1},
+                {"color_transfer", 1},
+                {"color_matrix", 1}};
+  if (!media::is_prores(kept.codec)) {
+    write["quality"] = jget(vp, "quality", 0.8);
+  }
+  stages.push_back(stage("write", "avf-save-video",
+                         Json::array({port("tap")}), std::move(write)));
   g.spec = {{"id", "valtz-" + jid},
             {"stages", stages},
             {"subpipelines", Json::array()}};

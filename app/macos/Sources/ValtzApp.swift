@@ -1384,7 +1384,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 })
             }
             if let spec = env["VALTZ_SNAPSHOT_TUNE"] {
-                for part in spec.split(separator: ",") {
+                // A number after a number's own comma continues it, a
+                // SCHEDULE: "regenerate_sol_tau=1,1.5,1.75".
+                var parts: [String] = []
+                for part in spec.split(separator: ",").map(String.init) {
+                    if !part.contains("="), Double(part) != nil,
+                       let last = parts.last,
+                       let v = last.split(separator: "=").last,
+                       Double(v.split(separator: ",").last ?? "") != nil {
+                        parts[parts.count - 1] += "," + part
+                    } else {
+                        parts.append(part)
+                    }
+                }
+                for part in parts {
                     let kv = part.split(separator: "=").map(String.init)
                     guard kv.count == 2 else { continue }
                     // "turbo=off": the Turbo LoRA unchecked in the list.
@@ -1405,9 +1418,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "true", "on": m.setTuning(kv[0], flag: true)
                     case "false", "off": m.setTuning(kv[0], flag: false)
                     default:
-                        // A number, else a choice's value
+                        // A number, a schedule, else a choice's value
                         // ("i8_gemm_tier=token").
-                        if let d = Double(kv[1]) {
+                        if kv[1].contains(",") {
+                            m.setTuning(kv[0], schedule: kv[1])
+                        } else if let d = Double(kv[1]) {
                             m.setTuning(kv[0], number: d)
                         } else {
                             m.setTuning(kv[0], choice: kv[1])
@@ -6295,6 +6310,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return NSApp.windows.first(where: { $0.isVisible })
         }
+        // Custom's panel once every hook has run (the size, the model):
+        // whether it scrolls -- the panel's size, its scroll view's
+        // visible part and whole content ("snapshot: custom-scroll
+        // panel=WxH clip=WxH doc=WxH") -- drawn again as it is now,
+        // <snapshot>-custom-final.png, and with
+        // VALTZ_SNAPSHOT_TUNE_SCROLL=end scrolled to its end:
+        // <snapshot>-custom-end.png.
+        if env["VALTZ_SNAPSHOT_FAVOR"] == "custom",
+           let shot = env["VALTZ_SNAPSHOT"],
+           let pop = NSApp.windows.first(where: {
+               $0.isVisible && $0.className.contains("Popover")
+           }), let v = pop.contentView {
+            try? await Task.sleep(for: .milliseconds(600))
+            func scrollViews(_ v: NSView) -> [NSScrollView] {
+                ((v as? NSScrollView).map { [$0] } ?? [])
+                    + v.subviews.flatMap(scrollViews)
+            }
+            func draw(_ suffix: String) {
+                guard let rep = v.bitmapImageRepForCachingDisplay(
+                    in: v.bounds) else { return }
+                v.cacheDisplay(in: v.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: shot
+                        .replacingOccurrences(of: ".png", with: suffix)))
+            }
+            let sv = scrollViews(v).first
+            let clip = sv?.contentView.bounds.size ?? .zero
+            let doc = sv?.documentView?.frame.size ?? .zero
+            FileHandle.standardError.write(Data(
+                "snapshot: custom-scroll panel=\(Int(pop.frame.width))x\(Int(pop.frame.height)) clip=\(Int(clip.width))x\(Int(clip.height)) doc=\(Int(doc.width))x\(Int(doc.height))\n".utf8))
+            draw("-custom-final.png")
+            if env["VALTZ_SNAPSHOT_TUNE_SCROLL"] == "end",
+               let sv, let docView = sv.documentView {
+                let y = docView.isFlipped
+                    ? max(0, doc.height - clip.height) : 0
+                sv.contentView.scroll(to: NSPoint(x: 0, y: y))
+                sv.reflectScrolledClipView(sv.contentView)
+                try? await Task.sleep(for: .milliseconds(400))
+                draw("-custom-end.png")
+            }
+        }
         // VALTZ_SNAPSHOT_NOTICE="error:<words>" (info, warning, error): a
         // notice floated over the composer just before the capture, as
         // AppModel.flash shows one; its frame printed.
@@ -6571,10 +6627,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .replacingOccurrences(of: " ", with: "_")
             var tuneValues = "-"
             if let t = m.tuningInfo?.tuning {
-                let nums: [String] = ["steps", "video_shift",
-                                      "audio_shift"].compactMap { k in
-                    t.numbers[k].map { "\(k):\(String(format: "%g", $0))" }
-                }
+                let nums: [String] = ["steps", "video_shift", "audio_shift",
+                                      "sol_tau", "regenerate_sol_tau"]
+                    .compactMap { k in
+                        t.numbers[k].map {
+                            "\(k):\(String(format: "%g", $0))"
+                        } ?? t.schedules[k].map {
+                            "\(k):" + $0.replacingOccurrences(of: ",",
+                                                              with: "/")
+                        }
+                    }
+                // The switches on (the refine's among them).
+                let on = t.flags.keys.filter { t.flags[$0] == true }.sorted()
                 let loras: [String] = t.loras.filter(\.on).map {
                     URL(fileURLWithPath: $0.path).lastPathComponent
                 }
@@ -6582,7 +6646,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "\($0):\(t.choices[$0] ?? "")"
                 }
                 tuneValues = (nums + picked).joined(separator: ",") + ";"
-                    + loras.joined(separator: "+")
+                    + loras.joined(separator: "+") + ";"
+                    + on.joined(separator: "+")
             }
             // A zoomed clip's frame on the card.
             let videoShown: String = m.stageVideoRect.map { r in
@@ -6612,6 +6677,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "zoom=\(m.currentViewer.zoomText) fit=\(m.currentViewer.fitting) actual=\(m.currentViewer.isActualSize) canZoom=\(m.canZoom) videoShown=\(videoShown) videoRender=\(videoRender) \(Self.cardSummary(m)) \(Self.scrubberSummary()) "
                 + "output=\(m.dimensions.width)x\(m.dimensions.height) "
                 + "sizes=\(m.sizeClasses.map { "\($0)" }.joined(separator: ",")) "
+                + "regenerate=\(m.regenerateDraft.map { "\($0.width)x\($0.height)>\(m.dimensions.width)x\(m.dimensions.height)" } ?? (m.regenerateMissing ? "missing" : "-")) "
                 + "composer=\(Int(m.composerWidth))/\(Int(m.composerColumn)) "
                 + "drawers=\(m.drawerWidths.sorted { $0.key < $1.key }.map { "\($0.key):\(Int($0.value))" }.joined(separator: ",")) "
                 + "sizeShown=\(m.sizeChoice.map { "\($0)" } ?? "custom") "
