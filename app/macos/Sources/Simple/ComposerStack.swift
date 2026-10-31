@@ -407,8 +407,7 @@ struct ComposerStack: View {
                      dropTargeted: $dropTargeted, lines: $promptLines,
                      compact: model.promptCompact,
                      maxHeight: maxPromptHeight,
-                     fullHeight: $promptFullHeight,
-                     highlight: model.searchText)
+                     fullHeight: $promptFullHeight)
             // A voice-over takes no prompt: its words greyed, not typed
             // into or dropped on.
             .opacity(model.inVoiceOver ? 0.35 : 1)
@@ -1146,8 +1145,6 @@ struct AttachMenu: View {
 }
 
 extension View {
-    /// A composer row's label found by the title bar's search: marked as
-    /// Find marks text, without moving the layout.
     /// A setting to change for a refused generation to fit (the memory
     /// card's suggestion): ringed in orange while it is as it failed.
     func suggestMark(_ on: Bool) -> some View {
@@ -1164,20 +1161,6 @@ extension View {
                 }
             }
             .help(on ? String(localized: "Lower this for the clip to fit in memory") : "")
-    }
-
-    func searchMark(_ on: Bool) -> some View {
-        self
-            .foregroundStyle(on ? AnyShapeStyle(Color.black)
-                                : AnyShapeStyle(.secondary))
-            .background {
-                if on {
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(Color(nsColor: .findHighlightColor))
-                        .padding(.horizontal, -4)
-                        .padding(.vertical, -1)
-                }
-            }
     }
 }
 
@@ -1202,13 +1185,6 @@ private struct ModalityTab: View {
             ForEach(model.modalities) { segment($0) }
         }
         .padding(4)
-        // Found by search: marked as Find marks text, inside the tab.
-        .background {
-            if model.searchHits.contains(SettingsRow.modality) {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(nsColor: .findHighlightColor))
-            }
-        }
         .padding(.horizontal, 2)
         .padding(.top, 2)
         .padding(.bottom, 4)
@@ -1441,8 +1417,7 @@ private struct AdjustPanel: View {
                     step: 0.01, fine: 0.001, width: 34,
                     help: String(localized: "The layer's alpha: 100% as it is, lower to let what is under it show through, 0% clear. ⌥ for finer steps; double-click for 100%."),
                     onChange: { model.setAdjustment(.alpha, $0) })
-                    .searchMark(model.searchHits.contains(
-                        ImageAdjustments.Key.alpha.rawValue))
+                    .foregroundStyle(.secondary)
                 Divider()
                 HStack(alignment: .top, spacing: 28) {
                     ForEach(columns.indices, id: \.self) { c in
@@ -1467,7 +1442,6 @@ private struct AdjustPanel: View {
         GridRow {
             Text(key.label)
                 .foregroundStyle(.secondary)
-                .searchMark(model.searchHits.contains(key.rawValue))
                 .gridColumnAlignment(.trailing)
                 .onTapGesture(count: 2) { model.setAdjustment(key, 0) }
                 .help("Double-click to reset")
@@ -2168,7 +2142,6 @@ private struct DrawerSettings: View {
                 if $0 > labelWidth { labelWidth = $0 }
             }
             .frame(minWidth: labelWidth, alignment: .trailing)
-            .searchMark(model.searchHits.contains(row))
             .suggestMark(model.memorySuggests(row))
             .gridColumnAlignment(.trailing)
     }

@@ -72,6 +72,7 @@ set(VALTZ_APP_SOURCES
   Sources/Core/CoreService.swift
   Sources/Core/Updater.swift
   Sources/Core/FileHistory.swift
+  Sources/Core/RecentProjects.swift
   Sources/Core/Fleet.swift
   Sources/Core/MachineMonitor.swift
   Sources/Core/MarkupDTO.swift
@@ -79,7 +80,6 @@ set(VALTZ_APP_SOURCES
   Sources/Core/L10n.swift
   Sources/Core/DTO.swift
   Sources/AppModel.swift
-  Sources/Views/RootView.swift
   Sources/Views/CapabilitiesView.swift
   Sources/Views/HelperView.swift
   Sources/Views/UpscalingView.swift
@@ -88,7 +88,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/SettingsView.swift
   Sources/Views/SettingsNavigation.swift
   Sources/Views/SettingsMarks.swift
-  Sources/Views/TitleBar.swift
+  Sources/Views/ShareButton.swift
   Sources/Views/VideoEncodingRows.swift
   Sources/Views/AppKitPopover.swift
   Sources/Views/ColorPanelPlacer.swift
@@ -119,7 +119,14 @@ set(VALTZ_APP_SOURCES
   Sources/Design/Components/DockCard.swift
   Sources/Design/Components/DragHandle.swift
   Sources/Design/Components/CollapsibleSection.swift
+  Sources/Design/Components/StageButton.swift
   Sources/Shell/ActivityItem.swift
+  Sources/Shell/RootView.swift
+  Sources/Shell/Workspace.swift
+  Sources/Shell/SidebarView.swift
+  Sources/Shell/StageColumn.swift
+  Sources/Shell/RightColumn.swift
+  Sources/Shell/EditorToolbar.swift
   Sources/Views/MarkupBar.swift
   Sources/Views/PromptBar.swift
   Sources/Views/LogView.swift

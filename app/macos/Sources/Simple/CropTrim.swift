@@ -386,7 +386,6 @@ struct CropPanel: View {
                 HStack(spacing: 8) {
                     Text("Background")
                         .foregroundStyle(.secondary)
-                        .searchMark(model.searchHits.contains(SettingsRow.cropPad))
                     ColorPicker("Background", selection: Binding(
                         get: { model.crop.padColor },
                         set: { model.setCropPad($0) }),
@@ -413,7 +412,7 @@ struct CropPanel: View {
                     zoomGroup
                 }
             }
-            .searchMark(model.searchHits.contains(SettingsRow.cropZoom))
+            .foregroundStyle(.secondary)
             .padding(.leading, Self.indent)
             .disabled(off)
             if model.canUpscaleLayer || model.upscaleJob != nil {
@@ -434,7 +433,7 @@ struct CropPanel: View {
                     .accessibilityLabel(Text("Rotate"))
                 RotateField(model: model)
             }
-            .searchMark(model.searchHits.contains(SettingsRow.cropRotate))
+            .foregroundStyle(.secondary)
             .padding(.leading, Self.indent)
             .disabled(off)
         }
@@ -714,7 +713,7 @@ struct TrimPanel: View {
         VStack(spacing: 12) {
             ZStack {
                 clipTime
-                    .searchMark(model.searchHits.contains(SettingsRow.trimNow))
+                    .foregroundStyle(.secondary)
                 HStack {
                     if let n = model.trimmedFrames {
                         Text(verbatim: model.trimLengthText(n))
@@ -819,7 +818,7 @@ struct TrimPanel: View {
                 model.seekVideo(to: model.trimOffset)
             }
         }
-        .searchMark(model.searchHits.contains(SettingsRow.trimStart))
+        .foregroundStyle(.secondary)
     }
 
     /// { the clip's start, fast rewind, 1× back, a frame back, pause, a
@@ -889,7 +888,7 @@ struct TrimPanel: View {
                 model.setMark(in: true)
             }
             .disabled(off)
-            .searchMark(model.searchHits.contains(SettingsRow.markIn))
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -903,7 +902,7 @@ struct TrimPanel: View {
                 model.setMark(in: false)
             }
             .disabled(off)
-            .searchMark(model.searchHits.contains(SettingsRow.markOut))
+            .foregroundStyle(.secondary)
             TransportButton(symbol: "arrow.right.to.line",
                             help: "Go to the mark-out", on: false) {
                 if let o {

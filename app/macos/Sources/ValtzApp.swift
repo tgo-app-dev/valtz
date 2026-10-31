@@ -843,11 +843,14 @@ struct ValtzApp: App {
 
     var body: some Scene {
         Window("Valtz", id: "main") {
+            // The window's least size is AppKit's (RootView's
+            // WindowReader), not a frame's here: a frame's minimum went to
+            // the split view's detail column, and folding the sidebar
+            // grew the window by the sidebar's width to keep it.
             RootView(model: model)
-                .frame(minWidth: model.windowMinWidth, minHeight: 620)
                 .onAppear { delegate.model = model }
         }
-        .windowToolbarStyle(.unified(showsTitle: false))
+        .windowToolbarStyle(.unified)
         // The first launch's; after it, the window as it was left -- and
         // a project opened at the size it was last looked at.
         .defaultSize(width: 1024, height: 768)
@@ -879,6 +882,20 @@ struct ValtzApp: App {
                 Button("Open Project…") { openProject() }
                     .keyboardShortcut("o")
                     .disabled(model.closingTasks != nil)
+                // The sidebar's Recents, the same list.
+                Menu("Open Recent") {
+                    ForEach(RecentProjects.shared.existing) { p in
+                        Button {
+                            model.openDropped(p.url)
+                        } label: {
+                            Text(verbatim: p.name)
+                        }
+                    }
+                    Divider()
+                    Button("Clear Menu") { RecentProjects.shared.clear() }
+                        .disabled(RecentProjects.shared.items.isEmpty)
+                }
+                .disabled(model.closingTasks != nil)
             }
             // The project as a document (DESIGN §5b): Save writes its
             // working copy to its file; Revert to Saved goes back to it.
@@ -938,6 +955,7 @@ struct ValtzApp: App {
                     .disabled(!model.canDeselect
                               || model.closingTasks != nil)
             }
+            // ⌘F: the sidebar's search, which filters Assets.
             CommandGroup(after: .textEditing) {
                 Button("Find") { model.findRequest += 1 }
                     .keyboardShortcut("f")
@@ -974,13 +992,10 @@ struct ValtzApp: App {
                 Button("Reset Guides") { model.resetGuides() }
                     .disabled(!model.guidesSetByHand)
                 Divider()
-                Button(model.inspectorOpen ? "Hide Inspector" : "Show Inspector") {
-                    withAnimation(AppModel.motion) { model.inspectorOpen.toggle() }
-                }
-                .keyboardShortcut("i", modifiers: [.command, .option])
-                // The editor as a viewer (Tab, where nothing takes keys;
-                // the ☰ column's eye): no key here -- a menu's Tab would
-                // be every text field's.
+                // The stage as a viewer (Tab, where nothing takes keys):
+                // no key here -- a menu's Tab would be every text field's.
+                // (Show Sidebar ⌃⌘S and Show Inspector ⌃⌘I are the
+                // system's, SidebarCommands and InspectorCommands.)
                 Toggle("View Only", isOn: Binding(
                     get: { model.viewOnly },
                     set: { model.setViewOnly($0) }))
@@ -1061,13 +1076,8 @@ struct ValtzApp: App {
                 }
                 #endif
             }
-            CommandGroup(before: .sidebar) {
-                Button(model.navOpen ? "Hide Navigation" : "Show Navigation") {
-                    model.toggleNav()
-                }
-                .keyboardShortcut("n", modifiers: [.command, .control])
-                Divider()
-            }
+            SidebarCommands()
+            InspectorCommands()
         }
         #if DEBUG
         Window(Text(verbatim: "Design Gallery"), id: "design-gallery") {
@@ -1255,14 +1265,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// What the landings did, as a task step prints it:
     /// `landing=open:<timeline open>,auto:<n>,flash:<n>,results:<n>,
-    /// assets:<inspector on Assets>` -- the timeline opened by itself, the
-    /// switch flashed, Assets shown for a second result (AppModel.landed).
+    /// assets:<the sidebar, with Assets, shown>` -- the timeline opened by
+    /// itself, the switch flashed, Assets shown for a second result
+    /// (AppModel.landed).
     @MainActor
     static func landingSummary(_ m: AppModel) -> String {
         let c = m.landingCounts
-        let assets = m.inspectorOpen && (m.inspectorStacked
-            ? !m.inspectorFolded.contains(.assets)
-            : m.inspectorTab == .assets)
+        let assets = m.chrome.sidebar != .detailOnly
         return "open:\(m.timelineOpen),auto:\(c.timeline),"
             + "flash:\(c.flash),results:\(c.results),assets:\(assets)"
     }
@@ -1541,30 +1550,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if env["VALTZ_SNAPSHOT_MARKUP"] != nil { m.markupOpen = true }
             if let n = env["VALTZ_SNAPSHOT_RENAME"] { m.renameSession(n) }
-            if env["VALTZ_SNAPSHOT_TITLE_EDIT"] != nil {
-                // After the prompt has taken the focus, as a click on
-                // the name would come.
-                try? await Task.sleep(for: .milliseconds(500))
-                m.renamingTitle = true
-                // Clicks posted to the window ("x,y" in points from
-                // its top left; ";" between), as a pointer's would
-                // come (the pointer itself does not move).
-                if let spec = env["VALTZ_SNAPSHOT_TITLE_CLICK"] {
-                    try? await Task.sleep(for: .milliseconds(700))
-                    for c in spec.split(separator: ";") {
-                        let xy = c.split(separator: ",")
-                            .compactMap { Double($0) }
-                        guard xy.count == 2 else { continue }
-                        Self.postClick(x: xy[0], y: xy[1])
-                        try? await Task.sleep(for: .milliseconds(500))
-                        FileHandle.standardError.write(Data(
-                            "snapshot: title-click \(Int(xy[0])),\(Int(xy[1])) renaming=\(m.renamingTitle)\n".utf8))
-                    }
-                }
-            }
-            if env["VALTZ_SNAPSHOT_TITLEBAR_HOVER"] != nil {
-                m.titlebarHover = true
-            }
             // A picture attached as the paperclip would, then time
             // for its import to land (Start needs the asset).
             // A picture dropped on the stage: the base to edit.
@@ -2399,22 +2384,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         "snapshot: clear-prompt \(step) prompt=\(m.prompt.debugDescription) refs=\(m.promptAttachments.count) mentions=\(m.promptMentions.count) undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_")) redo=\(m.redoMenuTitle.replacingOccurrences(of: " ", with: "_")) focus=\(focus) project=\(m.windowTitle.replacingOccurrences(of: " ", with: "_")):\(m.assets.count)\n".utf8))
                 }
             }
-            // The inspector stacked ("1") -- before the asset list's
-            // actions, so they play in it -- its sections folded
-            // ("info,assets"; neither saved by a snapshot run).
-            if let m = model, env["VALTZ_SNAPSHOT_INSPECTOR_STACKED"] == "1" {
-                m.inspectorStacked = true
-                m.inspectorFolded = Set(
+            // The inspector's sections folded ("info"), before the asset
+            // list's actions, so they play in it; their shares
+            // ("layers:2,info:1"; none: even). Neither saved by a
+            // snapshot run.
+            if let m = model,
+               env["VALTZ_SNAPSHOT_INSPECTOR_FOLD"] != nil
+                || env["VALTZ_SNAPSHOT_INSPECTOR_WEIGHTS"] != nil {
+                m.chrome.collapsedSections = Set(
                     (env["VALTZ_SNAPSHOT_INSPECTOR_FOLD"] ?? "")
                         .split(separator: ",")
-                        .compactMap { InspectorTab(rawValue: String($0)) })
-                // Their shares ("layers:2,assets:1"; none: even).
-                m.inspectorWeights = Dictionary(uniqueKeysWithValues:
+                        .compactMap { InspectorSection(rawValue: String($0)) })
+                m.chrome.sectionWeights = Dictionary(uniqueKeysWithValues:
                     (env["VALTZ_SNAPSHOT_INSPECTOR_WEIGHTS"] ?? "")
                         .split(separator: ",").compactMap { kv in
                             let p = kv.split(separator: ":")
                             guard p.count == 2,
-                                  let t = InspectorTab(rawValue: String(p[0])),
+                                  let t = InspectorSection(rawValue: String(p[0])),
                                   let w = Double(p[1]) else { return nil }
                             return (t, w)
                         })
@@ -2574,12 +2560,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 try? await Task.sleep(for: .milliseconds(800))
             }
-            // The inspector's section ("info", "layers"), and layer work on
-            // the picture on the stage: "add;source=<asset>;hide=<layer>;
-            // select=<layer>;move=<layer>:<by>" ("0" is layer 0).
-            if let m = model, let t = env["VALTZ_SNAPSHOT_INSPECTOR_TAB"],
-               let tab = InspectorTab(rawValue: t == "history" ? "assets" : t) {
-                m.revealInspector(tab)
+            // The inspector's section ("info", "layers") brought into
+            // sight -- "assets" ("history"): the sidebar shown -- and layer
+            // work on the picture on the stage: "add;source=<asset>;
+            // hide=<layer>;select=<layer>;move=<layer>:<by>" ("0" is layer
+            // 0).
+            if let m = model, let t = env["VALTZ_SNAPSHOT_INSPECTOR_TAB"] {
+                if let s = InspectorSection(rawValue: t) {
+                    m.revealInspectorSection(s)
+                } else if t == "assets" || t == "history" {
+                    m.chrome.sidebar = .all
+                }
             }
             // Canvas Size applied ("1200x700:tl"; the anchor tl, t,
             // tr, l, c, r, bl, b, br; "own": Own Size) and a clip's
@@ -2616,7 +2607,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // Information › Canvas › Change…, open.
             if let m = model, env["VALTZ_SNAPSHOT_CANVAS_SIZE"] != nil {
-                m.revealInspector(.info)
+                m.revealInspectorSection(.info)
                 try? await Task.sleep(for: .milliseconds(500))
                 m.showsCanvasSize = true
             }
@@ -3014,7 +3005,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         : panel == "trim" ? .trim : .generate
                 }
             }
-            if env["VALTZ_SNAPSHOT_NAV"] != nil { m.toggleNav() }
+            // The sidebar hidden (or shown, if it was hidden).
+            if env["VALTZ_SNAPSHOT_NAV"] != nil {
+                m.chrome.sidebar = m.chrome.sidebar == .detailOnly
+                    ? .all : .detailOnly
+            }
             // Adjustments on the picture to edit, before Start
             // ("exposure=0.4,vibrance=0.3"): the model gets them.
             if let spec = env["VALTZ_SNAPSHOT_BASE_ADJUST"] {
@@ -5600,6 +5595,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 withAnimation(AppModel.motion) {
                     if p[0] == "inspector" {
                         m.inspectorOpen.toggle()
+                    } else if p[0] == "sidebar" {
+                        m.setSidebar(m.layout.sidebar == .detailOnly
+                                     ? .all : .detailOnly)
                     } else if p[0] == "editor" {
                         m.toggleImmersivePrompt()
                     } else if p[0] == "compare" {
@@ -5630,8 +5628,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let m = model, env["VALTZ_SNAPSHOT_DRAG_READY"] != nil {
             m.stageDragReady = true
         }
+        // The sidebar's search: Assets filtered by name.
         if let m = model, let q = env["VALTZ_SNAPSHOT_SEARCH"] {
-            m.searchText = q
+            m.assetFilter = q
         }
         // The title bar's zoom group: "in,in,out,fit,actual" -- each
         // step printed with the card it leaves (`snapshot: zoom-step`).
@@ -6370,9 +6369,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // for drops, its frame in the window (points from the top
         // left), its types -- beside the Assets list's frame: what
         // AppKit may hand a Finder drag to instead of SwiftUI's view.
-        // (=assets: the inspector's Assets shown first.)
+        // (=assets: the sidebar, with Assets, shown first.)
         if env["VALTZ_SNAPSHOT_DROP_VIEWS"] == "assets", let m = model {
-            m.revealInspector(.assets)
+            m.chrome.sidebar = .all
             try? await Task.sleep(for: .seconds(1))
         }
         if env["VALTZ_SNAPSHOT_DROP_VIEWS"] != nil,
@@ -6665,11 +6664,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "panel=\(String(describing: m.openPanel)) "
                 + "compact=\(m.promptCompact) "
                 + "title=\(m.windowTitle) inspector=\(m.inspectorOpen) "
-                + "titlebarHover=\(m.titlebarHover) "
+                + "sidebar=\(m.chrome.sidebar == .detailOnly ? "hidden" : "shown") "
                 + "anonymous=\(m.isAnonymous) projectPath=\(m.projectPath) "
                 + "base=\(m.baseAttachment?.url.lastPathComponent ?? "-") refs=\(m.promptAttachments.filter { !$0.isBase }.count) "
                 + "dragReady=\(m.stageDragReady && m.canDragStage) attachments=\(m.promptAttachments.count) "
-                + "hits=\(m.searchHits.sorted()) "
+                + "filter=\(m.assetFilter.replacingOccurrences(of: " ", with: "_")) "
+                + "recents=\(RecentProjects.shared.existing.map { $0.name.replacingOccurrences(of: " ", with: "_") }.joined(separator: "|")) "
+                + "openRecent=\(Self.openRecentTitles().joined(separator: "|")) "
                 + "window=\(NSApp.windows.first { $0.isVisible }.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? "-") "
                 + "screen=\(NSScreen.main.map { "\(Int($0.visibleFrame.width))x\(Int($0.visibleFrame.height))" } ?? "-") "
                 + "installed=\(models) ready=\(ready) "
@@ -6691,7 +6692,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "mentions=\(m.promptMentions.count) focus=\(m.promptAttachments.firstIndex { $0.id == m.focusedReference }.map(String.init) ?? "-") "
                 + "stack=\(m.stackPlayback.map { "\($0.width)x\($0.height)/\($0.frames)f/\($0.clips.count)clips" } ?? "-") "
                 + "look=\(m.stageStack?.layerStack.map { l in let k = m.layerLook(l.id); return "\(l.id.isEmpty ? "0" : l.id):\(k.adjust ? "a" : "")\(k.place ? "p" : "")\(k.turn ? "t" : "")\(k.keyed ? "k" : "")" }.joined(separator: ",") ?? "-") "
-                + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(m.inspectorStacked ? "stacked" : "one"):\(InspectorTab.allCases.filter { !m.inspectorFolded.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate),\(m.projectOutput.intermediate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) pictureRoom=\(Int(m.pictureRoom))/\(Int(m.editorRoom)) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
+                + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(InspectorSection.allCases.filter { !m.chrome.collapsedSections.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate),\(m.projectOutput.intermediate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) pictureRoom=\(Int(m.pictureRoom))/\(Int(m.editorRoom)) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
                 + "markup=\(m.markupOpen ? m.markup.tool.rawValue : "off"):sel[\(m.markup.selection.map(\.kind.rawValue).joined(separator: ","))\(m.markup.drawing ? "+drawing" : "")]@\(m.markup.selectionLayer ?? "-") "
                 // The first selected object's style: a text's
                 // alignment and spacing, its effects.
@@ -7320,13 +7321,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }.joined(separator: ",")
     }
 
-    /// The stacked inspector's open sections: "layers:1.00@312" -- each
-    /// one's share and height.
+    /// File › Open Recent's items, as the menu bar holds them. SwiftUI
+    /// brings the menus up to date as they open: the File menu is asked
+    /// as an opening would ask it first.
+    @MainActor
+    static func openRecentTitles() -> [String] {
+        let title = String(localized: "Open Recent")
+        guard let file = NSApp.mainMenu?.items.first(where: {
+            $0.submenu?.items.contains { $0.title == title } == true
+        })?.submenu else { return [] }
+        file.delegate?.menuNeedsUpdate?(file)
+        file.update()
+        let recent = file.items.first { $0.title == title }?.submenu
+        return (recent?.items ?? []).map {
+            $0.isSeparatorItem ? "-" : $0.title.replacingOccurrences(of: " ", with: "_")
+        }
+    }
+
+    /// The inspector's open sections: "layers:1.00" -- each one's share.
     @MainActor
     static func panelSummary(_ m: AppModel) -> String {
-        InspectorTab.allCases.filter { !m.inspectorFolded.contains($0) }
+        InspectorSection.allCases
+            .filter { !m.chrome.collapsedSections.contains($0) }
             .map { t in
-                "\(t.rawValue):\(String(format: "%.2f", m.inspectorWeight(t)))@\(Int(m.inspectorHeights[t] ?? 0))"
+                "\(t.rawValue):\(String(format: "%.2f", m.sectionWeight(t)))"
             }.joined(separator: ",")
     }
 

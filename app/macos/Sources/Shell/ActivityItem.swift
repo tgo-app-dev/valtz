@@ -12,7 +12,6 @@ import SwiftUI
 /// in memory under a fold (MemorySection).
 struct ActivityButton: View {
     @Bindable var model: AppModel
-    @State private var hovering = false
 
     private var count: Int {
         model.tasks.count + (model.exportShow == nil ? 0 : 1)
@@ -34,31 +33,25 @@ struct ActivityButton: View {
         Button {
             model.activityOpen.toggle()
         } label: {
-            HStack(spacing: VZ.Space.xs) {
-                if running {
-                    ActivityRing(fraction: fraction, diameter: 16)
-                } else {
-                    Image(systemName: "gauge.with.dots.needle.bottom.50percent")
-                        .font(.system(size: VZ.Size.toolbarSymbol))
-                }
-                if showsCount {
-                    Text(verbatim: "\(count)")
-                        .font(.vzCaption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.secondary)
+            // The toolbar's item shows the icon: the ring or the gauge,
+            // the count beside it.
+            Label {
+                Text("Activity")
+            } icon: {
+                HStack(spacing: VZ.Space.xs) {
+                    if running {
+                        ActivityRing(fraction: fraction, diameter: 16)
+                    } else {
+                        Image(systemName: "gauge.with.dots.needle.bottom.50percent")
+                    }
+                    if showsCount {
+                        Text(verbatim: "\(count)")
+                            .font(.vzCaption.monospacedDigit().weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-            .frame(minWidth: VZ.Size.toolbarButton)
-            .frame(height: VZ.Size.toolbarButton)
-            .padding(.horizontal, showsCount ? VZ.Space.s : 0)
-            .background {
-                Capsule().fill(Color.primary.opacity(
-                    model.activityOpen ? 0.14 : hovering ? 0.06 : 0))
-            }
-            .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .animation(VZ.Motion.quick, value: hovering)
         .accessibilityLabel(Text("Activity"))
         .accessibilityValue(Text(verbatim: accessibilityValue))
         .accessibilityAddTraits(model.activityOpen ? .isSelected : [])

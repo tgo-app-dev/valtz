@@ -596,7 +596,7 @@ extension AppModel {
         if target != nil, let u = asset(id: held) {
             if stageAssetId != held { putOnStage(u) }
             layersChanged()
-            revealInspector(.layers)
+            revealInspectorSection(.layers)
             selectLayer(landed)
         } else if let u = asset(id: held) {
             putOnStage(u)
@@ -678,9 +678,9 @@ extension AppModel {
     }
 }
 
-// MARK: - The inspector's Assets
+// MARK: - The sidebar's Assets
 
-/// The inspector's ASSETS: everything the project holds -- pictures, clips
+/// The sidebar's ASSETS (SidebarView): everything the project holds -- pictures, clips
 /// and sounds put into Valtz, each generation's result, the modified
 /// copies the prompt's pictures were changed through, captures of the
 /// stage -- newest first, in FOLDERS of the user's. It is the project's
@@ -700,15 +700,15 @@ extension AppModel {
 ///                   A or B, or into the prompt
 ///   STALE           a generation nothing uses any more -- replaced, in
 ///                   no prompt, nothing made from it: marked, kept until
-///                   removed (its menu, or Remove Stale)
+///                   removed (its menu, or Remove Unused)
+///
+/// A section of the sidebar's list, its rows the list's own: the list
+/// scrolls them and keeps the focus (Escape ends a viewing), the
+/// sidebar's search filters them, and a drop on the list lands here.
 struct AssetsSection: View {
     @Bindable var model: AppModel
-    /// Its notes at the foot (the stacked inspector leaves them out).
-    var notes = true
     @State private var renaming: String?
     @State private var dropFolder: String?
-    @FocusState private var listFocused: Bool
-    @FocusState private var filterFocused: Bool
 
     var body: some View {
         let used = model.assetsInUse
@@ -720,9 +720,9 @@ struct AssetsSection: View {
         // array of them).
         let stale = Set(all.filter { model.isStale($0, used: used) }
             .map(\.id))
-        // The filter: the rows whose name -- or whose folder's -- has
-        // every word typed; a folder holding none is left out, the others
-        // open whatever their fold.
+        // The filter (the sidebar's search): the rows whose name -- or
+        // whose folder's -- has every word typed; a folder holding none
+        // is left out, the others open whatever their fold.
         let words = AppModel.filterWords(model.assetFilter)
         let filtering = !words.isEmpty
         let shown = filtering
@@ -736,178 +736,105 @@ struct AssetsSection: View {
             ? model.assetFolders.filter { f in
                 shown.contains { $0.folder == f.id }
             } : model.assetFolders
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 2) {
-                // Blank ones, to build up -- or a sound to record into.
-                Menu {
-                    Button("New Composition") { model.newBlankAsset(.timeline) }
-                    Button("New Still Composition") { model.newBlankAsset(.still) }
-                    Button("New Audio") { model.newBlankAsset(.sound) }
-                } label: {
-                    Image(systemName: "plus.rectangle.on.folder")
-                        .frame(width: 22, height: 20)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("A new, blank asset: a composition (a timeline), a still composition, or audio to record into")
-                tool("folder.badge.plus", "New folder") {
-                    if let id = model.createFolder() { renaming = id }
-                }
-                tool("square.and.arrow.down", "Add files to the project") {
-                    importFiles()
-                }
-                Spacer()
-                if !stale.isEmpty {
-                    Button("Remove Unused (\(stale.count))") {
-                        model.removeStaleAssets()
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Remove every generation nothing uses any more")
-                }
-            }
-            // An agent at work holds the project: its assets are looked
-            // through, not added to, filed or removed.
-            .disabled(model.agentHolds)
-            .padding(.horizontal, 12)
-            let empty = all.isEmpty && model.projectViews.isEmpty
-                && model.assetFolders.isEmpty && model.tasks.isEmpty
-            // A long list filtered by name as it is typed.
-            if !empty || filtering {
-                FilterField(text: $model.assetFilter,
-                            prompt: "Filter by name",
-                            focused: $filterFocused) {
-                    filterFocused = false
-                }
-                .help("Show only the assets whose name, or whose folder's, has these words")
-                .padding(.horizontal, 12)
-            }
+        let empty = all.isEmpty && model.projectViews.isEmpty
+            && model.assetFolders.isEmpty && model.tasks.isEmpty
+        Section {
             // The project's own composition counts: a timeline of markups
             // alone (its markups no assets of their own) is listed.
             if filtering && shown.isEmpty && views.isEmpty {
                 Text("No assets match “\(model.assetFilter)”")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, 12)
+                    .frame(maxWidth: .infinity)
+                    .assetListRow()
             } else if empty {
-                ContentUnavailableView(
-                    "No assets yet", systemImage: "photo.stack",
-                    description: Text("Pictures, clips and sounds put into Valtz, and everything made here, are listed here."))
+                EmptyState.NoAssets()
                     .controlSize(.small)
-                    .frame(maxHeight: .infinity)
+                    .assetListRow()
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 2) {
-                        ForEach(views) { v in
-                            AssetRow(model: model, asset: v, stale: false,
-                                     used: true)
-                        }
-                        if !views.isEmpty {
-                            Divider().padding(.vertical, 4)
-                        }
-                        // Exports queued or running: a row each until the
-                        // file is written (no asset yet: not filtered for).
-                        if !filtering {
-                            ForEach(model.tasks.filter {
-                                $0.kind == "export" }) { t in
-                                ExportTaskRow(model: model, task: t)
-                            }
-                        }
-                        // A folder is ONE item of the list -- its header
-                        // and its rows, set in -- so a row's place never
-                        // depends on which ForEach the lazy stack matched
-                        // it to (an asset moved into a folder kept the
-                        // top level's place), and folding slides the rows
-                        // up under the header.
-                        ForEach(folders) { f in
-                            folderBlock(f, items: shown.filter {
-                                $0.folder == f.id }, stale: stale, used: used,
-                                        open: filtering
-                                            || !model.closedFolders
-                                                .contains(f.id))
-                        }
-                        ForEach(shown.filter { ($0.folder ?? "").isEmpty }) { a in
+                ForEach(views) { v in
+                    AssetRow(model: model, asset: v, stale: false,
+                             used: true)
+                        .assetListRow()
+                }
+                // Exports queued or running: a row each until the file
+                // is written (no asset yet: not filtered for).
+                if !filtering {
+                    ForEach(model.tasks.filter { $0.kind == "export" }) { t in
+                        ExportTaskRow(model: model, task: t)
+                            .assetListRow()
+                    }
+                }
+                // A folder's header, and -- open -- its assets set in
+                // under it.
+                ForEach(folders) { f in
+                    let items = shown.filter { $0.folder == f.id }
+                    let open = filtering || !model.closedFolders.contains(f.id)
+                    folderRow(f, count: items.count, open: open)
+                        .assetListRow()
+                    if open {
+                        ForEach(items) { a in
                             AssetRow(model: model, asset: a,
                                      stale: stale.contains(a.id),
                                      used: used.contains(a.id))
+                                .padding(.leading, 18)
+                                .assetListRow()
                         }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 8)
-                    // A click on the list's open space: the viewed asset
-                    // off the stage.
-                    .background(Color.clear.contentShape(Rectangle())
-                        .onTapGesture { model.endViewing() })
                 }
-                // Viewing takes the list's focus: Escape there puts the
-                // active asset back (as a click away from the list and
-                // the stage does: AppModel.endViewingIfOutside).
-                .focusable()
-                .focused($listFocused)
-                .focusEffectDisabled()
-                // Tab is the focus's here, not view-only's.
-                .onChange(of: listFocused) { _, f in
-                    model.assetListFocused = f
+                ForEach(shown.filter { ($0.folder ?? "").isEmpty }) { a in
+                    AssetRow(model: model, asset: a,
+                             stale: stale.contains(a.id),
+                             used: used.contains(a.id))
+                        .assetListRow()
                 }
-                .onDisappear { model.assetListFocused = false }
-                .onKeyPress(.escape) {
-                    guard model.viewedAsset != nil else { return .ignored }
-                    model.endViewing()
-                    return .handled
+                if !stale.isEmpty {
+                    Button("Remove Unused (\(stale.count))") {
+                        model.removeStaleAssets()
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Remove every generation nothing uses any more")
+                    // An agent at work holds the project.
+                    .disabled(model.agentHolds)
+                    .assetListRow()
                 }
-                .onChange(of: model.viewedAsset) { _, v in
-                    if v != nil { listFocused = true }
-                }
-                .onGeometryChange(for: CGRect.self) {
-                    $0.frame(in: .global)
-                } action: { model.assetListFrame = $0 }
-                // No drop destination of its own: the section's takes what
-                // is dropped on the list -- a row to the top, files
-                // imported. One for rows alone here lay in FRONT of it and
-                // AppKit hands a drag to the front one only: once the list
-                // had a row, a file from the Finder was refused over it.
             }
-            if notes {
-                Text("Set an asset active to edit it. Drag it into the prompt to use it, onto the stage to place its layers in what is there, onto A or B under the stage to compare it, or onto a folder. A generation nothing uses any more is marked unused; it stays until you remove it.")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 12)
-            }
+        } header: {
+            header
         }
-        // Media from outside -- the Finder's files, a browser's picture,
-        // an app's bytes, a link, words -- into the project; a row of its
-        // own: to the top of the list. The only drop destination over
-        // the list -- see above.
-        .onDrop(of: DroppedMedia.dropTypes,
-                delegate: AssetsDrop(model: model, folder: "",
-                                     targeted: .constant(false)))
     }
 
-    /// A folder: its header, and -- open -- its assets set in under it.
-    /// Folded, they slide up under the header as the block closes.
-    private func folderBlock(_ f: FolderDTO, items: [AssetDTO],
-                             stale: Set<String>,
-                             used: Set<String>, open: Bool) -> some View {
-        VStack(spacing: 2) {
-            folderRow(f, count: items.count, open: open)
-                .background(Color.valtzPanel)
-                .zIndex(1)
-            if open {
-                VStack(spacing: 2) {
-                    ForEach(items) { a in
-                        AssetRow(model: model, asset: a,
-                                 stale: stale.contains(a.id),
-                                 used: used.contains(a.id))
-                    }
-                }
-                .padding(.leading, 18)
-                .transition(.move(edge: .top).combined(with: .opacity))
+    /// The section's header: its name, and what adds to it -- a blank
+    /// asset, a folder, files.
+    private var header: some View {
+        HStack(spacing: 2) {
+            Text("Assets")
+                .help("Set an asset active to edit it. Drag it into the prompt to use it, onto the stage to place its layers in what is there, onto A or B under the stage to compare it, or onto a folder. A generation nothing uses any more is marked unused; it stays until you remove it.")
+            Spacer(minLength: 0)
+            // Blank ones, to build up -- or a sound to record into.
+            Menu {
+                Button("New Composition") { model.newBlankAsset(.timeline) }
+                Button("New Still Composition") { model.newBlankAsset(.still) }
+                Button("New Audio") { model.newBlankAsset(.sound) }
+            } label: {
+                Label("New Asset", systemImage: "plus.rectangle.on.folder")
+                    .labelStyle(.iconOnly)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("A new, blank asset: a composition (a timeline), a still composition, or audio to record into")
+            tool("folder.badge.plus", "New folder") {
+                if let id = model.createFolder() { renaming = id }
+            }
+            tool("square.and.arrow.down", "Add files to the project") {
+                importFiles()
             }
         }
-        .clipped()
+        // An agent at work holds the project: its assets are looked
+        // through, not added to, filed or removed.
+        .disabled(model.agentHolds)
     }
 
     private func folderRow(_ f: FolderDTO, count: Int,
@@ -975,12 +902,23 @@ struct AssetsSection: View {
     private func tool(_ symbol: String, _ help: LocalizedStringKey,
                       action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol)
+            Label(help, systemImage: symbol)
+                .labelStyle(.iconOnly)
                 .frame(width: 22, height: 20)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
         .help(help)
+    }
+}
+
+extension View {
+    /// A row of Assets in the sidebar's list: the row draws its own
+    /// hover, active and viewed marks edge to edge, so the list's insets
+    /// and background are cleared.
+    func assetListRow() -> some View {
+        listRowInsets(EdgeInsets(top: 1, leading: 2, bottom: 1, trailing: 2))
+            .listRowBackground(Color.clear)
     }
 }
 
@@ -995,7 +933,7 @@ struct AssetsSection: View {
 /// Read off the drag's pasteboard (DroppedMedia: an onDrop closure is
 /// handed providers -- promises received -- before it runs); each drop
 /// said in the system log (AppModel.dropLog).
-private struct AssetsDrop: DropDelegate {
+struct AssetsDrop: DropDelegate {
     let model: AppModel
     let folder: String
     @Binding var targeted: Bool

@@ -461,7 +461,7 @@ struct SpeedRow: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .searchMark(model.searchHits.contains(SettingsRow.speed))
+        .foregroundStyle(.secondary)
     }
 
     @ViewBuilder

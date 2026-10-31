@@ -2113,6 +2113,7 @@
       }
     },
     "Actual pixels (⌘0)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -2854,6 +2855,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "让图片动起来"
+          }
+        }
+      }
+    },
+    "Anonymous Project" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "匿名项目"
           }
         }
       }
@@ -3798,6 +3809,7 @@
       }
     },
     "Bass" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -4438,6 +4450,7 @@
       }
     },
     "Chords" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -4467,12 +4480,32 @@
         }
       }
     },
+    "Clear Menu" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除菜单"
+          }
+        }
+      }
+    },
     "Clear Prompt" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "清除提示"
+          }
+        }
+      }
+    },
+    "Clear Recents" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除最近项目"
           }
         }
       }
@@ -4508,6 +4541,7 @@
       }
     },
     "Clear the search" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -4695,6 +4729,7 @@
       }
     },
     "Clone" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -6897,6 +6932,7 @@
       }
     },
     "EQ" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -7707,7 +7743,18 @@
         }
       }
     },
+    "Filter Assets" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "筛选素材"
+          }
+        }
+      }
+    },
     "Filter by name" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -8418,6 +8465,7 @@
       }
     },
     "Generate an image to see its details here." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -8850,6 +8898,7 @@
       }
     },
     "Hide Inspector" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -8890,6 +8939,7 @@
       }
     },
     "Hide Navigation" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -8931,6 +8981,7 @@
       }
     },
     "Hide navigation" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -9000,7 +9051,18 @@
         }
       }
     },
+    "Hide the inspector (⌃⌘I)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏检查器 (⌃⌘I)"
+          }
+        }
+      }
+    },
     "Hide the inspector (⌥⌘I)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -9141,6 +9203,7 @@
       }
     },
     "Hold Pitch" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -11981,6 +12044,7 @@
       }
     },
     "Navigation" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -12067,6 +12131,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "新建匿名项目"
+          }
+        }
+      }
+    },
+    "New Asset" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新建素材"
           }
         }
       }
@@ -12323,6 +12397,7 @@
       }
     },
     "No assets yet" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -12404,6 +12479,7 @@
       }
     },
     "No layers" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -12891,6 +12967,7 @@
       }
     },
     "Nothing to inspect" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -12931,6 +13008,7 @@
       }
     },
     "Now" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -13383,6 +13461,16 @@
         }
       }
     },
+    "Open Recent" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "打开最近使用"
+          }
+        }
+      }
+    },
     "Open System Settings" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13604,6 +13692,7 @@
       }
     },
     "Padding" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -13932,6 +14021,7 @@
       }
     },
     "Pictures, clips and sounds put into Valtz, and everything made here, are listed here." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -14232,6 +14322,7 @@
       }
     },
     "Playback speed" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -14437,6 +14528,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "项目"
+          }
+        }
+      }
+    },
+    "Project name" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "项目名称"
           }
         }
       }
@@ -14968,6 +15069,16 @@
         }
       }
     },
+    "Recents" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最近项目"
+          }
+        }
+      }
+    },
     "Record" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15345,6 +15456,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "从队列中移除"
+          }
+        }
+      }
+    },
+    "Remove from Recents" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从最近项目中移除"
           }
         }
       }
@@ -16192,6 +16313,16 @@
         }
       }
     },
+    "Save, save as, or start over" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "存储、存储为或重新开始"
+          }
+        }
+      }
+    },
     "Saved %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16289,6 +16420,7 @@
       }
     },
     "Section" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16359,6 +16491,7 @@
       }
     },
     "Semitones" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16560,6 +16693,7 @@
       }
     },
     "Settings" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16731,6 +16865,7 @@
       }
     },
     "Show Inspector" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16771,6 +16906,7 @@
       }
     },
     "Show Navigation" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16823,6 +16959,7 @@
       }
     },
     "Show navigation" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16843,6 +16980,7 @@
       }
     },
     "Show one section at a time" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16853,6 +16991,7 @@
       }
     },
     "Show only the assets whose name, or whose folder's, has these words" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16902,7 +17041,18 @@
         }
       }
     },
+    "Show the inspector (⌃⌘I)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示检查器 (⌃⌘I)"
+          }
+        }
+      }
+    },
     "Show the inspector (⌥⌘I)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -17354,6 +17504,16 @@
         }
       }
     },
+    "Sound Project" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "声音项目"
+          }
+        }
+      }
+    },
     "Sound recorded from a microphone: the paperclip › Record Sound › From the Microphone, a blank audio asset's Record, and the sound of a video taken with the camera." : {
       "localizations" : {
         "zh-Hans" : {
@@ -17526,6 +17686,7 @@
       }
     },
     "Stack the sections" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -17536,6 +17697,7 @@
       }
     },
     "Stack the sections, each folding to its header" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -17551,6 +17713,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "上下排列"
+          }
+        }
+      }
+    },
+    "Stage" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "舞台"
           }
         }
       }
@@ -17833,6 +18005,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "静态合成"
+          }
+        }
+      }
+    },
+    "Still Project" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "静态项目"
           }
         }
       }
@@ -18189,6 +18371,7 @@
       }
     },
     "Tab" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -19786,6 +19969,16 @@
         }
       }
     },
+    "Timeline Project" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "时间线项目"
+          }
+        }
+      }
+    },
     "Tint" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20057,6 +20250,7 @@
       }
     },
     "Treble" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -21222,6 +21416,7 @@
       }
     },
     "Volume" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -21887,6 +22082,7 @@
       }
     },
     "Words" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -22201,11 +22397,22 @@
       }
     },
     "Zoom level" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "缩放比例"
+          }
+        }
+      }
+    },
+    "Zoom level — click for actual pixels (⌘0)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "缩放比例 — 点按以显示实际像素 (⌘0)"
           }
         }
       }

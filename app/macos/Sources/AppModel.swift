@@ -281,27 +281,6 @@ enum Preference: String, CaseIterable, Identifiable, Sendable {
     static let presets: [Preference] = [.speed, .balanced, .quality]
 }
 
-/// The inspector's sections (its navigation row, or its stacked panels).
-enum InspectorTab: String, CaseIterable, Identifiable, Sendable {
-    case info, layers, assets
-    var id: String { rawValue }
-
-    var label: LocalizedStringKey {
-        switch self {
-        case .info: "Information"
-        case .layers: "Layers"
-        case .assets: "Assets"
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .info: "info.circle"
-        case .layers: "square.3.layers.3d"
-        case .assets: "photo.stack"
-        }
-    }
-}
 
 /// The title bar's zoom group.
 enum ZoomStep: Sendable {
@@ -918,8 +897,22 @@ final class AppModel {
     var startupError: String?
 
     // Navigation
-    var navOpen = false
-    var screen: AppScreen = .editor
+    /// The sidebar's pick: the stage (the editor), the Atlas or the Log
+    /// (`screen`, Shell/Workspace).
+    var sidebarSelection: SidebarItem = .stage
+    /// The window's regions as the person set them (Shell/Workspace):
+    /// kept between launches -- while view only has put them away, as
+    /// they were before it.
+    var chrome = WorkspaceChrome.stored() {
+        didSet { (viewOnlyPutAway?.chrome ?? chrome).store() }
+    }
+    /// The window has room for the sidebar, the inspector and the stage
+    /// side by side (windowWidthChanged); not, the sidebar folds while
+    /// the inspector is shown (WorkspaceLayout.resolve).
+    var columnsFit = true
+    /// The sidebar's and the inspector's widths as last laid out.
+    @ObservationIgnored var sidebarWidth: CGFloat = 240
+    @ObservationIgnored var inspectorWidth: CGFloat = 320
     /// The ATLAS (Views/AtlasView): the project's graph as the core laid
     /// it out, read while the screen shows it -- and what was read.
     var atlas: AtlasLayout?
@@ -954,10 +947,11 @@ final class AppModel {
     /// (setViewOnly).
     private(set) var viewOnly = false
     /// What view-only put away, put back as it ends: the markup toolbar,
-    /// the Prompt Editor. (The timeline only goes out of reach -- it is
-    /// not offered meanwhile, timelineAvailable -- and its wish stays.)
+    /// the Prompt Editor, the window's sidebar and inspector as they were.
+    /// (The timeline only goes out of reach -- it is not offered
+    /// meanwhile, timelineAvailable -- and its wish stays.)
     @ObservationIgnored private var viewOnlyPutAway:
-        (markup: Bool, immersive: Bool)?
+        (markup: Bool, immersive: Bool, chrome: WorkspaceChrome)?
     /// When view only last ended: the prompt box coming back then leaves
     /// the keyboard where it is (promptKeepsOffKeyboard).
     @ObservationIgnored private var viewOnlyEnded: Date?
@@ -981,24 +975,6 @@ final class AppModel {
     /// in the temporary directory, kept while the session lives and
     /// deleted, with everything made in it, on Start Over and at exit.
     private(set) var isAnonymous = false
-    /// The title is being renamed (a field in the title bar).
-    var renamingTitle = false
-    var inspectorOpen = false
-    /// The inspector's column is in the window: open, on the editor.
-    var showsInspectorColumn: Bool { inspectorOpen && screen == .editor }
-
-    /// The editor's narrowest: the composer's column whole -- 680 between
-    /// its margins. Its cards' rows hold the composer near 640 however
-    /// little room it is given, so with the inspector open at the
-    /// window's old 820 the editor had 520 and the prompt card ran past
-    /// both its edges.
-    static let editorMinWidth: CGFloat = 820
-    /// The window's narrowest: the editor's, and the inspector beside it
-    /// while it is open.
-    var windowMinWidth: CGFloat {
-        Self.editorMinWidth
-            + (showsInspectorColumn ? InspectorColumn.width : 0)
-    }
     /// The toolbar's Activity popover open (ActivityButton): the tasks,
     /// the machine's load, and what Valtz holds in memory.
     var activityOpen = false
@@ -1072,31 +1048,16 @@ final class AppModel {
     private static var storedAgentShowsSpeed: Bool {
         keepsViewState && UserDefaults.standard.bool(forKey: agentSpeedKey)
     }
-    /// The pointer is over the title bar: its bottom edge shows, as in
-    /// Preview.
-    var titlebarHover = false
     /// The pointer is just outside the result on the stage: it can be
     /// dragged -- into the prompt, as the picture to edit.
     var stageDragReady = false
     /// The markup toolbar (its tools are still to come).
     var markupOpen = false
-    /// The title bar's search: it finds the text in the prompt and the
-    /// settings in the composer's cards.
-    ///
-    /// Its effects run from the view (RootView's onChange), not a didSet:
-    /// a change made inside an @Observable property's didSet happens
-    /// within that property's own mutation, and the card it opened was
-    /// never seen by the views.
-    var searchText = ""
-    /// Bumped by Find (⌘F) to focus the search field.
+    /// Bumped by Find (⌘F) to focus the sidebar's search, which filters
+    /// Assets (SidebarView).
     var findRequest = 0
     /// Bumped to open the share button's menu (a scripted snapshot).
     var shareRequest = 0
-    /// The composer rows that match the search (SettingsRow ids).
-    var searchHits: Set<String> = []
-    /// The card that was open before a search opened another.
-    private var panelBeforeSearch: ComposerPanel?
-    private var searchOpenedPanel = false
 
     // Machine and models
     var hardware: HardwareInfo?
@@ -1681,62 +1642,6 @@ final class AppModel {
         else { return }
         UserDefaults.standard.set(value, forKey: key)
     }
-    /// The inspector's sections STACKED -- each under a header that folds
-    /// it, several open at once, as an image editor's panels -- or one at
-    /// a time, picked in its navigation row (the default). Kept between
-    /// launches.
-    var inspectorStacked = UserDefaults.standard
-        .object(forKey: "inspectorStacked") as? Bool ?? false {
-        didSet { Self.keep(inspectorStacked, as: "inspectorStacked") }
-    }
-    /// Stacked, the sections folded to their header. Kept between
-    /// launches.
-    var inspectorFolded: Set<InspectorTab> = Set(
-        (UserDefaults.standard.stringArray(forKey: "inspectorFolded") ?? [])
-            .compactMap(InspectorTab.init(rawValue:))) {
-        didSet {
-            Self.keep(inspectorFolded.map(\.rawValue).sorted(),
-                      as: "inspectorFolded")
-        }
-    }
-
-    /// Stacked, the open sections' shares of the height (each 1 until a
-    /// divider between two is dragged; a double-click on one evens them).
-    /// Kept between launches.
-    var inspectorWeights: [InspectorTab: Double] = Dictionary(
-        uniqueKeysWithValues: ((UserDefaults.standard
-            .dictionary(forKey: "inspectorWeights") as? [String: Double])
-            ?? [:]).compactMap { k, v in
-                InspectorTab(rawValue: k).map { ($0, v) }
-            }) {
-        didSet {
-            Self.keep(Dictionary(uniqueKeysWithValues: inspectorWeights.map {
-                ($0.key.rawValue, $0.value)
-            }), as: "inspectorWeights")
-        }
-    }
-    /// A stacked section's share of the height.
-    func inspectorWeight(_ tab: InspectorTab) -> Double {
-        max(0.01, inspectorWeights[tab] ?? 1)
-    }
-    /// Stacked, each open section's height as laid out: what a divider's
-    /// drag turns into shares.
-    @ObservationIgnored var inspectorHeights: [InspectorTab: CGFloat] = [:]
-
-    /// A section shown: picked -- or, stacked, unfolded.
-    func revealInspector(_ tab: InspectorTab) {
-        inspectorTab = tab
-        if inspectorStacked { inspectorFolded.remove(tab) }
-    }
-
-    /// Stacked, a section's header clicked: folded, or open again.
-    func toggleInspectorFold(_ tab: InspectorTab) {
-        if inspectorFolded.contains(tab) {
-            inspectorFolded.remove(tab)
-        } else {
-            inspectorFolded.insert(tab)
-        }
-    }
     /// The text view being written in -- the prompt's, or the Prompt
     /// Editor's suggestion beside it: what the toolbar's B / I / U format.
     @ObservationIgnored weak var promptTextView: NSTextView?
@@ -1811,8 +1716,6 @@ final class AppModel {
     var selectedLayers: Set<String> = []
     /// The markup toolbar's tool, settings and work in hand.
     let markup = MarkupState()
-    /// The inspector's section: the picture's information, or its layers.
-    var inspectorTab: InspectorTab = .info
     /// Information › Canvas › Change…: the Canvas Size popover is open.
     var showsCanvasSize = false
     @ObservationIgnored private var compositing = false
@@ -5062,30 +4965,26 @@ final class AppModel {
 
     // MARK: - Navigation
 
-    func toggleNav() {
-        withAnimation(Self.motion) { navOpen.toggle() }
-    }
-
-    /// The editor or the log, from the ☰ column -- the editor to edit:
-    /// view-only ends.
+    /// The stage, the Atlas or the Log, from the sidebar -- the stage to
+    /// edit: view-only ends.
     func show(_ s: AppScreen) {
         guard s == screen || !refusedForColorTarget() else { return }
         if s == .editor { setViewOnly(false) }
         if s != .atlas { leaveAtlas() }
         withAnimation(Self.motion) {
-            screen = s
-            navOpen = false
+            sidebarSelection = switch s {
+            case .editor: .stage
+            case .atlas: .atlas
+            case .log: .log
+            }
         }
         if s == .atlas { reloadAtlas(force: true) }
     }
 
-    /// The ☰ column's eye: the editor, view-only.
+    /// The stage, view-only (a scripted run's way there from any screen).
     func showViewOnly() {
         leaveAtlas()
-        withAnimation(Self.motion) {
-            screen = .editor
-            navOpen = false
-        }
+        withAnimation(Self.motion) { sidebarSelection = .stage }
         setViewOnly(true)
     }
 
@@ -5145,18 +5044,20 @@ final class AppModel {
     }
 
     /// VIEW ONLY on or off (`viewOnly`). On: the Prompt Editor left, the
-    /// markup's selection let go and its toolbar put away, the keyboard
-    /// taken from the text it was in (the box goes); off: those back as
-    /// they were.
+    /// markup's selection let go and its toolbar put away, the sidebar
+    /// and the inspector folded away, the keyboard taken from the text it
+    /// was in (the box goes); off: those back as they were.
     func setViewOnly(_ on: Bool) {
         guard on != viewOnly else { return }
         if on {
-            viewOnlyPutAway = (markupOpen, promptImmersive)
+            viewOnlyPutAway = (markupOpen, promptImmersive, chrome)
             if markupOpen { commitSelection() }
             editorWindow?.makeFirstResponder(nil)
             withAnimation(Self.motion) {
                 if promptImmersive { exitImmersivePrompt() }
                 markupOpen = false
+                chrome.sidebar = .detailOnly
+                chrome.inspectorShown = false
                 viewOnly = true
             }
         } else {
@@ -5166,6 +5067,7 @@ final class AppModel {
             withAnimation(Self.motion) {
                 viewOnly = false
                 if back?.markup == true { markupOpen = true }
+                if let c = back?.chrome { chrome = c }
             }
             if back?.immersive == true, !promptImmersive {
                 withAnimation(Self.motion) { enterImmersivePrompt() }
@@ -5231,6 +5133,8 @@ final class AppModel {
         projectName = r["name"] as? String
             ?? URL(fileURLWithPath: path).deletingPathExtension()
                 .lastPathComponent
+        RecentProjects.shared.note(URL(fileURLWithPath: path),
+                                   name: projectName)
         restoreWindowSize()
         reloadAssets()
         // Its work, as it was left: the project's composition -- still,
@@ -6231,21 +6135,15 @@ final class AppModel {
     }
 
     /// SEVERAL TASKS under way -- generations, upscales, exports, running
-    /// side by side or waiting (DESIGN §3a): the inspector opens on
-    /// Assets, where each is a row -- its badge, what it is doing, what it
+    /// side by side or waiting (DESIGN §3a): the sidebar shows, its
+    /// Assets listing each as a row -- its badge, what it is doing, what it
     /// waits for -- so what runs and what waits is in sight. Once, as
     /// their number reaches two; shut again by hand, it stays shut.
     /// (Settings › General › Generations can turn it off: `revealsTasks`;
     /// and have the second result made open it: `revealsResults`.)
     func revealTasks() {
-        withAnimation(Self.motion) {
-            inspectorOpen = true
-            if inspectorStacked {
-                inspectorFolded.remove(.assets)
-            } else {
-                inspectorTab = .assets
-            }
-        }
+        guard !viewOnly, chrome.sidebar == .detailOnly else { return }
+        withAnimation(Self.motion) { chrome.sidebar = .all }
     }
 
     /// The task making an asset, while it is queued or running -- one of
@@ -9460,6 +9358,7 @@ final class AppModel {
         projectPath = url.path
         projectName = url.deletingPathExtension().lastPathComponent
         isAnonymous = false
+        RecentProjects.shared.note(url, name: projectName)
         refreshDocument()
         return true
     }
@@ -9792,8 +9691,6 @@ final class AppModel {
                 pendingWindowSize = nil
                 applyWindowSize(size)
             }
-            // The inspector open from the first: room for it.
-            fitWindowToInspector()
         }
     }
     /// The editor's window has been there: closing the last window quits
@@ -9917,41 +9814,6 @@ final class AppModel {
 
     /// Its top left where it is; within the screen, and no smaller than
     /// the window may be.
-    /// The window widened for the inspector -- by how much, to what -- so
-    /// shutting it gives that back while the window is still as it was
-    /// left.
-    @ObservationIgnored private var widenedForInspector:
-        (by: CGFloat, to: CGFloat)?
-
-    /// The inspector opened or shut: the window as wide as the editor and
-    /// the inspector need -- widened to the right (kept on the screen;
-    /// where the screen is narrower, the editor has what is left) -- and
-    /// narrowed back as it shuts, if it was widened for it and is the width
-    /// it was left at. A window already wide enough is left alone.
-    func fitWindowToInspector() {
-        guard let win = editorWindow else { return }
-        let room = win.screen?.visibleFrame ?? win.frame
-        var f = win.frame
-        if showsInspectorColumn {
-            let need = min(windowMinWidth, room.width)
-            guard f.width < need - 0.5 else { return }
-            widenedForInspector = (need - f.width, need)
-            f.size.width = need
-            f.origin.x = min(max(f.origin.x, room.minX), room.maxX - need)
-            win.setFrame(f, display: true, animate: win.isVisible)
-            return
-        }
-        guard let widened = widenedForInspector else { return }
-        widenedForInspector = nil
-        guard abs(f.width - widened.to) < 0.5 else { return }
-        f.size.width = max(Self.editorMinWidth, f.width - widened.by)
-        // After this pass: its minimum, still the inspector's, comes down
-        // with the layout.
-        DispatchQueue.main.async {
-            win.setFrame(f, display: true, animate: win.isVisible)
-        }
-    }
-
     private func applyWindowSize(_ size: CGSize) {
         guard let win = editorWindow else { return }
         var f = win.frame
@@ -10405,7 +10267,6 @@ final class AppModel {
         showsTuning = false
         seedText = ""
         openPanel = nil
-        searchText = ""
         banner = nil
         refreshMachine()  // picks the default models again
     }
@@ -10417,7 +10278,6 @@ final class AppModel {
     func renameSession(_ name: String) {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !n.isEmpty { anonymousName = n }
-        renamingTitle = false
     }
 
     /// Simple mode's anonymous session, or the open project.
@@ -10852,36 +10712,6 @@ final class AppModel {
         }
         CGImageDestinationAddImage(dst, img, nil)
         return CGImageDestinationFinalize(dst)
-    }
-
-    /// Search, in simple mode: the matching rows of the composer's cards
-    /// are marked, and the card with the most of them opens (the one
-    /// that was open comes back when the search is cleared). The prompt
-    /// marks its own matches (PromptEditor).
-    func searchChanged() {
-        let q = searchText.trimmingCharacters(in: .whitespaces)
-        let hits = !q.isEmpty ? SettingsRow.matching(q, in: self) : []
-        searchHits = Set(hits.map(\.id))
-        // The card with the most matches; the generation card on a tie.
-        // A row always in view (the modality tab) opens none.
-        let want: ComposerPanel? = !hits.contains { $0.panel != nil } ? nil
-            : [ComposerPanel.generate, .adjust, .crop, .trim,
-               .audio].max { a, b in
-                hits.filter { $0.panel == a }.count
-                    < hits.filter { $0.panel == b }.count
-            }
-        withAnimation(Self.motion) {
-            if let want {
-                if !searchOpenedPanel {
-                    panelBeforeSearch = openPanel
-                    searchOpenedPanel = true
-                }
-                openPanel = want
-            } else if searchOpenedPanel {
-                openPanel = panelBeforeSearch
-                searchOpenedPanel = false
-            }
-        }
     }
 
     nonisolated private static let animals = [

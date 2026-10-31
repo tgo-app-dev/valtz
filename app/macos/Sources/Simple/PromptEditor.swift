@@ -755,8 +755,6 @@ struct PromptEditor: NSViewRepresentable {
     var maxHeight: CGFloat = 240
     /// How tall the box would be not compact: what it grows back to.
     var fullHeight: Binding<CGFloat>?
-    /// Text to mark wherever it occurs (the title bar's search).
-    var highlight = ""
     /// Room around the text: the box's own, or immersive editing's wider
     /// margins.
     var inset = PromptEditor.inset
@@ -796,7 +794,6 @@ struct PromptEditor: NSViewRepresentable {
         weak var textView: PromptTextView?
         weak var scrollView: NSScrollView?
         var wasCompact = false
-        var marked = ""
         /// The row as the mentions were last drawn from it.
         var drawnFrom = ""
         /// The tag being edited: where it is, its editor, digits typed.
@@ -849,7 +846,6 @@ struct PromptEditor: NSViewRepresentable {
                 model.promptChanged()
             }
             measure()
-            mark(parent.highlight, reveal: false)
         }
 
         /// Each paragraph's spacing: a Latin one 1.1x, a CJK one the
@@ -971,38 +967,6 @@ struct PromptEditor: NSViewRepresentable {
             tagEditor = pop
             // Typing stays in the text: digits there are its place too.
             tv.window?.makeFirstResponder(tv)
-        }
-
-        /// Mark every occurrence of `query` as Find does, with temporary
-        /// attributes (never saved with the text); a new query brings the
-        /// first one into view.
-        func mark(_ query: String, reveal: Bool) {
-            guard let tv = textView, let lm = tv.layoutManager else { return }
-            let text = tv.string as NSString
-            lm.removeTemporaryAttribute(
-                .backgroundColor,
-                forCharacterRange: NSRange(location: 0, length: text.length))
-            lm.removeTemporaryAttribute(
-                .foregroundColor,
-                forCharacterRange: NSRange(location: 0, length: text.length))
-            marked = query
-            let q = query.trimmingCharacters(in: .whitespaces)
-            guard !q.isEmpty else { return }
-            var first: NSRange?
-            var from = 0
-            while from < text.length {
-                let r = text.range(
-                    of: q, options: [.caseInsensitive, .diacriticInsensitive],
-                    range: NSRange(location: from, length: text.length - from))
-                guard r.location != NSNotFound else { break }
-                lm.addTemporaryAttributes(
-                    [.backgroundColor: NSColor.findHighlightColor,
-                     .foregroundColor: NSColor.black],
-                    forCharacterRange: r)
-                if first == nil { first = r }
-                from = r.location + max(r.length, 1)
-            }
-            if reveal, let first { tv.scrollRangeToVisible(first) }
         }
 
         func measure() {
@@ -1208,9 +1172,6 @@ struct PromptEditor: NSViewRepresentable {
             context.coordinator.styleMarkdown()
         }
         context.coordinator.measure()
-        if context.coordinator.marked != highlight {
-            context.coordinator.mark(highlight, reveal: true)
-        }
     }
 
     /// A positional tag's look: bound to what the row has at its place

@@ -69,7 +69,7 @@ enum VZ {
         static let meterBar: CGFloat = 5
         /// A section's header row (the inspector's, the gallery's).
         static let sectionHeader: CGFloat = 26
-        /// A title-bar button's box, and the symbol in it.
+        /// A stage button's box, and the symbol in it (StageButton).
         static let toolbarButton: CGFloat = 28
         static let toolbarSymbol: CGFloat = 15
         /// The badge column before a task row's title.

@@ -438,8 +438,8 @@ private struct StagePages: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            TitleBarButton(symbol: "chevron.backward", title: "Previous Page",
-                           help: "The page before") {
+            StageButton(symbol: "chevron.backward", title: "Previous Page",
+                        help: "The page before") {
                 model.goToPage(model.stagePage - 1)
             }
             .disabled(model.stagePage <= 0)
@@ -447,14 +447,14 @@ private struct StagePages: View {
             Text("Page \(String(model.stagePage + 1)) of \(String(model.stagePages))")
                 .monospacedDigit()
                 .padding(.horizontal, 6)
-            TitleBarButton(symbol: "chevron.forward", title: "Next Page",
-                           help: "The page after") {
+            StageButton(symbol: "chevron.forward", title: "Next Page",
+                        help: "The page after") {
                 model.goToPage(model.stagePage + 1)
             }
             .disabled(model.stagePage >= model.stagePages - 1)
             .shortcutHint("→")
         }
-        .titleBarCapsule()
+        .stageCapsule()
     }
 }
 
@@ -1004,8 +1004,7 @@ private struct ResultStage: View {
                 .onContinuousHover { phase in
                     switch phase {
                     case .active(let p):
-                        model.stageDragReady = !model.navOpen
-                            && band.contains(p)
+                        model.stageDragReady = band.contains(p)
                     case .ended:
                         model.stageDragReady = false
                     }
@@ -1083,29 +1082,29 @@ private struct ClipBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            TitleBarButton(symbol: "repeat", title: "Loop",
-                           help: loops ? "Play the clip once"
-                                       : "Play the clip again and again",
-                           on: loops, action: toggle)
-                .titleBarCapsule()
+            StageButton(symbol: "repeat", title: "Loop",
+                        help: loops ? "Play the clip once"
+                                    : "Play the clip again and again",
+                        on: loops, action: toggle)
+                .stageCapsule()
             if let transport {
                 transport
                     .transition(.opacity)
             }
             if canGrab {
-                TitleBarButton(symbol: "camera.viewfinder",
-                               title: "Grab Frame",
-                               help: "Grab this frame as a still, into the prompt",
-                               on: false, action: grabFrame)
-                    .titleBarCapsule()
+                StageButton(symbol: "camera.viewfinder",
+                            title: "Grab Frame",
+                            help: "Grab this frame as a still, into the prompt",
+                            on: false, action: grabFrame)
+                    .stageCapsule()
             }
             if canContinue {
-                TitleBarButton(symbol: "arrow.right.to.line",
-                               title: "Continue",
-                               help: "Continue the clip from its last seconds, picture and sound",
-                               on: false, action: openMenu)
+                StageButton(symbol: "arrow.right.to.line",
+                            title: "Continue",
+                            help: "Continue the clip from its last seconds, picture and sound",
+                            on: false, action: openMenu)
                     .background(MenuAnchorView(anchor: anchor))
-                    .titleBarCapsule()
+                    .stageCapsule()
                     .onChange(of: menuRequest) { openMenu() }
             }
         }
@@ -1216,49 +1215,49 @@ struct TransportButtons: View {
         HStack(spacing: 10) {
             // The player's sound, off or on: what plays heard or not, its
             // layers' own volumes as they are.
-            TitleBarButton(
+            StageButton(
                 symbol: muted ? "speaker.slash.fill" : "speaker.wave.2.fill",
                 title: muted ? "Unmute" : "Mute",
                 help: muted ? "Turn the sound on" : "Turn the sound off",
                 on: muted, action: act.mute)
-                .titleBarCapsule()
-            buttons.titleBarCapsule()
+                .stageCapsule()
+            buttons.stageCapsule()
         }
     }
 
     private var buttons: some View {
         let r = rate
         return HStack(spacing: 0) {
-            TitleBarButton(
+            StageButton(
                 symbol: "backward.end.fill", title: "Previous Event",
                 help: events
                     ? "Previous event: a key, where a layer begins or ends, the start"
                     : "Go to the start",
                 action: act.previous)
                 .shortcutHint("⌘←")
-            TitleBarButton(symbol: "backward.fill", title: "Fast Rewind",
-                           help: "Fast rewind", on: r < -1,
-                           action: act.rewind)
-            TitleBarButton(
+            StageButton(symbol: "backward.fill", title: "Fast Rewind",
+                        help: "Fast rewind", on: r < -1,
+                        action: act.rewind)
+            StageButton(
                 symbol: "backward.frame.fill", title: "Step Back",
                 help: sound ? "Back 10 ms (with ⌥, 1 ms)" : "Back one frame",
                 action: act.stepBack)
                 .shortcutHint("←")
-            TitleBarButton(
+            StageButton(
                 symbol: r != 0 ? "pause.fill" : "play.fill",
                 title: r != 0 ? "Pause" : "Play",
                 help: r != 0 ? "Pause (Space)" : "Play (Space)",
                 action: act.playPause)
                 .shortcutHint(String(localized: "Space"))
-            TitleBarButton(
+            StageButton(
                 symbol: "forward.frame.fill", title: "Step Forward",
                 help: sound ? "On 10 ms (with ⌥, 1 ms)" : "On one frame",
                 action: act.stepForward)
                 .shortcutHint("→")
-            TitleBarButton(symbol: "forward.fill", title: "Fast Forward",
-                           help: "Fast forward", on: r > 1,
-                           action: act.forward)
-            TitleBarButton(
+            StageButton(symbol: "forward.fill", title: "Fast Forward",
+                        help: "Fast forward", on: r > 1,
+                        action: act.forward)
+            StageButton(
                 symbol: "forward.end.fill", title: "Next Event",
                 help: events
                     ? "Next event: a key, where a layer begins or ends, the end"

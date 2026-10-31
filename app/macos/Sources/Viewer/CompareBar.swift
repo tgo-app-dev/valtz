@@ -48,11 +48,11 @@ struct CompareBar: View {
             GlassEffectContainer(spacing: 16) {
                 HStack(spacing: 16) {
                     if current == nil {
-                        TitleBarButton(symbol: "arrow.uturn.backward",
-                                       title: "Return to current",
-                                       help: "Show the current picture in A again",
-                                       action: returnToCurrent)
-                            .titleBarCapsule()
+                        StageButton(symbol: "arrow.uturn.backward",
+                                    title: "Return to current",
+                                    help: "Show the current picture in A again",
+                                    action: returnToCurrent)
+                            .stageCapsule()
                             .transition(.scale(scale: 0.6)
                                 .combined(with: .opacity))
                     }
@@ -60,22 +60,22 @@ struct CompareBar: View {
                         sideButton(.a)
                         sideButton(.b)
                     }
-                    .titleBarCapsule()
+                    .stageCapsule()
                     if hasB {
                         ForEach(Self.groups, id: \.self) { group in
                             HStack(spacing: 2) {
                                 ForEach(group) { modeButton($0) }
                             }
-                            .titleBarCapsule()
+                            .stageCapsule()
                         }
                         lineButton
-                            .titleBarCapsule()
+                            .stageCapsule()
                         modeButton(.difference)
-                            .titleBarCapsule()
-                        TitleBarButton(symbol: "arrow.left.arrow.right",
-                                       title: "Swap A and B",
-                                       help: "Swap A and B", action: swap)
-                            .titleBarCapsule()
+                            .stageCapsule()
+                        StageButton(symbol: "arrow.left.arrow.right",
+                                    title: "Swap A and B",
+                                    help: "Swap A and B", action: swap)
+                            .stageCapsule()
                     }
                 }
             }
@@ -84,10 +84,10 @@ struct CompareBar: View {
     }
 
     private func modeButton(_ m: CompareMode) -> some View {
-        TitleBarButton(symbol: m.symbol,
-                       title: LocalizedStringKey(m.help),
-                       help: LocalizedStringKey(m.help),
-                       on: m == mode) {
+        StageButton(symbol: m.symbol,
+                    title: LocalizedStringKey(m.help),
+                    help: LocalizedStringKey(m.help),
+                    on: m == mode) {
             setMode(m)
         }
     }
@@ -96,14 +96,14 @@ struct CompareBar: View {
     private func sideButton(_ s: StageSlot) -> some View {
         let m: CompareMode = s == .a ? .a : .b
         let empty = s == .b && !hasB
-        return TitleBarButton(symbol: m.symbol,
-                              title: LocalizedStringKey(m.help),
-                              help: s == current
-                                ? (s == .a ? "Show A, the current picture"
-                                           : "Show B, the current picture")
-                                : LocalizedStringKey(m.help),
-                              on: m == mode && !empty, text: m.label,
-                              emphasized: s == current) {
+        return StageButton(symbol: m.symbol,
+                           title: LocalizedStringKey(m.help),
+                           help: s == current
+                             ? (s == .a ? "Show A, the current picture"
+                                        : "Show B, the current picture")
+                             : LocalizedStringKey(m.help),
+                           on: m == mode && !empty, text: m.label,
+                           emphasized: s == current) {
             if !empty { setMode(m) }
         }
         .opacity(empty ? 0.45 : 1)
@@ -124,7 +124,7 @@ struct CompareBar: View {
     /// The divider, drawn across the wipe it belongs to.
     private var lineButton: some View {
         let wipes = mode == .wipe || mode == .wipeHorizontal
-        return TitleBarButton(
+        return StageButton(
             symbol: mode == .wipeHorizontal
                 ? "arrow.up.and.line.horizontal.and.arrow.down"
                 : "arrow.left.and.line.vertical.and.arrow.right",

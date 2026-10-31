@@ -336,7 +336,6 @@ extension AppModel {
         editorEdited = false
         markupOpen = false
         showsTuning = false
-        if inspectorTab != .layers { inspectorTab = .assets }
         stage.fitRequest += 1
         promptImmersive = true
         // Back from it, the box: the prompt, not the timeline it may have

@@ -37,7 +37,7 @@ struct AudioPanel: View {
                     step: 0.5, fine: 0.1, width: 58,
                     help: String(localized: "The sound's gain: 0 dB as it is, −6 dB half the level, up to +12 dB; at the bottom, muted. ⌥ for finer steps; double-click for 0 dB."),
                     onChange: { model.setLayerVolume(Self.gain(atPosition: $0)) })
-                    .searchMark(model.searchHits.contains(SettingsRow.audioGain))
+                    .foregroundStyle(.secondary)
                 FaderColumn(
                     id: "pitch", name: String(localized: "Pitch"),
                     shown: Self.pitchText(here.pitch),
@@ -48,7 +48,7 @@ struct AudioPanel: View {
                     rest: 0, step: 1, fine: 0.1, width: 58,
                     help: String(localized: "Semitones up (+) or down (−), whole ones; ⌥ for tenths. Whether it also follows the speed is set beside the speed, in Trim. Double-click for none."),
                     onChange: { model.setLayerPitch($0) })
-                    .searchMark(model.searchHits.contains(SettingsRow.pitch))
+                    .foregroundStyle(.secondary)
                 Divider()
                 // As tall as the gain and the pitch: its faders shorter,
                 // the curve over them.
@@ -84,7 +84,7 @@ struct AudioPanel: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity,
                        alignment: .topLeading)
-                .searchMark(model.searchHits.contains(SettingsRow.audioEq))
+                .foregroundStyle(.secondary)
             }
             // One height for the strip: every fader fills its column.
             .frame(height: Self.strip)

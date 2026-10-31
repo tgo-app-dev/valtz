@@ -980,7 +980,7 @@ struct AtlasAssetNode: View {
                 return String(localized: "\(p) pages · \(layers)")
             }
             if a.isTimeline, let len = a.length, let r = a.compositionRate {
-                let s = InspectorView.duration(Double(len) / r.fps)
+                let s = InformationSection.duration(Double(len) / r.fps)
                 return "\(s) · \(layers)"
             }
             return layers
@@ -992,11 +992,11 @@ struct AtlasAssetNode: View {
         }
         switch a.kind {
         case "video":
-            let s = InspectorView.duration(info.pictureSeconds ?? 0)
+            let s = InformationSection.duration(info.pictureSeconds ?? 0)
             let size = "\(info.frame.w) × \(info.frame.h)"
             return String(localized: "Clip · \(s) · \(size)")
         case "audio":
-            let s = InspectorView.duration(info.seconds ?? 0)
+            let s = InformationSection.duration(info.seconds ?? 0)
             return String(localized: "Sound · \(s)")
         default:
             let size = "\(info.frame.w) × \(info.frame.h)"

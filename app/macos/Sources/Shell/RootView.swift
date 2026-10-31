@@ -1,32 +1,75 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The window: the current mode full-bleed under a Preview-style title
-/// bar (TitleBarContent), the inspector column on the right when asked
-/// for, and a navigation panel that stays hidden until ☰ asks for it.
+/// The window: one skeleton, three columns -- the sidebar (the project,
+/// its screens, Recents, Assets), the stage column, the inspector (Layers
+/// over Information) -- under the system's toolbar. A mode only decides
+/// what fills each region and which fold away (WorkspaceLayout.resolve);
+/// the window never resizes itself for any of them.
+///
+/// The stage over-sized in the system's inspector once: it was laid out
+/// from a column sized to the composer's fixed width, the window widened
+/// for the inspector, and the window's least width followed it. Now the
+/// stage region takes what it is given, the window's least width is
+/// fixed, and the stage fits again once a column has come or gone.
 struct RootView: View {
     @Bindable var model: AppModel
-    @Environment(\.colorScheme) private var scheme
     /// A drag over the window, and whether it holds a Valtz project
     /// (ProjectDropDelegate).
     @State private var projectDrag = ProjectDrag()
 
+    /// The window's least size, fixed: it never resizes itself for a
+    /// column, and at it the sidebar or the inspector folds before the
+    /// stage goes under its least width (WorkspaceLayout.resolve).
+    static let minSize = NSSize(width: 820, height: 600)
+
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                main
-                // A plain column rather than SwiftUI's .inspector, which
-                // over-sizes the stage.
-                if model.showsInspectorColumn {
-                    InspectorColumn(model: model)
+        let layout = model.layout
+        NavigationSplitView(columnVisibility: Binding(
+            get: { layout.sidebar },
+            // The split view says back what it was told, a fold made
+            // for room included: only a change is the person's.
+            set: { if $0 != model.layout.sidebar { model.setSidebar($0) } })) {
+            SidebarView(model: model)
+                .navigationSplitViewColumnWidth(min: 200, ideal: 240,
+                                                max: 320)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                    if $0 > 0 { model.sidebarWidth = $0 }
                 }
-            }
-            // The editor keeps its width beside it: the window widened
-            // for it, and narrowed back after (AppModel.fitWindowToInspector).
-            .onChange(of: model.showsInspectorColumn) { _, _ in
-                model.fitWindowToInspector()
-            }
+        } detail: {
+            StageColumn(model: model, layout: layout)
+                // Only a change is the person's: the inspector says back
+                // its hiding on the Atlas, the Log and under view only.
+                .inspector(isPresented: Binding(
+                    get: { layout.inspector },
+                    set: {
+                        if $0 != model.layout.inspector {
+                            model.chrome.inspectorShown = $0
+                        }
+                    })) {
+                    RightColumn(model: model)
+                        .inspectorColumnWidth(min: 280, ideal: 320, max: 480)
+                        .onGeometryChange(for: CGFloat.self) {
+                            $0.size.width
+                        } action: {
+                            if $0 > 0 { model.inspectorWidth = $0 }
+                        }
+                }
+                .toolbar(id: "editor") {
+                    EditorToolbar(model: model, layout: layout)
+                }
+                .toolbarRole(.editor)
+                .background { WindowTitle(model: model) }
         }
+        // The window's width: room for both columns beside the stage, or
+        // the sidebar folds while the inspector shows.
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+            model.windowWidthChanged($0)
+        }
+        // A column come or gone: the stage fits its new room once the
+        // columns have settled.
+        .onChange(of: layout.sidebar) { _, _ in model.refitStage() }
+        .onChange(of: layout.inspector) { _, _ in model.refitStage() }
         // File › Start Over…, with something to lose: asked first.
         .confirmationDialog("Start over?", isPresented: $model.startOverAsked) {
             Button("Start Over", role: .destructive) { model.startOver() }
@@ -68,26 +111,6 @@ struct RootView: View {
             }
         }
         .fleetAskAlert(model)
-        // The title bar's bottom edge: while the pointer is over the title
-        // bar, and always while the inspector or the markup toolbar sits
-        // under it.
-        .overlay(alignment: .top) {
-            let editor = model.screen == .editor
-            let shown = model.titlebarHover || model.screen != .editor
-                || (editor && (model.inspectorOpen || model.markupOpen
-                               || model.promptImmersive))
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(height: 1)
-                .opacity(shown ? 1 : 0)
-                .animation(.easeInOut(duration: 0.2), value: shown)
-                .allowsHitTesting(false)
-        }
-        .background {
-            TitlebarHoverDetector { model.titlebarHover = $0 }
-                .frame(width: 0, height: 0)
-        }
-        .onChange(of: model.searchText) { model.searchChanged() }
         // Unsaved changes: the dot in the window's close button.
         .onChange(of: model.document.dirty, initial: true) { _, dirty in
             NSApp.windows.first { $0.isVisible }?.isDocumentEdited =
@@ -112,160 +135,60 @@ struct RootView: View {
             }
         }
         // The window, for a project's size (AppModel.editorWindow).
-        .background(WindowReader { model.editorWindow = $0 })
-        .navigationTitle(model.windowTitle)
-        .toolbar { TitleBarContent(model: model, scheme: scheme) }
-        .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-        .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    /// The current mode -- under the markup toolbar, a row of its own
-    /// below the title bar, as Preview's -- with the navigation panel
-    /// over it. Immersive prompt editing takes the editor's place, under
-    /// its own toolbar.
-    private var main: some View {
-        ZStack(alignment: .topLeading) {
-            switch model.screen {
-            case .editor:
-                VStack(spacing: 0) {
-                    // The Prompt Editor's toolbar, or the markup toolbar:
-                    // the editor grows the prompt card itself (SimpleView).
-                    if model.promptImmersive {
-                        PromptBar(model: model)
-                            // Its foot: the small stage keeps clear of it.
-                            .onGeometryChange(for: CGFloat.self) {
-                                $0.frame(in: .global).maxY
-                            } action: { model.editorToolbarBottom = $0 }
-                            .transition(.move(edge: .top)
-                                .combined(with: .opacity))
-                    } else if model.markupOpen && !model.viewOnly {
-                        MarkupBar(model: model)
-                            .transition(.move(edge: .top)
-                                .combined(with: .opacity))
-                    }
-                    SimpleView(model: model)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            case .atlas:
-                AtlasView(model: model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .log:
-                LogView(model: model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            if model.navOpen {
-                // Click anywhere else to put the panel away.
-                Color.black.opacity(0.001)
-                    .onTapGesture { model.toggleNav() }
-                NavPanel(model: model)
-                    .padding(.top, 14)
-                    .padding(.leading, 10)
-                    .padding(.bottom, 10)
-                    .transition(.move(edge: .leading)
-                        .combined(with: .opacity))
-            }
-        }
+        .background(WindowReader {
+            $0.contentMinSize = RootView.minSize
+            model.editorWindow = $0
+        })
     }
 }
 
-/// The inspector at the window's right, with its edge.
-struct InspectorColumn: View {
+/// The window's title, its subtitle and its document, set from a view of
+/// their own: whether the title can be renamed changes which modifier
+/// sets it, and that change remakes this empty view, not the stage.
+/// The anonymous session's name is renamed in the title (its menu's
+/// Rename, as a document's); a project's name is its file's. "Edited"
+/// under it while a project has changes not saved; the proxy icon is the
+/// project's package, dragged or ⌘-clicked as any document's.
+private struct WindowTitle: View {
     @Bindable var model: AppModel
 
-    /// Its width, the edge included: what the window widens by for it
-    /// (AppModel.windowMinWidth).
-    static let width: CGFloat = 301
-
-    var body: some View {
-        HStack(spacing: 0) {
-            Divider()
-            InspectorView(model: model)
-                .frame(width: Self.width - 1)
-        }
-        .transition(.move(edge: .trailing).combined(with: .opacity))
+    /// An agent at work holds the project: not renamed meanwhile.
+    private var renamable: Bool {
+        model.isAnonymous && !model.viewOnly && !model.agentHolds
     }
-}
-
-/// The ☰ column: a narrow glass strip of icons -- the screens (the
-/// editor; the editor VIEW ONLY, its eye -- Tab too; the atlas; the log)
-/// at the top, Settings (⌘,) at the foot -- set well below the title
-/// bar's hairline.
-struct NavPanel: View {
-    @Bindable var model: AppModel
-    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
-        VStack(spacing: 6) {
-            ForEach(AppScreen.allCases) { s in
-                NavRow(title: s.label, symbol: s.symbol,
-                       selected: model.screen == s
-                           && !(s == .editor && model.viewOnly)) {
-                    model.show(s)
-                }
-                // The editor as a viewer, right under it: its eye.
-                if s == .editor {
-                    NavRow(title: String(localized: "View Only"),
-                           symbol: "eye",
-                           selected: model.screen == .editor
-                               && model.viewOnly) {
-                        model.showViewOnly()
-                    }
-                    .shortcutHint(String(localized: "Tab"))
-                }
+        Group {
+            if renamable {
+                Color.clear
+                    .navigationTitle(Binding(
+                        get: { model.anonymousName },
+                        set: { model.renameSession($0) }))
+            } else {
+                Color.clear
+                    .navigationTitle(Text(verbatim: model.windowTitle))
             }
-            Spacer(minLength: 20)
-            NavRow(title: String(localized: "Settings"), symbol: "gearshape",
-                   selected: false) {
-                model.toggleNav()
-                openSettings()
-            }
-            .shortcutHint("⌘,")
         }
-        .padding(6)
-        .frame(width: 52)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16,
-                                                    style: .continuous))
+        .navigationSubtitle(model.document.dirty && !model.isAnonymous
+                            ? Text("Edited") : Text(verbatim: ""))
+        .modifier(ProjectDocument(path: model.isAnonymous ? ""
+                                        : model.projectPath))
     }
 }
 
-/// One of its icons; its name in the tooltip and to VoiceOver.
-private struct NavRow: View {
-    let title: String   // already localized
-    let symbol: String
-    let selected: Bool
-    let action: () -> Void
-    @State private var hovering = false
+/// The project's package as the window's document, when there is one.
+private struct ProjectDocument: ViewModifier {
+    let path: String
 
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 16))
-                .foregroundStyle(selected ? Color.accentColor : .secondary)
-                .frame(width: 40, height: 36)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(selected ? Color.accentColor.opacity(0.16)
-                          : hovering ? Color.primary.opacity(0.06)
-                          : .clear))
+    func body(content: Content) -> some View {
+        if path.isEmpty {
+            content
+        } else {
+            content.navigationDocument(URL(fileURLWithPath: path))
         }
-        .buttonStyle(.plain)
-        .help(title)
-        .accessibilityLabel(Text(verbatim: title))
-        .onHover { hovering = $0 }
-        .animation(.smooth(duration: 0.15), value: hovering)
     }
 }
 
-/// The window a view is in, told when it has one.
-/// Asks before the editor's window closes (its close button; ⌘W closes
-/// the project, File › Close Project): standing in as the window's
-/// delegate, `windowShouldClose` asks; everything else goes on to the
-/// delegate SwiftUI gave the window, as it was. SwiftUI has no way to
-/// refuse a window's close.
-@MainActor
 /// A closed project's TASKS being stopped (AppModel.closingTasks): the
 /// window veiled and out of reach, saying what it waits for -- the work
 /// still stopping -- and what comes once it has.
@@ -330,6 +253,12 @@ struct ClosingTasksOverlay: View {
     }
 }
 
+/// Asks before the editor's window closes (its close button; ⌘W closes
+/// the project, File › Close Project): standing in as the window's
+/// delegate, `windowShouldClose` asks; everything else goes on to the
+/// delegate SwiftUI gave the window, as it was. SwiftUI has no way to
+/// refuse a window's close.
+@MainActor
 final class WindowCloseGuard: NSObject, NSWindowDelegate {
     weak var window: NSWindow?
     nonisolated(unsafe) private weak var inner: NSWindowDelegate?
@@ -362,6 +291,7 @@ final class WindowCloseGuard: NSObject, NSWindowDelegate {
     }
 }
 
+/// The window a view is in, told when it has one.
 private struct WindowReader: NSViewRepresentable {
     let found: (NSWindow) -> Void
 
