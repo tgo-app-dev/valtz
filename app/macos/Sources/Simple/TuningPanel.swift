@@ -431,6 +431,7 @@ struct TuningPanel: View {
         case "color_fix": String(localized: "Colour fix")
         case "guidance_scale": String(localized: "Guidance")
         case "fast_decoder": String(localized: "Fast decoder")
+        case "refine_start": String(localized: "Refine")
         default: key
         }
     }
@@ -500,6 +501,7 @@ struct TuningPanel: View {
         case "motion_cache": String(localized: "Before each step, predicts how far the model's answer moved since the last one that ran; when little, reuses it. Little to gain on short schedules.")
         case "color_fix": String(localized: "Corrects each restored frame's colour toward its source frame, so the upscaled layer keeps the colours of the clip it replaces. FlashVSR 1.1 moves each channel's mean and spread to the source's (AdaIN); FlashVSR+ takes the source's low frequencies and keeps its own detail (a wavelet fix).")
         case "guidance_scale": String(localized: "Classifier-free guidance: each step runs the model twice, with the prompt and with an empty one, and moves the picture away from the empty one's by this much. MOSS-Image's own setting is 3. Higher follows the words more literally, with harder colours; 1 runs one forward a step, about twice as fast, the prompt followed less.")
+        case "refine_start": String(localized: "How much of the draft the refine keeps. It puts the enlarged draft back to a level of noise and denoises it again in three steps. Keep the Draft starts at 0.7: in a test at 1920×1088, a woman's face and the words on a sign stayed the draft's, their detail sharper. NVIDIA's Recipe, Open-H3-Regenerate-2K as released, starts at 0.909, keeping about 9% of the draft: it redraws more, and in the same test it gave the woman another face and garbled the sign. The refine follows the prompt's words only weakly either way, so they do not bring back what it redraws.")
         case "fast_decoder": String(localized: "Decodes the regenerated clip with the fast decoder Open-H3-Regenerate-2K ships (NVIDIA's StreamRender-H3): 24 of MiniMax H3's decoder layers distilled, over the whole clip at once. About 3.6× faster on an M4 Pro, its frames about 40 dB from the released decoder's. Its working memory grows with the clip: about 12 GB for five seconds at 2K. Needs its download, in Settings › Capabilities › MiniMax H3.")
         default: ""
         }
@@ -525,6 +527,8 @@ struct TuningPanel: View {
         case ("vae_i8_gemm_tier", "fast"): String(localized: "Fast")
         case ("sol_threshold", "diag"): String(localized: "Diagonal")
         case ("sol_threshold", "exact"): String(localized: "Exact")
+        case ("refine_start", "draft"): String(localized: "Keep the Draft")
+        case ("refine_start", "release"): String(localized: "NVIDIA's Recipe")
         default: value
         }
     }
@@ -547,6 +551,10 @@ struct TuningPanel: View {
             String(localized: "The blocks' variance, channel by channel")
         case ("sol_threshold", "exact"):
             String(localized: "Their full covariance, as published: less error")
+        case ("refine_start", "draft"):
+            String(localized: "From noise 0.7: the draft's faces and lettering kept")
+        case ("refine_start", "release"):
+            String(localized: "From noise 0.909, as released: faces and lettering redrawn")
         default: ""
         }
     }

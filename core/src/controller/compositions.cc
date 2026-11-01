@@ -3704,7 +3704,7 @@ Result<std::pair<AssetId, std::string>>
 Controller::place_result(ProjectId pid, AssetId asset,
                          std::optional<AssetId> onto,
                          std::optional<std::string> at, std::int64_t offset,
-                         std::optional<JobId> job)
+                         std::optional<JobId> job, bool at_end)
 {
   auto undo = job ? join_(pid, *job) : command_(pid, "asset.place", asset);
   project::Project* p = project(pid);
@@ -3723,6 +3723,12 @@ Controller::place_result(ProjectId pid, AssetId asset,
   if (onto) {
     auto t = p->asset(*onto);
     if (t.ok() && is_comp(*t) && check_source_(*p, *t, a).ok()) {
+      // At the end: a clip on a timeline from its content's end, which
+      // the clips that landed before it moved (a set length past it is
+      // no content: the clip does not wait for it).
+      if (at_end && a.kind == AssetKind::Video && is_timeline(*t)) {
+        VALTZ_ASSIGN(offset, content_end_(pid, t->id));
+      }
       return instantiate(pid, asset, *onto, at, offset);
     }
   }

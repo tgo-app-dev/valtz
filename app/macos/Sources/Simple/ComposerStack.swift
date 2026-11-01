@@ -1020,9 +1020,12 @@ struct ComposerStack: View {
             return model.speaks && model.speechVoice != nil
                 ? String(localized: "Voice · \(name)") : name
         }
-        // A clip opening on a picture -- and ending on another (FL2VA).
+        // A clip opening on a picture -- and ending on another (FL2VA),
+        // or ending on one alone (L2VA).
         if let k = model.keyframes {
-            return k.last != nil
+            return k.first == nil
+                ? String(localized: "To last frame · \(model.imageModelName)")
+                : k.last != nil
                 ? String(localized: "First and last frames · \(model.imageModelName)")
                 : String(localized: "From picture · \(model.imageModelName)")
         }

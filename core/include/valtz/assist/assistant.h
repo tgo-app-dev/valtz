@@ -101,7 +101,8 @@ struct EnhanceRequest {
   // key -- clip_sections). The guide names the modes; Valtz says which
   // this is -- "T2VA" (words alone), "I2VA"
   // (opening on <Picture 1>, its first frame), "FL2VA" (opening on
-  // Picture 1, ending on Picture 2), "Ref2VA" (full reference) -- and
+  // Picture 1, ending on Picture 2), "L2VA" (ending on <Picture 1>, its
+  // last frame), "Ref2VA" (full reference) -- and
   // lists the references one line each, named as the
   // model names them ("<Picture 1>: a picture, \"cat.jpg\" -- image 1
   // shown above"). A small assistant told only the guide guesses the
@@ -232,7 +233,7 @@ std::string mention_form(std::string_view text,
 // "" for a model without one.
 struct OutlineFrames {
   int    first = -1;    // the picture it opens on: its place in the row
-  int    last = -1;     // ...and ends on; -1: none
+  int    last = -1;     // ...and ends on, after it or alone; -1: none
   double seconds = 0;   // the clip's length
 };
 std::string prompt_outline(const Json& outline, std::string_view language,
@@ -402,6 +403,7 @@ struct ShotText {
   // I2VA: the picture it opens on, "<Picture 1>". FL2VA: and the one it
   // ENDS on -- the two named as that case of the guide names them,
   // "Picture 1" and "Picture 2" -- at `seconds`, the clip's length.
+  // L2VA: `last` alone, "<Picture 1>", the picture it ends on.
   std::string first;
   std::string last;
   double      seconds = 0;

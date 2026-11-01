@@ -1581,7 +1581,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // (a click on it), "mention=0" (dragged into the text, at
             // its end), "move=2:0" (along the row), "remove=1",
             // "base=1" (its pencil badge), "whole=1" (a clip's or a
-            // sound's scissors badge).
+            // sound's scissors badge), "key=1:last" (its menu's First
+            // Frame, Last Frame, Not a Keyframe: first | last | none --
+            // printing `snapshot: refs key=... keyframes=a>b roles=`)
             if let spec = env["VALTZ_SNAPSHOT_REFS"] {
                 // A thumbnail's drag, its pointer scripted: `drag=n`
                 // begun on the n-th, `over=n` onto another, `out` off
@@ -1611,6 +1613,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         try? await Task.sleep(for: .milliseconds(100))
                         FileHandle.standardError.write(Data(
                             "snapshot: refs \(step) order=\(m.promptAttachments.map(\.url.lastPathComponent).joined(separator: ",")) dragging=\(m.rowDrag.map { d in m.promptAttachments.first { $0.id == d.id }?.url.lastPathComponent ?? "?" } ?? "-") outside=\(m.rowDrag?.outside == true)\n".utf8))
+                        continue
+                    }
+                    if kv[0] == "key", kv.count > 1 {
+                        let p = kv[1].split(separator: ":").map(String.init)
+                        let row = m.promptAttachments
+                        if p.count == 2, let n = Int(p[0]),
+                           row.indices.contains(n),
+                           let role = KeyframeRole(rawValue: p[1]) {
+                            m.setKeyframe(row[n].id, role)
+                        }
+                        try? await Task.sleep(for: .milliseconds(100))
+                        let k = m.keyframes
+                        let ends = (k?.first?.url.lastPathComponent ?? "")
+                            + ">" + (k?.last?.url.lastPathComponent ?? "")
+                        let roles = m.promptAttachments.map {
+                            "\($0.url.lastPathComponent):"
+                                + (m.keyframeRole($0)?.rawValue ?? "-")
+                                + ":" + (m.referenceBadge($0) ?? "-")
+                        }.joined(separator: ",")
+                        FileHandle.standardError.write(Data(
+                            "snapshot: refs \(step) keyframes=\(k == nil ? "-" : ends) roles=\(roles) offers=\(m.offersKeyframeRoles) lead=\(ComposerStack.summaryLead(m).replacingOccurrences(of: " ", with: "_"))\n".utf8))
                         continue
                     }
                     let args = (kv.count > 1 ? kv[1] : "")
@@ -4625,6 +4648,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         if let a { m.viewAsset(a) }
                     case "active":
                         if let a = m.projectViews.first { m.setActive(a) }
+                    // The viewing ended, as Escape or a click away ends
+                    // it: the active composition back.
+                    case "unview":
+                        m.endViewing()
                     case "cancel":
                         if let t = m.tasks.first(where: {
                             $0.position == Int(arg) }) {
@@ -5002,7 +5029,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try? await Task.sleep(for: .milliseconds(400))
                     FileHandle.standardError.write(Data(
-                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.asset(id: id)?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary())\n".utf8))
+                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.asset(id: id)?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary()) \(Self.stageShowSummary(m))\n".utf8))
                 }
             }
             // THE AGENT (DESIGN §9b), driven as its card drives it:
@@ -6125,6 +6152,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "agent-cache":
                     m.setAgentSettings(["expert_cache_gb":
                                         arg == "auto" ? 0 : Int(arg) ?? 0])
+                // Its Int8 Prefill: auto | on | off.
+                case "agent-i8":
+                    m.setAgentSettings(["i8_prefill": arg])
                 case "offload", "share":
                     let kv2 = arg.split(separator: "=").map(String.init)
                     guard kv2.count == 2 else { break }
@@ -6211,6 +6241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         line += ",context=\(p.context.here)/"
                         line += "\(p.context.fits ?? 0)/\(p.context.model)"
                     }
+                    // Its Int8 Prefill: chosen:the model's own:cores.
+                    line += " i8=\(a.i8Prefill ?? "auto"):"
+                    line += (a.i8PrefillModel == true ? "on" : "off")
+                    line += a.matrixCores == false ? ":nocores" : ""
                 }
                 // Where it is: open, its frame and the editor's (the
                 // screen's points), and whether it is centred on it.
@@ -6618,7 +6652,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .replacingOccurrences(of: " ", with: "_")
             var keyframes = "-"
             if let k = m.keyframes {
-                keyframes = k.first.url.lastPathComponent
+                keyframes = k.first?.url.lastPathComponent ?? ""
                 if let l = k.last {
                     keyframes += ">" + l.url.lastPathComponent
                 }
@@ -7037,6 +7071,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// left), what the zoom lays out, and where the picture -- or the
     /// zoomed clip -- lies in it: "card=1200x640@40,60 content=1800x960
     /// shown=-300,-160,1800x960".
+    /// What the stage holds after a landing: Information's asset (`-`:
+    /// none found), the player's file, the stack plan, the picture's
+    /// size, shown or not -- `stageShow=info:Name,video:x.mov,plan:3,
+    /// a:832x480,visible`.
+    @MainActor
+    static func stageShowSummary(_ m: AppModel) -> String {
+        let info = m.currentAsset?.name
+            .replacingOccurrences(of: " ", with: "_") ?? "-"
+        let video = m.stage.video?.lastPathComponent ?? "-"
+        let plan = m.stackPlayback.map { String($0.plan) } ?? "-"
+        let a = m.stage.a.map { "\($0.width)x\($0.height)" } ?? "-"
+        return "stageShow=info:\(info),video:\(video),plan:\(plan),"
+            + "a:\(a),\(m.stageVisible ? "visible" : "hidden")"
+    }
+
     /// The stage's scrubber in the window (points from its top left) and
     /// its knob's x there: "scrubber=420,671,560x18@knob=700"; "-" while
     /// it is not shown.

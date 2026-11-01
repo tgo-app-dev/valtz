@@ -221,8 +221,15 @@ extension AppModel {
     func snapshotLand(_ asset: String) {
         guard let core, let projectId, let onto = activeComposition
         else { return }
-        let r = core.assetOp(project: projectId, "place-result",
-                             ["asset": asset, "onto": onto.id])
+        // At the playhead, as a task asked now lands -- or after the
+        // timeline's content (Settings' At the End).
+        var req: [String: Any] = ["asset": asset, "onto": onto.id,
+                                  "offset": onto.isPaged ? stagePage
+                                                         : videoFrame]
+        if placesAtEnd(self.asset(id: asset)?.kind ?? "") {
+            req["at_end"] = true
+        }
+        let r = core.assetOp(project: projectId, "place-result", req)
         guard r.ok, let view = r["asset"] as? String else {
             note("error", r.message)
             return

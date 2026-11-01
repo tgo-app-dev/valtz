@@ -1346,6 +1346,29 @@ TEST(models, a_refiners_options_sit_in_its_models_custom)
   // as a switch of its own.
   CHECK(find(tuning_options(*refiner, t, "balanced", false),
              "fast_decoder")["available"] == true);
+  // Where it starts: Keep the Draft at every preference -- the presets
+  // move the arithmetic -- first in the refiner's list; NVIDIA's Recipe
+  // asked for, in Custom or Settings, taken.
+  const Json own = tuning_options(*refiner, t, "balanced", false);
+  CHECK(own["options"][0]["key"] == "refine_start");
+  CHECK(own["options"][0]["type"] == "choice");
+  CHECK(own["options"][0]["choices"] ==
+        Json::array({"draft", "release"}));
+  CHECK(own["values"]["refine_start"] == "draft");
+  for (const char* p : {"speed", "balanced", "quality"}) {
+    CHECK(tuning_options(fl2va, t, p, false)["values"]
+              ["regenerate_refine_start"] == "draft");
+  }
+  CHECK(resolve_tuning(fl2va, t, "quality", false,
+                       {{"regenerate_refine_start", "release"}})
+            ["regenerate_refine_start"] == "release");
+  CHECK(resolve_tuning(fl2va, t, "quality", false,
+                       {{"regenerate_refine_start", "nonsense"}})
+            ["regenerate_refine_start"] == "draft");
+  TuningContext kept = t;
+  kept.refiner_values = {{"refine_start", "release"}};
+  CHECK(tuning_options(fl2va, kept, "speed", false)["values"]
+            ["regenerate_refine_start"] == "release");
 }
 
 // Sol's FLAVOUR wherever Sol is offered; its threshold a value a STEP

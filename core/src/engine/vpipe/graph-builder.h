@@ -332,8 +332,9 @@ Result<BuiltGraph> build_image_edit(const JobSpec&,
 // generate-video (DESIGN §4c): a prompt -- and, when the family takes
 // one (`vpipe.first_frame`), a picture to open on, cropped to fill the
 // frame; one that takes a second (`vpipe.last_frame`: H3's FL2VA
-// partition), a picture to END on as well, fitted the same -- into a
-// clip and its soundtrack. The family's config stage
+// partition), a picture to END on as well, or only (L2VA: shown to the
+// prompt encoder too), fitted the same -- into a clip and its
+// soundtrack. The family's config stage
 // carries its shifts, the Turbo LoRA (job.model.lora) and the preview
 // TAE; the clip is decoded in F16 and written as HEVC Main10, the sound
 // as a WAV, joined afterwards. Width and height go up to `vpipe.align`,

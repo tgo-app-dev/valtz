@@ -713,8 +713,26 @@ struct PromptAttachment: Identifiable, Hashable, Sendable {
     /// A clip or a sound referenced WHOLE (Ref2VA): not cut to the clip's
     /// length, as every other one is -- its scissors badge off.
     var whole = false
+    /// What the person said this picture is to a clip that opens and ends
+    /// on pictures (FL2VA, chosen): the frame it ENDS on, or no keyframe
+    /// at all. The one it opens on is the base (`isBase`); nil, as the
+    /// row's order gives it (AppModel.keyframes).
+    var keyframe: KeyframeMark?
     /// What its copy was made from.
     var original: String?
+}
+
+/// A picture marked for a clip's keyframes (PromptAttachment.keyframe).
+enum KeyframeMark: String, Sendable, Hashable {
+    case last, neither
+}
+
+/// What a picture of the row is to a clip opening or ending on pictures:
+/// as the Start makes it (AppModel.keyframeRole), and as the row's menu
+/// sets it (AppModel.setKeyframe).
+enum KeyframeRole: String, Sendable, Hashable {
+    case first, last
+    case neither = "none"
 }
 
 struct LogLine: Identifiable {
@@ -1285,12 +1303,15 @@ final class AppModel {
     /// them (2026-10-23).
     @ObservationIgnored private var assetIndex: [String: Int] = [:]
 
-    /// The asset `id`, when the list has it (read through `assets`: a
-    /// view reading it follows the list).
+    /// The asset `id`, when the list has it. Read through `assets` found
+    /// or not, so a view asking follows the list: one asking for an asset
+    /// not listed yet looked at the (unobserved) index alone, and was not
+    /// drawn again when the list brought it.
     func asset(id: String) -> AssetDTO? {
-        guard let i = assetIndex[id], assets.indices.contains(i),
-              assets[i].id == id else { return nil }
-        return assets[i]
+        let list = assets
+        guard let i = assetIndex[id], list.indices.contains(i),
+              list[i].id == id else { return nil }
+        return list[i]
     }
     /// The asset list's folders, in order.
     var assetFolders: [FolderDTO] = []
@@ -1543,6 +1564,25 @@ final class AppModel {
     var mutesNewClips = AppModel.storedLanding("muted", default: false) {
         didSet { Self.keep(mutesNewClips, as: "landing.muted") }
     }
+    /// Where a generated CLIP lands on a timeline (Settings › General ›
+    /// Generations): at the PLAYHEAD where it was asked for (the default,
+    /// as ever -- with the playhead on the timeline's last frame, the new
+    /// clip's first frame lies over it and covers it), or at the END,
+    /// after what the timeline holds as the clip lands: nothing under it,
+    /// no gap before it, clips queued one after another end to end (core
+    /// Controller::place_result's `at_end`). Kept between launches -- a
+    /// snapshot run takes VALTZ_SNAPSHOT_LANDING's "place=end".
+    enum ClipPlacement: String, CaseIterable, Sendable {
+        case playhead, end
+    }
+    var clipPlacement = AppModel.storedPlacement {
+        didSet { Self.keep(clipPlacement.rawValue, as: "landing.place") }
+    }
+    /// A result of this kind lands after its timeline's content, not at
+    /// the playhead: a clip, At the End.
+    func placesAtEnd(_ kind: String) -> Bool {
+        kind == "video" && clipPlacement == .end
+    }
     /// The PROMPT BOX's words by target (Settings › General › Prompt
     /// Box): each target -- Video, Image, Audio, Agent -- keeps its own
     /// (the default), the Agent apart from the three that generate, or
@@ -1593,6 +1633,21 @@ final class AppModel {
     /// opened by itself, the switch flashed, Assets shown for a result.
     @ObservationIgnored var landingCounts = (timeline: 0, flash: 0,
                                              results: 0)
+    private static var storedPlacement: ClipPlacement {
+        guard keepsViewState else {
+            let spec = ProcessInfo.processInfo
+                .environment["VALTZ_SNAPSHOT_LANDING"] ?? ""
+            for item in spec.split(separator: ",") {
+                let kv = item.split(separator: "=").map(String.init)
+                if kv.count == 2, kv[0] == "place" {
+                    return ClipPlacement(rawValue: kv[1]) ?? .playhead
+                }
+            }
+            return .playhead
+        }
+        return (UserDefaults.standard.string(forKey: "landing.place"))
+            .flatMap(ClipPlacement.init(rawValue:)) ?? .playhead
+    }
     private static func storedLanding(_ name: String,
                                       default fallback: Bool) -> Bool {
         guard keepsViewState else {
@@ -1944,8 +1999,14 @@ final class AppModel {
     /// The page of the still on the stage it shows and the panels work on,
     /// from 0 (DESIGN §6a).
     var stagePage = 0
-    /// Asks the stage's player to show a frame.
+    /// Asks the stage's player to show a frame. Only the clip on the
+    /// stage when it was sent takes it: putting another there clears it
+    /// (`forgetVideoCommand`).
     var videoCommand: VideoCommand?
+    /// The last command's token: counted on through a session's reset
+    /// and a cleared command, so a player that took one never mistakes a
+    /// new one for it.
+    @ObservationIgnored private var videoCommandSerial = 0
     /// The stage's player's rate, as it reports it (0 is paused).
     var videoRate: Float = 0
     /// Its sound off, as it reports it (the transport's mute button).
@@ -2552,18 +2613,85 @@ final class AppModel {
 
     /// The pictures a clip opens and ends on (FL2VA's keyframes): the
     /// one marked to edit -- or, with such a model chosen, the row's
-    /// first picture -- and, for a model that ends on one, the next
-    /// picture in the row. Nil when the clip is made from words or from
-    /// references.
-    var keyframes: (first: PromptAttachment, last: PromptAttachment?)? {
+    /// first picture not marked otherwise -- and, for a model that ends
+    /// on one, the picture marked LAST, else the next unmarked one after
+    /// a first. Marked last with none to open on, the clip ends on it
+    /// alone (L2VA, vpipe 4a4a1f3a). Nil when the clip is made from
+    /// words or from references.
+    var keyframes: (first: PromptAttachment?, last: PromptAttachment?)? {
         guard activeModality == .video, !usesReferences, opensOnPicture
         else { return nil }
         let pics = promptAttachments.filter { $0.kind == "image" }
-        guard let first = pics.first(where: \.isBase)
-            ?? (videoChoicePinned ? pics.first : nil) else { return nil }
-        let last = runningModelInfo?.lastFrame == true
-            ? pics.first { $0.id != first.id } : nil
+        let ends = runningModelInfo?.lastFrame == true
+        let free = { (p: PromptAttachment) in
+            !p.isBase && (p.keyframe == nil || (!ends && p.keyframe == .last))
+        }
+        let first = pics.first(where: \.isBase)
+            ?? (videoChoicePinned ? pics.first(where: free) : nil)
+        let last: PromptAttachment? = !ends ? nil
+            : pics.first { $0.keyframe == .last && !$0.isBase }
+                ?? first.flatMap { f in
+                    pics.first { free($0) && $0.id != f.id }
+                }
+        guard first != nil || last != nil else { return nil }
         return (first, last)
+    }
+
+    /// What `item` is to the clip as Start makes it -- its first frame,
+    /// its last, or neither -- while the person may say (a chosen model
+    /// that opens on pictures: `offersKeyframeRoles`); nil otherwise.
+    func keyframeRole(_ item: PromptAttachment) -> KeyframeRole? {
+        guard offersKeyframeRoles, item.kind == "image" else { return nil }
+        let k = keyframes
+        return item.id == k?.first?.id ? .first
+            : item.id == k?.last?.id ? .last : .neither
+    }
+
+    /// The row's pictures can be said to be a clip's first frame, its
+    /// last, or neither: a model CHOSEN that opens on pictures (FL2VA),
+    /// which reads nothing else of the row.
+    var offersKeyframeRoles: Bool { videoChoicePinned && opensOnPicture }
+
+    /// A model that ends a clip on a picture (FL2VA): the row's menu
+    /// offers Last Frame.
+    var endsOnPicture: Bool { runningModelInfo?.lastFrame == true }
+
+    /// A picture said to be the clip's FIRST frame (the base: it leads the
+    /// row), its LAST (one picture at a time), or NEITHER -- left out of
+    /// the clip. A picture let go of a role goes back to the row's order:
+    /// the first one unmarked opens the clip, the next ends it.
+    func setKeyframe(_ id: UUID, _ role: KeyframeRole) {
+        guard let i = promptAttachments.firstIndex(where: { $0.id == id }),
+              promptAttachments[i].kind == "image" else { return }
+        switch role {
+        case .first:
+            if !promptAttachments[i].isBase { toggleBase(id) }
+            if let j = promptAttachments.firstIndex(where: { $0.id == id }) {
+                withAnimation(Self.motion) {
+                    promptAttachments[j].keyframe = nil
+                }
+            }
+        case .last, .neither:
+            baseHint = nil
+            withAnimation(Self.motion) {
+                if role == .last {
+                    for j in promptAttachments.indices
+                    where promptAttachments[j].keyframe == .last {
+                        promptAttachments[j].keyframe = nil
+                    }
+                }
+                promptAttachments[i].isBase = false
+                promptAttachments[i].keyframe =
+                    role == .last ? KeyframeMark.last : .neither
+            }
+        }
+    }
+
+    /// The n-th picture of the row (0 first) said to be the clip's first
+    /// frame, its last, or neither (the snapshot hooks' REFS `key=`).
+    func setKeyframe(picture n: Int, _ role: KeyframeRole) {
+        let pics = promptAttachments.filter { $0.kind == "image" }
+        if pics.indices.contains(n) { setKeyframe(pics[n].id, role) }
     }
 
     /// Row items the clip Start makes does not read: beside a chosen
@@ -2573,7 +2701,7 @@ final class AppModel {
         let k = keyframes
         return promptAttachments.filter {
             ["image", "video", "audio"].contains($0.kind)
-                && $0.id != k?.first.id && $0.id != k?.last?.id
+                && $0.id != k?.first?.id && $0.id != k?.last?.id
         }
     }
 
@@ -3981,7 +4109,13 @@ final class AppModel {
                 self.stackPosterAgain = false
                 self.stackPlayback = made
                 if let old { self.releaseLater(old.plan) }
-                if firstPoster || reshaped { self.stackPoster(made, id) }
+                // And whenever the stage has no picture: a clip landing on
+                // an empty stage was planned twice (its layer selected),
+                // the first plan's poster dropped as stale and the second
+                // not the first -- the card laid out square, posterless.
+                if firstPoster || reshaped || self.stage.a == nil {
+                    self.stackPoster(made, id)
+                }
             } else if let made {
                 core.releaseStackPlan(made.plan)
             }
@@ -6098,23 +6232,25 @@ final class AppModel {
             req["inline"] = inlineAssets
         } else if let k = keyframes {
             // As each looks: its modified copy, rendered by the core. Its
-            // mentions are <Picture 1> to the model -- with a last frame,
-            // Picture 1 and Picture 2 (FL2VA).
-            for att in [k.first] + (k.last.map { [$0] } ?? [])
+            // mentions are <Picture 1> to the model -- with both, Picture
+            // 1 and Picture 2 (FL2VA); a last alone, <Picture 1> (L2VA).
+            for att in [k.first, k.last].compactMap({ $0 })
             where assetId(of: att) == nil {
                 flash(String(localized: "Still importing \(att.url.lastPathComponent)…"), level: .warning)
                 return
             }
-            req["first"] = assetId(of: k.first)
+            if let f = k.first { req["first"] = assetId(of: f) }
             if let l = k.last { req["last"] = assetId(of: l) }
             req["inline"] = inlineAssets
         }
-        // A chosen model reads its keyframes only: the rest is said.
-        if let skipped = unreadVideoMedia.first {
+        // A chosen model reads its keyframes only: the rest is said --
+        // but a picture the person said is no keyframe.
+        let unread = unreadVideoMedia.filter { $0.keyframe != .neither }
+        if let skipped = unread.first {
             let name = modelName(imageModel)
-            flash(unreadVideoMedia.count == 1
+            flash(unread.count == 1
                 ? String(localized: "\(name) does not read \(skipped.url.lastPathComponent): it is left out.")
-                : String(localized: "\(name) reads its first and last pictures only: \(String(unreadVideoMedia.count)) items are left out."), level: .warning)
+                : String(localized: "\(name) reads its first and last pictures only: \(String(unread.count)) items are left out."), level: .warning)
         }
         generationBase = nil
         let r = core.generateVideo(req)
@@ -6717,6 +6853,8 @@ final class AppModel {
             for j in list.indices { list[j].isBase = false }
             var item = list.remove(at: i)
             item.isBase = true
+            // The base opens a clip: no other mark of a keyframe on it.
+            item.keyframe = nil
             list.insert(item, at: 0)
         }
         withAnimation(Self.motion) { promptAttachments = list }
@@ -6822,7 +6960,7 @@ final class AppModel {
     private func activeLabel(_ item: PromptAttachment) -> String {
         // A clip's keyframes: where it opens, where it ends.
         if let k = keyframes {
-            if item.id == k.first.id {
+            if item.id == k.first?.id {
                 return String(localized: "First frame")
             }
             if item.id == k.last?.id { return String(localized: "Last frame") }
@@ -6946,10 +7084,11 @@ final class AppModel {
             }
         }
         // A clip's keyframes: Picture 1 it opens on, Picture 2 it ends
-        // on; a chosen model reads nothing else.
+        // on -- ending on one alone, Picture 1; a chosen model reads
+        // nothing else.
         if let k = keyframes {
-            return item.id == k.first.id ? 1
-                : item.id == k.last?.id ? 2 : nil
+            return item.id == k.first?.id ? 1
+                : item.id == k.last?.id ? (k.first == nil ? 1 : 2) : nil
         }
         if videoChoicePinned { return nil }
         return numberedPictures.firstIndex { $0.id == item.id }
@@ -7145,6 +7284,8 @@ final class AppModel {
         let before = stageBeforeBase
         stageBeforeBase = nil
         adjustTask?.cancel()
+        // A clip back on the stage: a player made for it again.
+        if before?.stage.video != nil { forgetVideoCommand() }
         withAnimation(Self.motion) {
             if let before {
                 stage = before.stage
@@ -7242,9 +7383,10 @@ final class AppModel {
         if let b = baseAttachment, let a = assetId(of: b) {
             req["base"] = a
         }
-        // A clip's keyframes: the picture it opens on, and ends on.
+        // A clip's keyframes: the picture it opens on, and ends on --
+        // or ends on alone (L2VA), with none to open on.
         if let k = keyframes {
-            req["base"] = assetId(of: k.first)
+            req["base"] = k.first.flatMap { assetId(of: $0) }
             if let l = k.last { req["last"] = assetId(of: l) }
         }
         req["references"] = promptAttachments
@@ -8691,8 +8833,19 @@ final class AppModel {
         if voiceOverRecording, case .cued = kind {} else if voiceOverRecording {
             return
         }
-        videoCommand = VideoCommand(kind: kind,
-                                    token: (videoCommand?.token ?? 0) + 1)
+        videoCommandSerial += 1
+        videoCommand = VideoCommand(kind: kind, token: videoCommandSerial)
+    }
+
+    /// A clip put on the stage: the last command was the one shown
+    /// before's. A player is made for the new clip, and a player made
+    /// takes the command it is handed -- a play pressed on an earlier
+    /// clip, or a scrub let go playing, started every generated clip as
+    /// it landed whatever Settings › General › Generations said (and a
+    /// step or seek put it at another's frame). What is asked from here
+    /// on -- an opened project's playhead -- is the new clip's.
+    private func forgetVideoCommand() {
+        videoCommand = nil
     }
 
     /// The clip (timeline, sound) on the stage at its first frame or its
@@ -11317,10 +11470,12 @@ final class AppModel {
                 req["onto"] = onto
                 if let at = ctx.at { req["at"] = at }
                 req["offset"] = ctx.offset
+                if placesAtEnd(asset.kind) { req["at_end"] = true }
             } else if ctx.intoProject, let project = projectViews.first {
                 // On top of what an earlier result of the queue made the
                 // project's (a kind it cannot show: one of its own).
                 req["onto"] = project.id
+                if placesAtEnd(asset.kind) { req["at_end"] = true }
             }
             let r = core.assetOp(project: projectId, "place-result", req)
             if r.ok, let view = r["asset"] as? String {
@@ -11346,29 +11501,58 @@ final class AppModel {
         guard watched else {
             // Not watched: the stage stays with what is being done there
             // -- drawn again when that is what the result went into.
-            if let placed, placed.doc.id == stageAssetId,
-               generationJob == nil {
+            guard let placed else { return }
+            if placed.doc.id == stageAssetId, generationJob == nil {
                 layersChanged()
                 landed(on: placed.doc, layer: placed.layer)
+            } else if viewedAsset != nil, viewReturn == nil {
+                // An asset viewed while nothing was active -- an empty
+                // project's first result on its way: the composition it
+                // landed in is what the viewing gives way to. It went back
+                // to nothing, and the stage stayed empty (2026-11-01).
+                viewReturn = placed.doc.id
+            } else if stageBare {
+                // Nothing there to stay with -- the viewing ended before it
+                // landed: the result takes the stage, as one watched does.
+                showLanded(placed, result: asset, state: state, task: ctx)
             }
             return
         }
-        // A clip made: what it lands on plays as Settings say.
-        if state == "finished", asset?.kind == "video" {
-            landedClip = placed?.doc.id ?? asset?.id
-        }
         if let placed {
-            finishStage(state: "finished", asset: placed.doc, result: asset,
-                        layer: placed.layer, task: ctx)
-            selectLayer(placed.layer)
-            landed(on: placed.doc, layer: placed.layer)
+            showLanded(placed, result: asset, state: state, task: ctx)
         } else {
+            // A clip made, not placed: it plays as Settings say.
+            if state == "finished", asset?.kind == "video" {
+                landedClip = asset?.id
+            }
             finishStage(state: state, asset: asset, task: ctx)
         }
         // Following the queue: the next generation, if it began before
         // this one's end was heard. (Its preview follows as it comes; the
         // result just landed shows till then.)
         if followsQueue, let next = runningGeneration { watchTask(next) }
+    }
+
+    /// A result placed as `placed`'s layer, on the stage: the composition
+    /// it landed in shown, that layer selected, the timeline opened onto
+    /// it as Settings say; a clip played as they say.
+    private func showLanded(_ placed: (doc: AssetDTO, layer: String),
+                            result: AssetDTO?, state: String,
+                            task: TaskContext) {
+        if state == "finished", result?.kind == "video" {
+            landedClip = placed.doc.id
+        }
+        finishStage(state: "finished", asset: placed.doc, result: result,
+                    layer: placed.layer, task: task)
+        selectLayer(placed.layer)
+        landed(on: placed.doc, layer: placed.layer)
+    }
+
+    /// Nothing on the stage of its own: no asset shown or viewed, no
+    /// picture to edit, no task watched -- the mark.
+    private var stageBare: Bool {
+        stageAssetId == nil && viewedAsset == nil && stageBaseURL == nil
+            && generationJob == nil && exportShow == nil
     }
 
     /// What is on the stage now, as it is: `asset`, showing `result` --
@@ -11546,6 +11730,7 @@ final class AppModel {
     /// the clip's own first frame is read.
     private func finishClip(_ asset: AssetDTO, _ url: URL) {
         unwatchTask()
+        forgetVideoCommand()
         generationBase = nil
         stageBaseURL = nil
         stageBaseOriginal = nil

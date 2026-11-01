@@ -292,7 +292,7 @@ declared_offers(const Json& vp, const TuningContext& ctx,
     "i8_gemm_tier", "vae_i8_gemm",
     "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
     "motion_cache", "video_shift", "audio_shift", "shift", "turbo",
-    "fast_decoder"};
+    "fast_decoder", "refine_start"};
   for (const auto& d : jget(vp, "options", Json::array())) {
     const auto key = jget<std::string>(d, "key", "");
     const auto type = jget<std::string>(d, "type", "bool");
@@ -378,6 +378,19 @@ offers(const ModelEntry& m, const TuningContext& ctx,
       !jget(vp, "steps_fixed", false)) {
     Offer o{"steps", Kind::Int, 1, 100, 1};
     o.preset = turbo_on ? steps_on : steps_off;
+    out.push_back(std::move(o));
+  }
+  // A refiner's START (Open-H3-Regenerate-2K, DESIGN §4q): the noise the
+  // enlarged clip is put back to. DRAFT, its `keep_draft_sigma` (0.7),
+  // keeps the draft's faces and lettering and adds detail; RELEASE is
+  // NVIDIA's own grid, from 0.909 -- about 9% of the draft kept, which
+  // drew a 768P draft's Japanese-looking woman as another and garbled its
+  // sign's words (measured 2026-10-31, tgo-m5-3, 1920 x 1088 x 22). The
+  // draft's at every preference: what changes there is the arithmetic.
+  if (upscale && jget(vp, "regenerate", Json()).is_object()) {
+    Offer o{"refine_start", Kind::Choice};
+    o.choices = Json::array({"draft", "release"});
+    o.preset = "draft";
     out.push_back(std::move(o));
   }
   if (const Json hf = jget(vp, "hyperflow", Json()); hf.is_object()) {

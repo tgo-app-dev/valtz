@@ -934,11 +934,11 @@ regenerate_spec(const JobSpec& job)
 // vpipe's minimax-h3-regenerate-2k graph): its latent enlarged by the
 // latent upscaler -- told the ratio, cut back to the size by a crop box
 // where it is not whole latent cells -- put back to the refine's first
-// sigma and denoised again by the same DiT under the release's merged
-// LoRA, then decoded:
+// sigma (0.7 keeping the draft, else NVIDIA's 0.909) and denoised again
+// by the same DiT under the release's merged LoRA, then decoded:
 //
 //   <latent> -> latent-upscale -11-> generate-video (the refine)
-//   regenerate-config (the merged LoRA) -9-> generate-video
+//   regenerate-config (the merged LoRA, the start) -9-> generate-video
 //   <cond> -0-> generate-video -> vae-decode
 //
 // <cond> is the draft's own conditioning -- unless the job carries words
@@ -1008,11 +1008,18 @@ regenerate_stages(const JobSpec& job, const Json& cond, const Json& latent,
                            std::move(ccfg)));
     refine_cond = port("regenerate-conditioner");
   }
+  // Where it starts: the refiner's Keep the Draft (its `refine_start`
+  // "draft": the catalog's `keep_draft_sigma` on vpipe's shift-6 grid
+  // from there), else NVIDIA's own grid -- vpipe's default, what a clip
+  // made before the option had.
+  Json rcfg = {{"lora", job.model.regenerate_lora.string()},
+               {"lora_scale", 1.0}};
+  if (jget<std::string>(t, "refine_start", "release") == "draft") {
+    rcfg["refine_start_sigma"] = jget(spec, "keep_draft_sigma", 0.7);
+  }
   stages.push_back(stage("regenerate-config",
                          jget<std::string>(bvp, "config_stage", cfg_stage),
-                         Json::array(),
-                         {{"lora", job.model.regenerate_lora.string()},
-                          {"lora_scale", 1.0}}));
+                         Json::array(), std::move(rcfg)));
   Json gen_cfg = merged({{"width", width}, {"height", height},
                          {"frames", frames}, {"fps", fps},
                          {"steps", jget(spec, "steps", 3)},
@@ -1103,11 +1110,13 @@ draft_preview_stages(const JobSpec& job, const Json& latent, int width,
 
 // The shape of vpipe's MiniMax H3 reference graphs
 // (docs/pipelines/minimax-h3-text-to-video-turbo / -preview /
-// -first-last-to-video), with the output written Apple-native:
+// -first-last-to-video / -last-frame-to-video), with the output written
+// Apple-native:
 //
 //   text-prompt -> diffusion-conditioner -0-> generate-video
 //   [first -> first-fit -> vae-encode] -5-> generate-video
 //   [last -> last-fit -> vae-encode] -6-> generate-video
+//   (a last alone: last-fit -3-> diffusion-conditioner too)
 //   <family>-model-config -9-> generate-video
 //   generate-video -0-> vae-decode (F16) -> avf-save-video (HEVC 10-bit)
 //                  -1-> audio-vae-decode -> save-audio (WAV)
@@ -1128,12 +1137,10 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
     return make_error(Code::Unsupported, std::format(
         "{} cannot start a clip from a picture", job.model.id));
   }
-  // A last frame anchors the end of a clip that opens on a first (vpipe
-  // reads none alone).
-  if (last && !first) {
-    return make_error(Code::InvalidArgument,
-                      "a clip ends on a picture only if it opens on one");
-  }
+  // A last frame anchors the clip's end -- after a first (FL2VA), or
+  // alone (L2VA: vpipe 4a4a1f3a's generate-video reads port 6 without
+  // port 5 as one anchor at the end; an older one drops it, the clip
+  // made from words).
   if (last && !jget(vp, "last_frame", false)) {
     return make_error(Code::Unsupported, std::format(
         "{} cannot end a clip on a picture", job.model.id));
@@ -1271,10 +1278,15 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   };
   // Pika H3 Flex's recipe (vpipe's pika-h3-flex graphs): the keyframes
   // are SHOWN to the prompt encoder too, ahead of the words -- FL2VA's
-  // own presentation, "<Picture 1>: ", the picture its prompts name.
+  // own presentation, "<Picture 1>: ", the picture its prompts name. A
+  // last frame alone is shown so whatever runs, as vpipe's
+  // last-frame-to-video graph shows it: on the first picture's port, the
+  // <Picture 1> its prompt names.
   const bool show_keyframes =
       refs.empty() && !prompt_only && (first || last) &&
-      jget(jget(job.params, "tuning", Json::object()), "pika_flex", false);
+      (!first ||
+       jget(jget(job.params, "tuning", Json::object()), "pika_flex",
+            false));
   if (refs.empty() && !prompt_only) {
     // The prompt encoder (Qwen3-VL-32B for H3) streams, and is dropped
     // before the denoise: the two never share the machine. KEPT
@@ -1314,14 +1326,16 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                              {{"conditioning", kKeptConditioning}}});
     } else {
       prompt_read = true;
-      // 0 text, 1 negative, 2 model, 3 / 4 the keyframes shown.
+      // 0 text, 1 negative, 2 model, 3 / 4 the keyframes shown -- a
+      // last alone on 3, its <Picture 1>.
       Json cin = Json::array({port("text-prompt"), unwired(),
                               port("model-select")});
-      if (show_keyframes) {
-        cin.push_back(first ? keyframe_picture(*first, "first", true)
-                            : unwired());
+      if (show_keyframes && first) {
+        cin.push_back(keyframe_picture(*first, "first", true));
         cin.push_back(last ? keyframe_picture(*last, "last", false)
                            : unwired());
+      } else if (show_keyframes) {
+        cin.push_back(keyframe_picture(*last, "last", false));
       }
       stages.push_back(stage("diffusion-conditioner",
                              "diffusion-conditioner", std::move(cin),

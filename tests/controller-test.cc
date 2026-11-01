@@ -3656,6 +3656,77 @@ TEST(composition, a_result_lands_in_a_new_layer_or_its_own)
   CHECK(b.p().asset(again->first)->name == "kite (3)");
 }
 
+// A CLIP landing on a timeline (Settings › General › Generations): at
+// the playhead it was asked at -- on the last frame, the new clip's
+// first covers it -- or AT THE END, after the content as it is when it
+// lands: queued clips end to end, nothing under them, no gap -- not at a
+// set length past the content.
+TEST(composition, a_clip_lands_at_the_playhead_or_at_the_end)
+{
+  Bench b("comp-land-end");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  // A raw clip: two seconds at 24, a movie imported.
+  auto shot = ctl.create_composition(pid, project::AssetClass::Composition,
+                                     {16, 16}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto in_shot = ctl.instantiate(pid, *red, *shot);
+  REQUIRE_OK(in_shot);
+  project::LayerTime two;
+  two.duration = 48;
+  REQUIRE_OK(ctl.set_layer_time(pid, *shot, in_shot->second, two));
+  auto movie = ctl.rendered(pid, *shot);
+  REQUIRE_OK(movie);
+  fs::copy_file(*movie, b.root / "shot.mov");
+  auto clip = import_and_wait(ctl, pid, b.root / "shot.mov");
+  REQUIRE(clip);
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {16, 16}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  REQUIRE_OK(ctl.instantiate(pid, *clip, *tl));
+  auto start_of = [&](const std::string& layer) {
+    for (const auto& l : b.layers(*tl)) {
+      if (l.id == layer) {
+        return l.time.offset;
+      }
+    }
+    return std::int64_t{-1};
+  };
+  // At the playhead on its last frame (47): the new one starts there.
+  auto here = ctl.place_result(pid, *clip, *tl, std::nullopt, 47);
+  REQUIRE_OK(here);
+  CHECK(start_of(here->second) == 47);
+  REQUIRE_OK(ctl.undo(pid));
+  // At the end: after frame 47, whatever offset was asked; the next one
+  // after it.
+  auto end1 = ctl.place_result(pid, *clip, *tl, std::nullopt, 10,
+                               std::nullopt, true);
+  REQUIRE_OK(end1);
+  CHECK(start_of(end1->second) == 48);
+  auto end2 = ctl.place_result(pid, *clip, *tl, std::nullopt, 10,
+                               std::nullopt, true);
+  REQUIRE_OK(end2);
+  CHECK(start_of(end2->second) == 96);
+  CHECK(b.p().asset(*tl)->timeline_frames <= 0 ||
+        b.p().asset(*tl)->timeline_frames >= 144);
+  // A set length past the content is no content: the clip goes right
+  // after the last clip, the length kept where it holds it.
+  REQUIRE_OK(ctl.set_timeline(pid, *tl, 400));
+  auto end3 = ctl.place_result(pid, *clip, *tl, std::nullopt, 0,
+                               std::nullopt, true);
+  REQUIRE_OK(end3);
+  CHECK(start_of(end3->second) == 144);
+  CHECK(b.p().asset(*tl)->timeline_frames == 400);
+  // A picture lands where it was asked, whatever the setting.
+  auto pic = ctl.place_result(pid, *red, *tl, std::nullopt, 5,
+                              std::nullopt, true);
+  REQUIRE_OK(pic);
+  CHECK(start_of(pic->second) == 5);
+}
+
 // How a project was last looked at -- the app's window size -- is saved
 // with it and read back at the next open; never a command, and setting
 // what is there already changes nothing.
@@ -8916,6 +8987,115 @@ TEST(controller, the_agents_expert_cache_trades_its_context)
   }
 }
 
+// THE AGENT'S INT8 PREFILL (Settings › Agentic Helper › Agent, DESIGN
+// §9b): how the agent's model reads its prompts -- vpipe's i8_prefill,
+// a prefill's GEMMs in int8 on an M5's matrix cores. Auto: as the model
+// asks (catalog engine.vpipe.i8_prefill -- Flash-Next on, the 9B off);
+// On and Off the person's, for the agent's model alone and every use of
+// it (an Enhance on it too), no other model's. Kept in agent.json.
+TEST(controller, the_agents_int8_prefill_follows_its_setting)
+{
+  auto root = test::temp_dir("ctl-i8-prefill");
+  const fs::path helper =
+      root / "models" / "mlx-community" / "Qwen3.5-9B-OptiQ-4bit";
+  const fs::path next = root / "models" / "mlx-community" /
+                        "Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp";
+  for (const auto& d : {helper, next}) {
+    fs::create_directories(d);
+    std::ofstream(d / "model.safetensors") << "w";
+  }
+  std::ofstream(helper / "config.json") << "{}";
+  std::ofstream(next / "config.json") << R"({"model_type": "qwen4_exp"})";
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  // A 256 GB M5 (Flash-Next from 64 GB), or one before matrix cores.
+  auto mac = [&](const char* cores) {
+    ::setenv("VALTZ_RAM_LIMIT_GB", "256", 1);
+    ::setenv("VALTZ_GPU_MATRIX_CORES", cores, 1);
+    auto made = Controller::create(cfg);
+    ::unsetenv("VALTZ_RAM_LIMIT_GB");
+    ::unsetenv("VALTZ_GPU_MATRIX_CORES");
+    return made;
+  };
+  {
+    auto made = mac("1");
+    REQUIRE_OK(made);
+    Controller& ctl = **made;
+    REQUIRE(engine != nullptr);
+    // The helper's params as an Enhance hands them to the engine (an
+    // agent's turn takes the same: Controller::helper_params_).
+    auto enhance = [&]() -> Json {
+      EnhancePromptRequest req;
+      req.prompt = "a fox in snow";
+      auto job = ctl.enhance_prompt(req);
+      CHECK(job.ok());
+      const auto chats = engine->held_of(engine::kOpChat);
+      CHECK(chats.size() == 1);
+      const engine::JobSpec* spec =
+          chats.size() == 1 ? engine->spec(chats[0]) : nullptr;
+      if (spec == nullptr) {
+        return Json();
+      }
+      Json q = spec->params;
+      engine->turn(chats[0], {{"text", R"({"prompt": "A fox."})"}});
+      return q;
+    };
+    auto i8 = [](const Json& q) { return jget(q, "i8_prefill", false); };
+    Json s = ctl.agent_settings();
+    CHECK(s["i8_prefill"] == "auto");
+    CHECK(s["matrix_cores"] == true);
+    // The 9B thinks for the agent and enhances: Auto, as it asks -- off.
+    CHECK(s["using"] == "qwen3.5-9b");
+    CHECK(s["i8_prefill_model"] == false);
+    CHECK(!i8(enhance()));
+    // On: the agent's model reads in int8, and so does its Enhance --
+    // the same model.
+    REQUIRE_OK(ctl.set_agent_settings({{"i8_prefill", "on"}}));
+    CHECK(ctl.agent_settings()["i8_prefill"] == "on");
+    CHECK(i8(enhance()));
+    // The agent on Flash-Next: the setting is its; the 9B, enhancing
+    // alone, reads as it asks again.
+    REQUIRE_OK(
+        ctl.set_agent_settings({{"model", "qwen3.8-flash-next"}}));
+    s = ctl.agent_settings();
+    CHECK(s["using"] == "qwen3.8-flash-next");
+    CHECK(s["i8_prefill_model"] == true);
+    CHECK(!i8(enhance()));
+    // Flash-Next as the Agentic Helper too: Off takes its own int8 away,
+    // Auto gives it back.
+    REQUIRE_OK(ctl.set_agent_settings({{"model", ""}}));
+    REQUIRE_OK(ctl.choose_assistant("qwen3.8-flash-next"));
+    CHECK(i8(enhance()));
+    REQUIRE_OK(ctl.set_agent_settings({{"i8_prefill", "off"}}));
+    CHECK(!i8(enhance()));
+    REQUIRE_OK(ctl.set_agent_settings({{"i8_prefill", "auto"}}));
+    CHECK(i8(enhance()));
+    // Refused: anything but auto, on, off.
+    CHECK(ctl.set_agent_settings({{"i8_prefill", "yes"}}).code() ==
+          Code::InvalidArgument);
+    CHECK(ctl.set_agent_settings({{"i8_prefill", true}}).code() ==
+          Code::InvalidArgument);
+    REQUIRE_OK(ctl.set_agent_settings({{"i8_prefill", "off"}}));
+  }
+  // Kept for a later run; a GPU before matrix cores said so.
+  {
+    auto made = mac("0");
+    REQUIRE_OK(made);
+    const Json s = (*made)->agent_settings();
+    CHECK(s["i8_prefill"] == "off");
+    CHECK(s["matrix_cores"] == false);
+  }
+}
+
 // THE UPSCALERS' OPTIONS (Settings › Upscaling, DESIGN §4f): an upscale
 // has no generation card, so each upscaler's arithmetic -- int8 GEMMs,
 // Sage, Sol where it takes it -- is set once, kept in the support folder
@@ -9348,14 +9528,33 @@ TEST(controller, a_clip_opens_and_ends_on_pictures)
   CHECK(jget<std::string>(i2va->params, "prompt", "") ==
         "<Picture 1> waves.");
 
-  // A last frame needs a first, and no references with it.
+  // A last frame ALONE (L2VA, vpipe 4a4a1f3a): the clip leads up to it,
+  // <Picture 1> as the guide's L2VA case names it. No references with a
+  // keyframe.
   GenerateVideoRequest alone = req;
   alone.first.reset();
-  auto r1 = ctl.generate_video(alone);
-  CHECK(!r1.ok() && r1.error().code == Code::InvalidArgument);
+  alone.row = {*open};
+  alone.prompt = "The camera glides in and settles on <valtz_ref_img_0>.";
+  REQUIRE_OK(ctl.generate_video(alone));
+  REQUIRE(eventually([&] {
+    return engine->held_of(engine::kOpGenerateVideo).size() == 3;
+  }, 10));
+  const auto* l2va =
+      engine->spec(engine->held_of(engine::kOpGenerateVideo).back());
+  REQUIRE(l2va != nullptr);
+  CHECK(jget<std::string>(l2va->params, "prompt", "") ==
+        "The camera glides in and settles on <Picture 1>.");
+  REQUIRE(!l2va->inputs.empty());
+  CHECK(l2va->inputs[0].role == "last");
+  for (const auto& in : l2va->inputs) {
+    CHECK(in.role != "first");
+  }
   GenerateVideoRequest both = req;
   both.references = {*closed};
   CHECK(!ctl.generate_video(both).ok());
+  GenerateVideoRequest ends = alone;
+  ends.references = {*closed};
+  CHECK(!ctl.generate_video(ends).ok());
 
   // A continuation as Continue writes it in the prompt box: the clip
   // continued by its tag for its place in the row -- what the box draws
@@ -9380,7 +9579,7 @@ TEST(controller, a_clip_opens_and_ends_on_pictures)
   cont.frames = 124;
   REQUIRE_OK(ctl.generate_video(cont));
   REQUIRE(eventually([&] {
-    return engine->held_of(engine::kOpGenerateVideo).size() == 3;
+    return engine->held_of(engine::kOpGenerateVideo).size() == 4;
   }, 20));
   const auto* ref2va =
       engine->spec(engine->held_of(engine::kOpGenerateVideo).back());
@@ -9404,7 +9603,7 @@ TEST(controller, a_clip_opens_and_ends_on_pictures)
   sung.frames = 56;
   REQUIRE_OK(ctl.generate_video(sung));
   REQUIRE(eventually([&] {
-    return engine->held_of(engine::kOpGenerateVideo).size() == 4;
+    return engine->held_of(engine::kOpGenerateVideo).size() == 5;
   }, 20));
   const auto* kept =
       engine->spec(engine->held_of(engine::kOpGenerateVideo).back());
@@ -9835,6 +10034,7 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
     CHECK(jget(rt, "sol_attn", false));
     CHECK(jget<std::string>(rt, "sol_threshold", "") == "exact");
     CHECK(jget(rt, "fast_decoder", false));
+    CHECK(jget<std::string>(rt, "refine_start", "") == "draft");
     CHECK(jget(rt, "sage_attn", false) == m5);
     CHECK(jget(rt, "i8_gemm", false) == m5);
     const std::string p = pref;
@@ -9854,6 +10054,19 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
       CHECK(!jget(rt, "sage_pv8", true));
       CHECK(jget<std::string>(rt, "i8_gemm_tier", "") == "accurate");
     }
+  }
+  // NVIDIA's Recipe kept in Settings › Upscaling: the refine starts as
+  // released, whatever the preference.
+  REQUIRE_OK(b.ctl->set_upscale_tuning("open-h3-regenerate-2k",
+                                       {{"refine_start", "release"}}));
+  {
+    GenerateVideoRequest req = quiet;
+    req.tuning = Json::object();
+    REQUIRE_OK(b.ctl->generate_video(req));
+    s = b.job(engine::kOpGenerateVideo, ++n);
+    REQUIRE(s != nullptr);
+    CHECK(jget<std::string>(s->params["regenerate_tuning"], "refine_start",
+                            "") == "release");
   }
   // Without the refiner, none of it is offered.
   RegenBench none("regen-options-absent", false);
@@ -13109,6 +13322,81 @@ TEST(controller, an_enhances_speed_comes_with_it)
   CHECK(stats["accepted_pct"] == 75);
   CHECK(stats.contains("turn_ms"));
   CHECK(!stats.contains("first_ms"));   // no words were streamed
+}
+
+// A clip ENDING on a picture alone (L2VA), as Enhance writes it: the
+// helper told the guide's L2VA mode and the picture by its name, the
+// suggestion opening on the guide's L2VA line -- the picture, of the
+// reply's final shot, at the clip's length -- the picture back as the
+// row's tag.
+TEST(controller, a_clip_ending_on_a_picture_is_written_as_l2va)
+{
+  auto root = test::temp_dir("ctl-l2va-enhance");
+  const fs::path helper =
+      root / "models" / "mlx-community" / "Qwen3.5-9B-OptiQ-4bit";
+  fs::create_directories(helper);
+  std::ofstream(helper / "config.json") << "{}";
+  std::ofstream(helper / "model.safetensors") << "w";
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "L.valtz", "l2va");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "open.png", 32, 32, {0x80, 0x40, 0x20, 0xff}));
+  auto open = import_and_wait(ctl, *pid, root / "open.png");
+  REQUIRE(open);
+  EnhancePromptRequest req;
+  req.prompt = "the door swings open onto <valtz_ref_img_0>";
+  req.target = "video";
+  req.model = "minimax-h3-fl2va";
+  req.project = *pid;
+  req.row = {*open};
+  req.last = *open;
+  req.frames = 124;
+  req.fps = 24;
+  auto job = ctl.enhance_prompt(req);
+  REQUIRE_OK(job);
+  const auto chats = engine->held_of(engine::kOpChat);
+  REQUIRE(chats.size() == 1);
+  const std::string asked =
+      jget<std::string>(engine->spec(chats[0])->params, "text", "");
+  CHECK(asked.find("Mode: L2VA -- the video ENDS on <Picture 1>") !=
+        std::string::npos);
+  CHECK(asked.find("<Picture 1>: the picture the video ends on (its last "
+                   "frame), \"open") != std::string::npos);
+  engine->turn(chats[0],
+               {{"text", Json{{"integrated_multimodal_description",
+                               "[Shot 1] A closed door. [Shot 2] At "
+                               "00:03.000, it swings open onto <Picture "
+                               "1>."},
+                              {"overall_soundscape", "Hinges creak."},
+                              {"non_diegetic_music", "N/A"}}.dump()}});
+  std::string written;
+  for (int i = 0; i < 50 && written.empty(); ++i) {
+    Event ev;
+    if (ctl.events().wait(ev, 100) && ev.job == *job &&
+        ev.kind == "assist.enhanced") {
+      written = jget<std::string>(ev.data, "prompt", "");
+    }
+  }
+  CHECK(written.starts_with(
+      "How the reference pictures align with the target video — "
+      "<valtz_ref_img_0> (from [Shot 2]) aligns with the 5.17-second "
+      "mark of the target video.\n\nintegrated_multimodal_description: "
+      "[Shot 1] A closed door."));
+  CHECK(written.find("onto <valtz_ref_img_0>.") != std::string::npos);
 }
 
 // MINIMAX-MUSIC3 (DESIGN §4d): a song from a description in lines and

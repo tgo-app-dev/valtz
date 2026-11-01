@@ -63,6 +63,7 @@ enum SettingsPlace: Hashable, Sendable {
          String(localized: "Ask before each step"),
          String(localized: "DeepSeek"), String(localized: "Agent Memory"),
          String(localized: "Expert Cache"),
+         String(localized: "Int8 Prefill"),
          String(localized: "A member keeps its context"),
          String(localized: "Provider"), String(localized: "Model"),
          String(localized: "Server"), String(localized: "API Key")]
@@ -77,6 +78,7 @@ enum SettingsPlace: Hashable, Sendable {
             [String(localized: "Language"), String(localized: "Generations"),
              String(localized: "Timeline"), String(localized: "Assets"),
              String(localized: "Play"), String(localized: "Muted"),
+             String(localized: "Playhead"),
              String(localized: "Prompt Box"),
              String(localized: "Prompt history"),
              String(localized: "Updates"), String(localized: "Version"),

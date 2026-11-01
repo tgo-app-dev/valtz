@@ -468,9 +468,9 @@ prompt_outline(const Json& outline, std::string_view language,
                               RefKind::Image);
     return ref_tag(RefKind::Image, static_cast<int>(n));
   };
+  // (A last frame alone is L2VA's: the clip ends on it.)
   const std::string first = keyframe(frames.first);
-  const std::string last = first.empty() ? std::string()
-                                         : keyframe(frames.last);
+  const std::string last = keyframe(frames.last);
   std::vector<std::string> out;
   int subject = 0;
   const auto emit = [&](std::string line) {
@@ -1021,6 +1021,17 @@ clip_skill_prompt(const EnhanceRequest& r)
         "pictures as the guide's FL2VA case does: Picture 1, Picture 2, "
         "without angle brackets. (Valtz writes the FL2VA instruction "
         "line itself: do not write it.)\n",
+        r.seconds);
+  } else if (r.video_mode == "L2VA") {
+    s += std::format(
+        "Mode: L2VA -- the video ENDS on <Picture 1>, its last frame at "
+        "{:.2f} seconds, which belongs to the final shot, not to Shot 1: "
+        "infer a plausible earlier state from the request and the "
+        "picture, then describe how the subjects, the objects, the "
+        "camera and the scene move toward it, settling into its pose, "
+        "lighting and composition at the end of the final shot. Do not "
+        "open on the picture. (Valtz writes the L2VA instruction line "
+        "itself: do not write it.)\n",
         r.seconds);
   } else if (r.video_mode == "Ref2VA") {
     s += "Mode: full-reference (Ref2VA): the six sections.\n";
@@ -1701,6 +1712,20 @@ shot_prompt(const ShotText& t)
                          "{} (from Shot {}) aligns with the {:.2f}-second "
                          "mark of the target video.\n\n",
                          t.first, t.last, last, t.seconds) +
+             out;
+    }
+    // The guide's L2VA alignment line, word for word: the picture it
+    // ends on, of the description's last shot.
+    if (t.first.empty() && !t.last.empty()) {
+      int last = 1;
+      for (auto at = described.find("[Shot "); at != std::string::npos;
+           at = described.find("[Shot ", at + 1)) {
+        last = std::max(last, std::atoi(described.c_str() + at + 6));
+      }
+      return std::format("How the reference pictures align with the "
+                         "target video — {} (from [Shot {}]) aligns with "
+                         "the {:.2f}-second mark of the target video.\n\n",
+                         t.last, last, t.seconds) +
              out;
     }
     // The guide's I2VA instruction, word for word.

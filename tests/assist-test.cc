@@ -930,11 +930,28 @@ TEST(assist, built_in_outlines_follow_their_guides)
     CHECK(fl.find("<valtz_ref_img_1>", desc) < fl.find("<valtz_ref_img_0>",
                                                        desc));
   }
-  // A last frame needs a first; a keyframe that is no picture is none.
-  CHECK(prompt_outline(fl_outline, "en", {RefKind::Image}, {-1, 0})
-            .starts_with("integrated_multimodal_description: [Shot 1] ("));
+  // A last frame alone: the base guide's L2VA line -- <Picture 1> at the
+  // clip's end, of its final shot -- and a shot that lands on it.
+  {
+    const std::string l2 = prompt_outline(fl_outline, "en",
+                                          {RefKind::Image}, {-1, 0, 6.0});
+    CHECK(l2.starts_with(
+        "How the reference pictures align with the target video — "
+        "<valtz_ref_img_0> (from [Shot 1]) aligns with the 6.00-second "
+        "mark of the target video.\n\n"
+        "integrated_multimodal_description: [Shot 1] (Begin from a "
+        "plausible earlier moment"));
+    CHECK(l2.find("settling into its pose") != std::string::npos);
+    CHECK(l2.find("fully referenced") == std::string::npos);
+    CHECK(l2.find("[Shot 2]") == std::string::npos);
+    CHECK(l2.find("{") == std::string::npos);
+  }
+  // A keyframe that is no picture is none.
   CHECK(prompt_outline(fl_outline, "en", {RefKind::Audio, RefKind::Image},
-                       {0, 1})
+                       {0, -1})
+            .starts_with("integrated_multimodal_description: [Shot 1] ("));
+  CHECK(prompt_outline(fl_outline, "en", {RefKind::Image, RefKind::Audio},
+                       {-1, 1})
             .starts_with("integrated_multimodal_description: [Shot 1] ("));
 }
 
@@ -1054,6 +1071,20 @@ TEST(assist, a_clip_is_asked_for_through_its_guide)
   CHECK(fl2va.find("There is no <Video N> here.") != std::string::npos);
   CHECK(fl2va.find("{\"integrated_multimodal_description\": ") !=
         std::string::npos);
+
+  // Ending on one alone: the L2VA case, <Picture 1> its last frame, the
+  // shot leading up to it.
+  r.video_mode = "L2VA";
+  r.references = {"<Picture 1>: the picture the video ends on (its last "
+                  "frame), \"b.png\" -- image 1 shown above"};
+  const std::string l2va = build_enhance_prompt(r);
+  CHECK(l2va.find("Mode: L2VA -- the video ENDS on <Picture 1>, its last "
+                  "frame at 5.17 seconds") != std::string::npos);
+  CHECK(l2va.find("Do not open on the picture.") != std::string::npos);
+  CHECK(l2va.find("Valtz writes the L2VA instruction line itself") !=
+        std::string::npos);
+  CHECK(l2va.find("There is no <Picture N> here.") == std::string::npos);
+  CHECK(l2va.find("Mode: FL2VA") == std::string::npos);
 
   r.video_mode = "T2VA";
   r.references.clear();
@@ -1359,4 +1390,15 @@ TEST(assist, a_shot_counts_its_own_shots)
   r.pictures = {"<Picture 1>"};
   CHECK(shot_prompt(r).find("<Subject 1> is who or what <Picture 1> "
                             "shows.") != std::string::npos);
+  // Ending on a picture alone (L2VA): the guide's line, of the
+  // description's final shot, at the clip's length.
+  ShotText e;
+  e.description = "[Shot 1] A door, closed. [Shot 2] At 00:03.000, it "
+                  "swings open onto <Picture 1>.";
+  e.last = "<Picture 1>";
+  e.seconds = 5.17;
+  CHECK(shot_prompt(e).starts_with(
+      "How the reference pictures align with the target video — <Picture "
+      "1> (from [Shot 2]) aligns with the 5.17-second mark of the target "
+      "video.\n\nintegrated_multimodal_description: [Shot 1] A door"));
 }

@@ -2179,8 +2179,10 @@ TEST(graph_builder, minimax_h3_clip_opens_on_a_picture)
 // FL2VA's two keyframes: the picture it ends on fitted as the first is
 // -- at its own size, cropped to the frame -- but as it looks (the
 // request's look is the first's), VAE-encoded into generate-video's
-// LAST-keyframe port, 6. Never without a first, nor on a family that
-// ends on none.
+// LAST-keyframe port, 6. Alone (L2VA, vpipe 4a4a1f3a) it is shown to the
+// prompt encoder too, on its first picture's port, as vpipe's
+// last-frame-to-video graph shows it. Never on a family that ends on
+// none.
 TEST(graph_builder, minimax_h3_clip_ends_on_a_picture)
 {
   JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
@@ -2210,10 +2212,42 @@ TEST(graph_builder, minimax_h3_clip_ends_on_a_picture)
   CHECK(src_of(gen, 5) == "first-latent");
   CHECK(src_of(gen, 6) == "last-latent");
 
-  CHECK(!vp::build_video(j, std::nullopt, {}, last).ok());
+  // FL2VA's base graph shows the prompt encoder neither.
+  const Json* cond = find_stage(g->spec, "diffusion-conditioner");
+  REQUIRE(cond);
+  CHECK((*cond)["iports"].size() == 3);
+  // The last alone: port 6, and port 3 of the conditioner; nothing
+  // opens it.
+  auto l2 = vp::build_video(j, std::nullopt, {}, last);
+  REQUIRE_OK(l2);
+  REQUIRE(l2->references.size() == 1);
+  CHECK(l2->references[0].stage == "last");
+  CHECK(l2->references[0].adjust.exposure == 0.0);
+  const Json* lgen = find_stage(l2->spec, "generate-video");
+  CHECK(src_of(lgen, 5).empty());
+  CHECK(src_of(lgen, 6) == "last-latent");
+  CHECK(!find_stage(l2->spec, "first"));
+  const Json* lcond = find_stage(l2->spec, "diffusion-conditioner");
+  REQUIRE(lcond);
+  REQUIRE((*lcond)["iports"].size() == 4);
+  CHECK(src_of(lcond, 3) == "last-fit");
+  // With Pika H3 Flex, both shown on 3 and 4; the last alone on 3.
+  JobSpec pk = j;
+  pk.params["tuning"] = {{"pika_flex", true}};
+  auto pg = vp::build_video(pk, first, {}, last);
+  REQUIRE_OK(pg);
+  const Json* pcond = find_stage(pg->spec, "diffusion-conditioner");
+  REQUIRE((*pcond)["iports"].size() == 5);
+  CHECK(src_of(pcond, 3) == "first-fit" && src_of(pcond, 4) == "last-fit");
+  auto pl = vp::build_video(pk, std::nullopt, {}, last);
+  REQUIRE_OK(pl);
+  const Json* plc = find_stage(pl->spec, "diffusion-conditioner");
+  REQUIRE((*plc)["iports"].size() == 4);
+  CHECK(src_of(plc, 3) == "last-fit");
   JobSpec k = j;
   k.model.engine["vpipe"]["last_frame"] = false;
   CHECK(!vp::build_video(k, first, {}, last).ok());
+  CHECK(!vp::build_video(k, std::nullopt, {}, last).ok());
   // One picture: nothing on port 6.
   auto one = vp::build_video(j, first);
   REQUIRE_OK(one);
@@ -2267,6 +2301,9 @@ TEST(graph_builder, a_clip_past_768p_is_drafted_and_regenerated)
         j.model.regenerate_lora.string());
   CHECK(jget(config_of(cfg), "lora_scale", 0.0) == 1.0);
   CHECK(!config_of(cfg).contains("preview_vae"));
+  // No start asked (a clip made before Keep the Draft): NVIDIA's grid,
+  // vpipe's default.
+  CHECK(!config_of(cfg).contains("refine_start_sigma"));
   const Json* ref = find_stage(g->spec, "regenerate");
   REQUIRE(ref);
   CHECK(jget<std::string>(*ref, "type", "") == "generate-video");
@@ -2344,6 +2381,25 @@ TEST(graph_builder, a_clip_past_768p_is_drafted_and_regenerated)
   CHECK(jget<std::string>(dfast, "fast_decoder", "") ==
         fast.model.fast_decoder.string());
   CHECK(!dfast.contains("i8_gemm_tier"));
+  // Keep the Draft: the refine starts at the refiner's keep_draft_sigma;
+  // NVIDIA's Recipe at the release's grid.
+  JobSpec keep = j;
+  keep.params["regenerate_tuning"]["refine_start"] = "draft";
+  keep.params["regenerate_spec"]["keep_draft_sigma"] = 0.75;
+  auto kg = vp::build_video(keep, first);
+  REQUIRE_OK(kg);
+  CHECK(jget(config_of(find_stage(kg->spec, "regenerate-config")),
+             "refine_start_sigma", 0.0) == 0.75);
+  keep.params["regenerate_spec"].erase("keep_draft_sigma");
+  auto kd = vp::build_video(keep, first);
+  REQUIRE_OK(kd);
+  CHECK(jget(config_of(find_stage(kd->spec, "regenerate-config")),
+             "refine_start_sigma", 0.0) == 0.7);
+  keep.params["regenerate_tuning"]["refine_start"] = "release";
+  auto kr = vp::build_video(keep, first);
+  REQUIRE_OK(kr);
+  CHECK(!config_of(find_stage(kr->spec, "regenerate-config"))
+             .contains("refine_start_sigma"));
   // A VAE of Custom's: one source, read by both decoders.
   JobSpec own = j;
   own.model.vae = "/m/my-vae";

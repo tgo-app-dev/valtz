@@ -2492,7 +2492,10 @@ Controller::AgentHost::tools()
                  {"first", str("a picture's id the shot opens on, its "
                                "first frame (not with continues or "
                                "references)")},
-                 {"last", str("with first: the picture it ENDS on")},
+                 {"last", str("a picture's id the shot ENDS on, its "
+                              "last frame: after first, or alone -- the "
+                              "shot leads up to it (not with continues "
+                              "or references)")},
                  {"references", picture_ids},
                  {"start", num("where it lands, timeline seconds; omitted "
                                "(best): after the shots before it. A shot "
@@ -5927,12 +5930,7 @@ Controller::AgentHost::t_enhance_prompt(Session& s, Step&, const Json& args,
     VALTZ_ASSIGN(auto refs, pictures_of(*p, args, "references"));
     VALTZ_ASSIGN(auto from, maybe_asset(*p, args, "continue_from",
                                         AssetKind::Video));
-    if (last && !first) {
-      return make_error(Code::InvalidArgument,
-                        "a shot ends on a picture (last) only when it "
-                        "opens on one (first)");
-    }
-    if (first && (from || !refs.empty())) {
+    if ((first || last) && (from || !refs.empty())) {
       return make_error(Code::InvalidArgument,
                         "a shot opens on a picture (first), or draws on "
                         "references and carries on from a clip -- not both");
@@ -5974,10 +5972,14 @@ Controller::AgentHost::t_enhance_prompt(Session& s, Step&, const Json& args,
                                                      0));
       name_back(k++, last ? numbered(bare, 1) : numbered(image, 1));
     }
+    // Ending on one: Picture 2 after the first (FL2VA), else <Picture 1>
+    // (L2VA).
     if (last) {
-      in.emplace_back("<Picture 2>", assist::ref_tag(assist::RefKind::Image,
-                                                     1));
-      name_back(k++, numbered(bare, 2));
+      in.emplace_back(first ? "<Picture 2>" : "<Picture 1>",
+                      assist::ref_tag(assist::RefKind::Image,
+                                      static_cast<int>(k)));
+      name_back(k, first ? numbered(bare, 2) : numbered(image, 1));
+      ++k;
     }
     if (drawn) {
       VALTZ_ASSIGN(Json tags, _c.video_reference_tags(s.project, m->id, refs,
@@ -7331,13 +7333,9 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
   if (const auto f = text_arg(args, "first"); !f.empty()) {
     VALTZ_ASSIGN(first, asset_arg(f, AssetKind::Image));
   }
-  // The picture it ENDS on (FL2VA): from one picture to the other.
+  // The picture it ENDS on: from the first to it (FL2VA), or leading up
+  // to it alone (L2VA).
   if (const auto f = text_arg(args, "last"); !f.empty()) {
-    if (!first) {
-      return make_error(Code::InvalidArgument,
-                        "a shot ends on a picture (last) only when it "
-                        "opens on one (first)");
-    }
     VALTZ_ASSIGN(last, asset_arg(f, AssetKind::Image));
   }
   std::vector<AssetId> pictures;
@@ -7358,10 +7356,12 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
   }
   const bool continues = flag(args, "continues");
   const std::string from_text = text_arg(args, "continue_from");
-  if (first && (continues || !from_text.empty() || !pictures.empty())) {
+  if ((first || last) &&
+      (continues || !from_text.empty() || !pictures.empty())) {
     return make_error(Code::InvalidArgument,
-                      "a shot opens on a picture (first), or draws on "
-                      "references and carries on from a clip -- not both");
+                      "a shot opens or ends on a picture (first, last), or "
+                      "draws on references and carries on from a clip -- "
+                      "not both");
   }
   const bool refs = continues || !from_text.empty() || !pictures.empty();
   // The model Auto runs it on: FL2VA from words or a picture, Ref2VA
@@ -7647,6 +7647,10 @@ Controller::AgentHost::submit_shot_(Session& s, const std::string& title,
                                       {tag("image", 2), text.last}});
   } else if (req.first) {
     text.first = tag("image", 1);
+  } else if (req.last) {
+    // Ending on one alone (L2VA): <Picture 1>, at the clip's end.
+    text.last = tag("image", 1);
+    text.seconds = req.fps > 0 ? req.frames / req.fps : 0;
   }
   req.prompt = assist::shot_prompt(text);
   auto undo = _c.command_(s.project, "agent",

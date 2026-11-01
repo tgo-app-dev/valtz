@@ -167,10 +167,12 @@ usage()
       "         project's composition -- above L, or in L when blank; at\n"
       "         timeline frame F; refused into itself)\n"
       "  land <project.valtz> <asset-id> [onto-comp-id] [--at L]\n"
-      "         [--offset F]\n"
+      "         [--offset F | --end]\n"
       "         (a result landing, as the app places a generation's: a new\n"
       "         layer of onto -- the composition active at Start -- else\n"
-      "         a composition of its own, the project's when it has none)\n"
+      "         a composition of its own, the project's when it has none;\n"
+      "         --end: a clip on a timeline after its content, as\n"
+      "         Settings' At the End)\n"
       "  compose <project.valtz> still|timeline <W>x<H> [--rate N[/D]]\n"
       "         [--project] [name]  (a new composition -- 0x0: sound\n"
       "         alone; --project, or none yet: the project's)\n"
@@ -245,7 +247,7 @@ usage()
       "  video <project.valtz> <prompt> [--model id] [--size WxH]\n"
       "        [--frames n | --seconds s] [--fps n] [--steps n]\n"
       "        [--speed|--quality] [--seed n] [--no-turbo]\n"
-      "        [--first <file|asset-id> [--last <file|asset-id>]]\n"
+      "        [--first <file|asset-id>] [--last <file|asset-id>]\n"
       "        [--tune k=v,...]\n"
       "        [--ref <file|asset-id> [--whole]]... [--continue <clip>]\n"
       "        [--tail-seconds s] [--song-sound]\n"
@@ -254,7 +256,8 @@ usage()
       "        up to one the model makes -- 17n+5 frames -- and the Turbo\n"
       "        LoRA, when installed, runs 4/6/8 steps; --first is a picture\n"
       "        the clip opens on, cropped to fill the frame, --last one it\n"
-      "        ends on (FL2VA: Picture 1 and Picture 2). --ref: a\n"
+      "        ends on (FL2VA: Picture 1 and Picture 2) -- alone, one it\n"
+      "        leads up to (L2VA: <Picture 1>). --ref: a\n"
       "        picture, clip or sound to draw on (Ref2VA: a subject, a\n"
       "        motion, a voice, a song; name them <Picture 1>, <Video 1>,\n"
       "        <Audio 1> in the prompt, numbered as the job lists them --\n"
@@ -267,7 +270,8 @@ usage()
       "        2K where it is installed: --regenerate insists, --no-\n"
       "        regenerate makes it at the size directly; the draft is\n"
       "        decoded for the preview -- \"preview draft\" -- unless\n"
-      "        --no-preview, which shows no step either)\n"
+      "        --no-preview, which shows no step either;\n"
+      "        VALTZ_DRAFT_OUT=<file> writes its bytes, [F,C,H,W] u8)\n"
       "  audio <project.valtz> <prompt> [--lyrics <file>] [--model id]\n"
       "        [--plan full|melody|off] [--score <file.abc>]\n"
       "        [--max-seconds s] [--steps n] [--speed|--quality]\n"
@@ -496,7 +500,8 @@ usage()
       "          minimax-music3, its sectioned description) to --seconds.\n"
       "          --video: a clip written to MiniMax H3's own guide --\n"
       "          from words, opening on --first (ending on --last:\n"
-      "          FL2VA), or from references (Auto's Ref2VA) -- --frames\n"
+      "          FL2VA; --last alone: L2VA), or from references (Auto's\n"
+      "          Ref2VA) -- --frames\n"
       "          long)\n"
       "  upscale <project> <composition> [--layer L] [--model id]\n"
       "          [--seed n] [--prompt words]   the layer's clip rendered\n"
@@ -535,7 +540,7 @@ usage()
       "        [--assistant <id>]\n"
       "        | agent tools | agent settings [backend=helper|cloud]\n"
       "            [helper=<id>|same] [memory=64|128|192|<GB>|none]\n"
-      "            [expert_cache=<GB>|auto]\n"
+      "            [expert_cache=<GB>|auto] [i8_prefill=auto|on|off]\n"
       "            [review=on|off] [lease=<s>] [provider=anthropic|openai|\n"
       "            openai-compatible] [model=<id>] [base_url=<url>]\n"
       "            [max_tokens=<n>] [context=<tokens>] [compact=on|off]\n"
@@ -1153,6 +1158,22 @@ follow(Controller& c, JobId job, std::string* made = nullptr)
       }
       if (jget(ev.data, "draft", false)) {
         std::fprintf(stderr, "  preview draft (%s)\n", shape.c_str());
+        // Dev aid: VALTZ_DRAFT_OUT=<file> keeps the draft as decoded --
+        // its bytes as they come, [F, C, H, W] u8 -- to be set beside
+        // the clip its refine made (what the regenerate pass changed).
+        const char* out = std::getenv("VALTZ_DRAFT_OUT");
+        if (out && *out && ev.tensor && ev.tensor->data) {
+          std::size_t n = ev.tensor->element_size();
+          for (auto d : ev.tensor->shape) {
+            n *= static_cast<std::size_t>(d);
+          }
+          if (FILE* f = std::fopen(out, "wb")) {
+            const bool ok = std::fwrite(ev.tensor->data, 1, n, f) == n;
+            std::fclose(f);
+            std::fprintf(stderr, "  draft %s %s\n",
+                         ok ? "written to" : "NOT written to", out);
+          }
+        }
         continue;
       }
       std::fprintf(stderr, "  preview step %d/%d (%s)\n",
@@ -1719,6 +1740,8 @@ agent_command(Controller& c, std::vector<std::string> args)
           return usage();
         }
         set["expert_cache_gb"] = v == "auto" ? 0 : std::atoi(v.c_str());
+      } else if (k == "i8_prefill") {
+        set["i8_prefill"] = v;
       } else if (k == "review") {
         set["review"] = v == "on" || v == "true";
       } else if (k == "compact") {
@@ -4090,11 +4113,14 @@ main(int argc, char** argv)
       std::optional<AssetId> onto;
       std::optional<std::string> at;
       std::int64_t offset = 0;
+      bool at_end = false;
       for (std::size_t i = 2; i < args.size(); ++i) {
         if (args[i] == "--at" && i + 1 < args.size()) {
           at = layer_id(args[++i]);
         } else if (args[i] == "--offset" && i + 1 < args.size()) {
           offset = std::atoll(args[++i].c_str());
+        } else if (args[i] == "--end" && cmd == "land") {
+          at_end = true;
         } else {
           onto = AssetId::parse(args[i]);
           if (!onto) {
@@ -4103,7 +4129,8 @@ main(int argc, char** argv)
         }
       }
       auto put = cmd == "land"
-                     ? c.place_result(*pid, *aid, onto, at, offset)
+                     ? c.place_result(*pid, *aid, onto, at, offset,
+                                      std::nullopt, at_end)
                      : c.instantiate(*pid, *aid, onto, at, offset);
       if (!put.ok()) {
         return fail(put.error());

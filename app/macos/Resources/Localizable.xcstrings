@@ -926,6 +926,16 @@
         }
       }
     },
+    "%@ — no keyframe: the clip does not read it. Right-click to make it the first or the last frame." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@——不是关键帧：视频不读取它。右键点按可设为首帧或尾帧。"
+          }
+        }
+      }
+    },
     "%@ — not downloaded" : {
       "localizations" : {
         "zh-Hans" : {
@@ -948,6 +958,38 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@ — 图片 %2$@。点按可在舞台上查看；拖入文字可引用它，沿这一行拖动可调整顺序。"
+          }
+        }
+      }
+    },
+    "%@ — the clip's first frame, picture %@ to the model. Right-click to make it the last frame, or no keyframe." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ — the clip's first frame, picture %2$@ to the model. Right-click to make it the last frame, or no keyframe."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@——视频的首帧，对模型而言是图片 %2$@。右键点按可设为尾帧，或不作关键帧。"
+          }
+        }
+      }
+    },
+    "%@ — the clip's last frame, picture %@ to the model: the clip leads up to it. Right-click to make it the first frame, or no keyframe." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ — the clip's last frame, picture %2$@ to the model: the clip leads up to it. Right-click to make it the first frame, or no keyframe."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@——视频的尾帧，对模型而言是图片 %2$@：视频最终落到这一帧。右键点按可设为首帧，或不作关键帧。"
           }
         }
       }
@@ -3199,6 +3241,26 @@
         }
       }
     },
+    "At the End of the Timeline" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放在时间线末尾"
+          }
+        }
+      }
+    },
+    "At the Playhead" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "放在播放头处"
+          }
+        }
+      }
+    },
     "At the Start" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3408,6 +3470,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "自动（全部专家）"
+          }
+        }
+      }
+    },
+    "Auto (off for this model)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动（此模型关闭）"
+          }
+        }
+      }
+    },
+    "Auto (on for this model)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动（此模型开启）"
           }
         }
       }
@@ -7698,6 +7780,16 @@
         }
       }
     },
+    "First Frame" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "首帧"
+          }
+        }
+      }
+    },
     "First and last frames · %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8116,6 +8208,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "从第 %@ 帧起"
+          }
+        }
+      }
+    },
+    "From noise 0.7: the draft's faces and lettering kept" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从噪声 0.7 开始：保留草稿中的面孔和文字"
+          }
+        }
+      }
+    },
+    "From noise 0.909, as released: faces and lettering redrawn" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按发布版本从噪声 0.909 开始：面孔和文字会被重绘"
           }
         }
       }
@@ -9240,6 +9352,16 @@
         }
       }
     },
+    "How much of the draft the refine keeps. It puts the enlarged draft back to a level of noise and denoises it again in three steps. Keep the Draft starts at 0.7: in a test at 1920×1088, a woman's face and the words on a sign stayed the draft's, their detail sharper. NVIDIA's Recipe, Open-H3-Regenerate-2K as released, starts at 0.909, keeping about 9% of the draft: it redraws more, and in the same test it gave the woman another face and garbled the sign. The refine follows the prompt's words only weakly either way, so they do not bring back what it redraws." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "精修保留多少草稿。它把放大后的草稿重新加噪到某一噪声水平，再用三步去噪。“保留草稿”从 0.7 开始：在 1920×1088 的测试中，一位女性的面孔和招牌上的文字都保持草稿原样，细节更清晰。“NVIDIA 原版方案”即 Open-H3-Regenerate-2K 发布时的设置，从 0.909 开始，只保留约 9% 的草稿：它重绘得更多，在同一测试中把那位女性画成了另一张脸，招牌文字也变得错乱。无论哪种方式，精修对提示词的遵循都很弱，因此提示词无法找回被重绘的内容。"
+          }
+        }
+      }
+    },
     "How the clips made in this project are kept: generated, upscaled, rendered. ProRes keeps the most for editing, its sound uncompressed; HEVC takes the least room. Clips made before keep their own." : {
       "localizations" : {
         "zh-Hans" : {
@@ -9662,6 +9784,16 @@
         }
       }
     },
+    "Int8 Prefill" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Int8 预填充"
+          }
+        }
+      }
+    },
     "Intent detection" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9734,6 +9866,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "它约占用 %1$@：%2$@ 常驻内存，其 %4$@ 专家中缓存 %3$@——其余在被选中时从 SSD 读取——以及它的对话，最多 %5$lld 个 token，约 %6$@。"
+          }
+        }
+      }
+    },
+    "It starts right after the last thing on the timeline, so nothing overlaps and no gap is left before it. Clips made one after another follow each other." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它紧接在时间线上最后的内容之后开始，不与任何内容重叠，前面也不留空隙。接连生成的片段会依次排在后面。"
+          }
+        }
+      }
+    },
+    "It starts where the playhead was when you pressed Start. With the playhead at the end of the timeline, that is on its last frame: the new clip's first frame lies over it and covers it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它从你按下“开始”时播放头所在的位置开始。如果播放头位于时间线末尾，那就是最后一帧：新片段的第一帧会叠在上面，把它遮住。"
           }
         }
       }
@@ -10086,6 +10238,16 @@
         }
       }
     },
+    "Keep the Draft" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保留草稿"
+          }
+        }
+      }
+    },
     "Keep the Original, Delete the %@-bit Copy (%@)…" : {
       "localizations" : {
         "en" : {
@@ -10184,6 +10346,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "有关键帧：随视频变化"
+          }
+        }
+      }
+    },
+    "Keyframe" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关键帧"
           }
         }
       }
@@ -10287,6 +10459,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放大文字"
+          }
+        }
+      }
+    },
+    "Last Frame" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尾帧"
           }
         }
       }
@@ -11868,6 +12050,16 @@
         }
       }
     },
+    "NVIDIA's Recipe" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "NVIDIA 原版方案"
+          }
+        }
+      }
+    },
     "Name" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12472,6 +12664,16 @@
         }
       }
     },
+    "Not a Keyframe" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不作关键帧"
+          }
+        }
+      }
+    },
     "Not allowed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12798,6 +13000,16 @@
         }
       }
     },
+    "Off" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关闭"
+          }
+        }
+      }
+    },
     "Off: it answers straight away" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12875,6 +13087,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "偏移 Y"
+          }
+        }
+      }
+    },
+    "On" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "开启"
           }
         }
       }
@@ -13267,6 +13489,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在 Hugging Face 打开其页面"
+          }
+        }
+      }
+    },
+    "Open the clip on this picture" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "让视频从这张图片开始"
           }
         }
       }
@@ -13889,6 +14121,16 @@
         }
       }
     },
+    "Place a generated clip on the timeline" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成的片段在时间线上的位置"
+          }
+        }
+      }
+    },
     "Place on Stage" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14075,6 +14317,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "播放速度"
+          }
+        }
+      }
+    },
+    "Playhead" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "播放头"
           }
         }
       }
@@ -14733,6 +14985,16 @@
         }
       }
     },
+    "Reads the conversation's GEMMs in int8 on the GPU's matrix cores: a long prompt read faster, about twice the 16-bit rate, its tokens not exactly the 16-bit ones; the reply is written as ever. An Enhance on the same model reads alike. From its next turn." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在 GPU 的矩阵核心上以 int8 计算对话的 GEMM：长提示读得更快，约为 16 位的两倍，但读出的词元与 16 位的不完全相同；回复照常生成。同一模型上的“增强”也这样读取。从它的下一轮起生效。"
+          }
+        }
+      }
+    },
     "Ready" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -14940,6 +15202,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "参考 · %@"
+          }
+        }
+      }
+    },
+    "Refine" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "精修起点"
           }
         }
       }
@@ -18483,6 +18755,16 @@
         }
       }
     },
+    "The clip's first frame — click to open it on none" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "视频的首帧——点按以不从任何图片开始"
+          }
+        }
+      }
+    },
     "The colour grade tints the tones" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19358,6 +19640,16 @@
         }
       }
     },
+    "This Mac's GPU has no matrix cores (M5 and later): its prompts are read in 16 bits whatever is set." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这台 Mac 的 GPU 没有矩阵核心（M5 及以后才有）：无论如何设置，提示都以 16 位读取。"
+          }
+        }
+      }
+    },
     "This Mac's memory moves %@ GB/s, under 200, so Auto reads about 40 frames of a short clip: 8 a second up to 5 seconds, 4 up to 10, 2 up to 20, 1 up to 40, then one every 2 seconds." : {
       "localizations" : {
         "zh-Hans" : {
@@ -19594,6 +19886,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "待编辑"
+          }
+        }
+      }
+    },
+    "To last frame · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "落到尾帧 · %@"
           }
         }
       }
@@ -25347,23 +25649,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "片段要么从一张图片开始，要么读取参考素材，不能两者兼有。"
-          }
-        }
-      }
-    },
-    "core.video_last_needs_first" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "A clip ends on a picture only when it opens on one too."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "视频只有在以一张图片开头时，才能以另一张图片结尾。"
           }
         }
       }

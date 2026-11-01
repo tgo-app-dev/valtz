@@ -238,10 +238,11 @@ struct GenerateVideoRequest {
   std::optional<AssetId> first;
   media::Adjustments   first_adjust;
   media::Crop          first_crop;    // "base_crop", as for an edit
-  // A picture it ENDS on (FL2VA's last keyframe; catalog `last_frame`),
-  // with a first: the two are Picture 1 and Picture 2 to the model, as
-  // its guide's FL2VA case names them. Recorded as the recipe's "last"
-  // input, as it looks.
+  // A picture it ENDS on (FL2VA's last keyframe; catalog `last_frame`):
+  // with a first, the two are Picture 1 and Picture 2 to the model, as
+  // its guide's FL2VA case names them; alone (L2VA, vpipe 4a4a1f3a) it is
+  // <Picture 1>, the clip leading up to it. Recorded as the recipe's
+  // "last" input, as it looks.
   std::optional<AssetId> last;
   // REFERENCES (MiniMax H3 Ref2VA; DESIGN §4e): pictures, clips and
   // sounds the clip draws on -- a subject, a motion, a voice, a song --
@@ -397,8 +398,9 @@ struct EnhancePromptRequest {
   double                 fps = 0;
   std::optional<AssetId> continue_from;
   bool                   reference_sound = false;
-  // The picture it ENDS on, with `base` the one it opens on (FL2VA):
-  // the guide's FL2VA mode, its instruction line written by Valtz.
+  // The picture it ENDS on, with `base` the one it opens on (FL2VA) --
+  // or alone (L2VA): the guide's mode, its instruction line written by
+  // Valtz.
   std::optional<AssetId> last;
 };
 
@@ -1079,10 +1081,14 @@ public:
   // the project's when the project has none. Never resized to the
   // surface: a picture smaller than the canvas lies centred on it. One
   // command with the generation (`job`). The composition and the layer.
+  // `at_end` (Settings › General › Generations' At the End): a CLIP put
+  // on a timeline starts where its content ends -- measured as it lands,
+  // so clips queued one after another go end to end -- not at `offset`:
+  // nothing under it, no gap before it.
   Result<std::pair<AssetId, std::string>> place_result(
       ProjectId, AssetId asset, std::optional<AssetId> onto,
       std::optional<std::string> at = std::nullopt, std::int64_t offset = 0,
-      std::optional<JobId> job = std::nullopt);
+      std::optional<JobId> job = std::nullopt, bool at_end = false);
   // An asset INSTANTIATED in `onto` (what the stage works on; none: the
   // project's composition, made of it when there is none): a NEW LAYER
   // showing it -- in `at` when that layer is blank, else right above it;
@@ -1307,6 +1313,14 @@ public:
   // that many of them (vpipe's expert_cache_mb), its context and the rest
   // of the memory the room it leaves. 0 for any other model.
   std::uint64_t agent_expert_cache_(const models::ModelEntry& m) const;
+  // Whether the agent's model reads its prompts in int8 (the Agent's
+  // Int8 Prefill: vpipe's i8_prefill -- a prefill's GEMMs on an M5's
+  // matrix cores, faster on a long prompt, its tokens not exact; a decode
+  // step and a verify untouched): 1 on, 0 off, -1 as the model asks
+  // (catalog engine.vpipe.i8_prefill) -- -1 for any other model. Every
+  // use of the model alike, an Enhance on it too: the copy kept warm is
+  // one.
+  int agent_i8_prefill_(const models::ModelEntry& m) const;
   // What the agent's model holds here, for Settings: its resident part,
   // its experts, the cache asked for and what Auto's would be, its
   // context (its own, Auto's, the most this Mac holds, what it is given)

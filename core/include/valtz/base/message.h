@@ -630,9 +630,6 @@ inline constexpr Message kVideoEndsOnPicture{
     "core.video_ends_on_picture",
     "A clip can end only on a picture, and only with a model that ends "
     "on one, such as MiniMax H3 FL2VA."};
-inline constexpr Message kVideoLastNeedsFirst{
-    "core.video_last_needs_first",
-    "A clip ends on a picture only when it opens on one too."};
 inline constexpr Message kSourceNotBuilt{
     "core.source_not_built", "Imported assets are not built."};
 inline constexpr Message kRecipeModelUnknown{

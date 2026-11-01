@@ -100,7 +100,7 @@ all_messages()
     kOutputColorUnknown, kIntermediateUnknown,
     kNoReferenceModel, kVideoFirstOrReferences, kVideoReferencesNeedPicture,
     kVideoTooManyReferences, kVideoReferenceKind, kContinueNeedsClip,
-    kGrabNeedsClip, kVideoEndsOnPicture, kVideoLastNeedsFirst,
+    kGrabNeedsClip, kVideoEndsOnPicture,
     kSourceNotBuilt, kRecipeModelUnknown, kEngineCannotRun,
     kImportFailedSome, kEnhanceUnreadable, kExportFormatUnknown,
     kExportEncodingInvalid,

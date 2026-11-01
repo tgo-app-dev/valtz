@@ -14,6 +14,9 @@ import UniformTypeIdentifiers
 ///                            stage stays as it is); the row's order as
 ///                            it was once the pointer leaves the row
 ///   pencil badge             the picture to edit, or no longer
+///   menu's First Frame,      a picture a chosen FL2VA clip opens on,
+///     Last Frame, Not a      ends on -- alone too (L2VA) -- or leaves
+///     Keyframe               out; its badge's glyph says which end
 ///   scissors badge           a clip or a sound a clip draws on (Ref2VA)
 ///                            cut to the clip's length -- on, as the
 ///                            model's makers cut them -- or used whole
@@ -117,6 +120,7 @@ private struct ReferenceThumb: View {
         let focused = model.focusedReference == item.id
         let number = model.referenceNumber(item)
         let badge = model.referenceBadge(item)
+        let role = model.keyframeRole(item)
         picture(thumb)
             .frame(width: width(thumb), height: h)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -130,14 +134,24 @@ private struct ReferenceThumb: View {
                 // What the model calls it: a picture's number, or a clip's
                 // reference ("P1", "V1", "A1").
                 if let badge {
-                    Text(verbatim: badge)
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 3)
-                        .frame(minWidth: 14, minHeight: 14)
-                        .background(Capsule().fill(item.isBase
+                    // A keyframe's end before its number: |◀ the first
+                    // frame, ▶| the last.
+                    HStack(spacing: 1) {
+                        if role == .first || role == .last {
+                            Image(systemName: role == .first
+                                  ? "backward.end.fill" : "forward.end.fill")
+                                .font(.system(size: 6, weight: .bold))
+                        }
+                        Text(verbatim: badge)
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 3)
+                    .frame(minWidth: 14, minHeight: 14)
+                    .background(Capsule().fill(
+                        item.isBase || role == .first || role == .last
                             ? Color.accentColor : .black.opacity(0.6)))
-                        .padding(3)
+                    .padding(3)
                 } else if item.kind == "video" {
                     Image(systemName: "play.fill")
                         .font(.system(size: 7))
@@ -193,6 +207,9 @@ private struct ReferenceThumb: View {
                 }
             }
             .scaleEffect(focused ? 1.06 : 1)
+            // What the clip a chosen model makes does not read: faint.
+            .opacity(model.unreadVideoMedia.contains { $0.id == item.id }
+                     ? 0.45 : 1)
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
             // On release only: a drag that ends elsewhere (in the text)
@@ -213,7 +230,17 @@ private struct ReferenceThumb: View {
                     delegate: ReorderDrop(target: item.id, model: model))
             .help(help(number))
             .contextMenu {
-                if item.kind == "image" {
+                if let role {
+                    // What it is to the clip: the frame it opens on, the
+                    // one it ends on, or neither.
+                    Section("Keyframe") {
+                        keyframeItem("First Frame", .first, role)
+                        if model.endsOnPicture {
+                            keyframeItem("Last Frame", .last, role)
+                        }
+                        keyframeItem("Not a Keyframe", .neither, role)
+                    }
+                } else if item.kind == "image" {
                     Button(item.isBase ? "Not the Picture to Edit"
                                        : "Picture to Edit") {
                         model.toggleBase(item.id)
@@ -261,6 +288,15 @@ private struct ReferenceThumb: View {
 
     private var hinted: Bool { model.baseHint == item.id && !item.isBase }
 
+    /// A keyframe role in the menu, checked where it is.
+    private func keyframeItem(_ title: LocalizedStringKey,
+                              _ to: KeyframeRole,
+                              _ now: KeyframeRole) -> some View {
+        Toggle(title, isOn: Binding(
+            get: { now == to },
+            set: { _ in model.setKeyframe(item.id, to) }))
+    }
+
     /// The base toggle: accent on the base, faint on the others.
     private var pencil: some View {
         Button {
@@ -276,7 +312,10 @@ private struct ReferenceThumb: View {
         }
         .buttonStyle(.plain)
         .padding(3)
-        .help(item.isBase ? "The picture to edit — click to edit none"
+        .help(model.offersKeyframeRoles
+            ? (item.isBase ? "The clip's first frame — click to open it on none"
+                           : "Open the clip on this picture")
+            : item.isBase ? "The picture to edit — click to edit none"
                           : "Make this the picture to edit")
     }
 
@@ -325,6 +364,18 @@ private struct ReferenceThumb: View {
     }
 
     private func help(_ number: Int?) -> String {
+        // A chosen FL2VA clip's keyframes, by the end each is; neither,
+        // left out.
+        switch model.keyframeRole(item) {
+        case .first?:
+            return String(localized: "\(name) — the clip's first frame, picture \(String(number ?? 1)) to the model. Right-click to make it the last frame, or no keyframe.")
+        case .last?:
+            return String(localized: "\(name) — the clip's last frame, picture \(String(number ?? 1)) to the model: the clip leads up to it. Right-click to make it the first frame, or no keyframe.")
+        case .neither?:
+            return String(localized: "\(name) — no keyframe: the clip does not read it. Right-click to make it the first or the last frame.")
+        case nil:
+            break
+        }
         if item.isBase {
             return String(localized: "\(name) — the picture to edit. Click to see it on the stage; drag it into the text to mention it.")
         }

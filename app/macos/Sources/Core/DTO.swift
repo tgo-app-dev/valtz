@@ -1909,6 +1909,13 @@ struct AgentSettings: Decodable, Sendable, Equatable {
     /// (DeepSeek V4.1 Flash, Qwen3.8 Flash-Next): at most this. 0 Auto,
     /// what the memory leaves it.
     var expertCacheGb: Int?
+    /// Its prompts read in int8 (vpipe's i8_prefill: a prefill's GEMMs
+    /// on an M5's matrix cores): "auto" as the model asks, "on", "off".
+    /// `i8PrefillModel` what Auto is for the model that runs (Qwen3.8
+    /// Flash-Next's on), `matrixCores` whether this GPU runs them at all.
+    var i8Prefill: String?
+    var i8PrefillModel: Bool?
+    var matrixCores: Bool?
     /// What that model holds here, as the core works it out.
     var plan: AgentMemoryPlan?
     var review: Bool

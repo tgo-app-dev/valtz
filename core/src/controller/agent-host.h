@@ -50,11 +50,13 @@ public:
   Json settings() const;
   Status set_settings(const Json&);
   // Its settings' "model" ("" the Agentic Helper's), "memory_gb" (0
-  // none) and "expert_cache_gb" (0 Auto): Controller::agent_model,
-  // agent_memory_limit_, agent_expert_cache_.
+  // none), "expert_cache_gb" (0 Auto) and "i8_prefill" ("auto" the
+  // model's own, "on", "off"): Controller::agent_model,
+  // agent_memory_limit_, agent_expert_cache_, agent_i8_prefill_.
   std::string model_choice() const;
   int memory_gb() const;
   int expert_cache_gb() const;
+  std::string i8_prefill() const;
   Json tools_json() const;
 
   // A job's event as the controller posts it: an agent's picture landing

@@ -905,11 +905,14 @@
         "outline": {
           "en": [
             "{if first}{unless last}For the target video, at 0.00 seconds into the target video, {first} (from [Shot 1]) is fully referenced.",
-            "{if last}How the reference pictures align with the target video — {first} (from Shot 1) aligns with the 0.00-second mark of the target video; {last} (from Shot 1) aligns with the {seconds}-second mark of the target video.",
+            "{if first}{if last}How the reference pictures align with the target video — {first} (from Shot 1) aligns with the 0.00-second mark of the target video; {last} (from Shot 1) aligns with the {seconds}-second mark of the target video.",
+            "{if last}{unless first}How the reference pictures align with the target video — {last} (from [Shot 1]) aligns with the {seconds}-second mark of the target video.",
             "{if first}",
+            "{if last}{unless first}",
             "{if first}{unless last}integrated_multimodal_description: [Shot 1] (Begin from {first} -- its style, its subjects and where they are -- then what happens next. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
-            "{if last}integrated_multimodal_description: [Shot 1] (Begin in the position and framing established by {first}, then the continuous path -- how the subjects move, how poses and the camera change, how the light turns -- that settles into the pose and composition established by {last} at the end. One shot. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
-            "{unless first}integrated_multimodal_description: [Shot 1] (The style, the framing, who is where and what happens. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
+            "{if first}{if last}integrated_multimodal_description: [Shot 1] (Begin in the position and framing established by {first}, then the continuous path -- how the subjects move, how poses and the camera change, how the light turns -- that settles into the pose and composition established by {last} at the end. One shot. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
+            "{if last}{unless first}integrated_multimodal_description: [Shot 1] (Begin from a plausible earlier moment -- where the subjects and the camera are before -- then how they move toward {last}, settling into its pose, light and composition at the end. One shot. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
+            "{unless first}{unless last}integrated_multimodal_description: [Shot 1] (The style, the framing, who is where and what happens. Dialogue as <d>[English] the words</d>, its speaker named (S1).)",
             "{unless last}[Shot 2] At 00:04.000, (the camera cuts to what comes next.)",
             "",
             "overall_soundscape: (The ambience and the sounds of what happens -- steps, breathing, objects -- in one to four sentences; no dialogue, no music.)",
@@ -918,11 +921,14 @@
           ],
           "zh-Hans": [
             "{if first}{unless last}For the target video, at 0.00 seconds into the target video, {first} (from [Shot 1]) is fully referenced.",
-            "{if last}How the reference pictures align with the target video — {first} (from Shot 1) aligns with the 0.00-second mark of the target video; {last} (from Shot 1) aligns with the {seconds}-second mark of the target video.",
+            "{if first}{if last}How the reference pictures align with the target video — {first} (from Shot 1) aligns with the 0.00-second mark of the target video; {last} (from Shot 1) aligns with the {seconds}-second mark of the target video.",
+            "{if last}{unless first}How the reference pictures align with the target video — {last} (from [Shot 1]) aligns with the {seconds}-second mark of the target video.",
             "{if first}",
+            "{if last}{unless first}",
             "{if first}{unless last}integrated_multimodal_description: [Shot 1]（从 {first} 开始——它的风格、主体和它们的位置——再写接下来发生了什么。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
-            "{if last}integrated_multimodal_description: [Shot 1]（从 {first} 的位置和构图开始，写出一条连续的路径——主体怎样移动、姿态和镜头怎样变化、光线怎样转变——最后落定在 {last} 的姿态和构图上。一个镜头。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
-            "{unless first}integrated_multimodal_description: [Shot 1]（风格、构图、谁在哪里、发生了什么。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
+            "{if first}{if last}integrated_multimodal_description: [Shot 1]（从 {first} 的位置和构图开始，写出一条连续的路径——主体怎样移动、姿态和镜头怎样变化、光线怎样转变——最后落定在 {last} 的姿态和构图上。一个镜头。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
+            "{if last}{unless first}integrated_multimodal_description: [Shot 1]（从一个合理的更早时刻开始——主体和镜头此前在哪里——再写它们怎样走向 {last}，最后落定在它的姿态、光线和构图上。一个镜头。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
+            "{unless first}{unless last}integrated_multimodal_description: [Shot 1]（风格、构图、谁在哪里、发生了什么。对白写成 <d>[Chinese] 台词</d>，并标出说话人 (S1)。）",
             "{unless last}[Shot 2] At 00:04.000,（镜头切到接下来的画面。）",
             "",
             "overall_soundscape:（环境声和动作的声音——脚步、呼吸、物件——一到四句；不写对白，不写音乐。）",
@@ -1637,6 +1643,7 @@
             "upscaler": "open-h3-latent-upscaler",
             "fast_decoder": "open-h3-fast-vae",
             "steps": 3, "encode_short_edge": 768, "posterior_seed": 42,
+            "keep_draft_sigma": 0.7,
             "presets": {
               "speed": {
                 "sol_attn": true, "sol_threshold": "exact",
@@ -1668,7 +1675,7 @@
       },
       "disk_gb": 12.5, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
       "license": "minimax",
-      "notes": "NVIDIA's refine of a MiniMax H3 clip at a larger size (2K from 768P): the clip's latent enlarged by the latent upscaler, re-noised and denoised again in three steps by H3 FL2VA under one merged LoRA (their refiner, lightx2v's FL2VA Turbo v1.2, LMS Sharp v1.0). A clip past 768 on its short side is drafted at 768 and regenerated with it -- an FL2VA clip, or a Ref2VA one (drafted by Ref2VA, refined by FL2VA against the prompt's regenerate_prompt: segment, else words made from it); Render Upscaled runs it when chosen in Settings > Upscaling. Never Auto's upscaler: a 2K clip of 5 s is hours on most Macs."
+      "notes": "NVIDIA's refine of a MiniMax H3 clip at a larger size (2K from 768P): the clip's latent enlarged by the latent upscaler, re-noised (from 0.7 by default, keeping the draft's faces and lettering; NVIDIA's own 0.909 in Settings > Upscaling) and denoised again in three steps by H3 FL2VA under one merged LoRA (their refiner, lightx2v's FL2VA Turbo v1.2, LMS Sharp v1.0). A clip past 768 on its short side is drafted at 768 and regenerated with it -- an FL2VA clip, or a Ref2VA one (drafted by Ref2VA, refined by FL2VA against the prompt's regenerate_prompt: segment, else words made from it); Render Upscaled runs it when chosen in Settings > Upscaling. Never Auto's upscaler: a 2K clip of 5 s is hours on most Macs."
     },
     {
       "id": "open-h3-latent-upscaler",

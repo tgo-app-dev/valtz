@@ -457,6 +457,13 @@ Controller::AgentHost::expert_cache_gb() const
   return std::max(0, jget(_settings, "expert_cache_gb", 0));
 }
 
+std::string
+Controller::AgentHost::i8_prefill() const
+{
+  std::lock_guard lk(_mu);
+  return jget<std::string>(_settings, "i8_prefill", "auto");
+}
+
 Json
 Controller::AgentHost::settings() const
 {
@@ -464,6 +471,15 @@ Controller::AgentHost::settings() const
   // the plan's sizes take this lock.
   const auto* using_ = _c.agent_model();
   Json plan = _c.agent_memory_plan_();
+  // Whether that model reads its prompts in int8 by itself (catalog
+  // engine.vpipe.i8_prefill: Flash-Next's) -- what Auto means for it --
+  // and whether this GPU runs the int8 GEMMs at all (an M5's matrix
+  // cores: vpipe ignores the flag without them).
+  const bool own_i8 =
+      using_ != nullptr &&
+      jget(jget(using_->engine, "vpipe", Json::object()), "i8_prefill",
+           false);
+  const bool cores = _c._hw.gpu_matrix_cores;
   std::lock_guard lk(_mu);
   Json s = {{"backend", jget<std::string>(_settings, "backend", "helper")},
             {"model", jget<std::string>(_settings, "model", "")},
@@ -471,6 +487,10 @@ Controller::AgentHost::settings() const
             {"memory_gb", std::max(0, jget(_settings, "memory_gb", 0))},
             {"expert_cache_gb",
              std::max(0, jget(_settings, "expert_cache_gb", 0))},
+            {"i8_prefill",
+             jget<std::string>(_settings, "i8_prefill", "auto")},
+            {"i8_prefill_model", own_i8},
+            {"matrix_cores", cores},
             {"plan", std::move(plan)},
             {"review", jget(_settings, "review", true)},
             {"lease", jget(_settings, "lease", kDefaultLease)},
@@ -523,10 +543,22 @@ Controller::AgentHost::set_settings(const Json& j)
           to_text(j["expert_cache_gb"])));
     }
   }
+  // Its prompts read in int8: the model's own way, always, or never.
+  if (j.contains("i8_prefill")) {
+    const std::string v = jget<std::string>(j, "i8_prefill", "");
+    if (v != "auto" && v != "on" && v != "off") {
+      return make_error(Code::InvalidArgument, std::format(
+          "the agent's int8 prefill is auto, on or off, not {}",
+          to_text(j["i8_prefill"])));
+    }
+  }
   std::lock_guard lk(_mu);
   Json next = _settings;
   if (j.contains("model")) {
     next["model"] = jget<std::string>(j, "model", "");
+  }
+  if (j.contains("i8_prefill")) {
+    next["i8_prefill"] = jget<std::string>(j, "i8_prefill", "auto");
   }
   if (j.contains("memory_gb")) {
     next["memory_gb"] = jget(j, "memory_gb", 0);

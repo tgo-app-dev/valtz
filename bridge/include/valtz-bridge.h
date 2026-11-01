@@ -246,8 +246,9 @@ public:
   // {"project", "prompt", "model"?, "width"?, "height"?, "frames"?,
   //  "fps"?, "steps"?, "preference"?, "seed"?, "turbo"?: bool,
   //  "first"?: asset id (a picture the clip opens on), "first_adjust"?,
-  //  "first_crop"?, "last"?: asset id (with "first", a picture it ends
-  //  on: FL2VA), "references"?: [asset ids: pictures, clips, sounds,
+  //  "first_crop"?, "last"?: asset id (a picture it ends on: after
+  //  "first" -- FL2VA -- or alone, L2VA), "references"?: [asset ids:
+  //  pictures, clips, sounds,
   //  in order], "whole"?: [those clips and sounds kept whole, not cut
   //  to the clip's length], "continue"?: a clip to carry on from (its tail),
   //  "tail_seconds"?, "reference_sound"?: bool (the first sound's own as
@@ -432,7 +433,8 @@ public:
   // "instantiate" ("asset", "onto"?, "at"?: a layer, "" layer 0,
   // "offset"?: a timeline's frame) -> {"asset", "layer"}: a new layer
   // showing it; "place-result" ("asset", "onto"?, "at"?, "offset"?,
-  // "join"?) -> {"asset", "layer"}: a generation's result landing -- a
+  // "join"?, "at_end"?: a clip after a timeline's content, not at
+  // `offset`) -> {"asset", "layer"}: a generation's result landing -- a
   // new layer of `onto`, else a composition of its own; "place" ("asset",
   // "layer"?) -> {"placed", "asset"?}: the
   // project's composition with the asset as its new take (or on

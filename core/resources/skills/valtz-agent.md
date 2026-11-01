@@ -341,7 +341,9 @@ scene longer than a few seconds -- rather than cut from their clips
    `subjects` "<Subject 1> is the keeper in <Picture 1>." Or open the
    shot on a picture: `first` -- and end it on another, `last` (when
    `can_end_shots_on_pictures`): the shot goes from one to the other (a
-   door shut, then open; a street by day, then at night).
+   door shut, then open; a street by day, then at night). `last` alone
+   ends the shot on that picture: describe how it gets there -- what
+   comes before, then the moment it settles into the picture.
 7. Words spoken: the speaker named once with an ID, "the keeper (S1)
    says: <d>[English] Not tonight.</d>" -- short lines, two or three a
    shot at most. Write the prompts in English; spoken words stay in the

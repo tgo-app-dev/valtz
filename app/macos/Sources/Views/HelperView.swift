@@ -537,9 +537,38 @@ struct AgentSettingsSection: View {
         if let p = s.plan, p.streams {
             expertCacheRows(s, p)
         }
+        prefillRows(s)
     }
 
     private static let memorySizes = [64, 128, 192]
+
+    /// INT8 PREFILL: how the agent's model reads its prompts -- a long
+    /// conversation's GEMMs in int8 on an M5's matrix cores, about twice
+    /// their 16-bit rate, its tokens not exactly the 16-bit ones; the
+    /// reply written as ever. Auto is the model's own way (Qwen3.8
+    /// Flash-Next's on, the rest off); On and Off the person's.
+    @ViewBuilder
+    private func prefillRows(_ s: AgentSettings) -> some View {
+        let cores = s.matrixCores ?? true
+        Picker("Int8 Prefill", selection: Binding(
+            get: { s.i8Prefill ?? "auto" },
+            set: { model.setAgentSettings(["i8_prefill": $0]) })) {
+            Text(s.i8PrefillModel == true
+                 ? String(localized: "Auto (on for this model)")
+                 : String(localized: "Auto (off for this model)"))
+                .tag("auto")
+            Divider()
+            Text("On").tag("on")
+            Text("Off").tag("off")
+        }
+        .disabled(!cores)
+        .settingsMark(String(localized: "Int8 Prefill"))
+        Text(cores
+             ? String(localized: "Reads the conversation's GEMMs in int8 on the GPU's matrix cores: a long prompt read faster, about twice the 16-bit rate, its tokens not exactly the 16-bit ones; the reply is written as ever. An Enhance on the same model reads alike. From its next turn.")
+             : String(localized: "This Mac's GPU has no matrix cores (M5 and later): its prompts are read in 16 bits whatever is set."))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
 
     /// THE EXPERT CACHE: how much of its routed experts the agent's
     /// model keeps in memory, the rest read from the SSD as they are

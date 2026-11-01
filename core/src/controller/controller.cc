@@ -2682,6 +2682,20 @@ Controller::agent_expert_cache_(const models::ModelEntry& m) const
              : 0;
 }
 
+int
+Controller::agent_i8_prefill_(const models::ModelEntry& m) const
+{
+  if (!_agent) {
+    return -1;
+  }
+  const std::string v = _agent->i8_prefill();
+  if (v != "on" && v != "off") {
+    return -1;
+  }
+  const auto* a = agent_model();
+  return a != nullptr && a->id == m.id ? (v == "on" ? 1 : 0) : -1;
+}
+
 namespace {
 
 // The working memory vpipe books beside a streamed model's context --
@@ -5028,9 +5042,12 @@ Controller::helper_params_(const models::ModelEntry& m) const
             {"sampling", jget(vp, "sampling", Json::object())},
             {"keep_loaded", _assistant_keep}};
   // A long prompt's GEMMs in int8 where the catalog asks (engine.vpipe.
-  // i8_prefill: Flash-Next's): a prefill of 1,024 rows or more, lossy as
-  // a prefill may be; a decode step and a verify untouched.
-  if (jget(vp, "i8_prefill", false)) { p["i8_prefill"] = true; }
+  // i8_prefill: Flash-Next's) -- or, the agent's model, as the Agent's
+  // Int8 Prefill says: a prefill of 1,024 rows or more, lossy as a
+  // prefill may be; a decode step and a verify untouched.
+  bool i8 = jget(vp, "i8_prefill", false);
+  if (const int a = agent_i8_prefill_(m); a >= 0) { i8 = a == 1; }
+  if (i8) { p["i8_prefill"] = true; }
   // The dtype it computes in (catalog engine.vpipe.compute_dtype):
   // Ternary-Bonsai's f16, which holds its f16 scales exactly -- 0.0007
   // from the reference's fp32 against bf16's 0.011 (vpipe f34a6ce8).
@@ -5744,6 +5761,29 @@ Controller::clip_request_(
       }
       er.references.push_back(std::move(line));
     }
+  } else if (p && !req.base && req.last &&
+             m.has(models::Capability::ImageToVideo) &&
+             jget(vp, "last_frame", false) && is_picture(*req.last)) {
+    er.video_mode = "L2VA";
+    // The guide's L2VA instruction, word for word: the picture it ends
+    // on is <Picture 1>, of the reply's final shot.
+    const std::string tag = numbered(keyframe_tag(m, false), 1);
+    form.lead = std::format(
+        "How the reference pictures align with the target video — {} "
+        "(from [Shot {{last_shot}}]) aligns with the {:.2f}-second mark "
+        "of the target video.",
+        tag, er.seconds);
+    tag_of[req.last->str()] = tag;
+    if (const auto t = row_tag(req.last->str()); !t.empty()) {
+      names.emplace_back(tag, t);
+    }
+    std::string line = std::format(
+        "{}: the picture the video ends on (its last frame), \"{}\"", tag,
+        p->asset(*req.last)->name);
+    if (show(*req.last)) {
+      line += std::format(" -- image {} shown above", images.size());
+    }
+    er.references.push_back(std::move(line));
   } else if (p && req.base && m.has(models::Capability::ImageToVideo) &&
              jget(vp, "first_frame", false)) {
     auto a = p->asset(*req.base);
@@ -6322,9 +6362,6 @@ Controller::generate_video(GenerateVideoRequest req)
   if (refs && (req.first || req.last)) {
     return make_error(Code::InvalidArgument, msg::kVideoFirstOrReferences);
   }
-  if (req.last && !req.first) {
-    return make_error(Code::InvalidArgument, msg::kVideoLastNeedsFirst);
-  }
   // With references, Auto's video `edit` pick (Ref2VA); else its generate.
   const char* op = refs ? "edit" : "generate";
   const models::ModelEntry* m = nullptr;
@@ -6498,33 +6535,39 @@ Controller::generate_video(GenerateVideoRequest req)
                                         ? upscale_tuning(*refiner)
                                         : refine_tuning;
   }
-  if (req.first) {
+  if (req.first || req.last) {
     // The picture it opens on is <Picture 1> to the model (H3's I2VA:
     // "<Picture 1> (from [Shot 1]) is fully referenced"): its mentions
     // and tags so named, any other dropped. Opening on one and ending on
     // another (FL2VA), the two are named as that case of the guide names
-    // them: "Picture 1", "Picture 2".
-    const std::string form = keyframe_tag(*m, req.last.has_value());
+    // them: "Picture 1", "Picture 2". Ending on one alone (L2VA, vpipe
+    // 4a4a1f3a), it is <Picture 1>: "<Picture 1> (from [Shot N]) aligns
+    // with the S.SS-second mark".
+    const bool both = req.first && req.last;
+    const std::string form = keyframe_tag(*m, both);
     if (form.find("{n}") != std::string::npos) {
       std::vector<std::string> tags;
       for (const auto& id : pf.inline_media) {
+        const bool first = id && req.first && *id == *req.first;
         const bool last = id && req.last && *id == *req.last;
-        tags.push_back(id && *id == *req.first ? numbered(form, 1)
-                       : last                  ? numbered(form, 2)
-                                               : std::string());
+        tags.push_back(first ? numbered(form, 1)
+                       : last ? numbered(form, both ? 2 : 1)
+                              : std::string());
       }
       r.params["prompt"] = templated(*m, assist::tag_inline(pf.text, tags));
     }
-    r.inputs.push_back({"first", *req.first, 0});
+    if (req.first) {
+      r.inputs.push_back({"first", *req.first, 0});
+    }
     if (req.last) {
       r.inputs.push_back({"last", *req.last, 0});
     }
-    // As for an edit's base: what the request says, over the picture as
-    // it looks (rendered for the job, submit_build_).
-    if (!req.first_adjust.identity()) {
+    // As for an edit's base: what the request says, over the picture it
+    // opens on as it looks (rendered for the job, submit_build_).
+    if (req.first && !req.first_adjust.identity()) {
       r.params["base_adjust"] = media::to_json(req.first_adjust);
     }
-    if (!req.first_crop.identity()) {
+    if (req.first && !req.first_crop.identity()) {
       r.params["base_crop"] = media::to_json(req.first_crop);
     }
   }
@@ -6586,7 +6629,10 @@ Controller::prompt_outline(const std::string& model,
     return make_error(Code::NotFound, msg::kUnknownModel,
                       {{"model", model}});
   }
-  // A clip model opens on a picture, and ends on the next, as it can.
+  // A clip model opens on a picture, and ends on the next, as it can --
+  // each where it is said to be (-2: none), else as the model takes the
+  // row. A last frame said and no first: it ends on that one alone
+  // (L2VA).
   const Json vp = jget(m->engine, "vpipe", Json::object());
   const auto picture = [&](int from, int skip) {
     for (int i = std::max(0, from); i < static_cast<int>(row.size()); ++i) {
@@ -6596,13 +6642,13 @@ Controller::prompt_outline(const std::string& model,
     }
     return -1;
   };
+  const bool ends = jget(vp, "last_frame", false);
   if (!jget(vp, "first_frame", false) || frames.first < -1) {
     frames.first = -1;
   } else if (frames.first == -1) {
-    frames.first = picture(0, -1);
+    frames.first = picture(0, ends && frames.last >= 0 ? frames.last : -1);
   }
-  if (frames.first < 0 || !jget(vp, "last_frame", false) ||
-      frames.last < -1) {
+  if (!ends || frames.last < -1 || (frames.last == -1 && frames.first < 0)) {
     frames.last = -1;
   } else if (frames.last == -1) {
     frames.last = picture(0, frames.first);

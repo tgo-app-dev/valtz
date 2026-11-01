@@ -607,6 +607,21 @@ private struct GeneralSettings: View {
                 }
                 .settingsMark(String(localized: "Timeline"),
                               String(localized: "When a generation finishes on a composition that has content"))
+                // Where a generated clip goes on a timeline
+                // (AppModel.clipPlacement).
+                Picker(selection: $model.clipPlacement) {
+                    Text("At the Playhead")
+                        .tag(AppModel.ClipPlacement.playhead)
+                    Text("At the End of the Timeline")
+                        .tag(AppModel.ClipPlacement.end)
+                } label: {
+                    Text("Place a generated clip on the timeline")
+                    Text(model.clipPlacement == .playhead
+                         ? "It starts where the playhead was when you pressed Start. With the playhead at the end of the timeline, that is on its last frame: the new clip's first frame lies over it and covers it."
+                         : "It starts right after the last thing on the timeline, so nothing overlaps and no gap is left before it. Clips made one after another follow each other.")
+                }
+                .settingsMark(String(localized: "Playhead"),
+                              String(localized: "Place a generated clip on the timeline"))
                 Group {
                     Toggle("Highlight the timeline and prompt switch when it switches by itself",
                            isOn: $model.landingFlashesSwitch)
