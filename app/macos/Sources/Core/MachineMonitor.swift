@@ -201,14 +201,29 @@ final class MachineMonitor {
     private func take(load d: Data) {
         guard let j = try? JSONSerialization.jsonObject(with: d)
                 as? [String: Any] else { return }
+        func num(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
+        // The memory figures as a person reads them: used of total,
+        // never past it -- and the whole Mac's use never below Valtz's
+        // own, which is part of it. The readings come from different
+        // counters (the process's ledger, the kernel's page counts, the
+        // hardware's size), and a kernel long up has let them disagree:
+        // the bar stops at the Mac's memory whatever they say.
+        let total = num(j["phys_total_bytes"]).flatMap { $0 > 0 ? $0 : nil }
+        func within(_ v: Double?) -> Double? {
+            guard let v else { return nil }
+            return min(max(0, v), total ?? .infinity)
+        }
+        let footprint = within(num(j["phys_footprint_bytes"]))
+        var systemUsed = within(num(j["sys_used_bytes"]))
+        if let f = footprint, let u = systemUsed, u < f { systemUsed = f }
         let next = Load(
             ane: j["ane_util_pct"] as? Double,
             aneWatts: j["ane_power_w"] as? Double,
             aneBandwidth: j["ane_bw_gbps"] as? Double,
             gpu: j["gpu_util_pct"] as? Double,
-            footprint: (j["phys_footprint_bytes"] as? NSNumber)?.doubleValue,
-            systemUsed: (j["sys_used_bytes"] as? NSNumber)?.doubleValue,
-            total: (j["phys_total_bytes"] as? NSNumber)?.doubleValue,
+            footprint: footprint,
+            systemUsed: systemUsed,
+            total: total,
             flops: Self.flops(j),
             fleet: (j["fleet"] as? [String: Any]).flatMap(Self.flops))
         if next != load { load = next }
