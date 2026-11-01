@@ -18,19 +18,18 @@ import SwiftUI
 /// never asking for more -- the editor's own measure is not laid out,
 /// so it cannot push the dock it sits in.
 ///
-/// `immersive`, the Prompt Editor -- until Phase 5 makes it the dock
-/// grown, SimpleView lays it out: the card alone, the height it is given,
-/// its tabs down its left side, the suggestion splitting it; no picker,
-/// no chips (its toolbar has them).
+/// `expanded`, the Prompt Editor: the dock grown to the column, the card
+/// with it -- its tabs along its top (PromptTabBar), with Markdown's B, I
+/// and U; the suggestion, while there is one, splitting the text's room
+/// (SuggestionSplit). The picker, the media and the chips stay where they
+/// were: the same card, grown.
 struct ComposerCard: View {
     @Bindable var model: AppModel
     /// How tall the text may grow the card.
     var maxPromptHeight: CGFloat = 240
     /// The dock's height is set: the text fills the card.
     var fills = false
-    var immersive = false
-    /// The card's width in the Prompt Editor (wider while it is split).
-    var cardWidth: CGFloat = 680
+    var expanded = false
     @State private var promptHeight: CGFloat = 60
     @State private var promptLines = 1
     @State private var dropTargeted = false
@@ -44,25 +43,27 @@ struct ComposerCard: View {
 
     /// The text's room on its right, under the corner buttons: the same
     /// whether one or three show, so a button coming as the text wraps
-    /// cannot wrap it again.
-    private var cornerRoom: CGFloat { immersive ? 44 : 96 }
+    /// cannot wrap it again. In the editor, the way back -- and a locked
+    /// prompt's copy.
+    private var cornerRoom: CGFloat {
+        expanded ? (model.activeTabReadOnly ? 72 : 44) : 96
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            if !immersive {
-                header
+            if expanded {
+                PromptTabBar(model: model)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
+            header
             media
             textArea
-            if !immersive {
-                GenerateChipRow(model: model)
-                    .padding(.horizontal, VZ.Space.m)
-                    .padding(.top, VZ.Space.xs)
-                    .padding(.bottom, VZ.Space.m - 2)
-            }
+            GenerateChipRow(model: model)
+                .padding(.horizontal, VZ.Space.m)
+                .padding(.top, VZ.Space.xs)
+                .padding(.bottom, VZ.Space.m - 2)
         }
-        .frame(maxHeight: immersive || fills ? .infinity : nil,
-               alignment: .top)
+        .frame(maxHeight: fills ? .infinity : nil, alignment: .top)
         .coordinateSpace(.named(Self.cardSpace))
         // A capture's card flying into the thumbnail it became.
         .overlay(alignment: .topLeading) {
@@ -84,20 +85,9 @@ struct ComposerCard: View {
             }
         }
         .onChange(of: model.capturedThumbFrame) { _, _ in flyGhost() }
-        .modifier(CardSurface(immersive: immersive,
-                              dropTargeted: dropTargeted))
-        // The editor's tabs, behind the card's left edge: a tray stood on
-        // its side.
-        .background(alignment: .topLeading) {
-            if immersive {
-                GeometryReader { g in
-                    PromptTabRail(model: model, height: g.size.height)
-                        .offset(x: -PromptTabRail.outset)
-                }
-                .transition(.opacity.combined(with: .offset(x: 30)))
-            }
-        }
+        .modifier(CardSurface(dropTargeted: dropTargeted))
         .animation(.smooth(duration: 0.2), value: dropTargeted)
+        .animation(AppModel.motion, value: expanded)
         // A new base brings its size and takes the stage; none gives the
         // stage back. Run from here, not from a didSet on the attachments:
         // a change made inside another property's mutation may never
@@ -155,7 +145,7 @@ struct ComposerCard: View {
                 // the editor: a new prompt is its tabs' +, the old one
                 // kept. A capture card has the (x) while it is there.
                 .overlay(alignment: .trailing) {
-                    if !immersive && model.attachCapture == nil {
+                    if !expanded && model.attachCapture == nil {
                         clearButton.padding(.trailing, VZ.Space.m)
                     }
                 }
@@ -221,76 +211,18 @@ struct ComposerCard: View {
 
     // MARK: Text
 
-    /// In the editor with the assistant's suggestion, the card split in
-    /// two halves (DESIGN §10c).
-    private var splitting: Bool { immersive && model.suggesting }
-
-    /// The agent's session, in the Agent tab.
-    private var agentSession: AgentSession? {
-        model.activeModality == .agent ? model.agent : nil
-    }
-
-    /// In the editor, the agent's session takes the card -- its whole
-    /// width, the card its own: the request it began from is in it, the
-    /// box emptied by Start. The box stays at its foot, a few lines, for
-    /// what is said to it next (an answer, more to do).
-    private var agentFills: Bool {
-        immersive && agentSession != nil && !model.suggesting
-    }
-
-    /// The box's height under the agent's session: three lines.
-    static let replyHeight: CGFloat = 96
-
     /// The text -- and, in the editor while there is a suggestion, beside
-    /// it the suggestion's half, each with its header. The half opens
-    /// and closes by its width, its own laid out whole and cut, so it
-    /// slides away rather than squeezes. The agent's session goes over
-    /// the text, which keeps its place (the same view: the caret, its
-    /// words carry on).
+    /// it the suggestion's half (SuggestionSplit).
     private var textArea: some View {
-        VStack(spacing: 0) {
-            if agentFills, let a = agentSession {
-                AgentPane(model: model, shown: a)
-                    .frame(maxHeight: .infinity)
-                    .transition(.opacity)
-                Rectangle()
-                    .fill(Color(nsColor: .separatorColor))
-                    .frame(height: 0.5)
-                    .padding(.horizontal, 14)
-            }
-            HStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    if immersive {
-                        PaneHeader(title: "Prompt")
-                            .frame(height: splitting ? PaneHeader.height : 0)
-                            .opacity(splitting ? 1 : 0)
-                            .clipped()
-                    }
-                    promptText
-                }
-                if immersive {
-                    let half = max(0, cardWidth / 2)
-                    Rectangle()
-                        .fill(Color(nsColor: .separatorColor))
-                        .frame(width: splitting ? 0.5 : 0)
-                        .padding(.vertical, 14)
-                    SuggestionPane(model: model)
-                        .frame(width: half)
-                        .frame(width: splitting ? half : 0,
-                               alignment: .leading)
-                        .clipped()
-                        .allowsHitTesting(splitting)
-                        .accessibilityHidden(!splitting)
-                }
-            }
-            .frame(height: agentFills ? Self.replyHeight : nil)
+        SuggestionSplit(model: model, expanded: expanded, fills: fills) {
+            promptText
         }
-        .frame(maxHeight: immersive || fills ? .infinity : nil)
+        .frame(maxHeight: fills ? .infinity : nil)
     }
 
-    /// The box grows with the text, or -- the dock's height set, or the
-    /// editor -- fills the room it is given.
-    private var flexible: Bool { immersive || fills }
+    /// The box grows with the text, or -- the dock's height set, the
+    /// editor's too -- fills the room it is given.
+    private var flexible: Bool { fills }
 
     private var promptText: some View {
         PromptEditor(model: model, height: $promptHeight,
@@ -330,7 +262,7 @@ struct ComposerCard: View {
                     // Past three lines, and growing with them: its size.
                     if !flexible && promptLines > 3 { sizeToggle }
                     // A locked prompt: a copy of it to change.
-                    if immersive && model.activeTabReadOnly {
+                    if expanded && model.activeTabReadOnly {
                         duplicateButton
                     }
                     // A tab only looked at never goes to the box.
@@ -352,7 +284,7 @@ struct ComposerCard: View {
     /// hold it. Never in the Prompt Editor: there a new prompt is a new
     /// tab (its +), and the one written stays in its own.
     private var clearInText: Bool {
-        !immersive && hasPromptContent && model.promptAttachments.isEmpty
+        !expanded && hasPromptContent && model.promptAttachments.isEmpty
             && model.attachCapture == nil
     }
 
@@ -389,22 +321,22 @@ struct ComposerCard: View {
         .accessibilityLabel(Text("Duplicate and Edit"))
     }
 
-    /// Into the Prompt Editor -- the card grown to the window's height --
-    /// or, in it, back (⇧⌘E).
+    /// Into the Prompt Editor -- the dock grown to the column -- or, in
+    /// it, back (⇧⌘E).
     private var editorButton: some View {
         Button {
             withAnimation(AppModel.motion) { model.toggleImmersivePrompt() }
         } label: {
-            Image(systemName: immersive ? "rectangle.compress.vertical"
+            Image(systemName: expanded ? "rectangle.compress.vertical"
                                         : "rectangle.expand.vertical")
                 .frame(width: 26, height: 26)
                 .contentShape(Rectangle())
                 .contentTransition(.symbolEffect(.replace))
         }
         .buttonStyle(.borderless)
-        .foregroundStyle(immersive ? Color.accentColor : .secondary)
-        .help(immersive ? "Back to the stage, this prompt in the box (⇧⌘E)"
-                        : "Edit the prompt the window's height, several at once (⇧⌘E)")
+        .foregroundStyle(expanded ? Color.accentColor : .secondary)
+        .help(expanded ? "Back to the stage, this prompt in the box (⇧⌘E)"
+                       : "Edit the prompt the window's height, several at once (⇧⌘E)")
         .accessibilityLabel(Text("Prompt Editor"))
         .shortcutHint("⇧⌘E")
     }
@@ -443,38 +375,19 @@ struct ComposerCard: View {
     }
 }
 
-/// The card's surface: in the dock, a dock card (concentric with the
-/// dock); in the Prompt Editor, the card it has been, square on top
-/// against the editor's toolbar. Its rim the accent while a drop is
-/// over it.
+/// The card's surface: a dock card (concentric with the dock), its rim
+/// the accent while a drop is over it.
 private struct CardSurface: ViewModifier {
-    let immersive: Bool
     let dropTargeted: Bool
 
     func body(content: Content) -> some View {
-        if immersive {
-            let shape = UnevenRoundedRectangle(topLeadingRadius: 0,
-                                               bottomLeadingRadius: 20,
-                                               bottomTrailingRadius: 20,
-                                               topTrailingRadius: 0,
-                                               style: .continuous)
-            content
-                .clipShape(shape)
-                .background(shape.fill(Color(nsColor: .textBackgroundColor)))
-                .overlay(shape.strokeBorder(dropTargeted
-                                            ? Color.accentColor
-                                            : Color.vzHairline,
-                                            lineWidth: dropTargeted ? 2 : 0.5))
-                .vzShadow(VZ.Elevation.dock)
-        } else {
-            DockCard { content }
-                .overlay {
-                    if dropTargeted {
-                        VZ.Radius.concentric()
-                            .stroke(Color.accentColor, lineWidth: 2)
-                            .padding(1)
-                    }
+        DockCard { content }
+            .overlay {
+                if dropTargeted {
+                    VZ.Radius.concentric()
+                        .stroke(Color.accentColor, lineWidth: 2)
+                        .padding(1)
                 }
-        }
+            }
     }
 }

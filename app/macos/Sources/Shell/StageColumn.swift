@@ -1,13 +1,20 @@
 import SwiftUI
 
 /// The middle column: the contextual row, when a mode has one (markup's
-/// tools), over the stage region -- the editor's stage (SimpleView), the
-/// Atlas or the Log -- and, under a splitter, the dock: the timeline band
-/// and the composer. The region takes whatever room the sidebar, the
-/// inspector and the dock leave it, never less than a stage's worth, and
-/// its background runs on under the sidebar and the inspector's glass.
-/// The Atlas, the Log and view only have no dock; the Prompt Editor lays
-/// out its own composer until Phase 5 makes it the dock grown.
+/// tools, the compare's A, B and modes), over the stage region -- the
+/// editor's stage (SimpleView), the Atlas or the Log -- and, under a
+/// splitter, the dock: the timeline band and the composer. The region
+/// takes whatever room the sidebar, the inspector and the dock leave it,
+/// never less than a stage's worth, and its background runs on under the
+/// sidebar and the inspector's glass. The Atlas, the Log and view only
+/// have no dock.
+///
+/// The Prompt Editor is the dock grown: the composer the column's height
+/// but a strip at the top, where the stage goes small. It is the same
+/// dock, the same card, the same text view -- grown, not made again -- so
+/// the prompt keeps the keyboard, the caret and its words as it grows and
+/// as it goes back. The splitter rests meanwhile; back, the dock is the
+/// height it had.
 struct StageColumn: View {
     @Bindable var model: AppModel
     let layout: WorkspaceLayout
@@ -25,14 +32,21 @@ struct StageColumn: View {
     /// width (820) holds all three.
     static let minWidth: CGFloat = 320
 
-    private var docked: Bool {
-        layout.dock == .composer || layout.dock == .bandAndComposer
-    }
+    /// The stage's strip over the Prompt Editor: the small stage and its
+    /// transport (SimpleView), or a generation's progress.
+    static let stageStrip: CGFloat = 168
+
+    private var docked: Bool { layout.dock != .hidden }
+    private var expanded: Bool { layout.dock == .expandedPrompt }
 
     /// The dock's height this pass: the drag's, else the chrome's, held
     /// to its bounds in the column as it is now (a window made shorter
-    /// leaves the stage its least); nil, its content's.
+    /// leaves the stage its least); nil, its content's. Grown, it has none
+    /// of its own: the strip is the region's height and the dock takes
+    /// the rest, so a window made smaller is never held up by a height
+    /// worked out from the size it was.
     private var dockHeight: CGFloat? {
+        if expanded { return nil }
         guard let h = dragHeight ?? model.chrome.dockHeight else {
             return nil
         }
@@ -43,18 +57,23 @@ struct StageColumn: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if layout.context == .markup {
-                MarkupBar(model: model)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
+            contextRow
             VStack(spacing: 0) {
                 region
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(height: expanded ? Self.stageStrip : nil)
+                    .frame(maxWidth: .infinity,
+                           maxHeight: expanded ? nil : .infinity)
                     .background(Color(nsColor: .windowBackgroundColor))
                     .backgroundExtensionEffect()
                 if docked {
                     VStack(spacing: 0) {
-                        splitter
+                        // Resting while the dock is grown: its room, no
+                        // grip, nothing to drag.
+                        if expanded {
+                            Color.clear.frame(height: DockSplitter.height)
+                        } else {
+                            splitter
+                        }
                         DockView(model: model, layout: layout,
                                  height: dockHeight,
                                  columnHeight: columnHeight)
@@ -74,6 +93,30 @@ struct StageColumn: View {
         }
         .animation(AppModel.motion, value: layout.context)
         .animation(AppModel.motion, value: docked)
+        .animation(AppModel.motion, value: expanded)
+    }
+
+    /// The mode's row: markup's tools (the compare's folded into a menu
+    /// at its end, when it is on too), or the compare's. Where it lies,
+    /// in the window: a click on it leaves a viewing as it is, as one on
+    /// the stage does.
+    @ViewBuilder
+    private var contextRow: some View {
+        Group {
+            switch layout.context {
+            case .markup:
+                MarkupBar(model: model)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            case .compare:
+                CompareBar(model: model)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            case .none:
+                EmptyView()
+            }
+        }
+        .onGeometryChange(for: CGRect.self) {
+            $0.frame(in: .global)
+        } action: { model.contextBarFrame = $0 }
     }
 
     private var splitter: some View {
@@ -105,21 +148,7 @@ struct StageColumn: View {
     private var region: some View {
         switch layout.stage {
         case .editor:
-            VStack(spacing: 0) {
-                // The Prompt Editor's own toolbar: the editor grows the
-                // prompt card itself (SimpleView).
-                if model.promptImmersive {
-                    PromptBar(model: model)
-                        // Its foot: the small stage keeps clear of it.
-                        .onGeometryChange(for: CGFloat.self) {
-                            $0.frame(in: .global).maxY
-                        } action: { model.editorToolbarBottom = $0 }
-                        .transition(.move(edge: .top)
-                            .combined(with: .opacity))
-                }
-                SimpleView(model: model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            SimpleView(model: model, strip: expanded)
         case .atlas:
             AtlasView(model: model)
         case .log:

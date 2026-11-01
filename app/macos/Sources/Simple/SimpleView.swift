@@ -6,65 +6,53 @@ import AppKit
 ///   idle        the Valtz mark, centred
 ///   generating  the mark breathes until the first preview frame, what
 ///               it is doing under it
-///   showing     the live preview / result, framed, with glass compare
-///               controls beneath it
-///   immersive   the Prompt Editor (DESIGN §10c): the prompt card grown
-///               to the column's height at its own width, its tabs down
-///               its left side; the stage small at the top left. Until
-///               Phase 5 makes it the dock grown, the editor lays its
-///               composer out here, and the dock stands aside.
+///   showing     the live preview / result, framed, the bar of what it
+///               offers under it (a clip's transport, a still's pages)
+///   strip       the Prompt Editor's (`strip`), over the dock grown: the
+///               stage small -- the picture, its transport under it --
+///               or a generation's progress
 ///
 /// Every change of state is one animated layout change (AppModel.motion).
-/// The stage is ONE view, drawn behind the region where a slot says --
-/// the region's room, or the editor's top left -- so going into the
-/// editor moves it there (its canvas and player carry on) rather than
-/// making another.
+/// The stage is ONE view whatever room it is given, so going into the
+/// editor makes it small rather than making another: its canvas and its
+/// player carry on.
 struct SimpleView: View {
     @Bindable var model: AppModel
+    /// The Prompt Editor's strip, over the dock grown.
+    var strip = false
     /// Where this view is in the window: the stage's drag ring stays in
-    /// it, out of the toolbar, the markup row and the dock.
+    /// it, out of the toolbar, the context row and the dock.
     @State private var area: CGRect = .null
 
-    /// The prompt column's width in the Prompt Editor: the card's; and
-    /// the floating cards' over the dock.
+    /// The floating cards' width over the dock; a generation's progress
+    /// over the stage, at most.
     static let columnWidth: CGFloat = 680
 
     var body: some View {
-        let immersive = model.promptImmersive
-        // Sizes from the view's own geometry, in the same layout pass: the
-        // card's width, the stage's place, change together and animate
-        // together (a measured size would come a pass late).
         GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                if immersive {
-                    // The whole view, the column centred in it: the
-                    // editor's top left is the window's, not the column's.
-                    editorColumn(size: geo.size)
-                        .frame(width: geo.size.width, height: geo.size.height)
-                    topLeft(geo.size)
-                } else {
-                    stageRoom(size: geo.size)
-                        .frame(width: geo.size.width, height: geo.size.height)
-                }
-            }
-        }
-        .backgroundPreferenceValue(StageSlotKey.self) { slot in
-            GeometryReader { proxy in
-                if let slot, model.stageVisible {
-                    let r = proxy[slot]
-                    ResultStage(model: model, area: area, small: immersive)
-                        .frame(width: r.width, height: r.height)
-                        .offset(x: r.minX, y: r.minY)
+            Group {
+                if model.stageVisible {
+                    ResultStage(model: model, area: area, small: strip)
+                        .padding(.horizontal, strip ? VZ.Space.l
+                                                    : VZ.Space.xl)
+                        .padding(.top, strip ? VZ.Space.s : VZ.Space.m)
+                        .padding(.bottom, strip ? VZ.Space.xs : 0)
                         .transition(.asymmetric(
                             insertion: .scale(scale: 0.94)
                                 .combined(with: .opacity),
                             removal: .opacity))
+                } else if strip {
+                    stripStatus(width: geo.size.width)
+                } else {
+                    markRoom(width: geo.size.width)
                 }
             }
+            .frame(width: geo.size.width, height: geo.size.height)
         }
         .animation(AppModel.motion, value: model.stageVisible)
         .animation(AppModel.motion, value: model.timelineOpen)
         .animation(AppModel.motion, value: model.viewOnly)
+        .animation(AppModel.motion, value: strip)
         .onGeometryChange(for: CGRect.self) {
             $0.frame(in: .global)
         } action: {
@@ -83,106 +71,53 @@ struct SimpleView: View {
         }
     }
 
-    /// The region outside the editor: the stage's slot, all of it -- or,
-    /// with nothing on the stage, the mark in the middle and, before the
-    /// first frame, what a generation is doing under it.
-    private func stageRoom(size: CGSize) -> some View {
+    /// Nothing on the stage: the mark in the middle and, before the first
+    /// frame, what a generation is doing under it.
+    private func markRoom(width: CGFloat) -> some View {
         VStack(spacing: 0) {
-            if model.stageVisible {
-                Color.clear
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .anchorPreference(key: StageSlotKey.self,
-                                      value: .bounds) { $0 }
-            } else {
-                Spacer(minLength: 12)
-                // The mark takes no drops: media go into the prompt, or
-                // onto a stage's layers.
-                HeroMark(sweep: model.markSweep)
-                    // A fleet job's overlay shows the mark, in blue.
-                    .opacity(model.fleetServing == nil ? 1 : 0)
-                    .padding(24)
-                    .transition(.scale(scale: 0.8).combined(with: .opacity))
-                    .onAppear { model.startupSweep() }
-                if model.isGenerating {
-                    GenerationStatus(
-                        model: model,
-                        width: min(GenerationStatus.defaultWidth,
-                                   max(120, size.width - 80)))
-                        .padding(.bottom, 20)
-                        .transition(.opacity)
-                }
-                Spacer(minLength: 12)
+            Spacer(minLength: 12)
+            // The mark takes no drops: media go into the prompt, or onto
+            // a stage's layers.
+            HeroMark(sweep: model.markSweep)
+                // A fleet job's overlay shows the mark, in blue.
+                .opacity(model.fleetServing == nil ? 1 : 0)
+                .padding(24)
+                .transition(.scale(scale: 0.8).combined(with: .opacity))
+                .onAppear { model.startupSweep() }
+            if model.isGenerating {
+                GenerationStatus(
+                    model: model,
+                    width: min(GenerationStatus.defaultWidth,
+                               max(120, width - 80)))
+                    .padding(.bottom, 20)
+                    .transition(.opacity)
             }
+            Spacer(minLength: 12)
         }
         .padding(.horizontal, VZ.Space.xl)
         .padding(.top, VZ.Space.m)
     }
 
-    /// The Prompt Editor's column: the composer alone, the region's
-    /// height, a margin short of its foot. There, while the card is split
-    /// -- the assistant's suggestion beside the prompt -- it reaches
-    /// right to the column's edge, the same margin from it, its left edge
-    /// where it was. The agent's session splits nothing: it takes the
-    /// card at its own width.
-    private func editorColumn(size: CGSize) -> some View {
-        let base = min(Self.columnWidth, size.width - 80)
-        let card = model.suggesting
-            ? max(base, size.width - Self.footInset - (size.width - base) / 2)
-            : base
-        return ComposerCard(model: model, maxPromptHeight: size.height / 2,
-                            immersive: true, cardWidth: card)
-            .frame(width: card)
-            .frame(maxHeight: .infinity, alignment: .top)
-            // Wider, it grows to the right: its left edge stays.
-            .offset(x: (card - base) / 2)
-            .padding(.horizontal, 40)
-            .padding(.bottom, Self.footInset)
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-    }
-
-    /// In the editor, the space left of the card and its tabs: the stage
-    /// there, at that width -- or, with nothing on it, a generation's
-    /// progress. Too narrow a space, and it stays away.
+    /// The strip with nothing on the stage: a generation's progress, its
+    /// phase under the bar; else the mark, small.
     @ViewBuilder
-    private func topLeft(_ size: CGSize) -> some View {
-        let card = min(Self.columnWidth, size.width - 80)
-        let room = (size.width - card) / 2 - PromptTabRail.outset - 28
-        if room >= 72 {
-            let aspect = max(0.2, model.stage.layoutAspect)
-            let w = min(room, (size.height * 0.45) * aspect)
-            // Its own transport under the picture, when it plays or has
-            // pages: too small for a player's over it.
-            let bar = model.stageHasTransport ? Self.smallBar : 0
-            Group {
-                if model.stageVisible {
-                    Color.clear
-                        .frame(width: w, height: w / aspect + bar)
-                        .anchorPreference(key: StageSlotKey.self,
-                                          value: .bounds) { $0 }
-                } else if model.isGenerating {
-                    CompactStatus(model: model)
-                        .frame(width: room)
-                        .transition(.opacity)
-                }
-            }
-            .padding(.leading, Self.smallInset)
-            // As far under the editor's toolbar as from the window's left
-            // edge -- measured, so it never lies over the toolbar.
-            .padding(.top, Self.smallInset
-                     + max(0, model.editorToolbarBottom - area.minY))
+    private func stripStatus(width: CGFloat) -> some View {
+        if model.isGenerating {
+            CompactStatus(model: model)
+                .frame(width: min(320, max(120, width - 80)))
+                .transition(.opacity)
+        } else {
+            HeroMark(sweep: model.markSweep)
+                .opacity(model.fleetServing == nil ? 1 : 0)
+                .padding(VZ.Space.m)
+                .transition(.opacity)
         }
     }
 
-    /// The Prompt Editor's card: this much short of the region's foot
-    /// (and of its right edge, split).
-    static let footInset: CGFloat = 24
-    /// The small stage's margin, left and top.
-    static let smallInset: CGFloat = 16
-    /// Its transport's row, under the picture.
+    /// The small stage's transport row, under its picture.
     static let smallBar: CGFloat = 30
 }
 
-/// Where the stage goes: the region's room, or the editor's top left.
 /// Media dropped on the stage are INSTANTIATED in its work: in the
 /// selected layer when it is blank, else in a new one right above it --
 /// an asset of the list, a file (imported first), or what a drag from
@@ -250,15 +185,8 @@ struct StageDrop: DropDelegate {
     }
 }
 
-private struct StageSlotKey: PreferenceKey {
-    static let defaultValue: Anchor<CGRect>? = nil
-    static func reduce(value: inout Anchor<CGRect>?,
-                       nextValue: () -> Anchor<CGRect>?) {
-        value = nextValue() ?? value
-    }
-}
-
-/// The Prompt Editor's small stage's transport, under its picture: a
+/// The Prompt Editor's small stage's transport, under its picture in
+/// the strip: a
 /// clip, a timeline or a sound { |<, play / pause, >| } (Space too); a
 /// still with pages { ‹, › }.
 private struct SmallTransport: View {
@@ -338,8 +266,8 @@ private struct StagePages: View {
     }
 }
 
-/// A generation's progress where the small stage would be: a bar and
-/// its phase.
+/// A generation's progress in the strip, where the small stage would be:
+/// a bar and its phase.
 private struct CompactStatus: View {
     @Bindable var model: AppModel
 
@@ -374,10 +302,6 @@ private struct HeroMark: View {
     }
 }
 
-/// The preview / result, framed, with the compare controls under it --
-/// or, `small` (the Prompt Editor's top left), what it shows alone: A, a
-/// player with its own controls, a thin progress bar; no compare, no
-/// zoom.
 /// The stage's player: a view of its own, so what changes with each
 /// step of a look or a sound -- the clip's look, its stack's plan -- is
 /// read here alone. Read in the stage's body, a grade wheel's drag on a
@@ -419,6 +343,10 @@ private struct StagePlayer: View {
     }
 }
 
+/// The preview / result, framed, the bar of what it offers under it --
+/// or, `small` (the Prompt Editor's strip), what it shows alone: A, its
+/// transport under it, a thin progress bar; no compare, no zoom. The
+/// compare's controls are the context row's (CompareBar).
 private struct ResultStage: View {
     @Bindable var model: AppModel
     /// The editor's own area, in the window (SimpleView): the drag ring
@@ -426,8 +354,8 @@ private struct ResultStage: View {
     let area: CGRect
     var small = false
     @State private var dropTargeted = false
-    /// The compare (or clip) bar under the card, in the window: the ring
-    /// leaves it out.
+    /// The bar under the card -- a clip's, a still's pages -- in the
+    /// window: the ring leaves it out.
     @State private var barFrame: CGRect = .null
     /// The card's width: the scrubber over the clip bar is as wide.
     @State private var cardWidth: CGFloat = 0
@@ -535,8 +463,8 @@ private struct ResultStage: View {
             if !small {
             // One view whatever it holds, the one bar fading into the
             // other in place: its frame and its going are the bar's. (A
-            // Group's modifiers are each branch's: the compare bar going as
-            // a clip's came could clear the frame the clip's had just set.)
+            // Group's modifiers are each branch's: the pages going as a
+            // clip's bar came could clear the frame the clip's had set.)
             ZStack(alignment: .bottom) {
             if model.stage.video != nil && model.stage.clip == nil {
                 VStack(spacing: 6) {
@@ -566,29 +494,11 @@ private struct ResultStage: View {
                             grabFrame: model.grabFrame)
                 }
                 .transition(.opacity)
-            } else {
-                VStack(spacing: 6) {
+            } else if model.stagePagesShown {
                 // A still's pages, where a clip's transport would be,
                 // while the timeline that steps them is not shown.
-                if model.stagePagesShown {
-                    StagePages(model: model)
-                        .transition(.opacity)
-                }
-                CompareBar(
-                    mode: model.stage.mode,
-                    hasB: model.stage.b != nil,
-                    wipeLine: model.stage.wipeLine,
-                    // Shown while the compare is on (the title bar's
-                    // button, or a result that changed what was there).
-                    takesPictures: model.compareOn,
-                    current: model.currentSlot,
-                    setMode: model.setStageMode,
-                    toggleWipeLine: model.toggleStageWipeLine,
-                    swap: model.swapStage,
-                    returnToCurrent: model.returnToCurrent,
-                    drop: { model.dropOnCompare($1, in: $0) })
-                }
-                .transition(.opacity)
+                StagePages(model: model)
+                    .transition(.opacity)
             }
             }
             .onGeometryChange(for: CGRect.self) {
@@ -880,7 +790,7 @@ enum ClipBarMenu {
     static weak var opened: NSMenu?
 }
 
-/// What a finished clip offers under the stage, in the compare bar's
+/// What a finished clip offers under the stage, in the stage buttons'
 /// style: whether it plays once or loops, its TRANSPORT (StageTransport;
 /// none while the timeline, whose own is the fuller one, is open), a
 /// still of the frame shown, and -- where a model reads clips (Ref2VA)
@@ -1179,7 +1089,6 @@ private struct RingShape: Shape {
     }
 }
 
-/// The assistant's rewrite, offered -- never applied without asking.
 /// A generation refused for lack of memory: what vpipe asked for -- the
 /// refused step part by part, each budget's need and room, the plan by
 /// phase -- and what to change: a shorter clip, a smaller size, fewer
@@ -1333,211 +1242,5 @@ struct MemoryFailureCard: View {
                 action: {}))
         }
         return out
-    }
-}
-
-struct SuggestionCard: View {
-    let prompt: String
-    /// Still being written: its words as far as they have come.
-    var writing = false
-    /// What the helper read and wrote, how fast -- shown while Settings ›
-    /// Agentic Helper › Show the Helper's Speed is on.
-    var stats: AgentTurnStats?
-    /// How tall its words stand before they scroll (`textCap`).
-    var maxTextHeight: CGFloat = 160
-    let accept: () -> Void
-    let dismiss: () -> Void
-    /// The Prompt Editor, the suggestion beside the prompt: read whole,
-    /// edited, applied there.
-    var review: (() -> Void)?
-
-    /// The words' height in the box: whole lines, as many as a sixth of
-    /// the window's height holds, three to ten. A long suggestion -- a
-    /// clip's, in its model's sections -- scrolls rather than pushing the
-    /// stage and the prompt out of the window.
-    static func textCap(window: CGFloat) -> CGFloat {
-        let line = SuggestionText.lineHeight
-        let n = min(10, max(3, Int(window / 6 / line)))
-        return CGFloat(n) * line
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Label("Suggested prompt", systemImage: "sparkles")
-                if writing {
-                    ProgressView().controlSize(.mini)
-                    Text("Writing…")
-                }
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            if !prompt.isEmpty {
-                SuggestionText(text: prompt, writing: writing,
-                               maxHeight: maxTextHeight)
-            }
-            if let stats, !stats.isEmpty {
-                AgentSpeedText(stats: stats)
-            }
-            HStack {
-                if let review {
-                    Button(action: review) {
-                        Label("Prompt Editor",
-                              systemImage: "rectangle.expand.vertical")
-                    }
-                    .buttonStyle(.glass)
-                    .help("Read and edit the suggestion beside the prompt, in the Prompt Editor (⇧⌘E)")
-                }
-                Spacer()
-                Button(writing ? "Stop" : "Dismiss", action: dismiss)
-                    .buttonStyle(.glass)
-                    .help(writing ? "Stop the assistant; the prompt stays as it is"
-                                  : "Keep the prompt as it is")
-                Button("Use Prompt", action: accept)
-                    .buttonStyle(.glassProminent)
-                    .disabled(writing)
-            }
-            .buttonBorderShape(.roundedRectangle(radius: 10))
-        }
-        .padding(16)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18,
-                                                    style: .continuous))
-    }
-}
-
-/// The suggestion's words in the box's card: read only, selectable, as
-/// tall as they wrap up to `maxHeight` -- past it they scroll, with the
-/// compact prompt's scroll bar, there while they do. The assistant's
-/// words are followed at the end as they come.
-struct SuggestionText: NSViewRepresentable {
-    let text: String
-    var writing = false
-    let maxHeight: CGFloat
-
-    static let font = NSFont.preferredFont(forTextStyle: .callout)
-    static let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
-    static var attributes: [NSAttributedString.Key: Any] {
-        [.font: font, .foregroundColor: NSColor.labelColor]
-    }
-
-    @MainActor
-    final class Coordinator {
-        weak var textView: NSTextView?
-        var shown = ""
-        /// The words laid out apart, at the width SwiftUI offers: their
-        /// height, as the text view will lay them.
-        let storage = NSTextStorage()
-        let layout = NSLayoutManager()
-        let container = NSTextContainer(
-            size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-
-        init() {
-            container.lineFragmentPadding = 0
-            layout.addTextContainer(container)
-            storage.addLayoutManager(layout)
-        }
-
-        func height(of text: String, width: CGFloat) -> CGFloat {
-            if storage.string != text {
-                storage.setAttributedString(NSAttributedString(
-                    string: text, attributes: SuggestionText.attributes))
-            }
-            container.size = NSSize(width: width,
-                                    height: CGFloat.greatestFiniteMagnitude)
-            layout.ensureLayout(for: container)
-            return ceil(layout.usedRect(for: container).height)
-        }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> SuggestionScrollView {
-        // TextKit 1, as the measure's: the same lines.
-        let storage = NSTextStorage()
-        let layout = NSLayoutManager()
-        storage.addLayoutManager(layout)
-        let container = NSTextContainer(
-            size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
-        container.widthTracksTextView = true
-        container.lineFragmentPadding = 0
-        layout.addTextContainer(container)
-        let tv = NSTextView(frame: .zero, textContainer: container)
-        tv.isEditable = false
-        tv.isSelectable = true
-        tv.isRichText = false
-        tv.drawsBackground = false
-        tv.isVerticallyResizable = true
-        tv.isHorizontallyResizable = false
-        tv.minSize = .zero
-        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
-                            height: CGFloat.greatestFiniteMagnitude)
-        tv.autoresizingMask = [.width]
-        tv.textContainerInset = .zero
-        tv.font = Self.font
-        tv.textColor = .labelColor
-        context.coordinator.textView = tv
-
-        let scroll = SuggestionScrollView()
-        scroll.documentView = tv
-        scroll.drawsBackground = false
-        scroll.automaticallyAdjustsContentInsets = false
-        scroll.verticalScroller = KnobScroller()
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.scrollerStyle = .overlay
-        return scroll
-    }
-
-    func updateNSView(_ scroll: SuggestionScrollView, context: Context) {
-        let c = context.coordinator
-        guard let tv = c.textView, text != c.shown else { return }
-        let was = c.shown
-        c.shown = text
-        if !was.isEmpty && text.hasPrefix(was) {
-            // Written on: what is new, at the end -- followed while the
-            // assistant writes.
-            tv.textStorage?.append(NSAttributedString(
-                string: String(text.dropFirst(was.count)),
-                attributes: Self.attributes))
-            if writing { tv.scrollToEndOfDocument(nil) }
-        } else {
-            tv.textStorage?.setAttributedString(NSAttributedString(
-                string: text, attributes: Self.attributes))
-            tv.scrollRangeToVisible(NSRange(location: 0, length: 0))
-        }
-    }
-
-    func sizeThatFits(_ proposal: ProposedViewSize,
-                      nsView: SuggestionScrollView,
-                      context: Context) -> CGSize? {
-        guard let w = proposal.width, w > 0, w.isFinite else { return nil }
-        let h = context.coordinator.height(of: text, width: w)
-        return CGSize(width: w,
-                      height: min(maxHeight, max(Self.lineHeight, h)))
-    }
-}
-
-/// The suggestion's scroll view: cut short, a scroll bar that stays (the
-/// legacy style, as the compact prompt's); whole, none. The legacy bar
-/// narrows the text, which only makes it longer, so this settles.
-final class SuggestionScrollView: NSScrollView {
-    override func tile() {
-        super.tile()
-        fitScroller()
-    }
-
-    override func reflectScrolledClipView(_ clip: NSClipView) {
-        super.reflectScrolledClipView(clip)
-        fitScroller()
-    }
-
-    private func fitScroller() {
-        guard let doc = documentView else { return }
-        let cut = doc.frame.height > contentView.bounds.height + 0.5
-        let style: NSScroller.Style = cut ? .legacy : .overlay
-        if scrollerStyle != style {
-            scrollerStyle = style
-            autohidesScrollers = !cut
-        }
     }
 }

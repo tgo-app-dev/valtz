@@ -1269,7 +1269,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// itself, the switch flashed, Assets shown for a second result
     /// (AppModel.landed).
     /// The dock as laid out: what fills it, its height (set, or its
-    /// content's), the composer's, the band's rows, the chip open.
+    /// content's), the composer's, the band's rows, the chip open; the
+    /// Prompt Editor's tabs (how many, the open one), the suggestion's
+    /// split, the prompt's length; the context row.
     @MainActor
     static func dockSummary(_ m: AppModel) -> String {
         let set = m.chrome.dockHeight.map { "\(Int($0))" } ?? "fit"
@@ -1277,7 +1279,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             + "composer=\(Int(m.dockComposerHeight)) "
             + "band=\(m.chrome.timelineBand) timelineOpen=\(m.timelineOpen) "
             + "rows=\(m.timelineRows) chip=\(m.openChip?.rawValue ?? "-") "
-            + "column=\(Int(m.stageColumnHeight))"
+            + "column=\(Int(m.stageColumnHeight)) "
+            + "tabs=\(m.promptTabs.count)/\(m.activePromptTab) "
+            + "split=\(m.promptImmersive && m.suggesting) "
+            + "prompt=\(m.prompt.count) context=\(m.layout.context) "
+            + "compareOn=\(m.compareOn) mode=\(m.stage.mode) "
+            + "markup=\(m.markupOpen) "
+            // The prompt's text view: the same one, grown or not.
+            + "textView=\(m.promptTextView.map { String(UInt(bitPattern: ObjectIdentifier($0).hashValue) % 100_000) } ?? "-")"
     }
 
     /// The chips as the row shows them: "model:Auto_(…)|shape:16:9_·_Large".
@@ -1287,6 +1296,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "\($0.rawValue):\(m.chipValue($0))"
                 .replacingOccurrences(of: " ", with: "_")
         }.joined(separator: "|")
+    }
+
+    /// The main menu's item for a key equivalent (⇧⌘E, the Prompt
+    /// Editor's) chosen, as the keyboard chooses it: a snapshot's window
+    /// is never the active app's, so no key event reaches the menu.
+    @MainActor
+    static func postMenuKey(_ key: String, _ flags: NSEvent.ModifierFlags,
+                            to m: AppModel) {
+        func find(_ menu: NSMenu) -> (NSMenu, Int)? {
+            for (i, item) in menu.items.enumerated() {
+                if item.keyEquivalent.lowercased() == key,
+                   item.keyEquivalentModifierMask.intersection(
+                       .deviceIndependentFlagsMask) == flags {
+                    return (menu, i)
+                }
+                if let sub = item.submenu, let hit = find(sub) {
+                    return hit
+                }
+            }
+            return nil
+        }
+        guard let main = NSApp.mainMenu, let (menu, i) = find(main) else {
+            FileHandle.standardError.write(Data(
+                "snapshot: menu-key \(key) none\n".utf8))
+            return
+        }
+        menu.update()
+        FileHandle.standardError.write(Data(
+            "snapshot: menu-key \(key) item=\(menu.items[i].title.replacingOccurrences(of: " ", with: "_")) enabled=\(menu.items[i].isEnabled)\n".utf8))
+        menu.performActionForItem(at: i)
     }
 
     /// A key pressed in the main window, as the key monitor sees one:
@@ -1900,35 +1939,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 withAnimation(AppModel.motion) { m.enterImmersivePrompt() }
                 try? await Task.sleep(for: .milliseconds(700))
             }
-            // The Prompt Editor's settings popover ("1"; "custom": with
-            // Favor's Custom, Tune's options inside it): how many
-            // popovers are open, and the popover drawn to
-            // <snapshot>-settings.png.
-            if let v = env["VALTZ_SNAPSHOT_EDITOR_SETTINGS"],
-               m.promptImmersive {
-                m.showsGenerationSettings = true
-                try? await Task.sleep(for: .milliseconds(700))
-                if v == "custom" {
-                    m.choosePreference(.custom)
-                    if !m.showsTuning { m.toggleTuning() }
-                    try? await Task.sleep(for: .milliseconds(900))
-                }
-                let pops = NSApp.windows.filter {
-                    $0.isVisible && $0.className.contains("Popover")
-                }
-                if let shot = env["VALTZ_SNAPSHOT"],
-                   let v = pops.first?.contentView,
-                   let rep = v.bitmapImageRepForCachingDisplay(
-                       in: v.bounds) {
-                    v.cacheDisplay(in: v.bounds, to: rep)
-                    try? rep.representation(using: .png, properties: [:])?
-                        .write(to: URL(fileURLWithPath: shot
-                            .replacingOccurrences(of: ".png",
-                                                  with: "-settings.png")))
-                }
-                FileHandle.standardError.write(Data(
-                    "snapshot: editor-settings popovers=\(pops.count) tuning=\(m.showsTuning) size=\(pops.first.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? "-")\n".utf8))
-            }
             // The file panels' folders (FileHistory): "attach:<file>",
             // "export:<file>", "project:<file>" as a panel chose it,
             // "startover", "anonymous" (File › New Anonymous Project),
@@ -1983,7 +1993,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let after = NSApp.windows.filter {
                     $0.isVisible && $0.className.contains("Popover")
                 }.count
-                print("snapshot: left wasActive=\(wasActive) active=\(NSApp.isActive) popovers=\(before)>\(after) tuning=\(m.showsTuning) settings=\(m.showsGenerationSettings)")
+                print("snapshot: left wasActive=\(wasActive) active=\(NSApp.isActive) popovers=\(before)>\(after) tuning=\(m.showsTuning) chip=\(m.openChip?.rawValue ?? "-")")
             }
             if let spec = env["VALTZ_SNAPSHOT_PROMPT_TABS"] {
                 for op in spec.split(separator: ";") {
@@ -5618,6 +5628,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // | color | grade | audio | viewonly | agentkey -- ⌘4's). Each
         // prints its time, to find it in a filmed run, and then the
         // window's chrome.
+        //
+        // The Prompt Editor and the compare: "editorkey" (⇧⌘E through
+        // the main menu, as the keyboard sends it), "tab" / "tab=<words>"
+        // (its +), "select=<i>", "close=<i>", "rename=<i>:<name>",
+        // "focus" (the prompt given the keyboard), "type=<text>" (typed
+        // at its end as the keyboard types), "sel=<at>,<length>",
+        // "bold" / "italic" / "underline" (the tab bar's B, I, U),
+        // "sparkles" (the assistant's button: a suggestion written, with
+        // the engine), "suggest" / "suggest=<words>" (one offered as if
+        // written -- a build without the engine has no assistant),
+        // "apply" / "reject" (its buttons), "markup" (⇧⌘A),
+        // "import=<file>" (into Assets), "a=<asset>" / "b=<asset>" (an
+        // asset dropped on the compare's A or B: an id, or "image",
+        // the newest picture in Assets not on the stage).
         if let m = model, let steps = env["VALTZ_SNAPSHOT_TOGGLES"] {
             for step in steps.split(separator: ",") {
                 let p = step.split(separator: ":").map(String.init)
@@ -5637,6 +5661,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         m.focusPrompt(.agent)
                     } else if p[0] == "editor" {
                         m.toggleImmersivePrompt()
+                    } else if p[0] == "editorkey" {
+                        Self.postMenuKey("e", [.command, .shift], to: m)
+                    } else if p[0] == "tab" || p[0].hasPrefix("tab=") {
+                        m.newPromptTab()
+                        if p[0].hasPrefix("tab=") {
+                            m.setPrompt(String(p[0].dropFirst(4)))
+                        }
+                    } else if p[0].hasPrefix("select=") {
+                        m.selectPromptTab(Int(p[0].dropFirst(7)) ?? 0)
+                    } else if p[0].hasPrefix("close=") {
+                        m.requestClosePromptTab(Int(p[0].dropFirst(6)) ?? 0)
+                    } else if p[0].hasPrefix("rename=") {
+                        let a = p[0].dropFirst(7).split(
+                            separator: "~", maxSplits: 1,
+                            omittingEmptySubsequences: false)
+                        if let n = Int(a.first ?? "") {
+                            m.renamePromptTab(
+                                n, a.count > 1 ? String(a[1]) : "")
+                        }
+                    } else if p[0] == "focus" {
+                        if let tv = m.promptTextView {
+                            tv.window?.makeFirstResponder(tv)
+                        }
+                    } else if p[0].hasPrefix("type=") {
+                        if let tv = m.promptTextView {
+                            tv.setSelectedRange(NSRange(
+                                location: tv.string.utf16.count, length: 0))
+                            for ch in p[0].dropFirst(5) {
+                                tv.insertText(String(ch),
+                                              replacementRange:
+                                                  tv.selectedRange())
+                            }
+                        }
+                    } else if p[0].hasPrefix("sel=") {
+                        let n = p[0].dropFirst(4).split(separator: "/")
+                            .compactMap { Int($0) }
+                        if n.count == 2, let tv = m.promptTextView {
+                            tv.setSelectedRange(NSRange(location: n[0],
+                                                        length: n[1]))
+                        }
+                    } else if ["bold", "italic", "underline"].contains(p[0]) {
+                        // As the tab bar's buttons do it.
+                        if let tv = m.promptTextView {
+                            tv.window?.makeFirstResponder(tv)
+                            tv.toggleMarkdown(p[0] == "bold" ? .bold
+                                : p[0] == "italic" ? .italic : .underline)
+                        }
+                    } else if p[0] == "suggest" || p[0].hasPrefix("suggest=") {
+                        let words = p[0].hasPrefix("suggest=")
+                            ? String(p[0].dropFirst(8))
+                            : "A slow dolly through a rain-soaked night market, neon reflected in the puddles, steam rising from the stalls; warm light, shallow depth of field, 35 mm film grain."
+                        m.enhanced = EnhancedPrompt(
+                            prompt: words, negative: "", title: "",
+                            aspect: "", follow: "")
+                    } else if p[0] == "sparkles" {
+                        // The assistant's button, the chip row's.
+                        m.assistantPressed()
+                    } else if p[0] == "apply" {
+                        m.acceptEnhanced()
+                    } else if p[0] == "reject" {
+                        m.dismissEnhanced()
+                    } else if p[0] == "markup" {
+                        m.markupOpen.toggle()
+                    } else if p[0].hasPrefix("import=") {
+                        _ = m.importFiles([URL(fileURLWithPath:
+                            String(p[0].dropFirst(7)))])
+                    } else if p[0].hasPrefix("a=") || p[0].hasPrefix("b=") {
+                        let arg = String(p[0].dropFirst(2))
+                        let a = arg == "image"
+                            ? m.assets.filter {
+                                $0.kind == "image" && $0.id != m.stageAssetId
+                              }.max { $0.created < $1.created }
+                            : m.asset(id: arg)
+                        let took = a.map {
+                            m.dropOnCompare(URL(string: AppModel.assetPrefix
+                                                + $0.id)!,
+                                            in: p[0].hasPrefix("a") ? .a : .b)
+                        } ?? false
+                        FileHandle.standardError.write(Data(
+                            "snapshot: compare-drop \(p[0]) asset=\(a?.name ?? "-") took=\(took)\n".utf8))
                     } else if p[0] == "compare" {
                         m.toggleCompare()
                         FileHandle.standardError.write(Data(

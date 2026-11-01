@@ -299,7 +299,7 @@ extension AppModel {
         let p = event.locationInWindow
         let at = CGPoint(x: p.x, y: content.bounds.height - p.y)
         if assetListFrame.contains(at) || stageCardFrame.contains(at)
-            || stageBarFrame.contains(at) {
+            || stageBarFrame.contains(at) || contextBarFrame.contains(at) {
             return
         }
         endViewing()

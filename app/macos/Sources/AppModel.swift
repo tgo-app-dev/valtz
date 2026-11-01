@@ -1281,9 +1281,6 @@ final class AppModel {
     var tuningInfo: TuningInfo?
     /// The Custom panel is open.
     var showsTuning = false
-    /// The Prompt Editor's popover of the generation card's settings (its
-    /// toolbar's button) -- Tune's options open inside it.
-    var showsGenerationSettings = false
     var seedText = ""      // empty = random
     /// A clip's length: a preset, in seconds as offered, or -- nil -- a
     /// length typed in the Length field, kept as `clipCustomFrames`.
@@ -1356,6 +1353,9 @@ final class AppModel {
     /// transport, Grab Frame and Continue: the stage's own, so a click on
     /// it leaves a viewing as it is.
     @ObservationIgnored var stageBarFrame: CGRect = .null
+    /// The contextual row over the stage -- the compare's A, B and modes,
+    /// markup's tools: the stage's too, a click on it leaving a viewing.
+    @ObservationIgnored var contextBarFrame: CGRect = .null
     /// The stage card off the desk: 0 on it, 1 lifted -- larger, faded
     /// out. A viewed asset is put down with it, and taken off.
     var stageLift = 0.0
@@ -1523,10 +1523,9 @@ final class AppModel {
     /// box -- and the dock with it -- growing with it. While the dock has
     /// a height of its own (its splitter's), the box fills it instead.
     var promptCompact = false
-    /// IMMERSIVE prompt editing (View › Edit Prompt in Full; PromptStudio):
-    /// the prompt the window's height under a toolbar of its own, the
-    /// stage a small preview at the top left, the cards put away -- and
-    /// several prompts open, as tabs. The ACTIVE tab is the prompt itself
+    /// IMMERSIVE prompt editing, the Prompt Editor (⇧⌘E; PromptStudio):
+    /// the dock grown to the column, its tabs along the composer's top,
+    /// the stage a strip over it -- and several prompts open, as tabs. The ACTIVE tab is the prompt itself
     /// (`prompt`, `promptMarked`, ...); the others wait in `promptTabs`.
     /// Back in the box, the prompt is the tab last open.
     var promptImmersive = false
@@ -1535,9 +1534,6 @@ final class AppModel {
     /// small stage, the editor kept; a double-click (to work on it) still
     /// takes the editor away.
     var editorEdited = false
-    /// The Prompt Editor's toolbar's foot, in the window: the small stage
-    /// keeps a margin under it.
-    var editorToolbarBottom: CGFloat = 0
     var promptTabs: [PromptTab] = []
     var activePromptTab = 0
     /// The tab whose name is being typed in its header, if any.

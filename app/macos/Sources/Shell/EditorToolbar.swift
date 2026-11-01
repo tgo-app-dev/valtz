@@ -7,7 +7,7 @@ import SwiftUI
 ///
 ///   zoom       zoom out, the level (a click: actual size), fit, zoom in;
 ///              the first to go when the window narrows
-///   modes      the compare under the stage, markup's row above it
+///   modes      the compare's row and markup's, above the stage
 ///   activity   what runs, and the machine's load (ActivityButton); on
 ///              every screen, the last to go
 ///   document   share (Save…, then the system's Share…), the inspector

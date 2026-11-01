@@ -130,8 +130,9 @@ set(VALTZ_APP_SOURCES
   Sources/Dock/TimelineBand.swift
   Sources/Dock/ComposerCard.swift
   Sources/Dock/GenerateChips.swift
+  Sources/Dock/PromptTabBar.swift
+  Sources/Dock/SuggestionSplit.swift
   Sources/Views/MarkupBar.swift
-  Sources/Views/PromptBar.swift
   Sources/Views/LogView.swift
   Sources/Simple/SimpleView.swift
   Sources/Simple/CropTrim.swift

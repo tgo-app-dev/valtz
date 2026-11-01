@@ -156,13 +156,12 @@ struct WorkspaceChrome: Codable, Equatable {
 struct WorkspaceLayout: Equatable {
     /// The stage column's main region.
     enum Stage: Equatable { case editor, atlas, log }
-    /// The contextual row above the stage. Compare joins it in Phase 5;
-    /// until then its bar stays under the stage.
-    enum Context: Equatable { case none, markup }
+    /// The contextual row above the stage: markup's tools, or the
+    /// compare's A, B and modes -- one at a time.
+    enum Context: Equatable { case none, markup, compare }
     /// The dock under the stage: none, the composer, the timeline band
-    /// over it -- or, in the Prompt Editor, the prompt expanded (until
-    /// Phase 5 makes that the dock grown, the editor lays it out itself
-    /// and the dock stands aside).
+    /// over it -- or, in the Prompt Editor, the composer expanded to the
+    /// column, the stage a strip over it.
     enum Dock: Equatable { case hidden, composer, bandAndComposer,
                                 expandedPrompt }
 
@@ -179,8 +178,9 @@ struct WorkspaceLayout: Equatable {
     ///
     ///   mode            sidebar      inspector  context  stage   dock
     ///   compose         chrome       chrome     none     editor  composer *
-    ///   Prompt Editor   chrome       chrome     none     editor  expandedPrompt
+    ///   Prompt Editor   chrome       chrome     none     strip   expandedPrompt
     ///   markup          chrome       chrome     markup   editor  as compose
+    ///   compare         chrome       chrome     compare  editor  as compose
     ///   view only       detailOnly   off        none     editor  hidden
     ///   Atlas, Log      chrome       off        none     atlas,  hidden
     ///                                                    log
@@ -188,6 +188,10 @@ struct WorkspaceLayout: Equatable {
     ///
     ///   * bandAndComposer while a timeline is on the stage and the band
     ///     is wanted (chrome.timelineBand: AppModel.timelineOpen).
+    ///
+    /// Markup and the compare both on: markup's row, the compare's
+    /// controls folded into a menu at its end (MarkupBar). The Prompt
+    /// Editor has neither (it puts markup away; the compare waits).
     ///
     /// View only puts the chrome itself away as it starts and back as it
     /// ends (AppModel.setViewOnly), so the person's sidebar toggle still
@@ -215,8 +219,9 @@ struct WorkspaceLayout: Equatable {
             sidebar: inspector && !m.columnsFit ? .detailOnly
                                                 : m.chrome.sidebar,
             inspector: inspector,
-            context: editor && m.markupOpen && !m.viewOnly
-                && !m.promptImmersive ? .markup : .none,
+            context: !editor || m.viewOnly || m.promptImmersive ? .none
+                : m.markupOpen ? .markup
+                : m.compareOn ? .compare : .none,
             stage: stage,
             dock: dock,
             editorTools: editor)

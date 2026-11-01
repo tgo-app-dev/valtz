@@ -6886,6 +6886,16 @@
         }
       }
     },
+    "Drop a picture from Assets here to compare it as B" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将素材中的图片拖到这里，作为 B 进行对比"
+          }
+        }
+      }
+    },
     "Drop a picture or a clip on a layer to show it there; clips start with the timeline. Each layer's adjustments, crop and turn are keyed on the clip's timeline: select a layer, then set its keys." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -8634,6 +8644,7 @@
       }
     },
     "Generation settings" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -8644,6 +8655,7 @@
       }
     },
     "Generation settings: what the generation card sets" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -14875,6 +14887,16 @@
         }
       }
     },
+    "Prompts" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提示词"
+          }
+        }
+      }
+    },
     "Proof on Dark Background" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19202,6 +19224,16 @@
         }
       }
     },
+    "The compare's controls: markup's row is up, so they wait in this menu" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对比的控件：标记栏已打开，因此它们收在这个菜单里"
+          }
+        }
+      }
+    },
     "The compressed copy kept, its original deleted: %@ freed." : {
       "localizations" : {
         "zh-Hans" : {
@@ -19436,6 +19468,7 @@
       }
     },
     "The model Start runs -- the generation card's, one choice" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -21897,6 +21930,7 @@
       }
     },
     "What Start makes" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {

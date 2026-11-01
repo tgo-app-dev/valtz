@@ -16,9 +16,16 @@ import SwiftUI
 /// back. A double-click on the splitter gives the height back to the
 /// content.
 ///
+/// In the Prompt Editor (`.expandedPrompt`) it is the composer grown to
+/// the column but the stage's strip (StageColumn): its tabs along its
+/// top, the suggestion splitting it. The same card as ever -- grown, not
+/// another -- so the prompt's text view, its caret and the keyboard stay
+/// in it as it grows and as it goes back.
+///
 /// A notice, the memory card and the assistant's suggestion float over
 /// its top edge, over the stage's foot: nothing moves as they come and
-/// go.
+/// go. The suggestion floats only while the dock is not grown: grown, it
+/// is half the card (SuggestionSplit).
 struct DockView: View {
     @Bindable var model: AppModel
     let layout: WorkspaceLayout
@@ -41,20 +48,25 @@ struct DockView: View {
     /// What the stage keeps of the column, at least.
     static let stageLeast: CGFloat = 240
 
+    private var expanded: Bool { layout.dock == .expandedPrompt }
+
     var body: some View {
-        let fixed = height != nil
+        // Grown, the dock fills what the strip leaves it.
+        let fixed = height != nil || expanded
         VStack(spacing: Self.gap) {
             if model.timelineAvailable {
                 TimelineBand(model: model, fills: fixed)
             }
             ComposerCard(model: model, maxPromptHeight: maxPromptHeight,
-                         fills: fixed && !model.timelineOpen)
+                         fills: fixed && !model.timelineOpen,
+                         expanded: expanded)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height }
                     action: { model.dockComposerHeight = $0 }
         }
         .padding(.horizontal, Self.inset)
         .padding(.bottom, Self.inset)
         .frame(height: height, alignment: .top)
+        .frame(maxHeight: expanded ? .infinity : nil, alignment: .top)
         .containerShape(.rect(cornerRadius: VZ.Radius.dock))
         .overlay(alignment: .top) { floating }
         .animation(AppModel.motion, value: model.timelineOpen)
@@ -108,7 +120,7 @@ struct DockView: View {
                     .transition(.move(edge: .bottom)
                         .combined(with: .opacity))
             }
-            if model.suggesting {
+            if model.suggesting && !expanded {
                 SuggestionCard(prompt: model.enhanced?.prompt
                                    ?? model.enhanceDraft,
                                writing: model.suggestionWriting,
@@ -134,17 +146,19 @@ struct DockView: View {
         .animation(AppModel.motion, value: model.notice?.text)
         .animation(AppModel.motion, value: model.memoryFailure != nil)
         .animation(AppModel.motion, value: model.suggesting)
+        .animation(AppModel.motion, value: expanded)
     }
 
     /// How far over the dock they float: clear of the stage's bar under
-    /// the picture (a clip's Loop / Grab Frame / Continue, the compare's,
-    /// a still's pages) and of a clip's scrubber over it.
+    /// the picture (a clip's Loop / Grab Frame / Continue, a still's
+    /// pages) and of a clip's scrubber over it. The strip over the grown
+    /// dock has neither.
     private var lift: CGFloat {
         let clip = model.stage.video != nil && model.stage.clip == nil
-        let bar = model.stageVisible && (clip || model.compareOn
-            || model.stagePagesShown)
+        let shown = model.stageVisible && !expanded
+        let bar = shown && (clip || model.stagePagesShown)
         // A clip's scrubber over its bar, but while the timeline is open.
-        let scrubber = model.stageVisible && clip && !model.timelineOpen
+        let scrubber = shown && clip && !model.timelineOpen
         return VZ.Space.m + (bar ? 40 : 0) + (scrubber ? 28 : 0)
     }
 }

@@ -1084,7 +1084,7 @@ struct PromptEditor: NSViewRepresentable {
             Self.refTagImage(kind, index, model)
         }
         tv.onClick = { model.clearReferenceFocus() }
-        // The prompt the toolbar's B / I / U format (PromptBar).
+        // The prompt the tab bar's B / I / U format (PromptTabBar).
         tv.onFocus = { [weak tv] in model.promptTextView = tv }
         tv.onFocusChange = { [weak coordinator = context.coordinator] in
             guard let coordinator,

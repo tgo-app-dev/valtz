@@ -12,7 +12,8 @@ import SwiftUI
 /// EFFECTS -- a shadow, a glow; what can be done with a selection --
 /// ARRANGE it (its order, alignment, spacing), give it CONNECTORS (or
 /// take them off), make it pixels, delete it; and which layer the markup
-/// goes on.
+/// goes on. With the compare on too, its controls in a menu at the end
+/// (CompareMenu).
 struct MarkupBar: View {
     @Bindable var model: AppModel
     @State private var fontPanel = false
@@ -39,6 +40,17 @@ struct MarkupBar: View {
                     .layoutPriority(-1)
             }
             .disabled(!model.markupReady)
+        } trailing: {
+            // The compare on too: its controls folded at the row's end,
+            // the row being markup's -- in reach however far the tools
+            // scroll.
+            if model.compareOn {
+                HStack(spacing: VZ.Space.s) {
+                    Divider().frame(height: 18)
+                    CompareMenu(model: model)
+                }
+                .padding(.trailing, VZ.Space.m)
+            }
         }
         .onChange(of: m.tool) { _, _ in model.markupToolChanged() }
         // The words typed in place follow the selection, and end with the

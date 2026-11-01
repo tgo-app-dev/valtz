@@ -669,55 +669,10 @@ private struct SeedPopover: View {
     }
 }
 
-/// The Prompt Editor's settings (its toolbar's button): every chip's
-/// rows in one popover, until Phase 5 gives the editor the dock's own
-/// chips.
-struct GenerateSettingsList: View {
-    @Bindable var model: AppModel
-    @State private var size: CGSize = .zero
-
-    var body: some View {
-        ScrollView(.vertical) {
-            AtIdealWidth(minWidth: 420) {
-                Form {
-                    ForEach(model.generateChips) { c in
-                        switch c {
-                        case .model: ModelRows(model: model)
-                        case .shape: ShapeRows(model: model)
-                        case .length: LengthRows(model: model)
-                        case .favor:
-                            Section {
-                                FavorRows(model: model)
-                                if model.preference == .custom {
-                                    TuningPanel(model: model, embedded: true)
-                                }
-                            }
-                        case .seed:
-                            Section {
-                                TextField("Seed", text: $model.seedText,
-                                          prompt: Text("Random"))
-                            }
-                        case .agent: AgentSettingsRows(model: model)
-                        }
-                    }
-                }
-                .formStyle(.grouped)
-                .scrollDisabled(true)
-            }
-            .onGeometryChange(for: CGSize.self) { $0.size }
-                action: { size = $0 }
-        }
-        .scrollBounceBehavior(.basedOnSize)
-        .frame(width: size.width > 0 ? size.width : nil,
-               height: size.height > 0 ? min(size.height, 680) : nil)
-        .animation(AppModel.motion, value: model.showsTuning)
-    }
-}
-
 /// The paperclip: a menu -- a file browsed for (a song's lyrics in the
 /// Audio tab), or a sound recorded from the microphone or the system's
 /// audio, or a still or a clip from the camera (AttachCapture), each
-/// into the prompt's row. The chip row's, and the Prompt Editor's.
+/// into the prompt's row. The chip row's.
 struct AttachMenu: View {
     @Bindable var model: AppModel
     var size: CGFloat = 22

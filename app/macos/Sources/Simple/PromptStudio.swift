@@ -1,324 +1,20 @@
 import AppKit
 import SwiftUI
 
-/// The Prompt Editor's TABS (DESIGN §10c): the prompts open at once, down
-/// the left side of the prompt card as the tray's cards hang under it --
-/// each a card tucked behind the prompt card's edge, rounded on its outer
-/// side, its title running up it. The open one is white, of a piece with
-/// the card; the others grey. While they fit in 80% of the height each
-/// shows its whole title (to a length); past that the longest titles give
-/// way first, and when even short tabs do not fit, they scroll, the round
-/// + below them in the last fifth. Otherwise + follows the last tab. A
-/// tab's title is typed over in place to NAME its prompt: a double-click
-/// on it, or its menu's Rename.
-struct PromptTabRail: View {
-    @Bindable var model: AppModel
-    /// The prompt card's height.
-    let height: CGFloat
-
-    /// How far a tab stands out of the card, and how far it tucks under.
-    static let visible: CGFloat = 32
-    static let tuck: CGFloat = 22
-    /// Room for the tabs' shadows inside the scroll view.
-    static let pad: CGFloat = 10
-    /// How far the rail reaches left of the card.
-    static let outset: CGFloat = visible + pad
-    private static let top: CGFloat = 16
-    private static let gap: CGFloat = 8
-    private static let radius: CGFloat = 14
-    private static let minLength: CGFloat = 64
-    private static let maxLength: CGFloat = 240
-    /// A tab whose name is being typed: room to type in.
-    private static let editLength: CGFloat = 200
-    private static let inset: CGFloat = 14
-    private static let font = NSFont.systemFont(ofSize: 12)
-
-    var body: some View {
-        let n = model.promptTabs.count
-        let titles = (0..<n).map { model.promptTabTitle($0) }
-        let room = max(0, height - Self.top) * 0.8
-        let editing = model.promptTabs.firstIndex {
-            $0.id == model.renamingPromptTab }
-        let (lengths, scrolls) = Self.lengths(
-            titles.enumerated().map { i, t in
-                let l = Self.natural(t, number: i + 1,
-                                     locked: model.promptTabs[i].readOnly)
-                return i == editing ? max(l, Self.editLength) : l
-            },
-            room: room - Self.gap * CGFloat(max(0, n - 1)))
-        VStack(alignment: .leading, spacing: Self.gap) {
-            ScrollViewReader { reader in
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: Self.gap) {
-                        ForEach(Array(model.promptTabs.enumerated()),
-                                id: \.element.id) { i, tab in
-                            PromptTabCard(
-                                number: i + 1, title: titles[i],
-                                length: lengths[i],
-                                open: i == model.activePromptTab,
-                                closable: n > 1
-                                    || !model.promptTabTitleIsEmpty(i),
-                                lookOnly: model.tabDoNotApply(i),
-                                locked: tab.readOnly,
-                                editing: i == editing,
-                                select: { act { model.selectPromptTab(i) } },
-                                close: { model.requestClosePromptTab(i) },
-                                new: { act { model.newPromptTab() } },
-                                rename: {
-                                    act { model.selectPromptTab(i) }
-                                    model.renamingPromptTab = tab.id
-                                },
-                                duplicate: tab.readOnly ? {
-                                    act { model.duplicatePromptTab(i) }
-                                } : nil,
-                                named: { typed in
-                                    model.renamingPromptTab = nil
-                                    if let typed, typed != titles[i] {
-                                        act { model.renamePromptTab(i, typed) }
-                                    }
-                                })
-                                .id(tab.id)
-                        }
-                        if !scrolls { plus }
-                    }
-                    .padding(.vertical, Self.pad)
-                }
-                .scrollDisabled(!scrolls)
-                .frame(height: scrolls ? room + 2 * Self.pad : nil)
-                .onChange(of: model.activePromptTab) { _, i in
-                    guard model.promptTabs.indices.contains(i) else { return }
-                    withAnimation(AppModel.motion) {
-                        reader.scrollTo(model.promptTabs[i].id)
-                    }
-                }
-            }
-            if scrolls { plus }
-        }
-        .padding(.top, Self.top - Self.pad)
-        .frame(width: Self.pad + Self.visible + Self.tuck, alignment: .leading)
-        .animation(AppModel.motion, value: model.promptTabs.map(\.id))
-    }
-
-    private func act(_ f: @escaping () -> Void) {
-        withAnimation(AppModel.motion) { f() }
-    }
-
-    /// The round + after the tabs: a new prompt.
-    private var plus: some View {
-        Button {
-            act { model.newPromptTab() }
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(Color.valtzPanel))
-                .shadow(color: .black.opacity(0.09), radius: 7, y: 3)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .help("New prompt")
-        .accessibilityLabel(Text("New Prompt"))
-        .padding(.leading, Self.pad + (Self.visible - 26) / 2)
-    }
-
-    /// A tab's length for its whole title: its number, the title, its
-    /// ends -- within the bounds a tab has.
-    private static func natural(_ title: String, number: Int,
-                                locked: Bool = false) -> CGFloat {
-        let w = { (s: String) in
-            (s as NSString).size(withAttributes: [.font: font]).width
-        }
-        // A little over the measure: SwiftUI's line takes a few points
-        // more than the font's advances.
-        // A locked one's lock beside its number.
-        let len = w(String(number)) + 6 + w(title) + 2 * inset + 12
-            + (locked ? 14 : 0)
-        return min(maxLength, max(minLength, ceil(len)))
-    }
-
-    /// The tabs' lengths in `room`: their own while they fit; else the
-    /// longest cut to one length -- water-filling -- so the short ones
-    /// keep theirs; and when that length would be shorter than a tab can
-    /// be, each at its shortest, scrolling.
-    static func lengths(_ natural: [CGFloat], room: CGFloat)
-        -> ([CGFloat], Bool) {
-        guard natural.reduce(0, +) > room, !natural.isEmpty else {
-            return (natural, false)
-        }
-        var left = room
-        var cap = room
-        for (i, l) in natural.sorted().enumerated() {
-            let share = left / CGFloat(natural.count - i)
-            if l <= share {
-                left -= l
-            } else {
-                cap = share
-                break
-            }
-        }
-        if cap < minLength {
-            return (natural.map { min($0, minLength) }, true)
-        }
-        return (natural.map { min($0, cap) }, false)
-    }
-}
-
-/// One tab: a card on its side, its number and title running up it; the
-/// number turns into × on hover. Renamed, the title is a field.
-private struct PromptTabCard: View {
-    let number: Int
-    let title: String
-    let length: CGFloat
-    let open: Bool
-    let closable: Bool
-    /// A text asset only looked at (do-not-apply): its title in italics;
-    /// read only, a lock before it.
-    var lookOnly = false
-    var locked = false
-    var editing = false
-    let select: () -> Void
-    let close: () -> Void
-    let new: () -> Void
-    /// Its title made a field; and what was typed there (nil: Escape).
-    let rename: () -> Void
-    /// A locked prompt's copy to edit (none for another).
-    let duplicate: (() -> Void)?
-    let named: (String?) -> Void
-    @State private var hovering = false
-
-    private var run: CGFloat { max(0, length - 28) }
-
-    var body: some View {
-        let shape = UnevenRoundedRectangle(topLeadingRadius: 14,
-                                           bottomLeadingRadius: 14,
-                                           bottomTrailingRadius: 0,
-                                           topTrailingRadius: 0,
-                                           style: .continuous)
-        HStack(spacing: 0) {
-            Color.clear.frame(width: PromptTabRail.pad)
-            label
-                .frame(width: PromptTabRail.visible, height: length)
-                .padding(.trailing, PromptTabRail.tuck)
-                .background(shape.fill(open
-                    ? Color(nsColor: .textBackgroundColor)
-                    : Color.valtzPanel))
-                .shadow(color: .black.opacity(open ? 0.13 : 0.09),
-                        radius: 7, y: 3)
-                .contentShape(shape)
-                // A double-click on it names it (a click alone selects at
-                // once: no wait for a second).
-                .onClick({ if !editing { select() } },
-                         double: { if !editing { rename() } })
-                .onHover { hovering = $0 }
-        }
-        .animation(.smooth(duration: 0.15), value: hovering)
-        .contextMenu {
-            Button("New Prompt", action: new)
-            Button("Rename Prompt", action: rename)
-            if let duplicate {
-                Button("Duplicate and Edit", action: duplicate)
-            }
-            if closable {
-                Button("Close Prompt", action: close)
-            }
-        }
-        .help(editing ? "" : String(localized: "\(title) -- double-click to name it"))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(verbatim: "\(number) \(title)"))
-        .accessibilityAddTraits(open ? [.isSelected, .isButton] : .isButton)
-        .accessibilityAction(named: Text("Close Prompt"), close)
-    }
-
-    /// Laid out along the tab, then stood up: it reads from the bottom.
-    private var label: some View {
-        HStack(spacing: 6) {
-            if hovering && closable {
-                Button(action: close) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 8, weight: .bold))
-                        .frame(width: 12, height: 12)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help("Close this prompt")
-            } else {
-                Text(verbatim: String(number))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(open ? Color.accentColor : .secondary)
-            }
-            if locked {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 8))
-                    .foregroundStyle(.secondary)
-            }
-            if editing {
-                TabNameField(initial: title, done: named)
-            } else {
-                Text(verbatim: title)
-                    .font(.callout)
-                    .italic(lookOnly)
-                    .foregroundStyle(open ? .primary : .secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-        }
-        .frame(width: run, alignment: .leading)
-        .rotationEffect(.degrees(-90))
-        .frame(width: 20, height: run)
-    }
-}
-
-/// A tab's title as a field: its name typed over it -- Return (or a
-/// click away) names the prompt, Escape leaves it as it was; emptied, the
-/// prompt is named by its words again.
-private struct TabNameField: View {
-    let initial: String
-    let done: (String?) -> Void
-    @State private var text = ""
-    @State private var ended = false
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        TextField("Prompt name", text: $text)
-            .textFieldStyle(.plain)
-            .font(.callout)
-            .focused($focused)
-            // Read as a field: a light box, the accent's edge.
-            .padding(.horizontal, 4)
-            .background(RoundedRectangle(cornerRadius: 4)
-                .fill(Color(nsColor: .textBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 4)
-                .strokeBorder(Color.accentColor.opacity(0.7)))
-            .onSubmit { end(text) }
-            .onExitCommand { end(nil) }
-            .onChange(of: focused) { _, now in
-                if !now { end(text) }
-            }
-            .onAppear {
-                text = initial
-                // Focused once it is in the window: it takes the keyboard,
-                // its words selected.
-                DispatchQueue.main.async { focused = true }
-            }
-            .accessibilityLabel(Text("Prompt name"))
-    }
-
-    private func end(_ typed: String?) {
-        guard !ended else { return }
-        ended = true
-        done(typed)
-    }
-}
+/// The Prompt Editor's TABS (DESIGN §10c), the model's side: the prompts
+/// open at once -- the open one the prompt itself, the others waiting in
+/// `promptTabs` -- going in and out of the editor, choosing, adding,
+/// duplicating, closing and naming them. Their bar is Dock/PromptTabBar.
 
 // MARK: - The tabs
 
 extension AppModel {
     /// Into the Prompt Editor: the prompt becomes a tab -- the first, or
     /// the one it was when last here (the others as they were left). The
-    /// stage goes small: no markup, no crop editing, fitted; the
-    /// inspector offers Layers and Assets (Assets, if it showed another).
+    /// dock grows to the column, the same text view in it (the keyboard
+    /// stays where it was); the stage goes small in the strip over it: no
+    /// markup, no crop editing, fitted once it has its room; the
+    /// inspector offers Layers and Information.
     func enterImmersivePrompt() {
         guard !refusedForColorTarget() else { return }
         if promptTabs.isEmpty {
@@ -339,6 +35,7 @@ extension AppModel {
         stage.fitRequest += 1
         promptImmersive = true
         timelineCutting = false
+        refitStage()
     }
 
     /// Back to the stage: the prompt in the box is the tab last open (the
@@ -364,12 +61,11 @@ extension AppModel {
             loadPromptTab(promptTabs[activePromptTab])
         }
         boxTab = nil
-        // Its settings popover goes with it, Tune's options too: the
-        // card's own would open otherwise.
-        showsGenerationSettings = false
-        showsTuning = false
+        // The dock back to the height it had (the chrome's, or its
+        // content's); the stage fitted to its room again once it has it.
         stage.fitRequest += 1
         promptImmersive = false
+        refitStage()
     }
 
     func toggleImmersivePrompt() {
