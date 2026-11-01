@@ -22,6 +22,24 @@ struct EditorToolbar: CustomizableToolbarContent {
     let layout: WorkspaceLayout
 
     var body: some CustomizableToolbarContent {
+        // The sidebar shown or hidden, on every screen: the model's, as
+        // ⌃⌘S is (AppModel.setSidebar).
+        ToolbarItem(id: "sidebar", placement: .navigation) {
+            let shown = layout.sidebar != .detailOnly
+            Button {
+                withAnimation(AppModel.motion) {
+                    model.setSidebar(shown ? .detailOnly : .all)
+                }
+            } label: {
+                Label(shown ? "Hide Sidebar" : "Show Sidebar",
+                      systemImage: "sidebar.leading")
+            }
+            .help(shown ? "Hide the sidebar (⌃⌘S)"
+                        : "Show the sidebar (⌃⌘S)")
+            .shortcutHint("⌃⌘S")
+            .disabled(model.windowGivenOver)
+        }
+
         ToolbarSpacer(.flexible)
 
         if layout.editorTools {
@@ -94,7 +112,7 @@ struct EditorToolbar: CustomizableToolbarContent {
                                 model.chrome.inspectorShown = on
                             }
                         })) {
-                        Label("Inspector", systemImage: "sidebar.trailing")
+                        Label("Inspector", systemImage: "info.circle")
                     }
                     .help(model.chrome.inspectorShown
                           ? "Hide the inspector (⌃⌘I)"

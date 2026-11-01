@@ -33,6 +33,10 @@ struct RootView: View {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240,
                                                 max: 320)
+                // The split view's own toggle lives in the sidebar's part
+                // of the toolbar and was lost once the column folded: the
+                // editor toolbar's Sidebar button stands in for it.
+                .toolbar(removing: .sidebarToggle)
                 .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
                     if $0 > 0 { model.sidebarWidth = $0 }
                 }
