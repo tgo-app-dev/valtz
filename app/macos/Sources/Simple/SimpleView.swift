@@ -1,28 +1,32 @@
 import SwiftUI
 import AppKit
 
-/// Simple mode: a prompt in the middle of the window, nothing else until
-/// there is something to show.
+/// The editor's stage region, over the dock (Shell/StageColumn):
 ///
-///   idle        the Valtz mark above the prompt, both centred
-///   generating  the mark breathes until the first preview frame
-///   showing     the live preview / result in a framed card above the
-///               prompt, with glass compare controls beneath it
+///   idle        the Valtz mark, centred
+///   generating  the mark breathes until the first preview frame, what
+///               it is doing under it
+///   showing     the live preview / result, framed, with glass compare
+///               controls beneath it
 ///   immersive   the Prompt Editor (DESIGN §10c): the prompt card grown
-///               to the window's height at its own width, its tabs down
-///               its left side; the stage small at the top left
+///               to the column's height at its own width, its tabs down
+///               its left side; the stage small at the top left. Until
+///               Phase 5 makes it the dock grown, the editor lays its
+///               composer out here, and the dock stands aside.
 ///
 /// Every change of state is one animated layout change (AppModel.motion).
-/// The stage is ONE view, drawn behind the column where a slot says --
-/// above the prompt, or at the top left -- so going into the editor moves
-/// it there (its canvas and player carry on) rather than making another.
+/// The stage is ONE view, drawn behind the region where a slot says --
+/// the region's room, or the editor's top left -- so going into the
+/// editor moves it there (its canvas and player carry on) rather than
+/// making another.
 struct SimpleView: View {
     @Bindable var model: AppModel
     /// Where this view is in the window: the stage's drag ring stays in
-    /// it, out of the title bar and the markup toolbar above.
+    /// it, out of the toolbar, the markup row and the dock.
     @State private var area: CGRect = .null
 
-    /// The prompt column's width: the card's, in either mode.
+    /// The prompt column's width in the Prompt Editor: the card's; and
+    /// the floating cards' over the dock.
     static let columnWidth: CGFloat = 680
 
     var body: some View {
@@ -32,12 +36,15 @@ struct SimpleView: View {
         // together (a measured size would come a pass late).
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
-                // The whole view, the column centred in it: the editor's
-                // top left is the window's, not the column's.
-                column(immersive, size: geo.size)
-                    .frame(width: geo.size.width, height: geo.size.height)
                 if immersive {
+                    // The whole view, the column centred in it: the
+                    // editor's top left is the window's, not the column's.
+                    editorColumn(size: geo.size)
+                        .frame(width: geo.size.width, height: geo.size.height)
                     topLeft(geo.size)
+                } else {
+                    stageRoom(size: geo.size)
+                        .frame(width: geo.size.width, height: geo.size.height)
                 }
             }
         }
@@ -56,15 +63,12 @@ struct SimpleView: View {
             }
         }
         .animation(AppModel.motion, value: model.stageVisible)
-        .animation(AppModel.motion, value: model.openPanel)
         .animation(AppModel.motion, value: model.timelineOpen)
         .animation(AppModel.motion, value: model.viewOnly)
         .onGeometryChange(for: CGRect.self) {
             $0.frame(in: .global)
         } action: {
             area = $0
-            model.editorRoom = $0.height
-            model.roomMeasured()
         }
         // The prompt row's first picture, in an image prompt: its pencil
         // suggested -- the picture to edit, if it is one. Watched here:
@@ -79,176 +83,61 @@ struct SimpleView: View {
         }
     }
 
-    /// The prompt's column: the stage's slot (or the mark) above the
-    /// composer -- or, in the editor, the composer alone, the window's
-    /// height, a status bar's height short of its foot. There, while the
-    /// card is split -- the assistant's suggestion beside the prompt -- it
-    /// reaches right to the window's edge, or the inspector's, a status
-    /// bar's height from it as from the foot, its left edge where it was.
-    /// (It stayed its own width beside the inspector, which left it a
-    /// column of empty room.) The agent's session splits nothing: it
-    /// takes the card at its own width.
-    private func column(_ immersive: Bool, size: CGSize) -> some View {
-        let base = min(Self.columnWidth, size.width - 80)
-        let wide = immersive && model.suggesting
-        let card = wide ? max(base, size.width - Self.footInset
-                                    - (size.width - base) / 2)
-                        : base
-        return VStack(spacing: 0) {
-            if !immersive {
-                if model.stageVisible {
-                    Color.clear
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .anchorPreference(key: StageSlotKey.self,
-                                          value: .bounds) { $0 }
-                        .onGeometryChange(for: CGFloat.self) {
-                            $0.size.height
-                        } action: {
-                            model.stageRoom = $0
-                            model.roomMeasured()
-                        }
-                        .padding(.bottom, 22)
-                } else {
-                    // The mark and the room around it: what the composer
-                    // can grow into (AppModel.pictureRoom).
-                    Spacer(minLength: 20)
-                        .onGeometryChange(for: CGFloat.self) {
-                            $0.size.height
-                        } action: {
-                            model.markRoom[0] = $0
-                            model.roomMeasured()
-                        }
-                    // Ahead of the spacers for room, but it shrinks when a
-                    // tall prompt (or open drawer) needs the height.
-                    // The mark takes no drops: media go into the prompt,
-                    // or onto a stage's layers.
-                    HeroMark(sweep: model.markSweep)
-                        // A fleet job's overlay shows the mark, in blue.
-                        .opacity(model.fleetServing == nil ? 1 : 0)
-                        .layoutPriority(1)
-                        .onGeometryChange(for: CGFloat.self) {
-                            $0.size.height
-                        } action: {
-                            model.markRoom[1] = $0
-                            model.roomMeasured()
-                        }
-                        .padding(24)
-                        .transition(.scale(scale: 0.8)
-                            .combined(with: .opacity))
-                        .padding(.bottom, 41 - 24)
-                        .onAppear { model.startupSweep() }
-                    // Before the first frame: what it is doing, at the
-                    // width it has over the stage.
-                    if model.isGenerating {
-                        GenerationStatus(
-                            model: model,
-                            width: min(GenerationStatus.defaultWidth, base))
-                            .padding(.bottom, 20)
-                            .transition(.opacity)
-                    }
+    /// The region outside the editor: the stage's slot, all of it -- or,
+    /// with nothing on the stage, the mark in the middle and, before the
+    /// first frame, what a generation is doing under it.
+    private func stageRoom(size: CGSize) -> some View {
+        VStack(spacing: 0) {
+            if model.stageVisible {
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .anchorPreference(key: StageSlotKey.self,
+                                      value: .bounds) { $0 }
+            } else {
+                Spacer(minLength: 12)
+                // The mark takes no drops: media go into the prompt, or
+                // onto a stage's layers.
+                HeroMark(sweep: model.markSweep)
+                    // A fleet job's overlay shows the mark, in blue.
+                    .opacity(model.fleetServing == nil ? 1 : 0)
+                    .padding(24)
+                    .transition(.scale(scale: 0.8).combined(with: .opacity))
+                    .onAppear { model.startupSweep() }
+                if model.isGenerating {
+                    GenerationStatus(
+                        model: model,
+                        width: min(GenerationStatus.defaultWidth,
+                                   max(120, size.width - 80)))
+                        .padding(.bottom, 20)
+                        .transition(.opacity)
                 }
-            }
-            // The cards over the composer, and the composer: a notice
-            // floats over the topmost of them.
-            VStack(spacing: 0) {
-                // View only: the stage alone (AppModel.viewOnly) -- the
-                // notice still floats where the composer's top would be.
-                if !immersive && !model.viewOnly {
-                    if let f = model.memoryFailure, !model.suggesting {
-                        MemoryFailureCard(model: model, failure: f)
-                            .frame(maxWidth: Self.columnWidth)
-                            .padding(.bottom, 14)
-                            .transition(.move(edge: .bottom)
-                                .combined(with: .opacity))
-                    }
-                    if model.suggesting {
-                        SuggestionCard(prompt: model.enhanced?.prompt
-                                           ?? model.enhanceDraft,
-                                       writing: model.suggestionWriting,
-                                       stats: model.agentShowsSpeed
-                                           ? model.enhanced?.stats : nil,
-                                       maxTextHeight: SuggestionCard.textCap(
-                                           window: size.height),
-                                       accept: model.acceptEnhanced,
-                                       dismiss: model.dismissEnhanced,
-                                       review: {
-                                           withAnimation(AppModel.motion) {
-                                               model.enterImmersivePrompt()
-                                           }
-                                       })
-                            .frame(maxWidth: Self.columnWidth)
-                            .padding(.bottom, 14)
-                            .transition(.move(edge: .bottom)
-                                .combined(with: .opacity))
-                    }
-                }
-                if !model.viewOnly {
-                ComposerStack(model: model, maxPromptHeight: size.height / 2,
-                              immersive: immersive, cardWidth: card)
-                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-                        model.composerWidth = $0
-                        model.composerColumn = base
-                    }
-                    .frame(width: immersive ? card : nil)
-                    // The timeline is wide: the window's width but the
-                    // margins, where its switch back sits.
-                    .frame(maxWidth: immersive ? nil
-                           : model.timelineOpen ? max(base, size.width - 80)
-                           : Self.columnWidth)
-                    .frame(maxHeight: immersive ? .infinity : nil,
-                           alignment: .top)
-                    // Wider, it grows to the right: its left edge stays.
-                    .offset(x: immersive ? (card - base) / 2 : 0)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            // A NOTICE, floating between the stage (or the mark) and the
-            // prompt or the timeline -- over neither's layout: nothing
-            // moves as it comes and goes. It went under the composer in
-            // secondary text, where it was missed. Over the stage's own bar
-            // (a clip's Loop / Grab Frame / Continue, the compare's) and a
-            // generation's status, it stands above them.
-            .overlay(alignment: .top) {
-                if !immersive, let n = model.notice {
-                    // Its foot on the group's top (a frame of no height, the
-                    // capsule standing up out of it), a gap above.
-                    NoticeCapsule(notice: n, dismiss: model.dismissNotice)
-                        .frame(maxWidth: min(Self.columnWidth, base))
-                        .frame(height: 0, alignment: .bottom)
-                        .offset(y: -noticeLift)
-                        .transition(.move(edge: .bottom)
-                            .combined(with: .opacity))
-                        .id(n.text)
-                }
-            }
-            if !immersive {
-                if !model.stageVisible {
-                    Spacer(minLength: 20)
-                        .onGeometryChange(for: CGFloat.self) {
-                            $0.size.height
-                        } action: {
-                            model.markRoom[2] = $0
-                            model.roomMeasured()
-                        }
-                }
+                Spacer(minLength: 12)
             }
         }
-        .padding(.horizontal, 40)
-        .padding(.top, immersive ? 0 : 12)
-        .padding(.bottom, immersive ? Self.footInset
-                 : model.stageVisible ? 28 : 0)
+        .padding(.horizontal, VZ.Space.xl)
+        .padding(.top, VZ.Space.m)
     }
 
-    /// How far over the composer a notice floats: clear of the stage's
-    /// bar under the picture and of a generation's status.
-    private var noticeLift: CGFloat {
-        let clip = model.stage.video != nil && model.stage.clip == nil
-        let bar = model.stageVisible && (clip || model.compareOn
-            || model.stagePagesShown)
-        // A clip's scrubber over its bar, but while the timeline is open.
-        let scrubber = model.stageVisible && clip && !model.timelineOpen
-        return 12 + (bar ? 40 : 0) + (scrubber ? 28 : 0)
-            + (model.isGenerating ? 52 : 0)
+    /// The Prompt Editor's column: the composer alone, the region's
+    /// height, a margin short of its foot. There, while the card is split
+    /// -- the assistant's suggestion beside the prompt -- it reaches
+    /// right to the column's edge, the same margin from it, its left edge
+    /// where it was. The agent's session splits nothing: it takes the
+    /// card at its own width.
+    private func editorColumn(size: CGSize) -> some View {
+        let base = min(Self.columnWidth, size.width - 80)
+        let card = model.suggesting
+            ? max(base, size.width - Self.footInset - (size.width - base) / 2)
+            : base
+        return ComposerCard(model: model, maxPromptHeight: size.height / 2,
+                            immersive: true, cardWidth: card)
+            .frame(width: card)
+            .frame(maxHeight: .infinity, alignment: .top)
+            // Wider, it grows to the right: its left edge stays.
+            .offset(x: (card - base) / 2)
+            .padding(.horizontal, 40)
+            .padding(.bottom, Self.footInset)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     /// In the editor, the space left of the card and its tabs: the stage
@@ -284,7 +173,7 @@ struct SimpleView: View {
         }
     }
 
-    /// The Prompt Editor's card: this much short of the window's foot
+    /// The Prompt Editor's card: this much short of the region's foot
     /// (and of its right edge, split).
     static let footInset: CGFloat = 24
     /// The small stage's margin, left and top.
@@ -293,8 +182,7 @@ struct SimpleView: View {
     static let smallBar: CGFloat = 30
 }
 
-/// Where the stage goes: the slot above the prompt, or the editor's top
-/// left.
+/// Where the stage goes: the region's room, or the editor's top left.
 /// Media dropped on the stage are INSTANTIATED in its work: in the
 /// selected layer when it is blank, else in a new one right above it --
 /// an asset of the list, a file (imported first), or what a drag from
@@ -447,67 +335,6 @@ private struct StagePages: View {
             .shortcutHint("→")
         }
         .stageCapsule()
-    }
-}
-
-/// A NOTICE (AppModel.flash) as it floats over the composer: its words
-/// in a Liquid Glass capsule -- an error's tinted a mild red, a warning's
-/// a mild yellow, its sign beside the words. A click lets it go.
-private struct NoticeCapsule: View {
-    let notice: Notice
-    let dismiss: () -> Void
-
-    private var symbol: String {
-        switch notice.level {
-        case .info: "info.circle.fill"
-        case .warning: "exclamationmark.triangle.fill"
-        case .error: "xmark.octagon.fill"
-        }
-    }
-
-    /// The level's colour; nil for a plain notice.
-    private var accent: Color? {
-        switch notice.level {
-        case .info: nil
-        case .warning: Color(red: 0.95, green: 0.72, blue: 0.10)
-        case .error: Color(red: 0.92, green: 0.26, blue: 0.24)
-        }
-    }
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: symbol)
-                .foregroundStyle(accent ?? .secondary)
-            Text(notice.text)
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.leading)
-                .lineLimit(3)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .font(.callout.weight(.medium))
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        // The glass BEHIND the words, not around them: content inside a
-        // glass effect waits for the glass's own appearance, and a notice
-        // comes and goes in seconds.
-        .background {
-            Capsule()
-                .fill(.clear)
-                .glassEffect(.regular.tint(accent?.opacity(0.22)),
-                             in: Capsule())
-        }
-        // Its rim: the level's colour, or -- a plain notice, whose glass
-        // over a white window all but vanishes -- a hairline.
-        .overlay {
-            Capsule().strokeBorder(accent?.opacity(0.5)
-                                       ?? Color.primary.opacity(0.14),
-                                   lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
-        .contentShape(Capsule())
-        .onTapGesture(perform: dismiss)
-        .help("Click to dismiss")
-        .accessibilityElement(children: .combine)
     }
 }
 

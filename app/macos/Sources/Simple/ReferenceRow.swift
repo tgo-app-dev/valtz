@@ -39,7 +39,7 @@ struct ReferenceRow: View {
                         // it lands, where it says it is.
                         .opacity(model.capturedItem == item.id ? 0 : 1)
                         .onGeometryChange(for: CGRect.self) {
-                            $0.frame(in: .named(ComposerStack.cardSpace))
+                            $0.frame(in: .named(ComposerCard.cardSpace))
                         } action: { f in
                             if model.capturedItem == item.id {
                                 model.capturedThumbFrame = f

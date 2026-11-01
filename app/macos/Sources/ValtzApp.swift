@@ -1268,12 +1268,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// assets:<the sidebar, with Assets, shown>` -- the timeline opened by
     /// itself, the switch flashed, Assets shown for a second result
     /// (AppModel.landed).
+    /// The dock as laid out: what fills it, its height (set, or its
+    /// content's), the composer's, the band's rows, the chip open.
+    @MainActor
+    static func dockSummary(_ m: AppModel) -> String {
+        let set = m.chrome.dockHeight.map { "\(Int($0))" } ?? "fit"
+        return "dock=\(m.layout.dock) dockHeight=\(set) "
+            + "composer=\(Int(m.dockComposerHeight)) "
+            + "band=\(m.chrome.timelineBand) timelineOpen=\(m.timelineOpen) "
+            + "rows=\(m.timelineRows) chip=\(m.openChip?.rawValue ?? "-") "
+            + "column=\(Int(m.stageColumnHeight))"
+    }
+
+    /// The chips as the row shows them: "model:Auto_(…)|shape:16:9_·_Large".
+    @MainActor
+    static func chipSummary(_ m: AppModel) -> String {
+        m.generateChips.map {
+            "\($0.rawValue):\(m.chipValue($0))"
+                .replacingOccurrences(of: " ", with: "_")
+        }.joined(separator: "|")
+    }
+
+    /// A key pressed in the main window, as the key monitor sees one:
+    /// posted to the app, so it goes through the monitors first.
+    @MainActor
+    static func postKey(_ code: UInt16, _ chars: String, to m: AppModel) {
+        guard let w = m.editorWindow,
+              let e = NSEvent.keyEvent(
+                  with: .keyDown, location: .zero, modifierFlags: [],
+                  timestamp: ProcessInfo.processInfo.systemUptime,
+                  windowNumber: w.windowNumber, context: nil,
+                  characters: chars, charactersIgnoringModifiers: chars,
+                  isARepeat: false, keyCode: code)
+        else { return }
+        NSApp.postEvent(e, atStart: false)
+    }
+
     @MainActor
     static func landingSummary(_ m: AppModel) -> String {
         let c = m.landingCounts
         let assets = m.chrome.sidebar != .detailOnly
         return "open:\(m.timelineOpen),auto:\(c.timeline),"
-            + "flash:\(c.flash),results:\(c.results),assets:\(assets)"
+            + "results:\(c.results),assets:\(assets)"
     }
 
     /// The main window drawn by AppKit (cacheDisplay) to a PNG: a second
@@ -1387,9 +1423,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // sets them.
             if let v = env["VALTZ_SNAPSHOT_FAVOR"],
                let p = Preference(rawValue: v) {
-                // Favor lives in the generation card: open, as a
-                // person choosing it has it.
-                m.openPanel = .generate
+                // Favor's chip: its popover open, as a person choosing
+                // it has it.
+                m.openChip = .favor
                 try? await Task.sleep(for: .milliseconds(400))
                 m.choosePreference(p)
             }
@@ -2157,7 +2193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    let sv = Self.find(SuggestionScrollView.self,
                                       in: root) {
                     FileHandle.standardError.write(Data(
-                        "snapshot: suggestion-card text=\(Int(sv.frame.height)) doc=\(Int(sv.documentView?.frame.height ?? 0)) bar=\(sv.scrollerStyle == .legacy ? "legacy" : "overlay") cap=\(Int(SuggestionCard.textCap(window: m.editorRoom))) pictureRoom=\(Int(m.pictureRoom))/\(Int(m.editorRoom))\n".utf8))
+                        "snapshot: suggestion-card text=\(Int(sv.frame.height)) doc=\(Int(sv.documentView?.frame.height ?? 0)) bar=\(sv.scrollerStyle == .legacy ? "legacy" : "overlay") cap=\(Int(SuggestionCard.textCap(window: m.stageColumnHeight))) column=\(Int(m.stageColumnHeight))\n".utf8))
                 }
                 if e == "accept" {
                     m.acceptEnhanced()
@@ -2215,8 +2251,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: .milliseconds(600))
                 }
             }
-            if env["VALTZ_SNAPSHOT_DRAWER"] != nil {
-                withAnimation(AppModel.motion) { m.openPanel = .generate }
+            // A chip's popover open: its name ("shape", "favor" ...;
+            // anything else, Model's).
+            if let c = env["VALTZ_SNAPSHOT_DRAWER"] {
+                m.openChip = GenerateChip(rawValue: c) ?? .model
             }
             // An asset on the simple stage as if just made: its id, or
             // "newest" / "newest-video" / "newest-image" /
@@ -2992,14 +3030,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: .milliseconds(450))
                 }
             }
-            // A panel: the Generate drawer, or a layer's edit ("adjust",
-            // "color", "grade", "crop", "trim", "audio"), brought into
-            // sight in the inspector.
+            // A panel: a layer's edit ("adjust", "color", "grade",
+            // "crop", "trim", "audio"), brought into sight in the
+            // inspector -- or a chip's popover ("generate": Model's).
             if let panel = env["VALTZ_SNAPSHOT_PANEL"] {
-                withAnimation(AppModel.motion) {
-                    m.openPanel = ComposerPanel.allCases.first {
-                        "\($0)" == panel } ?? .generate
-                }
+                m.openPanelNamed(panel)
             }
             // The right column on the Agent ("agent") or the inspector.
             if let v = env["VALTZ_SNAPSHOT_RIGHT"],
@@ -3019,7 +3054,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: .milliseconds(100))
                 }
                 m.adjustments = Self.adjustments(spec)
-                withAnimation(AppModel.motion) { m.openPanel = .adjust }
+                m.revealInspectorSection(.adjust)
                 try? await Task.sleep(for: .seconds(1))
             }
             // The Crop panel: values on the picture on the stage
@@ -3092,7 +3127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // tone= bypass= canBypass= keys=` (the look's keys) `viewed=
             // active= layer= page= banner= disks=hue@x,y,wxh,...`.
             if let spec = env["VALTZ_SNAPSHOT_COLOR"] {
-                withAnimation(AppModel.motion) { m.openPanel = .color }
+                m.revealInspectorSection(.color)
                 try? await Task.sleep(for: .milliseconds(500))
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
@@ -3307,7 +3342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // wheels=shadows@x,y,wxh,...` (points from the window's top
             // left).
             if let spec = env["VALTZ_SNAPSHOT_GRADE"] {
-                withAnimation(AppModel.motion) { m.openPanel = .grade }
+                m.revealInspectorSection(.grade)
                 try? await Task.sleep(for: .milliseconds(500))
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
@@ -3462,7 +3497,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // mix=<the plan's mixer file|-> audio=<its spans> faders=
             // gain@x,y,wxh,...` (points from the window's top left).
             if let spec = env["VALTZ_SNAPSHOT_AUDIO"] {
-                withAnimation(AppModel.motion) { m.openPanel = .audio }
+                m.revealInspectorSection(.audio)
                 try? await Task.sleep(for: .milliseconds(500))
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
@@ -3543,11 +3578,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Another card open ("trim", "adjust" ...), and the
                     // window drawn.
                     case "panel":
-                        let named = ComposerPanel.allCases.first {
-                            "\($0)" == arg }
-                        withAnimation(AppModel.motion) {
-                            m.openPanel = named ?? .audio
-                        }
+                        m.openPanelNamed(arg.isEmpty ? "audio" : arg)
                         try? await Task.sleep(for: .milliseconds(600))
                     case "draw": Self.drawWindow(to: arg)
                     case "persist":
@@ -3727,10 +3758,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "open", "close":
                         m.showTimeline(key == "open")
                     case "rows":
+                        // The band given so many rows (or more, fewer):
+                        // the dock's height set to hold them.
                         if arg.hasPrefix("+") || arg.hasPrefix("-") {
-                            m.timelineRows(by: Int(arg) ?? 0)
+                            m.setTimelineRows(m.timelineRows
+                                              + (Int(arg) ?? 0))
                         } else if let n = Int(arg) {
-                            m.timelineRows(by: n - m.timelineRows)
+                            m.setTimelineRows(n)
                         }
                     case "zoom":
                         m.zoomTimeline(to: arg == "in"
@@ -4125,10 +4159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     // A card under it opened: "panel=trim" (none: shut).
                     case "panel":
-                        withAnimation(AppModel.motion) {
-                            m.openPanel = ComposerPanel.allCases.first {
-                                "\($0)" == arg }
-                        }
+                        m.openPanelNamed(arg.isEmpty ? nil : arg)
                     // The clip carried on from its last N seconds
                     // ("continue=1": as it is) -- the prompt back.
                     case "continue":
@@ -5174,7 +5205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 where a[key] != key.rest {
                     m.setAdjustment(key, a[key])
                 }
-                withAnimation(AppModel.motion) { m.openPanel = .adjust }
+                m.revealInspectorSection(.adjust)
                 try? await Task.sleep(for: .seconds(1.5))
             }
             // The key button, here: "adjust" or "crop".
@@ -5626,17 +5657,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             "snapshot: appearance dark=\(m.appearsDark) fades=\(fades.joined(separator: ","))\n".utf8))
                     } else if let panel = ComposerPanel.allCases.first(
                         where: { "\($0)" == p[0] }) {
-                        if let s = panel.section {
-                            m.toggleInspectorSection(s)
-                        } else {
-                            m.openPanel = m.openPanel == panel ? nil : panel
+                        m.toggleInspectorSection(panel.section)
+                    } else if p[0] == "generate" {
+                        m.pressChip(.model)
+                    } else if p[0].hasPrefix("chip-") {
+                        // A chip pressed: "chip-shape"; "chip-none" shuts
+                        // the one open.
+                        let c = GenerateChip(rawValue: String(p[0].dropFirst(5)))
+                        if let c { m.pressChip(c) } else { m.openChip = nil }
+                    } else if p[0] == "band" {
+                        // View › Timeline (⇧⌘T).
+                        m.showTimeline(!m.timelineOpen)
+                    } else if p[0].hasPrefix("dock=") {
+                        // The splitter: "dock=320" sets the dock's
+                        // height, "dock=fit" double-clicks it.
+                        let v = p[0].dropFirst(5)
+                        m.chrome.dockHeight = Double(v).map { CGFloat($0) }
+                    } else if p[0].hasPrefix("rows=") {
+                        m.setTimelineRows(Int(p[0].dropFirst(5)) ?? 3)
+                    } else if p[0] == "scissors" || p[0] == "space" {
+                        // The keys, as the window's key monitor hands them
+                        // on: S, Space.
+                        Self.postKey(p[0] == "space" ? 49 : 1,
+                                     p[0] == "space" ? " " : "s", to: m)
+                    } else if p[0] == "start" {
+                        m.startPressed()
+                    } else if p[0] == "stop" {
+                        m.stop()
+                    } else if ["atlas", "log", "stage"].contains(p[0]) {
+                        m.select(p[0] == "atlas" ? .atlas
+                                 : p[0] == "log" ? .log : .stage)
+                    } else if p[0].hasPrefix("size=") {
+                        // The window made smaller or larger, as a person
+                        // drags it: "size=820x600".
+                        let wh = p[0].dropFirst(5).split(separator: "x")
+                            .compactMap { Double($0) }
+                        if wh.count == 2, let win = m.editorWindow {
+                            var f = win.frame
+                            f.origin.y += f.height - wh[1]
+                            f.size = CGSize(width: wh[0], height: wh[1])
+                            win.setFrame(f, display: true)
                         }
                     }
                 }
                 try? await Task.sleep(for: .milliseconds(700))
                 let win = m.editorWindow?.frame.size ?? .zero
                 FileHandle.standardError.write(Data(
-                    "snapshot: chrome \(p[0]) inspector=\(m.layout.inspector) right=\(m.chrome.rightPanel.rawValue) viewOnly=\(m.viewOnly) sidebar=\(m.layout.sidebar == .detailOnly ? "hidden" : "shown") panel=\(m.panelSummary) modality=\(m.modality.rawValue) window=\(Int(win.width))x\(Int(win.height))\n".utf8))
+                    "snapshot: chrome \(p[0]) inspector=\(m.layout.inspector) right=\(m.chrome.rightPanel.rawValue) viewOnly=\(m.viewOnly) sidebar=\(m.layout.sidebar == .detailOnly ? "hidden" : "shown") panel=\(m.panelSummary) modality=\(m.modality.rawValue) \(Self.dockSummary(m)) generating=\(m.isGenerating) tasks=\(m.tasks.count) rate=\(m.videoRate) cutting=\(m.timelineCutting) firstResponder=\(m.editorWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "-") screen=\(m.screen) window=\(Int(win.width))x\(Int(win.height))\n".utf8))
             }
         }
         if let m = model, env["VALTZ_SNAPSHOT_DRAG_READY"] != nil {
@@ -6626,7 +6693,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let models = m.installedImageModels.map(\.model)
             // The tray's words, a clip's keyframes, Favor's hint and
             // Custom's values (the model's own).
-            let trayLead = ComposerStack.summaryLead(m)
+            let trayLead = m.modelChipValue
                 .replacingOccurrences(of: " ", with: "_")
             var keyframes = "-"
             if let k = m.keyframes {
@@ -6693,8 +6760,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "output=\(m.dimensions.width)x\(m.dimensions.height) "
                 + "sizes=\(m.sizeClasses.map { "\($0)" }.joined(separator: ",")) "
                 + "regenerate=\(m.regenerateDraft.map { "\($0.width)x\($0.height)>\(m.dimensions.width)x\(m.dimensions.height)" } ?? (m.regenerateMissing ? "missing" : "-")) "
-                + "composer=\(Int(m.composerWidth))/\(Int(m.composerColumn)) "
-                + "drawers=\(m.drawerWidths.sorted { $0.key < $1.key }.map { "\($0.key):\(Int($0.value))" }.joined(separator: ",")) "
+                + "\(Self.dockSummary(m)) chips=\(Self.chipSummary(m)) "
                 + "sizeShown=\(m.sizeChoice.map { "\($0)" } ?? "custom") "
                 + "custom=\(m.customSize != nil) orientation=\(m.shownOrientation.rawValue) "
                 + "ratioShown=\(m.showsAspectRatio) "
@@ -6707,7 +6773,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "mentions=\(m.promptMentions.count) focus=\(m.promptAttachments.firstIndex { $0.id == m.focusedReference }.map(String.init) ?? "-") "
                 + "stack=\(m.stackPlayback.map { "\($0.width)x\($0.height)/\($0.frames)f/\($0.clips.count)clips" } ?? "-") "
                 + "look=\(m.stageStack?.layerStack.map { l in let k = m.layerLook(l.id); return "\(l.id.isEmpty ? "0" : l.id):\(k.adjust ? "a" : "")\(k.place ? "p" : "")\(k.turn ? "t" : "")\(k.keyed ? "k" : "")" }.joined(separator: ",") ?? "-") "
-                + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(InspectorSection.allCases.filter { !m.chrome.collapsedSections.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate),\(m.projectOutput.intermediate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) pictureRoom=\(Int(m.pictureRoom))/\(Int(m.editorRoom)) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
+                + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(InspectorSection.allCases.filter { !m.chrome.collapsedSections.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate),\(m.projectOutput.intermediate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
                 + "markup=\(m.markupOpen ? m.markup.tool.rawValue : "off"):sel[\(m.markup.selection.map(\.kind.rawValue).joined(separator: ","))\(m.markup.drawing ? "+drawing" : "")]@\(m.markup.selectionLayer ?? "-") "
                 // The first selected object's style: a text's
                 // alignment and spacing, its effects.

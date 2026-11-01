@@ -10,8 +10,8 @@ import SwiftUI
 /// the source of truth for the modes themselves (view only, the Prompt
 /// Editor, markup, the screen the sidebar picked).
 ///
-/// Later phases add to the chrome what their regions need: the dock's
-/// height and the timeline band.
+/// The dock under the stage -- the timeline band and the composer --
+/// keeps its height and whether the band is wanted in the chrome too.
 
 /// The inspector's sections, top first: the stage's layers, what is
 /// selected, then the selected layer's edits -- its look (Adjust, Color,
@@ -65,9 +65,8 @@ enum InspectorSection: String, CaseIterable, Identifiable, Codable, Sendable {
 }
 
 extension ComposerPanel {
-    /// The inspector section a layer's edit panel is now; nil for the
-    /// composer's own Generate drawer.
-    var section: InspectorSection? {
+    /// The inspector section a layer's edit panel is now.
+    var section: InspectorSection {
         switch self {
         case .adjust: .adjust
         case .color: .color
@@ -75,7 +74,6 @@ extension ComposerPanel {
         case .crop: .crop
         case .trim: .trim
         case .audio: .audio
-        case .generate: nil
         }
     }
 }
@@ -87,13 +85,20 @@ enum RightPanel: String, Codable, Sendable {
 
 /// What the person has set of the window's regions: whether the sidebar
 /// and the inspector are shown, whether the right column is the
-/// inspector or the Agent, and which inspector sections are folded and
-/// how the open ones share the height. Kept between launches (not by a
-/// scripted snapshot run).
+/// inspector or the Agent, which inspector sections are folded and how
+/// the open ones share the height, the dock's height and whether its
+/// timeline band is wanted. Kept between launches (not by a scripted
+/// snapshot run).
 struct WorkspaceChrome: Codable, Equatable {
     var sidebar: NavigationSplitViewVisibility = .all
     var inspectorShown = false
     var rightPanel: RightPanel = .inspector
+    /// The dock's height as its splitter left it; nil, the height its
+    /// content asks (a double-click on the splitter goes back to that).
+    var dockHeight: CGFloat?
+    /// The timeline band over the composer is wanted: shown while the
+    /// stage has a timeline (AppModel.timelineOpen).
+    var timelineBand = false
     /// A layer's edits but its tone start folded: Adjust opens beside
     /// Layers and Information, the others as they are asked for.
     var collapsedSections: Set<InspectorSection> =
@@ -123,6 +128,12 @@ struct WorkspaceChrome: Codable, Equatable {
         sectionWeights = (try? c.decodeIfPresent(
             [InspectorSection: Double].self, forKey: .sectionWeights))
             .flatMap { $0 } ?? d.sectionWeights
+        dockHeight = (try? c.decodeIfPresent(CGFloat.self,
+                                             forKey: .dockHeight))
+            .flatMap { $0 } ?? d.dockHeight
+        timelineBand = (try? c.decodeIfPresent(Bool.self,
+                                               forKey: .timelineBand))
+            .flatMap { $0 } ?? d.timelineBand
     }
 
     static func stored() -> WorkspaceChrome {
@@ -148,24 +159,35 @@ struct WorkspaceLayout: Equatable {
     /// The contextual row above the stage. Compare joins it in Phase 5;
     /// until then its bar stays under the stage.
     enum Context: Equatable { case none, markup }
+    /// The dock under the stage: none, the composer, the timeline band
+    /// over it -- or, in the Prompt Editor, the prompt expanded (until
+    /// Phase 5 makes that the dock grown, the editor lays it out itself
+    /// and the dock stands aside).
+    enum Dock: Equatable { case hidden, composer, bandAndComposer,
+                                expandedPrompt }
 
     var sidebar: NavigationSplitViewVisibility
     var inspector: Bool
     var context: Context
     var stage: Stage
+    var dock: Dock
     /// The toolbar's editor items -- zoom, compare, markup, share, the
     /// inspector -- belong on the editor; the Atlas and the Log hide them.
     var editorTools: Bool
 
     /// The mode table:
     ///
-    ///   mode            sidebar      inspector  context  stage
-    ///   compose         chrome       chrome     none     editor
-    ///   Prompt Editor   chrome       chrome     none     editor
-    ///   markup          chrome       chrome     markup   editor
-    ///   view only       detailOnly   off        none     editor
-    ///   Atlas, Log      chrome       off        none     atlas, log
-    ///   too narrow      detailOnly   chrome     --       --
+    ///   mode            sidebar      inspector  context  stage   dock
+    ///   compose         chrome       chrome     none     editor  composer *
+    ///   Prompt Editor   chrome       chrome     none     editor  expandedPrompt
+    ///   markup          chrome       chrome     markup   editor  as compose
+    ///   view only       detailOnly   off        none     editor  hidden
+    ///   Atlas, Log      chrome       off        none     atlas,  hidden
+    ///                                                    log
+    ///   too narrow      detailOnly   chrome     --       --      --
+    ///
+    ///   * bandAndComposer while a timeline is on the stage and the band
+    ///     is wanted (chrome.timelineBand: AppModel.timelineOpen).
     ///
     /// View only puts the chrome itself away as it starts and back as it
     /// ends (AppModel.setViewOnly), so the person's sidebar toggle still
@@ -186,6 +208,9 @@ struct WorkspaceLayout: Equatable {
         }
         let editor = stage == .editor
         let inspector = editor && !m.viewOnly && m.chrome.inspectorShown
+        let dock: Dock = !editor || m.viewOnly ? .hidden
+            : m.promptImmersive ? .expandedPrompt
+            : m.timelineOpen ? .bandAndComposer : .composer
         return WorkspaceLayout(
             sidebar: inspector && !m.columnsFit ? .detailOnly
                                                 : m.chrome.sidebar,
@@ -193,6 +218,7 @@ struct WorkspaceLayout: Equatable {
             context: editor && m.markupOpen && !m.viewOnly
                 && !m.promptImmersive ? .markup : .none,
             stage: stage,
+            dock: dock,
             editorTools: editor)
     }
 }
@@ -295,6 +321,22 @@ extension AppModel {
         }
     }
 
+    /// A hook's panel by name: a layer's edit ("adjust" ... "audio")
+    /// brought into sight in the inspector; a chip's popover ("shape",
+    /// "favor" ...; "generate", the Generate drawer that was, Model's)
+    /// opened; nil, the chip open shut.
+    func openPanelNamed(_ name: String?) {
+        guard let name else {
+            openChip = nil
+            return
+        }
+        if let p = ComposerPanel.allCases.first(where: { "\($0)" == name }) {
+            revealInspectorSection(p.section)
+        } else {
+            openChip = GenerateChip(rawValue: name) ?? .model
+        }
+    }
+
     /// The right column on the Agent, shown: a new session, ⌘4.
     func showAgentPanel() {
         withAnimation(Self.motion) {
@@ -334,10 +376,11 @@ extension AppModel {
             && !chrome.collapsedSections.contains(s) && sectionApplies(s)
     }
 
-    /// For the snapshot hooks' summaries: the Generate drawer, or the
-    /// edit sections in sight ("adjust+crop"), or "-".
+    /// For the snapshot hooks' summaries: a chip's popover open
+    /// ("chip-shape"), or the edit sections in sight ("adjust+crop"), or
+    /// "-".
     var panelSummary: String {
-        if openPanel == .generate { return "generate" }
+        if let c = openChip { return "chip-" + c.rawValue }
         let shown = InspectorSection.allCases.filter {
             $0.isEdit && sectionShown($0)
         }

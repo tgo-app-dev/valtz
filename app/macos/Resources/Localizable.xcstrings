@@ -2603,6 +2603,7 @@
       }
     },
     "Agent · %@" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -3156,6 +3157,7 @@
       }
     },
     "Ask the agent to work on the document (⌘4, ⇧⌘P)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -3175,7 +3177,18 @@
         }
       }
     },
+    "Aspect Ratio" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "宽高比"
+          }
+        }
+      }
+    },
     "Aspect ratio" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -3191,6 +3204,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "素材"
+          }
+        }
+      }
+    },
+    "Assistant" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "助手"
           }
         }
       }
@@ -3272,6 +3295,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "图谱"
+          }
+        }
+      }
+    },
+    "Attach" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "附加"
           }
         }
       }
@@ -3400,6 +3433,7 @@
       }
     },
     "Audio · not available yet" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -3715,6 +3749,7 @@
       }
     },
     "Back to the prompt and its generation settings (⇧⌘P)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -4286,6 +4321,7 @@
       }
     },
     "Change the custom settings" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -4851,6 +4887,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "云端上下文"
+          }
+        }
+      }
+    },
+    "Collapsed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已折叠"
           }
         }
       }
@@ -5485,6 +5531,7 @@
       }
     },
     "Create a song (⌘3)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -5495,6 +5542,7 @@
       }
     },
     "Create a video (⌘1)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -5515,6 +5563,7 @@
       }
     },
     "Create an image (⌘2)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -6381,6 +6430,16 @@
         }
       }
     },
+    "Dock" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "底栏"
+          }
+        }
+      }
+    },
     "Don't Keep" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6762,6 +6821,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "拖动图片以移动"
+          }
+        }
+      }
+    },
+    "Drag to change the dock's height; double-click to fit it to its content" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "拖动以更改底栏高度；连按两次以适应其内容"
           }
         }
       }
@@ -8190,6 +8259,16 @@
         }
       }
     },
+    "Frames or Seconds" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "帧数或秒数"
+          }
+        }
+      }
+    },
     "Frames or seconds" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9014,6 +9093,7 @@
       }
     },
     "Hide options" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -9104,6 +9184,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "隐藏标记工具栏"
+          }
+        }
+      }
+    },
+    "Hide the timeline (⇧⌘T)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏时间线（⇧⌘T）"
           }
         }
       }
@@ -9200,6 +9290,7 @@
       }
     },
     "Highlight the timeline and prompt switch when it switches by itself" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -12759,6 +12850,16 @@
         }
       }
     },
+    "Not available yet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "尚不可用"
+          }
+        }
+      }
+    },
     "Not installed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13350,6 +13451,7 @@
       }
     },
     "One more row" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -13370,6 +13472,7 @@
       }
     },
     "One row fewer" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -14160,6 +14263,16 @@
         }
       }
     },
+    "Pixels" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "像素"
+          }
+        }
+      }
+    },
     "Place" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14658,6 +14771,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "提示词编辑器"
+          }
+        }
+      }
+    },
+    "Prompt Size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提示词大小"
           }
         }
       }
@@ -17091,6 +17214,7 @@
       }
     },
     "Show options" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -17116,6 +17240,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示助手的速度"
+          }
+        }
+      }
+    },
+    "Show the Timeline" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示时间线"
           }
         }
       }
@@ -17182,11 +17316,22 @@
       }
     },
     "Show the timeline in place of the prompt (⇧⌘T)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "以时间线代替提示词显示（⇧⌘T）"
+          }
+        }
+      }
+    },
+    "Show the timeline over the prompt (⇧⌘T)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在提示词上方显示时间线（⇧⌘T）"
           }
         }
       }
@@ -17307,6 +17452,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "显示它的设置"
+          }
+        }
+      }
+    },
+    "Shows the timeline over the prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在提示词上方显示时间线"
           }
         }
       }
@@ -18420,6 +18575,7 @@
       }
     },
     "Switch to the Timeline" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -21447,6 +21603,7 @@
       }
     },
     "Video · not available yet" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -21745,6 +21902,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“开始”要生成的内容"
+          }
+        }
+      }
+    },
+    "What Start makes: a video (⌘1), an image (⌘2), a song (⌘3), or the agent at work on the document (⌘4)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“开始”会生成什么：视频（⌘1）、图像（⌘2）、歌曲（⌘3），或让智能体处理文稿（⌘4）"
           }
         }
       }

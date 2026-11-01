@@ -126,11 +126,14 @@ set(VALTZ_APP_SOURCES
   Sources/Shell/StageColumn.swift
   Sources/Shell/RightColumn.swift
   Sources/Shell/EditorToolbar.swift
+  Sources/Dock/DockView.swift
+  Sources/Dock/TimelineBand.swift
+  Sources/Dock/ComposerCard.swift
+  Sources/Dock/GenerateChips.swift
   Sources/Views/MarkupBar.swift
   Sources/Views/PromptBar.swift
   Sources/Views/LogView.swift
   Sources/Simple/SimpleView.swift
-  Sources/Simple/ComposerStack.swift
   Sources/Simple/CropTrim.swift
   Sources/Simple/Timeline.swift
   Sources/Simple/ValueControls.swift
@@ -151,7 +154,6 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/ColorMixer.swift
   Sources/Simple/ColorGrading.swift
   Sources/Simple/AudioPanel.swift
-  Sources/Simple/SettingsSearch.swift
   Sources/Simple/AttachCapture.swift
   Sources/Simple/VoiceOver.swift
   Sources/Simple/Capture.swift

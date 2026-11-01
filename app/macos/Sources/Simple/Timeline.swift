@@ -161,45 +161,37 @@ extension AppModel {
         return true
     }
 
-    /// Its switch is offered beside the prompt.
-    /// Not while VIEW ONLY: its wish kept for after (setViewOnly).
+    /// Its band is offered over the prompt (a disclosure, while it is
+    /// not wanted). Not while VIEW ONLY: its wish kept for after.
     var timelineAvailable: Bool {
         !promptImmersive && !viewOnly && timelineAsset != nil
             // A voice-over's take: its card, and Stop, stay in sight.
             && !voiceOverRecording
     }
 
-    /// The timeline is in the prompt's place.
-    var timelineOpen: Bool { timelineWanted && timelineAvailable }
+    /// The timeline band is open over the prompt.
+    var timelineOpen: Bool { chrome.timelineBand && timelineAvailable }
 
-    /// What the composer shows in the prompt's place: the timeline open --
-    /// and, as VIEW ONLY takes the composer away, the timeline it had, not
-    /// the prompt swapped in while it goes (its text view took the
-    /// keyboard on the way out).
-    var composerShowsTimeline: Bool {
-        timelineOpen || (viewOnly && timelineWanted && !promptImmersive
-                         && timelineAsset != nil)
-    }
-
-    /// The timeline in the prompt's place, or the prompt back: the
-    /// generation card goes with the prompt. `flash`: the switch shown
-    /// then flashes once (a switch made by itself) -- asked for FIRST,
-    /// as the new switch's onAppear can run within this very change;
-    /// any switch made clears a flash still asked for.
-    func showTimeline(_ on: Bool, flash: Bool = false) {
-        switchFlash = flash ? Date() : nil
+    /// The timeline band wanted or not (its disclosure, View › Timeline,
+    /// ⇧⌘T). Asked for by the person (`takesKeyboard`), the prompt gives
+    /// up the keyboard as it opens, so S and Space go to the timeline and
+    /// the stage (a click in the prompt gets it back); a band opened by a
+    /// result landing leaves the keyboard where it is.
+    func showTimeline(_ on: Bool, takesKeyboard: Bool = true) {
         withAnimation(Self.motion) {
-            timelineWanted = on
-            if on && openPanel == .generate { openPanel = nil }
+            chrome.timelineBand = on
             if !on { timelineCutting = false }
+        }
+        if on, takesKeyboard, let w = editorWindow,
+           w.firstResponder is NSText {
+            w.makeFirstResponder(nil)
         }
     }
 
     /// A result LANDED as `layer`, a new layer of `doc` (DESIGN §10a
     /// Timeline): with the composition holding something already -- a
-    /// layer not empty beside it -- and on the stage, the timeline slides
-    /// in for the prompt, to show where it went, and the switch back to
-    /// the prompt flashes once it is in (Settings › General ›
+    /// layer not empty beside it -- and on the stage, the timeline band
+    /// opens over the prompt, to show where it went (Settings › General ›
     /// Generations). Only where the timeline is offered: a timeline (a
     /// sound's too) or a still with pages; not over the Prompt Editor,
     /// nor when it is open already.
@@ -211,7 +203,7 @@ extension AppModel {
                   $0.id != layer && !$0.isEmpty })
         else { return }
         landingCounts.timeline += 1
-        showTimeline(true, flash: landingFlashesSwitch)
+        showTimeline(true, takesKeyboard: false)
     }
 
     /// A scripted run's landing (VALTZ_SNAPSHOT_TASKS `land:`): `asset`
@@ -726,33 +718,27 @@ extension AppModel {
     func zoomTimeline(to z: Double) {
         timelineZoom = min(16_384, max(Self.timelineZoomOut, z))
     }
-
-    /// One row more or fewer in view.
-    func timelineRows(by d: Int) {
-        let n = min(Self.timelineRowRange.upperBound,
-                    max(Self.timelineRowRange.lowerBound, timelineRows + d))
-        guard n != timelineRows else { return }
-        withAnimation(Self.motion) { timelineRows = n }
-    }
 }
 
 // MARK: - The card
 
-/// The TIMELINE (DESIGN §10a Timeline), in the prompt's place: a wide
-/// card with the prompt card's shadow. On its left the layers, top
-/// first, frozen there; along its top the time in the composition's own
-/// frames, frozen there; between them the clips where they play -- a key
-/// a dot, a sound its waveform's shadow -- and the player's line through
-/// all of them. Its top-left corner holds the scissors and the zoom; its
-/// right edge one row more or fewer; its foot the transport, |< and >|
-/// going from event to event.
+/// The TIMELINE (DESIGN §10a Timeline), the dock's band over the
+/// prompt: a wide card. On its left the layers, top first, frozen there;
+/// along its top the time in the composition's own frames, frozen there;
+/// between them the clips where they play -- a key a dot, a sound its
+/// waveform's shadow -- and the player's line through all of them. Its
+/// top-left corner holds the band's disclosure, the scissors and the
+/// zoom; its foot the transport, |< and >| going from event to event.
+/// The rows in view are what its height leaves room for (TimelineBand
+/// gives it the height; the canvas draws a row cut short as well).
 struct TimelineCard: View {
     @Bindable var model: AppModel
     @State private var peaks: [String: AudioWaveform.TimedPeaks] = [:]
+    /// Narrower than the whole transport and its times: fast rewind,
+    /// play backward and fast forward give way (the keys still do them).
+    @State private var narrow = false
 
-    static let transportHeight: CGFloat = 48
-    static let sideWidth: CGFloat = 30
-    static let radius: CGFloat = 20
+    static let transportHeight: CGFloat = VZ.Size.transport
 
     /// Its height with `rows` rows in view.
     static func height(rows: Int) -> CGFloat {
@@ -761,38 +747,35 @@ struct TimelineCard: View {
             + transportHeight
     }
 
+    /// The rows a height leaves room for, whole ones, 1 to 12.
+    static func rows(height h: CGFloat) -> Int {
+        let free = (h - TimelineNSView.rulerHeight - 0.5 - transportHeight)
+            / TimelineNSView.rowHeight
+        let r = AppModel.timelineRowRange
+        return min(r.upperBound, max(r.lowerBound, Int(free.rounded(.down))))
+    }
+
     var body: some View {
         let m = model.timelineModel
-        let shape = RoundedRectangle(cornerRadius: Self.radius,
-                                     style: .continuous)
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                TimelineCanvas(model: m, peaks: peaks, actions: actions(m))
-                    .accessibilityLabel(Text("Timeline"))
-                Rectangle()
-                    .fill(Color(nsColor: .separatorColor))
-                    .frame(width: 0.5)
-                rowButtons
-                    .frame(width: Self.sideWidth)
-            }
-            .frame(height: TimelineNSView.rulerHeight
-                   + CGFloat(model.timelineRows) * TimelineNSView.rowHeight)
-            .overlay(alignment: .topLeading) {
-                corner(m)
-                    .frame(width: TimelineNSView.nameWidth,
-                           height: TimelineNSView.rulerHeight)
-            }
+            TimelineCanvas(model: m, peaks: peaks, actions: actions(m))
+                .accessibilityLabel(Text("Timeline"))
+                .frame(maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    corner(m)
+                        .frame(width: TimelineNSView.nameWidth,
+                               height: TimelineNSView.rulerHeight)
+                }
             Rectangle()
                 .fill(Color(nsColor: .separatorColor))
                 .frame(height: 0.5)
             transport(m)
                 .frame(height: Self.transportHeight)
         }
-        .clipShape(shape)
-        .background(shape.fill(Color(nsColor: .textBackgroundColor)))
-        .overlay(shape.strokeBorder(Color.primary.opacity(0.08),
-                                    lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.13), radius: 18, y: 8)
+        .clipShape(VZ.Radius.concentric())
+        .onGeometryChange(for: Bool.self) { $0.size.width < 600 } action: {
+            narrow = $0
+        }
         .task(id: m.rows.compactMap(\.wave?.path)) {
             for r in m.rows {
                 guard let url = r.wave, peaks[url.path] == nil else {
@@ -866,9 +849,11 @@ struct TimelineCard: View {
             })
     }
 
-    /// The scissors, then zoom out, in and to the whole timeline.
+    /// The band's disclosure (it folds the band away), the scissors,
+    /// then zoom out, in and to the whole timeline.
     private func corner(_ m: TimelineModel) -> some View {
         HStack(spacing: 0) {
+            TimelineDisclosure(model: model)
             TimelineTool(symbol: "scissors", on: model.timelineCutting,
                          help: m.paged
                              ? "Pages cannot be cut: the scissors cut clips and sounds"
@@ -909,21 +894,6 @@ struct TimelineCard: View {
         .padding(.horizontal, 6)
     }
 
-    /// One row more, one fewer.
-    private var rowButtons: some View {
-        VStack(spacing: 2) {
-            TimelineTool(symbol: "chevron.up", on: false,
-                         help: "One more row") { model.timelineRows(by: 1) }
-                .disabled(model.timelineRows
-                          >= AppModel.timelineRowRange.upperBound)
-            TimelineTool(symbol: "chevron.down", on: false,
-                         help: "One row fewer") { model.timelineRows(by: -1) }
-                .disabled(model.timelineRows
-                          <= AppModel.timelineRowRange.lowerBound)
-        }
-        .frame(maxHeight: .infinity)
-    }
-
     /// The transport -- |< and >| from event to event -- with where the
     /// player is on its left and the timeline's length on its right, in
     /// the composition's own frames (a still's pages).
@@ -962,14 +932,17 @@ struct TimelineCard: View {
                     model.timelineEvent(next: false)
                 }
                 .shortcutHint("⌘←")
-                TransportButton(symbol: "backward.fill", help: "Fast rewind",
-                                on: r < -1, action: model.fastRewind)
+                if !narrow {
+                    TransportButton(symbol: "backward.fill",
+                                    help: "Fast rewind",
+                                    on: r < -1, action: model.fastRewind)
+                        .disabled(!timed)
+                    TransportButton(symbol: "play.fill", mirrored: true,
+                                    help: "Play backward", on: r == -1) {
+                        model.playVideo(rate: -1)
+                    }
                     .disabled(!timed)
-                TransportButton(symbol: "play.fill", mirrored: true,
-                                help: "Play backward", on: r == -1) {
-                    model.playVideo(rate: -1)
                 }
-                .disabled(!timed)
                 TransportButton(symbol: "backward.frame.fill",
                                 help: m.paged ? "The page before (←)"
                                     : "Back one frame (←)",
@@ -995,9 +968,12 @@ struct TimelineCard: View {
                 }
                 .shortcutHint(String(localized: "Space"))
                 .disabled(!timed)
-                TransportButton(symbol: "forward.fill", help: "Fast forward",
-                                on: r > 1, action: model.fastForward)
-                    .disabled(!timed)
+                if !narrow {
+                    TransportButton(symbol: "forward.fill",
+                                    help: "Fast forward",
+                                    on: r > 1, action: model.fastForward)
+                        .disabled(!timed)
+                }
                 TransportButton(symbol: "forward.end.fill",
                                 help: "Next event: a key, where a layer begins or ends, the end (⌘→)",
                                 on: false) {
@@ -1022,70 +998,9 @@ struct TimelineCard: View {
     }
 }
 
-/// The switch beside the prompt to the timeline (its wedge pointing
-/// right), and beside the timeline back to the prompt and its
-/// generation settings (pointing left): a grey tab of its own.
-struct TimelineSwitch: View {
-    let model: AppModel
-    let toTimeline: Bool
-    let action: () -> Void
-    @State private var hovering = false
-    /// Flashed: in the accent, for a moment.
-    @State private var lit = false
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 5) {
-                Image(systemName: toTimeline ? "film.stack" : "text.cursor")
-                    .font(.system(size: 11))
-                Image(systemName: toTimeline ? "chevron.right"
-                                             : "chevron.left")
-                    .font(.system(size: 12, weight: .bold))
-            }
-            .foregroundStyle(lit ? AnyShapeStyle(Color.white)
-                                 : AnyShapeStyle(.secondary))
-            .frame(width: 24, height: 58)
-            .background(Capsule().fill(lit ? Color.accentColor
-                                           : Color.primary.opacity(
-                                               hovering ? 0.12 : 0.07)))
-            .scaleEffect(lit ? 1.12 : 1)
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        // View › Timeline's key; back, ⇧⌘P -- the prompt's, the keyboard
-        // in it.
-        .shortcutHint(toTimeline ? "⇧⌘T" : "⇧⌘P")
-        .onHover { hovering = $0 }
-        // The timeline came by itself (AppModel.landed): the way back to
-        // the prompt flashes once, when it is in.
-        .onAppear { flashIfAsked() }
-        .onChange(of: model.switchFlash) { _, _ in flashIfAsked() }
-        .help(toTimeline ? "Show the timeline in place of the prompt (⇧⌘T)"
-                         : "Back to the prompt and its generation settings (⇧⌘P)")
-        .accessibilityLabel(Text(toTimeline ? "Timeline" : "Prompt"))
-    }
-
-    /// Asked within the last few seconds (the timeline's stack can take a
-    /// moment to load): taken, and -- once the slide that brings the
-    /// switch in is over -- the switch lit quickly and let go.
-    private func flashIfAsked() {
-        guard !toTimeline, let asked = model.switchFlash else { return }
-        model.switchFlash = nil
-        guard Date().timeIntervalSince(asked) < 5 else { return }
-        let scale = AppModel.animationScale
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(0.45 * scale))
-            model.landingCounts.flash += 1
-            withAnimation(.easeOut(duration: 0.12 * scale)) { lit = true }
-            try? await Task.sleep(for: .seconds(0.22 * scale))
-            withAnimation(.easeIn(duration: 0.45 * scale)) { lit = false }
-        }
-    }
-}
-
-/// A small tool in the timeline's corner and side: its symbol, pressed in
-/// while it is on.
-private struct TimelineTool: View {
+/// A small tool in the timeline's corner: its symbol, pressed in while
+/// it is on.
+struct TimelineTool: View {
     let symbol: String
     let on: Bool
     let help: LocalizedStringKey

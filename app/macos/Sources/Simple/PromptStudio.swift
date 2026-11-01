@@ -112,7 +112,7 @@ struct PromptTabRail: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 26, height: 26)
-                .background(Circle().fill(ComposerStack.trayFill))
+                .background(Circle().fill(Color.valtzPanel))
                 .shadow(color: .black.opacity(0.09), radius: 7, y: 3)
                 .contentShape(Circle())
         }
@@ -202,7 +202,7 @@ private struct PromptTabCard: View {
                 .padding(.trailing, PromptTabRail.tuck)
                 .background(shape.fill(open
                     ? Color(nsColor: .textBackgroundColor)
-                    : ComposerStack.trayFill))
+                    : Color.valtzPanel))
                 .shadow(color: .black.opacity(open ? 0.13 : 0.09),
                         radius: 7, y: 3)
                 .contentShape(shape)
@@ -338,9 +338,6 @@ extension AppModel {
         showsTuning = false
         stage.fitRequest += 1
         promptImmersive = true
-        // Back from it, the box: the prompt, not the timeline it may have
-        // left from.
-        timelineWanted = false
         timelineCutting = false
     }
 

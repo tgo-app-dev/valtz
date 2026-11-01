@@ -43,11 +43,11 @@ struct DesignGallery: View {
 
                 group("Chips") {
                     HStack {
-                        ChipMenu(label: "Model", value: "Auto (Krea 2 Turbo)",
+                        ChipMenu(label: String(localized: "Model"), value: "Auto (Krea 2 Turbo)",
                                  isOpen: $chipOpen) {
                             Text(verbatim: "A popover").padding()
                         }
-                        ChipMenu(label: "Shape", value: "16:9 · Large",
+                        ChipMenu(label: String(localized: "Shape"), value: "16:9 · Large",
                                  systemImage: "rectangle",
                                  isOpen: .constant(false)) { EmptyView() }
                     }

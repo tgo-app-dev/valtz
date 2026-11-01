@@ -83,7 +83,7 @@ extension AppModel {
         capturedThumbFrame = nil
         capturedItem = addAssetReferences([id]).first
         // The card goes at once: its ghost takes its place and flies into
-        // the thumbnail (ComposerStack).
+        // the thumbnail (ComposerCard).
         attachCapture = nil
         // A thumbnail never laid out (the row out of sight): shown anyway.
         let item = capturedItem
@@ -216,7 +216,7 @@ extension AppModel {
 /// its own after the references: a sound's recorder (its source, time
 /// and level) or the camera's picture, live, with Take Photo and Record.
 /// Its (x) lets it go; what it captures, it BECOMES -- the card flies
-/// into the new reference's thumbnail (ComposerStack's ghost).
+/// into the new reference's thumbnail (ComposerCard's ghost).
 struct AttachCaptureCard: View {
     @Bindable var model: AppModel
 

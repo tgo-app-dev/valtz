@@ -90,7 +90,7 @@ struct PromptBar: View {
         // can be dragged into Tune's options inside it from the Finder.
         .appKitPopover(isPresented: $model.showsGenerationSettings,
                        arrowEdge: .bottom) {
-            GenerationSettingsPopover(model: model)
+            GenerateSettingsList(model: model)
         }
         // Shut, it takes Tune's options with it.
         .onChange(of: model.showsGenerationSettings) { _, open in

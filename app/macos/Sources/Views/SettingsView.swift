@@ -586,16 +586,12 @@ private struct GeneralSettings: View {
             Section {
                 Picker("When a generation finishes on a composition that has content",
                        selection: $model.landingOpensTimeline) {
-                    Text("Switch to the Timeline").tag(true)
+                    Text("Show the Timeline").tag(true)
                     Text("Do Nothing").tag(false)
                 }
                 .settingsMark(String(localized: "Timeline"),
                               String(localized: "When a generation finishes on a composition that has content"))
                 Group {
-                    Toggle("Highlight the timeline and prompt switch when it switches by itself",
-                           isOn: $model.landingFlashesSwitch)
-                        .disabled(!model.landingOpensTimeline)
-                        .settingsMark(String(localized: "Highlight the timeline and prompt switch when it switches by itself"))
                     Toggle("Show Assets when several tasks are queued",
                            isOn: $model.revealsTasks)
                         .settingsMark(String(localized: "Assets"),

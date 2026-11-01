@@ -500,7 +500,6 @@ enum ComposerPanel: Sendable, CaseIterable {
     case crop       // crop and rotation: a picture's, or a clip's (keyed)
     case trim       // a clip's mark-in and mark-out
     case audio      // the selected layer's sound: gain, pitch, equalizer
-    case generate   // the generation settings
 }
 
 /// A request to the stage's player; a new `token` is a new request.
@@ -1285,12 +1284,6 @@ final class AppModel {
     /// The Prompt Editor's popover of the generation card's settings (its
     /// toolbar's button) -- Tune's options open inside it.
     var showsGenerationSettings = false
-    /// It was open when the mouse last went down. The popover shuts itself
-    /// on a press outside it -- on the very control that opens it, too --
-    /// before that click lands; asked then whether to open, a click on
-    /// Custom saw it shut and opened it again.
-    @ObservationIgnored private var tuningOpenAtPress = false
-    @ObservationIgnored private var tuningPressWatch: Any?
     var seedText = ""      // empty = random
     /// A clip's length: a preset, in seconds as offered, or -- nil -- a
     /// length typed in the Length field, kept as `clipCustomFrames`.
@@ -1345,7 +1338,7 @@ final class AppModel {
     /// snapshot hooks print it).
     @ObservationIgnored var lastCue: Double?
     /// The row item a capture just became, while the card flies into its
-    /// thumbnail (ComposerStack's ghost): hidden until it lands there.
+    /// thumbnail (ComposerCard's ghost): hidden until it lands there.
     var capturedItem: UUID?
     /// That thumbnail's frame in the prompt card: where the ghost goes.
     var capturedThumbFrame: CGRect?
@@ -1377,22 +1370,14 @@ final class AppModel {
     /// back: pictures and clips are shaped apart (a clip starts
     /// landscape, 16:9, at the Draft size).
     private var otherShapes: [Modality: OutputShape] = [:]
-    /// The composer's Generate drawer is out.
-    var generateDrawerOpen = false
-    /// The composer's panel open: the Generate drawer, or none. A layer's
-    /// edits are the inspector's sections now: asked for here -- a menu,
-    /// a notice, a task, a hook -- they are brought into sight there
-    /// (revealInspectorSection), and the drawer stays as it was.
-    var openPanel: ComposerPanel? {
-        get { generateDrawerOpen ? .generate : nil }
-        set {
-            switch newValue {
-            case nil: generateDrawerOpen = false
-            case .generate?: generateDrawerOpen = true
-            case let p?: if let s = p.section { revealInspectorSection(s) }
-            }
-        }
-    }
+    /// The chip under the prompt whose popover is open, if any
+    /// (Dock/GenerateChips): one at a time.
+    var openChip: GenerateChip?
+    /// The chip whose popover was open as the mouse last went down: a
+    /// popover shuts itself on a press outside it -- on its own chip too
+    /// -- before the click lands, which would open it again.
+    @ObservationIgnored var chipOpenAtPress: GenerateChip?
+    @ObservationIgnored var chipPressWatch: Any?
     /// The Crop card's zoom: X and Y together, their ratio kept (the
     /// lock between them), or apart. Remembered between launches.
     /// Information's W and H held to their ratio (its lock): a typed or
@@ -1408,26 +1393,17 @@ final class AppModel {
         }
     }
     static let cropZoomLockKey = "crop.zoomLocked"
-    /// The TIMELINE in the prompt's place (DESIGN §10a Timeline): asked
-    /// for (its switch beside the box), shown while the stage works on a
-    /// timeline or a still with pages (`timelineOpen`).
-    var timelineWanted = false
     /// Settings › General › Generations (DESIGN §10a Timeline): a result
     /// LANDING as a new layer of a composition that holds something
-    /// already slides the timeline in for the prompt -- or does nothing;
-    /// the switch back to the prompt flashes once when the timeline came
-    /// by itself; the inspector opens on Assets as tasks reach two
+    /// already opens the timeline band over the prompt -- or does
+    /// nothing; the inspector opens on Assets as tasks reach two
     /// (revealTasks), and as the results made reach two (off unless
     /// checked). Kept between launches -- a scripted snapshot run takes
-    /// VALTZ_SNAPSHOT_LANDING's instead ("timeline=off,flash=on,
-    /// tasks=off,results=on"), saving nothing.
+    /// VALTZ_SNAPSHOT_LANDING's instead ("timeline=off,tasks=off,
+    /// results=on"), saving nothing.
     var landingOpensTimeline = AppModel.storedLanding(
         "timeline", default: true) {
         didSet { Self.keep(landingOpensTimeline, as: "landing.timeline") }
-    }
-    var landingFlashesSwitch = AppModel.storedLanding(
-        "flash", default: true) {
-        didSet { Self.keep(landingFlashesSwitch, as: "landing.flash") }
     }
     var revealsTasks = AppModel.storedLanding("tasks", default: true) {
         didSet { Self.keep(revealsTasks, as: "landing.tasks") }
@@ -1488,13 +1464,9 @@ final class AppModel {
     }
     @ObservationIgnored var promptWordsBy: [String: PromptWords] = [:]
     @ObservationIgnored var agentWordsSent: PromptWords?
-    /// The switch back to the prompt asked to flash, once it is shown
-    /// (TimelineSwitch takes it): the timeline came by itself.
-    var switchFlash: Date?
     /// What the landings did, for the snapshot summary: the timeline
-    /// opened by itself, the switch flashed, Assets shown for a result.
-    @ObservationIgnored var landingCounts = (timeline: 0, flash: 0,
-                                             results: 0)
+    /// opened by itself, Assets shown for a result.
+    @ObservationIgnored var landingCounts = (timeline: 0, results: 0)
     private static func storedLanding(_ name: String,
                                       default fallback: Bool) -> Bool {
         guard keepsViewState else {
@@ -1509,16 +1481,15 @@ final class AppModel {
         return UserDefaults.standard.object(forKey: "landing." + name)
             as? Bool ?? fallback
     }
-    /// The timeline's rows of layers in view (its ⌃ ⌄), remembered
-    /// between launches (not by a scripted snapshot run).
-    var timelineRows = AppModel.storedTimelineRows {
-        didSet {
-            if Self.keepsViewState {
-                UserDefaults.standard.set(timelineRows,
-                                          forKey: Self.timelineRowsKey)
-            }
-        }
-    }
+    /// The timeline's rows of layers in view, as its band's height
+    /// leaves room for (TimelineBand): read, never set by hand.
+    @ObservationIgnored var timelineRows = AppModel.timelineDefaultRows
+    /// The composer's height in the dock, as last laid out: what a band
+    /// of so many rows adds to (setTimelineRows).
+    @ObservationIgnored var dockComposerHeight: CGFloat = 0
+    /// The stage column's height under the context row: the region and
+    /// the dock, which share it.
+    @ObservationIgnored var stageColumnHeight: CGFloat = 0
     /// The TRACK VIEW (DESIGN §10a Timeline): the layers laid in tracks,
     /// as a traditional editor shows them -- remembered as the rows are.
     var timelineTracks = AppModel.storedTimelineTracks {
@@ -1535,12 +1506,8 @@ final class AppModel {
             && UserDefaults.standard.bool(forKey: timelineTracksKey)
     }
     static let timelineRowRange = 1...12
-    private static let timelineRowsKey = "view.timelineRows"
-    private static var storedTimelineRows: Int {
-        let n = keepsViewState
-            ? UserDefaults.standard.integer(forKey: timelineRowsKey) : 0
-        return n > 0 ? min(n, timelineRowRange.upperBound) : 3
-    }
+    /// The band's rows while the dock has the height its content asks.
+    static let timelineDefaultRows = 3
     /// The timeline's zoom: how many times the whole of it fits (1: all
     /// of it in view).
     var timelineZoom = 1.0
@@ -1553,35 +1520,9 @@ final class AppModel {
     /// ("<composition>/<folder>"): how they are looked at, not kept.
     var foldedLayerFolders: Set<String> = []
     /// A long prompt stays three rows tall and scrolls, instead of the
-    /// box growing with it (to half the window).
+    /// box -- and the dock with it -- growing with it. While the dock has
+    /// a height of its own (its splitter's), the box fills it instead.
     var promptCompact = false
-    /// The box was made compact by a tray opening -- Adjust, Crop, Trim,
-    /// or the generation card short of room -- not by its own toggle: it
-    /// grows back when that tray goes.
-    @ObservationIgnored private var compactForPanel = false
-    /// The editor's height and, of it, the picture's above the cards --
-    /// the stage's slot, or the mark and the room around it -- as last
-    /// laid out (SimpleView): what a tray opening would leave it.
-    @ObservationIgnored var editorRoom: CGFloat = 0
-    /// The composer's width as laid out, the column it is given, and each
-    /// drawer's content as laid out (the snapshot summary's `composer=`):
-    /// the composer is never wider than its column.
-    @ObservationIgnored var composerWidth: CGFloat = 0
-    @ObservationIgnored var composerColumn: CGFloat = 0
-    @ObservationIgnored var drawerWidths: [String: CGFloat] = [:]
-    @ObservationIgnored var stageRoom: CGFloat = 0
-    @ObservationIgnored var markRoom: [Int: CGFloat] = [:]
-    var pictureRoom: CGFloat {
-        stageVisible ? stageRoom : markRoom.values.reduce(0, +)
-    }
-    /// The share of the editor's height the picture keeps while the
-    /// generation card is open; short of it, the box goes to its three
-    /// rows.
-    static let pictureShare: CGFloat = 0.3
-    /// The person sized the box (its own button) with the generation card
-    /// open: the card's room leaves it so until a tray opens or closes.
-    @ObservationIgnored private var promptSizeChosen = false
-    @ObservationIgnored private var roomCheckQueued = false
     /// IMMERSIVE prompt editing (View › Edit Prompt in Full; PromptStudio):
     /// the prompt the window's height under a toolbar of its own, the
     /// stage a small preview at the top left, the cards put away -- and
@@ -2075,18 +2016,18 @@ final class AppModel {
         }.count >= n
     }
 
-    /// A row of the generation card the memory card points at.
-    func memorySuggests(_ row: String) -> Bool {
-        switch row {
-        case SettingsRow.length: suggestsShorterClip
-        case SettingsRow.size: suggestsSmallerSize
+    /// A chip the memory card points at: a clip's length, the size.
+    func memorySuggests(_ chip: GenerateChip) -> Bool {
+        switch chip {
+        case .length: suggestsShorterClip
+        case .shape: suggestsSmallerSize
         default: false
         }
     }
 
-    /// The memory card's suggestion: the generation card opened on it.
+    /// The memory card's suggestion: the chip it points at, opened.
     func showMemorySuggestion() {
-        withAnimation(Self.motion) { openPanel = .generate }
+        openChip = suggestsShorterClip ? .length : .shape
     }
 
     func dismissMemoryFailure() {
@@ -4118,31 +4059,14 @@ final class AppModel {
         }
     }
 
-    /// Custom's panel from what opens it -- Favor's Custom again, or its
-    /// summary beside it: shut if it was open as the click began, else
-    /// opened.
+    /// Custom's options from what opens them -- Favor's Custom again:
+    /// shut if they were open, else opened.
     func toggleTuning() {
-        let wasOpen = tuningOpenAtPress || showsTuning
-        tuningOpenAtPress = false
-        if wasOpen {
+        if showsTuning {
             showsTuning = false
         } else {
             refreshTuning()
             showsTuning = true
-        }
-    }
-
-    /// Notes, at each press, whether Custom's panel was open (installed
-    /// once, by the card that shows Favor).
-    func watchTuningPresses() {
-        guard tuningPressWatch == nil else { return }
-        tuningPressWatch = NSEvent.addLocalMonitorForEvents(
-            matching: .leftMouseDown
-        ) { [weak self] event in
-            MainActor.assumeIsolated {
-                if let self { self.tuningOpenAtPress = self.showsTuning }
-            }
-            return event
         }
     }
 
@@ -4511,62 +4435,10 @@ final class AppModel {
         }
     }
 
-    /// The Generate drawer opened (or shut) where the window is short:
-    /// when the composer, `grows` taller by it (and by the box grown
-    /// back, `regrows`, if the drawer had shrunk it), would leave the
-    /// picture above less than `pictureShare` of the height, the prompt
-    /// box shrinks to its three rows, and grows back as it was when the
-    /// drawer goes, unless its own toggle was used meanwhile. (A layer's
-    /// edits are the inspector's, beside the stage: they leave the box
-    /// as it is.) Run from the view (onChange), not a didSet.
-    func panelChanged(to p: ComposerPanel?, grows: CGFloat = 0,
-                      regrows: CGFloat = 0) {
-        promptSizeChosen = false
-        let needs = grows + (compactForPanel && promptCompact ? regrows : 0)
-        let shortOfRoom = p == .generate && !promptImmersive
-            && editorRoom > 0
-            && pictureRoom - needs < editorRoom * Self.pictureShare
-        if shortOfRoom {
-            if !promptCompact {
-                compactForPanel = true
-                withAnimation(Self.motion) { promptCompact = true }
-            }
-        } else if compactForPanel {
-            compactForPanel = false
-            if promptCompact {
-                withAnimation(Self.motion) { promptCompact = false }
-            }
-        }
-    }
-
-    /// The prompt box's own toggle (its corner button): the person's
-    /// choice, which a tray closing leaves as it is.
+    /// The prompt box's own toggle (its corner button): three rows, or
+    /// the whole prompt.
     func togglePromptCompact() {
-        compactForPanel = false
-        if openPanel == .generate { promptSizeChosen = true }
         withAnimation(Self.motion) { promptCompact.toggle() }
-    }
-
-    /// Laid out again (SimpleView's measures) with the generation card
-    /// open: the picture left less than its share -- the prompt grown by
-    /// typing, a paste, a long suggestion used, the window made shorter --
-    /// and the box goes to its three rows, as the card opening short of
-    /// room makes it; it grows back when the card goes. Once the layout's
-    /// measures are all in.
-    func roomMeasured() {
-        guard openPanel == .generate, !roomCheckQueued else { return }
-        roomCheckQueued = true
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.roomCheckQueued = false
-            guard self.openPanel == .generate, !self.promptCompact,
-                  !self.promptSizeChosen, !self.promptImmersive,
-                  self.editorRoom > 0,
-                  self.pictureRoom < self.editorRoom * Self.pictureShare
-            else { return }
-            self.compactForPanel = true
-            withAnimation(Self.motion) { self.promptCompact = true }
-        }
     }
 
     /// What the empty prompt box says: how the model Start runs reads a
@@ -4970,10 +4842,10 @@ final class AppModel {
     func toggleViewOnly() { setViewOnly(!viewOnly) }
 
     /// ⌘1 ⌘2 ⌘3 ⌘4 (⇧⌘P the Agent's too): the prompt box for that target
-    /// -- the editor shown, view only and the timeline left, the box's
-    /// target switched, the keyboard in its words. A box that comes back
-    /// for it (view only ending, the timeline going) takes the keyboard
-    /// as it appears.
+    /// -- the editor shown, view only left, the box's target switched,
+    /// the keyboard in its words. A box that comes back for it (view only
+    /// ending) takes the keyboard as it appears. The timeline band stays:
+    /// the box is under it.
     func focusPrompt(_ m: Modality) {
         guard closingTasks == nil, fleetServing == nil,
               m == .agent || !agentHolds
@@ -4983,7 +4855,6 @@ final class AppModel {
         if screen != .editor { show(.editor) }
         setViewOnly(false)
         viewOnlyEnded = nil
-        if timelineOpen { showTimeline(false) }
         if m != modality {
             withAnimation(Self.motion) { setModality(m) }
         }
@@ -4993,11 +4864,9 @@ final class AppModel {
         }
     }
 
-    /// ⇧⌘P: the PROMPT box, the keyboard in it to type. With the timeline
-    /// in its place, the prompt back as it was -- its target kept -- (the
-    /// key of the timeline's switch back, shown on it under ⌘?); else the
-    /// Agent's box, as ⌘4 (View › Agent Prompt). The key monitor's: a
-    /// menu item takes one key.
+    /// ⇧⌘P: the Agent's PROMPT box, the keyboard in it to type, as ⌘4
+    /// (View › Agent Prompt). The key monitor's: a menu item takes one
+    /// key.
     func promptKey(_ e: NSEvent) -> Bool {
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
@@ -5006,9 +4875,7 @@ final class AppModel {
                 || e.charactersIgnoringModifiers?.lowercased() == "p",
               closingTasks == nil, fleetServing == nil
         else { return false }
-        if !e.isARepeat {
-            focusPrompt(composerShowsTimeline ? modality : .agent)
-        }
+        if !e.isARepeat { focusPrompt(.agent) }
         return true
     }
 
@@ -6156,7 +6023,7 @@ final class AppModel {
                 if stageAssetId != src { setActive(a) }
                 if let l = t.layer { selectLayer(l) }
                 upscaleJob = job
-                withAnimation(Self.motion) { openPanel = .crop }
+                revealInspectorSection(.crop)
             }
             return
         }
@@ -6820,7 +6687,7 @@ final class AppModel {
     /// base is on the stage already, and stays as it is; so does a
     /// generation in flight.
     ///
-    /// Run from the view (ComposerStack's onChange), not a didSet.
+    /// Run from the view (ComposerCard's onChange), not a didSet.
     func baseChanged(to url: URL?) {
         if let url { adoptBaseSize(url) }
         guard !isGenerating else { return }
@@ -9152,7 +9019,7 @@ final class AppModel {
     private func agentTookProject() {
         withAnimation(Self.motion) {
             if markupOpen { markupOpen = false }
-            openPanel = nil
+            openChip = nil
             timelineCutting = false
             if modality != .agent { setModality(.agent) }
         }
@@ -10246,7 +10113,7 @@ final class AppModel {
         preference = .balanced
         showsTuning = false
         seedText = ""
-        openPanel = nil
+        openChip = nil
         banner = nil
         refreshMachine()  // picks the default models again
     }
