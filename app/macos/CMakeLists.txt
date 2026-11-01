@@ -134,31 +134,31 @@ set(VALTZ_APP_SOURCES
   Sources/Dock/SuggestionSplit.swift
   Sources/Views/MarkupBar.swift
   Sources/Views/LogView.swift
-  Sources/Simple/SimpleView.swift
-  Sources/Simple/CropTrim.swift
-  Sources/Simple/Timeline.swift
-  Sources/Simple/ValueControls.swift
-  Sources/Simple/Keyframes.swift
-  Sources/Simple/TuningPanel.swift
-  Sources/Simple/Markup.swift
-  Sources/Simple/MarkupTextEditor.swift
-  Sources/Simple/MarkupConnectors.swift
-  Sources/Simple/MarkupRender.swift
-  Sources/Simple/PromptEditor.swift
-  Sources/Simple/PromptMarkdown.swift
-  Sources/Simple/PromptStudio.swift
-  Sources/Simple/SuggestionPane.swift
-  Sources/Simple/AgentModel.swift
-  Sources/Simple/AgentViews.swift
-  Sources/Simple/ReferenceRow.swift
-  Sources/Simple/Adjustments.swift
-  Sources/Simple/ColorMixer.swift
-  Sources/Simple/ColorGrading.swift
-  Sources/Simple/AudioPanel.swift
-  Sources/Simple/AttachCapture.swift
-  Sources/Simple/VoiceOver.swift
-  Sources/Simple/Capture.swift
-  Sources/Simple/ClipTime.swift
+  Sources/Stage/StageRegion.swift
+  Sources/Stage/CropTrim.swift
+  Sources/Stage/Timeline.swift
+  Sources/Stage/ValueControls.swift
+  Sources/Stage/Keyframes.swift
+  Sources/Stage/Markup.swift
+  Sources/Stage/MarkupTextEditor.swift
+  Sources/Stage/MarkupConnectors.swift
+  Sources/Stage/MarkupRender.swift
+  Sources/Stage/Adjustments.swift
+  Sources/Stage/ColorMixer.swift
+  Sources/Stage/ColorGrading.swift
+  Sources/Stage/AudioPanel.swift
+  Sources/Stage/ClipTime.swift
+  Sources/Composer/TuningPanel.swift
+  Sources/Composer/PromptEditor.swift
+  Sources/Composer/PromptMarkdown.swift
+  Sources/Composer/PromptStudio.swift
+  Sources/Composer/SuggestionPane.swift
+  Sources/Composer/AgentModel.swift
+  Sources/Composer/AgentViews.swift
+  Sources/Composer/ReferenceRow.swift
+  Sources/Composer/AttachCapture.swift
+  Sources/Composer/VoiceOver.swift
+  Sources/Composer/Capture.swift
   Sources/Viewer/CompareBar.swift
   Sources/Viewer/CompareCanvas.swift
   Sources/Viewer/GPUPicture.swift

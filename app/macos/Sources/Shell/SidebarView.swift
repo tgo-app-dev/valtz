@@ -10,7 +10,10 @@ import SwiftUI
 ///                 column shows it
 ///   Recents       the projects opened or saved lately: picked, opened
 ///                 (the one open asked about first)
-///   Assets        everything the project holds (AssetsSection)
+///   Assets        everything the project holds (AssetsSection): picked,
+///                 viewed on the stage, its row lit while it is there;
+///                 double-clicked, opened (made active, or a prompt put
+///                 in the box)
 ///
 /// Its search filters Assets by name; ⌘F (Edit › Find) puts the keyboard
 /// in it, showing the sidebar if it was hidden.
@@ -21,7 +24,7 @@ struct SidebarView: View {
 
     var body: some View {
         List(selection: Binding<SidebarItem?>(
-            get: { model.sidebarSelection },
+            get: { model.sidebarPick },
             set: { if let i = $0 { model.select(i) } })) {
             ProjectHeader(model: model)
                 .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 8,
@@ -37,6 +40,13 @@ struct SidebarView: View {
             AssetsSection(model: model)
         }
         .listStyle(.sidebar)
+        // A double-click on an asset's row (its menus are the rows' own).
+        .contextMenu(forSelectionType: SidebarItem.self) { _ in
+        } primaryAction: { items in
+            guard items.count == 1, case .asset(let id) = items.first
+            else { return }
+            model.assetOpened(id)
+        }
         .searchable(text: $model.assetFilter, placement: .sidebar,
                     prompt: Text("Filter Assets"))
         .searchFocused($searchFocused)

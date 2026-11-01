@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The middle column: the contextual row, when a mode has one (markup's
 /// tools, the compare's A, B and modes), over the stage region -- the
-/// editor's stage (SimpleView), the Atlas or the Log -- and, under a
+/// editor's stage (StageRegion), the Atlas or the Log -- and, under a
 /// splitter, the dock: the timeline band and the composer. The region
 /// takes whatever room the sidebar, the inspector and the dock leave it,
 /// never less than a stage's worth, and its background runs on under the
@@ -33,7 +33,7 @@ struct StageColumn: View {
     static let minWidth: CGFloat = 320
 
     /// The stage's strip over the Prompt Editor: the small stage and its
-    /// transport (SimpleView), or a generation's progress.
+    /// transport (StageRegion), or a generation's progress.
     static let stageStrip: CGFloat = 168
 
     private var docked: Bool { layout.dock != .hidden }
@@ -148,7 +148,7 @@ struct StageColumn: View {
     private var region: some View {
         switch layout.stage {
         case .editor:
-            SimpleView(model: model, strip: expanded)
+            StageRegion(model: model, strip: expanded)
         case .atlas:
             AtlasView(model: model)
         case .log:

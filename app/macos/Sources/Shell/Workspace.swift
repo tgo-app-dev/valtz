@@ -48,24 +48,10 @@ enum InspectorSection: String, CaseIterable, Identifiable, Codable, Sendable {
 
     /// A layer's edit, not the stack's or the selection's.
     var isEdit: Bool { self != .layers && self != .info }
-
-    /// The composer's old panel for it, for the hooks that still name
-    /// one.
-    var panel: ComposerPanel? {
-        switch self {
-        case .layers, .info: nil
-        case .adjust: .adjust
-        case .color: .color
-        case .grade: .grade
-        case .crop: .crop
-        case .trim: .trim
-        case .audio: .audio
-        }
-    }
 }
 
-extension ComposerPanel {
-    /// The inspector section a layer's edit panel is now.
+extension LayerEditSection {
+    /// The inspector's section for it.
     var section: InspectorSection {
         switch self {
         case .adjust: .adjust
@@ -228,12 +214,15 @@ struct WorkspaceLayout: Equatable {
     }
 }
 
-/// A row of the sidebar's list that it selects: the screens, and a
-/// recent project (opened as it is picked, the selection staying where
-/// it was).
+/// A row of the sidebar's list that it selects: the screens; a recent
+/// project (opened as it is picked, the selection staying where it was);
+/// an asset of the project (viewed on the stage as it is picked) and an
+/// export under way (its frames watched there).
 enum SidebarItem: Hashable {
     case stage, atlas, log
     case recent(String)
+    case asset(String)
+    case export(String)
 }
 
 extension AppModel {
@@ -265,30 +254,40 @@ extension AppModel {
         chrome.sidebar = v
     }
 
-    /// The inspector shown or hidden: the toolbar's button, ⌃⌘I, the
-    /// snapshot hooks. Kept as the name everything called it by.
-    var inspectorOpen: Bool {
-        get { chrome.inspectorShown }
-        set { chrome.inspectorShown = newValue }
-    }
-
     /// The screen the sidebar shows: the stage (the editor), the Atlas,
     /// the Log.
     var screen: AppScreen {
         switch sidebarSelection {
         case .atlas: .atlas
         case .log: .log
-        case .stage, .recent: .editor
+        case .stage, .recent, .asset, .export: .editor
         }
     }
 
-    /// A sidebar row picked: its screen shown, or its project opened.
+    /// The sidebar's row lit: on the stage, the asset viewed there or
+    /// the export it watches; else the screen's.
+    var sidebarPick: SidebarItem {
+        guard screen == .editor else { return sidebarSelection }
+        if let v = viewedAsset { return .asset(v) }
+        if let j = exportShow?.job { return .export(j) }
+        return sidebarSelection
+    }
+
+    /// A sidebar row picked: its screen shown -- the Stage's, the active
+    /// work back from a viewed asset -- its project opened, its asset
+    /// viewed, its export watched.
     func select(_ item: SidebarItem) {
         switch item {
-        case .stage: show(.editor)
+        case .stage:
+            endViewing()
+            show(.editor)
         case .atlas: show(.atlas)
         case .log: show(.log)
         case .recent(let path): openDropped(URL(fileURLWithPath: path))
+        case .asset(let id): assetPicked(id)
+        case .export(let job):
+            show(.editor)
+            showTask(job)
         }
     }
 
@@ -335,7 +334,7 @@ extension AppModel {
             openChip = nil
             return
         }
-        if let p = ComposerPanel.allCases.first(where: { "\($0)" == name }) {
+        if let p = LayerEditSection.allCases.first(where: { "\($0)" == name }) {
             revealInspectorSection(p.section)
         } else {
             openChip = GenerateChip(rawValue: name) ?? .model

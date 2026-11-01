@@ -88,7 +88,7 @@ struct DesignGallery: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     .frame(height: 220)
-                    .background(Color.valtzPanel)
+                    .background(Color(nsColor: .controlBackgroundColor))
                 }
 
                 group("Empty states") {

@@ -1275,7 +1275,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     static func dockSummary(_ m: AppModel) -> String {
         let set = m.chrome.dockHeight.map { "\(Int($0))" } ?? "fit"
-        return "dock=\(m.layout.dock) dockHeight=\(set) "
+        return "pick=\(String(describing: m.sidebarPick).replacingOccurrences(of: " ", with: "_")) "
+            + "viewed=\(m.viewedAsset ?? "-") active=\(m.activeComposition?.name ?? "-") "
+            + "dock=\(m.layout.dock) dockHeight=\(set) "
             + "composer=\(Int(m.dockComposerHeight)) "
             + "band=\(m.chrome.timelineBand) timelineOpen=\(m.timelineOpen) "
             + "rows=\(m.timelineRows) chip=\(m.openChip?.rawValue ?? "-") "
@@ -1636,7 +1638,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 m.setAppearance(dark: a == "dark")
             }
             if env["VALTZ_SNAPSHOT_INSPECTOR"] != nil {
-                m.inspectorOpen = true
+                m.chrome.inspectorShown = true
             }
             // A member's offer, asked ("Ask Each Time"), answered as
             // its alert's button would, two seconds after it comes
@@ -2642,15 +2644,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 try? await Task.sleep(for: .milliseconds(800))
             }
-            // The inspector's section ("info", "layers") brought into
-            // sight -- "assets" ("history"): the sidebar shown -- and layer
-            // work on the picture on the stage: "add;source=<asset>;
-            // hide=<layer>;select=<layer>;move=<layer>:<by>" ("0" is layer
-            // 0).
-            if let m = model, let t = env["VALTZ_SNAPSHOT_INSPECTOR_TAB"] {
+            // An inspector section ("layers", "info", "adjust" ...)
+            // brought into sight; "sidebar": the sidebar shown, its
+            // Assets in sight.
+            if let m = model, let t = env["VALTZ_SNAPSHOT_INSPECTOR_SECTION"] {
                 if let s = InspectorSection(rawValue: t) {
                     m.revealInspectorSection(s)
-                } else if t == "assets" || t == "history" {
+                } else if t == "sidebar" {
                     m.chrome.sidebar = .all
                 }
             }
@@ -2693,6 +2693,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? await Task.sleep(for: .milliseconds(500))
                 m.showsCanvasSize = true
             }
+            // Layer work on the picture on the stage: "add;source=<asset>;
+            // hide=<layer>;select=<layer>;move=<layer>:<by>" ("0" is layer
+            // 0).
             if let m = model, let spec = env["VALTZ_SNAPSHOT_LAYER_OPS"] {
                 for step in spec.split(separator: ";") {
                     let kv = step.split(separator: "=", maxSplits: 1)
@@ -2889,6 +2892,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // each prints the stacked inspector's shares after it.
             if let m = model, let spec = env["VALTZ_SNAPSHOT_DRAGS"] {
                 for d in spec.split(separator: ";") {
+                    // "x,y*r": a right-click there, the menu it opens
+                    // printed and shut.
+                    if d.hasSuffix("*r") {
+                        let xy = d.dropLast(2).split(separator: ",")
+                            .compactMap { Double($0) }
+                        if xy.count == 2 {
+                            let items = Self.postRightClick(x: xy[0], y: xy[1])
+                            try? await Task.sleep(for: .milliseconds(400))
+                            FileHandle.standardError.write(Data(
+                                "snapshot: right-click \(d) menu=\(items.map { $0.replacingOccurrences(of: " ", with: "_") }.joined(separator: "|"))\n".utf8))
+                        }
+                        continue
+                    }
                     // "x,y*2": a double-click there.
                     if d.hasSuffix("*2") {
                         let xy = d.dropLast(2).split(separator: ",")
@@ -3065,11 +3081,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                let p = RightPanel(rawValue: v) {
                 m.chrome.inspectorShown = true
                 m.chrome.rightPanel = p
-            }
-            // The sidebar hidden (or shown, if it was hidden).
-            if env["VALTZ_SNAPSHOT_NAV"] != nil {
-                m.chrome.sidebar = m.chrome.sidebar == .detailOnly
-                    ? .all : .detailOnly
             }
             // Adjustments on the picture to edit, before Start
             // ("exposure=0.4,vibrance=0.3"): the model gets them.
@@ -4613,7 +4624,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // button), "export:<format>:<file>", "idle:<s>" (until
             // no task is left, at most s), "model:<id>" (the model
             // field; empty: Auto), "memory:<png>" (Activity's Memory as it
-            // stands) -- each printing `snapshot: task <step> tasks=
+            // stands), "activity:<png>" (the Activity popover drawn) --
+            // each printing `snapshot: task <step> tasks=
             // watched= stage= downloads=`.
             if let spec = env["VALTZ_SNAPSHOT_TASKS"] {
                 for step in spec.split(separator: ";").map(String.init) {
@@ -4646,6 +4658,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // (as VALTZ_SNAPSHOT_MEMORY draws it, read for 3 s).
                     case "memory":
                         await Self.snapshotMemory(m, seconds: 3, to: arg)
+                        m.activityOpen = false
+                    // The Activity popover as it stands, drawn to
+                    // "activity:<file.png>" (a popover is a window of
+                    // its own: a shot of the window does not hold it).
+                    case "activity":
+                        m.activityOpen = true
+                        try? await Task.sleep(for: .seconds(1))
+                        let r = ImageRenderer(content: ActivityPopover(model: m)
+                            .background(Color(nsColor: .windowBackgroundColor)))
+                        r.scale = 2
+                        if let img = r.nsImage, let tiff = img.tiffRepresentation,
+                           let rep = NSBitmapImageRep(data: tiff),
+                           let png = rep.representation(using: .png, properties: [:]) {
+                            try? png.write(to: URL(fileURLWithPath: arg))
+                        }
                         m.activityOpen = false
                     case "model": m.modelChoice = arg
                     // The generation card's rows, as the env hooks
@@ -5662,6 +5689,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // "import=<file>" (into Assets), "a=<asset>" / "b=<asset>" (an
         // asset dropped on the compare's A or B: an id, or "image",
         // the newest picture in Assets not on the stage).
+        //
+        // The sidebar: "folder" (a new one, the newest asset moved into
+        // it), "click=x;y", "rclick=x;y" (the menu it opens printed),
+        // "dclick=x;y" -- points from the window's top left.
         if let m = model, let steps = env["VALTZ_SNAPSHOT_TOGGLES"] {
             for step in steps.split(separator: ",") {
                 let p = step.split(separator: ":").map(String.init)
@@ -5671,7 +5702,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "snapshot: toggle \(p[0]) at \(Date().timeIntervalSince1970)\n".utf8))
                 withAnimation(AppModel.motion) {
                     if p[0] == "inspector" {
-                        m.inspectorOpen.toggle()
+                        m.chrome.inspectorShown.toggle()
                     } else if p[0] == "sidebar" {
                         m.setSidebar(m.layout.sidebar == .detailOnly
                                      ? .all : .detailOnly)
@@ -5747,6 +5778,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     } else if p[0].hasPrefix("import=") {
                         _ = m.importFiles([URL(fileURLWithPath:
                             String(p[0].dropFirst(7)))])
+                    } else if p[0] == "folder" {
+                        // A new folder, the newest asset moved into it.
+                        if let id = m.createFolder(),
+                           let a = m.listedAssets.first {
+                            m.moveAsset(a.id, to: id)
+                        }
+                    } else if let (kind, xy) = Self.pointStep(p[0]) {
+                        // A click posted at "x;y" (points from the
+                        // window's top left): "click=", "rclick=" (the
+                        // menu it opens printed), "dclick=".
+                        switch kind {
+                        case "rclick":
+                            let items = Self.postRightClick(x: xy.0, y: xy.1)
+                            FileHandle.standardError.write(Data(
+                                "snapshot: right-click menu=\(items.map { $0.replacingOccurrences(of: " ", with: "_") }.joined(separator: "|"))\n".utf8))
+                        case "dclick": Self.postClick(x: xy.0, y: xy.1, count: 2)
+                        default: Self.postClick(x: xy.0, y: xy.1)
+                        }
                     } else if p[0].hasPrefix("a=") || p[0].hasPrefix("b=") {
                         let arg = String(p[0].dropFirst(2))
                         let a = arg == "image"
@@ -5779,7 +5828,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         FileHandle.standardError.write(Data(
                             "snapshot: appearance dark=\(m.appearsDark) fades=\(fades.joined(separator: ","))\n".utf8))
-                    } else if let panel = ComposerPanel.allCases.first(
+                    } else if let panel = LayerEditSection.allCases.first(
                         where: { "\($0)" == p[0] }) {
                         m.toggleInspectorSection(panel.section)
                     } else if p[0] == "generate" {
@@ -6869,8 +6918,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "panel=\(m.panelSummary) right=\(m.chrome.rightPanel.rawValue) "
                 + "sections=\(m.inspectorSections.map(\.rawValue).joined(separator: "+")) "
                 + "compact=\(m.promptCompact) "
-                + "title=\(m.windowTitle) inspector=\(m.inspectorOpen) "
+                + "title=\(m.windowTitle) inspector=\(m.chrome.inspectorShown) "
                 + "sidebar=\(m.chrome.sidebar == .detailOnly ? "hidden" : "shown") "
+                + "pick=\(String(describing: m.sidebarPick).replacingOccurrences(of: " ", with: "_")) "
                 + "anonymous=\(m.isAnonymous) projectPath=\(m.projectPath) "
                 + "base=\(m.baseAttachment?.url.lastPathComponent ?? "-") refs=\(m.promptAttachments.filter { !$0.isBase }.count) "
                 + "dragReady=\(m.stageDragReady && m.canDragStage) attachments=\(m.promptAttachments.count) "
@@ -7588,6 +7638,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.postEvent(ev, atStart: false)
     }
 
+    /// A TOGGLES step that posts a click: "click=x;y", "rclick=x;y",
+    /// "dclick=x;y" -- its kind and point.
+    static func pointStep(_ step: String) -> (String, (Double, Double))? {
+        let kv = step.split(separator: "=", maxSplits: 1).map(String.init)
+        guard kv.count == 2, ["click", "rclick", "dclick"].contains(kv[0])
+        else { return nil }
+        let xy = kv[1].split(separator: ";").compactMap { Double($0) }
+        return xy.count == 2 ? (kv[0], (xy[0], xy[1])) : nil
+    }
+
+    /// The context menu a right-click at (x, y) points from the window's
+    /// top left would open: its items' titles ("-": none), filled as
+    /// AppKit fills it before it shows, not opened.
+    @MainActor
+    static func postRightClick(x: Double, y: Double) -> [String] {
+        guard let win = NSApp.windows.first(where: { $0.isVisible }),
+              let content = win.contentView,
+              let ev = NSEvent.mouseEvent(
+                  with: .rightMouseDown,
+                  location: NSPoint(x: x, y: win.frame.height - y),
+                  modifierFlags: [],
+                  timestamp: ProcessInfo.processInfo.systemUptime,
+                  windowNumber: win.windowNumber, context: nil,
+                  eventNumber: 0, clickCount: 1, pressure: 1)
+        else { return ["-"] }
+        var v = content.superview?.hitTest(ev.locationInWindow)
+            ?? content.hitTest(ev.locationInWindow)
+        while let view = v {
+            if let menu = view.menu(for: ev) {
+                menu.delegate?.menuNeedsUpdate?(menu)
+                menu.update()
+                return menu.items.map {
+                    $0.isSeparatorItem ? "--" : $0.title
+                }
+            }
+            v = view.superview
+        }
+        return ["-"]
+    }
+
     /// A double-click posted to the window at (x, y) points from its top
     /// left: the pointer there first, then two clicks 180 ms apart.
     @MainActor
@@ -7671,19 +7761,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// from its top left, through the app's own event queue.
     @MainActor
     private static func postClick(x: Double, y: Double,
-                                  in window: NSWindow? = nil) {
+                                  in window: NSWindow? = nil,
+                                  count: Int = 1) {
         guard let win = window
                 ?? NSApp.windows.first(where: { $0.isVisible }) else {
             return
         }
         postedClickAt = CACurrentMediaTime()
         let p = NSPoint(x: x, y: win.frame.height - y)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            if let ev = NSEvent.mouseEvent(
-                with: type, location: p, modifierFlags: [], timestamp: 0,
-                windowNumber: win.windowNumber, context: nil,
-                eventNumber: 0, clickCount: 1, pressure: 1) {
-                NSApp.postEvent(ev, atStart: false)
+        // A double-click's second press counts 2, as AppKit's does.
+        for n in 1...count {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                if let ev = NSEvent.mouseEvent(
+                    with: type, location: p, modifierFlags: [], timestamp: 0,
+                    windowNumber: win.windowNumber, context: nil,
+                    eventNumber: 0, clickCount: n, pressure: 1) {
+                    NSApp.postEvent(ev, atStart: false)
+                }
             }
         }
     }

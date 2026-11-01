@@ -54,6 +54,17 @@ struct PromptTabBar: View {
                                     if let typed, typed != title {
                                         act { model.renamePromptTab(i, typed) }
                                     }
+                                    // The keyboard back to the prompt --
+                                    // unless the click that ended the
+                                    // name gave it to something else.
+                                    DispatchQueue.main.async {
+                                        if let tv = model.promptTextView,
+                                           let w = tv.window,
+                                           w.firstResponder == nil
+                                            || w.firstResponder === w {
+                                            w.makeFirstResponder(tv)
+                                        }
+                                    }
                                 })
                                 .id(tab.id)
                         }

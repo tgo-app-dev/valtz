@@ -16,7 +16,7 @@ import AppKit
 /// The stage is ONE view whatever room it is given, so going into the
 /// editor makes it small rather than making another: its canvas and its
 /// player carry on.
-struct SimpleView: View {
+struct StageRegion: View {
     @Bindable var model: AppModel
     /// The Prompt Editor's strip, over the dock grown.
     var strip = false
@@ -349,7 +349,7 @@ private struct StagePlayer: View {
 /// compare's controls are the context row's (CompareBar).
 private struct ResultStage: View {
     @Bindable var model: AppModel
-    /// The editor's own area, in the window (SimpleView): the drag ring
+    /// The editor's own area, in the window (StageRegion): the drag ring
     /// reaches no further.
     let area: CGRect
     var small = false
@@ -457,7 +457,7 @@ private struct ResultStage: View {
             }
             if small && model.stageHasTransport {
                 SmallTransport(model: model)
-                    .frame(height: SimpleView.smallBar)
+                    .frame(height: StageRegion.smallBar)
                     .transition(.opacity)
             }
             if !small {
@@ -519,7 +519,7 @@ private struct ResultStage: View {
     /// width -- the column's, at most -- or, while the timeline is open in
     /// its place, the timeline's (the stage's whole width).
     private func statusRoom(_ stage: CGFloat) -> CGFloat {
-        model.timelineOpen ? stage : min(SimpleView.columnWidth, stage)
+        model.timelineOpen ? stage : min(StageRegion.columnWidth, stage)
     }
 
     /// A clip's live preview loops; a finished clip plays; a picture is

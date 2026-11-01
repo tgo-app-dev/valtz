@@ -139,7 +139,7 @@ struct DockView: View {
                         .combined(with: .opacity))
             }
         }
-        .frame(maxWidth: SimpleView.columnWidth)
+        .frame(maxWidth: StageRegion.columnWidth)
         .padding(.horizontal, Self.inset)
         .frame(height: 0, alignment: .bottom)
         .offset(y: -lift)

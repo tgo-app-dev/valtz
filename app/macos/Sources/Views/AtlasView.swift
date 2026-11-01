@@ -718,7 +718,7 @@ struct AtlasAssetNode: View {
                 .padding(.horizontal, u(8))
                 .padding(.vertical, u(6))
         }
-        .background(Color.valtzPanel)
+        .background(Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: u(10), style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: u(10), style: .continuous)
@@ -1071,7 +1071,7 @@ struct AtlasOpNode: View {
         .padding(.horizontal, u(8))
         .padding(.vertical, u(7))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.valtzPanel.opacity(0.85),
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.85),
                     in: RoundedRectangle(cornerRadius: u(8),
                                          style: .continuous))
         .overlay {
@@ -1255,7 +1255,7 @@ struct AtlasExpanded: View {
             }
             .padding(16)
             .frame(maxWidth: 980, maxHeight: 760)
-            .background(Color.valtzPanel,
+            .background(Color(nsColor: .controlBackgroundColor),
                         in: RoundedRectangle(cornerRadius: 14,
                                              style: .continuous))
             .shadow(color: .black.opacity(0.3), radius: 24, y: 8)

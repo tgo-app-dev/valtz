@@ -197,6 +197,59 @@ extension AppModel {
 
     // MARK: Viewing an asset (a single click)
 
+    /// A row of Assets picked -- a click, ↑ or ↓ in the list: text into
+    /// the Prompt Editor, beside the prompt, to look at, once the
+    /// double-click interval has passed without a second click (a
+    /// prompt's double-click puts it in the box instead); anything else
+    /// on the stage, viewed -- a task's asset, its preview and progress
+    /// -- the editor going, unless something is being written in it:
+    /// then only its small stage shows it.
+    func assetPicked(_ id: String) {
+        assetPickWaits?.cancel()
+        assetPickWaits = nil
+        guard let a = asset(id: id) else { return }
+        if a.kind == "text" {
+            assetPickWaits = Task { [weak self] in
+                try? await Task.sleep(
+                    for: .seconds(NSEvent.doubleClickInterval))
+                if !Task.isCancelled { self?.openTextAsset(a) }
+            }
+            return
+        }
+        // The compare on: the stage stays the two sides' (said).
+        guard !refusedForCompare(a) else { return }
+        show(.editor)
+        if !(promptImmersive && editorEdited) { retreatFromEditor() }
+        if let t = task(of: a.id) {
+            showTask(t.job)
+        } else {
+            viewAsset(a)
+        }
+    }
+
+    /// A row of Assets double-clicked: a prompt into the box, a
+    /// composition made active; a flat asset stays viewed. Another kind
+    /// than text is to be worked on: the Prompt Editor goes, even while
+    /// something is being written in it.
+    func assetOpened(_ id: String) {
+        assetPickWaits?.cancel()
+        assetPickWaits = nil
+        guard let a = asset(id: id) else { return }
+        // A snapshot run: said.
+        if !Self.keepsChrome { print("snapshot: asset-opened \(a.name)") }
+        if a.kind != "text" { retreatFromEditor() }
+        if let t = task(of: a.id) {
+            showTask(t.job)
+        } else if a.isPrompt {
+            usePrompt(a)
+        } else if a.isComposition {
+            activateFromList(a)
+        } else {
+            // Only a composition is made active: a flat one is viewed.
+            viewAsset(a)
+        }
+    }
+
     /// An asset VIEWED: a single click on its row puts it on the stage --
     /// set down from above, larger and fading in, as a thing put on a
     /// desk -- while the ACTIVE one waits to come back. Another click
@@ -703,8 +756,11 @@ extension AppModel {
 ///                   removed (its menu, or Remove Unused)
 ///
 /// A section of the sidebar's list, its rows the list's own: the list
-/// scrolls them and keeps the focus (Escape ends a viewing), the
-/// sidebar's search filters them, and a drop on the list lands here.
+/// selects them (the one viewed on the stage lit, SidebarView), scrolls
+/// them and keeps the focus (Escape ends a viewing), a double-click goes
+/// to the list's primary action (AppModel.assetOpened), a folder is a
+/// disclosure group, the sidebar's search filters them, and a drop on the
+/// list lands here.
 struct AssetsSection: View {
     @Bindable var model: AppModel
     @State private var renaming: String?
@@ -746,47 +802,52 @@ struct AssetsSection: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)
-                    .assetListRow()
+                    .selectionDisabled()
             } else if empty {
                 EmptyState.NoAssets()
                     .controlSize(.small)
-                    .assetListRow()
+                    .selectionDisabled()
             } else {
                 ForEach(views) { v in
                     AssetRow(model: model, asset: v, stale: false,
                              used: true)
-                        .assetListRow()
+                        .tag(SidebarItem.asset(v.id))
                 }
                 // Exports queued or running: a row each until the file
                 // is written (no asset yet: not filtered for).
                 if !filtering {
                     ForEach(model.tasks.filter { $0.kind == "export" }) { t in
                         ExportTaskRow(model: model, task: t)
-                            .assetListRow()
+                            .tag(SidebarItem.export(t.job))
                     }
                 }
-                // A folder's header, and -- open -- its assets set in
-                // under it.
+                // A folder, its assets under it while it is open -- all
+                // of them while the search finds some.
                 ForEach(folders) { f in
                     let items = shown.filter { $0.folder == f.id }
-                    let open = filtering || !model.closedFolders.contains(f.id)
-                    folderRow(f, count: items.count, open: open)
-                        .assetListRow()
-                    if open {
+                    DisclosureGroup(isExpanded: Binding(
+                        get: { filtering || !model.closedFolders.contains(f.id) },
+                        set: { open in
+                            if !filtering,
+                               open == model.closedFolders.contains(f.id) {
+                                model.toggleFolder(f.id)
+                            }
+                        })) {
                         ForEach(items) { a in
                             AssetRow(model: model, asset: a,
                                      stale: stale.contains(a.id),
                                      used: used.contains(a.id))
-                                .padding(.leading, 18)
-                                .assetListRow()
+                                .tag(SidebarItem.asset(a.id))
                         }
+                    } label: {
+                        folderRow(f, count: items.count)
                     }
                 }
                 ForEach(shown.filter { ($0.folder ?? "").isEmpty }) { a in
                     AssetRow(model: model, asset: a,
                              stale: stale.contains(a.id),
                              used: used.contains(a.id))
-                        .assetListRow()
+                        .tag(SidebarItem.asset(a.id))
                 }
                 if !stale.isEmpty {
                     Button("Remove Unused (\(stale.count))") {
@@ -797,7 +858,7 @@ struct AssetsSection: View {
                     .help("Remove every generation nothing uses any more")
                     // An agent at work holds the project.
                     .disabled(model.agentHolds)
-                    .assetListRow()
+                    .selectionDisabled()
                 }
             }
         } header: {
@@ -837,15 +898,12 @@ struct AssetsSection: View {
         .disabled(model.agentHolds)
     }
 
-    private func folderRow(_ f: FolderDTO, count: Int,
-                           open: Bool) -> some View {
+    /// A folder's row: its name -- a double-click types a new one over
+    /// it -- and how many assets it holds; a row of Assets dropped on it
+    /// goes in.
+    private func folderRow(_ f: FolderDTO, count: Int) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
-                .rotationEffect(.degrees(open ? 90 : 0))
-                .foregroundStyle(.secondary)
-                .frame(width: 10)
-            Image(systemName: open ? "folder" : "folder.fill")
+            Image(systemName: "folder")
                 .foregroundStyle(.secondary)
             if renaming == f.id {
                 NameField(name: f.name) { name in
@@ -864,16 +922,12 @@ struct AssetsSection: View {
                 .foregroundStyle(.tertiary)
                 .monospacedDigit()
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 6)
+        // Lit while a drop over it would land in it.
+        .background(RoundedRectangle(cornerRadius: 5)
             .fill(dropFolder == f.id ? Color.accentColor.opacity(0.18)
-                                     : .clear))
+                                     : .clear)
+            .padding(-3))
         .contentShape(Rectangle())
-        .onTapGesture {
-            guard renaming != f.id else { return }
-            model.toggleFolder(f.id)
-        }
         // A row dropped on it goes in; a file from the Finder is imported,
         // as on the list (a destination for rows alone refused it here).
         .onDrop(of: DroppedMedia.dropTypes,
@@ -909,16 +963,6 @@ struct AssetsSection: View {
         }
         .buttonStyle(.borderless)
         .help(help)
-    }
-}
-
-extension View {
-    /// A row of Assets in the sidebar's list: the row draws its own
-    /// hover, active and viewed marks edge to edge, so the list's insets
-    /// and background are cleared.
-    func assetListRow() -> some View {
-        listRowInsets(EdgeInsets(top: 1, leading: 2, bottom: 1, trailing: 2))
-            .listRowBackground(Color.clear)
     }
 }
 
@@ -1002,11 +1046,6 @@ private struct AssetRow: View {
     let used: Bool
     @State private var image: CGImage?
     @State private var hovering = false
-    /// When it was last clicked: a second click within the double-click
-    /// interval is a double-click's.
-    @State private var lastClick: CFTimeInterval = 0
-    /// A text's click, waiting out the double-click interval.
-    @State private var pendingClick: Task<Void, Never>?
 
     var body: some View {
         let a = asset
@@ -1124,51 +1163,13 @@ private struct AssetRow: View {
                 .help("Set active: edit it on the stage")
             }
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 6)
-            .fill(active ? Color.accentColor.opacity(0.10)
-                  : Color.primary.opacity(hovering ? 0.06 : 0)))
+        .padding(.vertical, 1)
         .opacity(stale ? 0.7 : 1)
-        .overlay {
-            // Viewed: on the stage now, the active one waiting.
-            if model.viewedAsset == a.id {
-                RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.accentColor, lineWidth: 1.5)
-            }
-        }
         .contentShape(Rectangle())
+        // Its tools shown under the pointer. A click selects the row,
+        // and the selection views it (AppModel.assetPicked); a
+        // double-click is the list's primary action (assetOpened).
         .onHover { hovering = $0 }
-        // A click VIEWS it on the stage at once -- a task's, its preview
-        // and progress; the second click of a double-click then does
-        // more (a prompt into the box, a composition made active). One
-        // gesture, the second click told by its time: a double-click
-        // gesture beside a single one holds every click back for the
-        // double-click interval (350 ms) to tell the two apart. (The
-        // action runs after AppKit's event: NSApp.currentEvent is not the
-        // click, and its clickCount can throw.)
-        .onTapGesture {
-            guard !renaming else { return }
-            let now = CACurrentMediaTime()
-            let second = now - lastClick <= NSEvent.doubleClickInterval
-            lastClick = second ? 0 : now
-            pendingClick?.cancel()
-            pendingClick = nil
-            if second {
-                doubleClicked()
-            } else if asset.kind == "text" {
-                // Text opens the Prompt Editor; a prompt's double-click
-                // puts it in the box instead -- so its click waits to know
-                // which (it changes no stage).
-                pendingClick = Task {
-                    try? await Task.sleep(
-                        for: .seconds(NSEvent.doubleClickInterval))
-                    if !Task.isCancelled { clicked() }
-                }
-            } else {
-                clicked()
-            }
-        }
         .onDrag {
             NSItemProvider(object: (AppModel.assetPrefix + a.id) as NSString)
         } preview: {
@@ -1382,48 +1383,6 @@ private struct AssetRow: View {
                 .minute())
     }
 
-    /// A click: text into the Prompt Editor, beside the prompt, to look
-    /// at; anything else viewed on the stage -- the editor going, unless
-    /// something is being written in it: then only its small stage shows
-    /// it.
-    private func clicked() {
-        let a = asset
-        if a.kind == "text" {
-            model.openTextAsset(a)
-            return
-        }
-        // The compare on: the stage stays the two sides' (said).
-        guard !model.refusedForCompare(a) else { return }
-        if !(model.promptImmersive && model.editorEdited) {
-            model.retreatFromEditor()
-        }
-        if let t = task {
-            model.showTask(t.job)
-        } else {
-            model.viewAsset(a)
-        }
-    }
-
-    /// A double-click's second click: a prompt into the box, a
-    /// composition made active; a flat asset stays viewed. Another kind
-    /// than text is to be worked on: the Prompt Editor goes, even while
-    /// something is being written in it.
-    private func doubleClicked() {
-        let a = asset
-        // Another kind than text: the Prompt Editor goes.
-        if a.kind != "text" { model.retreatFromEditor() }
-        if let t = task {
-            model.showTask(t.job)
-        } else if a.isPrompt {
-            model.usePrompt(a)
-        } else if a.isComposition {
-            model.activateFromList(a)
-        } else {
-            // Only a composition is made active: a flat one is viewed.
-            model.viewAsset(a)
-        }
-    }
-
     /// "Generated 12:38 · 832 × 480", "Edited copy · …", "Capture · 2
     /// layers".
     private var subtitle: String {
@@ -1535,7 +1494,6 @@ private struct TaskBadge: View {
 private struct ExportTaskRow: View {
     @Bindable var model: AppModel
     let task: TaskDTO
-    @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -1558,15 +1516,8 @@ private struct ExportTaskRow: View {
             Spacer(minLength: 0)
             TaskBadge(task: task)
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(RoundedRectangle(cornerRadius: 6)
-            .fill(model.exportShow?.job == task.job
-                  ? Color.accentColor.opacity(0.10)
-                  : Color.primary.opacity(hovering ? 0.06 : 0)))
+        .padding(.vertical, 1)
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-        .onTapGesture { model.showTask(task.job) }
         .contextMenu {
             Button("Show on Stage") { model.showTask(task.job) }
             Button(task.running ? "Stop" : "Remove from Queue") {

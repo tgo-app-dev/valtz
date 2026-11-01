@@ -17,11 +17,9 @@ import AppKit
 ///   Storage       what Valtz keeps on the internal SSD (StorageView)
 ///   Permissions   what Valtz may ask macOS to use (PermissionsView)
 ///
-/// The sidebar is System Settings' measure -- 32 pt rows inset 10 pt, 20
-/// pt icons, 13 pt names -- with the selection in the system's accent,
-/// as the rest of the app. The rows are drawn here (a List would do as
-/// well now; kept until the sidebar is rebuilt); ↑ and ↓ move between
-/// them.
+/// The sidebar is the system's: a sidebar list, its rows the pages with
+/// their 20 pt icons, the selection in the system's accent, ↑ and ↓
+/// moving between them.
 struct SettingsView: View {
     @Bindable var model: AppModel
     @FocusState private var sidebarFocused: Bool
@@ -39,29 +37,22 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView {
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(rows, id: \.self) { r in
-                        SidebarRow(result: r, query: model.settingsSearch,
-                                   selected: selected(r)) {
-                            pick(r)
-                        }
-                    }
-                    if rows.isEmpty {
-                        Text("No Results")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 24)
-                    }
+            List(selection: Binding<SettingsResult?>(
+                get: { rows.first { selected($0) } },
+                set: { if let r = $0 { pick(r) } })) {
+                ForEach(rows, id: \.self) { r in
+                    SidebarRow(result: r, query: model.settingsSearch)
+                        .tag(r)
                 }
-                .padding(.horizontal, 10)
-                .padding(.top, 6)
             }
-            .focusable()
+            .listStyle(.sidebar)
+            .overlay {
+                if rows.isEmpty {
+                    Text("No Results")
+                        .foregroundStyle(.secondary)
+                }
+            }
             .focused($sidebarFocused)
-            .focusEffectDisabled()
-            .onKeyPress(.upArrow) { step(-1) }
-            .onKeyPress(.downArrow) { step(1) }
             .navigationSplitViewColumnWidth(Self.sidebarWidth)
             .background(SidebarWidthKeeper(width: Self.sidebarWidth))
             .background(UnifiedToolbar())
@@ -187,14 +178,6 @@ struct SettingsView: View {
 
     /// System Settings' sidebar, which does not resize.
     static let sidebarWidth: CGFloat = 232
-
-    private func step(_ by: Int) -> KeyPress.Result {
-        let all = rows
-        guard !all.isEmpty else { return .ignored }
-        let i = all.firstIndex { selected($0) } ?? 0
-        pick(all[min(all.count - 1, max(0, i + by))])
-        return .handled
-    }
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
@@ -417,16 +400,12 @@ private struct SettingsWindowKeeper: NSViewRepresentable {
     }
 }
 
-/// A row of the sidebar: a page, its icon and name -- the selected one
-/// on the accent, its name bold; selected too while a page under it is
-/// shown -- or, found by a search, a page under one, set in under it, or
-/// a setting found on a page, set in further, what was found in it bold.
+/// A row of the sidebar: a page, its icon and name -- or, found by a
+/// search, a page under one, set in under it, or a setting found on a
+/// page, set in further, what was found in it bold.
 private struct SidebarRow: View {
     let result: SettingsResult
     let query: String
-    let selected: Bool
-    let action: () -> Void
-    @Environment(\.colorScheme) private var scheme
 
     private var place: SettingsPlace { result.place }
 
@@ -435,48 +414,26 @@ private struct SidebarRow: View {
         return true
     }
 
-    private var ink: Color {
-        selected ? (scheme == .dark ? Color.black : Color.white)
-                 : Color.primary
-    }
-
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                if let s = result.setting {
-                    Spacer().frame(width: below ? 34 : 20)
-                    Text(SettingsSearchText.emphasized(s, query))
-                        .font(.system(size: 12))
-                        .foregroundStyle(selected ? ink : Color.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                } else {
-                    if below {
-                        Spacer().frame(width: 20)
-                    } else {
-                        SettingsIcon(symbol: place.page.symbol,
-                                     color: place.page.color)
-                    }
-                    Text(verbatim: place.title)
-                        .font(.system(size: 13,
-                                      weight: selected ? .semibold
-                                                       : .regular))
-                        .foregroundStyle(ink)
-                }
-                Spacer(minLength: 0)
+        Label {
+            if let s = result.setting {
+                Text(SettingsSearchText.emphasized(s, query))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text(verbatim: place.title)
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 9)
-            .frame(height: result.setting != nil ? 24 : below ? 28 : 32)
-            .background {
-                if selected {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.accentColor)
-                }
+        } icon: {
+            if result.setting == nil && !below {
+                SettingsIcon(symbol: place.page.symbol,
+                             color: place.page.color)
+            } else {
+                Color.clear.frame(width: 20, height: 20)
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .padding(.leading, result.setting != nil && below ? 26 : 0)
     }
 }
 
@@ -582,7 +539,7 @@ private struct GeneralSettings: View {
             } message: {
                 Text("The pictures made in this session are deleted when Valtz quits. Save anything you want to keep first.")
             }
-            // What a result landing does (AppModel.landed, revealTasks).
+            // What a result landing does (AppModel.landed, revealAssets).
             Section {
                 Picker("When a generation finishes on a composition that has content",
                        selection: $model.landingOpensTimeline) {
@@ -592,13 +549,10 @@ private struct GeneralSettings: View {
                 .settingsMark(String(localized: "Timeline"),
                               String(localized: "When a generation finishes on a composition that has content"))
                 Group {
-                    Toggle("Show Assets when several tasks are queued",
-                           isOn: $model.revealsTasks)
-                        .settingsMark(String(localized: "Assets"),
-                                      String(localized: "Show Assets when several tasks are queued"))
                     Toggle("Show Assets once more than one result has been generated",
                            isOn: $model.revealsResults)
-                        .settingsMark(String(localized: "Show Assets once more than one result has been generated"))
+                        .settingsMark(String(localized: "Assets"),
+                                      String(localized: "Show Assets once more than one result has been generated"))
                     Toggle("Play a generated clip as soon as it lands",
                            isOn: $model.autoplaysNewClips)
                         .settingsMark(String(localized: "Play"),

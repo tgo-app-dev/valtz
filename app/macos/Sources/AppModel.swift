@@ -489,11 +489,9 @@ struct OutputShape: Sendable {
     }
 }
 
-/// The simple-mode composer's panels, once opened from their tabs under
-/// the prompt card: the Generate drawer is still the composer's; the
-/// rest are the inspector's sections (InspectorSection) until Phase 6
-/// renames this.
-enum ComposerPanel: Sendable, CaseIterable {
+/// A layer's edits, each a section of the inspector (InspectorSection),
+/// by the names the snapshot hooks know them by ("adjust" ... "audio").
+enum LayerEditSection: Sendable, CaseIterable {
     case adjust     // adjustments: a picture's, or a clip's (keyed)
     case color      // the color mixer: the same look's, keyed with it
     case grade      // the color grade: the same look's, keyed with it
@@ -1187,6 +1185,9 @@ final class AppModel {
     var closedFolders: Set<String> = []
     /// The asset whose name is being typed in the asset list.
     var renamingAsset: String?
+    /// A text asset's row picked, waiting out the double-click interval
+    /// (assetPicked): a double-click puts a prompt in the box instead.
+    @ObservationIgnored var assetPickWaits: Task<Void, Never>?
     /// The asset list's filter: the words a row's name -- or its
     /// folder's -- has; "" lists every asset.
     var assetFilter = ""
@@ -1396,17 +1397,13 @@ final class AppModel {
     /// Settings › General › Generations (DESIGN §10a Timeline): a result
     /// LANDING as a new layer of a composition that holds something
     /// already opens the timeline band over the prompt -- or does
-    /// nothing; the inspector opens on Assets as tasks reach two
-    /// (revealTasks), and as the results made reach two (off unless
-    /// checked). Kept between launches -- a scripted snapshot run takes
-    /// VALTZ_SNAPSHOT_LANDING's instead ("timeline=off,tasks=off,
-    /// results=on"), saving nothing.
+    /// nothing; the sidebar's Assets are shown as the results made reach
+    /// two (revealAssets; off unless checked). Kept between launches --
+    /// a scripted snapshot run takes VALTZ_SNAPSHOT_LANDING's instead
+    /// ("timeline=off,results=on"), saving nothing.
     var landingOpensTimeline = AppModel.storedLanding(
         "timeline", default: true) {
         didSet { Self.keep(landingOpensTimeline, as: "landing.timeline") }
-    }
-    var revealsTasks = AppModel.storedLanding("tasks", default: true) {
-        didSet { Self.keep(revealsTasks, as: "landing.tasks") }
     }
     var revealsResults = AppModel.storedLanding("results", default: false) {
         didSet { Self.keep(revealsResults, as: "landing.results") }
@@ -1865,7 +1862,7 @@ final class AppModel {
     private var startupSweepDone = false
     private var lastStageResult: (image: CGImage, label: String)?
 
-    /// The notice floating over the composer (SimpleView's NoticeCapsule):
+    /// The notice floating over the composer (DockView's NoticeCapsule):
     /// what just happened, a warning, or an error -- for a few seconds.
     var notice: Notice?
     /// Its words (the snapshot hooks' `banner=`); set nil, it goes.
@@ -5977,14 +5974,11 @@ final class AppModel {
         }
     }
 
-    /// SEVERAL TASKS under way -- generations, upscales, exports, running
-    /// side by side or waiting (DESIGN §3a): the sidebar shows, its
-    /// Assets listing each as a row -- its badge, what it is doing, what it
-    /// waits for -- so what runs and what waits is in sight. Once, as
-    /// their number reaches two; shut again by hand, it stays shut.
-    /// (Settings › General › Generations can turn it off: `revealsTasks`;
-    /// and have the second result made open it: `revealsResults`.)
-    func revealTasks() {
+    /// The sidebar shown, its Assets in sight: as the second result is
+    /// made, when Settings › General › Generations asks for it
+    /// (`revealsResults`). Several tasks under way are the Activity
+    /// item's to show.
+    func revealAssets() {
         guard !viewOnly, chrome.sidebar == .detailOnly else { return }
         withAnimation(Self.motion) { chrome.sidebar = .all }
     }
@@ -10980,7 +10974,7 @@ final class AppModel {
                 .count
             if made == 2 {
                 landingCounts.results += 1
-                revealTasks()
+                revealAssets()
             }
         }
         guard watched else {

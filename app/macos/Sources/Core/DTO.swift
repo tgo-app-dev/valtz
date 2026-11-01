@@ -1521,7 +1521,8 @@ struct LayerDTO: Decodable, Sendable, Hashable, Identifiable {
     /// What it shows: a name given, or "Layer 0" (id ""), "Layer 2".
     var title: String {
         if !name.isEmpty { return name }
-        return String(localized: "Layer \(id.isEmpty ? "0" : id)")
+        let n = id.isEmpty ? "0" : id
+        return String(localized: "Layer \(n)")
     }
     var isEmpty: Bool { !own && source == nil && markup == nil }
     var isMarkup: Bool { markup != nil }
