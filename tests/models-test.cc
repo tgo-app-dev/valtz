@@ -10,6 +10,7 @@
 #include "valtz/models/tuning.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <map>
@@ -140,6 +141,29 @@ TEST(models, neural_engine_cores_by_chip)
   // What this Mac reports: at least what its chip has.
   const auto hw = probe_hardware();
   CHECK(hw.ane_cores >= ane_cores_of_chip(hw.chip));
+}
+
+TEST(models, ram_readings_fit_the_mac)
+{
+  // The status bar's RAM figures: the whole Mac's use and what is
+  // reclaimable, each within the Mac's memory and together no more
+  // than it -- one reading of the kernel's page counts, split two
+  // ways. (A kernel long up lets its queue counts run past the Mac; a
+  // figure summed from those read 166 GB on a 128 GB Mac.)
+  if (std::getenv("VALTZ_RAM_LIMIT_GB")) {
+    valtz::test::record_skip("VALTZ_RAM_LIMIT_GB simulates a smaller Mac");
+    return;
+  }
+  const auto hw = probe_hardware();
+  const std::uint64_t used = used_ram_bytes();
+  const std::uint64_t room = reclaimable_ram_bytes();
+  REQUIRE(hw.ram_bytes > 0);
+  CHECK(used > 0);
+  CHECK(room > 0);
+  CHECK(used <= hw.ram_bytes);
+  CHECK(room <= hw.ram_bytes);
+  // Read apart, so a page's worth of drift between the two is allowed.
+  CHECK(used + room <= hw.ram_bytes + (std::uint64_t{64} << 20));
 }
 
 TEST(models, builtin_catalog_parses_and_links)

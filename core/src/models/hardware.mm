@@ -250,26 +250,69 @@ probe_hardware()
   return hw;
 }
 
-std::uint64_t
-reclaimable_ram_bytes()
+namespace {
+
+// The kernel's pages, one reading: all it manages, and the ones an
+// allocation could take now -- free, speculative, purgeable, and the
+// clean file-backed ones it drops at will (Activity Monitor's Cached
+// Files). Read through sysctl, whose counts stay consistent with
+// vm.pages; host_statistics64's queue counts drift on a kernel long up
+// (macOS 27.0, 51 days: 190 GB of anonymous pages on a 128 GB Mac),
+// and a figure summed from them runs past the Mac. The old call stands
+// in where the sysctls are missing. All zero when the kernel will not
+// say.
+struct PageCounts {
+  std::uint64_t pages = 0;  // the Mac's
+  std::uint64_t room = 0;   // reclaimable now
+};
+
+PageCounts
+page_counts()
 {
+  PageCounts c;
+  // Each counter at the kernel's width (32 bits so far): read into a
+  // zeroed 64, which takes either.
+  auto count = [](const char* name, std::uint64_t& into) {
+    into = 0;
+    size_t n = sizeof(into);
+    return sysctlbyname(name, &into, &n, nullptr, 0) == 0 && n <= sizeof(into);
+  };
+  std::uint64_t free = 0, spec = 0, purgeable = 0, external = 0;
+  if (count("vm.pages", c.pages) && c.pages > 0 &&
+      count("vm.page_free_count", free) &&
+      count("vm.page_speculative_count", spec) &&
+      count("vm.page_purgeable_count", purgeable) &&
+      count("vm.page_pageable_external_count", external)) {
+    c.room = std::min(c.pages, free + spec + purgeable + external);
+    return c;
+  }
   vm_statistics64_data_t vm{};
   mach_msg_type_number_t n = HOST_VM_INFO64_COUNT;
   if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
                         reinterpret_cast<host_info64_t>(&vm), &n) !=
       KERN_SUCCESS) {
-    return 0;
+    return {};
   }
   const std::uint64_t page = vm_kernel_page_size;
-  std::uint64_t room = (static_cast<std::uint64_t>(vm.free_count) +
-                        vm.speculative_count + vm.purgeable_count +
-                        vm.external_page_count) * page;
+  c.pages = page > 0 ? sysctl_num<std::uint64_t>("hw.memsize") / page : 0;
+  c.room = std::min(c.pages, static_cast<std::uint64_t>(vm.free_count) +
+                                 vm.speculative_count + vm.purgeable_count +
+                                 vm.external_page_count);
+  return c;
+}
+
+}  // namespace
+
+std::uint64_t
+reclaimable_ram_bytes()
+{
+  const PageCounts c = page_counts();
+  const std::uint64_t page = vm_kernel_page_size;
+  std::uint64_t room = c.room * page;
   // A smaller box simulated: what it would have left, the same use made
   // of it as of this one.
   if (const char* lim = std::getenv("VALTZ_RAM_LIMIT_GB")) {
-    std::uint64_t total = 0;
-    std::size_t len = sizeof(total);
-    sysctlbyname("hw.memsize", &total, &len, nullptr, 0);
+    const std::uint64_t total = c.pages * page;
     const std::uint64_t limit = std::strtoull(lim, nullptr, 10) << 30;
     const std::uint64_t used = total > room ? total - room : 0;
     if (limit > 0 && total > limit) {
@@ -282,20 +325,11 @@ reclaimable_ram_bytes()
 std::uint64_t
 used_ram_bytes()
 {
-  vm_statistics64_data_t vm{};
-  mach_msg_type_number_t n = HOST_VM_INFO64_COUNT;
-  if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
-                        reinterpret_cast<host_info64_t>(&vm), &n) !=
-      KERN_SUCCESS) {
-    return 0;
-  }
-  const std::uint64_t page = vm_kernel_page_size;
-  const std::uint64_t app =
-      vm.internal_page_count > vm.purgeable_count
-          ? static_cast<std::uint64_t>(vm.internal_page_count) -
-                vm.purgeable_count
-          : 0;
-  return (app + vm.wire_count + vm.compressor_page_count) * page;
+  // The Mac's pages less the reclaimable ones: on a consistent kernel
+  // the same count as app memory + wired + compressor, which is what
+  // Activity Monitor adds up -- and never more than the Mac has.
+  const PageCounts c = page_counts();
+  return c.pages > c.room ? (c.pages - c.room) * vm_kernel_page_size : 0;
 }
 
 std::uint64_t

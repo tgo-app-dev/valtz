@@ -27,10 +27,10 @@ struct MemoryPopover: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            UsageBar(parts: parts.map {
-                         UsagePart(id: $0.id, bytes: $0.bytes, color: $0.color)
+            UsageBar(parts: parts.filter { $0.share > 0 }.map {
+                         UsagePart(id: $0.id, bytes: $0.share, color: $0.color)
                      },
-                     capacity: load.total ?? 1)
+                     capacity: Self.capacity(load: load, parts: parts))
             VStack(alignment: .leading, spacing: 7) {
                 ForEach(parts) { row($0) }
             }
@@ -51,7 +51,13 @@ struct MemoryPopover: View {
 
     private func row(_ p: Part) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Circle().fill(p.color).frame(width: 8, height: 8)
+            // What the bar leaves clear has a clear dot.
+            let clear = p.share == 0 && p.bytes > 0
+            Circle().fill(clear ? .clear : p.color)
+                .overlay(Circle().strokeBorder(
+                    clear ? Color.secondary.opacity(0.6) : .clear,
+                    lineWidth: 1))
+                .frame(width: 8, height: 8)
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
             VStack(alignment: .leading, spacing: 1) {
                 Text(verbatim: p.title).lineLimit(1).truncationMode(.middle)
@@ -72,10 +78,25 @@ struct MemoryPopover: View {
         let id: String
         let title: String
         let detail: String
+        /// The row's figure: the reading as it came.
         let bytes: Double
         let color: Color
         /// From its files' size: the engine counts none of it.
         var about = false
+        /// The bar's: `bytes` fitted to the budget the part sits in
+        /// (the row keeps the reading); 0 for what the bar leaves clear.
+        var share: Double
+
+        init(id: String, title: String, detail: String, bytes: Double,
+             color: Color, about: Bool = false, share: Double? = nil) {
+            self.id = id
+            self.title = title
+            self.detail = detail
+            self.bytes = bytes
+            self.color = color
+            self.about = about
+            self.share = share ?? bytes
+        }
     }
 
     private static let palette: [Color] = [
@@ -84,39 +105,69 @@ struct MemoryPopover: View {
 
     /// The bar's shares: the models held, largest first -- those kept
     /// warm before a checkpoint merely resident -- then the working
-    /// memory, the rest of Valtz, the other apps.
+    /// memory, the rest of Valtz, the other apps, and what is free. A
+    /// budget, nested, so the bar ends where the Mac's memory does
+    /// whatever the readings say: the whole Mac's use is within its
+    /// memory and at least Valtz's footprint (MachineMonitor sees to
+    /// both); Valtz's slice is its footprint; and what the engine holds
+    /// is drawn to fit that slice when its figures outrun it -- a model
+    /// loaded unwired is sized from its files, which the kernel may
+    /// hold as cache, outside the footprint. The rows keep the engine's
+    /// figures; only the bar's shares are fitted.
     static func parts(load: MachineMonitor.Load,
                       memory: MachineMonitor.Memory?) -> [Part] {
+        let total = load.total ?? .infinity
+        let footprint = min(load.footprint ?? 0, total)
+        let used = min(max(load.systemUsed ?? 0, footprint), total)
         let items = (memory?.items ?? []).sorted {
             ($0.warm ? 1 : 0, $0.bytes + $0.kvBytes)
                 > ($1.warm ? 1 : 0, $1.bytes + $1.kvBytes)
         }
+        let held = items.reduce(0) { $0 + $1.bytes + $1.kvBytes }
+        let gpu = memory?.gpuAllocated ?? 0
+        let metal = max(gpu, held)
+        // Valtz's slice: its footprint, or the whole Mac's memory while
+        // that is unread.
+        let slice = load.footprint == nil ? total : footprint
+        let fit = metal > slice ? slice / metal : 1
         var out = items.enumerated().map { i, it in
             Part(id: it.id, title: it.name.isEmpty ? partName(it) : it.name,
                  detail: detail(it), bytes: it.bytes + it.kvBytes,
-                 color: palette[i % palette.count], about: it.estimated)
+                 color: palette[i % palette.count], about: it.estimated,
+                 share: (it.bytes + it.kvBytes) * fit)
         }
-        let held = items.reduce(0) { $0 + $1.bytes + $1.kvBytes }
-        let metal = max(memory?.gpuAllocated ?? 0, held)
-        if let g = memory?.gpuAllocated, g > held {
+        if gpu > held {
             out.append(Part(
                 id: "working", title: String(localized: "Working memory"),
                 detail: String(localized: "What the models work in: scratch, caches, buffers"),
-                bytes: g - held, color: .orange))
+                bytes: gpu - held, color: .orange, share: (gpu - held) * fit))
         }
-        if let f = load.footprint, f > metal {
+        if load.footprint != nil, footprint > metal {
             out.append(Part(
                 id: "app", title: String(localized: "Valtz itself"),
                 detail: String(localized: "The app: the pictures on screen, the project, the rest"),
-                bytes: f - metal, color: .gray))
+                bytes: footprint - metal, color: .gray))
         }
-        if let u = load.systemUsed, let f = load.footprint, u > f {
+        guard load.systemUsed != nil else { return out }
+        if used > footprint {
             out.append(Part(
                 id: "others", title: String(localized: "Other apps and macOS"),
-                detail: "", bytes: u - f,
+                detail: "", bytes: used - footprint,
                 color: Color.secondary.opacity(0.35)))
         }
+        if let t = load.total, t > used {
+            out.append(Part(
+                id: "free", title: String(localized: "Free"),
+                detail: String(localized: "With the files macOS keeps cached, let go as apps need the room"),
+                bytes: t - used, color: .clear, share: 0))
+        }
         return out
+    }
+
+    /// What the bar stands for: the Mac's memory -- or, unread, all
+    /// the shares come to, so none runs past the end.
+    static func capacity(load: MachineMonitor.Load, parts: [Part]) -> Double {
+        load.total ?? max(1, parts.reduce(0) { $0 + $1.share })
     }
 
     static func partName(_ it: MachineMonitor.Memory.Item) -> String {

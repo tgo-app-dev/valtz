@@ -8054,6 +8054,16 @@
         }
       }
     },
+    "Free" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "可用"
+          }
+        }
+      }
+    },
     "Free memory" : {
       "localizations" : {
         "zh-Hans" : {
@@ -21624,6 +21634,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "开启 int8 P·V 时，片段中提示词和配乐的行（不到全部行的 1%）仍只用 SageAttention，除非打开此项。"
+          }
+        }
+      }
+    },
+    "With the files macOS keeps cached, let go as apps need the room" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "含 macOS 缓存的文件，应用需要空间时即释放"
           }
         }
       }

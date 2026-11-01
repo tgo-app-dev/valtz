@@ -73,8 +73,10 @@ std::uint64_t reclaimable_ram_bytes();
 // The memory the whole Mac is using, as Activity Monitor's "Memory Used"
 // counts it: app memory (anonymous pages, less purgeable ones), wired,
 // and what the compressor occupies -- file cache left out, since the
-// kernel drops it at will. The status bar's grey RAM bar. 0 when the
-// kernel will not say.
+// kernel drops it at will. Counted as the Mac's pages less the
+// reclaimable ones (the same reading as reclaimable_ram_bytes, so the
+// two add up to the Mac's memory and neither passes it). The status
+// bar's grey RAM bar. 0 when the kernel will not say.
 std::uint64_t used_ram_bytes();
 
 const char* to_str(ThermalState);

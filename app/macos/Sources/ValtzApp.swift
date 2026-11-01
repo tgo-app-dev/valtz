@@ -1269,6 +1269,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .write(to: URL(fileURLWithPath: path))
     }
 
+    /// RAM's popover opened (as a click on its meter opens it), read for
+    /// `seconds`, what it shows printed -- each share, the engine's own
+    /// figures -- and drawn to `out` (a popover is a window of its own:
+    /// the window's capture does not hold it). VALTZ_SNAPSHOT_MEMORY's,
+    /// and the task script's "memory:<png>" while a task runs.
+    @MainActor
+    static func snapshotMemory(_ m: AppModel, seconds: Double,
+                               to out: String) async {
+        m.memoryPopoverOpen = true
+        try? await Task.sleep(for: .seconds(seconds))
+        let parts = MemoryPopover.parts(load: m.monitor.load,
+                                        memory: m.monitor.memory)
+        func mb(_ v: Double?) -> String {
+            v.map { "\(Int($0 / 1_048_576))" } ?? "-"
+        }
+        // A share the bar draws smaller than its row reads: "=row[bar]".
+        let shares = parts.map {
+            "\($0.title.replacingOccurrences(of: " ", with: "_"))=\(mb($0.bytes))"
+                + ($0.about ? "~" : "")
+                + ($0.share == $0.bytes ? "" : "[\(mb($0.share))]")
+        }.joined(separator: ",")
+        let items = (m.monitor.memory?.items ?? []).map {
+            "\($0.part):\($0.model):\(mb($0.bytes))+kv\(mb($0.kvBytes))"
+                + ($0.seconds.map { "@\(Int($0))s" } ?? "")
+        }.joined(separator: ",")
+        let load = m.monitor.load
+        FileHandle.standardError.write(Data(
+            "snapshot: memory open=\(m.memoryPopoverOpen) read=\(m.monitor.memory != nil) items=\(items.isEmpty ? "-" : items) shares=\(shares) footprint=\(mb(load.footprint)) sys=\(mb(load.systemUsed)) gpu=\(mb(m.monitor.memory?.gpuAllocated)) total=\(mb(load.total))\n".utf8))
+        let r = ImageRenderer(content: MemoryPopover(model: m)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        r.scale = 2
+        if let img = r.nsImage, let tiff = img.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: out))
+        }
+    }
+
     /// The main window as the screen shows it (ScreenCaptureKit, glass
     /// and AppKit's own animations included) to a PNG, now: TASKS'
     /// `shot:<file>`, several in a run -- a bar's look over time.
@@ -2770,34 +2808,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // and drawn to <snapshot>-memory.png (a popover is a window
             // of its own: the capture does not hold it).
             if let m = model, let spec = env["VALTZ_SNAPSHOT_MEMORY"] {
-                m.memoryPopoverOpen = true
-                try? await Task.sleep(for: .seconds(Double(spec) ?? 3))
-                let parts = MemoryPopover.parts(load: m.monitor.load,
-                                                memory: m.monitor.memory)
-                func mb(_ v: Double?) -> String {
-                    v.map { "\(Int($0 / 1_048_576))" } ?? "-"
-                }
-                let shares = parts.map {
-                    "\($0.title.replacingOccurrences(of: " ", with: "_"))=\(mb($0.bytes))"
-                        + ($0.about ? "~" : "")
-                }.joined(separator: ",")
-                let items = (m.monitor.memory?.items ?? []).map {
-                    "\($0.part):\($0.model):\(mb($0.bytes))+kv\(mb($0.kvBytes))"
-                        + ($0.seconds.map { "@\(Int($0))s" } ?? "")
-                }.joined(separator: ",")
-                FileHandle.standardError.write(Data(
-                    "snapshot: memory open=\(m.memoryPopoverOpen) read=\(m.monitor.memory != nil) items=\(items.isEmpty ? "-" : items) shares=\(shares) footprint=\(mb(m.monitor.load.footprint)) gpu=\(mb(m.monitor.memory?.gpuAllocated)) total=\(mb(m.monitor.load.total))\n".utf8))
-                let r = ImageRenderer(content: MemoryPopover(model: m)
-                    .background(Color(nsColor: .windowBackgroundColor)))
-                r.scale = 2
-                if let img = r.nsImage, let tiff = img.tiffRepresentation,
-                   let rep = NSBitmapImageRep(data: tiff),
-                   let png = rep.representation(using: .png,
-                                                properties: [:]) {
-                    let out = (path as NSString).deletingPathExtension
-                        + "-memory.png"
-                    try? png.write(to: URL(fileURLWithPath: out))
-                }
+                await Self.snapshotMemory(
+                    m, seconds: Double(spec) ?? 3,
+                    to: (path as NSString).deletingPathExtension + "-memory.png")
             }
             // The status bar's context menu, opened by a right-click
             // posted on the bar: its items printed (+ checked), then
@@ -4563,8 +4576,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // "active:project", "cancel:<n>", "undo", "compare" (its
             // button), "export:<format>:<file>", "idle:<s>" (until
             // no task is left, at most s), "model:<id>" (the model
-            // field; empty: Auto) -- each printing `snapshot: task
-            // <step> tasks= watched= stage= downloads=`.
+            // field; empty: Auto), "memory:<png>" (RAM's popover as it
+            // stands) -- each printing `snapshot: task <step> tasks=
+            // watched= stage= downloads=`.
             if let spec = env["VALTZ_SNAPSHOT_TASKS"] {
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
@@ -4592,6 +4606,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // The window as the screen shows it, now.
                     case "shot":
                         await Self.shootWindow(to: arg)
+                    // RAM's popover as the task runs: "memory:<file.png>"
+                    // (as VALTZ_SNAPSHOT_MEMORY draws it, read for 3 s).
+                    case "memory":
+                        await Self.snapshotMemory(m, seconds: 3, to: arg)
+                        m.memoryPopoverOpen = false
                     case "model": m.modelChoice = arg
                     // The generation card's rows, as the env hooks
                     // set them before Start: "size:1920x1088",
