@@ -16,14 +16,10 @@ import AppKit
 ///                 made, discoverable; the jobs it takes (FleetView)
 ///   Storage       what Valtz keeps on the internal SSD (StorageView)
 ///   Permissions   what Valtz may ask macOS to use (PermissionsView)
-///   Experimental  what is still being built, switched on to try it --
-///                 the Agent (ExperimentalView)
 ///
-/// The sidebar is System Settings' measure -- 32 pt rows inset 10 pt, 20
-/// pt icons, 13 pt names -- with the selection in Valtz's own accent (a
-/// near-black; near-white in the dark), as the rest of the app. A List's
-/// selection takes the system's highlight colour (blue) instead, so the
-/// rows are drawn here; ↑ and ↓ move between them.
+/// The sidebar is the system's: a sidebar list, its rows the pages with
+/// their 20 pt icons, the selection in the system's accent, ↑ and ↓
+/// moving between them.
 struct SettingsView: View {
     @Bindable var model: AppModel
     @FocusState private var sidebarFocused: Bool
@@ -41,29 +37,22 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView {
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(rows, id: \.self) { r in
-                        SidebarRow(result: r, query: model.settingsSearch,
-                                   selected: selected(r)) {
-                            pick(r)
-                        }
-                    }
-                    if rows.isEmpty {
-                        Text("No Results")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 24)
-                    }
+            List(selection: Binding<SettingsResult?>(
+                get: { rows.first { selected($0) } },
+                set: { if let r = $0 { pick(r) } })) {
+                ForEach(rows, id: \.self) { r in
+                    SidebarRow(result: r, query: model.settingsSearch)
+                        .tag(r)
                 }
-                .padding(.horizontal, 10)
-                .padding(.top, 6)
             }
-            .focusable()
+            .listStyle(.sidebar)
+            .overlay {
+                if rows.isEmpty {
+                    Text("No Results")
+                        .foregroundStyle(.secondary)
+                }
+            }
             .focused($sidebarFocused)
-            .focusEffectDisabled()
-            .onKeyPress(.upArrow) { step(-1) }
-            .onKeyPress(.downArrow) { step(1) }
             .navigationSplitViewColumnWidth(Self.sidebarWidth)
             .background(SidebarWidthKeeper(width: Self.sidebarWidth))
             .background(UnifiedToolbar())
@@ -79,7 +68,6 @@ struct SettingsView: View {
                 case .page(.fleet): FleetView(model: model) { go($0) }
                 case .page(.storage): StorageView(model: model)
                 case .page(.permissions): PermissionsView(model: model)
-                case .page(.experimental): ExperimentalView(model: model)
                 case .fleetOffload: FleetOffloadView(model: model)
                 case .fleetSharing: FleetSharingView(model: model)
                 }
@@ -136,8 +124,6 @@ struct SettingsView: View {
                     prompt: Text("Search"))
         .frame(minWidth: 860, idealWidth: 920, minHeight: 600,
                idealHeight: 680)
-        // Controls take Valtz's accent, not the system's.
-        .tint(Color.valtzAccent)
         .background(SettingsWindowKeeper(model: model))
         .onAppear {
             sidebarFocused = true
@@ -192,19 +178,11 @@ struct SettingsView: View {
 
     /// System Settings' sidebar, which does not resize.
     static let sidebarWidth: CGFloat = 232
-
-    private func step(_ by: Int) -> KeyPress.Result {
-        let all = rows
-        guard !all.isEmpty else { return .ignored }
-        let i = all.firstIndex { selected($0) } ?? 0
-        pick(all[min(all.count - 1, max(0, i + by))])
-        return .handled
-    }
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case general, capabilities, helper, upscaling, fleet, storage,
-         permissions, experimental
+         permissions
     var id: String { rawValue }
 
     var title: String {
@@ -216,7 +194,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .fleet: String(localized: "Fleet")
         case .storage: String(localized: "Storage")
         case .permissions: String(localized: "Permissions")
-        case .experimental: String(localized: "Experimental")
         }
     }
 
@@ -229,7 +206,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .fleet: "point.3.connected.trianglepath.dotted"
         case .storage: "internaldrive.fill"
         case .permissions: "hand.raised.fill"
-        case .experimental: "flask.fill"
         }
     }
 
@@ -242,7 +218,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .fleet: .teal
         case .storage: .blue
         case .permissions: .indigo
-        case .experimental: .orange
         }
     }
 
@@ -263,8 +238,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
             String(localized: "What Valtz keeps on the internal SSD: models, projects and the cache, each sized.")
         case .permissions:
             String(localized: "What Valtz may ask macOS to use — the camera, the microphone, the Mac's sound, your folders — whether it is allowed now, and where Valtz needs it.")
-        case .experimental:
-            String(localized: "What is still being built: switched on here to try it. It may change, or go.")
         }
     }
 }
@@ -427,22 +400,12 @@ private struct SettingsWindowKeeper: NSViewRepresentable {
     }
 }
 
-/// Valtz's accent, as its asset catalog has it: what the system's own
-/// accent colour, a person's choice in System Settings, does not replace.
-extension Color {
-    static let valtzAccent = Color("AccentColor")
-}
-
-/// A row of the sidebar: a page, its icon and name -- the selected one
-/// on the accent, its name bold; selected too while a page under it is
-/// shown -- or, found by a search, a page under one, set in under it, or
-/// a setting found on a page, set in further, what was found in it bold.
+/// A row of the sidebar: a page, its icon and name -- or, found by a
+/// search, a page under one, set in under it, or a setting found on a
+/// page, set in further, what was found in it bold.
 private struct SidebarRow: View {
     let result: SettingsResult
     let query: String
-    let selected: Bool
-    let action: () -> Void
-    @Environment(\.colorScheme) private var scheme
 
     private var place: SettingsPlace { result.place }
 
@@ -451,48 +414,26 @@ private struct SidebarRow: View {
         return true
     }
 
-    private var ink: Color {
-        selected ? (scheme == .dark ? Color.black : Color.white)
-                 : Color.primary
-    }
-
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                if let s = result.setting {
-                    Spacer().frame(width: below ? 34 : 20)
-                    Text(SettingsSearchText.emphasized(s, query))
-                        .font(.system(size: 12))
-                        .foregroundStyle(selected ? ink : Color.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                } else {
-                    if below {
-                        Spacer().frame(width: 20)
-                    } else {
-                        SettingsIcon(symbol: place.page.symbol,
-                                     color: place.page.color)
-                    }
-                    Text(verbatim: place.title)
-                        .font(.system(size: 13,
-                                      weight: selected ? .semibold
-                                                       : .regular))
-                        .foregroundStyle(ink)
-                }
-                Spacer(minLength: 0)
+        Label {
+            if let s = result.setting {
+                Text(SettingsSearchText.emphasized(s, query))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text(verbatim: place.title)
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 9)
-            .frame(height: result.setting != nil ? 24 : below ? 28 : 32)
-            .background {
-                if selected {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.valtzAccent)
-                }
+        } icon: {
+            if result.setting == nil && !below {
+                SettingsIcon(symbol: place.page.symbol,
+                             color: place.page.color)
+            } else {
+                Color.clear.frame(width: 20, height: 20)
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .padding(.leading, result.setting != nil && below ? 26 : 0)
     }
 }
 
@@ -598,27 +539,20 @@ private struct GeneralSettings: View {
             } message: {
                 Text("The pictures made in this session are deleted when Valtz quits. Save anything you want to keep first.")
             }
-            // What a result landing does (AppModel.landed, revealTasks).
+            // What a result landing does (AppModel.landed, revealAssets).
             Section {
                 Picker("When a generation finishes on a composition that has content",
                        selection: $model.landingOpensTimeline) {
-                    Text("Switch to the Timeline").tag(true)
+                    Text("Show the Timeline").tag(true)
                     Text("Do Nothing").tag(false)
                 }
                 .settingsMark(String(localized: "Timeline"),
                               String(localized: "When a generation finishes on a composition that has content"))
                 Group {
-                    Toggle("Highlight the timeline and prompt switch when it switches by itself",
-                           isOn: $model.landingFlashesSwitch)
-                        .disabled(!model.landingOpensTimeline)
-                        .settingsMark(String(localized: "Highlight the timeline and prompt switch when it switches by itself"))
-                    Toggle("Show Assets when several tasks are queued",
-                           isOn: $model.revealsTasks)
-                        .settingsMark(String(localized: "Assets"),
-                                      String(localized: "Show Assets when several tasks are queued"))
                     Toggle("Show Assets once more than one result has been generated",
                            isOn: $model.revealsResults)
-                        .settingsMark(String(localized: "Show Assets once more than one result has been generated"))
+                        .settingsMark(String(localized: "Assets"),
+                                      String(localized: "Show Assets once more than one result has been generated"))
                     Toggle("Play a generated clip as soon as it lands",
                            isOn: $model.autoplaysNewClips)
                         .settingsMark(String(localized: "Play"),

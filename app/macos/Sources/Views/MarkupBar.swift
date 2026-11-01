@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// The markup toolbar (View › Show Markup Toolbar): a narrow row under
-/// the title bar's hairline, as Preview's. Its tools -- select, brush,
+/// The markup toolbar (View › Show Markup Toolbar): the stage column's
+/// contextual row under the toolbar, as Preview's. Its tools -- select, brush,
 /// eraser, line, rectangle, ellipse, polygon, the curvature pen, text, the
 /// eyedropper -- then what the tool (or the selection) takes: a brush's
 /// size and softness, a line's width, a text's -- or a shape's words' --
@@ -12,7 +12,8 @@ import SwiftUI
 /// EFFECTS -- a shadow, a glow; what can be done with a selection --
 /// ARRANGE it (its order, alignment, spacing), give it CONNECTORS (or
 /// take them off), make it pixels, delete it; and which layer the markup
-/// goes on.
+/// goes on. With the compare on too, its controls in a menu at the end
+/// (CompareMenu).
 struct MarkupBar: View {
     @Bindable var model: AppModel
     @State private var fontPanel = false
@@ -20,29 +21,37 @@ struct MarkupBar: View {
     private var m: MarkupState { model.markup }
 
     var body: some View {
-        // Centred in the bar, as Preview's markup toolbar is.
-        HStack(spacing: 12) {
-            tools
-            Divider().frame(height: 18)
-            settings
-            colors
-            effectsButton
-            selectionActions
-            Divider().frame(height: 18)
-            // Where the markup goes: the first to give way.
-            Text(verbatim: target)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .layoutPriority(-1)
+        // The stage column's contextual row (ContextBar): centred in it,
+        // as Preview's markup toolbar is.
+        ContextBar {
+            HStack(spacing: 12) {
+                tools
+                Divider().frame(height: 18)
+                settings
+                colors
+                effectsButton
+                selectionActions
+                Divider().frame(height: 18)
+                // Where the markup goes: the first to give way.
+                Text(verbatim: target)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .layoutPriority(-1)
+            }
+            .disabled(!model.markupReady)
+        } trailing: {
+            // The compare on too: its controls folded at the row's end,
+            // the row being markup's -- in reach however far the tools
+            // scroll.
+            if model.compareOn {
+                HStack(spacing: VZ.Space.s) {
+                    Divider().frame(height: 18)
+                    CompareMenu(model: model)
+                }
+                .padding(.trailing, VZ.Space.m)
+            }
         }
-        .disabled(!model.markupReady)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .frame(height: 34)
-        .frame(maxWidth: .infinity, alignment: .center)
-        .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
         .onChange(of: m.tool) { _, _ in model.markupToolChanged() }
         // The words typed in place follow the selection, and end with the
         // toolbar.

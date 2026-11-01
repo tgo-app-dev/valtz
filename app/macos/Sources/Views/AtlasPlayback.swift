@@ -199,14 +199,14 @@ struct AtlasTransport: View {
                         rate: { playback.rate },
                         step: { playback.step($0) })
             HStack(spacing: 10) {
-                TitleBarButton(symbol: "repeat", title: "Loop",
-                               help: playback.loops
-                                   ? "Play it once"
-                                   : "Play it again and again",
-                               on: playback.loops) {
+                StageButton(symbol: "repeat", title: "Loop",
+                            help: playback.loops
+                                ? "Play it once"
+                                : "Play it again and again",
+                            on: playback.loops) {
                     playback.loops.toggle()
                 }
-                .titleBarCapsule()
+                .stageCapsule()
                 TransportButtons(
                     rate: playback.rate, muted: playback.muted,
                     sound: playback.sound, events: false,

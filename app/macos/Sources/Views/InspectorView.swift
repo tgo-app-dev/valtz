@@ -1,179 +1,23 @@
 import AppKit
 import SwiftUI
 
-/// The inspector (the title bar's ⓘ): a grey column on the window's
-/// right, under the title bar, in Preview's small type. Its sections:
-///   Information  what is on the stage: its pixels, how it was made, the
-///                adjustments shown on it, where its file is;
-///   Layers       the picture on the stage's layer stack (LayersSection);
-///   Assets       everything the project holds, in folders -- its history
-///                too: each result as made, what it was made from, to
-///                compare on the stage (AssetsSection).
-/// Shown ONE AT A TIME, picked in a navigation row and taking the whole
-/// height (the default) -- or STACKED: each under a header that folds it
-/// to that one row (a click), the open ones sharing the height, as an
-/// image editor's panels; so the assets can be read beside the layers,
-/// and dropped on the very layer they go to. An icon switches between
-/// the two (`AppModel.inspectorStacked`): at the top right beside the
-/// navigation row, or -- stacked, where the first row is the first
-/// section's header -- centred at the foot.
-struct InspectorView: View {
+/// The inspector's Information (RightColumn): what is on the stage --
+/// its pixels, how it was made, the adjustments shown on it, where its
+/// file is -- in Preview's small type; an empty project's setup; nothing
+/// to inspect, said so. Under view only, or while an agent at work holds
+/// the project, what is shown is read, not set.
+struct InformationSection: View {
     @Bindable var model: AppModel
-
-    /// The section shown: in the Prompt Editor, Layers or Assets -- what
-    /// the prompt draws on, dragged into it -- whatever was asked for;
-    /// VIEW ONLY, Information alone (the tab asked for kept for after).
-    private var section: InspectorTab {
-        if model.viewOnly { return .info }
-        return model.promptImmersive && model.inspectorTab != .layers
-            ? .assets : model.inspectorTab
-    }
-
-    /// The sections offered: the Prompt Editor's two, view only
-    /// Information, else the three.
-    private var sections: [InspectorTab] {
-        model.viewOnly ? [.info]
-            : model.promptImmersive ? [.layers, .assets]
-            : InspectorTab.allCases
-    }
 
     /// Nothing in Information to edit (AppModel.viewOnly, or an agent at
     /// work holding the project): what is shown is read, not set.
     private var readOnly: Bool { model.viewOnly || model.agentHolds }
 
     var body: some View {
-        VStack(spacing: 0) {
-            // View only: Information alone, no sections to stack or pick.
-            if model.viewOnly {
-                Label(InspectorTab.info.label,
-                      systemImage: InspectorTab.info.symbol)
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 4)
-                content(.info, stacked: false)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if model.inspectorStacked {
-                stacked
-                // The way back to one section at a time, at the foot.
-                modeButton
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-                    .overlay(alignment: .top) { Divider() }
-            } else {
-                HStack(spacing: 8) {
-                    Picker("Section", selection: Binding(
-                        get: { section },
-                        set: { model.inspectorTab = $0 })) {
-                        ForEach(sections) { t in
-                            Label(t.label, systemImage: t.symbol).tag(t)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    // Made again when its sections change (the Prompt
-                    // Editor's two, the stage's three): the segmented
-                    // control keeps the widths it had, and the new labels
-                    // were cut to "…".
-                    .id(model.promptImmersive)
-                    modeButton
-                }
-                .padding(.leading, 16)
-                .padding(.trailing, 10)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
-                content(section, stacked: false)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .font(.system(size: 11))
-        .controlSize(.small)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Tucked under the title bar: the grey starts below it, and
-        // nothing scrolls up behind it.
-        .background { Color.valtzPanel }
-        .clipped()
-    }
-
-    /// One at a time, or stacked: the icon at the top right, or at the
-    /// foot.
-    private var modeButton: some View {
-        let on = model.inspectorStacked
-        return Button {
-            withAnimation(AppModel.motion) { model.inspectorStacked.toggle() }
-        } label: {
-            Image(systemName: "rectangle.split.1x2")
-                .font(.system(size: 13))
-                .foregroundStyle(on ? Color.accentColor : Color.secondary)
-                .frame(width: 24, height: 22)
-                .background(RoundedRectangle(cornerRadius: 5)
-                    .fill(on ? Color.accentColor.opacity(0.18) : .clear))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(on ? "Show one section at a time"
-                 : "Stack the sections, each folding to its header")
-        .accessibilityLabel(Text(on ? "Show one section at a time"
-                                    : "Stack the sections"))
-    }
-
-    @ViewBuilder
-    private func content(_ t: InspectorTab, stacked: Bool) -> some View {
-        switch t {
-        case .info: information
-        case .layers: LayersSection(model: model, notes: !stacked)
-        case .assets: AssetsSection(model: model, notes: !stacked)
-        }
-    }
-
-    /// The sections stacked, each under its header; the open ones share
-    /// the height by their weights -- the top edge of a header between
-    /// two open ones is a divider, dragged to give one more of it.
-    private var stacked: some View {
-        StackedPanels {
-            ForEach(sections) { t in
-                let open = !model.inspectorFolded.contains(t)
-                PanelHeader(tab: t, open: open) {
-                    withAnimation(AppModel.motion) {
-                        model.toggleInspectorFold(t)
-                    }
-                }
-                .overlay(alignment: .top) {
-                    if let pair = resizePair(at: t) {
-                        PanelDivider(model: model, above: pair.above,
-                                     below: pair.below)
-                    }
-                }
-                // Over the section above it: its divider is on top.
-                .zIndex(1)
-                if open {
-                    content(t, stacked: true)
-                        .padding(.top, 4)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .clipped()
-                        .onGeometryChange(for: CGFloat.self) {
-                            $0.size.height
-                        } action: { model.inspectorHeights[t] = $0 }
-                        .layoutValue(key: PanelWeight.self,
-                                     value: model.inspectorWeight(t))
-                        .transition(.opacity)
-                }
-            }
-        }
-    }
-
-    /// The two open sections the top edge of `t`'s header lies between:
-    /// the last open one above it, the first open one from it down.
-    private func resizePair(at t: InspectorTab)
-        -> (above: InspectorTab, below: InspectorTab)? {
-        guard let i = sections.firstIndex(of: t) else { return nil }
-        let open = { (s: InspectorTab) in !model.inspectorFolded.contains(s) }
-        guard let above = sections[..<i].last(where: open),
-              let below = sections[i...].first(where: open) else {
-            return nil
-        }
-        return (above, below)
+        information
+            .font(.system(size: 11))
+            .controlSize(.small)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var information: some View {
@@ -203,10 +47,7 @@ struct InspectorView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                ContentUnavailableView(
-                    "Nothing to inspect", systemImage: "info.circle",
-                    description: Text(
-                        "Generate an image to see its details here."))
+                EmptyState.NoSelection()
                     .controlSize(.small)
             }
         }
@@ -865,58 +706,6 @@ struct ExifRow: Identifiable {
     }
 }
 
-/// The stacked sections' column: each header at its own height, the
-/// open sections (a `PanelWeight` each) sharing what is left by weight.
-private struct StackedPanels: Layout {
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews,
-                      cache: inout ()) -> CGSize {
-        let w = proposal.width ?? 260
-        let fixed = subviews.reduce(CGFloat(0)) { sum, v in
-            v[PanelWeight.self] == nil
-                ? sum + v.sizeThatFits(.init(width: w, height: nil)).height
-                : sum
-        }
-        return CGSize(width: w, height: max(proposal.height ?? fixed, fixed))
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
-                       subviews: Subviews, cache: inout ()) {
-        let w = bounds.width
-        var fixed: CGFloat = 0
-        var total = 0.0
-        var own: [CGFloat?] = []
-        for v in subviews {
-            if let weight = v[PanelWeight.self] {
-                total += weight
-                own.append(nil)
-            } else {
-                let h = v.sizeThatFits(.init(width: w, height: nil)).height
-                fixed += h
-                own.append(h)
-            }
-        }
-        let rest = max(0, bounds.height - fixed)
-        var y = bounds.minY
-        for (i, v) in subviews.enumerated() {
-            let h = own[i] ?? (total > 0
-                ? rest * CGFloat((v[PanelWeight.self] ?? 0) / total) : 0)
-            v.place(at: CGPoint(x: bounds.minX, y: y), anchor: .topLeading,
-                    proposal: .init(width: w, height: h))
-            y += h
-        }
-    }
-}
-
-/// An open stacked section's share of the height; none: a header, at its
-/// own.
-private struct PanelWeight: LayoutValueKey {
-    static let defaultValue: Double? = nil
-}
-
-/// The divider between two open stacked sections, the top edge of the
-/// lower one's header: dragged, the one above takes height from the one
-/// below (or gives it), neither under `least`; double-clicked, every
-/// section's share is even again.
 /// Information's Adjustments: the Adjust panel's values not at rest.
 private struct AdjustmentsInfo: View {
     let model: AppModel
@@ -949,130 +738,6 @@ private struct AdjustmentsInfo: View {
     }
 }
 
-private struct PanelDivider: View {
-    let model: AppModel
-    let above: InspectorTab
-    let below: InspectorTab
-    /// At the drag's start: the two heights, and their weights.
-    @State private var start: (ha: CGFloat, hb: CGFloat, wa: Double,
-                               wb: Double)?
-    private let least: CGFloat = 60
-
-    var body: some View {
-        // Inside the header's top edge: what lies over the section above
-        // takes its own clicks.
-        DividerHandle(changed: drag, ended: { start = nil },
-                      reset: { model.inspectorWeights = [:] })
-            .frame(height: 6)
-            .frame(maxWidth: .infinity)
-            .help("Drag to share the height between the sections; double-click to share it evenly")
-    }
-
-    private func drag(_ dy: CGFloat) {
-        if start == nil {
-            guard let ha = model.inspectorHeights[above],
-                  let hb = model.inspectorHeights[below],
-                  ha + hb > 0 else { return }
-            start = (ha, hb, model.inspectorWeight(above),
-                     model.inspectorWeight(below))
-        }
-        guard let s = start else { return }
-        let sum = s.ha + s.hb
-        let ha = min(max(s.ha + dy, min(least, sum / 2)),
-                     sum - min(least, sum / 2))
-        let wa = (s.wa + s.wb) * Double(ha / sum)
-        var weights = model.inspectorWeights
-        weights[above] = wa
-        weights[below] = s.wa + s.wb - wa
-        model.inspectorWeights = weights
-    }
-}
-
-/// A divider's grip: an AppKit view, so the drag is the mouse's own --
-/// down, dragged, up -- with the resize cursor over it. `changed` gets how
-/// far it has moved down since the press; a double-click resets.
-private struct DividerHandle: NSViewRepresentable {
-    var changed: (CGFloat) -> Void
-    var ended: () -> Void
-    var reset: () -> Void
-
-    func makeNSView(context: Context) -> Grip {
-        let v = Grip()
-        v.handle = self
-        return v
-    }
-
-    func updateNSView(_ v: Grip, context: Context) { v.handle = self }
-
-    final class Grip: NSView {
-        var handle: DividerHandle?
-        private var pressed: CGFloat?
-
-        override func resetCursorRects() {
-            addCursorRect(bounds, cursor: .resizeUpDown)
-        }
-
-        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-        override func mouseDown(with event: NSEvent) {
-            if event.clickCount == 2 {
-                pressed = nil
-                handle?.reset()
-                return
-            }
-            pressed = event.locationInWindow.y
-        }
-
-        override func mouseDragged(with event: NSEvent) {
-            guard let y = pressed else { return }
-            // Window coordinates grow upward; the drag counts down.
-            handle?.changed(y - event.locationInWindow.y)
-        }
-
-        override func mouseUp(with event: NSEvent) {
-            guard pressed != nil else { return }
-            pressed = nil
-            handle?.ended()
-        }
-    }
-}
-
-/// A stacked section's header: its fold, its icon, its name -- a click
-/// folds it to this row, or opens it.
-private struct PanelHeader: View {
-    let tab: InspectorTab
-    let open: Bool
-    let toggle: () -> Void
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: toggle) {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .rotationEffect(.degrees(open ? 90 : 0))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 10)
-                Image(systemName: tab.symbol)
-                    .foregroundStyle(.secondary)
-                Text(tab.label)
-                    .font(.system(size: 11, weight: .semibold))
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 26)
-            .frame(maxWidth: .infinity)
-            .background(Color.primary.opacity(hovering ? 0.07 : 0.04))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .overlay(alignment: .bottom) { Divider() }
-        .help(open ? "Fold this section to its header" : "Open this section")
-        .accessibilityValue(Text(open ? "Open" : "Folded"))
-    }
-}
-
 /// The picture on the stage's LAYER STACK (core project::Layer), top
 /// first: a row each, with its eye (shown or hidden), its picture, and
 /// its name (double-click to rename). The selected layer is what the
@@ -1086,7 +751,8 @@ private struct PanelHeader: View {
 /// again.
 struct LayersSection: View {
     @Bindable var model: AppModel
-    /// Its notes at the foot (the stacked inspector leaves them out).
+    /// Its notes at the foot: while it has the inspector to itself
+    /// (RightColumn).
     var notes = true
 
     var body: some View {
@@ -1224,9 +890,7 @@ struct LayersSection: View {
                 }
             }
         } else {
-            ContentUnavailableView(
-                "No layers", systemImage: "square.3.layers.3d",
-                description: Text("A picture or a clip on the stage has layers."))
+            EmptyState.NoLayers()
                 .controlSize(.small)
         }
     }

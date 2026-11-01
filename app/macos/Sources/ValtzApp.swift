@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 struct ValtzApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var model = AppModel()
+    @Environment(\.openWindow) private var openWindow
 
     /// The selection's drawings, for the hook's "dsel": the one selected
     /// on the raster (its box), the lifted ones (theirs), the core's
@@ -842,11 +843,14 @@ struct ValtzApp: App {
 
     var body: some Scene {
         Window("Valtz", id: "main") {
+            // The window's least size is AppKit's (RootView's
+            // WindowReader), not a frame's here: a frame's minimum went to
+            // the split view's detail column, and folding the sidebar
+            // grew the window by the sidebar's width to keep it.
             RootView(model: model)
-                .frame(minWidth: model.windowMinWidth, minHeight: 620)
                 .onAppear { delegate.model = model }
         }
-        .windowToolbarStyle(.unified(showsTitle: false))
+        .windowToolbarStyle(.unified)
         // The first launch's; after it, the window as it was left -- and
         // a project opened at the size it was last looked at.
         .defaultSize(width: 1024, height: 768)
@@ -870,9 +874,28 @@ struct ValtzApp: App {
                 }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                     .disabled(model.closingTasks != nil)
+                // The anonymous session cleared and its files deleted;
+                // asks first when there is something to lose (RootView).
+                Button("Start Over…") { model.startOverPressed() }
+                    .disabled(!model.isAnonymous || model.isBusy
+                              || model.closingTasks != nil)
                 Button("Open Project…") { openProject() }
                     .keyboardShortcut("o")
                     .disabled(model.closingTasks != nil)
+                // The sidebar's Recents, the same list.
+                Menu("Open Recent") {
+                    ForEach(RecentProjects.shared.existing) { p in
+                        Button {
+                            model.openDropped(p.url)
+                        } label: {
+                            Text(verbatim: p.name)
+                        }
+                    }
+                    Divider()
+                    Button("Clear Menu") { RecentProjects.shared.clear() }
+                        .disabled(RecentProjects.shared.items.isEmpty)
+                }
+                .disabled(model.closingTasks != nil)
             }
             // The project as a document (DESIGN §5b): Save writes its
             // working copy to its file; Revert to Saved goes back to it.
@@ -932,6 +955,7 @@ struct ValtzApp: App {
                     .disabled(!model.canDeselect
                               || model.closingTasks != nil)
             }
+            // ⌘F: the sidebar's search, which filters Assets.
             CommandGroup(after: .textEditing) {
                 Button("Find") { model.findRequest += 1 }
                     .keyboardShortcut("f")
@@ -968,13 +992,10 @@ struct ValtzApp: App {
                 Button("Reset Guides") { model.resetGuides() }
                     .disabled(!model.guidesSetByHand)
                 Divider()
-                Button(model.inspectorOpen ? "Hide Inspector" : "Show Inspector") {
-                    withAnimation(AppModel.motion) { model.inspectorOpen.toggle() }
-                }
-                .keyboardShortcut("i", modifiers: [.command, .option])
-                // The editor as a viewer (Tab, where nothing takes keys;
-                // the ☰ column's eye): no key here -- a menu's Tab would
-                // be every text field's.
+                // The stage as a viewer (Tab, where nothing takes keys):
+                // no key here -- a menu's Tab would be every text field's.
+                // (Show Sidebar ⌃⌘S and Show Inspector ⌃⌘I are the
+                // system's, SidebarCommands and InspectorCommands.)
                 Toggle("View Only", isOn: Binding(
                     get: { model.viewOnly },
                     set: { model.setViewOnly($0) }))
@@ -1022,15 +1043,11 @@ struct ValtzApp: App {
                 Toggle("Markdown as It Reads", isOn: Binding(
                     get: { model.promptMarkdown },
                     set: { model.promptMarkdown = $0 }))
-                // The machine's load and thermal state along the bottom:
-                // ⌘/, as Finder's status bar.
-                Button(model.showsStatusBar ? "Hide Status Bar"
-                                            : "Show Status Bar") {
-                    withAnimation(AppModel.motion) {
-                        model.showsStatusBar.toggle()
-                    }
-                }
-                .keyboardShortcut("/")
+                // The app dark (or light) for proofing a picture on the
+                // other ground, whatever the Mac is set to.
+                Toggle("Proof on Dark Background", isOn: Binding(
+                    get: { model.appearsDark },
+                    set: { model.setAppearance(dark: $0, animated: true) }))
             }
             // The selected markup objects' order, by Photoshop's keys (the
             // toolbar's Arrange panel has the rest).
@@ -1052,15 +1069,22 @@ struct ValtzApp: App {
                     ShortcutHints.shared.showLatched()
                 }
                 .keyboardShortcut("?", modifiers: .command)
-            }
-            CommandGroup(before: .sidebar) {
-                Button(model.navOpen ? "Hide Navigation" : "Show Navigation") {
-                    model.toggleNav()
-                }
-                .keyboardShortcut("n", modifiers: [.command, .control])
+                #if DEBUG
                 Divider()
+                Button { openWindow(id: "design-gallery") } label: {
+                    Text(verbatim: "Design Gallery")
+                }
+                #endif
             }
+            SidebarCommands()
+            InspectorCommands()
         }
+        #if DEBUG
+        Window(Text(verbatim: "Design Gallery"), id: "design-gallery") {
+            DesignGallery()
+        }
+        .defaultSize(width: 760, height: 720)
+        #endif
         Settings {
             SettingsView(model: model)
         }
@@ -1241,16 +1265,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// What the landings did, as a task step prints it:
     /// `landing=open:<timeline open>,auto:<n>,flash:<n>,results:<n>,
-    /// assets:<inspector on Assets>` -- the timeline opened by itself, the
-    /// switch flashed, Assets shown for a second result (AppModel.landed).
+    /// assets:<the sidebar, with Assets, shown>` -- the timeline opened by
+    /// itself, the switch flashed, Assets shown for a second result
+    /// (AppModel.landed).
+    /// The dock as laid out: what fills it, its height (set, or its
+    /// content's), the composer's, the band's rows, the chip open; the
+    /// Prompt Editor's tabs (how many, the open one), the suggestion's
+    /// split, the prompt's length; the context row.
+    @MainActor
+    static func dockSummary(_ m: AppModel) -> String {
+        let set = m.chrome.dockHeight.map { "\(Int($0))" } ?? "fit"
+        return "pick=\(String(describing: m.sidebarPick).replacingOccurrences(of: " ", with: "_")) "
+            + "viewed=\(m.viewedAsset ?? "-") active=\(m.activeComposition?.name ?? "-") "
+            + "dock=\(m.layout.dock) dockHeight=\(set) "
+            + "composer=\(Int(m.dockComposerHeight)) "
+            + "band=\(m.chrome.timelineBand) timelineOpen=\(m.timelineOpen) "
+            + "rows=\(m.timelineRows) chip=\(m.openChip?.rawValue ?? "-") "
+            + "column=\(Int(m.stageColumnHeight)) "
+            + "tabs=\(m.promptTabs.count)/\(m.activePromptTab) "
+            + "split=\(m.promptImmersive && m.suggesting) "
+            + "prompt=\(m.prompt.count) context=\(m.layout.context) "
+            + "compareOn=\(m.compareOn) mode=\(m.stage.mode) "
+            + "markup=\(m.markupOpen) "
+            // The prompt's text view: the same one, grown or not.
+            + "textView=\(m.promptTextView.map { String(UInt(bitPattern: ObjectIdentifier($0).hashValue) % 100_000) } ?? "-")"
+    }
+
+    /// The chips as the row shows them: "model:Auto_(…)|shape:16:9_·_Large".
+    @MainActor
+    static func chipSummary(_ m: AppModel) -> String {
+        m.generateChips.map {
+            "\($0.rawValue):\(m.chipValue($0))"
+                .replacingOccurrences(of: " ", with: "_")
+        }.joined(separator: "|")
+    }
+
+    /// The main menu's item for a key equivalent (⇧⌘E, the Prompt
+    /// Editor's) chosen, as the keyboard chooses it: a snapshot's window
+    /// is never the active app's, so no key event reaches the menu.
+    @MainActor
+    static func postMenuKey(_ key: String, _ flags: NSEvent.ModifierFlags,
+                            to m: AppModel) {
+        func find(_ menu: NSMenu) -> (NSMenu, Int)? {
+            for (i, item) in menu.items.enumerated() {
+                if item.keyEquivalent.lowercased() == key,
+                   item.keyEquivalentModifierMask.intersection(
+                       .deviceIndependentFlagsMask) == flags {
+                    return (menu, i)
+                }
+                if let sub = item.submenu, let hit = find(sub) {
+                    return hit
+                }
+            }
+            return nil
+        }
+        guard let main = NSApp.mainMenu, let (menu, i) = find(main) else {
+            FileHandle.standardError.write(Data(
+                "snapshot: menu-key \(key) none\n".utf8))
+            return
+        }
+        menu.update()
+        FileHandle.standardError.write(Data(
+            "snapshot: menu-key \(key) item=\(menu.items[i].title.replacingOccurrences(of: " ", with: "_")) enabled=\(menu.items[i].isEnabled)\n".utf8))
+        menu.performActionForItem(at: i)
+    }
+
+    /// A key pressed in the main window, as the key monitor sees one:
+    /// posted to the app, so it goes through the monitors first.
+    @MainActor
+    static func postKey(_ code: UInt16, _ chars: String, to m: AppModel) {
+        guard let w = m.editorWindow,
+              let e = NSEvent.keyEvent(
+                  with: .keyDown, location: .zero, modifierFlags: [],
+                  timestamp: ProcessInfo.processInfo.systemUptime,
+                  windowNumber: w.windowNumber, context: nil,
+                  characters: chars, charactersIgnoringModifiers: chars,
+                  isARepeat: false, keyCode: code)
+        else { return }
+        NSApp.postEvent(e, atStart: false)
+    }
+
     @MainActor
     static func landingSummary(_ m: AppModel) -> String {
         let c = m.landingCounts
-        let assets = m.inspectorOpen && (m.inspectorStacked
-            ? !m.inspectorFolded.contains(.assets)
-            : m.inspectorTab == .assets)
+        let assets = m.chrome.sidebar != .detailOnly
         return "open:\(m.timelineOpen),auto:\(c.timeline),"
-            + "flash:\(c.flash),results:\(c.results),assets:\(assets)"
+            + "results:\(c.results),assets:\(assets)"
     }
 
     /// The main window drawn by AppKit (cacheDisplay) to a PNG: a second
@@ -1267,6 +1367,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         v.cacheDisplay(in: v.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?
             .write(to: URL(fileURLWithPath: path))
+    }
+
+    /// The Activity popover opened (as a click on its item opens it),
+    /// its Memory fold read for `seconds`, what it shows printed -- each
+    /// share, the engine's own figures -- and drawn to `out` (a popover
+    /// is a window of its own: the window's capture does not hold it).
+    /// VALTZ_SNAPSHOT_MEMORY's, and the task script's "memory:<png>"
+    /// while a task runs.
+    @MainActor
+    static func snapshotMemory(_ m: AppModel, seconds: Double,
+                               to out: String) async {
+        m.activityOpen = true
+        m.monitor.startMemory()
+        try? await Task.sleep(for: .seconds(seconds))
+        let parts = MemorySection.parts(load: m.monitor.load,
+                                        memory: m.monitor.memory)
+        func mb(_ v: Double?) -> String {
+            v.map { "\(Int($0 / 1_048_576))" } ?? "-"
+        }
+        // A share the bar draws smaller than its row reads: "=row[bar]".
+        let shares = parts.map {
+            "\($0.title.replacingOccurrences(of: " ", with: "_"))=\(mb($0.bytes))"
+                + ($0.about ? "~" : "")
+                + ($0.share == $0.bytes ? "" : "[\(mb($0.share))]")
+        }.joined(separator: ",")
+        let items = (m.monitor.memory?.items ?? []).map {
+            "\($0.part):\($0.model):\(mb($0.bytes))+kv\(mb($0.kvBytes))"
+                + ($0.seconds.map { "@\(Int($0))s" } ?? "")
+        }.joined(separator: ",")
+        let load = m.monitor.load
+        FileHandle.standardError.write(Data(
+            "snapshot: memory open=\(m.activityOpen) read=\(m.monitor.memory != nil) items=\(items.isEmpty ? "-" : items) shares=\(shares) footprint=\(mb(load.footprint)) sys=\(mb(load.systemUsed)) gpu=\(mb(m.monitor.memory?.gpuAllocated)) total=\(mb(load.total))\n".utf8))
+        let r = ImageRenderer(content: MemoryPopover(model: m)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        r.scale = 2
+        if let img = r.nsImage, let tiff = img.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: out))
+        }
     }
 
     /// The main window as the screen shows it (ScreenCaptureKit, glass
@@ -1350,12 +1490,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    : m.asset(id: v) {
                 m.usePrompt(a)
             }
-            // Settings › Experimental's switches, for the run:
-            // "agent" (the Agent tab; VALTZ_SNAPSHOT_AGENT too).
-            if env["VALTZ_SNAPSHOT_EXPERIMENTAL"] == "agent"
-                || env["VALTZ_SNAPSHOT_AGENT"] != nil {
-                m.setAgentEnabled(true)
-            }
             // Settings › Agentic Helper › Show Speed, for the run.
             if env["VALTZ_SNAPSHOT_AGENT_SPEED"] == "1" {
                 m.setAgentShowsSpeed(true)
@@ -1370,9 +1504,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // sets them.
             if let v = env["VALTZ_SNAPSHOT_FAVOR"],
                let p = Preference(rawValue: v) {
-                // Favor lives in the generation card: open, as a
-                // person choosing it has it.
-                m.openPanel = .generate
+                // Favor's chip: its popover open, as a person choosing
+                // it has it.
+                m.openChip = .favor
                 try? await Task.sleep(for: .milliseconds(400))
                 m.choosePreference(p)
             }
@@ -1504,10 +1638,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 m.setAppearance(dark: a == "dark")
             }
             if env["VALTZ_SNAPSHOT_INSPECTOR"] != nil {
-                m.inspectorOpen = true
-            }
-            if env["VALTZ_SNAPSHOT_STATUS_BAR"] != nil {
-                m.showsStatusBar = true
+                m.chrome.inspectorShown = true
             }
             // A member's offer, asked ("Ask Each Time"), answered as
             // its alert's button would, two seconds after it comes
@@ -1530,30 +1661,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if env["VALTZ_SNAPSHOT_MARKUP"] != nil { m.markupOpen = true }
             if let n = env["VALTZ_SNAPSHOT_RENAME"] { m.renameSession(n) }
-            if env["VALTZ_SNAPSHOT_TITLE_EDIT"] != nil {
-                // After the prompt has taken the focus, as a click on
-                // the name would come.
-                try? await Task.sleep(for: .milliseconds(500))
-                m.renamingTitle = true
-                // Clicks posted to the window ("x,y" in points from
-                // its top left; ";" between), as a pointer's would
-                // come (the pointer itself does not move).
-                if let spec = env["VALTZ_SNAPSHOT_TITLE_CLICK"] {
-                    try? await Task.sleep(for: .milliseconds(700))
-                    for c in spec.split(separator: ";") {
-                        let xy = c.split(separator: ",")
-                            .compactMap { Double($0) }
-                        guard xy.count == 2 else { continue }
-                        Self.postClick(x: xy[0], y: xy[1])
-                        try? await Task.sleep(for: .milliseconds(500))
-                        FileHandle.standardError.write(Data(
-                            "snapshot: title-click \(Int(xy[0])),\(Int(xy[1])) renaming=\(m.renamingTitle)\n".utf8))
-                    }
-                }
-            }
-            if env["VALTZ_SNAPSHOT_TITLEBAR_HOVER"] != nil {
-                m.titlebarHover = true
-            }
             // A picture attached as the paperclip would, then time
             // for its import to land (Start needs the asset).
             // A picture dropped on the stage: the base to edit.
@@ -1874,35 +1981,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 withAnimation(AppModel.motion) { m.enterImmersivePrompt() }
                 try? await Task.sleep(for: .milliseconds(700))
             }
-            // The Prompt Editor's settings popover ("1"; "custom": with
-            // Favor's Custom, Tune's options inside it): how many
-            // popovers are open, and the popover drawn to
-            // <snapshot>-settings.png.
-            if let v = env["VALTZ_SNAPSHOT_EDITOR_SETTINGS"],
-               m.promptImmersive {
-                m.showsGenerationSettings = true
-                try? await Task.sleep(for: .milliseconds(700))
-                if v == "custom" {
-                    m.choosePreference(.custom)
-                    if !m.showsTuning { m.toggleTuning() }
-                    try? await Task.sleep(for: .milliseconds(900))
-                }
-                let pops = NSApp.windows.filter {
-                    $0.isVisible && $0.className.contains("Popover")
-                }
-                if let shot = env["VALTZ_SNAPSHOT"],
-                   let v = pops.first?.contentView,
-                   let rep = v.bitmapImageRepForCachingDisplay(
-                       in: v.bounds) {
-                    v.cacheDisplay(in: v.bounds, to: rep)
-                    try? rep.representation(using: .png, properties: [:])?
-                        .write(to: URL(fileURLWithPath: shot
-                            .replacingOccurrences(of: ".png",
-                                                  with: "-settings.png")))
-                }
-                FileHandle.standardError.write(Data(
-                    "snapshot: editor-settings popovers=\(pops.count) tuning=\(m.showsTuning) size=\(pops.first.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? "-")\n".utf8))
-            }
             // The file panels' folders (FileHistory): "attach:<file>",
             // "export:<file>", "project:<file>" as a panel chose it,
             // "startover", "anonymous" (File › New Anonymous Project),
@@ -1957,7 +2035,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let after = NSApp.windows.filter {
                     $0.isVisible && $0.className.contains("Popover")
                 }.count
-                print("snapshot: left wasActive=\(wasActive) active=\(NSApp.isActive) popovers=\(before)>\(after) tuning=\(m.showsTuning) settings=\(m.showsGenerationSettings)")
+                print("snapshot: left wasActive=\(wasActive) active=\(NSApp.isActive) popovers=\(before)>\(after) tuning=\(m.showsTuning) chip=\(m.openChip?.rawValue ?? "-")")
             }
             if let spec = env["VALTZ_SNAPSHOT_PROMPT_TABS"] {
                 for op in spec.split(separator: ";") {
@@ -2167,7 +2245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    let sv = Self.find(SuggestionScrollView.self,
                                       in: root) {
                     FileHandle.standardError.write(Data(
-                        "snapshot: suggestion-card text=\(Int(sv.frame.height)) doc=\(Int(sv.documentView?.frame.height ?? 0)) bar=\(sv.scrollerStyle == .legacy ? "legacy" : "overlay") cap=\(Int(SuggestionCard.textCap(window: m.editorRoom))) pictureRoom=\(Int(m.pictureRoom))/\(Int(m.editorRoom))\n".utf8))
+                        "snapshot: suggestion-card text=\(Int(sv.frame.height)) doc=\(Int(sv.documentView?.frame.height ?? 0)) bar=\(sv.scrollerStyle == .legacy ? "legacy" : "overlay") cap=\(Int(SuggestionCard.textCap(window: m.stageColumnHeight))) column=\(Int(m.stageColumnHeight))\n".utf8))
                 }
                 if e == "accept" {
                     m.acceptEnhanced()
@@ -2225,8 +2303,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: .milliseconds(600))
                 }
             }
-            if env["VALTZ_SNAPSHOT_DRAWER"] != nil {
-                withAnimation(AppModel.motion) { m.openPanel = .generate }
+            // A chip's popover open: its name ("shape", "favor" ...;
+            // anything else, Model's).
+            if let c = env["VALTZ_SNAPSHOT_DRAWER"] {
+                m.openChip = GenerateChip(rawValue: c) ?? .model
             }
             // An asset on the simple stage as if just made: its id, or
             // "newest" / "newest-video" / "newest-image" /
@@ -2388,22 +2468,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         "snapshot: clear-prompt \(step) prompt=\(m.prompt.debugDescription) refs=\(m.promptAttachments.count) mentions=\(m.promptMentions.count) undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_")) redo=\(m.redoMenuTitle.replacingOccurrences(of: " ", with: "_")) focus=\(focus) project=\(m.windowTitle.replacingOccurrences(of: " ", with: "_")):\(m.assets.count)\n".utf8))
                 }
             }
-            // The inspector stacked ("1") -- before the asset list's
-            // actions, so they play in it -- its sections folded
-            // ("info,assets"; neither saved by a snapshot run).
-            if let m = model, env["VALTZ_SNAPSHOT_INSPECTOR_STACKED"] == "1" {
-                m.inspectorStacked = true
-                m.inspectorFolded = Set(
+            // The inspector's sections folded ("info"), before the asset
+            // list's actions, so they play in it; their shares
+            // ("layers:2,info:1"; none: even). Neither saved by a
+            // snapshot run.
+            if let m = model,
+               env["VALTZ_SNAPSHOT_INSPECTOR_FOLD"] != nil
+                || env["VALTZ_SNAPSHOT_INSPECTOR_WEIGHTS"] != nil {
+                m.chrome.collapsedSections = Set(
                     (env["VALTZ_SNAPSHOT_INSPECTOR_FOLD"] ?? "")
                         .split(separator: ",")
-                        .compactMap { InspectorTab(rawValue: String($0)) })
-                // Their shares ("layers:2,assets:1"; none: even).
-                m.inspectorWeights = Dictionary(uniqueKeysWithValues:
+                        .compactMap { InspectorSection(rawValue: String($0)) })
+                m.chrome.sectionWeights = Dictionary(uniqueKeysWithValues:
                     (env["VALTZ_SNAPSHOT_INSPECTOR_WEIGHTS"] ?? "")
                         .split(separator: ",").compactMap { kv in
                             let p = kv.split(separator: ":")
                             guard p.count == 2,
-                                  let t = InspectorTab(rawValue: String(p[0])),
+                                  let t = InspectorSection(rawValue: String(p[0])),
                                   let w = Double(p[1]) else { return nil }
                             return (t, w)
                         })
@@ -2563,12 +2644,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
                 try? await Task.sleep(for: .milliseconds(800))
             }
-            // The inspector's section ("info", "layers"), and layer work on
-            // the picture on the stage: "add;source=<asset>;hide=<layer>;
-            // select=<layer>;move=<layer>:<by>" ("0" is layer 0).
-            if let m = model, let t = env["VALTZ_SNAPSHOT_INSPECTOR_TAB"],
-               let tab = InspectorTab(rawValue: t == "history" ? "assets" : t) {
-                m.revealInspector(tab)
+            // An inspector section ("layers", "info", "adjust" ...)
+            // brought into sight; "sidebar": the sidebar shown, its
+            // Assets in sight.
+            if let m = model, let t = env["VALTZ_SNAPSHOT_INSPECTOR_SECTION"] {
+                if let s = InspectorSection(rawValue: t) {
+                    m.revealInspectorSection(s)
+                } else if t == "sidebar" {
+                    m.chrome.sidebar = .all
+                }
             }
             // Canvas Size applied ("1200x700:tl"; the anchor tl, t,
             // tr, l, c, r, bl, b, br; "own": Own Size) and a clip's
@@ -2605,10 +2689,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // Information › Canvas › Change…, open.
             if let m = model, env["VALTZ_SNAPSHOT_CANVAS_SIZE"] != nil {
-                m.revealInspector(.info)
+                m.revealInspectorSection(.info)
                 try? await Task.sleep(for: .milliseconds(500))
                 m.showsCanvasSize = true
             }
+            // Layer work on the picture on the stage: "add;source=<asset>;
+            // hide=<layer>;select=<layer>;move=<layer>:<by>" ("0" is layer
+            // 0).
             if let m = model, let spec = env["VALTZ_SNAPSHOT_LAYER_OPS"] {
                 for step in spec.split(separator: ";") {
                     let kv = step.split(separator: "=", maxSplits: 1)
@@ -2764,54 +2851,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Clicks posted to the window ("x,y" in points from its top
             // left; ";" between), as the pointer's would come: each
             // prints what has the focus after it.
-            // VALTZ_SNAPSHOT_MEMORY=1|<s>: RAM's popover opened (as a
-            // click on its meter opens it), read for s seconds (3), what
-            // it shows printed -- each share, the engine's own figures --
-            // and drawn to <snapshot>-memory.png (a popover is a window
-            // of its own: the capture does not hold it).
+            // VALTZ_SNAPSHOT_MEMORY=1|<s>: the Activity popover opened
+            // (its Memory fold reads what Valtz holds), read for s
+            // seconds (3), what it shows printed -- each share, the
+            // engine's own figures -- and drawn to <snapshot>-memory.png
+            // (a popover is a window of its own: the capture does not
+            // hold it).
             if let m = model, let spec = env["VALTZ_SNAPSHOT_MEMORY"] {
-                m.memoryPopoverOpen = true
-                try? await Task.sleep(for: .seconds(Double(spec) ?? 3))
-                let parts = MemoryPopover.parts(load: m.monitor.load,
-                                                memory: m.monitor.memory)
-                func mb(_ v: Double?) -> String {
-                    v.map { "\(Int($0 / 1_048_576))" } ?? "-"
-                }
-                let shares = parts.map {
-                    "\($0.title.replacingOccurrences(of: " ", with: "_"))=\(mb($0.bytes))"
-                        + ($0.about ? "~" : "")
-                }.joined(separator: ",")
-                let items = (m.monitor.memory?.items ?? []).map {
-                    "\($0.part):\($0.model):\(mb($0.bytes))+kv\(mb($0.kvBytes))"
-                        + ($0.seconds.map { "@\(Int($0))s" } ?? "")
-                }.joined(separator: ",")
-                FileHandle.standardError.write(Data(
-                    "snapshot: memory open=\(m.memoryPopoverOpen) read=\(m.monitor.memory != nil) items=\(items.isEmpty ? "-" : items) shares=\(shares) footprint=\(mb(m.monitor.load.footprint)) gpu=\(mb(m.monitor.memory?.gpuAllocated)) total=\(mb(m.monitor.load.total))\n".utf8))
-                let r = ImageRenderer(content: MemoryPopover(model: m)
-                    .background(Color(nsColor: .windowBackgroundColor)))
-                r.scale = 2
-                if let img = r.nsImage, let tiff = img.tiffRepresentation,
-                   let rep = NSBitmapImageRep(data: tiff),
-                   let png = rep.representation(using: .png,
-                                                properties: [:]) {
-                    let out = (path as NSString).deletingPathExtension
-                        + "-memory.png"
-                    try? png.write(to: URL(fileURLWithPath: out))
-                }
-            }
-            // The status bar's context menu, opened by a right-click
-            // posted on the bar: its items printed (+ checked), then
-            // the one named picked ("-": only looked at).
-            if let m = model,
-               let spec = env["VALTZ_SNAPSHOT_STATUS_MENU"] {
-                try? await Task.sleep(for: .seconds(1))
-                for pick in spec.split(separator: ";").map(String.init) {
-                    let items = await Self.statusMenu(
-                        pick: pick == "-" ? nil : pick)
-                    try? await Task.sleep(for: .milliseconds(400))
-                    FileHandle.standardError.write(Data(
-                        "snapshot: status-menu pick=\(pick) items=\(items) shown=\(Self.statusItems(m))\n".utf8))
-                }
+                await Self.snapshotMemory(
+                    m, seconds: Double(spec) ?? 3,
+                    to: (path as NSString).deletingPathExtension + "-memory.png")
             }
             if let m = model, let spec = env["VALTZ_SNAPSHOT_CLICKS"] {
                 for c in spec.split(separator: ";") {
@@ -2843,6 +2892,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // each prints the stacked inspector's shares after it.
             if let m = model, let spec = env["VALTZ_SNAPSHOT_DRAGS"] {
                 for d in spec.split(separator: ";") {
+                    // "x,y*r": a right-click there, the menu it opens
+                    // printed and shut.
+                    if d.hasSuffix("*r") {
+                        let xy = d.dropLast(2).split(separator: ",")
+                            .compactMap { Double($0) }
+                        if xy.count == 2 {
+                            let items = Self.postRightClick(x: xy[0], y: xy[1])
+                            try? await Task.sleep(for: .milliseconds(400))
+                            FileHandle.standardError.write(Data(
+                                "snapshot: right-click \(d) menu=\(items.map { $0.replacingOccurrences(of: " ", with: "_") }.joined(separator: "|"))\n".utf8))
+                        }
+                        continue
+                    }
                     // "x,y*2": a double-click there.
                     if d.hasSuffix("*2") {
                         let xy = d.dropLast(2).split(separator: ",")
@@ -3008,14 +3070,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: .milliseconds(450))
                 }
             }
+            // A panel: a layer's edit ("adjust", "color", "grade",
+            // "crop", "trim", "audio"), brought into sight in the
+            // inspector -- or a chip's popover ("generate": Model's).
             if let panel = env["VALTZ_SNAPSHOT_PANEL"] {
-                withAnimation(AppModel.motion) {
-                    m.openPanel = panel == "adjust" ? .adjust
-                        : panel == "crop" ? .crop
-                        : panel == "trim" ? .trim : .generate
-                }
+                m.openPanelNamed(panel)
             }
-            if env["VALTZ_SNAPSHOT_NAV"] != nil { m.toggleNav() }
+            // The right column on the Agent ("agent") or the inspector.
+            if let v = env["VALTZ_SNAPSHOT_RIGHT"],
+               let p = RightPanel(rawValue: v) {
+                m.chrome.inspectorShown = true
+                m.chrome.rightPanel = p
+            }
             // Adjustments on the picture to edit, before Start
             // ("exposure=0.4,vibrance=0.3"): the model gets them.
             if let spec = env["VALTZ_SNAPSHOT_BASE_ADJUST"] {
@@ -3023,7 +3089,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: .milliseconds(100))
                 }
                 m.adjustments = Self.adjustments(spec)
-                withAnimation(AppModel.motion) { m.openPanel = .adjust }
+                m.revealInspectorSection(.adjust)
                 try? await Task.sleep(for: .seconds(1))
             }
             // The Crop panel: values on the picture on the stage
@@ -3096,7 +3162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // tone= bypass= canBypass= keys=` (the look's keys) `viewed=
             // active= layer= page= banner= disks=hue@x,y,wxh,...`.
             if let spec = env["VALTZ_SNAPSHOT_COLOR"] {
-                withAnimation(AppModel.motion) { m.openPanel = .color }
+                m.revealInspectorSection(.color)
                 try? await Task.sleep(for: .milliseconds(500))
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
@@ -3283,7 +3349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(500))
-                    print("snapshot: color \(step) stack=\(m.stackPlayback != nil) target=\(m.colorTargeting) ready=\(m.colorTargetReady) hue=\(m.colorTargetHue.map { String(format: "%.1f", $0) } ?? "-") mix=\(Self.mixSummary(m.adjustments.mix)) tone=\(m.adjustments.toneIsIdentity ? "-" : "set") bypass=\(m.mixBypassed) canBypass=\(m.canBypassMix) keys=\(m.keyedStage ? "\(m.clipAdjustKeys.keys.count)" : "-") panel=\(m.openPanel.map { "\($0)" } ?? "-") viewed=\(m.viewedAsset ?? "-") active=\(m.stageStack?.id ?? "-") layer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) page=\(m.stagePage) banner=\(m.banner ?? "-") disks=\(Self.disksSummary())")
+                    print("snapshot: color \(step) stack=\(m.stackPlayback != nil) target=\(m.colorTargeting) ready=\(m.colorTargetReady) hue=\(m.colorTargetHue.map { String(format: "%.1f", $0) } ?? "-") mix=\(Self.mixSummary(m.adjustments.mix)) tone=\(m.adjustments.toneIsIdentity ? "-" : "set") bypass=\(m.mixBypassed) canBypass=\(m.canBypassMix) keys=\(m.keyedStage ? "\(m.clipAdjustKeys.keys.count)" : "-") panel=\(m.panelSummary) viewed=\(m.viewedAsset ?? "-") active=\(m.stageStack?.id ?? "-") layer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) page=\(m.stagePage) banner=\(m.banner ?? "-") disks=\(Self.disksSummary())")
                 }
             }
             // The GRADE panel (ColorGrading.swift), opened: "set:shadows=
@@ -3311,7 +3377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // wheels=shadows@x,y,wxh,...` (points from the window's top
             // left).
             if let spec = env["VALTZ_SNAPSHOT_GRADE"] {
-                withAnimation(AppModel.motion) { m.openPanel = .grade }
+                m.revealInspectorSection(.grade)
                 try? await Task.sleep(for: .milliseconds(500))
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
@@ -3446,7 +3512,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(500))
-                    print("snapshot: grade \(step) grade=\(Self.gradeSummary(m.adjustments.grade)) tone=\(m.adjustments.toneIsIdentity ? "-" : "set") mix=\(m.adjustments.mix.isEmpty ? "-" : "set") bypass=\(m.gradeBypassed) canBypass=\(m.canBypassGrade) keys=\(m.keyedStage ? "\(m.clipAdjustKeys.keys.count)" : "-") panel=\(m.openPanel.map { "\($0)" } ?? "-") banner=\(m.banner ?? "-") wheels=\(Self.wheelsSummary())")
+                    print("snapshot: grade \(step) grade=\(Self.gradeSummary(m.adjustments.grade)) tone=\(m.adjustments.toneIsIdentity ? "-" : "set") mix=\(m.adjustments.mix.isEmpty ? "-" : "set") bypass=\(m.gradeBypassed) canBypass=\(m.canBypassGrade) keys=\(m.keyedStage ? "\(m.clipAdjustKeys.keys.count)" : "-") panel=\(m.panelSummary) banner=\(m.banner ?? "-") wheels=\(Self.wheelsSummary())")
                 }
             }
             // The AUDIO panel (AudioPanel.swift), opened: "set:volume=0.5,
@@ -3466,7 +3532,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // mix=<the plan's mixer file|-> audio=<its spans> faders=
             // gain@x,y,wxh,...` (points from the window's top left).
             if let spec = env["VALTZ_SNAPSHOT_AUDIO"] {
-                withAnimation(AppModel.motion) { m.openPanel = .audio }
+                m.revealInspectorSection(.audio)
                 try? await Task.sleep(for: .milliseconds(500))
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
@@ -3547,11 +3613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Another card open ("trim", "adjust" ...), and the
                     // window drawn.
                     case "panel":
-                        let named = ComposerPanel.allCases.first {
-                            "\($0)" == arg }
-                        withAnimation(AppModel.motion) {
-                            m.openPanel = named ?? .audio
-                        }
+                        m.openPanelNamed(arg.isEmpty ? "audio" : arg)
                         try? await Task.sleep(for: .milliseconds(600))
                     case "draw": Self.drawWindow(to: arg)
                     case "persist":
@@ -3566,7 +3628,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(500))
-                    print("snapshot: audio \(step) here=\(Self.soundSummary(m.layerSoundHere)) keys=\(m.layerSound.keys.map { "\($0.frame):\(Self.soundSummary($0.value))" }.joined(separator: ";")) follow=\(m.pitchFollowsSpeed) alpha=\(String(format: "%.3f", m.adjustments.alpha)) frozen=\(m.layerFrozen) tab=\(m.showsAudio) panel=\(m.openPanel.map { "\($0)" } ?? "-") mix=\(m.stackPlayback?.mix?.path ?? "-") audio=\(m.stackPlayback?.audio.count ?? 0) faders=\(Self.fadersSummary())")
+                    print("snapshot: audio \(step) here=\(Self.soundSummary(m.layerSoundHere)) keys=\(m.layerSound.keys.map { "\($0.frame):\(Self.soundSummary($0.value))" }.joined(separator: ";")) follow=\(m.pitchFollowsSpeed) alpha=\(String(format: "%.3f", m.adjustments.alpha)) frozen=\(m.layerFrozen) tab=\(m.showsAudio) panel=\(m.panelSummary) mix=\(m.stackPlayback?.mix?.path ?? "-") audio=\(m.stackPlayback?.audio.count ?? 0) faders=\(Self.fadersSummary())")
                 }
             }
             if let g = env["VALTZ_SNAPSHOT_GUIDES"] {
@@ -3731,10 +3793,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "open", "close":
                         m.showTimeline(key == "open")
                     case "rows":
+                        // The band given so many rows (or more, fewer):
+                        // the dock's height set to hold them.
                         if arg.hasPrefix("+") || arg.hasPrefix("-") {
-                            m.timelineRows(by: Int(arg) ?? 0)
+                            m.setTimelineRows(m.timelineRows
+                                              + (Int(arg) ?? 0))
                         } else if let n = Int(arg) {
-                            m.timelineRows(by: n - m.timelineRows)
+                            m.setTimelineRows(n)
                         }
                     case "zoom":
                         m.zoomTimeline(to: arg == "in"
@@ -4129,12 +4194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     // A card under it opened: "panel=trim" (none: shut).
                     case "panel":
-                        withAnimation(AppModel.motion) {
-                            m.openPanel = arg == "adjust" ? .adjust
-                                : arg == "crop" ? .crop
-                                : arg == "trim" ? .trim
-                                : arg == "generate" ? .generate : nil
-                        }
+                        m.openPanelNamed(arg.isEmpty ? nil : arg)
                     // The clip carried on from its last N seconds
                     // ("continue=1": as it is) -- the prompt back.
                     case "continue":
@@ -4563,8 +4623,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // "active:project", "cancel:<n>", "undo", "compare" (its
             // button), "export:<format>:<file>", "idle:<s>" (until
             // no task is left, at most s), "model:<id>" (the model
-            // field; empty: Auto) -- each printing `snapshot: task
-            // <step> tasks= watched= stage= downloads=`.
+            // field; empty: Auto), "memory:<png>" (Activity's Memory as it
+            // stands), "activity:<png>" (the Activity popover drawn) --
+            // each printing `snapshot: task <step> tasks=
+            // watched= stage= downloads=`.
             if let spec = env["VALTZ_SNAPSHOT_TASKS"] {
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
@@ -4592,6 +4654,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // The window as the screen shows it, now.
                     case "shot":
                         await Self.shootWindow(to: arg)
+                    // Activity's Memory as the task runs: "memory:<file.png>"
+                    // (as VALTZ_SNAPSHOT_MEMORY draws it, read for 3 s).
+                    case "memory":
+                        await Self.snapshotMemory(m, seconds: 3, to: arg)
+                        m.activityOpen = false
+                    // The Activity popover as it stands, drawn to
+                    // "activity:<file.png>" (a popover is a window of
+                    // its own: a shot of the window does not hold it).
+                    case "activity":
+                        m.activityOpen = true
+                        try? await Task.sleep(for: .seconds(1))
+                        let r = ImageRenderer(content: ActivityPopover(model: m)
+                            .background(Color(nsColor: .windowBackgroundColor)))
+                        r.scale = 2
+                        if let img = r.nsImage, let tiff = img.tiffRepresentation,
+                           let rep = NSBitmapImageRep(data: tiff),
+                           let png = rep.representation(using: .png, properties: [:]) {
+                            try? png.write(to: URL(fileURLWithPath: arg))
+                        }
+                        m.activityOpen = false
                     case "model": m.modelChoice = arg
                     // The generation card's rows, as the env hooks
                     // set them before Start: "size:1920x1088",
@@ -5180,7 +5262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 where a[key] != key.rest {
                     m.setAdjustment(key, a[key])
                 }
-                withAnimation(AppModel.motion) { m.openPanel = .adjust }
+                m.revealInspectorSection(.adjust)
                 try? await Task.sleep(for: .seconds(1.5))
             }
             // The key button, here: "adjust" or "crop".
@@ -5589,8 +5671,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Toggles in turn, animated as their buttons are --
         // "inspector:2,generate:3": the inspector 2 s after this
         // point, then the generation card's drawer 3 s after that
-        // (inspector | editor | compare | generate | adjust | crop | trim). Each prints
-        // its time, to find it in a filmed run.
+        // (inspector | editor | compare | generate | adjust | crop | trim
+        // | color | grade | audio | viewonly | agentkey -- ⌘4's). Each
+        // prints its time, to find it in a filmed run, and then the
+        // window's chrome.
+        //
+        // The Prompt Editor and the compare: "editorkey" (⇧⌘E through
+        // the main menu, as the keyboard sends it), "tab" / "tab=<words>"
+        // (its +), "select=<i>", "close=<i>", "rename=<i>:<name>",
+        // "focus" (the prompt given the keyboard), "type=<text>" (typed
+        // at its end as the keyboard types), "sel=<at>,<length>",
+        // "bold" / "italic" / "underline" (the tab bar's B, I, U),
+        // "sparkles" (the assistant's button: a suggestion written, with
+        // the engine), "suggest" / "suggest=<words>" (one offered as if
+        // written -- a build without the engine has no assistant),
+        // "apply" / "reject" (its buttons), "markup" (⇧⌘A),
+        // "import=<file>" (into Assets), "a=<asset>" / "b=<asset>" (an
+        // asset dropped on the compare's A or B: an id, or "image",
+        // the newest picture in Assets not on the stage).
+        //
+        // The sidebar: "folder" (a new one, the newest asset moved into
+        // it), "click=x;y", "rclick=x;y" (the menu it opens printed),
+        // "dclick=x;y" -- points from the window's top left.
         if let m = model, let steps = env["VALTZ_SNAPSHOT_TOGGLES"] {
             for step in steps.split(separator: ",") {
                 let p = step.split(separator: ":").map(String.init)
@@ -5600,9 +5702,114 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "snapshot: toggle \(p[0]) at \(Date().timeIntervalSince1970)\n".utf8))
                 withAnimation(AppModel.motion) {
                     if p[0] == "inspector" {
-                        m.inspectorOpen.toggle()
+                        m.chrome.inspectorShown.toggle()
+                    } else if p[0] == "sidebar" {
+                        m.setSidebar(m.layout.sidebar == .detailOnly
+                                     ? .all : .detailOnly)
+                    } else if p[0] == "viewonly" {
+                        m.toggleViewOnly()
+                    } else if p[0] == "agentkey" {
+                        m.focusPrompt(.agent)
                     } else if p[0] == "editor" {
                         m.toggleImmersivePrompt()
+                    } else if p[0] == "editorkey" {
+                        Self.postMenuKey("e", [.command, .shift], to: m)
+                    } else if p[0] == "tab" || p[0].hasPrefix("tab=") {
+                        m.newPromptTab()
+                        if p[0].hasPrefix("tab=") {
+                            m.setPrompt(String(p[0].dropFirst(4)))
+                        }
+                    } else if p[0].hasPrefix("select=") {
+                        m.selectPromptTab(Int(p[0].dropFirst(7)) ?? 0)
+                    } else if p[0].hasPrefix("close=") {
+                        m.requestClosePromptTab(Int(p[0].dropFirst(6)) ?? 0)
+                    } else if p[0].hasPrefix("rename=") {
+                        let a = p[0].dropFirst(7).split(
+                            separator: "~", maxSplits: 1,
+                            omittingEmptySubsequences: false)
+                        if let n = Int(a.first ?? "") {
+                            m.renamePromptTab(
+                                n, a.count > 1 ? String(a[1]) : "")
+                        }
+                    } else if p[0] == "focus" {
+                        if let tv = m.promptTextView {
+                            tv.window?.makeFirstResponder(tv)
+                        }
+                    } else if p[0].hasPrefix("type=") {
+                        if let tv = m.promptTextView {
+                            tv.setSelectedRange(NSRange(
+                                location: tv.string.utf16.count, length: 0))
+                            for ch in p[0].dropFirst(5) {
+                                tv.insertText(String(ch),
+                                              replacementRange:
+                                                  tv.selectedRange())
+                            }
+                        }
+                    } else if p[0].hasPrefix("sel=") {
+                        let n = p[0].dropFirst(4).split(separator: "/")
+                            .compactMap { Int($0) }
+                        if n.count == 2, let tv = m.promptTextView {
+                            tv.setSelectedRange(NSRange(location: n[0],
+                                                        length: n[1]))
+                        }
+                    } else if ["bold", "italic", "underline"].contains(p[0]) {
+                        // As the tab bar's buttons do it.
+                        if let tv = m.promptTextView {
+                            tv.window?.makeFirstResponder(tv)
+                            tv.toggleMarkdown(p[0] == "bold" ? .bold
+                                : p[0] == "italic" ? .italic : .underline)
+                        }
+                    } else if p[0] == "suggest" || p[0].hasPrefix("suggest=") {
+                        let words = p[0].hasPrefix("suggest=")
+                            ? String(p[0].dropFirst(8))
+                            : "A slow dolly through a rain-soaked night market, neon reflected in the puddles, steam rising from the stalls; warm light, shallow depth of field, 35 mm film grain."
+                        m.enhanced = EnhancedPrompt(
+                            prompt: words, negative: "", title: "",
+                            aspect: "", follow: "")
+                    } else if p[0] == "sparkles" {
+                        // The assistant's button, the chip row's.
+                        m.assistantPressed()
+                    } else if p[0] == "apply" {
+                        m.acceptEnhanced()
+                    } else if p[0] == "reject" {
+                        m.dismissEnhanced()
+                    } else if p[0] == "markup" {
+                        m.markupOpen.toggle()
+                    } else if p[0].hasPrefix("import=") {
+                        _ = m.importFiles([URL(fileURLWithPath:
+                            String(p[0].dropFirst(7)))])
+                    } else if p[0] == "folder" {
+                        // A new folder, the newest asset moved into it.
+                        if let id = m.createFolder(),
+                           let a = m.listedAssets.first {
+                            m.moveAsset(a.id, to: id)
+                        }
+                    } else if let (kind, xy) = Self.pointStep(p[0]) {
+                        // A click posted at "x;y" (points from the
+                        // window's top left): "click=", "rclick=" (the
+                        // menu it opens printed), "dclick=".
+                        switch kind {
+                        case "rclick":
+                            let items = Self.postRightClick(x: xy.0, y: xy.1)
+                            FileHandle.standardError.write(Data(
+                                "snapshot: right-click menu=\(items.map { $0.replacingOccurrences(of: " ", with: "_") }.joined(separator: "|"))\n".utf8))
+                        case "dclick": Self.postClick(x: xy.0, y: xy.1, count: 2)
+                        default: Self.postClick(x: xy.0, y: xy.1)
+                        }
+                    } else if p[0].hasPrefix("a=") || p[0].hasPrefix("b=") {
+                        let arg = String(p[0].dropFirst(2))
+                        let a = arg == "image"
+                            ? m.assets.filter {
+                                $0.kind == "image" && $0.id != m.stageAssetId
+                              }.max { $0.created < $1.created }
+                            : m.asset(id: arg)
+                        let took = a.map {
+                            m.dropOnCompare(URL(string: AppModel.assetPrefix
+                                                + $0.id)!,
+                                            in: p[0].hasPrefix("a") ? .a : .b)
+                        } ?? false
+                        FileHandle.standardError.write(Data(
+                            "snapshot: compare-drop \(p[0]) asset=\(a?.name ?? "-") took=\(took)\n".utf8))
                     } else if p[0] == "compare" {
                         m.toggleCompare()
                         FileHandle.standardError.write(Data(
@@ -5621,18 +5828,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         FileHandle.standardError.write(Data(
                             "snapshot: appearance dark=\(m.appearsDark) fades=\(fades.joined(separator: ","))\n".utf8))
-                    } else if let panel = ComposerPanel.allCases.first(
+                    } else if let panel = LayerEditSection.allCases.first(
                         where: { "\($0)" == p[0] }) {
-                        m.openPanel = m.openPanel == panel ? nil : panel
+                        m.toggleInspectorSection(panel.section)
+                    } else if p[0] == "generate" {
+                        m.pressChip(.model)
+                    } else if p[0].hasPrefix("chip-") {
+                        // A chip pressed: "chip-shape"; "chip-none" shuts
+                        // the one open.
+                        let c = GenerateChip(rawValue: String(p[0].dropFirst(5)))
+                        if let c { m.pressChip(c) } else { m.openChip = nil }
+                    } else if p[0] == "band" {
+                        // View › Timeline (⇧⌘T).
+                        m.showTimeline(!m.timelineOpen)
+                    } else if p[0].hasPrefix("dock=") {
+                        // The splitter: "dock=320" sets the dock's
+                        // height, "dock=fit" double-clicks it.
+                        let v = p[0].dropFirst(5)
+                        m.chrome.dockHeight = Double(v).map { CGFloat($0) }
+                    } else if p[0].hasPrefix("rows=") {
+                        m.setTimelineRows(Int(p[0].dropFirst(5)) ?? 3)
+                    } else if p[0] == "scissors" || p[0] == "space" {
+                        // The keys, as the window's key monitor hands them
+                        // on: S, Space.
+                        Self.postKey(p[0] == "space" ? 49 : 1,
+                                     p[0] == "space" ? " " : "s", to: m)
+                    } else if p[0] == "start" {
+                        m.startPressed()
+                    } else if p[0] == "stop" {
+                        m.stop()
+                    } else if ["atlas", "log", "stage"].contains(p[0]) {
+                        m.select(p[0] == "atlas" ? .atlas
+                                 : p[0] == "log" ? .log : .stage)
+                    } else if p[0].hasPrefix("size=") {
+                        // The window made smaller or larger, as a person
+                        // drags it: "size=820x600".
+                        let wh = p[0].dropFirst(5).split(separator: "x")
+                            .compactMap { Double($0) }
+                        if wh.count == 2, let win = m.editorWindow {
+                            var f = win.frame
+                            f.origin.y += f.height - wh[1]
+                            f.size = CGSize(width: wh[0], height: wh[1])
+                            win.setFrame(f, display: true)
+                        }
                     }
                 }
+                try? await Task.sleep(for: .milliseconds(700))
+                let win = m.editorWindow?.frame.size ?? .zero
+                FileHandle.standardError.write(Data(
+                    "snapshot: chrome \(p[0]) inspector=\(m.layout.inspector) right=\(m.chrome.rightPanel.rawValue) viewOnly=\(m.viewOnly) sidebar=\(m.layout.sidebar == .detailOnly ? "hidden" : "shown") panel=\(m.panelSummary) modality=\(m.modality.rawValue) \(Self.dockSummary(m)) generating=\(m.isGenerating) tasks=\(m.tasks.count) rate=\(m.videoRate) cutting=\(m.timelineCutting) firstResponder=\(m.editorWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "-") screen=\(m.screen) window=\(Int(win.width))x\(Int(win.height))\n".utf8))
             }
         }
         if let m = model, env["VALTZ_SNAPSHOT_DRAG_READY"] != nil {
             m.stageDragReady = true
         }
+        // The sidebar's search: Assets filtered by name.
         if let m = model, let q = env["VALTZ_SNAPSHOT_SEARCH"] {
-            m.searchText = q
+            m.assetFilter = q
         }
         // The title bar's zoom group: "in,in,out,fit,actual" -- each
         // step printed with the card it leaves (`snapshot: zoom-step`).
@@ -6371,9 +6623,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // for drops, its frame in the window (points from the top
         // left), its types -- beside the Assets list's frame: what
         // AppKit may hand a Finder drag to instead of SwiftUI's view.
-        // (=assets: the inspector's Assets shown first.)
+        // (=assets: the sidebar, with Assets, shown first.)
         if env["VALTZ_SNAPSHOT_DROP_VIEWS"] == "assets", let m = model {
-            m.revealInspector(.assets)
+            m.chrome.sidebar = .all
             try? await Task.sleep(for: .seconds(1))
         }
         if env["VALTZ_SNAPSHOT_DROP_VIEWS"] != nil,
@@ -6614,7 +6866,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let models = m.installedImageModels.map(\.model)
             // The tray's words, a clip's keyframes, Favor's hint and
             // Custom's values (the model's own).
-            let trayLead = ComposerStack.summaryLead(m)
+            let trayLead = m.modelChipValue
                 .replacingOccurrences(of: " ", with: "_")
             var keyframes = "-"
             if let k = m.keyframes {
@@ -6663,14 +6915,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "editModel=\(m.editModel) willEdit=\(m.willEdit) "
                 + "modality=\(m.modality.rawValue) "
                 + "modelChoice=\(m.modelChoice.isEmpty ? "auto" : m.modelChoice) "
-                + "panel=\(String(describing: m.openPanel)) "
+                + "panel=\(m.panelSummary) right=\(m.chrome.rightPanel.rawValue) "
+                + "sections=\(m.inspectorSections.map(\.rawValue).joined(separator: "+")) "
                 + "compact=\(m.promptCompact) "
-                + "title=\(m.windowTitle) inspector=\(m.inspectorOpen) "
-                + "titlebarHover=\(m.titlebarHover) "
+                + "title=\(m.windowTitle) inspector=\(m.chrome.inspectorShown) "
+                + "sidebar=\(m.chrome.sidebar == .detailOnly ? "hidden" : "shown") "
+                + "pick=\(String(describing: m.sidebarPick).replacingOccurrences(of: " ", with: "_")) "
                 + "anonymous=\(m.isAnonymous) projectPath=\(m.projectPath) "
                 + "base=\(m.baseAttachment?.url.lastPathComponent ?? "-") refs=\(m.promptAttachments.filter { !$0.isBase }.count) "
                 + "dragReady=\(m.stageDragReady && m.canDragStage) attachments=\(m.promptAttachments.count) "
-                + "hits=\(m.searchHits.sorted()) "
+                + "filter=\(m.assetFilter.replacingOccurrences(of: " ", with: "_")) "
+                + "recents=\(RecentProjects.shared.existing.map { $0.name.replacingOccurrences(of: " ", with: "_") }.joined(separator: "|")) "
+                + "openRecent=\(Self.openRecentTitles().joined(separator: "|")) "
                 + "window=\(NSApp.windows.first { $0.isVisible }.map { "\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? "-") "
                 + "screen=\(NSScreen.main.map { "\(Int($0.visibleFrame.width))x\(Int($0.visibleFrame.height))" } ?? "-") "
                 + "installed=\(models) ready=\(ready) "
@@ -6678,8 +6934,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "output=\(m.dimensions.width)x\(m.dimensions.height) "
                 + "sizes=\(m.sizeClasses.map { "\($0)" }.joined(separator: ",")) "
                 + "regenerate=\(m.regenerateDraft.map { "\($0.width)x\($0.height)>\(m.dimensions.width)x\(m.dimensions.height)" } ?? (m.regenerateMissing ? "missing" : "-")) "
-                + "composer=\(Int(m.composerWidth))/\(Int(m.composerColumn)) "
-                + "drawers=\(m.drawerWidths.sorted { $0.key < $1.key }.map { "\($0.key):\(Int($0.value))" }.joined(separator: ",")) "
+                + "\(Self.dockSummary(m)) chips=\(Self.chipSummary(m)) "
                 + "sizeShown=\(m.sizeChoice.map { "\($0)" } ?? "custom") "
                 + "custom=\(m.customSize != nil) orientation=\(m.shownOrientation.rawValue) "
                 + "ratioShown=\(m.showsAspectRatio) "
@@ -6692,7 +6947,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "mentions=\(m.promptMentions.count) focus=\(m.promptAttachments.firstIndex { $0.id == m.focusedReference }.map(String.init) ?? "-") "
                 + "stack=\(m.stackPlayback.map { "\($0.width)x\($0.height)/\($0.frames)f/\($0.clips.count)clips" } ?? "-") "
                 + "look=\(m.stageStack?.layerStack.map { l in let k = m.layerLook(l.id); return "\(l.id.isEmpty ? "0" : l.id):\(k.adjust ? "a" : "")\(k.place ? "p" : "")\(k.turn ? "t" : "")\(k.keyed ? "k" : "")" }.joined(separator: ",") ?? "-") "
-                + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(m.inspectorStacked ? "stacked" : "one"):\(InspectorTab.allCases.filter { !m.inspectorFolded.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate),\(m.projectOutput.intermediate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) pictureRoom=\(Int(m.pictureRoom))/\(Int(m.editorRoom)) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
+                + "layers=\(m.stageStack?.layerStack.map { "\($0.id.isEmpty ? "0" : $0.id)\($0.visible ? "" : "-hidden")\($0.isEmpty ? "-empty" : "")\($0.isMarkup ? "-markup\($0.markup?.raster.isEmpty == false ? "+px" : "")\($0.markup.map { "+\($0.objects.count)obj" } ?? "")" : "")\($0.mask ? "-mask" : "")" }.joined(separator: ",") ?? "-") selectedLayer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) selectedLayers=\(m.selectedLayers.map { $0.isEmpty ? "0" : $0 }.sorted()) inspector=\(InspectorSection.allCases.filter { !m.chrome.collapsedSections.contains($0) }.map(\.rawValue).joined(separator: "+")) panels=\(Self.panelSummary(m)) tasks=\(Self.taskSummary(m)) projectOutput=\(m.projectOutput.color),\(m.projectOutput.fps.map(String.init).joined(separator: "/")),\(m.projectOutput.channels),\(m.projectOutput.sampleRate),\(m.projectOutput.intermediate) options=\(m.modelOptions(for: m.activeModality).map(\.name).joined(separator: "|").replacingOccurrences(of: " ", with: "_")) runningModel=\(m.runningModel) hint=\(String(m.promptHint.prefix(40)).replacingOccurrences(of: " ", with: "_")) promptCompact=\(m.promptCompact) framed=\(m.stageStack?.canvas.map { c in c.framed ? "\(c.fw ?? 0)x\(c.fh ?? 0)" + (c.resized ? "@\(c.w)x\(c.h)" : "") : "-" } ?? "-") "
                 + "markup=\(m.markupOpen ? m.markup.tool.rawValue : "off"):sel[\(m.markup.selection.map(\.kind.rawValue).joined(separator: ","))\(m.markup.drawing ? "+drawing" : "")]@\(m.markup.selectionLayer ?? "-") "
                 // The first selected object's style: a text's
                 // alignment and spacing, its effects.
@@ -6706,8 +6961,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "memoryFailure=\(m.memoryFailure.map { f in "\(f.step):\(MemoryFailure.size(f.need)):\(f.gates.filter { !$0.ok }.map(\.name).joined(separator: "+")):parts=\(f.parts.map(\.name).joined(separator: "+")):plan=\(MemoryFailure.size(f.planPeak))" } ?? "-") "
                 + "suggests=\([m.suggestsShorterClip ? "length" : nil, m.suggestsSmallerSize ? "size" : nil, m.suggestsFewerReferences ? "refs" : nil].compactMap { $0 }.joined(separator: ",")) "
                 + "bypassed=\(m.bypassed.map { "\($0)" }.sorted()) "
-                + "statusBar=\(m.showsStatusBar) "
-                + "statusItems=\(Self.statusItems(m)) "
+                + "activity=\(m.activityOpen ? "open" : "-") "
                 + "createTabs=\(m.modalities.map(\.rawValue).joined(separator: ",")) "
                 + "agentSpeed=\(m.agentShowsSpeed ? "on" : "off") "
                 // The stage player's own controls: floating, or none
@@ -7259,7 +7513,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let events = t.events.map(String.init).joined(separator: ",")
         // In parts: one chain of + took the type checker past its limit.
         let layers = rows.isEmpty ? "-" : rows
-        let panel = m.openPanel.map { "\($0)" } ?? "-"
+        let panel = m.panelSummary
         let a = "open=\(m.timelineOpen) available=\(m.timelineAvailable)"
         let b = "rows=\(m.timelineRows) zoom=\(zoom) scroll=\(TimelineNSView.shown?.scrollSummary ?? "-")"
         let c = "frame=\(t.playhead)/\(t.frames) cutting=\(t.cutting)"
@@ -7322,13 +7576,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }.joined(separator: ",")
     }
 
-    /// The stacked inspector's open sections: "layers:1.00@312" -- each
-    /// one's share and height.
+    /// File › Open Recent's items, as the menu bar holds them. SwiftUI
+    /// brings the menus up to date as they open: the File menu is asked
+    /// as an opening would ask it first.
+    @MainActor
+    static func openRecentTitles() -> [String] {
+        let title = String(localized: "Open Recent")
+        guard let file = NSApp.mainMenu?.items.first(where: {
+            $0.submenu?.items.contains { $0.title == title } == true
+        })?.submenu else { return [] }
+        file.delegate?.menuNeedsUpdate?(file)
+        file.update()
+        let recent = file.items.first { $0.title == title }?.submenu
+        return (recent?.items ?? []).map {
+            $0.isSeparatorItem ? "-" : $0.title.replacingOccurrences(of: " ", with: "_")
+        }
+    }
+
+    /// The inspector's open sections: "layers:1.00" -- each one's share.
     @MainActor
     static func panelSummary(_ m: AppModel) -> String {
-        InspectorTab.allCases.filter { !m.inspectorFolded.contains($0) }
+        InspectorSection.allCases
+            .filter { !m.chrome.collapsedSections.contains($0) }
             .map { t in
-                "\(t.rawValue):\(String(format: "%.2f", m.inspectorWeight(t)))@\(Int(m.inspectorHeights[t] ?? 0))"
+                "\(t.rawValue):\(String(format: "%.2f", m.sectionWeight(t)))"
             }.joined(separator: ",")
     }
 
@@ -7367,6 +7638,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.postEvent(ev, atStart: false)
     }
 
+    /// A TOGGLES step that posts a click: "click=x;y", "rclick=x;y",
+    /// "dclick=x;y" -- its kind and point.
+    static func pointStep(_ step: String) -> (String, (Double, Double))? {
+        let kv = step.split(separator: "=", maxSplits: 1).map(String.init)
+        guard kv.count == 2, ["click", "rclick", "dclick"].contains(kv[0])
+        else { return nil }
+        let xy = kv[1].split(separator: ";").compactMap { Double($0) }
+        return xy.count == 2 ? (kv[0], (xy[0], xy[1])) : nil
+    }
+
+    /// The context menu a right-click at (x, y) points from the window's
+    /// top left would open: its items' titles ("-": none), filled as
+    /// AppKit fills it before it shows, not opened.
+    @MainActor
+    static func postRightClick(x: Double, y: Double) -> [String] {
+        guard let win = NSApp.windows.first(where: { $0.isVisible }),
+              let content = win.contentView,
+              let ev = NSEvent.mouseEvent(
+                  with: .rightMouseDown,
+                  location: NSPoint(x: x, y: win.frame.height - y),
+                  modifierFlags: [],
+                  timestamp: ProcessInfo.processInfo.systemUptime,
+                  windowNumber: win.windowNumber, context: nil,
+                  eventNumber: 0, clickCount: 1, pressure: 1)
+        else { return ["-"] }
+        var v = content.superview?.hitTest(ev.locationInWindow)
+            ?? content.hitTest(ev.locationInWindow)
+        while let view = v {
+            if let menu = view.menu(for: ev) {
+                menu.delegate?.menuNeedsUpdate?(menu)
+                menu.update()
+                return menu.items.map {
+                    $0.isSeparatorItem ? "--" : $0.title
+                }
+            }
+            v = view.superview
+        }
+        return ["-"]
+    }
+
     /// A double-click posted to the window at (x, y) points from its top
     /// left: the pointer there first, then two clicks 180 ms apart.
     @MainActor
@@ -7396,82 +7707,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         post(.leftMouseDown, 2)
         try? await Task.sleep(for: .milliseconds(60))
         post(.leftMouseUp, 2)
-    }
-
-    /// The status bar's items shown, "gpu,ram,..." ("-": none).
-    @MainActor
-    static func statusItems(_ m: AppModel) -> String {
-        let shown = StatusBarItem.allCases.filter { m.showsStatusItem($0) }
-        return shown.isEmpty ? "-" : shown.map(\.rawValue)
-            .joined(separator: ",")
-    }
-
-    /// A right-click posted on the status bar, at its left edge: the menu
-    /// it opens read as it tracks -- "+GPU,-ANE,...,Hide_Status_Bar" --
-    /// then shut, the item titled `pick` performed. "no-menu" when none
-    /// opened in three seconds.
-    @MainActor
-    static func statusMenu(pick: String?) async -> String {
-        guard let win = NSApp.windows.first(where: { $0.isVisible }) else {
-            return "no-window"
-        }
-        // What the closures share: the observer, the menu once it opened
-        // (AppKit's, used on the main thread alone), whether it is over.
-        final class Watch: @unchecked Sendable {
-            var token: NSObjectProtocol?
-            var menu: NSMenu?
-            var done = false
-        }
-        let watch = Watch()
-        return await withCheckedContinuation { cont in
-            @MainActor func finish(_ s: String) {
-                guard !watch.done else { return }
-                watch.done = true
-                if let t = watch.token {
-                    NotificationCenter.default.removeObserver(t)
-                }
-                cont.resume(returning: s)
-            }
-            watch.token = NotificationCenter.default.addObserver(
-                forName: NSMenu.didBeginTrackingNotification, object: nil,
-                queue: .main) { note in
-                watch.menu = note.object as? NSMenu
-                MainActor.assumeIsolated {
-                    guard let menu = watch.menu else { return }
-                    let items = menu.items.map { i in
-                        i.isSeparatorItem ? "|" :
-                            (i.state == .on ? "+" : i.action == nil ? ""
-                                : "-") + i.title
-                            .replacingOccurrences(of: " ", with: "_")
-                    }.joined(separator: ",")
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        MainActor.assumeIsolated {
-                            guard let menu = watch.menu else { return }
-                            menu.cancelTrackingWithoutAnimation()
-                            if let pick, let i = menu.items.firstIndex(
-                                where: { $0.title == pick }) {
-                                menu.performActionForItem(at: i)
-                            }
-                            finish(items)
-                        }
-                    }
-                }
-            }
-            // In the bar's left padding: the bar's own, no meter's.
-            let p = NSPoint(x: 6, y: StatusBar.height / 2)
-            for type in [NSEvent.EventType.rightMouseDown, .rightMouseUp] {
-                if let ev = NSEvent.mouseEvent(
-                    with: type, location: p, modifierFlags: [],
-                    timestamp: 0, windowNumber: win.windowNumber,
-                    context: nil, eventNumber: 0, clickCount: 1,
-                    pressure: 1) {
-                    NSApp.postEvent(ev, atStart: false)
-                }
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                MainActor.assumeIsolated { finish("no-menu") }
-            }
-        }
     }
 
     /// The pointer moved to (x, y) points from the window's top left:
@@ -7526,19 +7761,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// from its top left, through the app's own event queue.
     @MainActor
     private static func postClick(x: Double, y: Double,
-                                  in window: NSWindow? = nil) {
+                                  in window: NSWindow? = nil,
+                                  count: Int = 1) {
         guard let win = window
                 ?? NSApp.windows.first(where: { $0.isVisible }) else {
             return
         }
         postedClickAt = CACurrentMediaTime()
         let p = NSPoint(x: x, y: win.frame.height - y)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            if let ev = NSEvent.mouseEvent(
-                with: type, location: p, modifierFlags: [], timestamp: 0,
-                windowNumber: win.windowNumber, context: nil,
-                eventNumber: 0, clickCount: 1, pressure: 1) {
-                NSApp.postEvent(ev, atStart: false)
+        // A double-click's second press counts 2, as AppKit's does.
+        for n in 1...count {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                if let ev = NSEvent.mouseEvent(
+                    with: type, location: p, modifierFlags: [], timestamp: 0,
+                    windowNumber: win.windowNumber, context: nil,
+                    eventNumber: 0, clickCount: n, pressure: 1) {
+                    NSApp.postEvent(ev, atStart: false)
+                }
             }
         }
     }

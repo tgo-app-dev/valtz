@@ -665,13 +665,17 @@ Controller::machine_status()
   if (!j.is_object()) {
     j = Json::object();
   }
-  // The whole Mac's use beside Valtz's own footprint: the OS's, not the
-  // engine's, so it is read here, with or without one.
-  if (const std::uint64_t used = models::used_ram_bytes(); used > 0) {
-    j["sys_used_bytes"] = used;
-  }
   if (!j.contains("phys_total_bytes")) {
     j["phys_total_bytes"] = _hw.ram_bytes;
+  }
+  // The whole Mac's use beside Valtz's own footprint: the OS's, not the
+  // engine's, so it is read here, with or without one -- and never past
+  // the Mac's memory, whatever the kernel's counters add up to.
+  if (std::uint64_t used = models::used_ram_bytes(); used > 0) {
+    if (const auto total = jget<std::uint64_t>(j, "phys_total_bytes", 0)) {
+      used = std::min(used, total);
+    }
+    j["sys_used_bytes"] = used;
   }
   // The arithmetic achieved, here and -- with a member connected -- in
   // the fleet.

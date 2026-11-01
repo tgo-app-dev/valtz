@@ -57,12 +57,14 @@ final class AudioScrubber {
     /// Valtz on macOS 27 (2026-10-18). The engine is started again when
     /// stopped, the play waits a moment for the output's first cycle (a
     /// few milliseconds on a Mac whose sound runs) and is skipped without
-    /// one -- the step silent; macOS 27's throwing play reports what is
-    /// left.
+    /// one -- the step silent; the throwing play reports what is left.
     private func schedule(_ buf: AVAudioPCMBuffer, tries: Int = 0) {
         if !attached {
             engine.attach(node)
-            engine.connect(node, to: engine.mainMixerNode, format: format)
+            do {
+                try engine.connectNode(node, to: engine.mainMixerNode,
+                                   format: format)
+            } catch { return }
             attached = true
         }
         if !engine.isRunning {
@@ -83,11 +85,7 @@ final class AudioScrubber {
         }
         node.stop()
         node.scheduleBuffer(buf, completionHandler: nil)
-        if #available(macOS 27.0, *) {
-            try? node.playAudio()
-        } else {
-            node.play()
-        }
+        try? node.playAudio()
     }
 
     /// The range decoded to 48 kHz stereo float, faded in and out over 3

@@ -17,11 +17,12 @@
 
 cmake_minimum_required(VERSION 3.29)
 
-# The oldest macOS Valtz runs on -- at or above libvpipe's own floor (an
+# The oldest macOS Valtz runs on: 27, for its look (Liquid Glass as macOS
+# 27 draws it, concentric corners) -- above libvpipe's own floor (an
 # app cannot run below the dylib it links; vpipe's is 26.0, its NAX
 # kernels 26.2).
 if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "26.2" CACHE STRING
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "27.0" CACHE STRING
       "Minimum macOS version" FORCE)
 endif()
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)

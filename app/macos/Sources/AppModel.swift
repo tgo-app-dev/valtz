@@ -281,27 +281,6 @@ enum Preference: String, CaseIterable, Identifiable, Sendable {
     static let presets: [Preference] = [.speed, .balanced, .quality]
 }
 
-/// The inspector's sections (its navigation row, or its stacked panels).
-enum InspectorTab: String, CaseIterable, Identifiable, Sendable {
-    case info, layers, assets
-    var id: String { rawValue }
-
-    var label: LocalizedStringKey {
-        switch self {
-        case .info: "Information"
-        case .layers: "Layers"
-        case .assets: "Assets"
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .info: "info.circle"
-        case .layers: "square.3.layers.3d"
-        case .assets: "photo.stack"
-        }
-    }
-}
 
 /// The title bar's zoom group.
 enum ZoomStep: Sendable {
@@ -510,16 +489,15 @@ struct OutputShape: Sendable {
     }
 }
 
-/// The simple-mode composer's panels, opened from their tabs under the
-/// prompt card.
-enum ComposerPanel: Sendable, CaseIterable {
+/// A layer's edits, each a section of the inspector (InspectorSection),
+/// by the names the snapshot hooks know them by ("adjust" ... "audio").
+enum LayerEditSection: Sendable, CaseIterable {
     case adjust     // adjustments: a picture's, or a clip's (keyed)
     case color      // the color mixer: the same look's, keyed with it
     case grade      // the color grade: the same look's, keyed with it
     case crop       // crop and rotation: a picture's, or a clip's (keyed)
     case trim       // a clip's mark-in and mark-out
     case audio      // the selected layer's sound: gain, pitch, equalizer
-    case generate   // the generation settings
 }
 
 /// A request to the stage's player; a new `token` is a new request.
@@ -918,8 +896,22 @@ final class AppModel {
     var startupError: String?
 
     // Navigation
-    var navOpen = false
-    var screen: AppScreen = .editor
+    /// The sidebar's pick: the stage (the editor), the Atlas or the Log
+    /// (`screen`, Shell/Workspace).
+    var sidebarSelection: SidebarItem = .stage
+    /// The window's regions as the person set them (Shell/Workspace):
+    /// kept between launches -- while view only has put them away, as
+    /// they were before it.
+    var chrome = WorkspaceChrome.stored() {
+        didSet { (viewOnlyPutAway?.chrome ?? chrome).store() }
+    }
+    /// The window has room for the sidebar, the inspector and the stage
+    /// side by side (windowWidthChanged); not, the sidebar folds while
+    /// the inspector is shown (WorkspaceLayout.resolve).
+    var columnsFit = true
+    /// The sidebar's and the inspector's widths as last laid out.
+    @ObservationIgnored var sidebarWidth: CGFloat = 240
+    @ObservationIgnored var inspectorWidth: CGFloat = 320
     /// The ATLAS (Views/AtlasView): the project's graph as the core laid
     /// it out, read while the screen shows it -- and what was read.
     var atlas: AtlasLayout?
@@ -954,10 +946,11 @@ final class AppModel {
     /// (setViewOnly).
     private(set) var viewOnly = false
     /// What view-only put away, put back as it ends: the markup toolbar,
-    /// the Prompt Editor. (The timeline only goes out of reach -- it is
-    /// not offered meanwhile, timelineAvailable -- and its wish stays.)
+    /// the Prompt Editor, the window's sidebar and inspector as they were.
+    /// (The timeline only goes out of reach -- it is not offered
+    /// meanwhile, timelineAvailable -- and its wish stays.)
     @ObservationIgnored private var viewOnlyPutAway:
-        (markup: Bool, immersive: Bool)?
+        (markup: Bool, immersive: Bool, chrome: WorkspaceChrome)?
     /// When view only last ended: the prompt box coming back then leaves
     /// the keyboard where it is (promptKeepsOffKeyboard).
     @ObservationIgnored private var viewOnlyEnded: Date?
@@ -981,75 +974,12 @@ final class AppModel {
     /// in the temporary directory, kept while the session lives and
     /// deleted, with everything made in it, on Start Over and at exit.
     private(set) var isAnonymous = false
-    /// The title is being renamed (a field in the title bar).
-    var renamingTitle = false
-    var inspectorOpen = false
-    /// The inspector's column is in the window: open, on the editor.
-    var showsInspectorColumn: Bool { inspectorOpen && screen == .editor }
-
-    /// The editor's narrowest: the composer's column whole -- 680 between
-    /// its margins. Its cards' rows hold the composer near 640 however
-    /// little room it is given, so with the inspector open at the
-    /// window's old 820 the editor had 520 and the prompt card ran past
-    /// both its edges.
-    static let editorMinWidth: CGFloat = 820
-    /// The window's narrowest: the editor's, and the inspector beside it
-    /// while it is open.
-    var windowMinWidth: CGFloat {
-        Self.editorMinWidth
-            + (showsInspectorColumn ? InspectorColumn.width : 0)
-    }
-    /// The status bar along the window's bottom (View › Show Status Bar):
-    /// the machine's load and thermal state, remembered between launches
-    /// -- except by a scripted snapshot run, which neither reads nor
-    /// writes it.
-    var showsStatusBar = AppModel.storedStatusBar {
-        didSet {
-            if Self.keepsViewState {
-                UserDefaults.standard.set(showsStatusBar,
-                                          forKey: Self.statusBarKey)
-            }
-        }
-    }
-    /// RAM's popover open (a click on its meter): what Valtz holds in
-    /// memory, model by model (MemoryPopover).
-    var memoryPopoverOpen = false
-    /// The status bar's items its context menu unchecked: remembered as
-    /// the bar is.
-    var hiddenStatusItems = AppModel.storedHiddenStatusItems {
-        didSet {
-            if Self.keepsViewState {
-                UserDefaults.standard.set(
-                    hiddenStatusItems.map(\.rawValue).sorted(),
-                    forKey: Self.statusItemsKey)
-            }
-        }
-    }
-
-    /// Settings › Experimental › Agent: the prompt's Agent tab and its
-    /// mode (DESIGN §9b) -- off until switched on, remembered as the
-    /// status bar is (VALTZ_SNAPSHOT_AGENT switches it on for its run).
-    private(set) var agentEnabled = AppModel.storedAgentEnabled {
-        didSet {
-            if Self.keepsViewState {
-                UserDefaults.standard.set(agentEnabled,
-                                          forKey: Self.agentEnabledKey)
-            }
-        }
-    }
-
-    /// The Agent switched on or off. Off, its tab goes -- the prompt back
-    /// to pictures if it was there -- and a session at work stops.
-    func setAgentEnabled(_ on: Bool) {
-        guard on != agentEnabled else { return }
-        withAnimation(Self.motion) {
-            agentEnabled = on
-            if !on {
-                if modality == .agent { setModality(.image) }
-                agentDismiss()
-            }
-        }
-    }
+    /// The toolbar's Activity popover open (ActivityButton): the tasks,
+    /// the machine's load, and what Valtz holds in memory.
+    var activityOpen = false
+    /// Start Over asked from the File menu, with something to lose: the
+    /// window's confirmation (RootView).
+    var startOverAsked = false
 
     /// Settings › Agentic Helper › Show Speed: each of the agent's turns
     /// with its prefill and decode speed in small type under it, for
@@ -1069,77 +999,32 @@ final class AppModel {
         withAnimation(Self.motion) { agentShowsSpeed = on }
     }
 
-    /// The prompt's tabs: what a generation makes, and the Agent while it
-    /// is switched on.
-    var modalities: [Modality] {
-        Modality.allCases.filter { $0 != .agent || agentEnabled }
-    }
+    /// The prompt's tabs: what a generation makes, and the Agent.
+    var modalities: [Modality] { Modality.allCases }
 
-    func showsStatusItem(_ item: StatusBarItem) -> Bool {
-        !hiddenStatusItems.contains(item)
-    }
-
-    func setStatusItem(_ item: StatusBarItem, shown: Bool) {
-        withAnimation(Self.motion) {
-            if shown {
-                hiddenStatusItems.remove(item)
-            } else {
-                hiddenStatusItems.insert(item)
-            }
-        }
-    }
-    /// What the status bar shows (it polls only while the bar is shown).
+    /// The machine's load (it polls only while the Activity popover is
+    /// open).
     let monitor: MachineMonitor
     /// Auto-update (Sparkle, when built in): Check for Updates…, and
     /// Settings › General › Updates.
     let updater = Updater()
-    private static let statusBarKey = "view.statusBar"
-    private static let statusItemsKey = "view.statusBarHidden"
-    private static let agentEnabledKey = "experimental.agent"
     private static let agentSpeedKey = "helper.agentSpeed"
     private static var keepsViewState: Bool {
         ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] == nil
     }
-    private static var storedStatusBar: Bool {
-        keepsViewState && UserDefaults.standard.bool(forKey: statusBarKey)
-    }
-    private static var storedAgentEnabled: Bool {
-        keepsViewState && UserDefaults.standard.bool(forKey: agentEnabledKey)
-    }
     private static var storedAgentShowsSpeed: Bool {
         keepsViewState && UserDefaults.standard.bool(forKey: agentSpeedKey)
     }
-    private static var storedHiddenStatusItems: Set<StatusBarItem> {
-        guard keepsViewState,
-              let raw = UserDefaults.standard.stringArray(
-                  forKey: statusItemsKey) else { return [] }
-        return Set(raw.compactMap(StatusBarItem.init(rawValue:)))
-    }
-    /// The pointer is over the title bar: its bottom edge shows, as in
-    /// Preview.
-    var titlebarHover = false
     /// The pointer is just outside the result on the stage: it can be
     /// dragged -- into the prompt, as the picture to edit.
     var stageDragReady = false
     /// The markup toolbar (its tools are still to come).
     var markupOpen = false
-    /// The title bar's search: it finds the text in the prompt and the
-    /// settings in the composer's cards.
-    ///
-    /// Its effects run from the view (RootView's onChange), not a didSet:
-    /// a change made inside an @Observable property's didSet happens
-    /// within that property's own mutation, and the card it opened was
-    /// never seen by the views.
-    var searchText = ""
-    /// Bumped by Find (⌘F) to focus the search field.
+    /// Bumped by Find (⌘F) to focus the sidebar's search, which filters
+    /// Assets (SidebarView).
     var findRequest = 0
     /// Bumped to open the share button's menu (a scripted snapshot).
     var shareRequest = 0
-    /// The composer rows that match the search (SettingsRow ids).
-    var searchHits: Set<String> = []
-    /// The card that was open before a search opened another.
-    private var panelBeforeSearch: ComposerPanel?
-    private var searchOpenedPanel = false
 
     // Machine and models
     var hardware: HardwareInfo?
@@ -1300,6 +1185,9 @@ final class AppModel {
     var closedFolders: Set<String> = []
     /// The asset whose name is being typed in the asset list.
     var renamingAsset: String?
+    /// A text asset's row picked, waiting out the double-click interval
+    /// (assetPicked): a double-click puts a prompt in the box instead.
+    @ObservationIgnored var assetPickWaits: Task<Void, Never>?
     /// The asset list's filter: the words a row's name -- or its
     /// folder's -- has; "" lists every asset.
     var assetFilter = ""
@@ -1394,15 +1282,6 @@ final class AppModel {
     var tuningInfo: TuningInfo?
     /// The Custom panel is open.
     var showsTuning = false
-    /// The Prompt Editor's popover of the generation card's settings (its
-    /// toolbar's button) -- Tune's options open inside it.
-    var showsGenerationSettings = false
-    /// It was open when the mouse last went down. The popover shuts itself
-    /// on a press outside it -- on the very control that opens it, too --
-    /// before that click lands; asked then whether to open, a click on
-    /// Custom saw it shut and opened it again.
-    @ObservationIgnored private var tuningOpenAtPress = false
-    @ObservationIgnored private var tuningPressWatch: Any?
     var seedText = ""      // empty = random
     /// A clip's length: a preset, in seconds as offered, or -- nil -- a
     /// length typed in the Length field, kept as `clipCustomFrames`.
@@ -1457,7 +1336,7 @@ final class AppModel {
     /// snapshot hooks print it).
     @ObservationIgnored var lastCue: Double?
     /// The row item a capture just became, while the card flies into its
-    /// thumbnail (ComposerStack's ghost): hidden until it lands there.
+    /// thumbnail (ComposerCard's ghost): hidden until it lands there.
     var capturedItem: UUID?
     /// That thumbnail's frame in the prompt card: where the ghost goes.
     var capturedThumbFrame: CGRect?
@@ -1475,6 +1354,9 @@ final class AppModel {
     /// transport, Grab Frame and Continue: the stage's own, so a click on
     /// it leaves a viewing as it is.
     @ObservationIgnored var stageBarFrame: CGRect = .null
+    /// The contextual row over the stage -- the compare's A, B and modes,
+    /// markup's tools: the stage's too, a click on it leaving a viewing.
+    @ObservationIgnored var contextBarFrame: CGRect = .null
     /// The stage card off the desk: 0 on it, 1 lifted -- larger, faded
     /// out. A viewed asset is put down with it, and taken off.
     var stageLift = 0.0
@@ -1489,8 +1371,14 @@ final class AppModel {
     /// back: pictures and clips are shaped apart (a clip starts
     /// landscape, 16:9, at the Draft size).
     private var otherShapes: [Modality: OutputShape] = [:]
-    /// Which composer panel is open (at most one).
-    var openPanel: ComposerPanel?
+    /// The chip under the prompt whose popover is open, if any
+    /// (Dock/GenerateChips): one at a time.
+    var openChip: GenerateChip?
+    /// The chip whose popover was open as the mouse last went down: a
+    /// popover shuts itself on a press outside it -- on its own chip too
+    /// -- before the click lands, which would open it again.
+    @ObservationIgnored var chipOpenAtPress: GenerateChip?
+    @ObservationIgnored var chipPressWatch: Any?
     /// The Crop card's zoom: X and Y together, their ratio kept (the
     /// lock between them), or apart. Remembered between launches.
     /// Information's W and H held to their ratio (its lock): a typed or
@@ -1506,29 +1394,16 @@ final class AppModel {
         }
     }
     static let cropZoomLockKey = "crop.zoomLocked"
-    /// The TIMELINE in the prompt's place (DESIGN §10a Timeline): asked
-    /// for (its switch beside the box), shown while the stage works on a
-    /// timeline or a still with pages (`timelineOpen`).
-    var timelineWanted = false
     /// Settings › General › Generations (DESIGN §10a Timeline): a result
     /// LANDING as a new layer of a composition that holds something
-    /// already slides the timeline in for the prompt -- or does nothing;
-    /// the switch back to the prompt flashes once when the timeline came
-    /// by itself; the inspector opens on Assets as tasks reach two
-    /// (revealTasks), and as the results made reach two (off unless
-    /// checked). Kept between launches -- a scripted snapshot run takes
-    /// VALTZ_SNAPSHOT_LANDING's instead ("timeline=off,flash=on,
-    /// tasks=off,results=on"), saving nothing.
+    /// already opens the timeline band over the prompt -- or does
+    /// nothing; the sidebar's Assets are shown as the results made reach
+    /// two (revealAssets; off unless checked). Kept between launches --
+    /// a scripted snapshot run takes VALTZ_SNAPSHOT_LANDING's instead
+    /// ("timeline=off,results=on"), saving nothing.
     var landingOpensTimeline = AppModel.storedLanding(
         "timeline", default: true) {
         didSet { Self.keep(landingOpensTimeline, as: "landing.timeline") }
-    }
-    var landingFlashesSwitch = AppModel.storedLanding(
-        "flash", default: true) {
-        didSet { Self.keep(landingFlashesSwitch, as: "landing.flash") }
-    }
-    var revealsTasks = AppModel.storedLanding("tasks", default: true) {
-        didSet { Self.keep(revealsTasks, as: "landing.tasks") }
     }
     var revealsResults = AppModel.storedLanding("results", default: false) {
         didSet { Self.keep(revealsResults, as: "landing.results") }
@@ -1586,13 +1461,9 @@ final class AppModel {
     }
     @ObservationIgnored var promptWordsBy: [String: PromptWords] = [:]
     @ObservationIgnored var agentWordsSent: PromptWords?
-    /// The switch back to the prompt asked to flash, once it is shown
-    /// (TimelineSwitch takes it): the timeline came by itself.
-    var switchFlash: Date?
     /// What the landings did, for the snapshot summary: the timeline
-    /// opened by itself, the switch flashed, Assets shown for a result.
-    @ObservationIgnored var landingCounts = (timeline: 0, flash: 0,
-                                             results: 0)
+    /// opened by itself, Assets shown for a result.
+    @ObservationIgnored var landingCounts = (timeline: 0, results: 0)
     private static func storedLanding(_ name: String,
                                       default fallback: Bool) -> Bool {
         guard keepsViewState else {
@@ -1607,16 +1478,15 @@ final class AppModel {
         return UserDefaults.standard.object(forKey: "landing." + name)
             as? Bool ?? fallback
     }
-    /// The timeline's rows of layers in view (its ⌃ ⌄), remembered
-    /// between launches (not by a scripted snapshot run).
-    var timelineRows = AppModel.storedTimelineRows {
-        didSet {
-            if Self.keepsViewState {
-                UserDefaults.standard.set(timelineRows,
-                                          forKey: Self.timelineRowsKey)
-            }
-        }
-    }
+    /// The timeline's rows of layers in view, as its band's height
+    /// leaves room for (TimelineBand): read, never set by hand.
+    @ObservationIgnored var timelineRows = AppModel.timelineDefaultRows
+    /// The composer's height in the dock, as last laid out: what a band
+    /// of so many rows adds to (setTimelineRows).
+    @ObservationIgnored var dockComposerHeight: CGFloat = 0
+    /// The stage column's height under the context row: the region and
+    /// the dock, which share it.
+    @ObservationIgnored var stageColumnHeight: CGFloat = 0
     /// The TRACK VIEW (DESIGN §10a Timeline): the layers laid in tracks,
     /// as a traditional editor shows them -- remembered as the rows are.
     var timelineTracks = AppModel.storedTimelineTracks {
@@ -1633,12 +1503,8 @@ final class AppModel {
             && UserDefaults.standard.bool(forKey: timelineTracksKey)
     }
     static let timelineRowRange = 1...12
-    private static let timelineRowsKey = "view.timelineRows"
-    private static var storedTimelineRows: Int {
-        let n = keepsViewState
-            ? UserDefaults.standard.integer(forKey: timelineRowsKey) : 0
-        return n > 0 ? min(n, timelineRowRange.upperBound) : 3
-    }
+    /// The band's rows while the dock has the height its content asks.
+    static let timelineDefaultRows = 3
     /// The timeline's zoom: how many times the whole of it fits (1: all
     /// of it in view).
     var timelineZoom = 1.0
@@ -1651,39 +1517,12 @@ final class AppModel {
     /// ("<composition>/<folder>"): how they are looked at, not kept.
     var foldedLayerFolders: Set<String> = []
     /// A long prompt stays three rows tall and scrolls, instead of the
-    /// box growing with it (to half the window).
+    /// box -- and the dock with it -- growing with it. While the dock has
+    /// a height of its own (its splitter's), the box fills it instead.
     var promptCompact = false
-    /// The box was made compact by a tray opening -- Adjust, Crop, Trim,
-    /// or the generation card short of room -- not by its own toggle: it
-    /// grows back when that tray goes.
-    @ObservationIgnored private var compactForPanel = false
-    /// The editor's height and, of it, the picture's above the cards --
-    /// the stage's slot, or the mark and the room around it -- as last
-    /// laid out (SimpleView): what a tray opening would leave it.
-    @ObservationIgnored var editorRoom: CGFloat = 0
-    /// The composer's width as laid out, the column it is given, and each
-    /// drawer's content as laid out (the snapshot summary's `composer=`):
-    /// the composer is never wider than its column.
-    @ObservationIgnored var composerWidth: CGFloat = 0
-    @ObservationIgnored var composerColumn: CGFloat = 0
-    @ObservationIgnored var drawerWidths: [String: CGFloat] = [:]
-    @ObservationIgnored var stageRoom: CGFloat = 0
-    @ObservationIgnored var markRoom: [Int: CGFloat] = [:]
-    var pictureRoom: CGFloat {
-        stageVisible ? stageRoom : markRoom.values.reduce(0, +)
-    }
-    /// The share of the editor's height the picture keeps while the
-    /// generation card is open; short of it, the box goes to its three
-    /// rows.
-    static let pictureShare: CGFloat = 0.3
-    /// The person sized the box (its own button) with the generation card
-    /// open: the card's room leaves it so until a tray opens or closes.
-    @ObservationIgnored private var promptSizeChosen = false
-    @ObservationIgnored private var roomCheckQueued = false
-    /// IMMERSIVE prompt editing (View › Edit Prompt in Full; PromptStudio):
-    /// the prompt the window's height under a toolbar of its own, the
-    /// stage a small preview at the top left, the cards put away -- and
-    /// several prompts open, as tabs. The ACTIVE tab is the prompt itself
+    /// IMMERSIVE prompt editing, the Prompt Editor (⇧⌘E; PromptStudio):
+    /// the dock grown to the column, its tabs along the composer's top,
+    /// the stage a strip over it -- and several prompts open, as tabs. The ACTIVE tab is the prompt itself
     /// (`prompt`, `promptMarked`, ...); the others wait in `promptTabs`.
     /// Back in the box, the prompt is the tab last open.
     var promptImmersive = false
@@ -1692,9 +1531,6 @@ final class AppModel {
     /// small stage, the editor kept; a double-click (to work on it) still
     /// takes the editor away.
     var editorEdited = false
-    /// The Prompt Editor's toolbar's foot, in the window: the small stage
-    /// keeps a margin under it.
-    var editorToolbarBottom: CGFloat = 0
     var promptTabs: [PromptTab] = []
     var activePromptTab = 0
     /// The tab whose name is being typed in its header, if any.
@@ -1723,62 +1559,6 @@ final class AppModel {
         guard ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] == nil
         else { return }
         UserDefaults.standard.set(value, forKey: key)
-    }
-    /// The inspector's sections STACKED -- each under a header that folds
-    /// it, several open at once, as an image editor's panels -- or one at
-    /// a time, picked in its navigation row (the default). Kept between
-    /// launches.
-    var inspectorStacked = UserDefaults.standard
-        .object(forKey: "inspectorStacked") as? Bool ?? false {
-        didSet { Self.keep(inspectorStacked, as: "inspectorStacked") }
-    }
-    /// Stacked, the sections folded to their header. Kept between
-    /// launches.
-    var inspectorFolded: Set<InspectorTab> = Set(
-        (UserDefaults.standard.stringArray(forKey: "inspectorFolded") ?? [])
-            .compactMap(InspectorTab.init(rawValue:))) {
-        didSet {
-            Self.keep(inspectorFolded.map(\.rawValue).sorted(),
-                      as: "inspectorFolded")
-        }
-    }
-
-    /// Stacked, the open sections' shares of the height (each 1 until a
-    /// divider between two is dragged; a double-click on one evens them).
-    /// Kept between launches.
-    var inspectorWeights: [InspectorTab: Double] = Dictionary(
-        uniqueKeysWithValues: ((UserDefaults.standard
-            .dictionary(forKey: "inspectorWeights") as? [String: Double])
-            ?? [:]).compactMap { k, v in
-                InspectorTab(rawValue: k).map { ($0, v) }
-            }) {
-        didSet {
-            Self.keep(Dictionary(uniqueKeysWithValues: inspectorWeights.map {
-                ($0.key.rawValue, $0.value)
-            }), as: "inspectorWeights")
-        }
-    }
-    /// A stacked section's share of the height.
-    func inspectorWeight(_ tab: InspectorTab) -> Double {
-        max(0.01, inspectorWeights[tab] ?? 1)
-    }
-    /// Stacked, each open section's height as laid out: what a divider's
-    /// drag turns into shares.
-    @ObservationIgnored var inspectorHeights: [InspectorTab: CGFloat] = [:]
-
-    /// A section shown: picked -- or, stacked, unfolded.
-    func revealInspector(_ tab: InspectorTab) {
-        inspectorTab = tab
-        if inspectorStacked { inspectorFolded.remove(tab) }
-    }
-
-    /// Stacked, a section's header clicked: folded, or open again.
-    func toggleInspectorFold(_ tab: InspectorTab) {
-        if inspectorFolded.contains(tab) {
-            inspectorFolded.remove(tab)
-        } else {
-            inspectorFolded.insert(tab)
-        }
     }
     /// The text view being written in -- the prompt's, or the Prompt
     /// Editor's suggestion beside it: what the toolbar's B / I / U format.
@@ -1854,8 +1634,6 @@ final class AppModel {
     var selectedLayers: Set<String> = []
     /// The markup toolbar's tool, settings and work in hand.
     let markup = MarkupState()
-    /// The inspector's section: the picture's information, or its layers.
-    var inspectorTab: InspectorTab = .info
     /// Information › Canvas › Change…: the Canvas Size popover is open.
     var showsCanvasSize = false
     @ObservationIgnored private var compositing = false
@@ -2084,7 +1862,7 @@ final class AppModel {
     private var startupSweepDone = false
     private var lastStageResult: (image: CGImage, label: String)?
 
-    /// The notice floating over the composer (SimpleView's NoticeCapsule):
+    /// The notice floating over the composer (DockView's NoticeCapsule):
     /// what just happened, a warning, or an error -- for a few seconds.
     var notice: Notice?
     /// Its words (the snapshot hooks' `banner=`); set nil, it goes.
@@ -2231,18 +2009,18 @@ final class AppModel {
         }.count >= n
     }
 
-    /// A row of the generation card the memory card points at.
-    func memorySuggests(_ row: String) -> Bool {
-        switch row {
-        case SettingsRow.length: suggestsShorterClip
-        case SettingsRow.size: suggestsSmallerSize
+    /// A chip the memory card points at: a clip's length, the size.
+    func memorySuggests(_ chip: GenerateChip) -> Bool {
+        switch chip {
+        case .length: suggestsShorterClip
+        case .shape: suggestsSmallerSize
         default: false
         }
     }
 
-    /// The memory card's suggestion: the generation card opened on it.
+    /// The memory card's suggestion: the chip it points at, opened.
     func showMemorySuggestion() {
-        withAnimation(Self.motion) { openPanel = .generate }
+        openChip = suggestsShorterClip ? .length : .shape
     }
 
     func dismissMemoryFailure() {
@@ -2918,9 +2696,11 @@ final class AppModel {
     /// Make pictures or clips. A model chosen for the other kind gives way
     /// to Auto.
     func setModality(_ m: Modality) {
-        guard m != modality, m != .agent || agentEnabled else { return }
+        guard m != modality else { return }
         // An agent at work holds the project: the box is its alone.
         guard m == .agent || !agentHolds else { return }
+        // The Agent's box: the right column on the Agent too.
+        if m == .agent { chrome.rightPanel = .agent }
         swapPromptWords(from: modality, to: m)
         otherShapes[modality] = outputShape
         outputShape = otherShapes[m] ?? OutputShape.defaults(for: m)
@@ -4272,31 +4052,14 @@ final class AppModel {
         }
     }
 
-    /// Custom's panel from what opens it -- Favor's Custom again, or its
-    /// summary beside it: shut if it was open as the click began, else
-    /// opened.
+    /// Custom's options from what opens them -- Favor's Custom again:
+    /// shut if they were open, else opened.
     func toggleTuning() {
-        let wasOpen = tuningOpenAtPress || showsTuning
-        tuningOpenAtPress = false
-        if wasOpen {
+        if showsTuning {
             showsTuning = false
         } else {
             refreshTuning()
             showsTuning = true
-        }
-    }
-
-    /// Notes, at each press, whether Custom's panel was open (installed
-    /// once, by the card that shows Favor).
-    func watchTuningPresses() {
-        guard tuningPressWatch == nil else { return }
-        tuningPressWatch = NSEvent.addLocalMonitorForEvents(
-            matching: .leftMouseDown
-        ) { [weak self] event in
-            MainActor.assumeIsolated {
-                if let self { self.tuningOpenAtPress = self.showsTuning }
-            }
-            return event
         }
     }
 
@@ -4665,69 +4428,10 @@ final class AppModel {
         }
     }
 
-    /// A composer tray opened (or none): Adjust, Crop and Trim work on the
-    /// stage, not the words -- the prompt box shrinks to its three rows,
-    /// and grows back as it was when the tray goes, unless its own toggle
-    /// was used meanwhile. The generation card does so too where the
-    /// window is short: when the composer, `grows` taller by it (and by
-    /// the box grown back, `regrows`, if a tray had shrunk it), would
-    /// leave the picture above less than `pictureShare` of the height.
-    /// Run from the view (onChange), not a didSet.
-    func panelChanged(to p: ComposerPanel?, grows: CGFloat = 0,
-                      regrows: CGFloat = 0) {
-        promptSizeChosen = false
-        let stageWork = p == .adjust || p == .crop || p == .trim
-            || p == .audio
-        let needs = grows + (compactForPanel && promptCompact ? regrows : 0)
-        let shortOfRoom = p == .generate && !promptImmersive
-            && editorRoom > 0
-            && pictureRoom - needs < editorRoom * Self.pictureShare
-        // Trim's ← and → step the clip: the prompt gives up the keyboard
-        // (its caret took them; a click in it gets them back).
-        if p == .trim, let w = editorWindow, w.firstResponder is NSText {
-            w.makeFirstResponder(nil)
-        }
-        if stageWork || shortOfRoom {
-            if !promptCompact {
-                compactForPanel = true
-                withAnimation(Self.motion) { promptCompact = true }
-            }
-        } else if compactForPanel {
-            compactForPanel = false
-            if promptCompact {
-                withAnimation(Self.motion) { promptCompact = false }
-            }
-        }
-    }
-
-    /// The prompt box's own toggle (its corner button): the person's
-    /// choice, which a tray closing leaves as it is.
+    /// The prompt box's own toggle (its corner button): three rows, or
+    /// the whole prompt.
     func togglePromptCompact() {
-        compactForPanel = false
-        if openPanel == .generate { promptSizeChosen = true }
         withAnimation(Self.motion) { promptCompact.toggle() }
-    }
-
-    /// Laid out again (SimpleView's measures) with the generation card
-    /// open: the picture left less than its share -- the prompt grown by
-    /// typing, a paste, a long suggestion used, the window made shorter --
-    /// and the box goes to its three rows, as the card opening short of
-    /// room makes it; it grows back when the card goes. Once the layout's
-    /// measures are all in.
-    func roomMeasured() {
-        guard openPanel == .generate, !roomCheckQueued else { return }
-        roomCheckQueued = true
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.roomCheckQueued = false
-            guard self.openPanel == .generate, !self.promptCompact,
-                  !self.promptSizeChosen, !self.promptImmersive,
-                  self.editorRoom > 0,
-                  self.pictureRoom < self.editorRoom * Self.pictureShare
-            else { return }
-            self.compactForPanel = true
-            withAnimation(Self.motion) { self.promptCompact = true }
-        }
     }
 
     /// What the empty prompt box says: how the model Start runs reads a
@@ -5105,48 +4809,45 @@ final class AppModel {
 
     // MARK: - Navigation
 
-    func toggleNav() {
-        withAnimation(Self.motion) { navOpen.toggle() }
-    }
-
-    /// The editor or the log, from the ☰ column -- the editor to edit:
-    /// view-only ends.
+    /// The stage, the Atlas or the Log, from the sidebar -- the stage to
+    /// edit: view-only ends.
     func show(_ s: AppScreen) {
         guard s == screen || !refusedForColorTarget() else { return }
         if s == .editor { setViewOnly(false) }
         if s != .atlas { leaveAtlas() }
         withAnimation(Self.motion) {
-            screen = s
-            navOpen = false
+            sidebarSelection = switch s {
+            case .editor: .stage
+            case .atlas: .atlas
+            case .log: .log
+            }
         }
         if s == .atlas { reloadAtlas(force: true) }
     }
 
-    /// The ☰ column's eye: the editor, view-only.
+    /// The stage, view-only (a scripted run's way there from any screen).
     func showViewOnly() {
         leaveAtlas()
-        withAnimation(Self.motion) {
-            screen = .editor
-            navOpen = false
-        }
+        withAnimation(Self.motion) { sidebarSelection = .stage }
         setViewOnly(true)
     }
 
     func toggleViewOnly() { setViewOnly(!viewOnly) }
 
     /// ⌘1 ⌘2 ⌘3 ⌘4 (⇧⌘P the Agent's too): the prompt box for that target
-    /// -- the editor shown, view only and the timeline left, the box's
-    /// target switched, the keyboard in its words. A box that comes back
-    /// for it (view only ending, the timeline going) takes the keyboard
-    /// as it appears.
+    /// -- the editor shown, view only left, the box's target switched,
+    /// the keyboard in its words. A box that comes back for it (view only
+    /// ending) takes the keyboard as it appears. The timeline band stays:
+    /// the box is under it.
     func focusPrompt(_ m: Modality) {
-        guard m != .agent || agentEnabled, closingTasks == nil,
-              fleetServing == nil, m == .agent || !agentHolds
+        guard closingTasks == nil, fleetServing == nil,
+              m == .agent || !agentHolds
         else { return }
+        // ⌘4: the right column shown, on the Agent.
+        if m == .agent { showAgentPanel() }
         if screen != .editor { show(.editor) }
         setViewOnly(false)
         viewOnlyEnded = nil
-        if timelineOpen { showTimeline(false) }
         if m != modality {
             withAnimation(Self.motion) { setModality(m) }
         }
@@ -5156,11 +4857,9 @@ final class AppModel {
         }
     }
 
-    /// ⇧⌘P: the PROMPT box, the keyboard in it to type. With the timeline
-    /// in its place, the prompt back as it was -- its target kept -- (the
-    /// key of the timeline's switch back, shown on it under ⌘?); else the
-    /// Agent's box while the Agent is on, as ⌘4 (View › Agent Prompt), or
-    /// the box as it is. The key monitor's: a menu item takes one key.
+    /// ⇧⌘P: the Agent's PROMPT box, the keyboard in it to type, as ⌘4
+    /// (View › Agent Prompt). The key monitor's: a menu item takes one
+    /// key.
     func promptKey(_ e: NSEvent) -> Bool {
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
@@ -5169,10 +4868,7 @@ final class AppModel {
                 || e.charactersIgnoringModifiers?.lowercased() == "p",
               closingTasks == nil, fleetServing == nil
         else { return false }
-        if !e.isARepeat {
-            focusPrompt(composerShowsTimeline || !agentEnabled
-                        ? modality : .agent)
-        }
+        if !e.isARepeat { focusPrompt(.agent) }
         return true
     }
 
@@ -5188,18 +4884,20 @@ final class AppModel {
     }
 
     /// VIEW ONLY on or off (`viewOnly`). On: the Prompt Editor left, the
-    /// markup's selection let go and its toolbar put away, the keyboard
-    /// taken from the text it was in (the box goes); off: those back as
-    /// they were.
+    /// markup's selection let go and its toolbar put away, the sidebar
+    /// and the inspector folded away, the keyboard taken from the text it
+    /// was in (the box goes); off: those back as they were.
     func setViewOnly(_ on: Bool) {
         guard on != viewOnly else { return }
         if on {
-            viewOnlyPutAway = (markupOpen, promptImmersive)
+            viewOnlyPutAway = (markupOpen, promptImmersive, chrome)
             if markupOpen { commitSelection() }
             editorWindow?.makeFirstResponder(nil)
             withAnimation(Self.motion) {
                 if promptImmersive { exitImmersivePrompt() }
                 markupOpen = false
+                chrome.sidebar = .detailOnly
+                chrome.inspectorShown = false
                 viewOnly = true
             }
         } else {
@@ -5209,6 +4907,7 @@ final class AppModel {
             withAnimation(Self.motion) {
                 viewOnly = false
                 if back?.markup == true { markupOpen = true }
+                if let c = back?.chrome { chrome = c }
             }
             if back?.immersive == true, !promptImmersive {
                 withAnimation(Self.motion) { enterImmersivePrompt() }
@@ -5274,6 +4973,8 @@ final class AppModel {
         projectName = r["name"] as? String
             ?? URL(fileURLWithPath: path).deletingPathExtension()
                 .lastPathComponent
+        RecentProjects.shared.note(URL(fileURLWithPath: path),
+                                   name: projectName)
         restoreWindowSize()
         reloadAssets()
         // Its work, as it was left: the project's composition -- still,
@@ -6273,22 +5974,13 @@ final class AppModel {
         }
     }
 
-    /// SEVERAL TASKS under way -- generations, upscales, exports, running
-    /// side by side or waiting (DESIGN §3a): the inspector opens on
-    /// Assets, where each is a row -- its badge, what it is doing, what it
-    /// waits for -- so what runs and what waits is in sight. Once, as
-    /// their number reaches two; shut again by hand, it stays shut.
-    /// (Settings › General › Generations can turn it off: `revealsTasks`;
-    /// and have the second result made open it: `revealsResults`.)
-    func revealTasks() {
-        withAnimation(Self.motion) {
-            inspectorOpen = true
-            if inspectorStacked {
-                inspectorFolded.remove(.assets)
-            } else {
-                inspectorTab = .assets
-            }
-        }
+    /// The sidebar shown, its Assets in sight: as the second result is
+    /// made, when Settings › General › Generations asks for it
+    /// (`revealsResults`). Several tasks under way are the Activity
+    /// item's to show.
+    func revealAssets() {
+        guard !viewOnly, chrome.sidebar == .detailOnly else { return }
+        withAnimation(Self.motion) { chrome.sidebar = .all }
     }
 
     /// The task making an asset, while it is queued or running -- one of
@@ -6321,7 +6013,7 @@ final class AppModel {
                 if stageAssetId != src { setActive(a) }
                 if let l = t.layer { selectLayer(l) }
                 upscaleJob = job
-                withAnimation(Self.motion) { openPanel = .crop }
+                revealInspectorSection(.crop)
             }
             return
         }
@@ -6985,7 +6677,7 @@ final class AppModel {
     /// base is on the stage already, and stays as it is; so does a
     /// generation in flight.
     ///
-    /// Run from the view (ComposerStack's onChange), not a didSet.
+    /// Run from the view (ComposerCard's onChange), not a didSet.
     func baseChanged(to url: URL?) {
         if let url { adoptBaseSize(url) }
         guard !isGenerating else { return }
@@ -9317,7 +9009,7 @@ final class AppModel {
     private func agentTookProject() {
         withAnimation(Self.motion) {
             if markupOpen { markupOpen = false }
-            openPanel = nil
+            openChip = nil
             timelineCutting = false
             if modality != .agent { setModality(.agent) }
         }
@@ -9503,6 +9195,7 @@ final class AppModel {
         projectPath = url.path
         projectName = url.deletingPathExtension().lastPathComponent
         isAnonymous = false
+        RecentProjects.shared.note(url, name: projectName)
         refreshDocument()
         return true
     }
@@ -9835,8 +9528,6 @@ final class AppModel {
                 pendingWindowSize = nil
                 applyWindowSize(size)
             }
-            // The inspector open from the first: room for it.
-            fitWindowToInspector()
         }
     }
     /// The editor's window has been there: closing the last window quits
@@ -9960,41 +9651,6 @@ final class AppModel {
 
     /// Its top left where it is; within the screen, and no smaller than
     /// the window may be.
-    /// The window widened for the inspector -- by how much, to what -- so
-    /// shutting it gives that back while the window is still as it was
-    /// left.
-    @ObservationIgnored private var widenedForInspector:
-        (by: CGFloat, to: CGFloat)?
-
-    /// The inspector opened or shut: the window as wide as the editor and
-    /// the inspector need -- widened to the right (kept on the screen;
-    /// where the screen is narrower, the editor has what is left) -- and
-    /// narrowed back as it shuts, if it was widened for it and is the width
-    /// it was left at. A window already wide enough is left alone.
-    func fitWindowToInspector() {
-        guard let win = editorWindow else { return }
-        let room = win.screen?.visibleFrame ?? win.frame
-        var f = win.frame
-        if showsInspectorColumn {
-            let need = min(windowMinWidth, room.width)
-            guard f.width < need - 0.5 else { return }
-            widenedForInspector = (need - f.width, need)
-            f.size.width = need
-            f.origin.x = min(max(f.origin.x, room.minX), room.maxX - need)
-            win.setFrame(f, display: true, animate: win.isVisible)
-            return
-        }
-        guard let widened = widenedForInspector else { return }
-        widenedForInspector = nil
-        guard abs(f.width - widened.to) < 0.5 else { return }
-        f.size.width = max(Self.editorMinWidth, f.width - widened.by)
-        // After this pass: its minimum, still the inspector's, comes down
-        // with the layout.
-        DispatchQueue.main.async {
-            win.setFrame(f, display: true, animate: win.isVisible)
-        }
-    }
-
     private func applyWindowSize(_ size: CGSize) {
         guard let win = editorWindow else { return }
         var f = win.frame
@@ -10290,6 +9946,16 @@ final class AppModel {
         anonymousAfresh()
     }
 
+    /// File › Start Over…: asks first when there is something to lose.
+    func startOverPressed() {
+        guard isAnonymous, !isBusy else { return }
+        if sessionHasWork {
+            startOverAsked = true
+        } else {
+            startOver()
+        }
+    }
+
     /// The anonymous session deleted and a new one begun (Start Over's,
     /// New Anonymous Project's once its work has stopped).
     private func anonymousAfresh() {
@@ -10437,8 +10103,7 @@ final class AppModel {
         preference = .balanced
         showsTuning = false
         seedText = ""
-        openPanel = nil
-        searchText = ""
+        openChip = nil
         banner = nil
         refreshMachine()  // picks the default models again
     }
@@ -10450,7 +10115,6 @@ final class AppModel {
     func renameSession(_ name: String) {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !n.isEmpty { anonymousName = n }
-        renamingTitle = false
     }
 
     /// Simple mode's anonymous session, or the open project.
@@ -10887,36 +10551,6 @@ final class AppModel {
         return CGImageDestinationFinalize(dst)
     }
 
-    /// Search, in simple mode: the matching rows of the composer's cards
-    /// are marked, and the card with the most of them opens (the one
-    /// that was open comes back when the search is cleared). The prompt
-    /// marks its own matches (PromptEditor).
-    func searchChanged() {
-        let q = searchText.trimmingCharacters(in: .whitespaces)
-        let hits = !q.isEmpty ? SettingsRow.matching(q, in: self) : []
-        searchHits = Set(hits.map(\.id))
-        // The card with the most matches; the generation card on a tie.
-        // A row always in view (the modality tab) opens none.
-        let want: ComposerPanel? = !hits.contains { $0.panel != nil } ? nil
-            : [ComposerPanel.generate, .adjust, .crop, .trim,
-               .audio].max { a, b in
-                hits.filter { $0.panel == a }.count
-                    < hits.filter { $0.panel == b }.count
-            }
-        withAnimation(Self.motion) {
-            if let want {
-                if !searchOpenedPanel {
-                    panelBeforeSearch = openPanel
-                    searchOpenedPanel = true
-                }
-                openPanel = want
-            } else if searchOpenedPanel {
-                openPanel = panelBeforeSearch
-                searchOpenedPanel = false
-            }
-        }
-    }
-
     nonisolated private static let animals = [
         "axolotl", "badger", "capybara", "dormouse", "egret", "fennec",
         "gecko", "heron", "ibis", "jackal", "kestrel", "lemur", "lynx",
@@ -11340,7 +10974,7 @@ final class AppModel {
                 .count
             if made == 2 {
                 landingCounts.results += 1
-                revealTasks()
+                revealAssets()
             }
         }
         guard watched else {

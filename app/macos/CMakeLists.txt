@@ -72,6 +72,7 @@ set(VALTZ_APP_SOURCES
   Sources/Core/CoreService.swift
   Sources/Core/Updater.swift
   Sources/Core/FileHistory.swift
+  Sources/Core/RecentProjects.swift
   Sources/Core/Fleet.swift
   Sources/Core/MachineMonitor.swift
   Sources/Core/MarkupDTO.swift
@@ -79,7 +80,6 @@ set(VALTZ_APP_SOURCES
   Sources/Core/L10n.swift
   Sources/Core/DTO.swift
   Sources/AppModel.swift
-  Sources/Views/RootView.swift
   Sources/Views/CapabilitiesView.swift
   Sources/Views/HelperView.swift
   Sources/Views/UpscalingView.swift
@@ -88,7 +88,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/SettingsView.swift
   Sources/Views/SettingsNavigation.swift
   Sources/Views/SettingsMarks.swift
-  Sources/Views/TitleBar.swift
+  Sources/Views/ShareButton.swift
   Sources/Views/VideoEncodingRows.swift
   Sources/Views/AppKitPopover.swift
   Sources/Views/ColorPanelPlacer.swift
@@ -97,7 +97,6 @@ set(VALTZ_APP_SOURCES
   Sources/Views/FleetPolicyViews.swift
   Sources/Views/FleetServing.swift
   Sources/Views/PermissionsView.swift
-  Sources/Views/ExperimentalView.swift
   Sources/Views/InspectorView.swift
   Sources/Views/CanvasSize.swift
   Sources/Views/ProjectOutput.swift
@@ -106,37 +105,60 @@ set(VALTZ_APP_SOURCES
   Sources/Views/AtlasPlayback.swift
   Sources/Views/DroppedMedia.swift
   Sources/Views/MemoryPopover.swift
-  Sources/Views/StatusBar.swift
+  Sources/Design/Tokens.swift
+  Sources/Design/Typography.swift
+  Sources/Design/Colors.swift
+  Sources/Design/Glass.swift
+  Sources/Design/DesignGallery.swift
+  Sources/Design/Components/ActivityRing.swift
+  Sources/Design/Components/Meter.swift
+  Sources/Design/Components/EmptyState.swift
+  Sources/Design/Components/ChipMenu.swift
+  Sources/Design/Components/ContextBar.swift
+  Sources/Design/Components/DockCard.swift
+  Sources/Design/Components/DragHandle.swift
+  Sources/Design/Components/CollapsibleSection.swift
+  Sources/Design/Components/StageButton.swift
+  Sources/Shell/ActivityItem.swift
+  Sources/Shell/RootView.swift
+  Sources/Shell/Workspace.swift
+  Sources/Shell/SidebarView.swift
+  Sources/Shell/StageColumn.swift
+  Sources/Shell/RightColumn.swift
+  Sources/Shell/EditorToolbar.swift
+  Sources/Dock/DockView.swift
+  Sources/Dock/TimelineBand.swift
+  Sources/Dock/ComposerCard.swift
+  Sources/Dock/GenerateChips.swift
+  Sources/Dock/PromptTabBar.swift
+  Sources/Dock/SuggestionSplit.swift
   Sources/Views/MarkupBar.swift
-  Sources/Views/PromptBar.swift
   Sources/Views/LogView.swift
-  Sources/Simple/SimpleView.swift
-  Sources/Simple/ComposerStack.swift
-  Sources/Simple/CropTrim.swift
-  Sources/Simple/Timeline.swift
-  Sources/Simple/ValueControls.swift
-  Sources/Simple/Keyframes.swift
-  Sources/Simple/TuningPanel.swift
-  Sources/Simple/Markup.swift
-  Sources/Simple/MarkupTextEditor.swift
-  Sources/Simple/MarkupConnectors.swift
-  Sources/Simple/MarkupRender.swift
-  Sources/Simple/PromptEditor.swift
-  Sources/Simple/PromptMarkdown.swift
-  Sources/Simple/PromptStudio.swift
-  Sources/Simple/SuggestionPane.swift
-  Sources/Simple/AgentModel.swift
-  Sources/Simple/AgentViews.swift
-  Sources/Simple/ReferenceRow.swift
-  Sources/Simple/Adjustments.swift
-  Sources/Simple/ColorMixer.swift
-  Sources/Simple/ColorGrading.swift
-  Sources/Simple/AudioPanel.swift
-  Sources/Simple/SettingsSearch.swift
-  Sources/Simple/AttachCapture.swift
-  Sources/Simple/VoiceOver.swift
-  Sources/Simple/Capture.swift
-  Sources/Simple/ClipTime.swift
+  Sources/Stage/StageRegion.swift
+  Sources/Stage/CropTrim.swift
+  Sources/Stage/Timeline.swift
+  Sources/Stage/ValueControls.swift
+  Sources/Stage/Keyframes.swift
+  Sources/Stage/Markup.swift
+  Sources/Stage/MarkupTextEditor.swift
+  Sources/Stage/MarkupConnectors.swift
+  Sources/Stage/MarkupRender.swift
+  Sources/Stage/Adjustments.swift
+  Sources/Stage/ColorMixer.swift
+  Sources/Stage/ColorGrading.swift
+  Sources/Stage/AudioPanel.swift
+  Sources/Stage/ClipTime.swift
+  Sources/Composer/TuningPanel.swift
+  Sources/Composer/PromptEditor.swift
+  Sources/Composer/PromptMarkdown.swift
+  Sources/Composer/PromptStudio.swift
+  Sources/Composer/SuggestionPane.swift
+  Sources/Composer/AgentModel.swift
+  Sources/Composer/AgentViews.swift
+  Sources/Composer/ReferenceRow.swift
+  Sources/Composer/AttachCapture.swift
+  Sources/Composer/VoiceOver.swift
+  Sources/Composer/Capture.swift
   Sources/Viewer/CompareBar.swift
   Sources/Viewer/CompareCanvas.swift
   Sources/Viewer/GPUPicture.swift
@@ -176,33 +198,41 @@ target_link_libraries(valtz-icon PRIVATE
 # live by Sources/Mark, so there is no bitmap of it here.
 set(VALTZ_APP_RESOURCES)
 
-# The asset catalog -- today only the app's accent color (a near-black;
-# near-white in the dark appearance), which AppKit and SwiftUI controls
-# use for highlights instead of the system blue. Compiled with actool, as
-# Xcode would; Info.plist names it (NSAccentColorName).
-set(VALTZ_XCASSETS "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Assets.xcassets")
-set(VALTZ_ASSETS_CAR "${CMAKE_CURRENT_BINARY_DIR}/assets/Assets.car")
-file(GLOB_RECURSE VALTZ_XCASSETS_FILES CONFIGURE_DEPENDS
-     "${VALTZ_XCASSETS}/*.json")
-add_custom_command(OUTPUT "${VALTZ_ASSETS_CAR}"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/assets"
-  COMMAND xcrun actool "${VALTZ_XCASSETS}"
-          --compile "${CMAKE_CURRENT_BINARY_DIR}/assets"
+# No asset catalog: the app takes the system's accent colour, and its
+# mark is drawn live (Sources/Mark).
+
+# App icon: the Icon Composer document Resources/Valtz.icon, compiled with
+# actool as Xcode would, into the layered icon macOS draws in Liquid Glass
+# (Assets.car: light, dark, clear and tinted, at every size) and a flat
+# Valtz.icns for whatever still reads one. Info.plist names it twice --
+# CFBundleIconName for the catalog, CFBundleIconFile for the .icns.
+# VALTZ_ICON_COMPOSER=OFF keeps the older pipeline: the icon RENDERED at
+# build time by valtz-icon, from the same geometry and shaders the app
+# draws its mark with, or VALTZ_RENDER_ICON=OFF, the painted master
+# (Resources/AppIcon-1024.png) scaled, for a build machine without a GPU.
+option(VALTZ_ICON_COMPOSER "Compile the app icon from Resources/Valtz.icon" ON)
+option(VALTZ_RENDER_ICON "Render the app icon with Metal (valtz-icon)" ON)
+if(VALTZ_ICON_COMPOSER)
+set(VALTZ_ICON_NAME "Valtz")
+set(VALTZ_ICON_DOC "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Valtz.icon")
+set(VALTZ_ICON_OUT "${CMAKE_CURRENT_BINARY_DIR}/icon")
+set(VALTZ_ASSETS_CAR "${VALTZ_ICON_OUT}/Assets.car")
+set(VALTZ_ICNS "${VALTZ_ICON_OUT}/${VALTZ_ICON_NAME}.icns")
+file(GLOB_RECURSE VALTZ_ICON_DOC_FILES CONFIGURE_DEPENDS "${VALTZ_ICON_DOC}/*")
+add_custom_command(OUTPUT "${VALTZ_ASSETS_CAR}" "${VALTZ_ICNS}"
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${VALTZ_ICON_OUT}"
+  COMMAND xcrun actool "${VALTZ_ICON_DOC}"
+          --compile "${VALTZ_ICON_OUT}"
           --platform macosx
           --minimum-deployment-target ${CMAKE_OSX_DEPLOYMENT_TARGET}
-          --accent-color AccentColor
-          --output-partial-info-plist "${CMAKE_CURRENT_BINARY_DIR}/assets/partial.plist"
+          --app-icon ${VALTZ_ICON_NAME} --include-all-app-icons
+          --output-partial-info-plist "${VALTZ_ICON_OUT}/partial.plist"
           --output-format human-readable-text >/dev/null
-  DEPENDS ${VALTZ_XCASSETS_FILES}
-  COMMENT "Compiling Assets.xcassets")
+  DEPENDS ${VALTZ_ICON_DOC_FILES}
+  COMMENT "Compiling Valtz.icon")
 list(APPEND VALTZ_APP_RESOURCES "${VALTZ_ASSETS_CAR}")
-
-# App icon: RENDERED at build time by valtz-icon, from the same geometry
-# and shaders the app draws its mark with -- each size natively, at its
-# own level of detail (no sprocket holes below 64 px), on the macOS icon
-# grid. VALTZ_RENDER_ICON=OFF falls back to scaling the painted master
-# (Resources/AppIcon-1024.png), for a build machine without a GPU.
-option(VALTZ_RENDER_ICON "Render the app icon with Metal (valtz-icon)" ON)
+else()
+set(VALTZ_ICON_NAME "AppIcon")
 set(VALTZ_ICON_SRC "${CMAKE_CURRENT_SOURCE_DIR}/Resources/AppIcon-1024.png")
 set(VALTZ_ICONSET "${CMAKE_CURRENT_BINARY_DIR}/AppIcon.iconset")
 set(VALTZ_ICNS "${CMAKE_CURRENT_BINARY_DIR}/AppIcon.icns")
@@ -240,6 +270,7 @@ add_custom_command(OUTPUT "${VALTZ_ICNS}"
   COMMAND iconutil -c icns "${VALTZ_ICONSET}" -o "${VALTZ_ICNS}"
   DEPENDS ${VALTZ_ICON_DEPENDS}
   COMMENT "Generating AppIcon.icns")
+endif()
 list(APPEND VALTZ_APP_RESOURCES "${VALTZ_ICNS}")
 
 set_source_files_properties(${VALTZ_APP_RESOURCES} PROPERTIES
@@ -326,8 +357,12 @@ add_executable(Valtz MACOSX_BUNDLE ${VALTZ_APP_SOURCES}
   ${VALTZ_MARK_SOURCES} Sources/Mark/MarkView.swift
   ${VALTZ_APP_RESOURCES})
 target_link_libraries(Valtz PRIVATE valtz_bridge)
+# DEBUG is a convention of Xcode's templates, not of swiftc: a Debug
+# build defines it here, for the Design Gallery and anything else kept
+# out of a release (#if DEBUG).
 target_compile_options(Valtz PRIVATE
   "$<$<COMPILE_LANGUAGE:Swift>:-parse-as-library>"
+  "$<$<AND:$<COMPILE_LANGUAGE:Swift>,$<CONFIG:Debug>>:-DDEBUG>"
   "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-emit-localized-strings -emit-localized-strings-path ${VALTZ_STRINGSDATA_DIR}>")
 file(MAKE_DIRECTORY "${VALTZ_STRINGSDATA_DIR}")
 set_target_properties(Valtz PROPERTIES

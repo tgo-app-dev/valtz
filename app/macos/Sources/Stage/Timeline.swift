@@ -1,0 +1,3518 @@
+import AppKit
+import SwiftUI
+
+// MARK: - The timeline, in the model
+
+/// One row of the TIMELINE (DESIGN §10a Timeline): a layer of the
+/// composition on the stage, top first, where it lies in the
+/// composition's frames (a still's pages) -- or a FOLDER's header over
+/// its layers, its span theirs together.
+struct TimelineRow: Equatable, Identifiable {
+    enum Kind: Equatable {
+        case clip, sound, picture, markup, composition, still, blank
+        case folder
+    }
+    /// A layer's id; a folder's "folder:<id>".
+    var id: String
+    var title: String
+    var kind: Kind
+    var visible: Bool
+    /// LOCKED (core set_layer_locked): pressed, it is selected and the
+    /// player goes there -- nothing of it is dragged, stretched or cut.
+    var locked = false
+    /// A TRACK SEPARATOR (core set_layer_separator): in the track view it
+    /// starts a track of its own, never laid in the track below it.
+    var separator = false
+    /// Its first frame, and the frame after its last -- nil while it runs
+    /// on to the end, as a picture does.
+    var start: Int
+    var end: Int?
+    /// Its keys (look, speed, sound), on the timeline's frames.
+    var keys: [Int]
+    /// How its values go on from a key to the next (by the first one's
+    /// frame): MOVING -- some track linear or a spline there, drawn
+    /// o>----->o -- or HELD, changing at once at the next, o     |o;
+    /// absent where nothing changes.
+    enum Way: Equatable { case moves, jumps }
+    var ways: [Int: Way] = [:]
+    /// The keys a drag moves: its tracks' (the first frame's dot may be
+    /// where the layer starts alone).
+    var movable: Set<Int> = []
+    /// A sound alone: its waveform's file, and the source seconds its
+    /// span shows.
+    var wave: URL?
+    var from = 0.0
+    var until: Double?
+    /// The scissors can cut it: a clip or a sound as imported or made, or
+    /// a part cut from one.
+    var cuttable: Bool
+    /// Its block's end stretches it: a still -- a picture, a markup, a
+    /// still composition -- whose length is its own (a clip's is its
+    /// marks').
+    var stretchable = false
+    /// The folder it is in (a layer), or it is (a header); folded shut.
+    var folder: String?
+    var folded = false
+    /// A folder's: where its layers play, together -- [start, end)
+    /// spans, merged; its layers' ids, bottom first.
+    var union: [Range<Int>] = []
+    var members: [String] = []
+
+    var isFolder: Bool { kind == .folder }
+    /// Set in under a folder's header.
+    var depth: Int { folder != nil && !isFolder ? 1 : 0 }
+    /// The layer's id; nil for a folder's header.
+    var layer: String? { isFolder ? nil : id }
+
+    static func folderID(_ f: String) -> String { "folder:" + f }
+}
+
+/// What happens where two layers overlap (core project::Transition):
+/// `from` ends first; "cut", "dissolve", "dip-black", "dip-white".
+struct TimelineTransition: Equatable {
+    var from: String
+    var to: String
+    var kind: String
+}
+
+/// What the timeline draws: its rows, its length and rate, where the
+/// player is, the selected layer, its tools and zoom, its transitions --
+/// and its EVENTS, where |< and >| go: a key, where a layer begins or
+/// ends, the timeline's start and end.
+/// What a timeline's rows are laid out from (AppModel.timelineLayout).
+struct TimelineLayoutKey: Equatable {
+    var asset: AssetDTO
+    var assets: Int
+    var plan: UInt64?
+    var active: String
+    var adjust: Keyframes<ImageAdjustments>?
+    var crop: ClipCrop?
+    var speed: Keyframes<LayerSpeed>?
+    var sound: Keyframes<LayerSound>?
+    var folded: Set<String>
+    var rate: FrameRate
+    var tracks: Bool
+}
+
+struct TimelineModel: Equatable {
+    var rows: [TimelineRow] = []
+    var frames = 1
+    var rate = FrameRate.fallback
+    var paged = false
+    var playhead = 0
+    /// The selected layer's id ("" layer 0) -- `noLayer` while none is.
+    var selected = ""
+    static let noLayer = "\u{0}none"
+    /// Layers ⌘-clicked into the selection (several: to group, merge).
+    var chosen: Set<String> = []
+    var cutting = false
+    var zoom = 1.0
+    var events: [Int] = []
+    var transitions: [TimelineTransition] = []
+    /// The TRACK VIEW's tracks (AppModel.timelineTracks): each a run of
+    /// `rows`, top first, drawn as one row; nil in the layer view, where
+    /// each row is one.
+    var lanes: [Range<Int>]?
+    /// An agent at work holds the project (AppModel.agentHolds): a press
+    /// selects, folds and scrubs; nothing is moved, cut, named, shown,
+    /// hidden, joined or dropped.
+    var readOnly = false
+}
+
+extension AppModel {
+    /// What the timeline shows: the active composition when it is on the
+    /// stage and runs in time -- a timeline, or a still with pages.
+    var timelineAsset: AssetDTO? {
+        guard let s = stageStack, s.isTimeline || s.isPaged,
+              activeComposition?.id == s.id else { return nil }
+        return s
+    }
+
+    /// The SCISSORS' keys, wherever the keyboard is in the window but text,
+    /// a list or a control (a timeline header's name field, the Assets
+    /// list): S takes them up or puts them away -- a key the markup
+    /// toolbar's tools leave free (V B E L R C P I, and X) -- and Escape
+    /// puts them away. While the timeline is open on a timeline (a still's
+    /// pages are not cut), no modifier held. Handled -- true -- or left to
+    /// go on (the timeline's own keyDown had Escape only while it held the
+    /// keyboard, which a click on a block does not give it).
+    func scissorsKey(_ e: NSEvent) -> Bool {
+        guard timelineOpen, fleetServing == nil, let w = e.window,
+              !(w is NSPanel), editorWindow == nil || w === editorWindow,
+              let a = timelineAsset, !a.isPaged else { return false }
+        let fr = w.firstResponder
+        if fr is NSText || fr is NSTableView || fr is NSOutlineView
+            || fr is NSCollectionView || fr is NSControl { return false }
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .numericPad, .function])
+        guard mods.isEmpty, !agentHolds else { return false }
+        if e.keyCode == 53 {
+            guard timelineCutting else { return false }
+            timelineCutting = false
+            return true
+        }
+        // By the letter, else -- a layout of other letters -- by its key
+        // on a US keyboard.
+        let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
+        let latin = ch.count == 1 && ch.first.map {
+            $0.isASCII && $0.isLetter } == true
+        guard latin ? ch == "s" : e.keyCode == 1 else { return false }
+        if !e.isARepeat { timelineCutting.toggle() }
+        return true
+    }
+
+    /// Its band is offered over the prompt (a disclosure, while it is
+    /// not wanted). Not while VIEW ONLY: its wish kept for after.
+    var timelineAvailable: Bool {
+        !promptImmersive && !viewOnly && timelineAsset != nil
+            // A voice-over's take: its card, and Stop, stay in sight.
+            && !voiceOverRecording
+    }
+
+    /// The timeline band is open over the prompt.
+    var timelineOpen: Bool { chrome.timelineBand && timelineAvailable }
+
+    /// The timeline band wanted or not (its disclosure, View › Timeline,
+    /// ⇧⌘T). Asked for by the person (`takesKeyboard`), the prompt gives
+    /// up the keyboard as it opens, so S and Space go to the timeline and
+    /// the stage (a click in the prompt gets it back); a band opened by a
+    /// result landing leaves the keyboard where it is.
+    func showTimeline(_ on: Bool, takesKeyboard: Bool = true) {
+        withAnimation(Self.motion) {
+            chrome.timelineBand = on
+            if !on { timelineCutting = false }
+        }
+        if on, takesKeyboard, let w = editorWindow,
+           w.firstResponder is NSText {
+            w.makeFirstResponder(nil)
+        }
+    }
+
+    /// A result LANDED as `layer`, a new layer of `doc` (DESIGN §10a
+    /// Timeline): with the composition holding something already -- a
+    /// layer not empty beside it -- and on the stage, the timeline band
+    /// opens over the prompt, to show where it went (Settings › General ›
+    /// Generations). Only where the timeline is offered: a timeline (a
+    /// sound's too) or a still with pages; not over the Prompt Editor,
+    /// nor when it is open already.
+    func landed(on doc: AssetDTO, layer: String) {
+        guard landingOpensTimeline, !promptImmersive, !viewOnly,
+              !timelineOpen,
+              doc.isTimeline || doc.isPaged, doc.id == stageAssetId,
+              doc.layerStack.contains(where: {
+                  $0.id != layer && !$0.isEmpty })
+        else { return }
+        landingCounts.timeline += 1
+        showTimeline(true, takesKeyboard: false)
+    }
+
+    /// A scripted run's landing (VALTZ_SNAPSHOT_TASKS `land:`): `asset`
+    /// placed as a generation's result is -- a new layer of the active
+    /// composition -- then what follows a landing not watched, the stage
+    /// on that composition.
+    func snapshotLand(_ asset: String) {
+        guard let core, let projectId, let onto = activeComposition
+        else { return }
+        let r = core.assetOp(project: projectId, "place-result",
+                             ["asset": asset, "onto": onto.id])
+        guard r.ok, let view = r["asset"] as? String else {
+            note("error", r.message)
+            return
+        }
+        reloadAssets()
+        guard let doc = self.asset(id: view),
+              doc.id == stageAssetId else { return }
+        layersChanged()
+        landed(on: doc, layer: r["layer"] as? String ?? "")
+    }
+
+    var timelineModel: TimelineModel {
+        guard let a = timelineAsset else { return TimelineModel() }
+        var m = timelineLayout(a)
+        m.playhead = a.isPaged ? stagePage : videoFrame
+        // None selected (⌘D): no row lit.
+        m.selected = layerNoneSelected ? TimelineModel.noLayer : activeLayer
+        if selectedLayers.count > 1 { m.chosen = selectedLayers }
+        m.cutting = timelineCutting && !agentHolds
+        m.zoom = timelineZoom
+        m.readOnly = agentHolds
+        return m
+    }
+
+    /// The timeline's rows, its length, transitions and events -- laid
+    /// out once for what they are made from: the timeline asks for its
+    /// model at each of the player's frames, and a timeline of 16 000
+    /// layers was laid out anew every time (2026-10-23).
+    private func timelineLayout(_ a: AssetDTO) -> TimelineModel {
+        let active = activeLayer
+        let live = keyedStage
+        let key = TimelineLayoutKey(
+            asset: a, assets: assetsRevision,
+            plan: clipOnStage ? stackPlayback?.plan : nil, active: active,
+            adjust: live ? clipAdjustKeys : nil,
+            crop: live ? clipCropKeys : nil,
+            speed: live && clipOnStage ? layerSpeed : nil,
+            sound: live && clipOnStage ? layerSound : nil,
+            folded: foldedLayerFolders, rate: stageFrameRate,
+            tracks: timelineTracks)
+        if let memo = timelineLayoutMemo, memo.key == key {
+            return memo.model
+        }
+        var m = TimelineModel()
+        m.paged = a.isPaged
+        m.rate = a.isPaged ? FrameRate(num: 1, den: 1) : stageFrameRate
+        let fps = m.rate.fps
+        // Each layer's modifiers, found once (each layer's tracks scanned
+        // them all).
+        var mods: [String: [ModifierDTO]] = [:]
+        for d in a.modifiers ?? [] { mods[d.layer, default: []].append(d) }
+        var spans: [String: StackSpan] = [:]
+        if stackPlayback != nil, clipOnStage {
+            for s in stackPlayback?.layers ?? [] { spans[s.id] = s }
+        }
+        var latest = 0
+        for l in a.layerStack.reversed() {
+            let src = source(of: l)
+            // In a composition of sound everything is sound (a clip's).
+            let kind = Self.timelineKind(l, src)
+            var r = TimelineRow(id: l.id, title: l.title,
+                                kind: a.kind == "audio" && kind != .blank
+                                    ? .sound : kind,
+                                visible: l.visible, start: 0, end: nil,
+                                keys: [], cuttable: false)
+            r.locked = l.locked
+            r.separator = l.trackSeparator
+            if a.isPaged {
+                let span = a.pageSpan(of: l)
+                r.start = span?.lowerBound ?? 0
+                r.end = span.map { $0.upperBound + 1 } ?? 0
+            } else if let sp = spans[l.id] {
+                r.start = Int((sp.start * fps).rounded())
+                r.end = sp.end.map { Int(($0 * fps).rounded()) }
+                if sp.audioOnly, let f = sp.file {
+                    r.wave = f
+                    r.from = sp.from
+                    r.until = sp.until
+                }
+            } else {
+                // Before the core's plan lands: as recorded.
+                let t = l.time ?? LayerTimeDTO()
+                r.start = t.offset
+                if t.duration > 0 { r.end = t.offset + t.duration }
+            }
+            // A layer's first frame is a key of its own: where its
+            // tracks start.
+            let own = mods[l.id] ?? []
+            let tracks = timelineTracks(a, layer: l.id, active: active) {
+                kind in own.first { $0.kind == kind }
+            }
+            let dots = Array(Set(tracks.flatMap { $0.map(\.frame) }
+                + (l.isEmpty ? [] : [0]))).sorted()
+            r.keys = dots.map { r.start + $0 }
+            r.movable = Set(tracks.flatMap { $0.map { r.start + $0.frame } })
+            for (f, w) in Self.keyWays(tracks, dots: dots) {
+                r.ways[r.start + f] = w
+            }
+            r.cuttable = !a.isPaged && Self.cuttable(src)
+            r.stretchable = a.kind != "audio"
+                && [.picture, .markup, .still].contains(r.kind)
+            r.folder = l.folder
+            latest = max(latest, r.end ?? r.start)
+            m.rows.append(r)
+        }
+        if a.isPaged {
+            m.frames = a.pageCount
+        } else {
+            m.frames = max(1, a.timeline ?? a.length ?? latest)
+        }
+        m.rows = timelineFolders(m.rows, frames: m.frames,
+                                 folders: a.layerFolders ?? [])
+        // A timeline's only (a still's pages have none).
+        if !a.isPaged {
+            m.transitions = (a.transitions ?? []).map {
+                TimelineTransition(from: $0.from, to: $0.to, kind: $0.kind)
+            }
+        }
+        if timelineTracks {
+            m.lanes = Self.timelineLanes(m.rows, frames: m.frames,
+                                         transitions: m.transitions)
+        }
+        // Where |< and >| stop.
+        var ev: Set<Int> = [0, m.frames]
+        for r in m.rows {
+            ev.insert(r.start)
+            if let e = r.end { ev.insert(m.paged ? e - 1 : e) }
+            ev.formUnion(r.keys)
+        }
+        m.events = ev.sorted()
+        timelineLayoutMemo = (key, m)
+        return m
+    }
+
+    /// The layers' rows with their folders' headers: each over its layers
+    /// (out of sight while it is folded), its span theirs together.
+    private func timelineFolders(_ rows: [TimelineRow], frames: Int,
+                                 folders: [LayerFolderDTO])
+        -> [TimelineRow] {
+        var out: [TimelineRow] = []
+        var open: String?
+        // Each folder's rows, gathered once.
+        var byFolder: [String: [TimelineRow]] = [:]
+        for r in rows {
+            if let f = r.folder { byFolder[f, default: []].append(r) }
+        }
+        for r in rows {
+            if let f = r.folder, f != open {
+                open = f
+                let members = byFolder[f] ?? []
+                var head = TimelineRow(
+                    id: TimelineRow.folderID(f),
+                    title: folders.first { $0.id == f }?.name ?? f,
+                    kind: .folder, visible: members.contains(where: \.visible),
+                    start: members.map(\.start).min() ?? 0, end: nil,
+                    keys: [], cuttable: false)
+                head.folder = f
+                head.folded = isFolderFolded(f)
+                head.members = members.reversed().map(\.id)
+                // Their spans merged: where any of them plays.
+                let spans = members.filter { $0.kind != .blank }.map {
+                    $0.start..<max($0.start + 1, $0.end ?? frames)
+                }.sorted { $0.lowerBound < $1.lowerBound }
+                var merged: [Range<Int>] = []
+                for s in spans {
+                    if let last = merged.last, s.lowerBound <= last.upperBound {
+                        merged[merged.count - 1] =
+                            last.lowerBound..<max(last.upperBound, s.upperBound)
+                    } else {
+                        merged.append(s)
+                    }
+                }
+                head.union = merged
+                head.end = merged.map(\.upperBound).max()
+                out.append(head)
+            } else if r.folder == nil {
+                open = nil
+            }
+            if let f = r.folder, isFolderFolded(f) { continue }
+            out.append(r)
+        }
+        return out
+    }
+
+    /// The TRACK VIEW's tracks (DESIGN §10a Timeline): the rows laid
+    /// together as a traditional editor's tracks -- each a run of rows,
+    /// top first. Walking up from the bottom, a layer goes in the track
+    /// under it unless it is a TRACK SEPARATOR, lies in another folder
+    /// than that track's, or overlaps one of the track's layers with no
+    /// transition between the two; a folder's header and a blank layer
+    /// are a track of their own, so no track runs across a folder's edge.
+    static func timelineLanes(_ rows: [TimelineRow], frames: Int,
+                              transitions: [TimelineTransition])
+        -> [Range<Int>] {
+        var joined: Set<[String]> = []
+        for t in transitions {
+            joined.insert([t.from, t.to])
+            joined.insert([t.to, t.from])
+        }
+        var lanes: [Range<Int>] = []   // bottom first while laid
+        // The last track's layers and where they play, together: a span
+        // clear of them all joins at once -- clips laid one after another
+        // are not each compared with all the others (16 000 layers).
+        var members: [(id: String, span: Range<Int>)] = []
+        var covers = 0..<0
+        var open = false
+        var folder: String?
+        for i in rows.indices.reversed() {
+            let r = rows[i]
+            let alone = r.isFolder || r.kind == .blank
+            let s = r.start..<max(r.start + 1, r.end ?? frames)
+            if open, !alone, !r.separator, r.folder == folder,
+               s.lowerBound >= covers.upperBound
+                || s.upperBound <= covers.lowerBound
+                || members.allSatisfy({ !$0.span.overlaps(s)
+                    || joined.contains([$0.id, r.id]) }) {
+                lanes[lanes.count - 1] = i..<lanes[lanes.count - 1].upperBound
+                members.append((r.id, s))
+                covers = min(covers.lowerBound, s.lowerBound)
+                    ..< max(covers.upperBound, s.upperBound)
+                continue
+            }
+            lanes.append(i..<i + 1)
+            members = alone ? [] : [(r.id, s)]
+            covers = s
+            open = !alone
+            folder = r.folder
+        }
+        return lanes.reversed()
+    }
+
+    /// What a row is, by what its layer shows -- a part cut from a clip
+    /// or a sound is that clip or sound.
+    static func timelineKind(_ l: LayerDTO,
+                             _ src: AssetDTO?) -> TimelineRow.Kind {
+        if l.isMarkup { return .markup }
+        guard let src else { return l.isEmpty ? .blank : .picture }
+        if src.kind == "audio" { return .sound }
+        if src.isTimeline {
+            return src.layerStack.count == 1 && src.kind == "video"
+                && (src.modifiers ?? []).isEmpty ? .clip : .composition
+        }
+        if src.isComposition { return .still }
+        return src.kind == "video" ? .clip : .picture
+    }
+
+    /// A clip or a sound as imported or made, or a part the scissors cut
+    /// (a timeline of one plain layer showing one): the core has the last
+    /// word (Controller::split_layer).
+    static func cuttable(_ src: AssetDTO?) -> Bool {
+        guard let src, src.kind == "video" || src.kind == "audio" else {
+            return false
+        }
+        if !src.isComposition { return true }
+        return src.isTimeline && src.layerStack.count == 1
+            && (src.modifiers ?? []).isEmpty
+    }
+
+    /// A key as the timeline sees it: where it is, how it goes on.
+    typealias TrackKey = (frame: Int, interp: KeyInterp)
+
+    /// A layer's tracks -- its look, speed and sound -- each its keys
+    /// from its own start: the panels' tracks for the selected layer (what
+    /// they hold now), the record's for the others. A track that changes
+    /// nothing has none to show.
+    func timelineTracks(_ a: AssetDTO, layer: String) -> [[TrackKey]] {
+        timelineTracks(a, layer: layer, active: activeLayer) { kind in
+            a.modifiers?.first { $0.kind == kind && $0.layer == layer }
+        }
+    }
+
+    /// The same, the active layer and the layer's modifier of each kind
+    /// found by the caller (timelineLayout: for every layer at once).
+    private func timelineTracks(_ a: AssetDTO, layer: String,
+                                active: String,
+                                modifier: (String) -> ModifierDTO?)
+        -> [[TrackKey]] {
+        func keys<T>(_ k: Keyframes<T>) -> [TrackKey]? {
+            k.isIdentity ? nil : k.keys.map { ($0.frame, $0.interp) }
+        }
+        var t: [[TrackKey]?]
+        if layer == active && keyedStage {
+            t = [keys(clipAdjustKeys), keys(clipCropKeys.place),
+                 keys(clipCropKeys.turn)]
+            if clipOnStage { t += [keys(layerSpeed), keys(layerSound)] }
+        } else {
+            let crop = AssetDTO.cropKeys(modifier("crop"))
+            t = [keys(AssetDTO.adjustKeys(modifier("adjust"))),
+                 keys(crop.place), keys(crop.turn),
+                 keys(AssetDTO.speedKeys(modifier("speed"))),
+                 keys(AssetDTO.soundKeys(modifier("audio")))]
+        }
+        return t.compactMap { $0 }
+    }
+
+    /// How the values go on from each of `dots` (ascending) to the next:
+    /// MOVING where any track there runs on linear or along a spline; else
+    /// HELD where a held track has its next key at the next dot (its value
+    /// changes at once there); else nothing -- a held track passing
+    /// another's key changes nothing there, nor a track before its first
+    /// key or after its last.
+    static func keyWays(_ tracks: [[TrackKey]],
+                        dots: [Int]) -> [Int: TimelineRow.Way] {
+        var out: [Int: TimelineRow.Way] = [:]
+        for (from, to) in zip(dots, dots.dropFirst()) {
+            var moves = false, jumps = false
+            for keys in tracks {
+                guard let first = keys.first?.frame,
+                      let last = keys.last?.frame, first <= from, to <= last,
+                      let span = keys.last(where: { $0.frame <= from })
+                else { continue }
+                if span.interp == .hold {
+                    jumps = jumps || keys.contains { $0.frame == to }
+                } else {
+                    moves = true
+                }
+            }
+            if moves {
+                out[from] = .moves
+            } else if jumps {
+                out[from] = .jumps
+            }
+        }
+        return out
+    }
+
+    /// The player at frame `n` of the timeline -- a still's page.
+    func timelineSeek(_ n: Int) {
+        if timelineAsset?.isPaged == true {
+            goToPage(n)
+        } else {
+            seekVideo(to: n)
+        }
+    }
+
+    /// A frame on or back (a still's page; a sound's 10 ms, as the Trim
+    /// panel steps it).
+    func timelineStep(_ n: Int) {
+        if timelineOpen && pagedOnStage && !clipOnStage {
+            goToPage(stagePage + n)
+        } else {
+            stepVideo(n)
+        }
+    }
+
+    /// |< and >|: the timeline's previous or next EVENT -- a key, where a
+    /// layer begins or ends, its start or end.
+    func timelineEvent(next: Bool) {
+        let m = timelineModel
+        let last = max(0, m.frames - 1)
+        let at = Set(m.events.map { min(max(0, $0), last) }).sorted()
+        let p = m.playhead
+        if let to = next ? at.first(where: { $0 > p })
+                         : at.last(where: { $0 < p }) {
+            timelineSeek(to)
+        }
+    }
+
+    /// The scissors: the layer's clip cut at timeline frame `frame` in
+    /// two parts (core Controller::split_layer), the second on a new
+    /// layer above it -- selected.
+    func cutTimelineLayer(_ id: String, at frame: Int) {
+        guard let core, let projectId, let a = timelineAsset,
+              a.isTimeline else { return }
+        flushPanels()
+        let r = core.layerOp(project: projectId, asset: a.id, "split",
+                             layer: id, extra: ["frame": frame])
+        guard r.ok else {
+            NSSound.beep()
+            flash(r.message, level: .error)
+            return
+        }
+        timelineLayersChanged(select: r["layer"] as? String)
+    }
+
+    /// A still's block stretched by its end: it runs `length` frames (a
+    /// still's pages), the timeline's length grown to hold it.
+    func stretchTimelineLayer(_ id: String, length: Int) {
+        guard let core, let projectId, let a = timelineAsset else { return }
+        flushPanels()
+        let r = core.layerOp(project: projectId, asset: a.id, "stretch",
+                             layer: id, extra: ["length": max(1, length)])
+        guard r.ok else {
+            flash(r.message, level: .error)
+            return
+        }
+        timelineLayersChanged(select: id)
+    }
+
+    /// A layer's key dragged along its block: every track keyed at `from`
+    /// keyed at `to` instead -- frames from the layer's start (a still's
+    /// pages). One command ("Undo Move Key").
+    func moveTimelineKey(_ id: String, from: Int, to: Int) {
+        guard let core, let projectId, let a = timelineAsset else { return }
+        flushPanels()
+        let r = core.layerOp(project: projectId, asset: a.id, "move-key",
+                             layer: id, extra: ["from": from, "to": to])
+        guard r.ok else {
+            flash(r.message, level: .error)
+            return
+        }
+        timelineLayersChanged(select: id)
+    }
+
+    /// What happens where two layers overlap (DESIGN §6a): `kind`
+    /// "dissolve", "dip-black" or "dip-white" -- "" takes it away --
+    /// `from` the one that ends first. One command ("Undo Transition").
+    func setTimelineTransition(from: String, to: String, kind: String) {
+        guard let core, let projectId, let a = timelineAsset else { return }
+        flushPanels()
+        let r = core.layerOp(project: projectId, asset: a.id, "transition",
+                             layer: from, extra: ["to": to, "kind": kind])
+        guard r.ok else {
+            flash(r.message, level: .error)
+            return
+        }
+        timelineLayersChanged(select: nil)
+    }
+
+    /// A clip dragged along the timeline: it starts at `offset` (a
+    /// still's page), the timeline's length grown to hold it.
+    func slideTimelineLayer(_ id: String, to offset: Int) {
+        guard let core, let projectId, let a = timelineAsset else { return }
+        flushPanels()
+        let r = core.layerOp(project: projectId, asset: a.id, "slide",
+                             layer: id, extra: ["offset": max(0, offset)])
+        guard r.ok else {
+            flash(r.message, level: .error)
+            return
+        }
+        timelineLayersChanged(select: id)
+    }
+
+    /// An asset dropped on the timeline: a NEW layer showing it, right
+    /// above the row it was dropped on (none: on top), from where it was
+    /// dropped -- selected.
+    @discardableResult
+    func dropOnTimeline(asset id: String, above layer: String?,
+                        at frame: Int) -> Bool {
+        guard let core, let projectId, let t = timelineAsset,
+              let a = asset(id: id) else {
+            return false
+        }
+        guard ["image", "video", "audio"].contains(a.kind) else {
+            flash(String(localized: "Text does not go on the timeline: put it in the prompt."), level: .warning)
+            return false
+        }
+        var extra: [String: Any] = ["asset": id, "onto": t.id,
+                                    "offset": max(0, frame),
+                                    "new_layer": true]
+        if let layer { extra["at"] = layer }
+        let r = core.assetOp(project: projectId, "instantiate", extra)
+        guard r.ok else {
+            flash(r.message, level: .error)
+            return false
+        }
+        timelineLayersChanged(select: r["layer"] as? String)
+        return true
+    }
+
+    /// Files dropped on the timeline: imported, then the first picture,
+    /// clip or sound put there as an asset is.
+    func dropFilesOnTimeline(_ urls: [URL], above layer: String?,
+                             at frame: Int) -> Bool {
+        guard let url = urls.first(where: {
+            ["image", "video", "audio"].contains(PromptTextView.kind(of: $0))
+        }) else { return false }
+        if let a = asset(forFile: url) {
+            return dropOnTimeline(asset: a.id, above: layer, at: frame)
+        }
+        importFiles([url])
+        Task { @MainActor [weak self] in
+            for _ in 0..<600 {
+                guard let self else { return }
+                if let a = self.asset(forFile: url) {
+                    self.dropOnTimeline(asset: a.id, above: layer, at: frame)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        return true
+    }
+
+    /// The timeline's layers changed in the core: the panels take the
+    /// selected layer as it now is -- nothing of theirs written back over
+    /// it -- and the layer named is selected.
+    private func timelineLayersChanged(select id: String?) {
+        reloadAssets()
+        if let a = stageStack {
+            if clipOnStage { loadTrim(a) }
+            if keyedStage { loadClipTracks(a, layer: activeLayer) }
+        }
+        if let id, !isSelectedLayer(id) { selectLayer(id) }
+        if clipOnStage { refreshStackPlan() } else { recomposite() }
+    }
+
+    /// Zoomed in or out (a factor), never further out than the whole of
+    /// it in half the view.
+    static let timelineZoomOut = 0.5
+    func zoomTimeline(to z: Double) {
+        timelineZoom = min(16_384, max(Self.timelineZoomOut, z))
+    }
+}
+
+// MARK: - The card
+
+/// The TIMELINE (DESIGN §10a Timeline), the dock's band over the
+/// prompt: a wide card. On its left the layers, top first, frozen there;
+/// along its top the time in the composition's own frames, frozen there;
+/// between them the clips where they play -- a key a dot, a sound its
+/// waveform's shadow -- and the player's line through all of them. Its
+/// top-left corner holds the band's disclosure, the scissors and the
+/// zoom; its foot the transport, |< and >| going from event to event.
+/// The rows in view are what its height leaves room for (TimelineBand
+/// gives it the height; the canvas draws a row cut short as well).
+struct TimelineCard: View {
+    @Bindable var model: AppModel
+    @State private var peaks: [String: AudioWaveform.TimedPeaks] = [:]
+    /// Narrower than the whole transport and its times: fast rewind,
+    /// play backward and fast forward give way (the keys still do them).
+    @State private var narrow = false
+
+    static let transportHeight: CGFloat = VZ.Size.transport
+
+    /// Its height with `rows` rows in view.
+    static func height(rows: Int) -> CGFloat {
+        TimelineNSView.rulerHeight
+            + CGFloat(rows) * TimelineNSView.rowHeight + 0.5
+            + transportHeight
+    }
+
+    /// The rows a height leaves room for, whole ones, 1 to 12.
+    static func rows(height h: CGFloat) -> Int {
+        let free = (h - TimelineNSView.rulerHeight - 0.5 - transportHeight)
+            / TimelineNSView.rowHeight
+        let r = AppModel.timelineRowRange
+        return min(r.upperBound, max(r.lowerBound, Int(free.rounded(.down))))
+    }
+
+    var body: some View {
+        let m = model.timelineModel
+        VStack(spacing: 0) {
+            TimelineCanvas(model: m, peaks: peaks, actions: actions(m))
+                .accessibilityLabel(Text("Timeline"))
+                .frame(maxHeight: .infinity)
+                .overlay(alignment: .topLeading) {
+                    corner(m)
+                        .frame(width: TimelineNSView.nameWidth,
+                               height: TimelineNSView.rulerHeight)
+                }
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(height: 0.5)
+            transport(m)
+                .frame(height: Self.transportHeight)
+        }
+        .clipShape(VZ.Radius.concentric())
+        .onGeometryChange(for: Bool.self) { $0.size.width < 600 } action: {
+            narrow = $0
+        }
+        .task(id: m.rows.compactMap(\.wave?.path)) {
+            for r in m.rows {
+                guard let url = r.wave, peaks[url.path] == nil else {
+                    continue
+                }
+                if let p = await AudioWaveform.timedPeaks(url) {
+                    peaks[url.path] = p
+                }
+            }
+        }
+    }
+
+    private func actions(_ m: TimelineModel) -> TimelineActions {
+        TimelineActions(
+            seek: { model.timelineSeek($0) },
+            select: { id in
+                // The target tool on: the stage stays on its layer.
+                if !model.isSelectedLayer(id),
+                   !model.refusedForColorTarget() {
+                    model.selectLayer(id)
+                }
+            },
+            slide: { model.slideTimelineLayer($0, to: $1) },
+            stretch: { model.stretchTimelineLayer($0, length: $1) },
+            moveKey: { model.moveTimelineKey($0, from: $1, to: $2) },
+            cut: { model.cutTimelineLayer($0, at: $1) },
+            zoom: { model.zoomTimeline(to: $0) },
+            stopCutting: { model.timelineCutting = false },
+            toggleVisible: { id in
+                if let r = m.rows.first(where: { $0.id == id }) {
+                    model.setLayerVisible(id, !r.visible)
+                }
+            },
+            toggleLocked: { id in
+                if let r = m.rows.first(where: { $0.id == id }) {
+                    model.setLayerLocked(id, !r.locked)
+                }
+            },
+            setVisible: { model.setLayersVisible($0, $1) },
+            setLocked: { model.setLayersLocked($0, $1) },
+            setSeparator: { model.setLayerSeparator($0, $1) },
+            moveLayer: { model.moveLayer($0, by: $1) },
+            addLayer: { model.addLayer(above: $0) },
+            duplicateLayer: { model.duplicateLayer($0) },
+            removeLayer: { model.removeLayer($0) },
+            canRemove: { model.canRemoveLayer($0) },
+            toggleFolded: { model.toggleFolderFolded($0) },
+            toggleFolderVisible: { f in
+                let shown = m.rows.first { $0.isFolder && $0.folder == f }?
+                    .visible ?? true
+                model.setFolderVisible(f, !shown)
+            },
+            place: { model.placeLayers($0, above: $1, folder: $2) },
+            group: { id in
+                if !(model.selectedLayers.count > 1
+                     && model.selectedLayers.contains(id)) {
+                    model.selectLayer(id)
+                }
+                model.groupSelectedLayers()
+            },
+            ungroup: { model.ungroupLayers($0) },
+            extendSelection: { model.toggleLayerSelection($0) },
+            setTransition: {
+                model.setTimelineTransition(from: $0, to: $1, kind: $2)
+            },
+            renameLayer: { model.renameLayer($0, $1) },
+            renameFolder: { model.renameLayerFolder($0, $1) },
+            dropAsset: { model.dropOnTimeline(asset: $0, above: $1, at: $2) },
+            dropFiles: {
+                model.dropFilesOnTimeline($0, above: $1, at: $2)
+            })
+    }
+
+    /// The band's disclosure (it folds the band away), the scissors,
+    /// then zoom out, in and to the whole timeline.
+    private func corner(_ m: TimelineModel) -> some View {
+        HStack(spacing: 0) {
+            TimelineDisclosure(model: model)
+            TimelineTool(symbol: "scissors", on: model.timelineCutting,
+                         help: m.paged
+                             ? "Pages cannot be cut: the scissors cut clips and sounds"
+                             : model.timelineCutting
+                             ? "Put the scissors away (Escape or S)"
+                             : "Scissors (S): click a clip or a sound to cut it there in two") {
+                model.timelineCutting.toggle()
+            }
+            .shortcutHint("S")
+            .disabled(m.paged || m.readOnly)
+            // The TRACK VIEW: the layers laid in tracks, as a traditional
+            // editor shows them -- or a row each again.
+            TimelineTool(symbol: "rectangle.compress.vertical",
+                         on: model.timelineTracks,
+                         help: model.timelineTracks
+                             ? "Layer view: a row for each layer"
+                             : "Track view: layers that follow one another, or meet in transitions, in one track") {
+                withAnimation(AppModel.motion) {
+                    model.timelineTracks.toggle()
+                }
+            }
+            Spacer(minLength: 4)
+            TimelineTool(symbol: "minus.magnifyingglass", on: false,
+                         help: "Zoom out") {
+                model.zoomTimeline(to: model.timelineZoom / 1.6)
+            }
+            .disabled(model.timelineZoom <= AppModel.timelineZoomOut)
+            TimelineTool(symbol: "plus.magnifyingglass", on: false,
+                         help: "Zoom in") {
+                model.zoomTimeline(to: model.timelineZoom * 1.6)
+            }
+            TimelineTool(symbol: "arrow.left.and.right", on: false,
+                         help: "The whole timeline") {
+                model.zoomTimeline(to: 1)
+            }
+            .disabled(model.timelineZoom == 1)
+        }
+        .padding(.horizontal, 6)
+    }
+
+    /// The transport -- |< and >| from event to event -- with where the
+    /// player is on its left and the timeline's length on its right, in
+    /// the composition's own frames (a still's pages).
+    private func transport(_ m: TimelineModel) -> some View {
+        let r = model.videoRate
+        let timed = !m.paged
+        return ZStack {
+            HStack(spacing: 2) {
+                // A blank layer on top; the selected one gone -- as the
+                // Layers section does.
+                TimelineTool(symbol: "rectangle.stack.badge.plus", on: false,
+                             help: "Add a blank layer on top") {
+                    model.addLayer()
+                }
+                .disabled(m.readOnly)
+                TimelineTool(symbol: "rectangle.stack.badge.minus", on: false,
+                             help: "Remove the selected layer") {
+                    model.removeLayer(model.activeLayer)
+                }
+                .disabled(!model.canRemoveLayer(model.activeLayer)
+                          || m.readOnly)
+                Text(verbatim: place(m.playhead, m))
+                    .font(.callout.monospacedDigit())
+                    .padding(.leading, 10)
+                Spacer()
+                Text(verbatim: length(m))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.leading, 10)
+            .padding(.trailing, 18)
+            HStack(spacing: 4) {
+                TransportButton(symbol: "backward.end.fill",
+                                help: "Previous event: a key, where a layer begins or ends, the start (⌘←)",
+                                on: false) {
+                    model.timelineEvent(next: false)
+                }
+                .shortcutHint("⌘←")
+                if !narrow {
+                    TransportButton(symbol: "backward.fill",
+                                    help: "Fast rewind",
+                                    on: r < -1, action: model.fastRewind)
+                        .disabled(!timed)
+                    TransportButton(symbol: "play.fill", mirrored: true,
+                                    help: "Play backward", on: r == -1) {
+                        model.playVideo(rate: -1)
+                    }
+                    .disabled(!timed)
+                }
+                TransportButton(symbol: "backward.frame.fill",
+                                help: m.paged ? "The page before (←)"
+                                    : "Back one frame (←)",
+                                on: false) {
+                    model.timelineStep(-1)
+                }
+                .shortcutHint("←")
+                TransportButton(symbol: "pause.fill", help: "Pause",
+                                on: timed && r == 0) {
+                    model.playVideo(rate: 0)
+                }
+                .disabled(!timed)
+                TransportButton(symbol: "forward.frame.fill",
+                                help: m.paged ? "The page after (→)"
+                                    : "On one frame (→)",
+                                on: false) {
+                    model.timelineStep(1)
+                }
+                .shortcutHint("→")
+                TransportButton(symbol: "play.fill", help: "Play",
+                                on: r == 1) {
+                    model.playVideo(rate: 1)
+                }
+                .shortcutHint(String(localized: "Space"))
+                .disabled(!timed)
+                if !narrow {
+                    TransportButton(symbol: "forward.fill",
+                                    help: "Fast forward",
+                                    on: r > 1, action: model.fastForward)
+                        .disabled(!timed)
+                }
+                TransportButton(symbol: "forward.end.fill",
+                                help: "Next event: a key, where a layer begins or ends, the end (⌘→)",
+                                on: false) {
+                    model.timelineEvent(next: true)
+                }
+                .shortcutHint("⌘→")
+            }
+        }
+        .controlSize(.small)
+    }
+
+    /// "00:00:01:12" -- a still's "Page 2".
+    private func place(_ n: Int, _ m: TimelineModel) -> String {
+        m.paged ? String(localized: "Page \(String(n + 1))")
+                : m.rate.timecode(n)
+    }
+
+    /// "00:00:05:00" -- a still's "4 pages".
+    private func length(_ m: TimelineModel) -> String {
+        m.paged ? String(localized: "\(String(m.frames)) pages")
+                : m.rate.timecode(m.frames)
+    }
+}
+
+/// A small tool in the timeline's corner: its symbol, pressed in while
+/// it is on.
+struct TimelineTool: View {
+    let symbol: String
+    let on: Bool
+    let help: LocalizedStringKey
+    let action: () -> Void
+    @State private var hovering = false
+    @Environment(\.isEnabled) private var enabled
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12))
+                .frame(width: 24, height: 22)
+                .background(RoundedRectangle(cornerRadius: 5).fill(
+                    on ? Color.accentColor.opacity(0.25)
+                       : Color.primary.opacity(hovering && enabled
+                                               ? 0.08 : 0)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(on ? Color.accentColor
+                         : enabled ? Color.primary : Color.secondary)
+        .opacity(enabled ? 1 : 0.5)
+        .help(help)
+        .accessibilityLabel(Text(help))
+        .onHover { hovering = $0 }
+    }
+}
+
+// MARK: - The view
+
+extension TimelineNSView: NSViewToolTipOwner {
+    static var keyTipText: String {
+        String(localized: "Zoom in until this key shows as a dot, then drag it to move it.")
+    }
+
+    /// A key's bar, zoomed out: how to move it.
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
+              point: NSPoint, userData data: UnsafeMutableRawPointer?)
+        -> String {
+        Self.keyTipText
+    }
+}
+
+/// What the timeline asks of the model.
+struct TimelineActions {
+    var seek: (Int) -> Void = { _ in }
+    var select: (String) -> Void = { _ in }
+    var slide: (String, Int) -> Void = { _, _ in }
+    /// A still's block stretched: its length, in frames (pages).
+    var stretch: (String, Int) -> Void = { _, _ in }
+    /// A key dragged: {layer, from, to}, frames from the layer's start.
+    var moveKey: (String, Int, Int) -> Void = { _, _, _ in }
+    var cut: (String, Int) -> Void = { _, _ in }
+    var zoom: (Double) -> Void = { _ in }
+    var stopCutting: () -> Void = {}
+    var toggleVisible: (String) -> Void = { _ in }
+    var toggleLocked: (String) -> Void = { _ in }
+    /// A track's layers shown or hidden, locked or unlocked, together;
+    /// a layer made a track separator or not.
+    var setVisible: ([String], Bool) -> Void = { _, _ in }
+    var setLocked: ([String], Bool) -> Void = { _, _ in }
+    var setSeparator: (String, Bool) -> Void = { _, _ in }
+    var moveLayer: (String, Int) -> Void = { _, _ in }
+    var addLayer: (String) -> Void = { _ in }
+    var duplicateLayer: (String) -> Void = { _ in }
+    var removeLayer: (String) -> Void = { _ in }
+    var canRemove: (String) -> Bool = { _ in false }
+    /// Folders: folded or open, every layer shown or hidden, layers put
+    /// in or out ({ids, above, folder}), a new one of a layer (and the
+    /// others selected), one undone; ⌘-click's selection.
+    var toggleFolded: (String) -> Void = { _ in }
+    var toggleFolderVisible: (String) -> Void = { _ in }
+    var place: ([String], String?, String) -> Void = { _, _, _ in }
+    var group: (String) -> Void = { _ in }
+    var ungroup: (String) -> Void = { _ in }
+    var extendSelection: (String) -> Void = { _ in }
+    /// A transition between two layers ({from, to, kind}; "" none).
+    var setTransition: (String, String, String) -> Void = { _, _, _ in }
+    /// A header's name typed over: a layer's, a folder's.
+    var renameLayer: (String, String) -> Void = { _, _ in }
+    var renameFolder: (String, String) -> Void = { _, _ in }
+    var dropAsset: (String, String?, Int) -> Bool = { _, _, _ in false }
+    var dropFiles: ([URL], String?, Int) -> Bool = { _, _, _ in false }
+}
+
+struct TimelineCanvas: NSViewRepresentable {
+    var model: TimelineModel
+    var peaks: [String: AudioWaveform.TimedPeaks]
+    var actions: TimelineActions
+
+    func makeNSView(context: Context) -> TimelineNSView { TimelineNSView() }
+
+    func updateNSView(_ v: TimelineNSView, context: Context) {
+        v.actions = actions
+        if v.peakPaths != Set(peaks.keys) { v.peaks = peaks }
+        v.model = model
+    }
+}
+
+/// The timeline drawn and handled by AppKit: the layers' names frozen on
+/// the left, the ruler frozen on top, the tracks scrolling under both
+/// (sideways with a trackpad's swipe or ⇧ and the wheel; up and down
+/// through more rows than are shown; ⌘ or a pinch zooms where the
+/// pointer is). A click on the ruler, or between clips, puts the player
+/// there; a clip is dragged along its row, its ends snapping to the
+/// others' events; the scissors cut a clip where it is clicked. Assets
+/// and files dropped on it go on a new layer above the row, from where
+/// they were dropped.
+@MainActor
+final class TimelineNSView: NSView {
+    static let nameWidth: CGFloat = 168
+    static let rulerHeight: CGFloat = 26
+    static let rowHeight: CGFloat = 22
+    /// A key's dot, across: where a frame's cell is narrower, the key is
+    /// drawn as its cell instead.
+    static let keyDot: CGFloat = 6
+    /// How near, in points, an end comes before it snaps.
+    private static let snap: CGFloat = 8
+
+    var model = TimelineModel() {
+        didSet {
+            guard model != oldValue else { return }
+            if model.rows != oldValue.rows {
+                rowIndex = Dictionary(
+                    model.rows.indices.compactMap { i in
+                        model.rows[i].isFolder ? nil : (model.rows[i].id, i)
+                    }, uniquingKeysWith: { first, _ in first })
+            }
+            if model.rows != oldValue.rows || model.lanes != oldValue.lanes {
+                laneOf = []
+                if let lanes = model.lanes {
+                    laneOf = Array(repeating: 0, count: model.rows.count)
+                    for (k, l) in lanes.enumerated() {
+                        for i in l where i < laneOf.count { laneOf[i] = k }
+                    }
+                }
+            }
+            modelChanged(from: oldValue)
+            needsDisplay = true
+        }
+    }
+    /// Each layer's row, by its id (a folder's header left out): found by
+    /// a search of the rows, a transition's arrows searched 16 000 of them
+    /// twice at every draw (2026-10-23).
+    private var rowIndex: [String: Int] = [:]
+    /// In the TRACK VIEW, each row's track (TimelineModel.lanes); empty
+    /// in the layer view, where a row is its own.
+    private var laneOf: [Int] = []
+    var actions = TimelineActions()
+    var peaks: [String: AudioWaveform.TimedPeaks] = [:] {
+        didSet { needsDisplay = true }
+    }
+    var peakPaths: Set<String> { Set(peaks.keys) }
+
+    /// Points of time scrolled off the left; of rows off the top.
+    private var scrollX: CGFloat = 0
+    private var scrollY: CGFloat = 0
+    /// The frame under the pointer as a zoom began, and where it was.
+    private var zoomAnchor: (frame: Double, x: CGFloat)?
+
+    private enum Drag {
+        case scrub
+        case slide(row: Int, downX: CGFloat, to: Int)
+        /// A still's block's end dragged: it ends at `end`.
+        case stretch(row: Int, end: Int)
+        /// A key's dot dragged: the key at `from` going to `to`, within
+        /// `range` -- between the keys either side, on its block.
+        case key(row: Int, from: Int, to: Int, downX: CGFloat,
+                 range: ClosedRange<Int>)
+        /// A header pressed -- a layer's, or a folder's with its layers
+        /// -- `moving` once it has gone 3 points, to `spot`.
+        case reorder(row: Int, downY: CGFloat, spot: Spot, moving: Bool)
+    }
+    /// Where a header dragged goes: the gap above row `gap` (the rows'
+    /// count: under the last), or INTO the folder of row `into`.
+    private enum Spot: Equatable {
+        case gap(Int)
+        case into(Int)
+    }
+    private var drag: Drag?
+    private var hover: CGPoint?
+    /// Zoomed out, the keys' bars, where a tooltip says to zoom in to move
+    /// one: as last set, and their tags.
+    private var keyTips: [CGRect] = []
+    private var keyTipTags: [NSView.ToolTipTag] = []
+    /// A header's name being typed over (a double-click): its field, and
+    /// the row's id.
+    private var nameField: NSTextField?
+    private var naming: String?
+    /// Where a drop would go: above which row (nil: on top), from which
+    /// frame.
+    private var dropAt: (row: Int?, frame: Int)?
+    /// ⌘ held: the selected layer's overlaps with the others highlighted,
+    /// to be clicked into a transition. Watched while in a window -- the
+    /// view need not have the keyboard -- and let go as the app goes to
+    /// the back (its key-up never comes).
+    fileprivate var commandHeld = false {
+        didSet { if commandHeld != oldValue { needsDisplay = true } }
+    }
+    private var commandMonitor: Any?
+    private var commandObserver: (any NSObjectProtocol)?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.string, .fileURL, .URL])
+        setAccessibilityRole(.group)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+    /// A click in the window behind another works at once, as in any
+    /// editor's timeline.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // MARK: Geometry
+
+    private var trackWidth: CGFloat { max(1, bounds.width - Self.nameWidth) }
+
+    /// Points a frame: the whole timeline across the tracks, times the
+    /// zoom -- a frame at most 48 points wide (a page 600; a millisecond
+    /// 2.4).
+    private func scale(zoom: Double) -> CGFloat {
+        let fit = (trackWidth - 12) / CGFloat(max(1, model.frames))
+        let top: CGFloat = model.paged ? 600
+            : min(48, 2400 / CGFloat(max(1, model.rate.fps)))
+        return min(max(fit, top), fit * CGFloat(zoom))
+    }
+
+    private var scale: CGFloat { scale(zoom: model.zoom) }
+
+    private func x(_ frame: Double) -> CGFloat {
+        Self.nameWidth + CGFloat(frame) * scale - scrollX
+    }
+
+    private func frame(at x: CGFloat) -> Double {
+        Double((x - Self.nameWidth + scrollX) / scale)
+    }
+
+    /// A frame is a CELL of the time, `scale` wide, from x(f) to x(f + 1):
+    /// a layer's block covers its frames' cells, a cut or a start is at a
+    /// cell's edge, and what is AT a frame -- the player's line, a key's
+    /// dot -- is drawn through its cell's middle, so the line runs through
+    /// the dot of the key it is on.
+    private func mid(_ frame: Int) -> CGFloat {
+        x(Double(frame) + 0.5)
+    }
+
+    // The TRACKS drawn one under another: in the track view each lays
+    // several rows side by side (TimelineModel.lanes), in the layer view
+    // each is a row.
+
+    private var laneCount: Int { model.lanes?.count ?? model.rows.count }
+
+    /// Row `i`'s track.
+    private func lane(_ i: Int) -> Int {
+        model.lanes == nil || i >= laneOf.count ? i : laneOf[i]
+    }
+
+    /// Track `k`'s rows, top first.
+    private func laneRows(_ k: Int) -> Range<Int> {
+        model.lanes?[k] ?? k..<k + 1
+    }
+
+    private func laneTop(_ k: Int) -> CGFloat {
+        Self.rulerHeight + CGFloat(k) * Self.rowHeight - scrollY
+    }
+
+    private var rowsHeight: CGFloat {
+        CGFloat(laneCount) * Self.rowHeight
+    }
+
+    private func rowTop(_ i: Int) -> CGFloat { laneTop(lane(i)) }
+
+    /// The tracks that can show between `area`'s top and foot: the rest
+    /// are out of sight -- a timeline of 16 000 layers was drawn whole at
+    /// each of the player's frames (2026-10-23).
+    private func lanesShown(_ area: CGRect) -> Range<Int> {
+        let n = laneCount
+        let first = Int(((area.minY - Self.rulerHeight + scrollY)
+                         / Self.rowHeight).rounded(.down))
+        let last = Int(((area.maxY - Self.rulerHeight + scrollY)
+                        / Self.rowHeight).rounded(.up))
+        let lo = min(max(0, first), n)
+        return lo..<min(max(lo, last + 1), n)
+    }
+
+    /// Their rows.
+    private func rowsShown(_ area: CGRect) -> Range<Int> {
+        let k = lanesShown(area)
+        guard let first = k.first, let last = k.last else { return 0..<0 }
+        return laneRows(first).lowerBound..<laneRows(last).upperBound
+    }
+
+    private func lane(at y: CGFloat) -> Int? {
+        guard y >= Self.rulerHeight else { return nil }
+        let k = Int(((y - Self.rulerHeight + scrollY) / Self.rowHeight)
+            .rounded(.down))
+        return k >= 0 && k < laneCount ? k : nil
+    }
+
+    /// The row at height `y` -- in a track of several, the one whose
+    /// block is at `x` (the topmost where two meet; else the nearest),
+    /// and over the headers -- no `x`, or left of the tracks -- the one
+    /// at the player's line, else the top one.
+    private func row(at y: CGFloat, x: CGFloat? = nil) -> Int? {
+        guard let k = lane(at: y) else { return nil }
+        let rows = laneRows(k)
+        guard rows.count > 1 else { return rows.lowerBound }
+        if let x, x >= Self.nameWidth {
+            var near: (d: CGFloat, i: Int)?
+            for i in rows {
+                guard let b = block(i) else { continue }
+                if x >= b.minX && x < b.maxX { return i }
+                let d = x < b.minX ? b.minX - x : x - b.maxX
+                if d < (near?.d ?? .infinity) { near = (d, i) }
+            }
+            if let near { return near.i }
+        }
+        return rows.first { model.rows[$0].kind != .blank
+            && model.rows[$0].start <= model.playhead
+            && model.playhead < end(of: model.rows[$0]) } ?? rows.lowerBound
+    }
+
+    /// How far it scrolls: past the end by a third of the view, so a clip
+    /// can be dragged out beyond it.
+    private var maxScrollX: CGFloat {
+        max(0, CGFloat(model.frames) * scale + trackWidth * 0.33
+            - trackWidth)
+    }
+
+    private var maxScrollY: CGFloat {
+        max(0, rowsHeight - (bounds.height - Self.rulerHeight))
+    }
+
+    private func clampScroll() {
+        scrollX = min(max(0, scrollX), maxScrollX)
+        scrollY = min(max(0, scrollY), maxScrollY)
+    }
+
+    /// A row's block: from its start to its end -- the timeline's end for
+    /// one that runs on -- moved where it is being dragged.
+    private func block(_ i: Int) -> CGRect? {
+        let r = model.rows[i]
+        guard r.kind != .blank, !r.isFolder else { return nil }
+        var start = r.start
+        var end = r.end ?? max(model.frames, r.start + 1)
+        if case .slide(let row, _, let to)? = drag, row == i {
+            end += to - start
+            start = to
+        }
+        if case .stretch(let row, let to)? = drag, row == i { end = to }
+        // The row's whole height, as a cell of Flash's timeline.
+        let x0 = x(Double(start)), x1 = x(Double(end))
+        return CGRect(x: x0, y: rowTop(i), width: max(2, x1 - x0),
+                      height: Self.rowHeight)
+    }
+
+    // MARK: Changes
+
+    private func modelChanged(from old: TimelineModel) {
+        let oldScale = scale(zoom: old.zoom)
+        if model.zoom != old.zoom || model.frames != old.frames {
+            // The frame under the pointer stays under it; else the
+            // player's line where it is, if it shows; else the left edge.
+            let a: (frame: Double, x: CGFloat)
+            if let z = zoomAnchor {
+                a = z
+            } else {
+                let head = Double(old.playhead) + 0.5
+                let px = Self.nameWidth + CGFloat(head) * oldScale - scrollX
+                a = px >= Self.nameWidth && px <= bounds.width
+                    ? (head, px)
+                    : (Double(scrollX / oldScale), Self.nameWidth)
+            }
+            scrollX = CGFloat(a.frame) * scale - (a.x - Self.nameWidth)
+            zoomAnchor = nil
+        }
+        if model.cutting != old.cutting {
+            window?.invalidateCursorRects(for: self)
+        }
+        // The row being named gone (undone, removed): its field too.
+        if let id = naming, !model.rows.contains(where: { $0.id == id }) {
+            endNaming(commit: false)
+        }
+        clampScroll()
+        // The player's line kept in view as it moves.
+        if model.playhead != old.playhead, drag == nil {
+            let px = mid(model.playhead)
+            if px < Self.nameWidth || px > bounds.width - 16 {
+                scrollX = CGFloat(model.playhead) * scale - trackWidth * 0.1
+                clampScroll()
+            }
+        }
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        clampScroll()
+    }
+
+    // MARK: Drawing
+
+    override func draw(_ dirtyRect: NSRect) {
+        let w = bounds.width, h = bounds.height
+        let nameW = Self.nameWidth, rulerH = Self.rulerHeight
+        let tracks = CGRect(x: nameW, y: rulerH, width: w - nameW,
+                            height: max(0, h - rulerH))
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: tracks).addClip()
+        drawTracks(tracks)
+        NSGraphicsContext.restoreGraphicsState()
+        drawRuler(CGRect(x: nameW, y: 0, width: w - nameW, height: rulerH))
+        drawPlayhead(height: h)
+        drawKeyDragMark()
+        drawNames(CGRect(x: 0, y: rulerH, width: nameW,
+                         height: max(0, h - rulerH)))
+        // The corner (the tools sit on it), the ruler's hairline, and the
+        // divider between the layers' headers and their time.
+        Self.chrome.setFill()
+        CGRect(x: 0, y: 0, width: nameW, height: rulerH).fill()
+        NSColor.separatorColor.setFill()
+        CGRect(x: 0, y: rulerH - 0.5, width: w, height: 0.5).fill()
+        NSColor.labelColor.withAlphaComponent(0.16).setFill()
+        CGRect(x: nameW - Self.divider, y: 0, width: Self.divider,
+               height: h).fill()
+        drawReorderMark()
+        updateKeyTips()
+    }
+
+    /// The keys' bars, zoomed out, each with its tooltip -- set again only
+    /// when they have moved (a scroll, a zoom, a change), not as the
+    /// player's line does.
+    private func updateKeyTips() {
+        var rects: [CGRect] = []
+        if scale < Self.keyDot {
+            let area = CGRect(x: Self.nameWidth, y: Self.rulerHeight,
+                              width: max(0, bounds.width - Self.nameWidth),
+                              height: max(0, bounds.height - Self.rulerHeight))
+            for i in rowsShown(area) {
+                let r = model.rows[i]
+                guard let b = block(i) else { continue }
+                for k in r.movable.sorted() where k >= r.start
+                    && k < end(of: r) {
+                    // A line's few points widened to find with the pointer.
+                    let bar = keyBar(mid(k), in: b).insetBy(dx: -2, dy: 0)
+                        .intersection(area)
+                    if !bar.isNull, bar.width > 0 { rects.append(bar) }
+                }
+            }
+        }
+        guard rects != keyTips else { return }
+        keyTips = rects
+        keyTipTags.forEach(removeToolTip)
+        keyTipTags = rects.map { addToolTip($0, owner: self, userData: nil) }
+    }
+
+    /// The divider's width.
+    static let divider: CGFloat = 3
+
+    /// A header being dragged: where it would go -- a line across, set in
+    /// when it goes into a folder; a folder it goes into, tinted.
+    private func drawReorderMark() {
+        guard case .reorder(let i, _, let spot, true)? = drag,
+              let to = place(moving: i, to: spot) else { return }
+        NSColor.controlAccentColor.setFill()
+        switch spot {
+        case .into(let h):
+            NSColor.controlAccentColor.withAlphaComponent(0.25).setFill()
+            CGRect(x: 0, y: rowTop(h), width: bounds.width,
+                   height: Self.rowHeight).fill()
+        case .gap(let g):
+            let inset: CGFloat = to.folder.isEmpty || model.rows[i].isFolder
+                ? 0 : Self.indent
+            CGRect(x: inset, y: rowTop(g) - 1, width: bounds.width - inset,
+                   height: 2).fill()
+        }
+    }
+
+    /// The ruler's and the names' ground: a shade off the card.
+    private static let chrome = NSColor(name: nil) { a in
+        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor.white.withAlphaComponent(0.04)
+            : NSColor.black.withAlphaComponent(0.03)
+    }
+
+    private func drawTracks(_ area: CGRect) {
+        let n = model.rows.count
+        let shown = rowsShown(area)
+        let lanes = lanesShown(area)
+        // Tracks, every other one shaded; the selected one's tinted.
+        for k in lanes {
+            let r = CGRect(x: area.minX, y: laneTop(k), width: area.width,
+                           height: Self.rowHeight)
+            guard r.intersects(area) else { continue }
+            let rows = laneRows(k)
+            if rows.contains(where: { model.rows[$0].id == model.selected
+                || model.chosen.contains(model.rows[$0].id) }) {
+                NSColor.controlAccentColor.withAlphaComponent(0.1).setFill()
+                r.fill()
+            } else if model.rows[rows.lowerBound].isFolder {
+                NSColor.labelColor.withAlphaComponent(0.04).setFill()
+                r.fill()
+            } else if k % 2 == 1 {
+                NSColor.labelColor.withAlphaComponent(0.025).setFill()
+                r.fill()
+            }
+        }
+        // Past the timeline's end.
+        let endX = x(Double(model.frames))
+        if endX < area.maxX {
+            NSColor.labelColor.withAlphaComponent(0.06).setFill()
+            CGRect(x: max(area.minX, endX), y: area.minY,
+                   width: area.maxX - max(area.minX, endX),
+                   height: area.height).fill()
+            NSColor.separatorColor.setFill()
+            CGRect(x: endX - 0.5, y: area.minY, width: 1,
+                   height: area.height).fill()
+        }
+        if n == 0 {
+            let s = NSAttributedString(
+                string: String(localized: "Drop pictures, clips and sounds here"),
+                attributes: [.font: NSFont.systemFont(ofSize: 12),
+                             .foregroundColor: NSColor.tertiaryLabelColor])
+            let sz = s.size()
+            s.draw(at: CGPoint(x: area.midX - sz.width / 2,
+                               y: area.minY + 10))
+        }
+        // Bottom first: in a track, a layer over the one under it where
+        // the two meet in a transition (and the selected one over both).
+        var top: Int?
+        for i in shown.reversed() {
+            if model.rows[i].isFolder {
+                drawFolderSpan(i, area)
+                continue
+            }
+            if model.lanes != nil, model.rows[i].id == model.selected {
+                top = i
+                continue
+            }
+            guard let b = block(i), b.intersects(area) else { continue }
+            drawBlock(i, b, area)
+        }
+        if let i = top, let b = block(i), b.intersects(area) {
+            drawBlock(i, b, area)
+        }
+        // The tracks' lines, over the blocks that fill them.
+        NSColor.labelColor.withAlphaComponent(0.08).setFill()
+        for k in lanes {
+            CGRect(x: area.minX, y: laneTop(k) + Self.rowHeight - 0.5,
+                   width: area.width, height: 0.5).fill()
+        }
+        drawGrid(area)
+        drawOverlaps()
+        drawTransitions()
+        drawCutLine()
+        drawDropMark(area)
+    }
+
+    /// A line down from each of the ruler's labelled ticks, across every
+    /// layer to the view's foot -- over the blocks, as the rows' lines
+    /// are -- so what lines up in time is seen to.
+    private func drawGrid(_ area: CGRect) {
+        let major = tickSteps().0
+        let first = max(0, Int(frame(at: area.minX)) / major * major)
+        let last = Int(frame(at: area.maxX)) + major
+        NSColor.labelColor.withAlphaComponent(0.1).setFill()
+        var f = first
+        while f <= last {
+            let fx = x(Double(f)).rounded() + 0.5
+            if fx >= area.minX {
+                CGRect(x: fx - 0.5, y: area.minY, width: 1,
+                       height: area.height).fill()
+            }
+            f += major
+        }
+    }
+
+    /// A folder's row: where any of its layers plays, a grey band each
+    /// span, its name in the first.
+    private func drawFolderSpan(_ i: Int, _ area: CGRect) {
+        let r = model.rows[i]
+        for (k, s) in r.union.enumerated() {
+            let x0 = x(Double(s.lowerBound)), x1 = x(Double(s.upperBound))
+            let b = CGRect(x: x0, y: rowTop(i) + 4, width: max(2, x1 - x0),
+                           height: Self.rowHeight - 8)
+            guard b.intersects(area) else { continue }
+            NSColor.labelColor.withAlphaComponent(r.visible ? 0.22 : 0.08)
+                .setFill()
+            b.fill()
+            NSColor.labelColor.withAlphaComponent(0.35).setStroke()
+            let edge = NSBezierPath(rect: b.insetBy(dx: 0.5, dy: 0.5))
+            edge.lineWidth = 1
+            edge.stroke()
+            if k == 0 {
+                let left = max(b.minX, area.minX) + 5
+                let room = b.maxX - left - 5
+                if room > 24 {
+                    NSAttributedString(string: r.title, attributes: [
+                        .font: NSFont.systemFont(ofSize: 9.5,
+                                                 weight: .semibold),
+                        .foregroundColor: NSColor.labelColor
+                            .withAlphaComponent(0.75),
+                    ]).draw(with: CGRect(x: left, y: b.minY + 0.5,
+                                         width: room, height: 13),
+                            options: [.usesLineFragmentOrigin,
+                                      .truncatesLastVisibleLine])
+                }
+            }
+        }
+    }
+
+    /// A block's colour by what it shows: muted, so the dots, the
+    /// waveforms and the player's line stand out on them.
+    private static func color(_ k: TimelineRow.Kind) -> NSColor {
+        switch k {
+        case .clip: NSColor(srgbRed: 0.38, green: 0.51, blue: 0.68, alpha: 1)
+        case .sound: NSColor(srgbRed: 0.70, green: 0.55, blue: 0.37, alpha: 1)
+        case .picture: NSColor(srgbRed: 0.54, green: 0.46, blue: 0.66,
+                               alpha: 1)
+        case .markup: NSColor(srgbRed: 0.69, green: 0.63, blue: 0.36,
+                              alpha: 1)
+        case .composition: NSColor(srgbRed: 0.36, green: 0.56, blue: 0.57,
+                                   alpha: 1)
+        case .still: NSColor(srgbRed: 0.45, green: 0.47, blue: 0.65,
+                             alpha: 1)
+        case .blank, .folder: .clear
+        }
+    }
+
+    private func drawBlock(_ i: Int, _ b: CGRect, _ area: CGRect) {
+        let r = model.rows[i]
+        let base = Self.color(r.kind)
+        let path = NSBezierPath(rect: b)
+        base.withAlphaComponent(r.visible ? 0.85 : 0.3).setFill()
+        path.fill()
+        // A sound's waveform, as a shadow on it.
+        if let url = r.wave, let p = peaks[url.path] {
+            drawWave(p, r, b, area)
+        }
+        let selected = r.id == model.selected
+        (selected ? NSColor.labelColor : base.shadow(withLevel: 0.25)
+            ?? base).withAlphaComponent(selected ? 0.85 : 0.9).setStroke()
+        let edge = NSBezierPath(rect: b.insetBy(dx: selected ? 1 : 0.5,
+                                                dy: selected ? 1 : 0.5))
+        edge.lineWidth = selected ? 2 : 1
+        edge.stroke()
+        // A still's end stretches it: a grip there.
+        if r.stretchable, b.width > 16 {
+            let gx = b.maxX - (selected ? 5 : 4.5)
+            let grip = NSBezierPath()
+            for dx: CGFloat in [-1.25, 1.25] {
+                grip.move(to: CGPoint(x: gx + dx, y: b.minY + 5))
+                grip.line(to: CGPoint(x: gx + dx, y: b.maxY - 9))
+            }
+            grip.lineWidth = 1
+            (r.kind == .markup ? NSColor.black : NSColor.white)
+                .withAlphaComponent(r.visible ? 0.5 : 0.25).setStroke()
+            grip.stroke()
+        }
+        // Its name, from where it shows -- in a track, past the arrow of
+        // a transition it begins in, which lies over its start.
+        var left = max(b.minX, area.minX) + 6
+        if let past = transitionEnd(into: i) { left = max(left, past + 4) }
+        let room = b.maxX - left - (r.stretchable ? 10 : 6)
+        if room > 24 {
+            let dark = r.kind == .markup
+            let s = NSAttributedString(string: r.title, attributes: [
+                .font: NSFont.systemFont(ofSize: 9.5, weight: .medium),
+                .foregroundColor: dark ? NSColor.black.withAlphaComponent(0.8)
+                                       : NSColor.white.withAlphaComponent(
+                                           r.visible ? 0.95 : 0.6),
+            ])
+            s.draw(with: CGRect(x: left, y: b.minY + 1, width: room,
+                                height: 12),
+                   options: [.usesLineFragmentOrigin,
+                             .truncatesLastVisibleLine])
+        }
+        // Its keys: solid dots along its foot, the ways between them.
+        let y = keyY(b)
+        func keyX(_ k: Int) -> CGFloat {
+            var kx = mid(k)
+            if case .slide(let row, _, let to)? = drag, row == i {
+                kx += CGFloat(to - r.start) * scale
+            }
+            // Inside the block, a key at its very start too.
+            return min(max(kx, b.minX + 4), b.maxX - 4)
+        }
+        // A key being dragged: where it goes, its way on with it (the
+        // layer's start keeps its dot).
+        var keys = r.keys, ways = r.ways
+        if case .key(let row, let from, let to, _, _)? = drag, row == i,
+           from != to {
+            keys = Set(keys.filter { $0 != from || $0 == r.start } + [to])
+                .sorted()
+            ways[to] = ways.removeValue(forKey: from)
+        }
+        for (k, next) in zip(keys, keys.dropFirst()) {
+            if let way = ways[k] {
+                drawWay(way, from: keyX(k), to: keyX(next), y: y)
+            }
+        }
+        for k in keys {
+            var kx = mid(k)
+            if case .slide(let row, _, let to)? = drag, row == i {
+                kx += CGFloat(to - r.start) * scale
+            }
+            guard kx >= b.minX - 1, kx <= b.maxX + 1 else { continue }
+            if scale < Self.keyDot {
+                NSColor.black.withAlphaComponent(0.75).setFill()
+                NSBezierPath(rect: keyBar(kx, in: b)).fill()
+                continue
+            }
+            kx = keyX(k)
+            // The accent's, ringed in the card's ground to show on any
+            // block; the one being dragged a size up.
+            var d = Self.keyDot
+            if case .key(let row, _, let to, _, _)? = drag, row == i,
+               to == k {
+                d += 2
+            }
+            let dot = NSBezierPath(ovalIn: CGRect(x: kx - d / 2, y: y - d / 2,
+                                                  width: d, height: d))
+            NSColor.controlAccentColor.setFill()
+            dot.fill()
+            NSColor.textBackgroundColor.setStroke()
+            dot.lineWidth = 1.25
+            dot.stroke()
+        }
+    }
+
+    /// Where a block's keys lie across: along its foot.
+    private func keyY(_ b: CGRect) -> CGFloat { b.maxY - 4.5 }
+
+    /// Zoomed out, a frame narrower than the dot: the key is its frame's
+    /// cell -- a dark bar down the block, a line at least -- so it says
+    /// which frame; a seam between cells wide enough keeps keys a frame
+    /// apart two.
+    private func keyBar(_ kx: CGFloat, in b: CGRect) -> CGRect {
+        let w = scale >= 3 ? scale - 1 : max(scale, 1.5)
+        let bx = min(max(kx - w / 2, b.minX + 1), b.maxX - 1 - w)
+        return CGRect(x: bx, y: b.minY + 1, width: w, height: b.height - 2)
+    }
+
+    /// A key being dragged: where it goes, on the ruler -- its time (a
+    /// page) and how far it has gone.
+    private func drawKeyDragMark() {
+        guard case .key(_, let from, let to, _, _)? = drag else { return }
+        let kx = mid(to)
+        guard kx >= Self.nameWidth, kx <= bounds.width else { return }
+        let place = model.paged ? String(localized: "Page \(String(to + 1))")
+                                : model.rate.timecode(to)
+        let by = to == from ? "" : to > from ? "  +\(to - from)"
+                                             : "  \(to - from)"
+        let s = NSAttributedString(string: place + by, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 9.5,
+                                                    weight: .medium),
+            .foregroundColor: NSColor.white,
+        ])
+        let size = s.size()
+        let w = size.width + 10, h = Self.rulerHeight - 8
+        let lx = min(max(kx - w / 2, Self.nameWidth + 2), bounds.width - w - 2)
+        let tag = NSBezierPath(roundedRect: CGRect(x: lx, y: 4, width: w,
+                                                   height: h),
+                               xRadius: h / 2, yRadius: h / 2)
+        NSColor.controlAccentColor.setFill()
+        tag.fill()
+        s.draw(at: CGPoint(x: lx + 5, y: 4 + (h - size.height) / 2))
+    }
+
+    /// The way from a key (at `a`) to the next (at `b`): moving,
+    /// o>----->o -- a line, a chevron after the first and before the
+    /// next -- or held, o     |o -- a bar before the next, where the value
+    /// changes. In the dots' accent, haloed in the card's ground to show
+    /// on any block; left out where the keys are too close for it.
+    private func drawWay(_ way: TimelineRow.Way, from a: CGFloat,
+                         to b: CGFloat, y: CGFloat) {
+        let x0 = a + 5, x1 = b - 5
+        guard x1 - x0 >= (way == .moves ? 12 : 3) else { return }
+        let p = NSBezierPath()
+        switch way {
+        case .moves:
+            p.move(to: CGPoint(x: x0, y: y))
+            p.line(to: CGPoint(x: x1, y: y))
+            for tip in [x0 + 3, x1] {
+                p.move(to: CGPoint(x: tip - 3, y: y - 2.5))
+                p.line(to: CGPoint(x: tip, y: y))
+                p.line(to: CGPoint(x: tip - 3, y: y + 2.5))
+            }
+        case .jumps:
+            p.move(to: CGPoint(x: x1, y: y - 3.5))
+            p.line(to: CGPoint(x: x1, y: y + 3.5))
+        }
+        p.lineCapStyle = .round
+        p.lineJoinStyle = .round
+        p.lineWidth = 3
+        NSColor.textBackgroundColor.withAlphaComponent(0.6).setStroke()
+        p.stroke()
+        p.lineWidth = 1.25
+        NSColor.controlAccentColor.setStroke()
+        p.stroke()
+    }
+
+    /// The waveform of the source's span the block shows, its loudest
+    /// at each couple of points, dark over the block.
+    private func drawWave(_ p: AudioWaveform.TimedPeaks, _ r: TimelineRow,
+                          _ b: CGRect, _ area: CGRect) {
+        let fps = model.rate.fps
+        let frames = Double((r.end ?? model.frames) - r.start)
+        guard frames > 0 else { return }
+        let seconds = frames / fps
+        let until = r.until ?? (r.from + seconds)
+        let k = (until - r.from) / seconds   // source seconds a second
+        let lo = max(b.minX, area.minX), hi = min(b.maxX, area.maxX)
+        guard hi > lo else { return }
+        let mid = b.midY + 1, half = (b.height - 6) / 2
+        let step: CGFloat = 2
+        let wave = NSBezierPath()
+        var px = lo
+        while px < hi {
+            let t0 = Double((px - b.minX) / scale) / fps
+            let t1 = Double((px + step - b.minX) / scale) / fps
+            let v = CGFloat(p.peak(from: r.from + t0 * k,
+                                   to: r.from + t1 * k))
+            let hh = max(0.5, v * half)
+            wave.appendRect(CGRect(x: px, y: mid - hh, width: step * 0.75,
+                                   height: hh * 2))
+            px += step
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: b).addClip()
+        NSColor.black.withAlphaComponent(0.3).setFill()
+        wave.fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// The scissors over a clip: where it would cut.
+    private func drawCutLine() {
+        guard model.cutting, drag == nil, let h = hover,
+              let i = row(at: h.y, x: h.x), model.rows[i].cuttable,
+              let b = block(i), b.contains(h) else { return }
+        let cx = x(Double(cutFrame(h.x, row: i)))
+        let line = NSBezierPath()
+        line.move(to: CGPoint(x: cx, y: b.minY - 2))
+        line.line(to: CGPoint(x: cx, y: b.maxY + 2))
+        line.lineWidth = 1.5
+        line.setLineDash([3, 2], count: 2, phase: 0)
+        NSColor.systemRed.setStroke()
+        line.stroke()
+    }
+
+    /// A drop's place: a line where the new layer would go -- above the
+    /// row -- and one at the frame it would start.
+    private func drawDropMark(_ area: CGRect) {
+        guard let d = dropAt else { return }
+        NSColor.controlAccentColor.setFill()
+        let y = d.row.map { rowTop($0) } ?? rowTop(0)
+        CGRect(x: area.minX, y: y - 1, width: area.width, height: 2).fill()
+        let dx = x(Double(d.frame))
+        CGRect(x: dx - 1, y: area.minY, width: 2, height: area.height)
+            .fill()
+    }
+
+    private func drawRuler(_ r: CGRect) {
+        Self.chrome.setFill()
+        r.fill()
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: r).addClip()
+        let endX = x(Double(model.frames))
+        if endX < r.maxX {
+            NSColor.labelColor.withAlphaComponent(0.06).setFill()
+            CGRect(x: max(r.minX, endX), y: r.minY,
+                   width: r.maxX - max(r.minX, endX), height: r.height)
+                .fill()
+        }
+        let (major, minor) = tickSteps()
+        let first = max(0, Int(frame(at: r.minX)) / minor * minor)
+        let last = Int(frame(at: r.maxX)) + minor
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 9.5,
+                                                    weight: .regular)
+        NSColor.secondaryLabelColor.setFill()
+        var f = first
+        while f <= last {
+            let fx = x(Double(f)).rounded() + 0.5
+            let isMajor = f % major == 0
+            let len: CGFloat = isMajor ? 9 : 4
+            CGRect(x: fx - 0.5, y: r.maxY - len, width: 1, height: len)
+                .fill()
+            if isMajor {
+                let label = model.paged ? String(f + 1)
+                                        : model.rate.timecode(f)
+                let s = NSAttributedString(string: label, attributes: [
+                    .font: font,
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                ])
+                // After its tick, over its frame's cell: a time, a page's
+                // number (the player's line is in the cell's middle).
+                s.draw(at: CGPoint(x: fx + 3, y: r.minY + 3))
+            }
+            f += minor
+        }
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// The ruler's labelled step and its small one, in frames: a label at
+    /// least 90 points from the next (a millisecond's 100).
+    private func tickSteps() -> (Int, Int) {
+        if model.paged {
+            let every = max(1, Int((40 / scale).rounded(.up)))
+            return (every, every)
+        }
+        let fps = model.rate.fps
+        let room: CGFloat = model.rate.isMilliseconds ? 104 : 88
+        let perSecond = max(1, Int(fps.rounded()))
+        var steps: [Int] = []
+        if model.rate.isMilliseconds {
+            steps = [10, 20, 50, 100, 200, 500]
+        } else {
+            steps = [1, 2, 5, 10].filter { $0 < perSecond }
+        }
+        steps += [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+            .map { $0 * perSecond }
+        let major = steps.first { CGFloat($0) * scale >= room }
+            ?? steps.last ?? perSecond
+        let minor = major % 5 == 0 ? major / 5
+            : major % 2 == 0 ? major / 2 : major
+        return (major, max(1, minor))
+    }
+
+    /// The player's line through the middle of the frame it is at (the
+    /// page shown) -- a cell, tinted through every row once it is wide
+    /// enough to be seen.
+    private func drawPlayhead(height h: CGFloat) {
+        let px = mid(model.playhead).rounded() + 0.5
+        guard px >= Self.nameWidth, px <= bounds.width else { return }
+        if model.paged || scale >= 4 {
+            NSColor.systemRed.withAlphaComponent(0.06).setFill()
+            CGRect(x: x(Double(model.playhead)), y: Self.rulerHeight,
+                   width: scale, height: h - Self.rulerHeight).fill()
+        }
+        NSColor.systemRed.setFill()
+        CGRect(x: px - 0.75, y: 4, width: 1.5, height: h - 4).fill()
+        let head = NSBezierPath()
+        head.move(to: CGPoint(x: px - 5, y: 2))
+        head.line(to: CGPoint(x: px + 5, y: 2))
+        head.line(to: CGPoint(x: px + 5, y: 9))
+        head.line(to: CGPoint(x: px, y: 14))
+        head.line(to: CGPoint(x: px - 5, y: 9))
+        head.close()
+        head.fill()
+    }
+
+    private func drawNames(_ area: CGRect) {
+        Self.chrome.setFill()
+        area.fill()
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: area).addClip()
+        for k in lanesShown(area) {
+            let rows = laneRows(k)
+            if rows.count > 1 {
+                drawTrackHeader(rows, area)
+                continue
+            }
+            let i = rows.lowerBound
+            let r = model.rows[i]
+            let top = rowTop(i)
+            let rr = CGRect(x: 0, y: top, width: area.width,
+                            height: Self.rowHeight)
+            guard rr.intersects(area) else { continue }
+            if r.id == model.selected || model.chosen.contains(r.id) {
+                NSColor.controlAccentColor.withAlphaComponent(0.16).setFill()
+                rr.fill()
+            } else if r.isFolder {
+                NSColor.labelColor.withAlphaComponent(0.05).setFill()
+                rr.fill()
+            }
+            if case .reorder(let from, _, _, true)? = drag, from == i {
+                NSColor.labelColor.withAlphaComponent(0.08).setFill()
+                rr.fill()
+            }
+            let tint: NSColor = r.visible ? .secondaryLabelColor
+                                          : .tertiaryLabelColor
+            // Shown or hidden, as the Layers section's eye (a folder's:
+            // all of its layers).
+            if let eye = Self.image(r.visible ? "eye" : "eye.slash",
+                                    r.visible ? .labelColor
+                                              : .tertiaryLabelColor) {
+                Self.draw(eye, centredIn: Self.eyeRect(top: top))
+            }
+            var x = Self.iconX + CGFloat(r.depth) * Self.indent
+            if r.isFolder {
+                if let fold = Self.image(r.folded ? "chevron.right"
+                                                  : "chevron.down",
+                                         .secondaryLabelColor) {
+                    Self.draw(fold, centredIn: Self.foldRect(top: top))
+                }
+                x += 12
+            }
+            if let img = Self.symbol(r.kind, tint) {
+                Self.draw(img, centredIn: CGRect(x: x, y: top, width: 14,
+                                                 height: Self.rowHeight))
+            }
+            // A layer's lock, at the header's end: shut while it is
+            // locked, faintly open while it is not.
+            if !r.isFolder,
+               let lock = Self.image(r.locked ? "lock.fill" : "lock.open",
+                                     r.locked ? .labelColor
+                                              : .tertiaryLabelColor) {
+                Self.draw(lock, centredIn: Self.lockRect(top: top))
+            }
+            let s = NSAttributedString(string: r.title, attributes: [
+                .font: NSFont.systemFont(ofSize: 10.5,
+                                         weight: r.isFolder ? .semibold
+                                                            : .regular),
+                .foregroundColor: r.visible ? NSColor.labelColor
+                                            : NSColor.secondaryLabelColor,
+            ])
+            // Being named: its field is there instead.
+            if r.id != naming {
+                s.draw(with: CGRect(x: x + 17, y: top + 4.5,
+                                    width: area.width - x - 17
+                                        - Self.divider - 4
+                                        - (r.isFolder ? 0 : Self.lockWidth),
+                                    height: 14),
+                       options: [.usesLineFragmentOrigin,
+                                 .truncatesLastVisibleLine])
+            }
+            NSColor.labelColor.withAlphaComponent(0.08).setFill()
+            CGRect(x: 0, y: rr.maxY - 0.5, width: area.width, height: 0.5)
+                .fill()
+            if r.separator { drawSeparatorMark(rr) }
+        }
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    /// A track of several layers' header, in the track view: an eye and
+    /// a lock for them all, its layers' names in the order they play.
+    private func drawTrackHeader(_ rows: Range<Int>, _ area: CGRect) {
+        let top = rowTop(rows.lowerBound)
+        let rr = CGRect(x: 0, y: top, width: area.width,
+                        height: Self.rowHeight)
+        guard rr.intersects(area) else { return }
+        let members = rows.map { model.rows[$0] }
+        if members.contains(where: { $0.id == model.selected
+            || model.chosen.contains($0.id) }) {
+            NSColor.controlAccentColor.withAlphaComponent(0.16).setFill()
+            rr.fill()
+        }
+        let visible = members.contains(where: \.visible)
+        let locked = members.allSatisfy(\.locked)
+        if let eye = Self.image(visible ? "eye" : "eye.slash",
+                                visible ? .labelColor : .tertiaryLabelColor) {
+            Self.draw(eye, centredIn: Self.eyeRect(top: top))
+        }
+        let x = Self.iconX
+            + CGFloat(members.first?.depth ?? 0) * Self.indent
+        let tint: NSColor = visible ? .secondaryLabelColor
+                                    : .tertiaryLabelColor
+        let kinds = Set(members.map(\.kind))
+        if let img = kinds.count == 1
+            ? Self.symbol(members[0].kind, tint)
+            : Self.image("rectangle.split.3x1", tint) {
+            Self.draw(img, centredIn: CGRect(x: x, y: top, width: 14,
+                                             height: Self.rowHeight))
+        }
+        if let lock = Self.image(locked ? "lock.fill" : "lock.open",
+                                 locked ? .labelColor : .tertiaryLabelColor) {
+            Self.draw(lock, centredIn: Self.lockRect(top: top))
+        }
+        let names = members.sorted { $0.start < $1.start }.map(\.title)
+        NSAttributedString(string: names.joined(separator: " · "),
+                           attributes: [
+            .font: NSFont.systemFont(ofSize: 10.5),
+            .foregroundColor: visible ? NSColor.labelColor
+                                      : NSColor.secondaryLabelColor,
+        ]).draw(with: CGRect(x: x + 17, y: top + 4.5,
+                             width: area.width - x - 17 - Self.divider - 4
+                                 - Self.lockWidth,
+                             height: 14),
+                options: [.usesLineFragmentOrigin,
+                          .truncatesLastVisibleLine])
+        NSColor.labelColor.withAlphaComponent(0.08).setFill()
+        CGRect(x: 0, y: rr.maxY - 0.5, width: area.width, height: 0.5)
+            .fill()
+        if members.last?.separator == true { drawSeparatorMark(rr) }
+    }
+
+    /// A track separator's mark: a firm line along its header's foot, the
+    /// edge it keeps from the track below.
+    private func drawSeparatorMark(_ rr: CGRect) {
+        NSColor.labelColor.withAlphaComponent(0.45).setFill()
+        CGRect(x: 2, y: rr.maxY - 1.5,
+               width: Self.nameWidth - Self.divider - 4, height: 1.5).fill()
+    }
+
+    /// The headers' columns: the eye, a folder's fold, what a row is
+    /// (set in under a folder).
+    private static let iconX: CGFloat = 20
+    static let indent: CGFloat = 12
+
+    /// A row's eye: where a click shows or hides its layer (a folder's).
+    private static func eyeRect(top: CGFloat) -> CGRect {
+        CGRect(x: 3, y: top, width: 16, height: rowHeight)
+    }
+
+    /// A layer's lock: where a click locks or unlocks it, at the end of
+    /// its header.
+    private static let lockWidth: CGFloat = 18
+    private static func lockRect(top: CGFloat) -> CGRect {
+        CGRect(x: nameWidth - divider - lockWidth - 1, y: top,
+               width: lockWidth, height: rowHeight)
+    }
+
+    /// A folder's fold: where a click folds it shut or opens it.
+    private static func foldRect(top: CGFloat) -> CGRect {
+        CGRect(x: iconX, y: top, width: 12, height: rowHeight)
+    }
+
+    private static func image(_ name: String, _ tint: NSColor) -> NSImage? {
+        let cfg = NSImage.SymbolConfiguration(pointSize: 9, weight: .medium)
+            .applying(.init(paletteColors: [tint]))
+        return NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
+    }
+
+    private static func draw(_ img: NSImage, centredIn r: CGRect) {
+        let sz = img.size
+        img.draw(in: CGRect(x: r.midX - sz.width / 2,
+                            y: r.midY - sz.height / 2,
+                            width: sz.width, height: sz.height))
+    }
+
+    private static func symbol(_ k: TimelineRow.Kind,
+                               _ tint: NSColor) -> NSImage? {
+        let name = switch k {
+        case .clip: "film"
+        case .sound: "waveform"
+        case .picture: "photo"
+        case .markup: "pencil.tip"
+        case .composition: "rectangle.stack"
+        case .still: "photo.stack"
+        case .blank: "square.dashed"
+        case .folder: "folder"
+        }
+        return image(name, tint)
+    }
+
+    // MARK: Moving headers
+
+    /// A header dragged to `spot`: the layers it moves (a folder's, all
+    /// of them), the layer they go right above (nil: the bottom), the
+    /// folder they go in -- or nil where it would not move.
+    private func place(moving i: Int, to spot: Spot)
+        -> (ids: [String], above: String?, folder: String)? {
+        let rows = model.rows
+        guard rows.indices.contains(i) else { return nil }
+        let mv = rows[i]
+        let ids = mv.isFolder ? mv.members : [mv.id]
+        // The layer topmost under a row: a folder's, its top one.
+        let anchor = { (r: TimelineRow) -> String? in
+            r.isFolder ? r.members.last : r.id
+        }
+        switch spot {
+        case .into(let h):
+            // A layer into a folder, on top; not a folder into another.
+            guard !mv.isFolder, rows.indices.contains(h),
+                  let f = rows[h].folder, mv.folder != f else { return nil }
+            return (ids, anchor(rows[h]), f)
+        case .gap(let g):
+            // Not next to itself (a folder: not within its own rows).
+            if g == i || g == i + 1 { return nil }
+            if mv.isFolder, (i + 1..<min(rows.count, i + 1
+                    + (mv.folded ? 0 : mv.members.count))).contains(g) {
+                return nil
+            }
+            let below = g < rows.count ? rows[g] : nil
+            let above = g > 0 ? rows[g - 1] : nil
+            var to = below.flatMap(anchor)
+            // Between a folder's header (open) or one of its layers and
+            // one of its layers: in it.
+            var folder = ""
+            if let a = above, let f = a.folder, !(a.isFolder && a.folded),
+               let b = below, !b.isFolder, b.folder == f {
+                folder = f
+            }
+            if mv.isFolder {
+                // A folder goes between others, never into one: above the
+                // one it was dropped in.
+                if !folder.isEmpty, folder != mv.folder,
+                   let h = rows.first(where: { $0.isFolder
+                       && $0.folder == folder }) {
+                    to = h.members.last
+                }
+                folder = mv.folder ?? ""
+            }
+            return (ids, to, folder)
+        }
+    }
+
+    // MARK: Snapping
+
+    /// What an end snaps to: the other rows' events, the timeline's start
+    /// and end, the player's line.
+    private func snapTargets(excluding i: Int?) -> [Int] {
+        var t: Set<Int> = [0, model.frames, model.playhead]
+        for (j, r) in model.rows.enumerated() where j != i && !r.isFolder {
+            t.insert(r.start)
+            if let e = r.end { t.insert(e) }
+            t.formUnion(r.keys)
+        }
+        return Array(t)
+    }
+
+    /// The frame at `x`, snapped to an event within reach.
+    private func snapped(_ x: CGFloat, excluding i: Int? = nil) -> Int {
+        let f = frame(at: x)
+        let reach = Double(Self.snap / scale)
+        if let t = snapTargets(excluding: i)
+            .min(by: { abs(Double($0) - f) < abs(Double($1) - f) }),
+           abs(Double(t) - f) <= reach {
+            return t
+        }
+        return Int(f.rounded())
+    }
+
+    /// Where the scissors cut: the frame edge nearest the pointer, or an
+    /// event (the player's line) within reach.
+    private func cutFrame(_ x: CGFloat, row i: Int) -> Int {
+        snapped(x, excluding: i)
+    }
+
+    /// Where a row's block ends: its end, or the timeline's for one that
+    /// runs on.
+    private func end(of r: TimelineRow) -> Int {
+        r.end ?? max(model.frames, r.start + 1)
+    }
+
+    /// Over a still's block's right end -- its last few points, or just
+    /// past it: where a press stretches it.
+    private func atStretchEnd(_ i: Int, _ p: CGPoint) -> Bool {
+        guard model.rows.indices.contains(i), model.rows[i].stretchable,
+              let b = block(i), p.y >= b.minY, p.y <= b.maxY else {
+            return false
+        }
+        return p.x >= b.maxX - min(5, b.width / 3) && p.x <= b.maxX + 4
+    }
+
+    /// The key whose dot is under `p` -- shown as a dot, it is dragged
+    /// along its block -- the nearest: its row and frame.
+    private func keyHit(_ p: CGPoint) -> (row: Int, frame: Int)? {
+        guard scale >= Self.keyDot, p.x >= Self.nameWidth,
+              let i = row(at: p.y, x: p.x), let b = block(i),
+              abs(p.y - keyY(b)) <= 6 else { return nil }
+        let r = model.rows[i]
+        var best: (d: CGFloat, k: Int)?
+        for k in r.movable where k >= r.start && k < end(of: r) {
+            let kx = min(max(mid(k), b.minX + 4), b.maxX - 4)
+            let d = abs(kx - p.x)
+            if d <= 5, d < (best?.d ?? .infinity) { best = (d, k) }
+        }
+        return best.map { (i, $0.k) }
+    }
+
+    /// Where a key may go: between the keys either side of it, on its
+    /// layer's frames (a still's pages).
+    private func keyRange(_ i: Int, _ k: Int) -> ClosedRange<Int> {
+        let r = model.rows[i]
+        let lo = max(r.start, (r.movable.filter { $0 < k }.max() ?? -1) + 1)
+        let hi = min(end(of: r) - 1,
+                     (r.movable.filter { $0 > k }.min() ?? .max) - 1)
+        return lo...max(lo, hi)
+    }
+
+    /// A row dragged by `dx` points: its start, its start or end snapped
+    /// to an event within reach -- never before the timeline's start.
+    private func slideStart(_ i: Int, dx: CGFloat) -> Int {
+        let r = model.rows[i]
+        let s = Double(r.start) + Double(dx / scale)
+        let len = r.end.map { Double($0 - r.start) }
+        let reach = Double(Self.snap / scale)
+        var best: (d: Double, to: Double)?
+        for t in snapTargets(excluding: i) {
+            let tt = Double(t)
+            for (d, to) in [(abs(tt - s), tt)]
+                + (len.map { [(abs(tt - (s + $0)), tt - $0)] } ?? []) {
+                if d <= reach, d < (best?.d ?? .infinity) {
+                    best = (d, to)
+                }
+            }
+        }
+        return max(0, Int((best?.to ?? s).rounded()))
+    }
+
+    // MARK: Pointer
+
+    override func mouseDown(with e: NSEvent) {
+        window?.makeFirstResponder(self)
+        let p = convert(e.locationInWindow, from: nil)
+        if Self.tracing {
+            print("snapshot: timeline-down \(Int(p.x)),\(Int(p.y)) row=\(row(at: p.y, x: p.x).map(String.init) ?? "-")")
+        }
+        if p.y < Self.rulerHeight {
+            if p.x >= Self.nameWidth {
+                drag = .scrub
+                scrubX = p.x
+                scrub(p.x)
+            }
+            return
+        }
+        let i = row(at: p.y, x: p.x)
+        if p.x < Self.nameWidth {
+            guard let i else { return }
+            let lanes = laneRows(lane(i))
+            if lanes.count > 1 {
+                trackHeaderDown(lanes, at: p)
+                return
+            }
+            let r = model.rows[i]
+            // The eye shows or hides it (a folder's, all its layers); a
+            // folder's fold folds it; elsewhere a press selects a layer
+            // (⌘ or ⇧: in or out of the selection), and a drag moves it --
+            // a folder with its layers -- up or down the stack.
+            // Read-only: selected and folded, nothing more.
+            if model.readOnly {
+                if r.isFolder, let f = r.folder,
+                   Self.foldRect(top: rowTop(i)).contains(p) {
+                    actions.toggleFolded(f)
+                } else if let id = r.layer {
+                    actions.select(id)
+                }
+                return
+            }
+            if Self.eyeRect(top: rowTop(i)).contains(p) {
+                if let f = r.folder, r.isFolder {
+                    actions.toggleFolderVisible(f)
+                } else {
+                    actions.toggleVisible(r.id)
+                }
+                return
+            }
+            if r.isFolder, let f = r.folder,
+               Self.foldRect(top: rowTop(i)).contains(p) {
+                actions.toggleFolded(f)
+                return
+            }
+            if !r.isFolder, Self.lockRect(top: rowTop(i)).contains(p) {
+                actions.toggleLocked(r.id)
+                return
+            }
+            let mods = e.modifierFlags
+            // A double-click on its name names it, as in the Layers
+            // section (AppKit's click count: the second click of two).
+            if e.clickCount == 2, !mods.contains(.command),
+               !mods.contains(.shift) {
+                beginNaming(i)
+                return
+            }
+            if let id = r.layer {
+                if mods.contains(.command) || mods.contains(.shift) {
+                    actions.extendSelection(id)
+                    return
+                }
+                actions.select(id)
+            }
+            // Up and down the stack in the layer view; the track view's
+            // places are its tracks, not the rows'.
+            if model.lanes == nil {
+                drag = .reorder(row: i, downY: p.y, spot: .gap(i),
+                                moving: false)
+            }
+            return
+        }
+        // A transition's arrow: its ways, in a menu.
+        if !model.readOnly, let n = transition(at: p),
+           let m = transitionMenu(n) {
+            m.popUp(positioning: nil, at: p, in: self)
+            return
+        }
+        // ⌘ held over an overlap the selected layer has with another: a
+        // transition between them -- a cross dissolve to start.
+        if !model.cutting, !model.readOnly,
+           let o = overlap(at: p, held: e.modifierFlags.contains(.command)) {
+            actions.setTransition(o.from, o.to, "dissolve")
+            return
+        }
+        guard let i else {
+            drag = .scrub
+            scrub(p.x)
+            return
+        }
+        let r = model.rows[i]
+        if r.isFolder {
+            drag = .scrub
+            scrub(p.x)
+            return
+        }
+        // A locked layer -- or every one, read-only: selected, the
+        // player where it was pressed -- nothing of it moves.
+        if r.locked || model.readOnly {
+            actions.select(r.id)
+            drag = .scrub
+            scrub(p.x)
+            return
+        }
+        // A key's dot: dragged, the key moves along its block.
+        if !model.cutting, let k = keyHit(p) {
+            actions.select(r.id)
+            drag = .key(row: k.row, from: k.frame, to: k.frame, downX: p.x,
+                        range: keyRange(k.row, k.frame))
+            NSCursor.resizeLeftRight.set()
+            needsDisplay = true
+            return
+        }
+        // A still's block's end: dragged, it stretches the still.
+        if !model.cutting, atStretchEnd(i, p) {
+            actions.select(r.id)
+            drag = .stretch(row: i, end: end(of: r))
+            NSCursor.resizeLeftRight.set()
+            return
+        }
+        if let b = block(i), b.contains(p) {
+            actions.select(r.id)
+            if model.cutting {
+                if r.cuttable {
+                    actions.cut(r.id, cutFrame(p.x, row: i))
+                } else {
+                    NSSound.beep()
+                }
+                return
+            }
+            drag = .slide(row: i, downX: p.x, to: r.start)
+            NSCursor.closedHand.set()
+        } else {
+            actions.select(r.id)
+            drag = .scrub
+            scrub(p.x)
+        }
+    }
+
+    /// A press on the header of a track of several layers (the track
+    /// view's): its eye shows or hides them all, its lock locks or
+    /// unlocks them all, each one command; elsewhere it selects the layer
+    /// at the player's line, else the top one. Its layers are moved up or
+    /// down the stack, and named, in the layer view.
+    private func trackHeaderDown(_ rows: Range<Int>, at p: CGPoint) {
+        let members = rows.map { model.rows[$0] }
+        let top = rowTop(rows.lowerBound)
+        let ids = members.map(\.id)
+        if !model.readOnly, Self.eyeRect(top: top).contains(p) {
+            actions.setVisible(ids, !members.contains(where: \.visible))
+            return
+        }
+        if !model.readOnly, Self.lockRect(top: top).contains(p) {
+            actions.setLocked(ids, !members.allSatisfy(\.locked))
+            return
+        }
+        if let i = row(at: p.y) { actions.select(model.rows[i].id) }
+    }
+
+    override func mouseDragged(with e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        switch drag {
+        case .scrub?:
+            scrubX = p.x
+            scrub(p.x)
+            // At the tracks' left or right edge, or past it: they scroll,
+            // the player's line kept in sight there.
+            if scrubScroll(p.x) != 0, scrubTimer == nil {
+                startScrubScroll()
+            }
+        case .slide(let i, let downX, _)?:
+            drag = .slide(row: i, downX: downX,
+                          to: slideStart(i, dx: p.x - downX))
+            needsDisplay = true
+        case .stretch(let i, _)?:
+            // Snapping to an event within reach; a frame at least; a
+            // still's page within its pages.
+            var to = max(model.rows[i].start + 1, snapped(p.x, excluding: i))
+            if model.paged { to = min(to, model.frames) }
+            drag = .stretch(row: i, end: to)
+            needsDisplay = true
+        case .key(let i, let from, _, let downX, let range)?:
+            // As far as the pointer has gone, snapped to an event within
+            // reach -- the player's line, another layer's key -- between
+            // its neighbours.
+            let want = Double(from) + Double((p.x - downX) / scale)
+            var to = Int(want.rounded())
+            if let t = snapTargets(excluding: i).filter(range.contains)
+                .min(by: { abs(Double($0) - want) < abs(Double($1) - want) }),
+               abs(Double(t) - want) <= Double(Self.snap / scale) {
+                to = t
+            }
+            to = min(max(to, range.lowerBound), range.upperBound)
+            drag = .key(row: i, from: from, to: to, downX: downX,
+                        range: range)
+            needsDisplay = true
+        case .reorder(let i, let downY, _, let moving)?:
+            guard moving || abs(p.y - downY) > 3 else { return }
+            reorderY = p.y
+            reorder(i, downY: downY)
+            NSCursor.closedHand.set()
+            // At the rows' top or bottom, or past it: they scroll.
+            if reorderScroll(p.y) != 0, reorderTimer == nil {
+                startReorderScroll()
+            }
+        case nil:
+            break
+        }
+    }
+
+    /// Where a header being dragged would go, the pointer at
+    /// `reorderY`: over a folder's header's middle, a layer goes into it;
+    /// else into the gap between rows nearest the pointer -- held to the
+    /// rows shown, so past the top or bottom it is the edge's gap while
+    /// the rows scroll under it.
+    private func reorder(_ i: Int, downY: CGFloat) {
+        let y = min(max(reorderY, Self.rulerHeight),
+                    max(Self.rulerHeight, bounds.height - 1))
+        let at = (y - Self.rulerHeight + scrollY) / Self.rowHeight
+        let r = Int(at.rounded(.down))
+        let frac = at - at.rounded(.down)
+        let spot: Spot
+        if model.rows.indices.contains(r), model.rows[r].isFolder,
+           !model.rows[i].isFolder, frac > 0.3, frac < 0.7 {
+            spot = .into(r)
+        } else {
+            spot = .gap(min(max(0, Int(at.rounded())), model.rows.count))
+        }
+        drag = .reorder(row: i, downY: downY, spot: spot, moving: true)
+        needsDisplay = true
+    }
+
+    /// The pointer's last height in a header's drag.
+    private var reorderY: CGFloat = 0
+    private var reorderTimer: Timer?
+
+    /// Points a tick the rows scroll for a header dragged to `y`: within
+    /// a band at the top or bottom of the rows shown, or past it, faster
+    /// the further out; 0 elsewhere, or with nothing more that way.
+    private func reorderScroll(_ y: CGFloat) -> CGFloat {
+        let band = Self.rowHeight * 0.75
+        let top = Self.rulerHeight + band
+        let bottom = bounds.height - band
+        let speed = { (out: CGFloat) in min(32, 2 + out / 3) }
+        if y < top, scrollY > 0 { return -speed(top - y) }
+        if y > bottom, scrollY < maxScrollY { return speed(y - bottom) }
+        return 0
+    }
+
+    /// The rows scrolled while a header is held at their edge: AppKit
+    /// sends no drag while the pointer stands still, so a timer moves
+    /// them -- and the gap it would go into with them -- until the
+    /// pointer comes back in, the end is reached or it is let go.
+    private func startReorderScroll() {
+        let t = Timer(timeInterval: 1.0 / 60, repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.reorderTick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        reorderTimer = t
+    }
+
+    private func reorderTick() {
+        guard case .reorder(let i, let downY, _, true)? = drag else {
+            stopReorderScroll()
+            return
+        }
+        let d = reorderScroll(reorderY)
+        guard d != 0 else {
+            stopReorderScroll()
+            return
+        }
+        scrollY += d
+        clampScroll()
+        reorder(i, downY: downY)
+    }
+
+    private func stopReorderScroll() {
+        reorderTimer?.invalidate()
+        reorderTimer = nil
+    }
+
+    /// Where the rows are scrolled, of how far they go (the hooks').
+    var scrollSummary: String {
+        "\(Int(scrollY))/\(Int(maxScrollY))"
+    }
+
+    /// The pointer's last place across in a drag of the player's line.
+    private var scrubX: CGFloat = 0
+    private var scrubTimer: Timer?
+
+    /// Points a tick the tracks scroll for the player's line dragged to
+    /// `x`: within a band at their left or right edge, or past it, faster
+    /// the further out -- left while the start is not in sight, right
+    /// while the end is not; 0 elsewhere.
+    private func scrubScroll(_ x: CGFloat) -> CGFloat {
+        let band: CGFloat = 16
+        let left = Self.nameWidth + band
+        let right = bounds.width - band
+        let speed = { (out: CGFloat) in min(40, 2 + out / 3) }
+        let endShown = self.x(Double(model.frames)) <= bounds.width
+        if x < left, scrollX > 0 { return -speed(left - x) }
+        if x > right, !endShown, scrollX < maxScrollX {
+            return speed(x - right)
+        }
+        return 0
+    }
+
+    /// The tracks scrolled while the player's line is held at their
+    /// edge: AppKit sends no drag while the pointer stands still, so a
+    /// timer moves them -- and the line with them, to the frame at the
+    /// edge -- until the pointer comes back in, the start or the end
+    /// comes into sight, or it is let go.
+    private func startScrubScroll() {
+        let t = Timer(timeInterval: 1.0 / 60, repeats: true) {
+            [weak self] _ in
+            MainActor.assumeIsolated { self?.scrubTick() }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        scrubTimer = t
+    }
+
+    private func scrubTick() {
+        guard case .scrub? = drag else {
+            stopScrubScroll()
+            return
+        }
+        let d = scrubScroll(scrubX)
+        guard d != 0 else {
+            stopScrubScroll()
+            return
+        }
+        scrollX += d
+        clampScroll()
+        scrub(scrubX)
+        needsDisplay = true
+    }
+
+    private func stopScrubScroll() {
+        scrubTimer?.invalidate()
+        scrubTimer = nil
+    }
+
+    /// Where the tracks are scrolled across, of how far they go (the
+    /// hooks').
+    var scrollXSummary: String {
+        "\(Int(scrollX))/\(Int(maxScrollX))"
+    }
+
+    override func mouseUp(with e: NSEvent) {
+        stopReorderScroll()
+        stopScrubScroll()
+        scrubbed = -1
+        defer {
+            drag = nil
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+        }
+        if case .slide(let i, _, let to)? = drag, i < model.rows.count,
+           to != model.rows[i].start {
+            actions.slide(model.rows[i].id, to)
+        }
+        if case .stretch(let i, let to)? = drag, i < model.rows.count,
+           to != end(of: model.rows[i]) {
+            actions.stretch(model.rows[i].id, to - model.rows[i].start)
+        }
+        if case .key(let i, let from, let to, _, _)? = drag,
+           i < model.rows.count, to != from {
+            let r = model.rows[i]
+            actions.moveKey(r.id, from - r.start, to - r.start)
+        }
+        // A header dropped: its layers where it went, in a folder or out.
+        if case .reorder(let i, _, let spot, true)? = drag,
+           let to = place(moving: i, to: spot) {
+            actions.place(to.ids, to.above, to.folder)
+        }
+    }
+
+    /// A layer's menu, on its header or its row: a blank layer above it,
+    /// shown or hidden, removed.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        menu(at: convert(event.locationInWindow, from: nil))
+    }
+
+    /// For the snapshot hooks: the menu a right-click on row `i` opens --
+    /// on its header, or its block's middle.
+    func layerMenu(row i: Int, header: Bool) -> NSMenu? {
+        guard model.rows.indices.contains(i) else { return nil }
+        if header {
+            return menu(at: CGPoint(x: 100,
+                                    y: rowTop(i) + Self.rowHeight / 2))
+        }
+        guard let b = block(i) else { return nil }
+        return menu(at: CGPoint(x: max(b.midX, Self.nameWidth + 1),
+                                y: b.midY))
+    }
+
+    private func menu(at p: CGPoint) -> NSMenu? {
+        // Read-only: every item of it would change the project.
+        if model.readOnly { return nil }
+        if p.x >= Self.nameWidth, p.y >= Self.rulerHeight,
+           let n = transition(at: p) {
+            return transitionMenu(n)
+        }
+        guard let i = row(at: p.y, x: p.x) else { return nil }
+        let lanes = laneRows(lane(i))
+        if p.x < Self.nameWidth, lanes.count > 1 {
+            return trackMenu(lanes)
+        }
+        let r = model.rows[i]
+        let m = NSMenu()
+        // A folder's: every layer of it shown or hidden; undone.
+        if r.isFolder, let f = r.folder {
+            m.addItem(Self.item(r.visible ? String(localized: "Hide Layers")
+                                          : String(localized: "Show Layers")) {
+                [weak self] in self?.actions.toggleFolderVisible(f)
+            })
+            m.addItem(Self.item(String(localized: "Ungroup")) {
+                [weak self] in self?.actions.ungroup(f)
+            })
+            return m
+        }
+        // Several chosen with it: they go in a folder together.
+        let several = model.chosen.count > 1 && model.chosen.contains(r.id)
+        if !several { actions.select(r.id) }
+        m.addItem(Self.item(several
+                            ? String(localized: "Group Selected Layers")
+                            : String(localized: "Put in a New Folder")) {
+            [weak self] in self?.actions.group(r.id)
+        })
+        if let f = r.folder,
+           let head = model.rows.first(where: { $0.isFolder
+               && $0.folder == f }) {
+            m.addItem(Self.item(String(localized: "Take Out of Its Folder")) {
+                [weak self] in
+                self?.actions.place([r.id], head.members.last, "")
+            })
+        }
+        m.addItem(.separator())
+        m.addItem(Self.item(String(localized: "Add Layer Above")) { [weak self] in
+            self?.actions.addLayer(r.id)
+        })
+        if r.kind != .blank {
+            m.addItem(Self.item(String(localized: "Duplicate Layer")) {
+                [weak self] in self?.actions.duplicateLayer(r.id)
+            })
+        }
+        m.addItem(Self.item(r.visible ? String(localized: "Hide Layer")
+                                      : String(localized: "Show Layer")) {
+            [weak self] in self?.actions.toggleVisible(r.id)
+        })
+        m.addItem(Self.item(r.locked ? String(localized: "Unlock Layer")
+                                     : String(localized: "Lock Layer")) {
+            [weak self] in self?.actions.toggleLocked(r.id)
+        })
+        m.addItem(separatorItem(r))
+        m.addItem(.separator())
+        let remove = Self.item(String(localized: "Remove Layer")) {
+            [weak self] in self?.actions.removeLayer(r.id)
+        }
+        remove.isEnabled = actions.canRemove(r.id)
+        m.addItem(remove)
+        return m
+    }
+
+    /// Track Separator, checked while `r` is one: in the track view it
+    /// starts a track of its own, never laid in the track below it.
+    private func separatorItem(_ r: TimelineRow) -> NSMenuItem {
+        let it = Self.item(String(localized: "Track Separator")) {
+            [weak self] in self?.actions.setSeparator(r.id, !r.separator)
+        }
+        it.state = r.separator ? .on : .off
+        it.identifier = NSUserInterfaceItemIdentifier("separator")
+        it.toolTip = String(localized: "In the track view, this layer starts a track of its own: it is not laid in the track below it, though the layers above it may join its track.")
+        return it
+    }
+
+    /// A track of several layers' menu (on its header, in the track
+    /// view): its layers shown or hidden, locked or unlocked, together;
+    /// a blank layer above it; whether its bottom layer -- where it meets
+    /// the track below -- is a track separator.
+    private func trackMenu(_ rows: Range<Int>) -> NSMenu {
+        let members = rows.map { model.rows[$0] }
+        let ids = members.map(\.id)
+        let shown = members.contains(where: \.visible)
+        let locked = members.allSatisfy(\.locked)
+        let m = NSMenu()
+        m.addItem(Self.item(shown ? String(localized: "Hide Layers")
+                                  : String(localized: "Show Layers")) {
+            [weak self] in self?.actions.setVisible(ids, !shown)
+        })
+        m.addItem(Self.item(locked ? String(localized: "Unlock Layers")
+                                   : String(localized: "Lock Layers")) {
+            [weak self] in self?.actions.setLocked(ids, !locked)
+        })
+        if let bottom = members.last { m.addItem(separatorItem(bottom)) }
+        m.addItem(.separator())
+        if let top = members.first {
+            m.addItem(Self.item(String(localized: "Add Layer Above")) {
+                [weak self] in self?.actions.addLayer(top.id)
+            })
+        }
+        return m
+    }
+
+    /// A menu item running `run`.
+    private static func item(_ title: String,
+                             _ run: @escaping @MainActor () -> Void)
+        -> NSMenuItem {
+        let it = NSMenuItem(title: title, action: #selector(MenuRun.go(_:)),
+                            keyEquivalent: "")
+        let target = MenuRun(run)
+        it.target = target
+        it.representedObject = target  // kept alive with the item
+        return it
+    }
+
+    /// The player at the frame under `px` -- held to the tracks shown,
+    /// so a pointer dragged past their edge leaves the line at the edge,
+    /// in sight, while they scroll -- once a frame.
+    private func scrub(_ px: CGFloat) {
+        let last = max(0, model.frames - 1)
+        let x = min(max(px, Self.nameWidth), bounds.width - 1)
+        let f = min(max(0, Int(frame(at: x).rounded(.down))), last)
+        guard f != scrubbed || drag == nil else { return }
+        scrubbed = f
+        actions.seek(f)
+    }
+    /// The frame a drag of the line last asked for (not asked again).
+    private var scrubbed = -1
+
+    // MARK: Naming a header
+
+    /// A row's name made a field, where it is drawn: its words selected.
+    private func beginNaming(_ i: Int) {
+        endNaming(commit: true)
+        let r = model.rows[i]
+        guard r.layer != nil || r.folder != nil else { return }
+        let x = Self.iconX + CGFloat(r.depth) * Self.indent
+            + (r.isFolder ? 12 : 0) + 14
+        let f = NSTextField(string: r.title)
+        f.font = .systemFont(ofSize: 10.5,
+                             weight: r.isFolder ? .semibold : .regular)
+        f.isBordered = true
+        f.isBezeled = true
+        f.bezelStyle = .squareBezel
+        f.drawsBackground = true
+        f.focusRingType = .none
+        f.cell?.isScrollable = true
+        f.cell?.wraps = false
+        f.delegate = self
+        f.frame = CGRect(x: x, y: rowTop(i) + 2,
+                         width: Self.nameWidth - x - Self.divider - 2,
+                         height: Self.rowHeight - 4)
+        f.setAccessibilityLabel(String(localized: "Layer name"))
+        addSubview(f)
+        nameField = f
+        naming = r.id
+        needsDisplay = true
+        // Its editing begun, the words selected (selectText ends any
+        // editing under way: a makeFirstResponder before it was undone).
+        f.selectText(nil)
+    }
+
+    /// The field gone: its name kept (Return, a click away) or not
+    /// (Escape). A layer's emptied takes its default name back; a
+    /// folder's is never empty.
+    private func endNaming(commit: Bool) {
+        guard let f = nameField, let id = naming else { return }
+        nameField = nil
+        naming = nil
+        let text = f.stringValue.trimmingCharacters(in: .whitespaces)
+        f.delegate = nil
+        f.removeFromSuperview()
+        needsDisplay = true
+        if window?.firstResponder == nil
+            || window?.firstResponder === window {
+            window?.makeFirstResponder(self)
+        }
+        guard commit, let r = model.rows.first(where: { $0.id == id }),
+              text != r.title else { return }
+        if r.isFolder, let folder = r.folder {
+            if !text.isEmpty { actions.renameFolder(folder, text) }
+        } else if let layer = r.layer {
+            actions.renameLayer(layer, text)
+        }
+    }
+
+    /// Whether a header's name is being typed (the hooks).
+    var isNaming: Bool { nameField != nil }
+
+    override func scrollWheel(with e: NSEvent) {
+        // The rows move: the name being typed is kept first.
+        endNaming(commit: true)
+        let mods = e.modifierFlags
+        var dx = e.scrollingDeltaX, dy = e.scrollingDeltaY
+        if !e.hasPreciseScrollingDeltas {
+            dx *= 8
+            dy *= 8
+        }
+        if mods.contains(.command) || mods.contains(.option) {
+            let p = convert(e.locationInWindow, from: nil)
+            zoom(by: exp(Double(dy) * 0.01), at: p.x)
+            return
+        }
+        if mods.contains(.shift), dx == 0 {
+            (dx, dy) = (dy, 0)
+        }
+        if abs(dx) >= abs(dy) || maxScrollY == 0 {
+            scrollX -= abs(dx) >= abs(dy) ? dx : dy
+        } else {
+            scrollY -= dy
+        }
+        clampScroll()
+        needsDisplay = true
+    }
+
+    override func magnify(with e: NSEvent) {
+        let p = convert(e.locationInWindow, from: nil)
+        zoom(by: 1 + Double(e.magnification), at: p.x)
+    }
+
+    private func zoom(by f: Double, at px: CGFloat) {
+        let at = max(Self.nameWidth, px)
+        zoomAnchor = (frame(at: at), at)
+        actions.zoom(model.zoom * f)
+    }
+
+    override func keyDown(with e: NSEvent) {
+        // Escape puts the scissors away.
+        if e.keyCode == 53, model.cutting {
+            actions.stopCutting()
+            return
+        }
+        super.keyDown(with: e)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate,
+                      .activeInKeyWindow, .inVisibleRect],
+            owner: self))
+    }
+
+    override func mouseMoved(with e: NSEvent) {
+        hover = convert(e.locationInWindow, from: nil)
+        updateCursor()
+        if model.cutting { needsDisplay = true }
+    }
+
+    override func mouseExited(with e: NSEvent) {
+        hover = nil
+        NSCursor.arrow.set()
+        if model.cutting { needsDisplay = true }
+    }
+
+    override func cursorUpdate(with e: NSEvent) {
+        hover = convert(e.locationInWindow, from: nil)
+        updateCursor()
+    }
+
+    private func updateCursor() {
+        // Over a locked layer's row: nothing to drag there.
+        if drag == nil, let h = hover, h.x >= Self.nameWidth,
+           let i = row(at: h.y, x: h.x), model.rows[i].locked {
+            NSCursor.arrow.set()
+            return
+        }
+        if drag == nil, !model.cutting, let h = hover, keyHit(h) != nil {
+            NSCursor.resizeLeftRight.set()
+            return
+        }
+        if drag == nil, !model.cutting, let h = hover,
+           let i = row(at: h.y, x: h.x), h.x >= Self.nameWidth,
+           atStretchEnd(i, h) {
+            NSCursor.resizeLeftRight.set()
+            return
+        }
+        guard drag == nil, let h = hover, let i = row(at: h.y, x: h.x),
+              h.x >= Self.nameWidth, let b = block(i), b.contains(h) else {
+            NSCursor.arrow.set()
+            return
+        }
+        if model.cutting {
+            (model.rows[i].cuttable ? Self.scissors : .operationNotAllowed)
+                .set()
+        } else {
+            NSCursor.openHand.set()
+        }
+    }
+
+    private static let scissors: NSCursor = {
+        let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
+            .applying(.init(paletteColors: [.labelColor]))
+        guard let img = NSImage(systemSymbolName: "scissors",
+                                accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg) else { return .crosshair }
+        return NSCursor(image: img, hotSpot: CGPoint(x: img.size.width / 2,
+                                                     y: img.size.height / 2))
+    }()
+
+    // MARK: Drops
+
+    private func carries(_ pb: NSPasteboard) -> Bool {
+        PromptTextView.draggedAsset(pb) != nil
+            || !PromptTextView.fileURLs(pb).isEmpty
+    }
+
+    /// A drop's place: above the row -- in the track view, above the
+    /// track's topmost layer, so what is dropped goes on top of what the
+    /// track holds (in it, where nothing there overlaps it) -- from the
+    /// frame.
+    private func place(of info: NSDraggingInfo) -> (row: Int?, frame: Int) {
+        place(at: convert(info.draggingLocation, from: nil))
+    }
+
+    private func place(at p: CGPoint) -> (row: Int?, frame: Int) {
+        (lane(at: p.y).map { laneRows($0).lowerBound },
+         max(0, snapped(max(Self.nameWidth, p.x))))
+    }
+
+    /// For the snapshot hooks: `asset` dropped on row `i` at frame `f`,
+    /// placed as a drop there is.
+    func drop(asset id: String, row i: Int, frame f: Int) -> Bool {
+        guard model.rows.indices.contains(i) else { return false }
+        let at = place(at: CGPoint(x: x(Double(f)),
+                                   y: rowTop(i) + Self.rowHeight / 2))
+        return actions.dropAsset(id, at.row.map { model.rows[$0].id },
+                                 at.frame)
+    }
+
+    override func draggingEntered(_ s: NSDraggingInfo) -> NSDragOperation {
+        draggingUpdated(s)
+    }
+
+    override func draggingUpdated(_ s: NSDraggingInfo) -> NSDragOperation {
+        guard !model.readOnly, carries(s.draggingPasteboard) else {
+            return []
+        }
+        let at = place(of: s)
+        if dropAt?.row != at.row || dropAt?.frame != at.frame {
+            dropAt = at
+            needsDisplay = true
+        }
+        return .copy
+    }
+
+    override func draggingExited(_ s: NSDraggingInfo?) {
+        dropAt = nil
+        needsDisplay = true
+    }
+
+    override func performDragOperation(_ s: NSDraggingInfo) -> Bool {
+        defer {
+            dropAt = nil
+            needsDisplay = true
+        }
+        let pb = s.draggingPasteboard
+        let at = place(of: s)
+        let layer = at.row.map { model.rows[$0].id }
+        if let id = PromptTextView.draggedAsset(pb) {
+            return actions.dropAsset(id, layer, at.frame)
+        }
+        let files = PromptTextView.fileURLs(pb)
+        return !files.isEmpty && actions.dropFiles(files, layer, at.frame)
+    }
+
+    /// For the snapshot hooks: a frame's place in the window's points
+    /// from its top left, at a row's middle.
+    func windowPoint(frame f: Int, row i: Int) -> CGPoint? {
+        guard let win = window else { return nil }
+        let local = CGPoint(x: x(Double(f)) + min(1, scale * 0.4),
+                            y: rowTop(i) + Self.rowHeight / 2)
+        let w = convert(local, to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// For the snapshot hooks: where a key's dot is (or would be: frame
+    /// `f` on row `i`), in the window's points from its top left.
+    func windowPoint(key f: Int, row i: Int) -> CGPoint? {
+        guard let win = window, model.rows.indices.contains(i),
+              let b = block(i) else { return nil }
+        let local = CGPoint(x: min(max(mid(f), b.minX + 4), b.maxX - 4),
+                            y: keyY(b))
+        let w = convert(local, to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// For the snapshot hooks: the tooltip a key's bar has on row `i`
+    /// ("-" none: shown as a dot, or no key there), and how many bars
+    /// have one.
+    func keyTip(frame f: Int, row i: Int) -> (tip: String, bars: Int) {
+        guard model.rows.indices.contains(i), let b = block(i) else {
+            return ("-", keyTips.count)
+        }
+        let c = CGPoint(x: keyBar(mid(f), in: b).midX, y: b.midY)
+        guard keyTips.contains(where: { $0.contains(c) }) else {
+            return ("-", keyTips.count)
+        }
+        return (Self.keyTipText, keyTips.count)
+    }
+
+    /// For the snapshot hooks: a row's block's right end, in the window's
+    /// points from its top left.
+    func windowPoint(endOf i: Int) -> CGPoint? {
+        guard let win = window, let b = block(i) else { return nil }
+        let w = convert(CGPoint(x: b.maxX - 1, y: b.midY), to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// For the snapshot hooks: a row's header in the window -- its eye,
+    /// or its name -- or the gap above row `gap`, in points from the
+    /// window's top left.
+    func windowPoint(header i: Int, eye: Bool = false, fold: Bool = false,
+                     lock: Bool = false, gap: Double? = nil) -> CGPoint? {
+        guard let win = window else { return nil }
+        // A gap's line, or (a fraction) that far into a row.
+        let y = gap.map {
+            Self.rulerHeight + CGFloat($0) * Self.rowHeight - scrollY
+        } ?? rowTop(i) + Self.rowHeight / 2
+        let x: CGFloat = eye ? 11 : fold ? Self.iconX + 6
+            : lock ? Self.lockRect(top: 0).midX : 100
+        let w = convert(CGPoint(x: x, y: y), to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// For the snapshot hooks: the ruler over frame `f`, and a point `by`
+    /// points past the tracks' left (or right) edge, over the ruler --
+    /// where the player's line is held for them to scroll.
+    func windowPoint(ruler f: Int) -> CGPoint? {
+        guard let win = window else { return nil }
+        let w = convert(CGPoint(x: mid(f), y: Self.rulerHeight / 2), to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    func windowPoint(pastSide right: Bool, by: CGFloat) -> CGPoint? {
+        guard let win = window else { return nil }
+        let x = right ? bounds.width + by : Self.nameWidth - by
+        let w = convert(CGPoint(x: x, y: Self.rulerHeight / 2), to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// A point `by` points past the rows' top or bottom edge, over the
+    /// headers -- where a header is held for the rows to scroll.
+    func windowPoint(past bottom: Bool, by: CGFloat) -> CGPoint? {
+        guard let win = window else { return nil }
+        let y = bottom ? bounds.height + by : Self.rulerHeight - by
+        let w = convert(CGPoint(x: 100, y: y), to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// The timeline on screen (the snapshot hooks find it), and whether
+    /// its clicks are printed.
+    static weak var shown: TimelineNSView?
+    static let tracing =
+        ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] != nil
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { Self.shown = self }
+        if let m = commandMonitor { NSEvent.removeMonitor(m) }
+        if let o = commandObserver {
+            NotificationCenter.default.removeObserver(o)
+        }
+        commandMonitor = nil
+        commandObserver = nil
+        commandHeld = false
+        guard window != nil else { return }
+        commandMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: .flagsChanged, handler: { [weak self] e in
+                MainActor.assumeIsolated {
+                    self?.commandHeld = e.modifierFlags.contains(.command)
+                }
+                return e
+            })
+        commandObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.commandHeld = false }
+        }
+    }
+}
+
+// MARK: - Transitions
+
+/// Where two layers overlap, a TRANSITION hands one over to the other
+/// (DESIGN §6a, §10a Timeline): ⌘ held with a layer selected highlights
+/// its overlaps with the other layers that show a picture; a click on one
+/// makes a cross dissolve there. Each is drawn as an ARROW across the
+/// rows -- from the layer that ends first, where the two begin to meet,
+/// to the other where they stop -- with a badge of the way it goes:
+/// the two layers' colours mixed, or through black or white. A click on
+/// the arrow (or its menu) chooses: Cross Dissolve, Dip to Black, Dip to
+/// White; or takes it away.
+extension TimelineNSView {
+    /// An overlap a transition could take: the other layer's row, which
+    /// of the two ends first (`from`), the frames they share.
+    struct Overlap: Equatable {
+        var row: Int
+        var from: String
+        var to: String
+        var frames: Range<Int>
+    }
+
+    /// The layers a transition joins: those that show a picture.
+    private static func joins(_ k: TimelineRow.Kind) -> Bool {
+        [.clip, .picture, .markup, .composition, .still].contains(k)
+    }
+
+    /// Where row `i` plays, in frames: to the timeline's end for one that
+    /// runs on.
+    private func frames(of i: Int) -> Range<Int> {
+        let r = model.rows[i]
+        return r.start..<max(r.start + 1, r.end ?? model.frames)
+    }
+
+    private var selectedRow: Int? { rowIndex[model.selected] }
+
+    /// With ⌘ held and a layer selected: its overlaps with the others
+    /// that show a picture and have none with it yet. The one that starts
+    /// first is the one that ends first, as the core takes it.
+    fileprivate func overlaps(held: Bool) -> [Overlap] {
+        guard held, !model.paged, drag == nil, let s = selectedRow,
+              Self.joins(model.rows[s].kind) else { return [] }
+        let a = frames(of: s), me = model.rows[s].id
+        // The layers it has a transition with already.
+        let joined = Set(model.transitions.compactMap {
+            $0.from == me ? $0.to : $0.to == me ? $0.from : nil
+        })
+        var out: [Overlap] = []
+        for (j, r) in model.rows.enumerated()
+            where j != s && !r.isFolder && Self.joins(r.kind) {
+            let b = frames(of: j)
+            let lo = max(a.lowerBound, b.lowerBound)
+            let hi = min(a.upperBound, b.upperBound)
+            guard hi > lo, !joined.contains(r.id) else { continue }
+            let first = (a.lowerBound, a.upperBound)
+                <= (b.lowerBound, b.upperBound)
+            out.append(Overlap(row: j, from: first ? me : r.id,
+                               to: first ? r.id : me, frames: lo..<hi))
+        }
+        return out
+    }
+
+    private func rect(_ o: Overlap, row i: Int) -> CGRect {
+        let x0 = x(Double(o.frames.lowerBound))
+        let x1 = x(Double(o.frames.upperBound))
+        return CGRect(x: x0, y: rowTop(i) + 2, width: max(4, x1 - x0),
+                      height: Self.rowHeight - 4)
+    }
+
+    /// The highlight under the pointer: the OTHER layer's share.
+    fileprivate func overlap(at p: CGPoint, held: Bool) -> Overlap? {
+        overlaps(held: held).first {
+            rect($0, row: $0.row).insetBy(dx: -2, dy: -2).contains(p)
+        }
+    }
+
+    /// The overlaps highlighted: the selected layer's share faint, the
+    /// other's -- the one to click -- dashed, with a + where it has room.
+    fileprivate func drawOverlaps() {
+        let os = overlaps(held: commandHeld)
+        guard !os.isEmpty, let s = selectedRow else { return }
+        let accent = NSColor.controlAccentColor
+        for o in os {
+            accent.withAlphaComponent(0.2).setFill()
+            NSBezierPath(rect: rect(o, row: s)).fill()
+            let r = rect(o, row: o.row)
+            let box = NSBezierPath(roundedRect: r, xRadius: 3, yRadius: 3)
+            accent.withAlphaComponent(0.45).setFill()
+            box.fill()
+            box.lineWidth = 1.5
+            box.setLineDash([4, 2], count: 2, phase: 0)
+            accent.setStroke()
+            box.stroke()
+            guard r.width >= 14 else { continue }
+            let plus = NSBezierPath()
+            plus.move(to: CGPoint(x: r.midX - 4, y: r.midY))
+            plus.line(to: CGPoint(x: r.midX + 4, y: r.midY))
+            plus.move(to: CGPoint(x: r.midX, y: r.midY - 4))
+            plus.line(to: CGPoint(x: r.midX, y: r.midY + 4))
+            plus.lineWidth = 1.75
+            plus.lineCapStyle = .round
+            NSColor.white.setStroke()
+            plus.stroke()
+        }
+    }
+
+    /// A transition's arrow: from the `from` row where the two begin to
+    /// overlap to the `to` row where they stop -- following a block being
+    /// dragged -- nil where either is out of sight (a folded folder) or
+    /// they no longer meet.
+    private func arrow(_ t: TimelineTransition)
+        -> (a: CGPoint, b: CGPoint, i: Int, j: Int)? {
+        guard let i = rowIndex[t.from], let j = rowIndex[t.to],
+              let bi = block(i), let bj = block(j) else { return nil }
+        let x0 = max(bi.minX, bj.minX), x1 = min(bi.maxX, bj.maxX)
+        guard x1 > x0 else { return nil }
+        return (CGPoint(x: x0, y: bi.midY), CGPoint(x: x1, y: bj.midY), i, j)
+    }
+
+    /// In the track view, where the arrow ends of a transition row `i`
+    /// begins in (it the later of the two) with a layer of its own track:
+    /// the arrow lies over its block's start there.
+    fileprivate func transitionEnd(into i: Int) -> CGFloat? {
+        guard model.lanes != nil else { return nil }
+        let id = model.rows[i].id
+        var end: CGFloat?
+        for t in model.transitions where t.to == id {
+            guard let j = rowIndex[t.from], lane(j) == lane(i),
+                  let (_, b, _, _) = arrow(t) else { continue }
+            end = max(end ?? b.x, b.x)
+        }
+        return end
+    }
+
+    /// A badge's place: a small capsule at the arrow's middle.
+    private static func badge(at c: CGPoint) -> CGRect {
+        CGRect(x: c.x - 11, y: c.y - 6, width: 22, height: 12)
+    }
+
+    private static func middle(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+        CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+    }
+
+    fileprivate func drawTransitions() {
+        for t in model.transitions {
+            guard let (a, b, i, j) = arrow(t) else { continue }
+            let p = NSBezierPath()
+            p.move(to: a)
+            p.line(to: b)
+            // Its head, along it.
+            let ang = atan2(b.y - a.y, b.x - a.x)
+            let len: CGFloat = 7, wide: CGFloat = .pi / 7
+            p.move(to: CGPoint(x: b.x - len * cos(ang - wide),
+                               y: b.y - len * sin(ang - wide)))
+            p.line(to: b)
+            p.line(to: CGPoint(x: b.x - len * cos(ang + wide),
+                               y: b.y - len * sin(ang + wide)))
+            p.lineCapStyle = .round
+            p.lineJoinStyle = .round
+            p.lineWidth = 4.5
+            NSColor.textBackgroundColor.withAlphaComponent(0.75).setStroke()
+            p.stroke()
+            p.lineWidth = 1.75
+            NSColor.labelColor.setStroke()
+            p.stroke()
+            drawBadge(t.kind, at: Self.middle(a, b),
+                      from: Self.color(model.rows[i].kind),
+                      to: Self.color(model.rows[j].kind))
+        }
+    }
+
+    /// The way it goes, left to right: the two layers' colours mixed (a
+    /// dissolve), through black or white (a dip), or split (a cut).
+    private func drawBadge(_ kind: String, at c: CGPoint, from: NSColor,
+                           to: NSColor) {
+        let r = Self.badge(at: c)
+        let cap = NSBezierPath(roundedRect: r, xRadius: r.height / 2,
+                               yRadius: r.height / 2)
+        switch kind {
+        case "dip-black":
+            NSGradient(colors: [from, .black, to])?.draw(in: cap, angle: 0)
+        case "dip-white":
+            NSGradient(colors: [from, .white, to])?.draw(in: cap, angle: 0)
+        case "dissolve":
+            NSGradient(starting: from, ending: to)?.draw(in: cap, angle: 0)
+        default:
+            NSGraphicsContext.saveGraphicsState()
+            cap.addClip()
+            from.setFill()
+            CGRect(x: r.minX, y: r.minY, width: r.width / 2,
+                   height: r.height).fill()
+            to.setFill()
+            CGRect(x: r.midX, y: r.minY, width: r.width / 2,
+                   height: r.height).fill()
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        // A dissolve's two crossing (the two pictures through each other),
+        // a cut's bar -- seen even where the two layers' colours are one.
+        let mark = NSBezierPath()
+        if kind == "dissolve" {
+            mark.move(to: CGPoint(x: r.midX - 5, y: r.minY + 3))
+            mark.line(to: CGPoint(x: r.midX + 5, y: r.maxY - 3))
+            mark.move(to: CGPoint(x: r.midX - 5, y: r.maxY - 3))
+            mark.line(to: CGPoint(x: r.midX + 5, y: r.minY + 3))
+        } else if !kind.hasPrefix("dip-") {
+            mark.move(to: CGPoint(x: r.midX, y: r.minY + 2))
+            mark.line(to: CGPoint(x: r.midX, y: r.maxY - 2))
+        }
+        mark.lineWidth = 1.25
+        mark.lineCapStyle = .round
+        NSColor.white.withAlphaComponent(0.9).setStroke()
+        mark.stroke()
+        cap.lineWidth = 1.5
+        NSColor.labelColor.setStroke()
+        cap.stroke()
+    }
+
+    /// The transition whose arrow (or badge) is under the pointer -- not
+    /// its last points at either end, where a block's end is stretched.
+    fileprivate func transition(at p: CGPoint) -> Int? {
+        for (n, t) in model.transitions.enumerated().reversed() {
+            guard let (a, b, _, _) = arrow(t) else { continue }
+            if Self.badge(at: Self.middle(a, b)).insetBy(dx: -3, dy: -3)
+                .contains(p) || Self.onLine(p, a, b) {
+                return n
+            }
+        }
+        return nil
+    }
+
+    /// Within 5 points of the line from `a` to `b`, 8 or more from its
+    /// ends.
+    private static func onLine(_ p: CGPoint, _ a: CGPoint,
+                               _ b: CGPoint) -> Bool {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len = hypot(dx, dy)
+        guard len > 16 else { return false }
+        let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / (len * len)
+        guard t * len >= 8, (1 - t) * len >= 8 else { return false }
+        return hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy)) <= 5
+    }
+
+    /// A transition's menu: its ways, the one it goes checked; taken
+    /// away. Each item's identifier its kind ("remove").
+    func transitionMenu(_ n: Int) -> NSMenu? {
+        guard model.transitions.indices.contains(n) else { return nil }
+        let t = model.transitions[n]
+        let m = NSMenu()
+        let kinds = [("dissolve", String(localized: "Cross Dissolve")),
+                     ("dip-black", String(localized: "Dip to Black")),
+                     ("dip-white", String(localized: "Dip to White"))]
+        for (kind, title) in kinds {
+            let it = Self.item(title) { [weak self] in
+                self?.actions.setTransition(t.from, t.to, kind)
+            }
+            it.state = t.kind == kind ? .on : .off
+            it.identifier = NSUserInterfaceItemIdentifier(kind)
+            m.addItem(it)
+        }
+        m.addItem(.separator())
+        let gone = Self.item(String(localized: "Remove Transition")) {
+            [weak self] in self?.actions.setTransition(t.from, t.to, "")
+        }
+        gone.identifier = NSUserInterfaceItemIdentifier("remove")
+        m.addItem(gone)
+        return m
+    }
+
+    // For the snapshot hooks.
+
+    /// A transition's badge, in the window's points from its top left.
+    func windowPoint(transition n: Int) -> CGPoint? {
+        guard let win = window, model.transitions.indices.contains(n),
+              let (a, b, _, _) = arrow(model.transitions[n]) else {
+            return nil
+        }
+        let w = convert(Self.middle(a, b), to: nil)
+        return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// Which transition a click on transition `n`'s badge finds.
+    func transitionHit(_ n: Int) -> Int? {
+        guard model.transitions.indices.contains(n),
+              let (a, b, _, _) = arrow(model.transitions[n]) else {
+            return nil
+        }
+        return transition(at: Self.middle(a, b))
+    }
+
+    /// What ⌘ shows: "2:90-124" (the other's row, the frames) each;
+    /// "held" first while it is.
+    var overlapSummary: String {
+        let os = overlaps(held: commandHeld).map {
+            "\($0.row):\($0.frames.lowerBound)-\($0.frames.upperBound)"
+        }
+        return (commandHeld ? "held" : "-")
+            + (os.isEmpty ? "" : ":" + os.joined(separator: ","))
+    }
+}
+
+/// A menu item's action as a closure.
+@MainActor
+private final class MenuRun: NSObject {
+    let run: @MainActor () -> Void
+    init(_ run: @escaping @MainActor () -> Void) { self.run = run }
+    @objc func go(_ sender: Any?) { run() }
+}
+
+extension TimelineNSView: NSTextFieldDelegate {
+    /// Return names it; Escape leaves it as it was.
+    func control(_ control: NSControl, textView: NSTextView,
+                 doCommandBy sel: Selector) -> Bool {
+        if sel == #selector(NSResponder.cancelOperation(_:)) {
+            endNaming(commit: false)
+            return true
+        }
+        if sel == #selector(NSResponder.insertNewline(_:)) {
+            endNaming(commit: true)
+            return true
+        }
+        return false
+    }
+
+    /// A click away: kept.
+    func controlTextDidEndEditing(_ obj: Notification) {
+        endNaming(commit: true)
+    }
+}
