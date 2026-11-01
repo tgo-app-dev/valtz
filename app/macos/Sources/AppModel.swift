@@ -489,8 +489,10 @@ struct OutputShape: Sendable {
     }
 }
 
-/// The simple-mode composer's panels, opened from their tabs under the
-/// prompt card.
+/// The simple-mode composer's panels, once opened from their tabs under
+/// the prompt card: the Generate drawer is still the composer's; the
+/// rest are the inspector's sections (InspectorSection) until Phase 6
+/// renames this.
 enum ComposerPanel: Sendable, CaseIterable {
     case adjust     // adjustments: a picture's, or a clip's (keyed)
     case color      // the color mixer: the same look's, keyed with it
@@ -982,31 +984,6 @@ final class AppModel {
     /// window's confirmation (RootView).
     var startOverAsked = false
 
-    /// Settings › Experimental › Agent: the prompt's Agent tab and its
-    /// mode (DESIGN §9b) -- off until switched on, remembered as the
-    /// status bar is (VALTZ_SNAPSHOT_AGENT switches it on for its run).
-    private(set) var agentEnabled = AppModel.storedAgentEnabled {
-        didSet {
-            if Self.keepsViewState {
-                UserDefaults.standard.set(agentEnabled,
-                                          forKey: Self.agentEnabledKey)
-            }
-        }
-    }
-
-    /// The Agent switched on or off. Off, its tab goes -- the prompt back
-    /// to pictures if it was there -- and a session at work stops.
-    func setAgentEnabled(_ on: Bool) {
-        guard on != agentEnabled else { return }
-        withAnimation(Self.motion) {
-            agentEnabled = on
-            if !on {
-                if modality == .agent { setModality(.image) }
-                agentDismiss()
-            }
-        }
-    }
-
     /// Settings › Agentic Helper › Show Speed: each of the agent's turns
     /// with its prefill and decode speed in small type under it, for
     /// debugging -- off until switched on, remembered as the status bar is
@@ -1025,11 +1002,8 @@ final class AppModel {
         withAnimation(Self.motion) { agentShowsSpeed = on }
     }
 
-    /// The prompt's tabs: what a generation makes, and the Agent while it
-    /// is switched on.
-    var modalities: [Modality] {
-        Modality.allCases.filter { $0 != .agent || agentEnabled }
-    }
+    /// The prompt's tabs: what a generation makes, and the Agent.
+    var modalities: [Modality] { Modality.allCases }
 
     /// The machine's load (it polls only while the Activity popover is
     /// open).
@@ -1037,13 +1011,9 @@ final class AppModel {
     /// Auto-update (Sparkle, when built in): Check for Updates…, and
     /// Settings › General › Updates.
     let updater = Updater()
-    private static let agentEnabledKey = "experimental.agent"
     private static let agentSpeedKey = "helper.agentSpeed"
     private static var keepsViewState: Bool {
         ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] == nil
-    }
-    private static var storedAgentEnabled: Bool {
-        keepsViewState && UserDefaults.standard.bool(forKey: agentEnabledKey)
     }
     private static var storedAgentShowsSpeed: Bool {
         keepsViewState && UserDefaults.standard.bool(forKey: agentSpeedKey)
@@ -1407,8 +1377,22 @@ final class AppModel {
     /// back: pictures and clips are shaped apart (a clip starts
     /// landscape, 16:9, at the Draft size).
     private var otherShapes: [Modality: OutputShape] = [:]
-    /// Which composer panel is open (at most one).
-    var openPanel: ComposerPanel?
+    /// The composer's Generate drawer is out.
+    var generateDrawerOpen = false
+    /// The composer's panel open: the Generate drawer, or none. A layer's
+    /// edits are the inspector's sections now: asked for here -- a menu,
+    /// a notice, a task, a hook -- they are brought into sight there
+    /// (revealInspectorSection), and the drawer stays as it was.
+    var openPanel: ComposerPanel? {
+        get { generateDrawerOpen ? .generate : nil }
+        set {
+            switch newValue {
+            case nil: generateDrawerOpen = false
+            case .generate?: generateDrawerOpen = true
+            case let p?: if let s = p.section { revealInspectorSection(s) }
+            }
+        }
+    }
     /// The Crop card's zoom: X and Y together, their ratio kept (the
     /// lock between them), or apart. Remembered between launches.
     /// Information's W and H held to their ratio (its lock): a typed or
@@ -2778,9 +2762,11 @@ final class AppModel {
     /// Make pictures or clips. A model chosen for the other kind gives way
     /// to Auto.
     func setModality(_ m: Modality) {
-        guard m != modality, m != .agent || agentEnabled else { return }
+        guard m != modality else { return }
         // An agent at work holds the project: the box is its alone.
         guard m == .agent || !agentHolds else { return }
+        // The Agent's box: the right column on the Agent too.
+        if m == .agent { chrome.rightPanel = .agent }
         swapPromptWords(from: modality, to: m)
         otherShapes[modality] = outputShape
         outputShape = otherShapes[m] ?? OutputShape.defaults(for: m)
@@ -4525,29 +4511,22 @@ final class AppModel {
         }
     }
 
-    /// A composer tray opened (or none): Adjust, Crop and Trim work on the
-    /// stage, not the words -- the prompt box shrinks to its three rows,
-    /// and grows back as it was when the tray goes, unless its own toggle
-    /// was used meanwhile. The generation card does so too where the
-    /// window is short: when the composer, `grows` taller by it (and by
-    /// the box grown back, `regrows`, if a tray had shrunk it), would
-    /// leave the picture above less than `pictureShare` of the height.
-    /// Run from the view (onChange), not a didSet.
+    /// The Generate drawer opened (or shut) where the window is short:
+    /// when the composer, `grows` taller by it (and by the box grown
+    /// back, `regrows`, if the drawer had shrunk it), would leave the
+    /// picture above less than `pictureShare` of the height, the prompt
+    /// box shrinks to its three rows, and grows back as it was when the
+    /// drawer goes, unless its own toggle was used meanwhile. (A layer's
+    /// edits are the inspector's, beside the stage: they leave the box
+    /// as it is.) Run from the view (onChange), not a didSet.
     func panelChanged(to p: ComposerPanel?, grows: CGFloat = 0,
                       regrows: CGFloat = 0) {
         promptSizeChosen = false
-        let stageWork = p == .adjust || p == .crop || p == .trim
-            || p == .audio
         let needs = grows + (compactForPanel && promptCompact ? regrows : 0)
         let shortOfRoom = p == .generate && !promptImmersive
             && editorRoom > 0
             && pictureRoom - needs < editorRoom * Self.pictureShare
-        // Trim's ← and → step the clip: the prompt gives up the keyboard
-        // (its caret took them; a click in it gets them back).
-        if p == .trim, let w = editorWindow, w.firstResponder is NSText {
-            w.makeFirstResponder(nil)
-        }
-        if stageWork || shortOfRoom {
+        if shortOfRoom {
             if !promptCompact {
                 compactForPanel = true
                 withAnimation(Self.motion) { promptCompact = true }
@@ -4996,9 +4975,11 @@ final class AppModel {
     /// for it (view only ending, the timeline going) takes the keyboard
     /// as it appears.
     func focusPrompt(_ m: Modality) {
-        guard m != .agent || agentEnabled, closingTasks == nil,
-              fleetServing == nil, m == .agent || !agentHolds
+        guard closingTasks == nil, fleetServing == nil,
+              m == .agent || !agentHolds
         else { return }
+        // ⌘4: the right column shown, on the Agent.
+        if m == .agent { showAgentPanel() }
         if screen != .editor { show(.editor) }
         setViewOnly(false)
         viewOnlyEnded = nil
@@ -5015,8 +4996,8 @@ final class AppModel {
     /// ⇧⌘P: the PROMPT box, the keyboard in it to type. With the timeline
     /// in its place, the prompt back as it was -- its target kept -- (the
     /// key of the timeline's switch back, shown on it under ⌘?); else the
-    /// Agent's box while the Agent is on, as ⌘4 (View › Agent Prompt), or
-    /// the box as it is. The key monitor's: a menu item takes one key.
+    /// Agent's box, as ⌘4 (View › Agent Prompt). The key monitor's: a
+    /// menu item takes one key.
     func promptKey(_ e: NSEvent) -> Bool {
         let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
@@ -5026,8 +5007,7 @@ final class AppModel {
               closingTasks == nil, fleetServing == nil
         else { return false }
         if !e.isARepeat {
-            focusPrompt(composerShowsTimeline || !agentEnabled
-                        ? modality : .agent)
+            focusPrompt(composerShowsTimeline ? modality : .agent)
         }
         return true
     }

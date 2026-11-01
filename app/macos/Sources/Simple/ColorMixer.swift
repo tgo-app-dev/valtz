@@ -516,7 +516,7 @@ extension AppModel {
     /// The target tool takes the stage's pointer: on, its panel open, the
     /// selected layer there to change.
     var colorTargetReady: Bool {
-        colorTargeting && openPanel == .color
+        colorTargeting && sectionShown(.color)
             && canEditLayerHere && !isGenerating && stage.mode == .a
             && markupAsset != nil && !agentHolds
     }
@@ -526,7 +526,7 @@ extension AppModel {
     /// the compare, a Start -- is refused, said in a notice that says how
     /// to go on.
     func refusedForColorTarget() -> Bool {
-        guard colorTargeting, openPanel == .color else { return false }
+        guard colorTargeting, sectionShown(.color) else { return false }
         flash(String(localized: "The Color panel's target tool is on: turn it off first (Target, at the left of the Color panel) to look at anything else."), level: .error)
         return true
     }
@@ -698,22 +698,22 @@ extension AppModel {
 
 // MARK: - The panel
 
-/// The Color panel: the keyframes (a clip) or a word on what it does,
-/// Bypass, Reset; the target tool and how it goes; then the three planes.
+/// The Color panel: a word on what it does (a still), Bypass, Reset; the
+/// target tool and how it goes; then the three planes side by side. The
+/// keyframes are the inspector section header's. Compact -- the
+/// inspector's Color section, 280 to 480 points wide -- one plane at a
+/// time, picked over it; the section header's ⤢ opens the three side by
+/// side in a popover.
 struct ColorPanel: View {
     @Bindable var model: AppModel
+    var compact = false
+    /// The plane shown, compact.
+    @State private var plane: MixChannel = .hue
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                if model.keyedStage {
-                    // The look's keys: the Adjust panel's too.
-                    KeyframeBar(model: model, track: .adjust)
-                } else {
-                    Text("Each hue's own hue, saturation and luminance, as curves round the colour wheel.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
+                if !compact && !model.keyedStage { note.font(.callout) }
                 Spacer()
                 MixBypassButton(model: model)
                 Button("Reset") { model.resetColorMix() }
@@ -722,7 +722,7 @@ struct ColorPanel: View {
                                   && model.layerOffStage != nil)
                               || model.selectedLayerLocked)
             }
-            HStack(spacing: 10) {
+            HStack(alignment: compact ? .top : .center, spacing: 10) {
                 // The target tool first, where it is seen.
                 ColorTargetButton(model: model)
                 Text(model.colorTargeting
@@ -730,21 +730,47 @@ struct ColorPanel: View {
                      : "Click a disk to add a point at that hue, then drag it: out or in for its value, round for its hue (⌥ finer). Double-click a point, or drag it off the disk, to remove it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .lineLimit(compact ? nil : 2)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(MixChannel.allCases) { c in
-                    MixDiskColumn(model: model, channel: c)
+            Group {
+                if compact {
+                    VStack(spacing: 8) {
+                        Picker("Plane", selection: $plane) {
+                            ForEach(MixChannel.allCases) { c in
+                                Text(verbatim: c.label).tag(c)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        MixDiskColumn(model: model, channel: plane,
+                                      side: Self.compactSide)
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 12) {
+                        ForEach(MixChannel.allCases) { c in
+                            MixDiskColumn(model: model, channel: c)
+                        }
+                    }
                 }
             }
             // Greyed while the playhead is off the selected layer -- its
             // values would change unseen -- or it is locked.
             .disabled(!model.canEditLayerHere)
+            if compact && !model.keyedStage { note.font(.caption) }
         }
         .controlSize(.small)
     }
+
+    private var note: some View {
+        Text("Each hue's own hue, saturation and luminance, as curves round the colour wheel.")
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// A plane's disk in the inspector: inside its narrowest width.
+    static let compactSide: CGFloat = 200
 
     /// A curve's value as the panel says it: a hue shift in degrees, the
     /// rest -100...+100.
@@ -770,6 +796,7 @@ struct MixReading: Equatable {
 private struct MixDiskColumn: View {
     @Bindable var model: AppModel
     let channel: MixChannel
+    var side: CGFloat = 168
     @State private var reading: MixReading?
     @Environment(\.isEnabled) private var enabled
 
@@ -787,14 +814,14 @@ private struct MixDiskColumn: View {
                         .lineLimit(1)
                 }
             }
-            .frame(width: Self.side)
+            .frame(width: side)
             MixDisk(channel: channel, curve: model.adjustments.mix[channel],
                     marked: model.colorTargetHue,
                     targeting: model.colorTargeting, enabled: enabled,
                     onChange: { model.setMix(channel, $0) },
                     onReset: { model.resetColorMix(channel) },
                     onReading: { reading = $0 })
-                .frame(width: Self.side, height: Self.side)
+                .frame(width: side, height: side)
                 .accessibilityLabel(Text(verbatim: channel.label))
             HStack {
                 Text(verbatim: String(localized: "In: \(ends.0)"))
@@ -803,13 +830,11 @@ private struct MixDiskColumn: View {
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
-            .frame(width: Self.side)
+            .frame(width: side)
         }
         .frame(maxWidth: .infinity)
         .opacity(enabled ? 1 : 0.55)
     }
-
-    static let side: CGFloat = 168
 
     /// What inward (-1 at its inner reach) and outward (+1 at the rim) do.
     private var ends: (String, String) {

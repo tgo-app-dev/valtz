@@ -2,6 +2,7 @@ import CoreGraphics
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import Foundation
+import SwiftUI
 
 /// Adjustments, in image space: the look of the picture on the stage --
 /// a result, changed after it is made, or the picture about to be
@@ -226,5 +227,176 @@ struct ImageAdjustments: Equatable, Sendable {
         let ci = applyChain(chain, to: CIImage(cgImage: image))
         let space = image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
         return GPUPicture.render(ci, extent: extent, colorSpace: space)
+    }
+}
+
+/// The adjustments panel: eight sliders over the picture on the stage,
+/// applied live -- a result, or the picture to edit, which the model then
+/// receives adjusted (on top of a RAW's development). The values are
+/// recorded on the image, applied when a file is made from it; the
+/// original is kept. Each value is a field too: type one, or clear it
+/// with its x; Reset clears them all. Laid out for the inspector's
+/// Adjust section, 280 to 480 points wide: the alpha a row over the
+/// eight, in one column, the note under them; the keyframes are the
+/// section header's.
+struct AdjustPanel: View {
+    @Bindable var model: AppModel
+
+    private let keys: [ImageAdjustments.Key] = [
+        .exposure, .contrast, .highlights, .shadows,
+        .temperature, .tint, .vibrance, .saturation,
+    ]
+
+    private var note: LocalizedStringKey {
+        !model.canAdjust
+            ? "Adjustments wait for the image being made."
+            : model.adjustsBase
+            ? "Applied as the picture is edited and saved; the original is kept."
+            : "Applied when the image is saved; the original is kept."
+    }
+
+    /// Bypass and Reset.
+    @ViewBuilder
+    private var buttons: some View {
+        BypassButton(model: model, part: .adjust,
+                     help: "Hold to see the picture without its adjustments")
+        // Its own sliders: the mixer is the Color panel's.
+        Button("Reset", action: model.resetAdjustments)
+            .disabled((model.keyedStage
+                      ? !model.clipAdjustKeys.keys.contains {
+                          !$0.value.toneIsIdentity }
+                          || model.layerOffStage != nil
+                      : model.adjustments.toneIsIdentity)
+                      || model.selectedLayerLocked)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Spacer()
+                buttons
+            }
+            Grid(alignment: .leading, horizontalSpacing: 8,
+                 verticalSpacing: 8) {
+                alphaRow
+                GridRow {
+                    Divider().gridCellColumns(3)
+                }
+                ForEach(keys) { row($0) }
+            }
+            .focusSection()
+            // Greyed while the playhead is off the selected layer -- its
+            // values would change unseen -- or it is locked.
+            .disabled(!model.canEditLayerHere)
+            if !model.keyedStage {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .controlSize(.small)
+    }
+
+    /// The layer's master alpha as a row: 100% as it is.
+    private var alphaRow: some View {
+        let key = ImageAdjustments.Key.alpha
+        return GridRow {
+            Text(key.label)
+                .foregroundStyle(.secondary)
+                .gridColumnAlignment(.trailing)
+                .onTapGesture(count: 2) { model.setAdjustment(.alpha, 1) }
+                .help("Double-click for 100%")
+            CenteredSlider(value: Binding(get: { model.adjustments.alpha },
+                                          set: { model.setAdjustment(.alpha, $0) }),
+                           range: key.range, zero: 1)
+                .frame(minWidth: 60)
+                .accessibilityLabel(Text(key.label))
+                .help("The layer's alpha: 100% as it is, lower to let what is under it show through, 0% clear.")
+            Text(verbatim: key.display(model.adjustments.alpha))
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func row(_ key: ImageAdjustments.Key) -> some View {
+        GridRow {
+            Text(key.label)
+                .foregroundStyle(.secondary)
+                .gridColumnAlignment(.trailing)
+                .onTapGesture(count: 2) { model.setAdjustment(key, 0) }
+                .help("Double-click to reset")
+            CenteredSlider(value: Binding(get: { model.adjustments[key] },
+                                          set: { model.setAdjustment(key, $0) }),
+                           range: key.range)
+                .frame(minWidth: 60)
+                .accessibilityLabel(Text(key.label))
+            AdjustValueField(model: model, key: key)
+        }
+    }
+}
+
+/// One adjustment's value as a text box: typed values are taken on
+/// Return or when the field is left (exposure in stops, the others
+/// -100...+100), clamped to the slider's range; the x on its right clears
+/// that value alone.
+private struct AdjustValueField: View {
+    @Bindable var model: AppModel
+    let key: ImageAdjustments.Key
+    @State private var text = ""
+    /// What it last showed: text unlike it is being typed.
+    @State private var shown = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let value = model.adjustments[key]
+        HStack(spacing: 2) {
+            // Named for VoiceOver by its row; the row shows the name.
+            TextField(key.label, text: $text)
+                .labelsHidden()
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.trailing)
+                .font(.callout.monospacedDigit())
+                .focused($focused)
+                .onSubmit(commit)
+                .frame(width: 42)
+            Button {
+                model.setAdjustment(key, 0)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.tertiary)
+            .help("Reset \(key.label)")
+            .opacity(value == 0 ? 0 : 1)
+            .disabled(value == 0)
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 3)
+        .padding(.vertical, 2)
+        .background(RoundedRectangle(cornerRadius: 5)
+            .fill(Color(nsColor: .textBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 5)
+            .strokeBorder(Color(nsColor: .separatorColor)))
+        .onAppear { show(key.display(value)) }
+        // It follows the slider and the frame a clip shows, focused or
+        // not, unless a value is being typed in it.
+        .onChange(of: value) { _, v in
+            if text == shown { show(key.display(v)) }
+        }
+        .onChange(of: focused) { _, f in
+            if !f { commit() }
+        }
+    }
+
+    private func show(_ s: String) {
+        text = s
+        shown = s
+    }
+
+    private func commit() {
+        if let v = key.parse(text) { model.setAdjustment(key, v) }
+        show(key.display(model.adjustments[key]))
     }
 }

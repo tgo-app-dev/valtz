@@ -54,8 +54,7 @@ enum SettingsPlace: Hashable, Sendable {
             .flatMap(SettingsPlace.init(raw:)) ?? .page(.general)
     }
 
-    /// The Agent's settings (AgentSettingsSection), on Agentic Helper
-    /// while Experimental has it on.
+    /// The Agent's settings (AgentSettingsSection), on Agentic Helper.
     @MainActor
     static var agentKeywords: [String] {
         [String(localized: "Agent"), String(localized: "Thinks On"),
@@ -116,8 +115,8 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "Cloud Context"),
              String(localized: "Debugging"),
              String(localized: "Show the Helper's Speed")]
-                // The agent's, while it is switched on: on this page.
-                + (model.agentEnabled ? Self.agentKeywords : [])
+                // The agent's: on this page.
+                + Self.agentKeywords
         case .page(.upscaling):
             // Its upscalers and their options are the core's: named as
             // the page names them.
@@ -127,8 +126,6 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "Clips"), String(localized: "Pictures")]
                 + model.upscalers.map(\.name)
                 + model.upscalers.flatMap { $0.options.map(TuningPanel.title) }
-        case .page(.experimental):
-            [String(localized: "Agent")]
         case .page(.fleet):
             [String(localized: "This Mac"), String(localized: "Name"),
              String(localized: "Discoverable"), String(localized: "Fleet"),

@@ -359,23 +359,27 @@ enum CropField: CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// The Crop panel -- a picture's, or a clip's, keyed (the guides are View
-/// › Show Guides):
+/// The Crop panel, the inspector's Crop section -- a picture's, or a
+/// clip's, keyed (the guides are View › Show Guides):
 ///
 ///   the background colour, where the picture does not reach
-///   the placement's keyframes                         (a clip)
-///   Offset  X [  ] ◉  Y [  ] ◉     Zoom  X [  ] ◉  🔒  Y [  ] ◉     Reset
-///   the rotation's keyframes                          (a clip)
-///   the rotation: slider and degrees                           Reset
+///   Crop and zoom                                     Bypass  Reset
+///     Offset  X [  ] ◉  Y [  ] ◉
+///     Zoom  X [  ] ◉  🔒  Y [  ] ◉
+///   Rotation  the rotation's keyframes (a clip)       Bypass  Reset
+///     the rotation: slider and degrees
+///
+/// The placement's keyframes are the section header's; the rotation, a
+/// track keyed apart, keeps its own on its row.
 ///
 /// Each value is typed in its box, or JOGGED by the wheel after it: its
 /// dot dragged left or right. The lock between the zooms keeps them in
 /// ratio, and the second wheel goes while it is shut.
 struct CropPanel: View {
     @Bindable var model: AppModel
-    /// The rows under a part's header (its keyframes, or its name) are
-    /// set in by about four characters, to read as under it.
-    private static let indent: CGFloat = 28
+    /// The rows under a part's header are set in a little, to read as
+    /// under it.
+    private static let indent: CGFloat = 8
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -448,7 +452,7 @@ struct CropPanel: View {
     /// "Offset  X [ ] ◉  Y [ ] ◉": where the picture's centre is, in frame
     /// widths and heights.
     private var offsetGroup: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Text("Offset")
                 .foregroundStyle(.secondary)
                 .fixedSize()
@@ -460,7 +464,7 @@ struct CropPanel: View {
     /// "Zoom  X [ ] ◉ 🔒 Y [ ] ◉": its size as a share of the frame's;
     /// locked, X and Y keep their ratio and one wheel turns both.
     private var zoomGroup: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Text("Zoom")
                 .foregroundStyle(.secondary)
                 .fixedSize()
@@ -556,22 +560,28 @@ struct CropPanel: View {
         }
     }
 
-    /// A part's row: its keyframes on a clip, its name on a still; Bypass
-    /// and Reset at the right.
+    /// A part's row: its name -- and the rotation's keyframes, on a clip
+    /// (the placement's are the section header's); Bypass and Reset at the
+    /// right.
     private func header(_ part: KeyTrack, _ name: LocalizedStringKey,
                         bypass: LocalizedStringKey,
                         reset: @escaping () -> Void,
                         isReset: Bool) -> some View {
-        HStack(spacing: 8) {
-            if model.keyedStage {
-                KeyframeBar(model: model, track: part)
-            } else {
-                Text(name).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(name)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                BypassButton(model: model, part: part, help: bypass)
+                Button("Reset", action: reset)
+                    .disabled(isReset || off)
             }
-            Spacer()
-            BypassButton(model: model, part: part, help: bypass)
-            Button("Reset", action: reset)
-                .disabled(isReset || off)
+            // Its own keys, under its name.
+            if model.keyedStage && part == .turn {
+                KeyframeBar(model: model, track: part, compact: true)
+                    .padding(.leading, Self.indent)
+            }
         }
     }
 
@@ -601,7 +611,7 @@ private struct CropValueField: View {
                 .font(.callout.monospacedDigit())
                 .focused($focused)
                 .onSubmit(commit)
-                .frame(width: 52)
+                .frame(width: 44)
         }
         .help(field.help)
         .onAppear { show(CropField.display(value)) }
@@ -685,11 +695,13 @@ private struct RotateField: View {
     }
 }
 
-/// The Trim panel, for a clip -- the selected layer's -- everything
-/// centred:
+/// The Trim panel, the inspector's Trim section, for a clip -- the
+/// selected layer's -- everything centred:
 ///
-///   kept length          00:00:01:23 #47                     Reset
-///   in ⇤ [I]   { |<, rewind, back, a frame back, pause, on, play, ffwd, >| }   [O] ⇥ out
+///                     00:00:01:23 #47
+///   kept length                                              Reset
+///   { |<, rewind, back, a frame back, pause, on, play, ffwd, >| }
+///   in ⇤ [I]                                            [O] ⇥ out
 ///   Speed [1×]  Pitch [Hold | Follow Speed]   (its frames resampled)
 ///
 /// (The pitch itself, the gain and the equalizer: the Audio panel.)
@@ -711,37 +723,52 @@ struct TrimPanel: View {
     var body: some View {
         let rate = model.stageFrameRate
         VStack(spacing: 12) {
-            ZStack {
-                clipTime
-                    .foregroundStyle(.secondary)
-                HStack {
-                    if let n = model.trimmedFrames {
-                        Text(verbatim: model.trimLengthText(n))
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Reset", action: model.resetTrim)
-                        .disabled(model.trim.isIdentity || off)
+            clipTime
+                .foregroundStyle(.secondary)
+            HStack {
+                if let n = model.trimmedFrames {
+                    Text(verbatim: model.trimLengthText(n))
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
+                Spacer()
+                Button("Reset", action: model.resetTrim)
+                    .disabled(model.trim.isIdentity || off)
             }
-            // The marks at the row's ends; short of room, under it.
+            // The marks at the row's ends; short of room, under it; and
+            // shorter still, one under the other. The transport's buttons
+            // close up in the narrowest column.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
                     markIn
                         .frame(width: side, alignment: .leading)
                     Spacer(minLength: 0)
-                    transport
+                    transport(30)
                     Spacer(minLength: 0)
                     markOut
                         .frame(width: side, alignment: .trailing)
                 }
                 VStack(spacing: 10) {
-                    transport
-                    HStack(spacing: 36) {
+                    transport(30)
+                    HStack {
                         markIn
+                        Spacer(minLength: 8)
                         markOut
                     }
+                }
+                VStack(spacing: 10) {
+                    transport(26)
+                    HStack {
+                        markIn
+                        Spacer(minLength: 8)
+                        markOut
+                    }
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    transport(26)
+                        .frame(maxWidth: .infinity)
+                    markIn
+                    markOut
                 }
             }
             if model.layerIsTimed {
@@ -800,11 +827,10 @@ struct TrimPanel: View {
     }
 
     /// Where the selected layer starts on the composition's timeline
-    /// (DESIGN §6a): a time to type, or where the player is.
+    /// (DESIGN §6a): a time to type, or where the player is. Short of
+    /// room, its words over the field.
     private func start(rate: FrameRate) -> some View {
-        HStack(spacing: 6) {
-            Text("Starts on the timeline at")
-                .foregroundStyle(.secondary)
+        let field = HStack(spacing: 6) {
             StartTimeField(model: model,
                            shown: rate.timecode(model.trimOffset))
                 .disabled(off)
@@ -818,15 +844,25 @@ struct TrimPanel: View {
                 model.seekVideo(to: model.trimOffset)
             }
         }
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                Text("Starts on the timeline at")
+                field
+            }
+            VStack(spacing: 4) {
+                Text("Starts on the timeline at")
+                field
+            }
+        }
         .foregroundStyle(.secondary)
     }
 
     /// { the clip's start, fast rewind, 1× back, a frame back, pause, a
     /// frame on, 1×, fast forward, the clip's end }; the one playing is
     /// pressed in. A frame's step is heard (← and → step too).
-    private var transport: some View {
+    private func transport(_ size: CGFloat) -> some View {
         let r = model.videoRate
-        return HStack(spacing: 4) {
+        return HStack(spacing: size < 30 ? 0 : 4) {
             TransportButton(symbol: "backward.end.fill",
                             help: "Go to the clip's start", on: false) {
                 model.seekClipEdge(end: false)
@@ -868,6 +904,7 @@ struct TrimPanel: View {
                 model.seekClipEdge(end: true)
             }
         }
+        .environment(\.transportButtonSize, size)
     }
 
     /// The mark-in at the row's left: its time, ⇤, [I].
@@ -1037,13 +1074,14 @@ struct TransportButton: View {
     let action: () -> Void
     @State private var hovering = false
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.transportButtonSize) private var size
 
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 14))
                 .scaleEffect(x: mirrored ? -1 : 1, y: 1)
-                .frame(width: 30, height: 30)
+                .frame(width: size, height: size)
                 .background {
                     Circle().fill(Color.primary.opacity(
                         on ? 0.14 : hovering && enabled ? 0.06 : 0))
@@ -1107,4 +1145,10 @@ private struct HoldButton<Label: View>: View {
             .onChange(of: pressed) { _, p in onHold(p) }
             .onDisappear { if pressed { onHold(false) } }
     }
+}
+
+extension EnvironmentValues {
+    /// A transport button's circle: 30 points, closer up in the Trim
+    /// section's narrowest column.
+    @Entry var transportButtonSize: CGFloat = 30
 }

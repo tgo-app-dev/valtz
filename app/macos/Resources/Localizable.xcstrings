@@ -2458,6 +2458,7 @@
       }
     },
     "Adjust the clip" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -2468,6 +2469,7 @@
       }
     },
     "Adjust the picture to edit" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -2478,6 +2480,7 @@
       }
     },
     "Adjust the result" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -2508,6 +2511,7 @@
       }
     },
     "Adjustments are applied" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -2578,6 +2582,7 @@
       }
     },
     "Agent Settings" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -2870,6 +2875,7 @@
       }
     },
     "Answer in the box below." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -4364,7 +4370,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在编写区选择“代理”（⌘4），告诉它要做什么。"
+            "value" : "在编写区选择“智能体”（⌘4），告诉它要做什么。"
           }
         }
       }
@@ -5559,6 +5565,7 @@
       }
     },
     "Crop and rotate the clip" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -5569,6 +5576,7 @@
       }
     },
     "Crop and rotate the picture" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -6409,6 +6417,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "点线"
+          }
+        }
+      }
+    },
+    "Double-click for 100%" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "连按两次回到 100%"
           }
         }
       }
@@ -7453,6 +7471,7 @@
       }
     },
     "Experimental" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -8716,6 +8735,7 @@
       }
     },
     "Grade the clip's tones" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -8726,6 +8746,7 @@
       }
     },
     "Grade the picture's tones" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -8961,6 +8982,7 @@
       }
     },
     "Hide adjustments" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -9002,6 +9024,7 @@
       }
     },
     "Hide the audio panel" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -9012,6 +9035,7 @@
       }
     },
     "Hide the colour grade" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -9022,6 +9046,7 @@
       }
     },
     "Hide the colour mixer" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -9042,6 +9067,7 @@
       }
     },
     "Hide the crop" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -9083,6 +9109,7 @@
       }
     },
     "Hide the trim" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -10384,6 +10411,16 @@
         }
       }
     },
+    "Keyframe here" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此处的关键帧"
+          }
+        }
+      }
+    },
     "Keyframes" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11663,6 +11700,7 @@
       }
     },
     "Mix the clip's colours" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -11673,6 +11711,7 @@
       }
     },
     "Mix the picture's colours" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -13521,6 +13560,26 @@
         }
       }
     },
+    "Open the colour grade at its full width" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "以完整宽度打开色彩分级"
+          }
+        }
+      }
+    },
+    "Open the colour mixer at its full width" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "以完整宽度打开色彩混合器"
+          }
+        }
+      }
+    },
     "Open this section" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14197,6 +14256,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "只写旋律，再围绕旋律编曲"
+          }
+        }
+      }
+    },
+    "Plane" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "平面"
           }
         }
       }
@@ -15963,6 +16032,16 @@
         }
       }
     },
+    "Right Column" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "右栏"
+          }
+        }
+      }
+    },
     "Rotate" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16724,7 +16803,6 @@
       }
     },
     "Shape" : {
-      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16735,6 +16813,7 @@
       }
     },
     "Shape the sound: gain, pitch, equalizer" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16938,6 +17017,16 @@
         }
       }
     },
+    "Show Wide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "宽版显示"
+          }
+        }
+      }
+    },
     "Show in Finder" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17058,6 +17147,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示检查器 (⌥⌘I)"
+          }
+        }
+      }
+    },
+    "Show the inspector or the Agent" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示检查器或智能体"
           }
         }
       }
@@ -18704,6 +18803,7 @@
       }
     },
     "The Agent tab over the prompt: ask for a deck, a poster or a video of your clips with music, and a model builds it in your document with the editor's tools, a step at a time. Switched off, the tab goes, and a session at work stops. Switched on, its settings are in Agentic Helper." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -18894,6 +18994,7 @@
       }
     },
     "The clip is trimmed" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -18904,6 +19005,7 @@
       }
     },
     "The colour grade tints the tones" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -18924,6 +19026,7 @@
       }
     },
     "The colour mixer changes colours" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -19074,7 +19177,18 @@
         }
       }
     },
+    "The helper reads a conversation up to its context. Auto gives it as much of the model’s own as this Mac’s memory holds, its words kept beside the model; less leaves more memory for the pictures. Past it, the agent compacts the conversation: the model writes notes on the work so far, and goes on from them and its latest turns. Switched off, a session stops there. For sessions started after a change." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "助手读取的对话以其上下文为限。“自动”会在这台 Mac 的内存容得下的范围内给它尽量多的模型自身上下文，词元保存在模型旁；设得更小，则为图片留出更多内存。超过上下文时，智能体会压缩对话：模型为迄今的工作写下笔记，再从这些笔记和最近几轮继续。关闭后，会话会在那里停止。更改只对之后开始的会话生效。"
+          }
+        }
+      }
+    },
     "The helper reads a conversation up to its context. Auto gives it as much of the model’s own as this Mac’s memory holds, its words kept beside the model; less leaves more memory for the pictures. Past it, the agent compacts the conversation: the model writes notes on the work so far, and goes on from them and its latest turns. Switched off, a session stops there. For sessions started after a change; the Agent is in Settings › Experimental." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -19114,7 +19228,18 @@
         }
       }
     },
+    "The layer's alpha: 100% as it is, lower to let what is under it show through, 0% clear." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图层的不透明度：100% 为原样，调低可透出下方内容，0% 为完全透明。"
+          }
+        }
+      }
+    },
     "The layer's alpha: 100% as it is, lower to let what is under it show through, 0% clear. ⌥ for finer steps; double-click for 100%." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -19346,6 +19471,7 @@
       }
     },
     "The picture is cropped or turned" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -19539,6 +19665,7 @@
       }
     },
     "The sound is changed" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -19549,6 +19676,7 @@
       }
     },
     "The sound is trimmed" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -20281,6 +20409,7 @@
       }
     },
     "Trim the clip" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -20291,6 +20420,7 @@
       }
     },
     "Trim the sound" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -20472,7 +20602,18 @@
         }
       }
     },
+    "Under each of the agent's turns and each suggested prompt, in small type: the tokens it read (prefill) and wrote (decode), how fast, how many tokens a round of its drafter bought and how many of its drafts were kept, and how much of the conversation it went on from." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在智能体的每一轮和每条建议的提示词下方以小字显示：它读入（预填充）和写出（解码）的词元数、速度，草稿模型每轮换来多少词元、保留了多少草稿，以及沿用了多少已有对话。"
+          }
+        }
+      }
+    },
     "Under each of the agent's turns and each suggested prompt, in small type: the tokens it read (prefill) and wrote (decode), how fast, how many tokens a round of its drafter bought and how many of its drafts were kept, and how much of the conversation it went on from. The Agent is switched on in Settings › Experimental." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -21679,6 +21820,7 @@
       }
     },
     "What is still being built: switched on here to try it. It may change, or go." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -21801,6 +21943,7 @@
       }
     },
     "Where it thinks, its model and memory" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {

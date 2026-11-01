@@ -1,13 +1,10 @@
 import SwiftUI
 
-/// THE AGENT at work (DESIGN §9b), over the prompt: what it is doing, its
-/// words as they come, the step waiting for the person's word (Run, Skip
-/// -- a note told to it -- Run All), and Pause, Stop. The Prompt Editor
-/// shows all of it (AgentPane).
-struct AgentCard: View {
+/// The session's state, where its model thinks, and its controls -- on
+/// one row, or, short of room (the right column), the controls under the
+/// state.
+struct AgentHeader: View {
     @Bindable var model: AppModel
-    /// The session as the card was made with it: shown only while the
-    /// card goes (the model's let go).
     let shown: AgentSession
 
     /// The session as the model has it now. A copy handed down is the
@@ -16,137 +13,61 @@ struct AgentCard: View {
     /// model beside an older copy's Pause and Stop (2026-10-29).
     var session: AgentSession { model.agent ?? shown }
 
-    /// The rows the agent's output has: what it says and the step it is
-    /// on, however long, scroll within them.
-    static let outputHeight: CGFloat = 96
-    /// The review buttons' row.
-    static let buttonsHeight: CGFloat = 24
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            AgentHeader(model: model, shown: session)
-            AgentHoldNote(model: model)
-            // What it is doing -- its words as they come, the step it is on
-            // with what it was asked, an error, a question -- in rows of
-            // their own, the newest in view; longer, they scroll. Sized by
-            // what came, the card moved the stage at every word and step.
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        output
-                        Color.clear.frame(height: 1).id("end")
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                state
+                Spacer(minLength: 8)
+                controls
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) { state }
+                HStack(spacing: 8) {
+                    Spacer(minLength: 0)
+                    controls
                 }
-                .frame(height: Self.outputHeight)
-                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
-                .onChange(of: scrollKey) {
-                    proxy.scrollTo("end", anchor: .bottom)
-                }
-            }
-            // Its buttons' row kept while it asks for a word on each step,
-            // so the card is one height as steps come and go.
-            if let step = session.proposed {
-                AgentReviewButtons(model: model, step: step)
-                    .frame(height: Self.buttonsHeight)
-            } else if session.review && !session.listening {
-                Color.clear.frame(height: Self.buttonsHeight)
-            }
-        }
-        .padding(16)
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 18,
-                                                    style: .continuous))
-    }
-}
-
-extension AgentCard {
-    /// The card's output, whole.
-    @ViewBuilder
-    private var output: some View {
-        let words = model.agentWriting.trimmingCharacters(
-            in: .whitespacesAndNewlines)
-        if !words.isEmpty {
-            Text(agentMarkdown(words))
-                .font(.callout)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        if let e = session.errorText, session.state == "failed" {
-            Label(e, systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        if let step = session.proposed ?? session.steps.last {
-            AgentStepRow(step: step, compact: true, limited: false)
-        }
-        if session.state == "asking",
-           let q = session.steps.last?.question {
-            Label(q, systemImage: "questionmark.bubble")
-                .font(.callout.weight(.medium))
-                .fixedSize(horizontal: false, vertical: true)
-            Text("Answer in the box below.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        // The last turn's speed, for debugging.
-        if model.agentShowsSpeed, let st = session.stats, !st.isEmpty {
-            AgentSpeedText(stats: st)
-        }
-    }
-
-    /// What changes the output: the newest is brought into view.
-    private var scrollKey: String {
-        "\(model.agentWriting.count)|\(session.steps.count)|"
-            + "\(session.steps.last?.state ?? "")|\(session.state)|"
-            + "\(session.proposed?.n ?? -1)"
-    }
-}
-
-/// The session's state, where its model thinks, and its controls.
-struct AgentHeader: View {
-    @Bindable var model: AppModel
-    let shown: AgentSession
-
-    /// The model's, as its state label reads it (AgentCard.session).
-    var session: AgentSession { model.agent ?? shown }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Label(model.agentStateLabel, systemImage: "wand.and.stars")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            if session.busy {
-                ProgressView().controlSize(.mini)
-            }
-            Text(model.agentBackendLabel)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 8)
-            Toggle("Ask First", isOn: Binding(
-                get: { session.review },
-                set: { model.agentControl($0 ? "review" : "auto") }))
-                .toggleStyle(.checkbox)
-                .help("Each step that changes the document waits for your word")
-                .disabled(session.ended)
-            if session.state == "paused" {
-                Button("Resume") { model.agentControl("resume") }
-            } else if !session.ended && !session.listening {
-                Button("Pause") { model.agentControl("pause") }
-                    .help("It stops after the step it is on")
-            }
-            if session.ended || session.state == "done" {
-                Button("Close") { model.agentDismiss() }
-                    .help("Put it away: the next request starts anew")
-            } else {
-                Button("Stop") { model.agentControl("stop") }
-                    .help("End the session; what it made stays")
             }
         }
         .controlSize(.small)
+    }
+
+    @ViewBuilder
+    private var state: some View {
+        Label(model.agentStateLabel, systemImage: "wand.and.stars")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        if session.busy {
+            ProgressView().controlSize(.mini)
+        }
+        Text(model.agentBackendLabel)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+
+    @ViewBuilder
+    private var controls: some View {
+        Toggle("Ask First", isOn: Binding(
+            get: { session.review },
+            set: { model.agentControl($0 ? "review" : "auto") }))
+            .toggleStyle(.checkbox)
+            .help("Each step that changes the document waits for your word")
+            .disabled(session.ended)
+        if session.state == "paused" {
+            Button("Resume") { model.agentControl("resume") }
+        } else if !session.ended && !session.listening {
+            Button("Pause") { model.agentControl("pause") }
+                .help("It stops after the step it is on")
+        }
+        if session.ended || session.state == "done" {
+            Button("Close") { model.agentDismiss() }
+                .help("Put it away: the next request starts anew")
+        } else {
+            Button("Stop") { model.agentControl("stop") }
+                .help("End the session; what it made stays")
+        }
     }
 }
 
@@ -180,26 +101,41 @@ struct AgentHoldNote: View {
     }
 }
 
-/// Run, Skip (with a note), Run All -- for the step waiting.
+/// Run, Skip (with a note), Run All -- for the step waiting: on one row,
+/// or, short of room, the note over the buttons.
 struct AgentReviewButtons: View {
     @Bindable var model: AppModel
     let step: AgentStep
 
     var body: some View {
-        HStack(spacing: 8) {
-            TextField("Note for Skip (optional)", text: $model.agentNote)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 220)
-            Spacer(minLength: 8)
-            Button("Skip") { model.agentSkip(step) }
-                .help("Not this one: it is told, with your note")
-            Button("Run All") { model.agentApproveAll(step) }
-                .help("This one and every step after it, without asking")
-            Button("Run") { model.agentApprove(step) }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                note.frame(minWidth: 140, maxWidth: 220)
+                Spacer(minLength: 8)
+                buttons
+            }
+            VStack(alignment: .trailing, spacing: 6) {
+                note
+                HStack(spacing: 8) { buttons }
+            }
         }
         .controlSize(.small)
+    }
+
+    private var note: some View {
+        TextField("Note for Skip (optional)", text: $model.agentNote)
+            .textFieldStyle(.roundedBorder)
+    }
+
+    @ViewBuilder
+    private var buttons: some View {
+        Button("Skip") { model.agentSkip(step) }
+            .help("Not this one: it is told, with your note")
+        Button("Run All") { model.agentApproveAll(step) }
+            .help("This one and every step after it, without asking")
+        Button("Run") { model.agentApprove(step) }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
     }
 }
 
@@ -270,26 +206,31 @@ struct AgentSpeedText: View {
     }
 }
 
-/// The Prompt Editor's card while the agent works (DESIGN §10c), its
-/// whole width, the box a few lines under it:
-/// the request, then each turn -- its words, its steps, its speed while
-/// that is shown -- as they came, the step waiting with its buttons, the
-/// words being written last.
+/// The agent at work (DESIGN §9b) -- the right column's Agent panel, and
+/// the Prompt Editor's card while the agent works (DESIGN §10c), its
+/// whole width, the box a few lines under it: its state and controls,
+/// the hold note, then the request and each turn -- its words, its
+/// steps, its speed while that is shown -- as they came, the step
+/// waiting with its buttons, the words being written last.
 struct AgentPane: View {
     @Bindable var model: AppModel
     let shown: AgentSession
+    /// Its rows' leading inset: the prompt's text's in the Prompt
+    /// Editor, the column's margin in the right column.
+    var inset: CGFloat = PromptEditor.inset.width + 5
 
-    /// The model's (AgentCard.session).
+    /// The model's (AgentHeader.session).
     var session: AgentSession { model.agent ?? shown }
 
     var body: some View {
         VStack(spacing: 0) {
             AgentHeader(model: model, shown: session)
-                .padding(.leading, PromptEditor.inset.width + 5)
+                .padding(.leading, inset)
                 .padding(.trailing, 12)
-                .frame(height: PaneHeader.height)
+                .padding(.vertical, VZ.Space.xs)
+                .frame(minHeight: PaneHeader.height)
             AgentHoldNote(model: model)
-                .padding(.leading, PromptEditor.inset.width + 5)
+                .padding(.leading, inset)
                 .padding(.trailing, 12)
                 .padding(.bottom, 6)
             ScrollViewReader { proxy in
@@ -321,7 +262,7 @@ struct AgentPane: View {
                         }
                         Color.clear.frame(height: 1).id("end")
                     }
-                    .padding(.leading, PromptEditor.inset.width + 5)
+                    .padding(.leading, inset)
                     .padding(.trailing, 16)
                     .padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)

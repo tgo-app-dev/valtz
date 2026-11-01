@@ -1,8 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The prompt card, the tab above it, and the tray of cards tucked under
-/// it.
+/// The prompt card, the tab above it, and the Generate drawer tucked
+/// under it.
 ///
 ///   modality tab  Video | Image, on a grey tab over the card's top-left
 ///                 corner: what Start makes, chosen before nearly every
@@ -11,28 +11,25 @@ import UniformTypeIdentifiers
 ///                 (ReferenceRow), split from the text by a hairline, and
 ///                 the text, which mentions them; attach and the
 ///                 assistant sit in its bottom-right corner
-///   tray          cards hanging from under the prompt card, each a
-///                 header at its bottom edge -- Adjust, Crop (Trim, for
-///                 a clip), and the generation brief (model · size ·
-///                 speed) with Start -- on one row, docked right with a
-///                 small gap between
+///   tray          the Generate card hanging from under the prompt card,
+///                 its header at its bottom edge -- the generation brief
+///                 (model · size · speed) with Start -- docked right
 ///
-/// A header's chevron pulls its card out like a drawer: the card's body
-/// slides down from under the prompt card, pushing the header row down,
-/// and the header stays joined to it by concave rounded corners. The
-/// other card stays behind, its header riding along on the same row and
-/// shaded by the open card. At most one is open.
+/// The header's chevron pulls the card out like a drawer: its body
+/// slides down from under the prompt card, pushing the header down, and
+/// the header stays joined to it by concave rounded corners. (A layer's
+/// edits -- Adjust, Color, Grade, Crop, Trim, Audio -- once cards beside
+/// it, are the inspector's sections now.)
 ///
 /// The tray is narrower than the prompt card, so its edges start well
 /// inside the card's rounded corners, and it casts a shallower shadow.
-/// Its silhouettes are drawn in one layer behind the content, from the
-/// headers' measured frames, so the open card, its header and the other
-/// header can be stacked in the order a drawer implies. Each frame is
-/// taken against the tray's own, measured the same way: while the
-/// composer itself moves (the inspector opening, a result landing), an
-/// anchor resolves in the layer's space with that move still to come --
-/// a header read 150 pt right of where it showed, then slid back -- and
-/// the tray's anchor carries the same offset, which cancels.
+/// Its silhouette is drawn in a layer behind the content, from the
+/// header's measured frame. The frame is taken against the tray's own,
+/// measured the same way: while the composer itself moves (the inspector
+/// opening, a result landing), an anchor resolves in the layer's space
+/// with that move still to come -- a header read 150 pt right of where it
+/// showed, then slid back -- and the tray's anchor carries the same
+/// offset, which cancels.
 struct ComposerStack: View {
     @Bindable var model: AppModel
     /// How tall the prompt card may grow: half the window.
@@ -48,9 +45,9 @@ struct ComposerStack: View {
     @State private var promptHeight: CGFloat = 60
     /// Its height not compact: what a tray closing grows it back to.
     @State private var promptFullHeight: CGFloat = 60
-    /// Each card's body as laid out, open or not: how much taller the
-    /// composer stands with it open.
-    @State private var panelHeights: [ComposerPanel: CGFloat] = [:]
+    /// The Generate card's body as laid out, open or not: how much
+    /// taller the composer stands with it open.
+    @State private var drawerHeight: CGFloat = 0
     @State private var promptLines = 1
     @State private var dropTargeted = false
     /// The attach capture's card, where it lies in the prompt card; and
@@ -60,10 +57,6 @@ struct ComposerStack: View {
     @State private var ghostFlying = false
     /// The prompt card's coordinates: the card and the row's thumbnails.
     static let cardSpace = "promptCard"
-    /// The card last opened: it stays in front while it closes.
-    @State private var lastPanel: ComposerPanel = .generate
-    /// The card closing: kept built while its drawer shuts.
-    @State private var closingPanel: ComposerPanel?
 
     private let radius: CGFloat = 20
     private let tabRadius: CGFloat = 18
@@ -75,12 +68,9 @@ struct ComposerStack: View {
     private let trayInset: CGFloat = 30
     /// The height of a header.
     private let tabHeight: CGFloat = 37
-    /// Between the two headers.
-    private let tabGap: CGFloat = 8
 
     /// The timeline in the prompt's place (DESIGN §10a Timeline): no
-    /// modality tab, no generation card -- the other cards tucked under it
-    /// as under the prompt.
+    /// modality tab, no generation card.
     private var timeline: Bool { !immersive && model.composerShowsTimeline }
 
     var body: some View {
@@ -91,19 +81,10 @@ struct ComposerStack: View {
                     .transition(.opacity)
             }
             ZStack(alignment: .top) {
-                if !immersive {
+                if !immersive && !timeline {
                     tray
-                        // Under the wide timeline, where it is under the
-                        // prompt: its width, centred, its headers at the
-                        // prompt's right -- not out at the timeline's.
-                        .frame(maxWidth: timeline
-                               ? SimpleView.columnWidth - 2 * trayInset
-                               : .infinity)
                         .padding(.horizontal, trayInset)
-                        .padding(.top, timeline
-                                 ? TimelineCard.height(rows: model.timelineRows)
-                                     - tuck
-                                 : rowHeight + promptHeight - tuck)
+                        .padding(.top, rowHeight + promptHeight - tuck)
                         .transition(.opacity)
                 }
                 // The prompt slides out to the left as the timeline comes
@@ -135,18 +116,14 @@ struct ComposerStack: View {
                 }
             }
         }
-        .onChange(of: model.openPanel) { was, p in
+        .onChange(of: model.openPanel) { _, p in
             // Custom's panel belongs to the generation card.
             if p != .generate { model.showsTuning = false }
-            if let p { lastPanel = p }
-            // The Crop card shows the whole canvas.
-            if p == .crop { model.stage.fitRequest += 1 }
-            // What the composer gains: the card opened, less the one it
-            // replaces -- and the box, should it grow back.
-            let body = { (p: ComposerPanel?) in
-                p.flatMap { panelHeights[$0] } ?? 0
-            }
-            model.panelChanged(to: p, grows: body(p) - body(was),
+            // What the composer gains: the card opened, or what it gives
+            // back shut -- and the box, should it grow back.
+            model.panelChanged(to: p,
+                               grows: p == .generate ? drawerHeight
+                                                     : -drawerHeight,
                                regrows: max(0, promptFullHeight
                                                - promptHeight))
         }
@@ -156,47 +133,6 @@ struct ComposerStack: View {
                 withAnimation(AppModel.motion) { model.openPanel = nil }
             }
             if !open { model.timelineCutting = false }
-        }
-        // The Adjust and Crop tabs go when the stage has nothing for them;
-        // their cards go with them.
-        .onChange(of: model.showsAdjust) { _, shows in
-            if !shows && (model.openPanel == .adjust
-                          || model.openPanel == .color
-                          || model.openPanel == .grade) {
-                withAnimation(AppModel.motion) { model.openPanel = nil }
-            }
-            if !shows && (lastPanel == .adjust || lastPanel == .color
-                          || lastPanel == .grade) {
-                lastPanel = .generate
-            }
-        }
-        // The target tool works while its panel is open.
-        .onChange(of: model.openPanel) { was, p in
-            if p != .color { model.colorTargeting = false }
-            // The card shutting stays built for its drawer's animation.
-            closingPanel = was
-            Task { @MainActor in
-                try? await Task.sleep(for: .seconds(0.6 * AppModel.animationScale))
-                if closingPanel == was { closingPanel = nil }
-            }
-        }
-        .onChange(of: model.showsCrop) { _, shows in
-            if !shows && model.openPanel == .crop {
-                withAnimation(AppModel.motion) { model.openPanel = nil }
-            }
-            if !shows && lastPanel == .crop { lastPanel = .generate }
-        }
-        .onChange(of: model.showsTrim) { _, shows in
-            if !shows && model.openPanel == .trim {
-                withAnimation(AppModel.motion) { model.openPanel = nil }
-            }
-            if !shows && lastPanel == .trim { lastPanel = .generate }
-        }
-        .onChange(of: model.showsAudio) { _, shows in
-            if !shows && model.openPanel == .audio {
-                withAnimation(AppModel.motion) { model.openPanel = nil }
-            }
-            if !shows && lastPanel == .audio { lastPanel = .generate }
         }
         // A new base brings its size and takes the stage; none gives the
         // stage back. Run from here, not from a didSet on the attachments:
@@ -611,58 +547,21 @@ struct ComposerStack: View {
         .foregroundStyle(.secondary)
     }
 
-    // MARK: Tray: two cards, headers at the bottom
+    // MARK: Tray: the Generate card, its header at the bottom
 
-    /// The content only -- the open card's body, then the header row;
-    /// the cards themselves are drawn behind it (`cards`).
+    /// The content only -- the card's body while it is out, then its
+    /// header; the card itself is drawn behind it (`card`).
     private var tray: some View {
         VStack(spacing: 0) {
             drawer
-            HStack(spacing: tabGap) {
+            HStack(spacing: 0) {
                 // The row keeps room on its left; the brief gives way
                 // first when the window is narrow.
                 Spacer(minLength: 72)
-                // Only once the stage has a picture of its own to adjust
-                // -- and not while an agent at work holds the project.
-                if model.showsAdjust && !model.agentHolds {
-                    adjustTab
-                        .fixedSize()
-                        .transition(.opacity)
-                }
-                // The color mixer: a picture's or a clip's, as Adjust is.
-                if model.showsAdjust && !model.agentHolds
-                    && !model.stageIsAudio {
-                    colorTab
-                        .fixedSize()
-                        .transition(.opacity)
-                    // The color grade: the same.
-                    gradeTab
-                        .fixedSize()
-                        .transition(.opacity)
-                }
-                if model.showsCrop && !model.agentHolds {
-                    cropTab
-                        .fixedSize()
-                        .transition(.opacity)
-                }
-                if model.showsTrim && !model.agentHolds {
-                    trimTab
-                        .fixedSize()
-                        .transition(.opacity)
-                }
-                // The sound of the selected layer, when it has one.
-                if model.showsAudio && !model.agentHolds {
-                    audioTab
-                        .fixedSize()
-                        .transition(.opacity)
-                }
-                if !timeline {
-                    generateTab
-                        .transition(.opacity)
-                }
+                generateTab
             }
         }
-        // Added to the headers' anchors, not in place of them.
+        // Added to the header's anchor, not in place of it.
         .transformAnchorPreference(key: TabFrameKey.self,
                                    value: .bounds) { $0[.tray] = $1 }
         .backgroundPreferenceValue(TabFrameKey.self) { frames in
@@ -670,51 +569,29 @@ struct ComposerStack: View {
         }
     }
 
-    /// The open card's body, its top behind the prompt card. Each panel
-    /// sits at the bottom of its own box, clipped; opening one grows its
-    /// box from nothing, so the panel rides down on the header row from
-    /// under the prompt card (and back up as it closes) -- one layout
-    /// animation, nothing to keep in step. Switching cards shrinks one
-    /// box as the other grows.
+    /// The card's body, its top behind the prompt card. It sits at the
+    /// bottom of its own box, clipped; opening grows the box from
+    /// nothing, so the body rides down on the header from under the
+    /// prompt card (and back up as it closes) -- one layout animation,
+    /// nothing to keep in step. Built shut too: its height decides how
+    /// the prompt makes room for it.
     private var drawer: some View {
-        VStack(spacing: 0) {
-            drawerPanel(.adjust)
-            drawerPanel(.color)
-            drawerPanel(.grade)
-            drawerPanel(.crop)
-            drawerPanel(.trim)
-            drawerPanel(.audio)
-            drawerPanel(.generate)
-        }
-        .padding(.top, tuck)
-    }
-
-    private func drawerPanel(_ p: ComposerPanel) -> some View {
-        let open = model.openPanel == p
-        // Built while it shows or closes -- and the generation card, whose
-        // height decides how the prompt makes room for it: a shut card was
-        // evaluated and laid out (at no height) at every step of a drag on
-        // another, its values reading the same look.
-        let built = open || p == closingPanel || p == .generate
-        return Group {
-            if built {
-                panel(p)
-                    .onGeometryChange(for: CGFloat.self) {
-                        $0.size.width
-                    } action: {
-                        model.drawerWidths["\(p)"] = $0
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 18)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .onGeometryChange(for: CGFloat.self) {
-                        $0.size.height
-                    } action: {
-                        panelHeights[p] = $0
-                    }
+        let open = model.openPanel == .generate
+        return DrawerSettings(model: model)
+            .onGeometryChange(for: CGFloat.self) {
+                $0.size.width
+            } action: {
+                model.drawerWidths["generate"] = $0
             }
-        }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 18)
+            .fixedSize(horizontal: false, vertical: true)
+            .onGeometryChange(for: CGFloat.self) {
+                $0.size.height
+            } action: {
+                drawerHeight = $0
+            }
             .frame(height: open ? nil : 0, alignment: .bottom)
             .clipped()
             .allowsHitTesting(open)
@@ -724,42 +601,24 @@ struct ComposerStack: View {
             // Out of the Tab order too: a shut drawer's fields are still
             // laid out (at no height), and Tab would visit them unseen.
             .disabled(!open)
+            .padding(.top, tuck)
     }
 
-    /// The cards: the open (or last opened) one in front of the others,
-    /// each with its own shadow -- so the open card shades the headers
-    /// behind it, and reads as pulled out in front of them. Each card
-    /// keeps one identity and is raised, not moved to another list: a
-    /// card re-inserted as it went behind faded in from the layer's final
-    /// place -- a slab over the picture while a drawer opened.
+    /// The card, from its header's frame against the tray's anchor, not
+    /// the layer's origin (see the type's comment).
     @ViewBuilder
     private func cards(_ frames: [TrayPart: Anchor<CGRect>],
                        _ proxy: GeometryProxy) -> some View {
-        let front = model.openPanel ?? lastPanel
-        // A header where it shows on the tray: against the tray's anchor,
-        // not the layer's origin (see the type's comment).
         let origin = frames[.tray].map { proxy[$0].origin } ?? .zero
-        let tab = { (p: ComposerPanel) -> CGRect? in
-            frames[.tab(p)].map {
-                proxy[$0].offsetBy(dx: -origin.x, dy: -origin.y)
-            }
+        if let r = frames[.tab].map({
+            proxy[$0].offsetBy(dx: -origin.x, dy: -origin.y)
+        }) {
+            TrayCard(rowTop: r.minY, tabMinX: r.minX, tabMaxX: r.maxX,
+                     tabHeight: r.height, shutRowTop: tuck, drawer: true,
+                     radius: tabRadius, fillet: fillet)
+                .fill(Self.trayFill)
+                .shadow(color: .black.opacity(0.09), radius: 7, y: 3)
         }
-        ZStack(alignment: .topLeading) {
-            ForEach(ComposerPanel.allCases, id: \.self) { p in
-                if let r = tab(p) {
-                    card(r, drawer: p == front)
-                        .zIndex(p == front ? 1 : 0)
-                }
-            }
-        }
-    }
-
-    private func card(_ tab: CGRect, drawer: Bool) -> some View {
-        TrayCard(rowTop: tab.minY, tabMinX: tab.minX, tabMaxX: tab.maxX,
-                 tabHeight: tab.height, shutRowTop: tuck, drawer: drawer,
-                 radius: tabRadius, fillet: fillet)
-            .fill(Self.trayFill)
-            .shadow(color: .black.opacity(0.09), radius: 7, y: 3)
     }
 
     private func chevron(open: Bool) -> some View {
@@ -769,173 +628,13 @@ struct ComposerStack: View {
             .foregroundStyle(.tertiary)
     }
 
-    /// The Adjust panel's own sliders change something.
-    private static func adjustChanged(_ m: AppModel) -> Bool {
-        m.keyedStage
-            ? m.clipAdjustKeys.keys.contains { !$0.value.toneIsIdentity }
-            : !m.adjustments.toneIsIdentity
-    }
-
-    private var adjustTab: some View {
-        let open = model.openPanel == .adjust
-        return Button {
-            toggle(.adjust)
-        } label: {
-            HStack(spacing: 8) {
-                chevron(open: open)
-                    .padding(.trailing, 2)
-                Image(systemName: "slider.horizontal.3")
-                    .accessibilityLabel(Text("Adjust"))
-                    // Its own sliders (the mixer and the grade have tabs
-                    // of their own).
-                    .overlay(alignment: .bottom) {
-                        TabDot(model: model, changed: Self.adjustChanged,
-                               help: "Adjustments are applied")
-                    }
-            }
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .padding(.leading, 16)
-            .padding(.trailing, 18)
-            .frame(height: tabHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(open ? "Hide adjustments"
-              : model.adjustsBase ? "Adjust the picture to edit"
-              : model.clipOnStage ? "Adjust the clip"
-              : "Adjust the result")
-        .anchorPreference(key: TabFrameKey.self, value: .bounds) {
-            [.tab(.adjust): $0]
-        }
-    }
-
-    /// Crop and rotate (a picture, or a clip -- keyed). A dot while it
-    /// changes what the picture or clip gives.
-    /// The color mixer's: its curves of hue, saturation, luminance.
-    private var colorTab: some View {
-        iconTab(.color, symbol: "paintpalette", name: "Color",
-                       changed: { m in
-                           m.keyedStage
-                               ? m.clipAdjustKeys.keys.contains {
-                                   !$0.value.mix.isIdentity }
-                               : !m.adjustments.mix.isIdentity
-                       },
-                       dot: "The colour mixer changes colours",
-                       show: model.clipOnStage ? "Mix the clip's colours"
-                                               : "Mix the picture's colours",
-                       hide: "Hide the colour mixer")
-    }
-
-    /// The color grade's: its tints of the shadows, midtones, highlights.
-    private var gradeTab: some View {
-        iconTab(.grade, symbol: "camera.filters", name: "Grade",
-                       changed: { m in
-                           m.keyedStage
-                               ? m.clipAdjustKeys.keys.contains {
-                                   !$0.value.grade.isIdentity }
-                               : !m.adjustments.grade.isIdentity
-                       },
-                       dot: "The colour grade tints the tones",
-                       show: model.clipOnStage ? "Grade the clip's tones"
-                                               : "Grade the picture's tones",
-                       hide: "Hide the colour grade")
-    }
-
-    private var cropTab: some View {
-        iconTab(.crop, symbol: "crop", name: "Crop",
-                       changed: { m in
-                           m.keyedStage ? !m.clipCropKeys.isIdentity
-                                        : !m.crop.isIdentity
-                       },
-                       dot: "The picture is cropped or turned",
-                       show: model.clipOnStage ? "Crop and rotate the clip"
-                                               : "Crop and rotate the picture",
-                       hide: "Hide the crop")
-    }
-
-    /// A clip's (or a sound's) mark-in and mark-out.
-    private var trimTab: some View {
-        let sound = model.stageIsAudio
-        return iconTab(.trim, symbol: "timeline.selection", name: "Trim",
-                       changed: { !$0.trim.isIdentity },
-                       dot: sound ? "The sound is trimmed"
-                                  : "The clip is trimmed",
-                       show: sound ? "Trim the sound" : "Trim the clip",
-                       hide: "Hide the trim")
-    }
-
-    /// The selected layer's sound: its gain, pitch and equalizer.
-    private var audioTab: some View {
-        iconTab(.audio, symbol: "speaker.wave.2", name: "Audio",
-                changed: { !$0.layerSound.isIdentity },
-                dot: "The sound is changed",
-                show: "Shape the sound: gain, pitch, equalizer",
-                hide: "Hide the audio panel")
-    }
-
-    /// A header's dot, a view of its own: what it reads -- a look's keys,
-    /// a sound's -- changes with every step of a drag, and read in the
-    /// composer's body it evaluated and laid out the whole prompt card and
-    /// tray again at each (the prompt's model resolved each time).
-    private struct TabDot: View {
-        let model: AppModel
-        let changed: (AppModel) -> Bool
-        let help: LocalizedStringKey
-
-        var body: some View {
-            if changed(model) { ComposerStack.changedDot.help(help) }
-        }
-    }
-
-    /// A header's dot while its card changes something: under its icon,
-    /// at the header's foot -- out of its row, so a card does not widen
-    /// as one comes or goes.
-    static var changedDot: some View {
-        Circle().fill(Color.accentColor)
-            .frame(width: 5, height: 5)
-            .offset(y: 10)
-    }
-
-    /// A card's header that is its icon alone (its name is its help and
-    /// what VoiceOver says), and a dot while it changes something.
-    private func iconTab(_ p: ComposerPanel, symbol: String,
-                         name: LocalizedStringKey,
-                         changed: @escaping (AppModel) -> Bool,
-                         dot: LocalizedStringKey, show: LocalizedStringKey,
-                         hide: LocalizedStringKey) -> some View {
-        let open = model.openPanel == p
-        return Button {
-            toggle(p)
-        } label: {
-            HStack(spacing: 8) {
-                chevron(open: open)
-                    .padding(.trailing, 2)
-                Image(systemName: symbol)
-                    .accessibilityLabel(Text(name))
-                    .overlay(alignment: .bottom) {
-                        TabDot(model: model, changed: changed, help: dot)
-                    }
-            }
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .padding(.leading, 16)
-            .padding(.trailing, 18)
-            .frame(height: tabHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(open ? hide : show)
-        .anchorPreference(key: TabFrameKey.self, value: .bounds) {
-            [.tab(p): $0]
-        }
-    }
-
     private var generateTab: some View {
         let open = model.openPanel == .generate
         return HStack(spacing: 12) {
             Button {
-                toggle(.generate)
+                withAnimation(AppModel.motion) {
+                    model.openPanel = open ? nil : .generate
+                }
             } label: {
                 HStack(spacing: 10) {
                     chevron(open: open)
@@ -965,28 +664,7 @@ struct ComposerStack: View {
         .padding(.trailing, 12)
         .frame(height: tabHeight)
         .anchorPreference(key: TabFrameKey.self, value: .bounds) {
-            [.tab(.generate): $0]
-        }
-    }
-
-    @ViewBuilder
-    private func panel(_ p: ComposerPanel) -> some View {
-        switch p {
-        case .generate: DrawerSettings(model: model)
-        case .adjust: AdjustPanel(model: model)
-        case .color: ColorPanel(model: model)
-        case .grade: GradePanel(model: model)
-        case .crop: CropPanel(model: model)
-        case .trim: TrimPanel(model: model)
-        case .audio: AudioPanel(model: model)
-        }
-    }
-
-    private func toggle(_ p: ComposerPanel) {
-        // An agent at work: its own settings only.
-        if p != .generate && model.agentHolds { return }
-        withAnimation(AppModel.motion) {
-            model.openPanel = model.openPanel == p ? nil : p
+            [.tab: $0]
         }
     }
 
@@ -1272,11 +950,11 @@ private struct ModalityTabShape: Shape {
     }
 }
 
-/// What the cards behind the content are drawn from: each header, and
-/// the tray they are measured against.
+/// What the card behind the content is drawn from: its header, and the
+/// tray it is measured against.
 private enum TrayPart: Hashable {
     case tray
-    case tab(ComposerPanel)
+    case tab
 }
 
 private struct TabFrameKey: PreferenceKey {
@@ -1361,163 +1039,6 @@ private func roundedPolygon(_ c: [(CGPoint, CGFloat)]) -> Path {
     }
     p.closeSubpath()
     return p
-}
-
-/// The adjustments panel: eight sliders over the picture on the stage,
-/// applied live -- a result, or the picture to edit, which the model then
-/// receives adjusted (on top of a RAW's development). The values are
-/// recorded on the image, applied when a file is made from it; the
-/// original is kept. Each value is a field too: type one, or clear it
-/// with its x; Reset clears them all.
-private struct AdjustPanel: View {
-    @Bindable var model: AppModel
-
-    private let columns: [[ImageAdjustments.Key]] = [
-        [.exposure, .contrast, .highlights, .shadows],
-        [.temperature, .tint, .vibrance, .saturation],
-    ]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                if model.keyedStage {
-                    // A clip (a still with pages): keyframes, the values
-                    // between interpolated.
-                    KeyframeBar(model: model, track: .adjust)
-                } else {
-                    Text(!model.canAdjust
-                         ? "Adjustments wait for the image being made."
-                         : model.adjustsBase
-                         ? "Applied as the picture is edited and saved; the original is kept."
-                         : "Applied when the image is saved; the original is kept.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                BypassButton(model: model, part: .adjust,
-                             help: "Hold to see the picture without its adjustments")
-                // Its own sliders: the mixer is the Color panel's.
-                Button("Reset", action: model.resetAdjustments)
-                    .disabled((model.keyedStage
-                              ? !model.clipAdjustKeys.keys.contains {
-                                  !$0.value.toneIsIdentity }
-                                  || model.layerOffStage != nil
-                              : model.adjustments.toneIsIdentity)
-                              || model.selectedLayerLocked)
-            }
-            HStack(alignment: .top, spacing: 18) {
-                // The layer's master alpha, up and down, as tall as the
-                // sliders beside it.
-                FaderColumn(
-                    id: "alpha", name: ImageAdjustments.Key.alpha.label,
-                    shown: ImageAdjustments.Key.alpha.display(
-                        model.adjustments.alpha),
-                    value: model.adjustments.alpha,
-                    range: ImageAdjustments.Key.alpha.range, rest: 1,
-                    step: 0.01, fine: 0.001, width: 34,
-                    help: String(localized: "The layer's alpha: 100% as it is, lower to let what is under it show through, 0% clear. ⌥ for finer steps; double-click for 100%."),
-                    onChange: { model.setAdjustment(.alpha, $0) })
-                    .foregroundStyle(.secondary)
-                Divider()
-                HStack(alignment: .top, spacing: 28) {
-                    ForEach(columns.indices, id: \.self) { c in
-                        Grid(alignment: .leading, horizontalSpacing: 10,
-                             verticalSpacing: 8) {
-                            ForEach(columns[c]) { key in row(key) }
-                        }
-                        // Tab goes down a column, then on to the next.
-                        .focusSection()
-                    }
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            // Greyed while the playhead is off the selected layer -- its
-            // values would change unseen -- or it is locked.
-            .disabled(!model.canEditLayerHere)
-        }
-        .controlSize(.small)
-    }
-
-    private func row(_ key: ImageAdjustments.Key) -> some View {
-        GridRow {
-            Text(key.label)
-                .foregroundStyle(.secondary)
-                .gridColumnAlignment(.trailing)
-                .onTapGesture(count: 2) { model.setAdjustment(key, 0) }
-                .help("Double-click to reset")
-            CenteredSlider(value: Binding(get: { model.adjustments[key] },
-                                          set: { model.setAdjustment(key, $0) }),
-                           range: key.range)
-                .frame(minWidth: 110)
-                .accessibilityLabel(Text(key.label))
-            AdjustValueField(model: model, key: key)
-        }
-    }
-}
-
-/// One adjustment's value as a text box: typed values are taken on
-/// Return or when the field is left (exposure in stops, the others
-/// -100...+100), clamped to the slider's range; the x on its right clears
-/// that value alone.
-private struct AdjustValueField: View {
-    @Bindable var model: AppModel
-    let key: ImageAdjustments.Key
-    @State private var text = ""
-    /// What it last showed: text unlike it is being typed.
-    @State private var shown = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        let value = model.adjustments[key]
-        HStack(spacing: 2) {
-            // Named for VoiceOver by its row; the row shows the name.
-            TextField(key.label, text: $text)
-                .labelsHidden()
-                .textFieldStyle(.plain)
-                .multilineTextAlignment(.trailing)
-                .font(.callout.monospacedDigit())
-                .focused($focused)
-                .onSubmit(commit)
-                .frame(width: 42)
-            Button {
-                model.setAdjustment(key, 0)
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.caption)
-            }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.tertiary)
-            .help("Reset \(key.label)")
-            .opacity(value == 0 ? 0 : 1)
-            .disabled(value == 0)
-        }
-        .padding(.leading, 6)
-        .padding(.trailing, 3)
-        .padding(.vertical, 2)
-        .background(RoundedRectangle(cornerRadius: 5)
-            .fill(Color(nsColor: .textBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 5)
-            .strokeBorder(Color(nsColor: .separatorColor)))
-        .onAppear { show(key.display(value)) }
-        // It follows the slider and the frame a clip shows, focused or
-        // not, unless a value is being typed in it.
-        .onChange(of: value) { _, v in
-            if text == shown { show(key.display(v)) }
-        }
-        .onChange(of: focused) { _, f in
-            if !f { commit() }
-        }
-    }
-
-    private func show(_ s: String) {
-        text = s
-        shown = s
-    }
-
-    private func commit() {
-        if let v = key.parse(text) { model.setAdjustment(key, v) }
-        show(key.display(model.adjustments[key]))
-    }
 }
 
 extension View {

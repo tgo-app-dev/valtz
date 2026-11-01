@@ -16,8 +16,6 @@ import AppKit
 ///                 made, discoverable; the jobs it takes (FleetView)
 ///   Storage       what Valtz keeps on the internal SSD (StorageView)
 ///   Permissions   what Valtz may ask macOS to use (PermissionsView)
-///   Experimental  what is still being built, switched on to try it --
-///                 the Agent (ExperimentalView)
 ///
 /// The sidebar is System Settings' measure -- 32 pt rows inset 10 pt, 20
 /// pt icons, 13 pt names -- with the selection in the system's accent,
@@ -79,7 +77,6 @@ struct SettingsView: View {
                 case .page(.fleet): FleetView(model: model) { go($0) }
                 case .page(.storage): StorageView(model: model)
                 case .page(.permissions): PermissionsView(model: model)
-                case .page(.experimental): ExperimentalView(model: model)
                 case .fleetOffload: FleetOffloadView(model: model)
                 case .fleetSharing: FleetSharingView(model: model)
                 }
@@ -202,7 +199,7 @@ struct SettingsView: View {
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case general, capabilities, helper, upscaling, fleet, storage,
-         permissions, experimental
+         permissions
     var id: String { rawValue }
 
     var title: String {
@@ -214,7 +211,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .fleet: String(localized: "Fleet")
         case .storage: String(localized: "Storage")
         case .permissions: String(localized: "Permissions")
-        case .experimental: String(localized: "Experimental")
         }
     }
 
@@ -227,7 +223,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .fleet: "point.3.connected.trianglepath.dotted"
         case .storage: "internaldrive.fill"
         case .permissions: "hand.raised.fill"
-        case .experimental: "flask.fill"
         }
     }
 
@@ -240,7 +235,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .fleet: .teal
         case .storage: .blue
         case .permissions: .indigo
-        case .experimental: .orange
         }
     }
 
@@ -261,8 +255,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
             String(localized: "What Valtz keeps on the internal SSD: models, projects and the cache, each sized.")
         case .permissions:
             String(localized: "What Valtz may ask macOS to use — the camera, the microphone, the Mac's sound, your folders — whether it is allowed now, and where Valtz needs it.")
-        case .experimental:
-            String(localized: "What is still being built: switched on here to try it. It may change, or go.")
         }
     }
 }

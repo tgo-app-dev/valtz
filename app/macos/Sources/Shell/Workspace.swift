@@ -10,18 +10,26 @@ import SwiftUI
 /// the source of truth for the modes themselves (view only, the Prompt
 /// Editor, markup, the screen the sidebar picked).
 ///
-/// Later phases add to the chrome what their regions need: the right
-/// column's Agent panel, the dock's height and the timeline band.
+/// Later phases add to the chrome what their regions need: the dock's
+/// height and the timeline band.
 
-/// The inspector's sections, top first.
+/// The inspector's sections, top first: the stage's layers, what is
+/// selected, then the selected layer's edits -- its look (Adjust, Color,
+/// Grade), its crop, its trim, its sound.
 enum InspectorSection: String, CaseIterable, Identifiable, Codable, Sendable {
-    case layers, info
+    case layers, info, adjust, color, grade, crop, trim, audio
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .layers: String(localized: "Layers")
         case .info: String(localized: "Information")
+        case .adjust: String(localized: "Adjust")
+        case .color: String(localized: "Color")
+        case .grade: String(localized: "Grade")
+        case .crop: String(localized: "Crop")
+        case .trim: String(localized: "Trim")
+        case .audio: String(localized: "Audio")
         }
     }
 
@@ -29,21 +37,93 @@ enum InspectorSection: String, CaseIterable, Identifiable, Codable, Sendable {
         switch self {
         case .layers: "square.3.layers.3d"
         case .info: "info.circle"
+        case .adjust: "slider.horizontal.3"
+        case .color: "paintpalette"
+        case .grade: "camera.filters"
+        case .crop: "crop"
+        case .trim: "timeline.selection"
+        case .audio: "speaker.wave.2"
+        }
+    }
+
+    /// A layer's edit, not the stack's or the selection's.
+    var isEdit: Bool { self != .layers && self != .info }
+
+    /// The composer's old panel for it, for the hooks that still name
+    /// one.
+    var panel: ComposerPanel? {
+        switch self {
+        case .layers, .info: nil
+        case .adjust: .adjust
+        case .color: .color
+        case .grade: .grade
+        case .crop: .crop
+        case .trim: .trim
+        case .audio: .audio
         }
     }
 }
 
+extension ComposerPanel {
+    /// The inspector section a layer's edit panel is now; nil for the
+    /// composer's own Generate drawer.
+    var section: InspectorSection? {
+        switch self {
+        case .adjust: .adjust
+        case .color: .color
+        case .grade: .grade
+        case .crop: .crop
+        case .trim: .trim
+        case .audio: .audio
+        case .generate: nil
+        }
+    }
+}
+
+/// What the right column shows: the inspector's sections, or the Agent.
+enum RightPanel: String, Codable, Sendable {
+    case inspector, agent
+}
+
 /// What the person has set of the window's regions: whether the sidebar
-/// and the inspector are shown, and which inspector sections are folded
-/// and how the open ones share the height. Kept between launches (not
-/// by a scripted snapshot run).
+/// and the inspector are shown, whether the right column is the
+/// inspector or the Agent, and which inspector sections are folded and
+/// how the open ones share the height. Kept between launches (not by a
+/// scripted snapshot run).
 struct WorkspaceChrome: Codable, Equatable {
     var sidebar: NavigationSplitViewVisibility = .all
     var inspectorShown = false
-    var collapsedSections: Set<InspectorSection> = []
+    var rightPanel: RightPanel = .inspector
+    /// A layer's edits but its tone start folded: Adjust opens beside
+    /// Layers and Information, the others as they are asked for.
+    var collapsedSections: Set<InspectorSection> =
+        [.color, .grade, .crop, .trim, .audio]
     var sectionWeights: [InspectorSection: Double] = [:]
 
     private static let key = "workspace.chrome"
+
+    init() {}
+
+    /// What an older version kept lacks the newer fields: each one
+    /// missing is its default, not the whole chrome lost.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = WorkspaceChrome()
+        sidebar = try c.decodeIfPresent(NavigationSplitViewVisibility.self,
+                                        forKey: .sidebar) ?? d.sidebar
+        inspectorShown = try c.decodeIfPresent(Bool.self,
+                                               forKey: .inspectorShown)
+            ?? d.inspectorShown
+        rightPanel = (try? c.decodeIfPresent(RightPanel.self,
+                                             forKey: .rightPanel))
+            .flatMap { $0 } ?? d.rightPanel
+        collapsedSections = (try? c.decodeIfPresent(
+            Set<InspectorSection>.self, forKey: .collapsedSections))
+            .flatMap { $0 } ?? d.collapsedSections
+        sectionWeights = (try? c.decodeIfPresent(
+            [InspectorSection: Double].self, forKey: .sectionWeights))
+            .flatMap { $0 } ?? d.sectionWeights
+    }
 
     static func stored() -> WorkspaceChrome {
         guard AppModel.keepsChrome,
@@ -181,13 +261,88 @@ extension AppModel {
         }
     }
 
-    /// An inspector section brought into sight: the inspector shown, the
-    /// section unfolded.
+    /// An inspector section brought into sight -- the Adjust, Crop, Trim
+    /// ... asked for from a menu, a notice, a task: the inspector shown,
+    /// the right column on the inspector, the section unfolded.
     func revealInspectorSection(_ s: InspectorSection) {
         withAnimation(Self.motion) {
             chrome.inspectorShown = true
+            chrome.rightPanel = .inspector
             chrome.collapsedSections.remove(s)
         }
+        switch s {
+        // Crop shows the whole canvas.
+        case .crop: stage.fitRequest += 1
+        // Trim's ← and → step the clip: the prompt gives up the keyboard
+        // (its caret took them; a click in it gets them back).
+        case .trim:
+            if let w = editorWindow, w.firstResponder is NSText {
+                w.makeFirstResponder(nil)
+            }
+        default: break
+        }
+    }
+
+    /// A section folded if it shows, else brought into sight (a hook's
+    /// "panel" step, as the tray's chevrons toggled).
+    func toggleInspectorSection(_ s: InspectorSection) {
+        if sectionShown(s) {
+            withAnimation(Self.motion) {
+                _ = chrome.collapsedSections.insert(s)
+            }
+        } else {
+            revealInspectorSection(s)
+        }
+    }
+
+    /// The right column on the Agent, shown: a new session, ⌘4.
+    func showAgentPanel() {
+        withAnimation(Self.motion) {
+            chrome.inspectorShown = true
+            chrome.rightPanel = .agent
+        }
+    }
+
+    /// Whether the inspector has the section at all now -- the rest are
+    /// left out, never greyed. Layers with a stack on the stage;
+    /// Information always; a layer's edits while the stage has something
+    /// for them, and not while an agent at work holds the project or the
+    /// Prompt Editor has the window (Layers and Information alone).
+    func sectionApplies(_ s: InspectorSection) -> Bool {
+        let edits = !agentHolds && !promptImmersive
+        switch s {
+        case .layers: return stageStack != nil
+        case .info: return true
+        case .adjust: return edits && showsAdjust
+        case .color, .grade: return edits && showsAdjust && !stageIsAudio
+        case .crop: return edits && showsCrop
+        case .trim: return edits && showsTrim
+        case .audio: return edits && showsAudio
+        }
+    }
+
+    /// The sections the inspector lists now, top first.
+    var inspectorSections: [InspectorSection] {
+        InspectorSection.allCases.filter(sectionApplies)
+    }
+
+    /// The section is in sight: the inspector shown and on its sections,
+    /// the section there and open. (The Color section's target tool works
+    /// only while it is.)
+    func sectionShown(_ s: InspectorSection) -> Bool {
+        layout.inspector && chrome.rightPanel == .inspector
+            && !chrome.collapsedSections.contains(s) && sectionApplies(s)
+    }
+
+    /// For the snapshot hooks' summaries: the Generate drawer, or the
+    /// edit sections in sight ("adjust+crop"), or "-".
+    var panelSummary: String {
+        if openPanel == .generate { return "generate" }
+        let shown = InspectorSection.allCases.filter {
+            $0.isEdit && sectionShown($0)
+        }
+        return shown.isEmpty ? "-"
+            : shown.map(\.rawValue).joined(separator: "+")
     }
 
     /// A column come or gone: a stage that was fitting fits its new room

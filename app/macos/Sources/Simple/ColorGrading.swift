@@ -366,20 +366,20 @@ extension AppModel {
 
 // MARK: - The panel
 
+/// The Grade panel: a word on what it does (a still), Bypass, Reset; the
+/// three wheels; the numbers beside the ranges' graph. The keyframes are
+/// the inspector section header's. Compact -- the inspector's Grade
+/// section, 280 to 480 points wide -- the wheels shrink to share the
+/// width and the graph goes under the numbers; the section header's ⤢
+/// opens it at its full width in a popover.
 struct GradePanel: View {
     @Bindable var model: AppModel
+    var compact = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                if model.keyedStage {
-                    // The look's keys: the Adjust panel's too.
-                    KeyframeBar(model: model, track: .adjust)
-                } else {
-                    Text("Tint the shadows, midtones and highlights: click a wheel for the hue and how strong it is.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
+                if !compact && !model.keyedStage { note.font(.callout) }
                 Spacer()
                 GradeBypassButton(model: model)
                 Button("Reset") { model.resetColorGrade() }
@@ -389,26 +389,44 @@ struct GradePanel: View {
                               || model.selectedLayerLocked)
             }
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 12) {
+                HStack(alignment: .top, spacing: compact ? 6 : 12) {
                     ForEach(GradeRange.allCases) { r in
-                        GradeWheelColumn(model: model, range: r)
+                        GradeWheelColumn(model: model, range: r,
+                                         side: compact ? nil : 132)
                     }
                 }
-                HStack(alignment: .center, spacing: 18) {
-                    Grid(alignment: .leading, horizontalSpacing: 10,
+                if compact {
+                    Grid(alignment: .leading, horizontalSpacing: 8,
                          verticalSpacing: 8) {
                         ForEach(ColorGrade.Number.allCases) { row($0) }
                     }
                     GradeRangesGraph(grade: model.adjustments.grade)
-                        .frame(minWidth: 110, maxWidth: .infinity)
-                        .frame(height: 64)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 48)
+                } else {
+                    HStack(alignment: .center, spacing: 18) {
+                        Grid(alignment: .leading, horizontalSpacing: 10,
+                             verticalSpacing: 8) {
+                            ForEach(ColorGrade.Number.allCases) { row($0) }
+                        }
+                        GradeRangesGraph(grade: model.adjustments.grade)
+                            .frame(minWidth: 110, maxWidth: .infinity)
+                            .frame(height: 64)
+                    }
                 }
             }
             // Greyed while the playhead is off the selected layer -- its
             // values would change unseen -- or it is locked.
             .disabled(!model.canEditLayerHere)
+            if compact && !model.keyedStage { note.font(.caption) }
         }
         .controlSize(.small)
+    }
+
+    private var note: some View {
+        Text("Tint the shadows, midtones and highlights: click a wheel for the hue and how strong it is.")
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func row(_ n: ColorGrade.Number) -> some View {
@@ -422,7 +440,7 @@ struct GradePanel: View {
                                get: { model.adjustments.grade[n] },
                                set: { model.setGradeNumber(n, $0) }),
                            range: n.range, zero: n.rest)
-                .frame(minWidth: 110)
+                .frame(minWidth: compact ? 60 : 110)
                 .help(n.help)
                 .accessibilityLabel(Text(n.label))
             Text(verbatim: n.display(model.adjustments.grade[n]))
@@ -448,10 +466,12 @@ struct GradePanel: View {
 }
 
 /// A wheel with its range's name over it and its tint in words under
-/// it (beside the name, a narrow tray cut them short).
+/// it (beside the name, a narrow tray cut them short). At `side` points,
+/// or -- nil -- as wide as its share of the row, up to 132.
 private struct GradeWheelColumn: View {
     @Bindable var model: AppModel
     let range: GradeRange
+    let side: CGFloat?
     @Environment(\.isEnabled) private var enabled
 
     var body: some View {
@@ -463,7 +483,9 @@ private struct GradeWheelColumn: View {
             GradeWheel(range: range, tint: t, enabled: enabled,
                        onChange: { model.setGradeTint(range, $0) },
                        onReset: { model.resetColorGrade(range) })
-                .frame(width: 132, height: 132)
+                .frame(width: side, height: side)
+                .aspectRatio(1, contentMode: .fit)
+                .frame(maxWidth: 132)
                 .accessibilityLabel(Text(verbatim: range.label))
             Text(verbatim: t.saturation > 0
                  ? "\(MixBand.nearest(t.hue).label) \(Int(t.hue.rounded()) % 360)° · \(Int((t.saturation * 100).rounded()))"
@@ -471,6 +493,7 @@ private struct GradeWheelColumn: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity)
         .opacity(enabled ? 1 : 0.55)

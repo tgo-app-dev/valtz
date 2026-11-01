@@ -150,7 +150,9 @@ private struct SectionHeader<ID: Hashable>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(Text(verbatim: section.label))
             .accessibilityValue(Text(open ? "Open" : "Folded"))
+            .accessibilityAddTraits(.isHeader)
             .help(open ? "Fold this section to its header"
                        : "Open this section")
             if let a = section.accessory, open {

@@ -3,8 +3,8 @@ import SwiftUI
 
 /// THE AGENT in the app (DESIGN §9b): Start with the Agent tab over the
 /// prompt asks the agent -- a new session, or the next words to the one
-/// listening -- and the card over the prompt, or the Prompt Editor's
-/// card, shows it working: its words as they come, each step, the
+/// listening -- and the right column's Agent panel, or the Prompt
+/// Editor's card, shows it working: its words as they come, each step, the
 /// one waiting for the person's word.
 extension AppModel {
     /// Start in the Agent tab: the request to a new session -- or, while
@@ -47,6 +47,8 @@ extension AppModel {
                                  prompt: words, steps: [])
             agentFollows = true
         }
+        // A new session: the right column on the Agent.
+        showAgentPanel()
         clearAgentPrompt()
         reloadAgent()
     }
@@ -250,7 +252,7 @@ extension AppModel {
         }
     }
 
-    // ---- Settings › Experimental › Agent
+    // ---- Settings › Agentic Helper › Agent
 
     func setAgentSettings(_ s: [String: Any]) {
         guard let core else { return }

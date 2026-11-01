@@ -1373,12 +1373,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                    : m.asset(id: v) {
                 m.usePrompt(a)
             }
-            // Settings › Experimental's switches, for the run:
-            // "agent" (the Agent tab; VALTZ_SNAPSHOT_AGENT too).
-            if env["VALTZ_SNAPSHOT_EXPERIMENTAL"] == "agent"
-                || env["VALTZ_SNAPSHOT_AGENT"] != nil {
-                m.setAgentEnabled(true)
-            }
             // Settings › Agentic Helper › Show Speed, for the run.
             if env["VALTZ_SNAPSHOT_AGENT_SPEED"] == "1" {
                 m.setAgentShowsSpeed(true)
@@ -2998,12 +2992,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try? await Task.sleep(for: .milliseconds(450))
                 }
             }
+            // A panel: the Generate drawer, or a layer's edit ("adjust",
+            // "color", "grade", "crop", "trim", "audio"), brought into
+            // sight in the inspector.
             if let panel = env["VALTZ_SNAPSHOT_PANEL"] {
                 withAnimation(AppModel.motion) {
-                    m.openPanel = panel == "adjust" ? .adjust
-                        : panel == "crop" ? .crop
-                        : panel == "trim" ? .trim : .generate
+                    m.openPanel = ComposerPanel.allCases.first {
+                        "\($0)" == panel } ?? .generate
                 }
+            }
+            // The right column on the Agent ("agent") or the inspector.
+            if let v = env["VALTZ_SNAPSHOT_RIGHT"],
+               let p = RightPanel(rawValue: v) {
+                m.chrome.inspectorShown = true
+                m.chrome.rightPanel = p
             }
             // The sidebar hidden (or shown, if it was hidden).
             if env["VALTZ_SNAPSHOT_NAV"] != nil {
@@ -3277,7 +3279,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(500))
-                    print("snapshot: color \(step) stack=\(m.stackPlayback != nil) target=\(m.colorTargeting) ready=\(m.colorTargetReady) hue=\(m.colorTargetHue.map { String(format: "%.1f", $0) } ?? "-") mix=\(Self.mixSummary(m.adjustments.mix)) tone=\(m.adjustments.toneIsIdentity ? "-" : "set") bypass=\(m.mixBypassed) canBypass=\(m.canBypassMix) keys=\(m.keyedStage ? "\(m.clipAdjustKeys.keys.count)" : "-") panel=\(m.openPanel.map { "\($0)" } ?? "-") viewed=\(m.viewedAsset ?? "-") active=\(m.stageStack?.id ?? "-") layer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) page=\(m.stagePage) banner=\(m.banner ?? "-") disks=\(Self.disksSummary())")
+                    print("snapshot: color \(step) stack=\(m.stackPlayback != nil) target=\(m.colorTargeting) ready=\(m.colorTargetReady) hue=\(m.colorTargetHue.map { String(format: "%.1f", $0) } ?? "-") mix=\(Self.mixSummary(m.adjustments.mix)) tone=\(m.adjustments.toneIsIdentity ? "-" : "set") bypass=\(m.mixBypassed) canBypass=\(m.canBypassMix) keys=\(m.keyedStage ? "\(m.clipAdjustKeys.keys.count)" : "-") panel=\(m.panelSummary) viewed=\(m.viewedAsset ?? "-") active=\(m.stageStack?.id ?? "-") layer=\(m.activeLayer.isEmpty ? "0" : m.activeLayer) page=\(m.stagePage) banner=\(m.banner ?? "-") disks=\(Self.disksSummary())")
                 }
             }
             // The GRADE panel (ColorGrading.swift), opened: "set:shadows=
@@ -3440,7 +3442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(500))
-                    print("snapshot: grade \(step) grade=\(Self.gradeSummary(m.adjustments.grade)) tone=\(m.adjustments.toneIsIdentity ? "-" : "set") mix=\(m.adjustments.mix.isEmpty ? "-" : "set") bypass=\(m.gradeBypassed) canBypass=\(m.canBypassGrade) keys=\(m.keyedStage ? "\(m.clipAdjustKeys.keys.count)" : "-") panel=\(m.openPanel.map { "\($0)" } ?? "-") banner=\(m.banner ?? "-") wheels=\(Self.wheelsSummary())")
+                    print("snapshot: grade \(step) grade=\(Self.gradeSummary(m.adjustments.grade)) tone=\(m.adjustments.toneIsIdentity ? "-" : "set") mix=\(m.adjustments.mix.isEmpty ? "-" : "set") bypass=\(m.gradeBypassed) canBypass=\(m.canBypassGrade) keys=\(m.keyedStage ? "\(m.clipAdjustKeys.keys.count)" : "-") panel=\(m.panelSummary) banner=\(m.banner ?? "-") wheels=\(Self.wheelsSummary())")
                 }
             }
             // The AUDIO panel (AudioPanel.swift), opened: "set:volume=0.5,
@@ -3560,7 +3562,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(500))
-                    print("snapshot: audio \(step) here=\(Self.soundSummary(m.layerSoundHere)) keys=\(m.layerSound.keys.map { "\($0.frame):\(Self.soundSummary($0.value))" }.joined(separator: ";")) follow=\(m.pitchFollowsSpeed) alpha=\(String(format: "%.3f", m.adjustments.alpha)) frozen=\(m.layerFrozen) tab=\(m.showsAudio) panel=\(m.openPanel.map { "\($0)" } ?? "-") mix=\(m.stackPlayback?.mix?.path ?? "-") audio=\(m.stackPlayback?.audio.count ?? 0) faders=\(Self.fadersSummary())")
+                    print("snapshot: audio \(step) here=\(Self.soundSummary(m.layerSoundHere)) keys=\(m.layerSound.keys.map { "\($0.frame):\(Self.soundSummary($0.value))" }.joined(separator: ";")) follow=\(m.pitchFollowsSpeed) alpha=\(String(format: "%.3f", m.adjustments.alpha)) frozen=\(m.layerFrozen) tab=\(m.showsAudio) panel=\(m.panelSummary) mix=\(m.stackPlayback?.mix?.path ?? "-") audio=\(m.stackPlayback?.audio.count ?? 0) faders=\(Self.fadersSummary())")
                 }
             }
             if let g = env["VALTZ_SNAPSHOT_GUIDES"] {
@@ -4124,10 +4126,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // A card under it opened: "panel=trim" (none: shut).
                     case "panel":
                         withAnimation(AppModel.motion) {
-                            m.openPanel = arg == "adjust" ? .adjust
-                                : arg == "crop" ? .crop
-                                : arg == "trim" ? .trim
-                                : arg == "generate" ? .generate : nil
+                            m.openPanel = ComposerPanel.allCases.first {
+                                "\($0)" == arg }
                         }
                     // The clip carried on from its last N seconds
                     // ("continue=1": as it is) -- the prompt back.
@@ -5583,8 +5583,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Toggles in turn, animated as their buttons are --
         // "inspector:2,generate:3": the inspector 2 s after this
         // point, then the generation card's drawer 3 s after that
-        // (inspector | editor | compare | generate | adjust | crop | trim). Each prints
-        // its time, to find it in a filmed run.
+        // (inspector | editor | compare | generate | adjust | crop | trim
+        // | color | grade | audio | viewonly | agentkey -- ⌘4's). Each
+        // prints its time, to find it in a filmed run, and then the
+        // window's chrome.
         if let m = model, let steps = env["VALTZ_SNAPSHOT_TOGGLES"] {
             for step in steps.split(separator: ",") {
                 let p = step.split(separator: ":").map(String.init)
@@ -5598,6 +5600,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     } else if p[0] == "sidebar" {
                         m.setSidebar(m.layout.sidebar == .detailOnly
                                      ? .all : .detailOnly)
+                    } else if p[0] == "viewonly" {
+                        m.toggleViewOnly()
+                    } else if p[0] == "agentkey" {
+                        m.focusPrompt(.agent)
                     } else if p[0] == "editor" {
                         m.toggleImmersivePrompt()
                     } else if p[0] == "compare" {
@@ -5620,9 +5626,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             "snapshot: appearance dark=\(m.appearsDark) fades=\(fades.joined(separator: ","))\n".utf8))
                     } else if let panel = ComposerPanel.allCases.first(
                         where: { "\($0)" == p[0] }) {
-                        m.openPanel = m.openPanel == panel ? nil : panel
+                        if let s = panel.section {
+                            m.toggleInspectorSection(s)
+                        } else {
+                            m.openPanel = m.openPanel == panel ? nil : panel
+                        }
                     }
                 }
+                try? await Task.sleep(for: .milliseconds(700))
+                let win = m.editorWindow?.frame.size ?? .zero
+                FileHandle.standardError.write(Data(
+                    "snapshot: chrome \(p[0]) inspector=\(m.layout.inspector) right=\(m.chrome.rightPanel.rawValue) viewOnly=\(m.viewOnly) sidebar=\(m.layout.sidebar == .detailOnly ? "hidden" : "shown") panel=\(m.panelSummary) modality=\(m.modality.rawValue) window=\(Int(win.width))x\(Int(win.height))\n".utf8))
             }
         }
         if let m = model, env["VALTZ_SNAPSHOT_DRAG_READY"] != nil {
@@ -6661,7 +6675,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "editModel=\(m.editModel) willEdit=\(m.willEdit) "
                 + "modality=\(m.modality.rawValue) "
                 + "modelChoice=\(m.modelChoice.isEmpty ? "auto" : m.modelChoice) "
-                + "panel=\(String(describing: m.openPanel)) "
+                + "panel=\(m.panelSummary) right=\(m.chrome.rightPanel.rawValue) "
+                + "sections=\(m.inspectorSections.map(\.rawValue).joined(separator: "+")) "
                 + "compact=\(m.promptCompact) "
                 + "title=\(m.windowTitle) inspector=\(m.inspectorOpen) "
                 + "sidebar=\(m.chrome.sidebar == .detailOnly ? "hidden" : "shown") "
@@ -7258,7 +7273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let events = t.events.map(String.init).joined(separator: ",")
         // In parts: one chain of + took the type checker past its limit.
         let layers = rows.isEmpty ? "-" : rows
-        let panel = m.openPanel.map { "\($0)" } ?? "-"
+        let panel = m.panelSummary
         let a = "open=\(m.timelineOpen) available=\(m.timelineAvailable)"
         let b = "rows=\(m.timelineRows) zoom=\(zoom) scroll=\(TimelineNSView.shown?.scrollSummary ?? "-")"
         let c = "frame=\(t.playhead)/\(t.frames) cutting=\(t.cutting)"

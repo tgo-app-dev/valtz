@@ -161,14 +161,6 @@ struct SimpleView: View {
                             .transition(.move(edge: .bottom)
                                 .combined(with: .opacity))
                     }
-                    if !immersive, model.activeModality == .agent,
-                       let a = model.agent, !model.suggesting {
-                        AgentCard(model: model, shown: a)
-                            .frame(maxWidth: Self.columnWidth)
-                            .padding(.bottom, 14)
-                            .transition(.move(edge: .bottom)
-                                .combined(with: .opacity))
-                    }
                     if model.suggesting {
                         SuggestionCard(prompt: model.enhanced?.prompt
                                            ?? model.enhanceDraft,

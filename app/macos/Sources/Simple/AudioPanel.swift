@@ -9,7 +9,9 @@ import SwiftUI
 /// the speed, as a tape's, is the Trim panel's, beside the speed. The
 /// gain plays as it changes; the pitch and the equalizer are the mixer's
 /// offline pass (media/sound.h), heard once the change rests and the
-/// mix is made again.
+/// mix is made again. Laid out for the inspector's Audio section: the
+/// gain and the pitch side by side, the equalizer under them; the
+/// keyframes are the section header's.
 struct AudioPanel: View {
     @Bindable var model: AppModel
 
@@ -18,7 +20,6 @@ struct AudioPanel: View {
         let frozen = model.layerFrozen
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                KeyframeBar(model: model, track: .sound)
                 Spacer()
                 Button("Flat") { model.flattenLayerEq() }
                     .disabled(model.layerSound.keys.allSatisfy(\.value.isFlat)
@@ -28,30 +29,34 @@ struct AudioPanel: View {
                     .disabled(model.layerSound.isIdentity || frozen)
                     .help("Gain, pitch and equalizer back as the sound was, in every keyframe")
             }
-            HStack(alignment: .top, spacing: 14) {
-                FaderColumn(
-                    id: "gain", name: String(localized: "Gain"),
-                    shown: AppModel.decibelText(here.volume),
-                    value: Self.gainPosition(here.volume),
-                    range: Self.gainFloor...Self.gainCeiling, rest: 0,
-                    step: 0.5, fine: 0.1, width: 58,
-                    help: String(localized: "The sound's gain: 0 dB as it is, −6 dB half the level, up to +12 dB; at the bottom, muted. ⌥ for finer steps; double-click for 0 dB."),
-                    onChange: { model.setLayerVolume(Self.gain(atPosition: $0)) })
-                    .foregroundStyle(.secondary)
-                FaderColumn(
-                    id: "pitch", name: String(localized: "Pitch"),
-                    shown: Self.pitchText(here.pitch),
-                    note: model.pitchFromSpeed != 0
-                        ? String(localized: "\(Self.pitchText(model.pitchFromSpeed)) by speed")
-                        : nil,
-                    value: here.pitch, range: LayerSound.pitchRange,
-                    rest: 0, step: 1, fine: 0.1, width: 58,
-                    help: String(localized: "Semitones up (+) or down (−), whole ones; ⌥ for tenths. Whether it also follows the speed is set beside the speed, in Trim. Double-click for none."),
-                    onChange: { model.setLayerPitch($0) })
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 14) {
+                    FaderColumn(
+                        id: "gain", name: String(localized: "Gain"),
+                        shown: AppModel.decibelText(here.volume),
+                        value: Self.gainPosition(here.volume),
+                        range: Self.gainFloor...Self.gainCeiling, rest: 0,
+                        step: 0.5, fine: 0.1, width: 58,
+                        help: String(localized: "The sound's gain: 0 dB as it is, −6 dB half the level, up to +12 dB; at the bottom, muted. ⌥ for finer steps; double-click for 0 dB."),
+                        onChange: { model.setLayerVolume(Self.gain(atPosition: $0)) })
+                        .foregroundStyle(.secondary)
+                    FaderColumn(
+                        id: "pitch", name: String(localized: "Pitch"),
+                        shown: Self.pitchText(here.pitch),
+                        note: model.pitchFromSpeed != 0
+                            ? String(localized: "\(Self.pitchText(model.pitchFromSpeed)) by speed")
+                            : nil,
+                        value: here.pitch, range: LayerSound.pitchRange,
+                        rest: 0, step: 1, fine: 0.1, width: 58,
+                        help: String(localized: "Semitones up (+) or down (−), whole ones; ⌥ for tenths. Whether it also follows the speed is set beside the speed, in Trim. Double-click for none."),
+                        onChange: { model.setLayerPitch($0) })
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: Self.strip)
                 Divider()
-                // As tall as the gain and the pitch: its faders shorter,
-                // the curve over them.
+                // Under the gain and the pitch, as tall: its faders
+                // shorter, the curve over them.
                 VStack(alignment: .leading, spacing: 4) {
                     EqCurve(gains: here.eq)
                         .frame(height: 40)
@@ -75,19 +80,20 @@ struct AudioPanel: View {
                                 shown: Self.decibels(here.eq[i]),
                                 value: here.eq[i],
                                 range: LayerSound.eqRange, rest: 0,
-                                step: 0.5, fine: 0.1, width: 32,
+                                // Ten in the column's narrowest width.
+                                step: 0.5, fine: 0.1, width: 22,
                                 stretches: true,
                                 help: String(localized: "The band around \(Self.hertzText(LayerSound.eqFrequencies[i]))Hz, an octave wide: up to 12 dB louder or quieter. ⌥ for finer steps; double-click for 0 dB."),
                                 onChange: { model.setLayerEq(i, $0) })
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity,
-                       alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                // One height for each strip: every fader fills its
+                // column.
+                .frame(height: Self.strip)
                 .foregroundStyle(.secondary)
             }
-            // One height for the strip: every fader fills its column.
-            .frame(height: Self.strip)
             // Greyed while the playhead is off the selected layer -- its
             // values would change unheard -- or it is locked.
             .disabled(frozen)

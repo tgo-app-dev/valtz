@@ -525,10 +525,13 @@ struct ClipLook: Equatable, Sendable {
 }
 
 /// The keyframe controls for a clip: { previous key, set or unset a key
-/// here, next key }, and where the clip is against its keys.
+/// here, next key }, and where the clip is against its keys. Compact --
+/// an inspector section's header -- the words where it is go into the
+/// diamond's help and what VoiceOver reads, and the buttons stay.
 struct KeyframeBar: View {
     @Bindable var model: AppModel
     let track: KeyTrack
+    var compact = false
 
     var body: some View {
         // Keys count from the layer's own start (a still's: its pages).
@@ -565,6 +568,20 @@ struct KeyframeBar: View {
             .help("Next keyframe")
             // A sound's keys go on in a straight line (the core's).
             if track != .sound { interpMenu }
+            if compact {
+                // Off the layer, or locked: the diamond says so too.
+                Image(systemName: off != nil ? "circle.slash"
+                      : locked ? "lock.fill"
+                      : here ? "diamond.fill" : "diamond")
+                    .font(.caption)
+                    .foregroundStyle(here && off == nil && !locked
+                                     ? Color.accentColor : .secondary)
+                    .frame(width: 16)
+                    .help(status(keys, here: here, frame: f))
+                    .accessibilityLabel(Text("Keyframe here"))
+                    .accessibilityValue(Text(status(keys, here: here,
+                                                    frame: f)))
+            } else {
             Image(systemName: here ? "diamond.fill" : "diamond")
                 .font(.caption)
                 .foregroundStyle(here ? Color.accentColor : .secondary)
@@ -587,8 +604,22 @@ struct KeyframeBar: View {
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
+            }
         }
         .buttonStyle(.borderless)
+    }
+
+    /// What the bar says where it is, in words: off the layer, locked,
+    /// or its keys.
+    private func status(_ keys: [Int], here: Bool, frame: Int) -> String {
+        if let off = model.layerOffStage {
+            return Self.offString(off, paged: model.pagedOnStage
+                                      && !model.clipOnStage)
+        }
+        if model.selectedLayerLocked {
+            return String(localized: "Layer locked")
+        }
+        return keyText(keys, here: here, frame: frame)
     }
 
     /// How the keyframe here -- or the one before -- goes on to the next:
@@ -619,6 +650,14 @@ struct KeyframeBar: View {
               ? String(localized: "How a keyframe goes on to the next: move the playhead to a keyframe")
               : String(localized: "To the next keyframe -- \(now.help)"))
         .accessibilityLabel(Text("Interpolation"))
+    }
+
+    /// `offText` as a string, for a help tag.
+    static func offString(_ edge: AppModel.ClipEdge, paged: Bool) -> String {
+        if edge == .unselected { return String(localized: "No layer selected") }
+        if paged { return String(localized: "Not on this page") }
+        return edge == .before ? String(localized: "Before the layer starts")
+                               : String(localized: "After the layer ends")
     }
 
     /// Where the stage is against the layer, when it is not on it.

@@ -97,7 +97,6 @@ set(VALTZ_APP_SOURCES
   Sources/Views/FleetPolicyViews.swift
   Sources/Views/FleetServing.swift
   Sources/Views/PermissionsView.swift
-  Sources/Views/ExperimentalView.swift
   Sources/Views/InspectorView.swift
   Sources/Views/CanvasSize.swift
   Sources/Views/ProjectOutput.swift

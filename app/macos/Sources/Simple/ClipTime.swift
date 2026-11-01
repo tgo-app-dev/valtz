@@ -417,51 +417,67 @@ struct TrimValueField: View {
 /// The selected clip's SPEED, centred: "2×", "50%", typed. Where its
 /// frames are taken at other times than its own -- a speed, or a timeline
 /// at another rate -- it says so: the timeline shows the clip's frame
-/// nearest before each of its own.
+/// nearest before each of its own. Short of room (the inspector's
+/// column), the speed, the pitch and the resampling one under another.
 struct SpeedRow: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        let here = model.layerSpeedHere
-        HStack(spacing: 8) {
-            Text("Speed")
-                .foregroundStyle(.secondary)
-            TrimValueField(name: "Speed", shown: Self.display(here),
-                           isReset: here == 1,
-                           commit: { t in
-                               guard let v = Self.parse(t) else { return false }
-                               model.setLayerSpeed(v)
-                               return true
-                           },
-                           reset: { model.setLayerSpeed(1) })
-                .help("How fast the clip plays: 2× (or 200%) twice as fast, 0.5× half -- the clip then takes less, or more, of the timeline")
-            // Whether its pitch goes with the speed: the speed's matter
-            // (the pitch itself is the Audio panel's).
-            if model.layerHasSound {
-                Text("Pitch")
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 8)
-                Picker("Pitch and speed", selection: $model.pitchFollowsSpeed) {
-                    Text("Hold").tag(false)
-                    Text("Follow Speed").tag(true)
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .fixedSize()
-                .help("Hold: the pitch stays as the speed changes. Follow Speed: it rises and falls with the speed, as a tape's -- twice as fast, an octave up")
-                if model.pitchFromSpeed != 0 {
-                    Text(verbatim: AudioPanel.pitchText(model.pitchFromSpeed))
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.tertiary)
-                        .help("What the speed adds, in semitones")
-                }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                speed
+                pitch
+                if model.layerResampled { resampled }
             }
-            if model.layerResampled {
-                resampled
+            VStack(spacing: 8) {
+                HStack(spacing: 8) { speed }
+                if model.layerHasSound { HStack(spacing: 8) { pitch } }
+                if model.layerResampled { resampled }
             }
         }
         .frame(maxWidth: .infinity)
         .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var speed: some View {
+        let here = model.layerSpeedHere
+        Text("Speed")
+            .foregroundStyle(.secondary)
+        TrimValueField(name: "Speed", shown: Self.display(here),
+                       isReset: here == 1,
+                       commit: { t in
+                           guard let v = Self.parse(t) else { return false }
+                           model.setLayerSpeed(v)
+                           return true
+                       },
+                       reset: { model.setLayerSpeed(1) })
+            .help("How fast the clip plays: 2× (or 200%) twice as fast, 0.5× half -- the clip then takes less, or more, of the timeline")
+    }
+
+    /// Whether its pitch goes with the speed: the speed's matter (the
+    /// pitch itself is the Audio panel's).
+    @ViewBuilder
+    private var pitch: some View {
+        if model.layerHasSound {
+            Text("Pitch")
+                .foregroundStyle(.secondary)
+                .padding(.leading, 8)
+            Picker("Pitch and speed", selection: $model.pitchFollowsSpeed) {
+                Text("Hold").tag(false)
+                Text("Follow Speed").tag(true)
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .fixedSize()
+            .help("Hold: the pitch stays as the speed changes. Follow Speed: it rises and falls with the speed, as a tape's -- twice as fast, an octave up")
+            if model.pitchFromSpeed != 0 {
+                Text(verbatim: AudioPanel.pitchText(model.pitchFromSpeed))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .help("What the speed adds, in semitones")
+            }
+        }
     }
 
     @ViewBuilder
