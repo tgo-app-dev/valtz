@@ -23,8 +23,11 @@ add_executable(valtz_test
 if(VALTZ_HAVE_VPIPE)
   # The valtz-vpipe plugin in a real vpipe session (no models needed).
   # The summary stage's scene cuts are plain C++: tested here as well.
+  # The end-to-end suite (VALTZ_TEST_E2E=1): the installed models, each
+  # feature they unlock (tests/e2e/README.md).
   target_sources(valtz_test PRIVATE vpipe-plugin-test.cc
     graph-builder-test.cc
+    e2e-test.cc
     "${PROJECT_SOURCE_DIR}/vpipe-plugin/src/scene-cut.cc")
   target_include_directories(valtz_test PRIVATE
     "${PROJECT_SOURCE_DIR}/vpipe-plugin/src")
