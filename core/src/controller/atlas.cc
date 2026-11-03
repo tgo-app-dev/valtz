@@ -29,6 +29,8 @@ using project::AssetClass;
 // slot to its points.
 constexpr double kAssetSlots = 2;
 constexpr double kOpSlots = 1;
+// A generate node's: its controls under its title.
+constexpr double kGenerateSlots = 1.5;
 constexpr double kGap = 0.25;
 // Between two parts of the graph.
 constexpr double kPartGap = 1;
@@ -57,6 +59,7 @@ struct Edge {
   int         to = 0;
   std::string kind;  // input | made | layer | into | note
   std::string role;
+  int         index = -1;  // into a generate node: its place in the row
 };
 
 double
@@ -198,12 +201,13 @@ Controller::atlas(ProjectId pid)
     of[a.id] = static_cast<int>(nodes.size());
     nodes.push_back(std::move(n));
   }
-  auto edge = [&](int from, int to, std::string kind, std::string role) {
+  auto edge = [&](int from, int to, std::string kind, std::string role,
+                  int index = -1) {
     nodes[from].out.push_back(to);
     nodes[to].in.push_back(from);
     nodes[from].feeds = nodes[from].feeds || kind == "input" ||
                         kind == "layer";
-    edges.push_back({from, to, std::move(kind), std::move(role)});
+    edges.push_back({from, to, std::move(kind), std::move(role), index});
   };
   auto op = [&](int owner, Json j, double height) {
     Node n;
@@ -214,6 +218,8 @@ Controller::atlas(ProjectId pid)
     return static_cast<int>(nodes.size()) - 1;
   };
 
+  // Each asset's recipe op, by its node.
+  std::map<int, int> made_by;
   for (std::size_t k = 0; k < by_age.size(); ++k) {
     const auto& a = all[by_age[k]];
     const int at = of[a.id];
@@ -230,6 +236,7 @@ Controller::atlas(ProjectId pid)
                             {"into", a.id.str()}},
                        kOpSlots);
       nodes[o].order = nodes[at].order;
+      made_by[at] = o;
       for (const auto& in : r->inputs) {
         if (auto f = of.find(in.asset); f != of.end() && f->second != at) {
           edge(f->second, o, "input", in.role);
@@ -281,6 +288,48 @@ Controller::atlas(ProjectId pid)
       nodes[o].order = nodes[at].order + 0.5 * (count - i) / (count + 1);
       edge(f->second, o, "layer", "");
       edge(o, at, "into", "");
+    }
+  }
+
+  // The GENERATE NODES: one that ran, its result here, is that result's
+  // op; any other an op of its own after its inputs -- a draft, or one
+  // whose result has gone -- its prompt and its row's places on its
+  // edges.
+  if (auto gens = generate_nodes(pid); gens.ok()) {
+    for (const auto& g : *gens) {
+      const auto made = AssetId::parse(jget<std::string>(
+          jget(g, "started", Json::object()), "asset", ""));
+      if (made) {
+        if (auto f = of.find(*made); f != of.end()) {
+          if (auto m = made_by.find(f->second); m != made_by.end()) {
+            nodes[m->second].json["generate"] = g;
+            nodes[m->second].height = kGenerateSlots;
+            continue;
+          }
+        }
+      }
+      const int o = op(-1,
+                       {{"id", "g:" + jget<std::string>(g, "id", "")},
+                        {"type", "generate"}, {"generate", g}},
+                       kGenerateSlots);
+      if (auto pa = AssetId::parse(jget<std::string>(g, "prompt", ""))) {
+        if (auto f = of.find(*pa); f != of.end()) {
+          edge(f->second, o, "input", "prompt");
+        }
+      }
+      int i = 0;
+      for (const auto& r : jget(g, "refs", Json::array())) {
+        const auto ra = AssetId::parse(r.get<std::string>());
+        if (auto f = ra ? of.find(*ra) : of.end(); f != of.end()) {
+          edge(f->second, o, "input", "reference", i);
+        }
+        ++i;
+      }
+      double order = 0;
+      for (int u : nodes[o].in) {
+        order = std::max(order, nodes[u].order + 0.5);
+      }
+      nodes[o].order = order;
     }
   }
 
@@ -360,15 +409,31 @@ Controller::atlas(ProjectId pid)
     if (!n.in.empty() || n.out.empty()) {
       continue;
     }
+    // (A generate node not run makes nothing yet: it waits for it.)
     int first = std::numeric_limits<int>::max();
     for (int o : n.out) {
-      first = std::min(first, nodes[nodes[o].owner].rank);
+      if (nodes[o].owner >= 0) {
+        first = std::min(first, nodes[nodes[o].owner].rank);
+      }
     }
-    n.rank = std::max(0, first - 1);
+    if (first != std::numeric_limits<int>::max()) {
+      n.rank = std::max(0, first - 1);
+    }
   }
   int columns = 1;
   for (auto& n : nodes) {
-    n.column = n.asset ? 2 * n.rank : 2 * nodes[n.owner].rank - 1;
+    if (n.asset) {
+      n.column = 2 * n.rank;
+    } else if (n.owner >= 0) {
+      n.column = 2 * nodes[n.owner].rank - 1;
+    } else {
+      // A generate node not run: the op column after its inputs.
+      int r = -1;
+      for (int u : n.in) {
+        r = std::max(r, nodes[u].rank);
+      }
+      n.column = 2 * r + 1;
+    }
     columns = std::max(columns, n.column + 1);
   }
 
@@ -525,6 +590,9 @@ Controller::atlas(ProjectId pid)
               {"to", out_nodes[e.to]["id"]}, {"kind", e.kind}};
     if (!e.role.empty()) {
       j["role"] = e.role;
+    }
+    if (e.index >= 0) {
+      j["index"] = e.index;
     }
     out_edges.push_back(std::move(j));
   }

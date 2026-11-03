@@ -92,8 +92,12 @@ extension View {
         return alert(
             ask.map { String(localized: "\($0.from) asks this Mac to run a job") }
                 ?? "",
+            // Asked once, in the window in front (several may be open).
             isPresented: Binding(
-                get: { model.fleetAsks.first != nil },
+                get: {
+                    model.fleetAsks.first != nil
+                        && EditorWindows.shared.owner(of: nil) === model
+                },
                 set: { if !$0, let a = model.fleetAsks.first {
                     model.fleetAsks.removeAll { $0.job == a.job }
                 } }),

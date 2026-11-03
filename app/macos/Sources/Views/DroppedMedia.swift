@@ -297,8 +297,14 @@ enum DroppedMedia {
             let queue = OperationQueue()
             queue.qualityOfService = .userInitiated
             let count = Counter(owed)
+            // @Sendable: called on `queue`, not the main thread. Written
+            // here plainly it took Intake's main-actor isolation, and
+            // Swift 6's check at its entry trapped -- a browser's picture
+            // dropped on the prompt's row crashed Valtz (Valtz-122). AppKit
+            // marks the reader no Sendable block, so nothing warned.
             r.receivePromisedFiles(atDestination: dir, options: [:],
-                                   operationQueue: queue) { url, error in
+                                   operationQueue: queue) {
+                @Sendable url, error in
                 c.yield(error == nil ? url : nil)
                 if count.done() { c.finish() }
             }

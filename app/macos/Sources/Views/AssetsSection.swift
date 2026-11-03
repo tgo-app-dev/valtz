@@ -225,6 +225,8 @@ extension AppModel {
         swapStageAnimated { [weak self] in
             self?.stageReturn = nil
             self?.putOnStage(a)
+            // A preview plays (DESIGN §10a): a clip, a timeline, a sound.
+            self?.askAutoplay(a.id)
             if clickedAt > 0 {
                 print("snapshot: view-asset staged after-click="
                       + "\(Int((CACurrentMediaTime() - clickedAt) * 1000))ms")

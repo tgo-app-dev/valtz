@@ -41,6 +41,7 @@ enum class Capability : std::uint8_t {
   Transcribe,      // speech to text, sound events heard (Qwen3-ASR)
   VideoSummary,    // a clip told scene by scene (a VLM: Qwen3.5)
   AudioSeparate,   // a song split into its sources (BS-RoFormer)
+  MicroAgent,      // short text tasks of Valtz's own (LFM3-VL 2B)
 };
 
 inline constexpr Capability kAllCapabilities[] = {
@@ -53,6 +54,7 @@ inline constexpr Capability kAllCapabilities[] = {
   Capability::AudioOutput,   Capability::TextToAudio,
   Capability::TextToSpeech,  Capability::Transcribe,
   Capability::VideoSummary,  Capability::AudioSeparate,
+  Capability::MicroAgent,
 };
 
 const char* to_str(Capability);
@@ -63,7 +65,8 @@ struct ModelEntry {
   std::string              id;
   std::string              name;
   std::string              family;
-  // assistant|image|video|audio|upscale|preview|encoder|lora|branch|vae
+  // assistant|micro|image|video|audio|upscale|preview|encoder|lora|
+  // branch|vae
   std::string              role;
   std::string              hf_path;
   // A folder inside the repo that IS this model (catalog `subdir`): one

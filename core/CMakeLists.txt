@@ -50,6 +50,7 @@ set(VALTZ_CORE_SOURCES
   src/models/tuning.cc
   src/assist/assistant.cc
   src/assist/drama3.cc
+  src/assist/micro.cc
   src/assist/moss-image.cc
   src/assist/rewrite-prompts.cc
   src/assist/segments.cc
@@ -71,6 +72,7 @@ set(VALTZ_CORE_SOURCES
   src/controller/compositions.cc
   src/controller/controller.cc
   src/controller/event-bus.cc
+  src/controller/generate-nodes.cc
   src/controller/job-queue.cc
   src/controller/job-timing.cc
   src/controller/locations.cc

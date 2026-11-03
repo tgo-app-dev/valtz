@@ -146,6 +146,11 @@ public:
   Result<AssetVersion> version(AssetId, std::uint32_t number = 0) const;
   Result<std::vector<AssetVersion>> versions(AssetId) const;
   Status rename_asset(AssetId, std::string name);
+  // Renamed to `name` made unique among the project's assets as a new
+  // one's is ("Fox at Dawn (2)"), cut to `max_bytes` (0: whole): the
+  // name it got.
+  Result<std::string> rename_unique(AssetId, std::string_view name,
+                                    std::size_t max_bytes);
   // Replace the asset's modifiers (Modifier): no new version -- the bytes
   // are unchanged -- and nothing downstream goes stale (a recipe records
   // what it used).
@@ -172,6 +177,10 @@ public:
   // the project's meta; an asset names its own (Asset::folder).
   Result<Json> folders() const;
   Status set_folders(const Json& folders);
+  // The Atlas's GENERATE NODES (Controller::generate_nodes), in order,
+  // kept in the project's meta as they are written; [] when none.
+  Result<Json> generate_nodes() const;
+  Status set_generate_nodes(const Json& nodes);
   // How the project was last LOOKED AT -- an app's own state for it (its
   // window's size: {"window": {"width", "height"}}), kept in its meta and
   // saved with it; {} when none.

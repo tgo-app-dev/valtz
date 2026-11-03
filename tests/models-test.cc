@@ -1038,6 +1038,28 @@ TEST(models, favor_presets_follow_the_catalog)
     }
     CHECK(listed);
   }
+  // Not for a clip continued THROUGH its tail (FL2VA's guide, DESIGN
+  // §4e): vpipe drops the guide beside TaoMate, so it is not offered --
+  // nor its adapter alone -- whatever Custom says.
+  {
+    TuningContext hc = h;
+    hc.continuation = true;
+    const Json cf = resolve_tuning(fl, hc, "speed", false,
+                                   {{"taomate", true},
+                                    {"taomate_lora", true}});
+    CHECK(cf["taomate"] == false && cf["taomate_lora"] == false);
+    CHECK(cf["steps"] == 4 && cf["loras"][0]["on"] == true);
+    int said = 0;
+    const Json opts = tuning_options(fl, hc, "speed", false);
+    for (const auto& o : opts["options"]) {
+      if (o["key"] == "taomate" || o["key"] == "taomate_lora") {
+        CHECK(!jget(o, "available", true));
+        CHECK(jget<std::string>(o, "why", "") == "continues-through");
+        ++said;
+      }
+    }
+    CHECK(said == 2);
+  }
   // ...where it needs no Turbo LoRA, even with none here; without it, Fast
   // needs its 4-step -- not 8 plain steps at TaoMate's shifts.
   h.loras.erase("minimax-h3-turbo-4step");
@@ -1291,11 +1313,11 @@ TEST(models, a_refiners_options_sit_in_its_models_custom)
   CHECK(fv["regenerate_i8_gemm_tier"] == "token");
   CHECK(fv["sage_pv8_all_rows"] == true);
   CHECK(fv["sol_threshold"] == "diag");
-  // Med: 1.0, 1.5, 1.75 a step, int8 Fast, no int8 P·V; Fine: 0.75 each
+  // Med: 1.0, 1.0, 1.25 a step, int8 Fast, no int8 P·V; Fine: 0.75 each
   // step, int8 Accurate.
   const Json med = tuning_options(fl2va, t, "balanced", false)["values"];
   CHECK(med["regenerate_sol_threshold"] == "exact");
-  CHECK(med["regenerate_sol_tau"] == "1,1.5,1.75");
+  CHECK(med["regenerate_sol_tau"] == "1,1,1.25");
   CHECK(med["regenerate_sage_attn"] == true);
   CHECK(med["regenerate_sage_pv8"] == false);
   CHECK(med["regenerate_i8_gemm_tier"] == "fast");
@@ -1369,6 +1391,60 @@ TEST(models, a_refiners_options_sit_in_its_models_custom)
   kept.refiner_values = {{"refine_start", "release"}};
   CHECK(tuning_options(fl2va, kept, "speed", false)["values"]
             ["regenerate_refine_start"] == "release");
+  // VDN in Sol's place for the refine, and its reach: offered greyed
+  // while the branch is not here, off at every preference; on, Sol goes
+  // (the presets' Sol included), the reach the branch's own unless set.
+  const Json rv = find(all, "regenerate_vdn");
+  REQUIRE(rv.is_object());
+  CHECK(rv["available"] == false && rv["why"] == "not-installed");
+  CHECK(rv["excludes"] == Json::array({"regenerate_sol_attn"}));
+  CHECK(find(all, "regenerate_vdn_range")["needs"] == "regenerate_vdn");
+  CHECK(fv["regenerate_vdn"] == false);
+  CHECK(fv["regenerate_vdn_range"] == 1);
+  t.vdn_installed = true;
+  for (const char* p : {"speed", "balanced", "quality"}) {
+    const Json on = resolve_tuning(fl2va, t, p, false,
+                                   {{"regenerate_vdn", true}});
+    CHECK(on["regenerate_vdn"] == true);
+    CHECK(on["regenerate_sol_attn"] == false);
+    CHECK(on["regenerate_vdn_range"] == 1);
+    // ...the draft's own attention as it was.
+    CHECK(on["vdn"] == false);
+  }
+  const Json wide = resolve_tuning(fl2va, t, "speed", false,
+                                   {{"regenerate_vdn", true},
+                                    {"regenerate_vdn_range", 3}});
+  CHECK(wide["regenerate_vdn_range"] == 3);
+  CHECK(resolve_tuning(fl2va, t, "speed", false,
+                       {{"regenerate_vdn", true},
+                        {"regenerate_vdn_range", 40}})
+            ["regenerate_vdn_range"] == 8);
+  // The refiner's own list (Settings › Upscaling) offers them too.
+  const Json up = tuning_options(*refiner, t, "balanced", false);
+  CHECK(find(up, "vdn")["available"] == true);
+  CHECK(find(up, "vdn_range")["needs"] == "vdn");
+  // ...and the model's own Custom its draft's reach, beside its VDN.
+  const Json dr = find(all, "vdn_range");
+  CHECK(dr["type"] == "int" && dr["min"] == 0 && dr["max"] == 8);
+  CHECK(resolve_tuning(fl2va, t, "speed", false,
+                       {{"vdn", true}, {"vdn_range", 0}})["vdn_range"] ==
+        0);
+  // A reach a STEP (vpipe's vdn_range_steps), as Sol's threshold: whole
+  // numbers held to 0 ... 8, written back the shortest way; one entry a
+  // number; not numbers, the preset's.
+  CHECK(dr["schedule"] == true);
+  CHECK(find(all, "regenerate_vdn_range")["schedule"] == true);
+  CHECK(find(up, "vdn_range")["schedule"] == true);
+  const auto reach = [&](const char* key, Json v) {
+    return resolve_tuning(fl2va, t, "speed", false,
+                          {{"vdn", true}, {"regenerate_vdn", true},
+                           {key, std::move(v)}})[key];
+  };
+  CHECK(reach("vdn_range", "2, 1,1") == "2,1,1");
+  CHECK(reach("vdn_range", " 3 ") == 3);
+  CHECK(reach("vdn_range", "1.6,12") == "2,8");
+  CHECK(reach("vdn_range", "1,wide") == 1);
+  CHECK(reach("regenerate_vdn_range", "3,1,1") == "3,1,1");
 }
 
 // Sol's FLAVOUR wherever Sol is offered; its threshold a value a STEP

@@ -12,6 +12,7 @@ struct SettingsRow: Identifiable, Sendable {
     static let length = "length"
     static let songPlan = "song-plan", songLength = "song-length"
     static let lyrics = "lyrics", soundtrack = "soundtrack"
+    static let latents = "latents"
     static let voice = "voice", speechLength = "speech-length"
     static let cropZoom = "crop-zoom", cropPad = "crop-pad"
     static let cropRotate = "crop-rotate"
@@ -175,6 +176,14 @@ struct SettingsRow: Identifiable, Sendable {
                     + AppModel.clipLengths.map {
                         String(localized: "\($0) s")
                     }))
+        }
+        // A clip's latents kept, for a continuation from them.
+        if m.offersKeepLatents {
+            rows.append(SettingsRow(
+                id: latents, panel: .generate,
+                terms: [String(localized: "Latents"),
+                        String(localized: "Keep for continuing"),
+                        String(localized: "Continue")]))
         }
         // The Crop card's rows: a picture's crop, or a clip's trim.
         if m.showsTrim {

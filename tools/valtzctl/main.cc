@@ -94,6 +94,13 @@ usage()
       "  compress <model-id> --keep compressed|original\n"
       "         (the two kept: which one runs; one kept, the other\n"
       "         deleted)\n"
+      "  micro [model=<id>|auto|off] [names=on|off] [refine=on|off]\n"
+      "        [enhance=on|off]\n"
+      "         (Settings > Agentic Helper > Micro Agent: the small model\n"
+      "         -- LFM3-VL 2B -- naming prompts and their results,\n"
+      "         rewriting a Ref2VA clip's words for its 2K pass, and,\n"
+      "         asked, enhancing in the helper's place; kept)\n"
+      "  micro ask <text> [--image <file>]...   (asked as its tasks are)\n"
       "  assistant [<model-id>|auto] [--keep <seconds>]\n"
       "            [--drafter mtp|dflash] [--bits 8|4]\n"
       "            [--video-every <seconds>|<n>/s|auto]\n"
@@ -153,6 +160,8 @@ usage()
       "  capture <project.valtz> <asset-id> [--layers 1,2] [name]\n"
       "         (its layers and looks, frozen in a composition)\n"
       "  guide <project.valtz> <clip-id> <seconds> [--model id] [name]\n"
+      "  latent <project.valtz> <clip-id> [<tail frames>...]   its kept\n"
+      "         latents, and whether each tail is carried by them\n"
       "         (a continuation's guide: the clip's last seconds, rounded\n"
       "         up to a length the model takes -- 17n + 5 frames for H3 --\n"
       "         on a timeline of their own; --continue it)\n"
@@ -189,6 +198,15 @@ usage()
       "         right: each asset, the op that made it from its inputs,\n"
       "         a composition's layers into it; column by column, leaves\n"
       "         -- removable -- marked)\n"
+      "  gen <project.valtz> [list]  (the Atlas's generate nodes)\n"
+      "  gen <project.valtz> add image|video|audio <asset-id...>  (a\n"
+      "         generate node: a text its prompt, the rest its row)\n"
+      "  gen <project.valtz> link|unlink <node> <asset-id>; order <node>\n"
+      "         <asset-id...> (its row); set <node> model=<id>,\n"
+      "         preference=speed|balanced|quality,custom=true,width=,\n"
+      "         height=,seconds=,seed=,plan=; tune <node> k=v,... (Favor's\n"
+      "         Custom, as --tune); start <node> [--no-wait];\n"
+      "         duplicate <node>; remove <node>\n"
       "  auto   (what the model field's Auto picks, per modality and op)\n"
       "  ext [list]           (extension packages found at launch: each\n"
       "         one's state, what it brings, what was withheld and why)\n"
@@ -250,8 +268,9 @@ usage()
       "        [--first <file|asset-id>] [--last <file|asset-id>]\n"
       "        [--tune k=v,...]\n"
       "        [--ref <file|asset-id> [--whole]]... [--continue <clip>]\n"
-      "        [--tail-seconds s] [--song-sound]\n"
-      "        [--regenerate | --no-regenerate] [--no-preview]\n"
+      "        [--tail-seconds s] [--latents] [--song-sound]\n"
+      "        [--keep-latents] [--regenerate | --no-regenerate]\n"
+      "        [--no-preview]\n"
       "        (a clip with its soundtrack, MiniMax H3; the length goes\n"
       "        up to one the model makes -- 17n+5 frames -- and the Turbo\n"
       "        LoRA, when installed, runs 4/6/8 steps; --first is a picture\n"
@@ -263,7 +282,11 @@ usage()
       "        <Audio 1> in the prompt, numbered as the job lists them --\n"
       "        a clip or a sound cut to the clip's length, or --whole);\n"
       "        --continue: a clip carried on from its tail (3.75 s, or\n"
-      "        --tail-seconds); --song-sound: the first sound reference is\n"
+      "        --tail-seconds) -- read as a reference, or --latents: from\n"
+      "        the latents it kept (Ref2VA carries them; FL2VA, chosen, is\n"
+      "        guided through its last 22 frames by them, else by its\n"
+      "        tail encoded); --keep-latents: this clip's kept with it,\n"
+      "        for that; --song-sound: the first sound reference is\n"
       "        the clip's soundtrack, as it is -- a music video. Past 768\n"
       "        on its short side a clip from words or pictures is drafted\n"
       "        at 768 and regenerated at the size by Open-H3-Regenerate-\n"
@@ -1199,6 +1222,18 @@ follow(Controller& c, JobId job, std::string* made = nullptr)
   }
 }
 
+// A generation followed to its end, then the micro agent's name for its
+// prompt waited for (DESIGN §9c) -- asked in the background after it,
+// and this process ends with the job.
+int
+named(Controller& c, int rc)
+{
+  if (!c.wait_micro(120000)) {
+    std::fprintf(stderr, "the micro agent's name did not come\n");
+  }
+  return rc;
+}
+
 // The projects a run opened that were clean then: what it changes in
 // them is saved as it ends. One left with unsaved changes (--unsaved
 // before) is saved by `save` alone.
@@ -2110,6 +2145,9 @@ main(int argc, char** argv)
                     cmd == "intent" || cmd == "download" || cmd == "caps" ||
                     cmd == "sources" || cmd == "wired" ||
                     cmd == "auto" || cmd == "agent" ||
+                    (cmd == "micro" && !args.empty() && args[0] == "ask") ||
+                    // A generate node run.
+                    (cmd == "gen" && args.size() > 1 && args[1] == "start") ||
                     // (Favor's options as the app has them: a refiner
                     // runs only with its graph -- the refine's past 768P.)
                     cmd == "tuning" ||
@@ -2335,6 +2373,70 @@ main(int argc, char** argv)
     std::printf("cache    %s  (budget %s)\n",
                 gb(r["cache"]["bytes"]).c_str(),
                 gb(r["cache"]["budget"]).c_str());
+    return 0;
+  }
+  if (cmd == "micro" && !args.empty() && args[0] == "ask") {
+    // A task's words tried: asked as its tasks are, pictures shown.
+    std::string text;
+    std::vector<fs::path> images;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+      if (args[i] == "--image" && i + 1 < args.size()) {
+        images.push_back(args[++i]);
+      } else {
+        text += (text.empty() ? "" : " ") + args[i];
+      }
+    }
+    if (text.empty()) {
+      return usage();
+    }
+    auto r = c.ask_micro(text, images);
+    if (!r.ok()) {
+      return fail(r.error());
+    }
+    std::printf("%s\n", r->c_str());
+    return 0;
+  }
+  if (cmd == "micro") {
+    // The micro agent (DESIGN §9c): its model and its tasks, "k=v ...".
+    Json changes = Json::object();
+    for (const auto& a : args) {
+      const auto eq = a.find('=');
+      if (eq == std::string::npos) {
+        return usage();
+      }
+      const std::string k = a.substr(0, eq), v = a.substr(eq + 1);
+      if (k == "model") {
+        changes["model"] = v == "auto" ? std::string() : v;
+      } else if (k == "names" || k == "refine" || k == "enhance") {
+        changes[k] = v == "on" || v == "true" || v == "1";
+      } else {
+        return usage();
+      }
+    }
+    if (!changes.empty()) {
+      if (auto st = c.set_micro(changes); !st.ok()) {
+        return fail(st.error());
+      }
+    }
+    const Json m = c.micro_settings();
+    const auto on = [&](const char* k) {
+      return jget(m, k, false) ? "on" : "off";
+    };
+    const auto choice = jget<std::string>(m, "model", "");
+    std::printf("micro agent: %s (chosen: %s)\n",
+                jget<std::string>(m, "using", "").empty()
+                    ? "none"
+                    : jget<std::string>(m, "using", "").c_str(),
+                choice.empty() ? "auto" : choice.c_str());
+    std::printf("  names %s, refine %s, enhance %s\n", on("names"),
+                on("refine"), on("enhance"));
+    for (const auto& e : jget(m, "models", Json::array())) {
+      std::printf("  %-14s %-12s %.1f GB  from %d GB  %s\n",
+                  jget<std::string>(e, "id", "").c_str(),
+                  jget<std::string>(e, "state", "").c_str(),
+                  jget(e, "disk_gb", 0.0), jget(e, "min_ram_gb", 0),
+                  jget<std::string>(e, "license", "").c_str());
+    }
     return 0;
   }
   if (cmd == "assistant") {
@@ -4030,7 +4132,7 @@ main(int argc, char** argv)
   if (cmd == "folders" || cmd == "folder" || cmd == "mv" || cmd == "rm" ||
       cmd == "rename" || cmd == "modify" || cmd == "capture" ||
       cmd == "instantiate" || cmd == "land" || cmd == "place" ||
-      cmd == "guide" || cmd == "grab") {
+      cmd == "guide" || cmd == "grab" || cmd == "latent") {
     if (args.empty()) {
       return usage();
     }
@@ -4137,6 +4239,52 @@ main(int argc, char** argv)
       }
       std::printf("%s layer %s\n", put->first.str().c_str(),
                   put->second.empty() ? "0" : put->second.c_str());
+      return 0;
+    }
+    if (cmd == "latent") {
+      // A clip's kept latents (DESIGN §4e): what a continuation carries
+      // -- and which tails, in frames, they carry whole.
+      std::vector<std::int64_t> tails;
+      for (std::size_t i = 2; i < args.size(); ++i) {
+        tails.push_back(std::atoll(args[i].c_str()));
+      }
+      auto k = c.kept_latents(*pid, *aid, tails);
+      if (!k.ok()) {
+        return fail(k.error());
+      }
+      if (!jget(*k, "kept", false)) {
+        std::printf("no latents kept%s\n",
+                    jget<std::string>(*k, "clip", "").empty()
+                        ? " (not a clip a continuation carries)"
+                        : " (made without --keep-latents): a "
+                          "continuation reads its picture and sound");
+        return 0;
+      }
+      const auto dims = [](const Json& sh) {
+        std::string d;
+        for (const auto& v : sh) {
+          d += (d.empty() ? "" : "x") + std::to_string(v.get<long long>());
+        }
+        return d;
+      };
+      std::printf("clip %s, %lld frames (tail to %lld)\n",
+                  jget<std::string>(*k, "clip", "").c_str(),
+                  static_cast<long long>(jget<std::int64_t>(*k, "frames", 0)),
+                  static_cast<long long>(jget<std::int64_t>(*k, "end", 0)));
+      std::printf("video latent %s  %s\n",
+                  dims((*k)["video"]["shape"]).c_str(),
+                  jget<std::string>((*k)["video"], "file", "").c_str());
+      if (k->contains("audio")) {
+        std::printf("audio latent %s  %s\n",
+                    dims((*k)["audio"]["shape"]).c_str(),
+                    jget<std::string>((*k)["audio"], "file", "").c_str());
+      }
+      for (std::size_t i = 0; i < tails.size(); ++i) {
+        std::printf("tail %lld: %s\n", static_cast<long long>(tails[i]),
+                    jget(*k, "fits", Json::array())[i].get<bool>()
+                        ? "carried"
+                        : "not carried (read as a reference)");
+      }
       return 0;
     }
     if (cmd == "guide") {
@@ -4356,15 +4504,173 @@ main(int argc, char** argv)
             "layer {} -> {}  {}", layer.empty() ? "0" : layer,
             name(jget<std::string>(n, "into", "")),
             look.empty() ? "as it is" : look);
+      } else if (type == "generate") {
+        // A generate node not run (or its result gone).
+        const Json g = jget(n, "generate", Json::object());
+        const auto model = jget<std::string>(g, "model", "");
+        const auto id = jget<std::string>(g, "id", "");
+        what = std::format("generate {} · {}  [{} {}]",
+                           jget<std::string>(g, "target", ""),
+                           model.empty() ? "auto" : model,
+                           g.contains("started") ? "run" : "draft",
+                           id.substr(id.size() > 8 ? id.size() - 8 : 0));
       } else {
         const auto model = jget<std::string>(n, "model", "");
         what = std::format("{}{} -> {}", jget<std::string>(n, "op", ""),
                            model.empty() ? "" : " · " + model,
                            name(jget<std::string>(n, "into", "")));
+        if (n.contains("generate")) {
+          const auto id = jget<std::string>(n["generate"], "id", "");
+          what += std::format("  [node {}]",
+                              id.substr(id.size() > 8 ? id.size() - 8 : 0));
+        }
       }
       std::printf("  c%-2d %6.2f  %-5s %s\n", n["column"].get<int>(),
                   n["row"].get<double>(),
                   type == "asset" ? "asset" : "op", what.c_str());
+    }
+    return 0;
+  }
+  if (cmd == "gen") {
+    // The Atlas's GENERATE NODES: listed; or one changed -- add <target>
+    // <asset...> | link / unlink <node> <asset> | order <node> <asset...>
+    // | set <node> k=v,... | start <node> [--no-wait] | duplicate <node>
+    // | remove <node> -- a node by its id or the end of it.
+    if (args.empty()) {
+      return usage();
+    }
+    auto pid = open_or_fail(c, args[0]);
+    if (!pid.ok()) {
+      return fail(pid.error());
+    }
+    const bool wait = std::erase(args, std::string("--no-wait")) == 0;
+    project::Project* p = c.project(*pid);
+    auto name = [&](const std::string& id) {
+      const auto a = AssetId::parse(id);
+      const auto got = a ? p->asset(*a) : Result<project::Asset>(
+                                              make_error(Code::NotFound, ""));
+      return got.ok() ? got->name : id;
+    };
+    auto node_id = [&](const std::string& given) -> Result<std::string> {
+      auto all = c.generate_nodes(*pid);
+      if (!all.ok()) {
+        return all.error();
+      }
+      std::string found;
+      for (const auto& n : *all) {
+        const auto id = jget<std::string>(n, "id", "");
+        if (id == given || (given.size() >= 4 && id.ends_with(given))) {
+          if (!found.empty() && id != given) {
+            return make_error(Code::InvalidArgument,
+                              std::format("'{}' names more than one node",
+                                          given));
+          }
+          found = id;
+        }
+      }
+      if (found.empty()) {
+        return make_error(Code::NotFound,
+                          std::format("no generate node '{}'", given));
+      }
+      return found;
+    };
+    auto print = [&](const Json& n) {
+      const auto id = jget<std::string>(n, "id", "");
+      std::string refs;
+      for (const auto& r : jget(n, "refs", Json::array())) {
+        refs += (refs.empty() ? "" : ", ") + name(r.get<std::string>());
+      }
+      const auto model = jget<std::string>(n, "model", "");
+      const Json st = jget(n, "started", Json::object());
+      std::printf("%s  %s  %s  %s%s\n    prompt: %s\n    row: %s\n",
+                  id.substr(id.size() > 8 ? id.size() - 8 : 0).c_str(),
+                  jget<std::string>(n, "target", "").c_str(),
+                  model.empty() ? "auto" : model.c_str(),
+                  jget<std::string>(n, "preference", "").c_str(),
+                  jget(n, "custom", false) ? " (custom)" : "",
+                  n.contains("prompt")
+                      ? name(jget<std::string>(n, "prompt", "")).c_str()
+                      : "-",
+                  refs.empty() ? "-" : refs.c_str());
+      if (st.is_object() && !st.empty()) {
+        std::printf("    started: seed %lld%s, %s -> %s\n",
+                    static_cast<long long>(jget<std::int64_t>(st, "seed", 0)),
+                    jget(st, "seed_given", false) ? " (given)" : "",
+                    jget<std::string>(st, "model", "").c_str(),
+                    name(jget<std::string>(st, "asset", "")).c_str());
+      } else {
+        const auto seed = jget<std::int64_t>(n, "seed", -1);
+        std::printf("    draft: seed %s\n",
+                    seed < 0 ? "random" : std::to_string(seed).c_str());
+      }
+    };
+    if (args.size() == 1 || args[1] == "list") {
+      auto all = c.generate_nodes(*pid);
+      if (!all.ok()) {
+        return fail(all.error());
+      }
+      for (const auto& n : *all) {
+        print(n);
+      }
+      return 0;
+    }
+    const std::string action = args[1];
+    Json req = {{"action", action}};
+    if (action == "add") {
+      if (args.size() < 3) {
+        return usage();
+      }
+      req["target"] = args[2];
+      req["assets"] = Json::array();
+      for (std::size_t i = 3; i < args.size(); ++i) {
+        req["assets"].push_back(args[i]);
+      }
+    } else {
+      if (args.size() < 3) {
+        return usage();
+      }
+      auto id = node_id(args[2]);
+      if (!id.ok()) {
+        return fail(id.error());
+      }
+      req["node"] = *id;
+      if (action == "link" || action == "unlink") {
+        if (args.size() < 4) {
+          return usage();
+        }
+        req["asset"] = args[3];
+      } else if (action == "order") {
+        req["refs"] = Json::array();
+        for (std::size_t i = 3; i < args.size(); ++i) {
+          req["refs"].push_back(args[i]);
+        }
+      } else if (action == "set" || action == "tune") {
+        Json settings = Json::object();
+        for (std::size_t i = 3; i < args.size(); ++i) {
+          settings.update(tune_spec(args[i]));
+        }
+        // Custom's values ("tune <node> steps=6,sage_attn=true"): its
+        // Favor Custom, from the preference it has.
+        if (action == "tune") {
+          settings = {{"custom", true}, {"tuning", settings}};
+          req["action"] = "set";
+        }
+        req["settings"] = settings;
+      }
+    }
+    auto r = c.generate_node_op(*pid, req);
+    if (!r.ok()) {
+      return fail(r.error());
+    }
+    print(jget(*r, "node", Json::object()));
+    if (action == "start") {
+      const auto job = JobId::parse(jget<std::string>(*r, "job", ""));
+      std::printf("job %s, asset %s\n",
+                  jget<std::string>(*r, "job", "").c_str(),
+                  jget<std::string>(*r, "asset", "").c_str());
+      if (wait && job) {
+        return follow(c, *job);
+      }
     }
     return 0;
   }
@@ -4630,7 +4936,7 @@ main(int argc, char** argv)
       if (!j.ok()) {
         return fail(j.error());
       }
-      return follow(c, *j);
+      return named(c, follow(c, *j));
     }
     // Made again in this process, as the app makes a picture after the
     // first: what the session keeps (tuned kernels, models kept, the
@@ -4737,6 +5043,10 @@ main(int argc, char** argv)
         req.whole.push_back(req.references.back());
       } else if (a == "--tail-seconds") {
         req.tail_seconds = std::atof(next().c_str());
+      } else if (a == "--latents") {
+        req.continue_latents = true;
+      } else if (a == "--keep-latents") {
+        req.keep_latents = true;
       } else if (a == "--song-sound") {
         req.reference_sound = true;
       } else if (a == "--regenerate") {
@@ -4757,7 +5067,7 @@ main(int argc, char** argv)
     if (!j.ok()) {
       return fail(j.error());
     }
-    return follow(c, *j);
+    return named(c, follow(c, *j));
   }
   if (cmd == "audio") {
     if (args.size() < 2) {
@@ -4845,7 +5155,7 @@ main(int argc, char** argv)
     if (!j.ok()) {
       return fail(j.error());
     }
-    return follow(c, *j);
+    return named(c, follow(c, *j));
   }
   if (cmd == "export") {
     if (!args.empty() && args[0] == "--formats") {

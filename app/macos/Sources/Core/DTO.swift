@@ -88,6 +88,7 @@ struct CapabilityStatus: Decodable, Sendable, Identifiable {
         case "audio-transcribe": String(localized: "Transcribe audio")
         case "video-summary": String(localized: "Video summary")
         case "audio-separate": String(localized: "Separate audio")
+        case "micro-agent": String(localized: "Micro agent")
         case "text-to-audio": String(localized: "Text to audio")
         case "text-to-speech": String(localized: "Text to speech")
         default: english ?? capability.replacingOccurrences(of: "-", with: " ")
@@ -151,6 +152,13 @@ struct CatalogModel: Decodable, Sendable, Identifiable {
     /// A clip model that ends on a picture as well as opening on one
     /// (catalog `last_frame`: MiniMax H3 FL2VA).
     var lastFrame: Bool?
+    /// It continues a clip THROUGH its tail (FL2VA's guide, DESIGN §4e):
+    /// the frames of the tail its first ones redo (22); nil for one that
+    /// continues from references, or none.
+    var continuesThrough: Int?
+    /// It keeps its clip's latents when asked (catalog `keeps_latents`:
+    /// MiniMax H3) -- the generation card's Latents row.
+    var keepsLatents: Bool?
     /// The longest side it makes (catalog `max_edge`: FLUX.3 Image
     /// Klein's 4096) -- its 4K size offered; nil when it says nothing.
     var maxEdge: Int?
@@ -627,11 +635,48 @@ struct AtlasNodeDTO: Decodable, Sendable, Hashable, Identifiable {
     var offset: Int?
     var duration: Int?
     var note: Bool?
+    /// A GENERATE NODE (core generate_nodes): the node of type
+    /// "generate" -- not run yet, or its result gone -- or the op of the
+    /// result it made.
+    var generate: GenerateNodeDTO?
     var column: Int
     var row: Double
     var height: Double
 
     var isAsset: Bool { type == "asset" }
+}
+
+/// An Atlas GENERATE NODE (DESIGN §10a Atlas; core generate_nodes): a
+/// generation set up before it runs -- its target, its prompt (a text)
+/// and its reference row, its model and settings -- and, once started,
+/// frozen with the seed it ran with and what it made. (Its Custom
+/// values are read apart: AtlasNodeTuning.)
+struct GenerateNodeDTO: Decodable, Sendable, Hashable {
+    struct Started: Decodable, Sendable, Hashable {
+        var job: String
+        var asset: String?
+        var seed: Int64
+        var seedGiven: Bool?
+        var model: String?
+    }
+    var id: String
+    /// "image" | "video" | "audio".
+    var target: String
+    var prompt: String?
+    var refs: [String]
+    /// "": Auto's.
+    var model: String
+    /// "speed" | "balanced" | "quality": Favor, or the preset Custom
+    /// starts from.
+    var preference: String
+    var custom: Bool
+    var width: Int
+    var height: Int
+    var seconds: Double
+    var plan: String?
+    /// -1: random.
+    var seed: Int64
+    var started: Started?
 }
 
 /// An edge: "input" (with its role), "made", "layer", "into", "note".
@@ -640,6 +685,8 @@ struct AtlasEdgeDTO: Decodable, Sendable, Hashable {
     var to: String
     var kind: String
     var role: String?
+    /// Into a generate node: its place in the node's reference row.
+    var index: Int?
 }
 
 struct AssetListDTO: Decodable, Sendable {

@@ -1010,9 +1010,16 @@ struct ComposerStack: View {
         // pictures, clips and sounds.
         if model.usesReferences {
             let name = model.modelName(model.videoReferenceModel)
-            return model.promptAttachments.contains(where: \.continues)
+            let cont = model.promptAttachments.first(where: \.continues)
+            return cont?.fromLatents == true
+                ? String(localized: "Continue from its latents · \(name)")
+                : cont != nil
                 ? String(localized: "Continue · \(name)")
                 : String(localized: "References · \(name)")
+        }
+        // A clip continued through its tail (FL2VA's guide).
+        if model.guidedContinuation != nil {
+            return String(localized: "Continue through its end · \(model.imageModelName)")
         }
         // Sound: a song, or speech -- in the row's voice.
         if model.activeModality == .audio {
@@ -1800,7 +1807,12 @@ struct ModelPicker: View {
 /// the screen's room.
 struct GenerationSettingsPopover: View {
     @Bindable var model: AppModel
-    @State private var size: CGSize = .zero
+    /// The popover holding it (appKitPopover(fitted:)), which takes the
+    /// size it reports -- within what the screen leaves under the Prompt
+    /// Editor's toolbar, where it hangs from -- as Tune's own panel does:
+    /// a popover following its content's size, the content measuring
+    /// itself, hung and crashed Valtz on macOS 27.2 (TuningPanel.panel).
+    @Environment(\.popoverFit) private var fit
 
     var body: some View {
         ScrollView(.vertical) {
@@ -1810,24 +1822,15 @@ struct GenerationSettingsPopover: View {
                 DrawerSettings(model: model, tuneInline: true)
                     .padding(16)
             }
+            // 680 points tall at most.
             .onGeometryChange(for: CGSize.self) { $0.size }
-                action: { size = $0 }
+                action: { s in
+                    fit?.fit(CGSize(width: s.width,
+                                    height: min(s.height, 680)))
+                }
         }
         .scrollBounceBehavior(.basedOnSize)
-        .frame(width: size.width > 0 ? size.width : nil,
-               height: size.height > 0 ? min(size.height, room) : nil)
         .animation(AppModel.motion, value: model.showsTuning)
-    }
-
-    /// 680 points at most, or what the screen leaves under the Prompt
-    /// Editor's toolbar, where it hangs from (the main window's: a
-    /// popover holding a field may be the key one).
-    private var room: CGFloat {
-        guard let w = NSApp.mainWindow, let screen = w.screen?.visibleFrame
-        else { return 680 }
-        // The toolbar under the title bar, the arrow, a margin.
-        let below = w.frame.maxY - 90 - screen.minY - 24
-        return max(320, min(680, below))
     }
 }
 
@@ -1911,7 +1914,8 @@ private struct DrawerSettings: View {
                                        set: {
                                            if !tuneInline { model.showsTuning = $0 }
                                        }),
-                                   anchor: customAnchor, arrowEdge: .top) {
+                                   anchor: customAnchor, arrowEdge: .top,
+                                   fitted: true) {
                         TuningPanel(model: model)
                     }
                     .onAppear { model.watchTuningPresses() }
@@ -2043,6 +2047,18 @@ private struct DrawerSettings: View {
                          },
                          selection: clipChoice)
                 ClipLengthField(model: model)
+            }
+            .transition(.opacity)
+        }
+        // Its latents kept with it (DESIGN §4e), asked for: Continue can
+        // then carry it on from them, not only from its picture and sound.
+        if model.offersKeepLatents {
+            GridRow {
+                label("Latents", row: SettingsRow.latents)
+                Toggle("Keep for continuing", isOn: $model.keepLatents)
+                    .toggleStyle(.checkbox)
+                    .help("Keep the clip's latents with it in the project (a few MB): its Continue can then carry it on from them -- the model's own frames and sound -- as well as from its picture and sound read again")
+                    .gridCellColumns(2)
             }
             .transition(.opacity)
         }
@@ -2295,6 +2311,10 @@ private struct ClipLengthField: View {
             .onChange(of: model.clipLengthText) { _, s in
                 if text == lastShown { show(s) }
             }
+            // What is typed, for a Start pressed before it is taken.
+            .onChange(of: text) { _, t in
+                model.typedLength = t == lastShown ? nil : t
+            }
             .help("Type a length: frames (124 frames) or seconds (5 s)")
     }
 
@@ -2304,6 +2324,7 @@ private struct ClipLengthField: View {
     }
 
     private func commit() {
+        model.typedLength = nil
         if text != lastShown {
             withAnimation(AppModel.motion) {
                 if !model.setClipLength(text) { NSSound.beep() }
@@ -2340,6 +2361,10 @@ private struct SizeField: View {
             .onChange(of: shown) { _, s in
                 if text == lastShown { show(s) }
             }
+            // What is typed, for a Start pressed before it is taken.
+            .onChange(of: text) { _, t in
+                model.typedSize = t == lastShown ? nil : t
+            }
             .help("Type a size: width × height, as 1200x800 or 1200*800")
     }
 
@@ -2355,6 +2380,7 @@ private struct SizeField: View {
     }
 
     private func commit() {
+        model.typedSize = nil
         if text != lastShown {
             withAnimation(AppModel.motion) {
                 if !model.setCustomSize(text) { NSSound.beep() }

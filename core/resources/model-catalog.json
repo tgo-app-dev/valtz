@@ -204,6 +204,13 @@
       ]
     },
     {
+      "id": "micro-agents", "name": "Micro agents",
+      "features": ["micro-agent"],
+      "members": [
+        {"model": "lfm3-vl-2b", "label": "LFM3-VL 2B"}
+      ]
+    },
+    {
       "id": "upscalers", "name": "Upscalers",
       "features": ["video-upscale", "image-upscale"],
       "members": [
@@ -412,6 +419,22 @@
                                        "min_p": 0.0, "presence_penalty": 1.5,
                                        "repetition_penalty": 1.0}}},
       "notes": "Prism ML's ternary training of Qwen3.8-27B: every weight of the language model -1, 0 or +1 times a 16-bit scale per 128, in a 5.9 GB GGUF (PTQ1_0) beside its 0.9 GB vision projector -- a 27B that sees, held in 7.7 GB plus 0.9 for its tower. Run at f16 (its scales are f16: 0.0007 from the reference's fp32 against bf16's 0.011) on vpipe's 2-bit kernels, each projection's input turned by the Hadamard rotation it was trained with (vpipe f34a6ce8). No draft head is published for it, so it decodes a token at a time: on a 24 GB M5 Pro ~30 tok/s, a 512-token prompt read at ~420 tok/s; on a 16 GB M5 ~16 tok/s with little else open. Its K/V 64 KB a token, its context 262,144 as the memory holds it. Chosen by name only (Settings > Agentic Helper, the Agent's Model). Apache-2.0."
+    },
+    {
+      "id": "lfm3-vl-2b",
+      "name": "LFM3-VL 2B",
+      "family": "lfm3",
+      "role": "micro",
+      "hf_path": "LiquidAI/LFM3-VL-2B",
+      "check": {"is": {"config.json": "lfm3_vl"}},
+      "capabilities": ["micro-agent"],
+      "disk_gb": 3.9,
+      "min_ram_gb": 8, "rank": 1,
+      "license": "lfm-open-1.0",
+      "engine": {"vpipe": {"mtp": false,
+                           "sampling": {"temperature": 0.1, "top_k": 50,
+                                       "repetition_penalty": 1.1}}},
+      "notes": "Liquid AI's on-device vision-language model: a 1.73B LFM3 language model (13 gated short convolutions, 5 sliding-window and 6 global attention layers) under a 164M vision tower, 3.8 GB in bf16, run at f16 (vpipe f6512f95). Valtz's MICRO AGENT (DESIGN §9c): the short tasks a few hundred tokens take -- a prompt's short name, a Ref2VA clip's words rewritten for its 2K pass (the reference pictures shown), Enhance where asked -- kept loaded beside the helper, without thinking, Liquid AI's sampler (temperature 0.1, top-k 50, repetition penalty 1.1). ~2,200-3,900 tok/s prefill, 33-53 tok/s decode on an M4 Pro / M5. LFM Open License v1.0: commercial use licensed below USD 10M annual revenue."
     },
     {
       "id": "z-image-turbo",
@@ -888,13 +911,15 @@
                       "fixes": {"video_shift": 12, "audio_shift": 3},
                       "lora_only": {"steps": 3,
                                     "fixes": {"video_shift": 12, "audio_shift": 3}}},
-          "vdn": {"branch": "minimax-h3-vdn"},
+          "vdn": {"branch": "minimax-h3-vdn", "range": 1},
           "regenerate": {"with": "open-h3-regenerate-2k", "above": 768,
                          "draft": 768},
-          "accel": ["sol_attn", "sol_tau_steps", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sol_tau_steps", "vdn_range_steps", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
           "first_frame": true,
           "last_frame": true,
+          "keeps_latents": true,
+          "continuation": {"guide": {"frames": 22, "latents": 7}},
           "quality": 0.8
         }
       },
@@ -967,6 +992,7 @@
             "video_shift": 12.0, "audio_shift": 3.0,
             "condition_timestep": 1.0, "condition_audio_timestep": 1.0
           },
+          "keeps_latents": true,
           "generate": {"i8_gemm": true, "unload_when_idle": "always"},
           "defaults": {"width": 960, "height": 544, "frames": 124, "fps": 24},
           "align": 32,
@@ -1638,6 +1664,7 @@
       "requires": ["open-h3-latent-upscaler", "minimax-h3-fl2va"],
       "engine": {
         "vpipe": {
+          "vdn": {"branch": "minimax-h3-vdn", "range": 1},
           "regenerate": {
             "base": "minimax-h3-fl2va",
             "upscaler": "open-h3-latent-upscaler",
@@ -1653,7 +1680,7 @@
               },
               "balanced": {
                 "sol_attn": true, "sol_threshold": "exact",
-                "sol_tau": "1.0,1.5,1.75", "sage_attn": true,
+                "sol_tau": "1.0,1.0,1.25", "sage_attn": true,
                 "sage_pv8": false, "i8_gemm": true,
                 "i8_gemm_tier": "fast"
               },
@@ -1665,9 +1692,9 @@
               }
             }
           },
-          "accel": ["sol_attn", "sol_tau_steps", "sage_attn", "sage_pv8",
-                    "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier",
-                    "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sol_tau_steps", "vdn_range_steps",
+                    "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm",
+                    "i8_gemm_tier", "ane_ffn", "ane_qkv"],
           "ane_qkv_min_ram_gb": 24,
           "steps_fixed": true,
           "defaults": {"steps": 3}

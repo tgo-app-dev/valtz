@@ -1021,11 +1021,14 @@ private:
       auto first = keyframe_(spec, "first");
       auto last = keyframe_(spec, "last");
       auto refs = reference_media_(spec);
+      auto guide = guide_media_(spec);
       built = !first.ok() ? Result<vp::BuiltGraph>(first.error())
               : !last.ok() ? Result<vp::BuiltGraph>(last.error())
               : !refs.ok() ? Result<vp::BuiltGraph>(refs.error())
-                           : vp::build_video(spec, *first, *refs, *last,
-                                             enc);
+              : !guide.ok() ? Result<vp::BuiltGraph>(guide.error())
+                            : vp::build_video(spec, *first, *refs, *last,
+                                              enc,
+                                              *guide ? &**guide : nullptr);
     } else if (spec.op == kOpGenerateAudio) {
       built = vp::build_audio(spec);
     } else if (spec.op == kOpGenerateSpeech) {
@@ -1638,8 +1641,21 @@ private:
       if (auto info = media::probe_file(g.output); info.ok()) {
         out.output_info = *info;
       }
+      out.data = Json::object();
       if (!score.empty()) {
-        out.data = {{"score", score}};
+        out.data["score"] = score;
+      }
+      // The clip's latents, as made (DESIGN §4e): its owner keeps them
+      // for a continuation of it.
+      Json lat = Json::object();
+      for (const auto& [k, f] : {std::pair{"video", &g.latent},
+                                 std::pair{"audio", &g.audio_latent}}) {
+        if (!f->empty() && fs::is_regular_file(*f, ec)) {
+          lat[k] = f->string();
+        }
+      }
+      if (!lat.empty()) {
+        out.data["latents"] = std::move(lat);
       }
       q.sink(out);
     } else if (spec.op == kOpTranscribeAudio) {
@@ -1812,14 +1828,89 @@ private:
   // its inputs "reference" and "continue", each with what the job
   // recorded of it (param "reference_media": its route, its trim, a
   // tail) -- a clip's span made frames of its own, a sound's seconds.
+  // A window of a clip's kept latent (input role `role`, its window the
+  // param `window` names), empty when the job carries none.
+  static vp::LatentWindow
+  latent_window_(const JobSpec& spec, std::string_view role,
+                 const Json& window)
+  {
+    vp::LatentWindow w;
+    for (const auto& in : spec.inputs) {
+      if (in.role == role) {
+        w.path = in.path;
+        w.hash = in.hash;
+        w.start = jget<std::int64_t>(window, "start", 0);
+        w.count = jget<std::int64_t>(window, "count", 0);
+        break;
+      }
+    }
+    return w;
+  }
+
+  // An FL2VA clip GUIDED through the tail of the clip it continues
+  // (param "continue_guide", the clip input "continue"): its kept
+  // latents' windows (inputs "continue_latent", "continue_audio_latent",
+  // param "continue_latent"), else the tail's frames and sound to encode.
+  static Result<std::optional<vp::GuideMedia>>
+  guide_media_(const JobSpec& spec)
+  {
+    const Json g = jget(spec.params, "continue_guide", Json());
+    if (!g.is_object()) {
+      return std::optional<vp::GuideMedia>();
+    }
+    const Json win = jget(spec.params, "continue_latent", Json::object());
+    vp::GuideMedia m;
+    m.latent = latent_window_(spec, "continue_latent",
+                              jget(win, "video", Json::object()));
+    m.audio_latent = latent_window_(spec, "continue_audio_latent",
+                                    jget(win, "audio", Json::object()));
+    for (const auto& in : spec.inputs) {
+      if (in.role != "continue") {
+        continue;
+      }
+      if (in.info.type != media::MediaType::Video) {
+        return make_error(Code::InvalidArgument,
+                          "a clip is continued from a clip");
+      }
+      m.clip = in.path;
+      m.hash = in.hash;
+      m.width = in.info.frame.width;
+      m.height = in.info.frame.height;
+      m.audio = in.info.has_audio;
+      const double fps = in.info.frame_rate.num > 0
+                             ? in.info.frame_rate.to_double()
+                             : 24.0;
+      // Its last `frames` frames (the controller's, in the clip's own),
+      // up to where it ends.
+      const std::int64_t total = in.info.frame_count;
+      const std::int64_t want = jget<std::int64_t>(g, "frames", 22);
+      const std::int64_t end =
+          std::min<std::int64_t>(total, jget<std::int64_t>(g, "end",
+                                                           total));
+      m.first = std::max<std::int64_t>(0, end - want);
+      m.count = end - m.first;
+      m.start_s = static_cast<double>(m.first) / fps;
+      m.duration_s = static_cast<double>(m.count) / fps;
+    }
+    if (m.clip.empty() && !m.kept()) {
+      return make_error(Code::InvalidArgument,
+                        "a guided clip names no clip it continues");
+    }
+    return std::optional<vp::GuideMedia>(std::move(m));
+  }
+
   static Result<std::vector<vp::RefMedia>>
   reference_media_(const JobSpec& spec)
   {
     const Json list = jget(spec.params, "reference_media", Json::array());
+    // An FL2VA guide's clip is no reference.
+    const bool guided = jget(spec.params, "continue_guide", Json())
+                            .is_object();
+    const Json win = jget(spec.params, "continue_latent", Json::object());
     std::vector<vp::RefMedia> out;
     std::size_t k = 0;
     for (const auto& in : spec.inputs) {
-      if (in.role != "reference" && in.role != "continue") {
+      if (in.role != "reference" && (in.role != "continue" || guided)) {
         continue;
       }
       const Json e = k < list.size() ? list[k] : Json::object();
@@ -1832,6 +1923,13 @@ private:
       r.audio = jget(e, "audio", false);
       r.continues = in.role == "continue";
       r.whole = jget(e, "whole", false);
+      // Its own latents, carried (DESIGN §4e): kept when it was made.
+      if (r.continues) {
+        r.latent = latent_window_(spec, "continue_latent",
+                                  jget(win, "video", Json::object()));
+        r.audio_latent = latent_window_(spec, "continue_audio_latent",
+                                        jget(win, "audio", Json::object()));
+      }
       const media::Trim t = media::trim_from_json(
           jget(e, "trim", Json::object()));
       if (r.kind == "video") {

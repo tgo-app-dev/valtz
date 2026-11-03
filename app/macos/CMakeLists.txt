@@ -71,6 +71,7 @@ set(VALTZ_APP_SOURCES
   Sources/ValtzApp.swift
   Sources/Core/CoreService.swift
   Sources/Core/Updater.swift
+  Sources/Core/EditorWindows.swift
   Sources/Core/FileHistory.swift
   Sources/Core/Fleet.swift
   Sources/Core/MachineMonitor.swift
@@ -103,6 +104,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/ProjectOutput.swift
   Sources/Views/AssetsSection.swift
   Sources/Views/AtlasView.swift
+  Sources/Views/AtlasGenerate.swift
   Sources/Views/AtlasPlayback.swift
   Sources/Views/DroppedMedia.swift
   Sources/Views/MemoryPopover.swift
@@ -117,6 +119,7 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/ValueControls.swift
   Sources/Simple/Keyframes.swift
   Sources/Simple/TuningPanel.swift
+  Sources/Simple/TuningHost.swift
   Sources/Simple/Markup.swift
   Sources/Simple/MarkupTextEditor.swift
   Sources/Simple/MarkupConnectors.swift

@@ -37,6 +37,15 @@
 //                          brings its own grid, so the steps are its 8
 //   vdn            bool    H3: the VDN linear attention branch; replaces
 //                          Sol-Attn on the blocks it covers
+//   vdn_range      int     with vdn: how far its SOFTMAX half reaches --
+//                          the query's chunk (5 latent frames) and this
+//                          many either side, the linear half beyond
+//                          (vpipe's `vdn_range`); the checkpoint's (its
+//                          catalog `vdn.range`, 1) by default -- or,
+//                          where the model's stage takes one a step
+//                          (catalog `accel`: `vdn_range_steps`, MiniMax
+//                          H3 FL2VA, its refiner), a SCHEDULE as sol_tau's:
+//                          "2,1,1", a reach a denoising step
 //   pika_flex      bool    H3: Pika H3 Flex, Pika Labs' six-step
 //                          post-training of either partition -- its
 //                          adapter in the first LoRA slot, the Turbo LoRA
@@ -214,8 +223,9 @@ Json missing_loras(const ModelEntry& m, const TuningContext& ctx,
 //                   "needs-matrix-cores" | "own-schedule",
 //                 "min", "max", "step" (numbers),
 //                 "choices": [a choice's values, in order],
-//                 "schedule": true where a real takes a value a step
-//                   too (its value then a number or "1,1.5,1.75"),
+//                 "schedule": true where a real or an int takes a
+//                   value a step too (its value then a number or
+//                   "1,1.5,1.75"),
 //                 "excludes": [keys turned off with it on],
 //                 "fixes": {key: value while it is on},
 //                 "needs": key it refines (sol_tau: sol_attn),

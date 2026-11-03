@@ -11,12 +11,15 @@ import SwiftUI
 /// them; eight run at a time), then the DiT and VAE checkpoints (one of
 /// each in place of the model's own).
 struct TuningPanel: View {
-    @Bindable var model: AppModel
+    /// Whose values: the card's (AppModel), a generate node's.
+    var model: any TuningHost
     /// Inside another popover (the Prompt Editor's settings): its rows,
     /// at its width, which that popover scrolls.
     var embedded = false
     @State private var dropTargeted = false
     @State private var contentSize: CGSize = .zero
+    /// The popover holding it, which it tells its size.
+    @Environment(\.popoverFit) private var fit
 
     var body: some View {
         if embedded {
@@ -31,50 +34,37 @@ struct TuningPanel: View {
     }
 
     private var panel: some View {
-        // As large as it is, up to the screen's room -- then it scrolls:
+        // As large as it is, up to its popover's room -- then it scrolls:
         // the LoRA list can grow, a clip regenerated adds the refine's
         // options, a long name widens the Acceleration pop-up, and a
         // popover larger than the screen is cut off. At 640 points wide
         // at least (it was 640 always: rows wider than that were cut on
-        // both sides), and as tall as it lays out at that width.
-        let wide = contentSize.width > Self.roomWidth
+        // both sides), as tall as it lays out at that width, 620 at most.
+        // The POPOVER takes that size (appKitPopover(fitted:)); the panel
+        // fills what it is given. It framed itself at what it measured,
+        // which AppKit's popover followed inside its own layout: on macOS
+        // 27.2 opening it hung, each frame given asking for another
+        // constraints pass, until AppKit raised and Valtz crashed
+        // (reported with MiniMax H3 Ref2VA).
+        let wide = contentSize.width > (fit?.room.width ?? .infinity)
         return ScrollView(wide ? [.vertical, .horizontal] : .vertical) {
             AtIdealWidth(minWidth: 640) { content }
                 .onGeometryChange(for: CGSize.self) { $0.size }
-                    action: { contentSize = $0 }
+                    action: { s in
+                        contentSize = s
+                        fit?.fit(CGSize(width: s.width,
+                                        height: min(s.height, 620)))
+                    }
         }
         .scrollBounceBehavior(.basedOnSize)
-        .frame(width: contentSize.width > 0
-                   ? min(contentSize.width, Self.roomWidth) : 640,
-               height: contentSize.height > 0
-                   ? min(contentSize.height, Self.roomHeight) : nil)
         .modifier(WeightsDrop(model: model, targeted: $dropTargeted))
-    }
-
-    /// The widest the panel stands before it scrolls sideways: its
-    /// screen's width, less a margin.
-    static var roomWidth: CGFloat {
-        let screen = (NSApp.mainWindow?.screen ?? NSScreen.main)?
-            .visibleFrame.width ?? 1200
-        return max(640, screen - 80)
-    }
-
-    /// The most the panel stands before it scrolls: 620 points, or what
-    /// its screen leaves. AppKit shows a popover on the side of its anchor
-    /// (the Custom segment) with the more room -- at least half the
-    /// screen's, less the arrow and a margin -- and cuts off what does
-    /// not fit there.
-    static var roomHeight: CGFloat {
-        let screen = (NSApp.mainWindow?.screen ?? NSScreen.main)?
-            .visibleFrame.height ?? 900
-        return max(280, min(620, screen / 2 - 40))
     }
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline) {
                 Text(verbatim: Preference.custom.label).font(.headline)
-                Text(verbatim: model.runningModelInfo?.name ?? "")
+                Text(verbatim: model.tuningTitle)
                     .foregroundStyle(.secondary)
                 Spacer()
                 Menu("Start from") {
@@ -96,7 +86,7 @@ struct TuningPanel: View {
                         // The refine's options while the clip is
                         // regenerated (past 768P, its refiner here).
                         if !opts.isEmpty,
-                           g != .regenerate || model.regenerateDraft != nil {
+                           g != .regenerate || model.tuningRegenerates {
                             GridRow {
                                 Text(g.title)
                                     .font(.caption.weight(.semibold))
@@ -412,6 +402,7 @@ struct TuningPanel: View {
         case "taomate": String(localized: "TaoMate")
         case "taomate_lora": String(localized: "As a LoRA only")
         case "vdn": String(localized: "VDN branch")
+        case "vdn_range": String(localized: "VDN softmax range")
         case "sol_attn": String(localized: "Sol-Attn")
         case "sol_threshold": String(localized: "Sol flavour")
         case "sol_tau": String(localized: "Sol threshold")
@@ -439,16 +430,28 @@ struct TuningPanel: View {
     /// The short note beside an option that can be changed -- a
     /// schedule's saying it takes one.
     static func note(_ o: TuningOption) -> String {
-        o.schedule && own(o.key) == "sol_tau"
-            ? String(localized: "Higher keeps fewer blocks; a list sets each step's")
-            : note(o.key)
+        guard o.schedule else { return note(o.key) }
+        switch own(o.key) {
+        case "sol_tau":
+            return String(localized: "Higher keeps fewer blocks; a list sets each step's")
+        case "vdn_range":
+            return String(localized: "Chunks either side kept exact; a list sets each step's")
+        default:
+            return note(o.key)
+        }
     }
 
     /// ...and its help.
     static func help(_ o: TuningOption) -> String {
-        o.schedule && own(o.key) == "sol_tau"
-            ? help(o.key) + " " + String(localized: "A list sets it step by step: 1.0, 1.5, 1.75 runs the first denoising step at 1.0, the second at 1.5, the third and any after at 1.75 (the last value is kept). Separate the values with commas; write decimals with a point. Later steps carry less noise, so they can keep fewer blocks for the same error.")
-            : help(o.key)
+        guard o.schedule else { return help(o.key) }
+        switch own(o.key) {
+        case "sol_tau":
+            return help(o.key) + " " + String(localized: "A list sets it step by step: 1.0, 1.5, 1.75 runs the first denoising step at 1.0, the second at 1.5, the third and any after at 1.75 (the last value is kept). Separate the values with commas; write decimals with a point. Later steps carry less noise, so they can keep fewer blocks for the same error.")
+        case "vdn_range":
+            return help(o.key) + " " + String(localized: "A list sets it step by step: 2, 1, 1 runs the first denoising step with 2 chunks either side, the second and any after with 1 (the last value is kept). Separate whole numbers with commas. The first steps decide the clip's layout and motion; later ones carry less noise and can hand more to the linear half.")
+        default:
+            return help(o.key)
+        }
     }
 
     static func note(_ key: String) -> String {
@@ -459,6 +462,7 @@ struct TuningPanel: View {
         case "taomate": String(localized: "3-step streaming method; its cache on disk")
         case "taomate_lora": String(localized: "Its adapter for 3 steps; no streaming, no cache")
         case "vdn": String(localized: "Linear attention for long, large clips")
+        case "vdn_range": String(localized: "Chunks either side kept exact; the rest linear")
         case "sol_attn": String(localized: "Attends only the key blocks that matter")
         case "sol_tau": String(localized: "Higher keeps fewer blocks: faster, less exact")
         case "sage_attn": String(localized: "int8 QK in attention, about 1.2× (M5)")
@@ -486,6 +490,7 @@ struct TuningPanel: View {
         case "taomate": String(localized: "TaoMate-H3's streaming method, not a LoRA: the base model writes the soundtrack, then its adapter writes the video in chunks, 3 steps each, against a cache of the chunks before. It takes a LoRA slot in place of the Turbo LoRA. Words to a clip only, made in whole 5-second requests. That cache is kept on disk (in 8 bits with int8 GEMM) and read back a block at a time. An alternative to the Turbo LoRA: no Favor preset turns it on.")
         case "taomate_lora": String(localized: "TaoMate-H3's adapter run as an ordinary LoRA: 3 steps over the whole clip, at the shifts TaoMate's own schedule uses (video 12, audio 3). No soundtrack pass by the base model, no chunks and no cache, so no disk traffic, and a clip may open on a picture. Not the method the adapter was trained for: judge its results by eye.")
         case "vdn": String(localized: "VideoDeltaNet: a windowed softmax over nearby frames plus a linear recurrence over the rest, a second checkpoint beside the model. Its advantage grows with the clip's length and size; it replaces Sol-Attn.")
+        case "vdn_range": String(localized: "How far VDN's softmax half reaches: the query's chunk of 5 latent frames (about 0.7 s of video) and this many chunks either side; the linear half carries every frame beyond. Wider is more of the original attention, more exact and slower; a window over the whole clip turns the linear half off. Narrower hands more to the linear half. The branch was trained at 1, so another value is outside its training: judge the results by eye.")
         case "sol_attn": String(localized: "Training-free sparse attention: key blocks a cheap proxy scores low are folded in as their centroid. Saves about a quarter to a third of the denoise on a long clip.")
         case "sol_tau": String(localized: "In standard deviations of the routing score's spread. 1.0 is the published setting.")
         case "sol_threshold": String(localized: "How Sol-Attn estimates the spread of a block's routing scores, which its threshold counts in. Diagonal reads the key blocks' variance channel by channel, as Sol has run in Valtz until now. Exact reads their full covariance, as the published Sol-Attn does (Open-H3-Regenerate-2K's own refine runs it): about 5-10% less error at the same share of blocks kept. The two keep different shares at one threshold, so a threshold chosen for one does not carry over to the other.")
@@ -562,6 +567,7 @@ struct TuningPanel: View {
     static func why(_ code: String) -> String {
         switch code {
         case "not-installed": String(localized: "Not installed — download it in Models")
+        case "continues-through": String(localized: "Not for a clip continued through its end: TaoMate streams from the prompt alone")
         case "no-adapter": String(localized: "This model has no few-step adapter")
         case "needs-matrix-cores": String(localized: "Needs an M5 or later")
         case "not-for-model": String(localized: "Not available for this model")
@@ -607,8 +613,8 @@ private enum TuningGroup: CaseIterable, Identifiable {
         case "steps", "hyperflow", "pika_flex", "taomate", "taomate_lora":
             .steps
         case "loras", "dits", "vaes": .weights
-        case "vdn", "sol_attn", "sol_threshold", "sol_tau", "sage_attn",
-             "sage_pv8", "sage_pv8_all_rows":
+        case "vdn", "vdn_range", "sol_attn", "sol_threshold", "sol_tau",
+             "sage_attn", "sage_pv8", "sage_pv8_all_rows":
             .attention
         case "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier",
              "ane_ffn", "ane_qkv", "motion_cache": .compute
@@ -742,7 +748,7 @@ struct TuningNumberField: View {
 /// Weights dropped anywhere on the panel: each filed by what it is -- a
 /// LoRA, a DiT or a VAE checkpoint.
 private struct WeightsDrop: ViewModifier {
-    let model: AppModel
+    let model: any TuningHost
     @Binding var targeted: Bool
 
     func body(content: Content) -> some View {

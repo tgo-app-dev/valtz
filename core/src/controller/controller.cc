@@ -3,6 +3,7 @@
 #include "controller/agent-host.h"
 
 #include "valtz/assist/drama3.h"
+#include "valtz/assist/micro.h"
 #include "valtz/assist/moss-image.h"
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
@@ -24,6 +25,7 @@
 #include <cstdlib>
 #include <format>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <random>
 #include <set>
@@ -179,6 +181,25 @@ set_named(project::Asset& a, bool on)
   std::erase(a.tags, std::string(kNamedTag));
   if (on) {
     a.tags.push_back(kNamedTag);
+  }
+}
+
+// A prompt the MICRO AGENT named (DESIGN §9c): a short name its results
+// take; dropped when its words change, or the person names it.
+constexpr const char* kShortTag = "short-named";
+
+bool
+is_short_named(const project::Asset& a)
+{
+  return std::ranges::find(a.tags, std::string(kShortTag)) != a.tags.end();
+}
+
+void
+set_short_named(project::Asset& a, bool on)
+{
+  std::erase(a.tags, std::string(kShortTag));
+  if (on) {
+    a.tags.push_back(kShortTag);
   }
 }
 
@@ -452,6 +473,11 @@ Controller::create(ControllerConfig cfg)
     }
     c->_assistant_context = std::max<std::int64_t>(
         0, jget<std::int64_t>(helper, "context", 0));
+    const Json micro = jget(helper, "micro", Json::object());
+    c->_micro_choice = jget<std::string>(micro, "model", "");
+    c->_micro_names = jget(micro, "names", true);
+    c->_micro_refine = jget(micro, "refine", true);
+    c->_micro_enhance = jget(micro, "enhance", false);
   }
   // VALTZ_ASSISTANT: another helper for this run only, chosen nowhere --
   // valtzctl's --assistant, for the app too (a 24 GB Mac checked on the
@@ -985,6 +1011,17 @@ Controller::post_(std::string kind, JobId job, Json data,
                  kind == "job.cancelled" || kind == "assist.enhanced")) {
     _agent->on_event(kind, job, data);
   }
+  // A job's events name its project: an app showing several projects at
+  // once -- a window each -- keeps each one's jobs apart. (No caller
+  // holds the job table's lock here.)
+  if (!job.is_nil() && kind.starts_with("job.") && data.is_object() &&
+      !data.contains("project")) {
+    ProjectId pid;
+    _jobs.update(job, [&](const JobRecord& r) { pid = r.project; });
+    if (!pid.is_nil()) {
+      data["project"] = pid.str();
+    }
+  }
   Event ev;
   ev.kind = std::move(kind);
   ev.job = job;
@@ -1008,6 +1045,7 @@ Controller::finish_job_(JobId id, JobState st, std::string message)
                      : std::string("job"),
                    id.str(), message);
   }
+  std::vector<std::string> scratch;
   _jobs.update(id, [&](JobRecord& r) {
     r.state = st;
     r.message = std::move(message);
@@ -1015,7 +1053,13 @@ Controller::finish_job_(JobId id, JobState st, std::string message)
     if (st == JobState::Finished) {
       r.progress = 1.0f;
     }
+    scratch.swap(r.scratch);
   });
+  // What was laid beside its inputs for it alone.
+  for (const auto& f : scratch) {
+    std::error_code ec;
+    fs::remove(f, ec);
+  }
   {
     std::lock_guard lk(_job_commands_mu);
     _withdrawn.erase(id);
@@ -1269,6 +1313,7 @@ Controller::engine_runs_(models::Capability c) const
     return _engine->supports(engine::kOpUpscaleImage);
   case Capability::PromptEnhance:
   case Capability::Intent:
+  case Capability::MicroAgent:
     return _engine->supports(engine::kOpChat);
   default:
     return false;
@@ -1856,6 +1901,7 @@ Controller::rename_asset(ProjectId pid, AssetId aid, std::string name)
     VALTZ_TRY(p->update_asset(aid, [&](project::Asset& r) {
       r.name = name;
       set_named(r, given);
+      set_short_named(r, false);
       return ok_status();
     }));
     post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
@@ -4977,7 +5023,362 @@ Controller::assistants() const
           {"video_every_now", video_every()},
           {"video_size", _video_size},
           {"memory_bandwidth_gbs", _hw.memory_bandwidth_gbs},
+          {"models", std::move(list)},
+          {"micro", micro_settings()}};
+}
+
+const models::ModelEntry*
+Controller::micro_model() const
+{
+  if (_micro_choice == "off") {
+    return nullptr;
+  }
+  const auto here = [&](const models::ModelEntry* m) {
+    return m && m->role == "micro" &&
+           _store->info(*m).state == models::InstallState::Installed;
+  };
+  if (!_micro_choice.empty()) {
+    if (const auto* m = _catalog.find(_micro_choice); here(m)) {
+      return m;
+    }
+  }
+  // Auto: the best ranked one here -- never a download of its own.
+  const models::ModelEntry* best = nullptr;
+  for (const auto* e : _catalog.serving(models::Capability::MicroAgent)) {
+    if (here(e) && (!best || e->rank > best->rank)) {
+      best = e;
+    }
+  }
+  return best;
+}
+
+Json
+Controller::micro_settings() const
+{
+  const auto* in_use = micro_model();
+  Json list = Json::array();
+  for (const auto* e : _catalog.serving(models::Capability::MicroAgent)) {
+    if (e->role != "micro") {
+      continue;
+    }
+    list.push_back({{"id", e->id},
+                    {"name", e->name},
+                    {"state", models::to_str(_store->info(*e).state)},
+                    {"disk_gb", e->disk_gb},
+                    {"min_ram_gb", e->min_ram_gb},
+                    {"license", e->license}});
+  }
+  return {{"model", _micro_choice},
+          {"using", in_use ? in_use->id : std::string()},
+          {"names", _micro_names},
+          {"refine", _micro_refine},
+          {"enhance", _micro_enhance},
           {"models", std::move(list)}};
+}
+
+Status
+Controller::set_micro(const Json& changes)
+{
+  if (!changes.is_object()) {
+    return make_error(Code::InvalidArgument, "micro settings: an object");
+  }
+  if (changes.contains("model")) {
+    const auto id = jget<std::string>(changes, "model", "");
+    if (!id.empty() && id != "off") {
+      const auto* m = _catalog.find(id);
+      if (!m) {
+        return make_error(Code::NotFound, msg::kUnknownModel,
+                          {{"model", id}});
+      }
+      if (m->role != "micro") {
+        return make_error(Code::InvalidArgument, msg::kNotAMicroAgent,
+                          {{"model", m->name}});
+      }
+    }
+  }
+  const fs::path file = _paths.support / "assistant.json";
+  Json j = read_settings(file);
+  Json micro = jget(j, "micro", Json::object());
+  if (changes.contains("model")) {
+    micro["model"] = jget<std::string>(changes, "model", "");
+    _micro_choice = micro["model"].get<std::string>();
+  }
+  for (const auto& [k, field] :
+       {std::pair{"names", &_micro_names},
+        std::pair{"refine", &_micro_refine},
+        std::pair{"enhance", &_micro_enhance}}) {
+    if (changes.contains(k)) {
+      *field = jget(changes, k, *field);
+      micro[k] = *field;
+    }
+  }
+  j["micro"] = micro;
+  VALTZ_TRY(write_settings(file, j));
+  post_("assistant.changed", JobId{}, {{"micro", micro_settings()}});
+  return ok_status();
+}
+
+void
+Controller::name_from_prompt_(ProjectId pid, project::Project& p,
+                              AssetId made)
+{
+  auto a = p.asset(made);
+  auto r = a.ok() ? p.recipe(a->recipe)
+                  : Result<project::Recipe>(a.error());
+  if (!r.ok()) {
+    return;
+  }
+  const auto in = std::ranges::find(r->inputs, std::string("prompt"),
+                                    &project::RecipeInput::role);
+  auto pa = in != r->inputs.end() ? p.asset(in->asset)
+                                  : Result<project::Asset>(r.error());
+  if (in == r->inputs.end() || !pa.ok() || !is_prompt(*pa) ||
+      is_named(*pa)) {
+    return;
+  }
+  const AssetId prompt = pa->id;
+  // Named by the micro agent before: by that name now, as a new asset is
+  // named -- made unique (" (2)").
+  if (is_short_named(*pa)) {
+    if (a->name != pa->name && p.rename_unique(made, pa->name, 48).ok()) {
+      post_("assets.changed", JobId{}, {{"project", pid},
+                                        {"asset", made},
+                                        {"reason", "renamed"}});
+    }
+    return;
+  }
+  if (!_micro_names || !micro_model()) {
+    return;
+  }
+  {
+    // Being named already (a Start after a Start): this one waits with
+    // the others.
+    std::lock_guard lk(_naming_mu);
+    if (auto it = _naming.find(prompt); it != _naming.end()) {
+      it->second.made.emplace_back(made, a->name);
+      return;
+    }
+    _naming[prompt] = Naming{pid, pa->name, {{made, a->name}}};
+  }
+  const JobId id = JobId::make();
+  // Its renames join the request's command: one undo with it.
+  if (project::Workspace* w = workspace_(pid)) {
+    if (const auto seq = w->undo().recording()) {
+      std::lock_guard lk(_job_commands_mu);
+      _job_commands[id] = seq;
+    }
+  }
+  auto text = p.read_text(prompt);
+  auto job = text.ok()
+      ? submit_micro_(
+            id, "Name the prompt", assist::micro_name_request(*text), {}, 32,
+            [this, id, prompt](std::optional<std::string> reply) {
+              Naming n;
+              {
+                std::lock_guard lk(_naming_mu);
+                auto it = _naming.find(prompt);
+                if (it == _naming.end()) {
+                  return;
+                }
+                n = std::move(it->second);
+                _naming.erase(it);
+              }
+              const std::string name =
+                  reply ? assist::micro_name(*reply) : std::string();
+              project::Project* p = project(n.project);
+              if (name.empty() || !p) {
+                return;
+              }
+              // Each still there and as it was named: the person's
+              // names, and assets undone away, left alone.
+              auto pa = p->asset(prompt);
+              const bool rename_prompt = pa.ok() && !is_named(*pa) &&
+                                         pa->name == n.was;
+              std::vector<AssetId> results;
+              for (const auto& [id2, was] : n.made) {
+                if (auto m = p->asset(id2); m.ok() && m->name == was) {
+                  results.push_back(id2);
+                }
+              }
+              if (!rename_prompt && results.empty()) {
+                return;
+              }
+              // The results first, made unique among the rest; the
+              // prompt -- a text, not counted -- by the same name.
+              auto undo = join_(n.project, id);
+              std::map<AssetId, std::pair<std::string, std::string>> named;
+              for (const auto& m : results) {
+                const auto was = std::ranges::find(
+                    n.made, m, &std::pair<AssetId, std::string>::first);
+                if (auto got = p->rename_unique(m, name, 48); got.ok()) {
+                  named[m] = {was->second, *got};
+                  post_("assets.changed", JobId{}, {{"project", n.project},
+                                                    {"asset", m},
+                                                    {"reason", "renamed"}});
+                }
+              }
+              // The layers that landed showing them -- named after them
+              // as they were then -- named so too.
+              if (auto all = p->assets(); all.ok() && !named.empty()) {
+                for (const auto& c : *all) {
+                  const auto renamed = [&](const project::Layer& l) {
+                    const auto it = l.source ? named.find(*l.source)
+                                             : named.end();
+                    return it != named.end() && l.name == it->second.first
+                               ? &it->second.second
+                               : nullptr;
+                  };
+                  const bool shows = std::ranges::any_of(
+                      c.layers, [&](const project::Layer& l) {
+                        return renamed(l) != nullptr;
+                      });
+                  if (!shows) {
+                    continue;
+                  }
+                  (void)p->update_asset(c.id, [&](project::Asset& r) {
+                    for (auto& l : r.layers) {
+                      if (const auto* to = renamed(l)) {
+                        l.name = *to;
+                      }
+                    }
+                    return ok_status();
+                  });
+                  post_("assets.changed", JobId{}, {{"project", n.project},
+                                                    {"asset", c.id},
+                                                    {"reason", "layers"}});
+                }
+              }
+              if (rename_prompt &&
+                  p->update_asset(prompt, [&](project::Asset& r) {
+                     r.name = name;
+                     set_short_named(r, true);
+                     return ok_status();
+                   }).ok()) {
+                post_("assets.changed", JobId{}, {{"project", n.project},
+                                                  {"asset", prompt},
+                                                  {"reason", "renamed"}});
+              }
+            })
+      : Result<JobId>(text.error());
+  if (!job.ok()) {
+    VALTZ_LOG_INFO("micro", "the prompt is not named: {}",
+                   job.error().message);
+    std::lock_guard lk(_naming_mu);
+    _naming.erase(prompt);
+  }
+}
+
+Result<std::string>
+Controller::ask_micro(std::string text,
+                      const std::vector<fs::path>& images,
+                      int max_new_tokens)
+{
+  std::vector<engine::JobInput> shown;
+  for (const auto& f : images) {
+    shown.push_back({"image", f, {}, {}});
+  }
+  auto said = std::make_shared<std::promise<std::optional<std::string>>>();
+  auto got = said->get_future();
+  VALTZ_TRY(submit_micro_(JobId::make(), "Ask", std::move(text),
+                          std::move(shown), max_new_tokens,
+                          [said](std::optional<std::string> r) {
+                            said->set_value(std::move(r));
+                          }));
+  auto r = got.get();
+  if (!r) {
+    return make_error(Code::Engine, "the micro agent said nothing");
+  }
+  return *r;
+}
+
+bool
+Controller::wait_micro(int timeout_ms)
+{
+  const auto until = std::chrono::steady_clock::now() +
+                     std::chrono::milliseconds(timeout_ms);
+  for (;;) {
+    {
+      std::lock_guard lk(_naming_mu);
+      if (_naming.empty()) {
+        return true;
+      }
+    }
+    if (std::chrono::steady_clock::now() >= until) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+}
+
+Result<JobId>
+Controller::submit_micro_(JobId id, std::string title, std::string text,
+                          std::vector<engine::JobInput> images,
+                          int max_new_tokens, MicroReply reply)
+{
+  const auto* m = micro_model();
+  if (!m || !engine_runs_(models::Capability::MicroAgent)) {
+    return make_error(Code::Unsupported, msg::kNoMicroAgent);
+  }
+  VALTZ_ASSIGN(engine::ModelRef ref, resolve_model_(*m, false));
+  engine::JobSpec spec;
+  spec.id = id;
+  spec.op = std::string(engine::kOpChat);
+  spec.model = ref;
+  // Its own sampler (catalog engine.vpipe.sampling: Liquid AI's), kept
+  // loaded as the helper is, no drafter, a context its tasks fill a
+  // fraction of; without thinking -- a line or three sections.
+  const Json vp = jget(m->engine, "vpipe", Json::object());
+  spec.params = {{"mtp", false},
+                 {"sampling", jget(vp, "sampling", Json::object())},
+                 {"keep_loaded", _assistant_keep},
+                 {"context_tokens", 16384},
+                 {"text", std::move(text)},
+                 {"disable_thinking", true},
+                 {"max_new_tokens", max_new_tokens}};
+  if (const auto d = jget<std::string>(vp, "compute_dtype", "");
+      !d.empty()) {
+    spec.params["compute_dtype"] = d;
+  }
+  spec.inputs = std::move(images);
+  JobRecord rec;
+  rec.id = id;
+  rec.op = std::string(engine::kOpChat);
+  rec.purpose = "micro";
+  rec.title = std::move(title);
+  rec.created_ms = project::now_ms();
+  _jobs.add(rec);
+  auto said = std::make_shared<std::string>();
+  engine::JobSink sink = [this, said, reply = std::move(reply)](
+                             const engine::JobEvent& ev) {
+    switch (ev.kind) {
+    case engine::JobEventKind::Started:
+      _jobs.update(ev.job,
+                   [](JobRecord& r) { r.state = JobState::Running; });
+      break;
+    case engine::JobEventKind::Output:
+      *said = ev.text;
+      break;
+    case engine::JobEventKind::Finished:
+      VALTZ_LOG_INFO("micro", "job {} said: {}", ev.job.str(),
+                     std::string(utf8_prefix(one_line(*said), 200)));
+      reply(said->empty() ? std::nullopt
+                          : std::optional<std::string>(*said));
+      finish_job_(ev.job, JobState::Finished, "");
+      break;
+    case engine::JobEventKind::Failed:
+      reply(std::nullopt);
+      finish_job_(ev.job, JobState::Failed, ev.text);
+      break;
+    case engine::JobEventKind::Cancelled:
+      reply(std::nullopt);
+      finish_job_(ev.job, JobState::Cancelled, "");
+      break;
+    default:
+      break;
+    }
+  };
+  VALTZ_TRY(_engine->submit(std::move(spec), std::move(sink)));
+  return id;
 }
 
 std::string
@@ -5010,9 +5411,10 @@ Controller::ReplyForm::apply(std::string prompt) const
 Result<engine::JobSpec>
 Controller::chat_spec_(JobId id, std::string text,
                        std::vector<engine::JobInput> images,
-                       int max_new_tokens) const
+                       int max_new_tokens,
+                       const models::ModelEntry* model) const
 {
-  const auto* m = assistant_model();
+  const auto* m = model ? model : assistant_model();
   if (!m) {
     return make_error(Code::Unsupported, msg::kNoAssistantModel);
   }
@@ -5200,11 +5602,17 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
                          ReplyForm form)
 {
   // Written by this Mac's assistant -- or, in a fleet, by a member's
-  // when this Mac has none or is busy (DESIGN §11).
-  auto spec = chat_spec_(id, text, images, max_new_tokens);
+  // when this Mac has none or is busy (DESIGN §11). An enhance by the
+  // micro agent where Settings ask (DESIGN §9c): here, never a member's.
+  const models::ModelEntry* micro =
+      purpose == "enhance" && _micro_enhance ? micro_model() : nullptr;
+  auto spec = chat_spec_(id, text, images, max_new_tokens, micro);
   const bool here = spec.ok() && _engine->supports(engine::kOpChat);
-  auto members = fleet_candidates_(std::string(engine::kOpChat), {}, here);
+  auto members =
+      micro ? std::vector<Json>()
+            : fleet_candidates_(std::string(engine::kOpChat), {}, here);
   const bool fleet_only =
+      !micro &&
       offload_policy_(engine::kOpChat, "") == fleet::kOffloadAlways;
   if (fleet_only && members.empty()) {
     return make_error(Code::Unsupported, msg::kFleetOnlyNoMember);
@@ -5619,14 +6027,13 @@ Controller::clip_request_(
     er.video_mode = "Ref2VA";
     // Past 768P, drafted and refined on another model (FL2VA, which reads
     // no references): the reply tells it in words too, the refine's
-    // segment (DESIGN §4q). Not a continuation: made at its size.
+    // segment (DESIGN §4q) -- a continuation's too, regenerated as the
+    // clip it continues was (DESIGN §4e).
     {
       const Json rg = jget(jget(m.engine, "vpipe", Json::object()),
                            "regenerate", Json());
       int w = 0, h = 0;
-      const auto* re = rg.is_object() && !req.continue_from
-                           ? refiner_of_(m)
-                           : nullptr;
+      const auto* re = rg.is_object() ? refiner_of_(m) : nullptr;
       const auto base = re ? jget<std::string>(
                                  jget(jget(re->engine, "vpipe",
                                            Json::object()),
@@ -5728,6 +6135,25 @@ Controller::clip_request_(
     task(reused, "audio reuse");
     task(heard, "audio reference");
     er.video_tasks = tasks;
+  } else if (p && req.continue_from &&
+             jget(jget(vp, "continuation", Json::object()), "guide", Json())
+                 .is_object()) {
+    // CONTINUED through the clip's tail (FL2VA's guide, DESIGN §4e): a
+    // clip from words that picks up where that one ends -- told so, and
+    // shown a frame of it; what it showed is not to be written again.
+    er.video_mode = "T2VA";
+    auto c = p->asset(*req.continue_from);
+    std::string line = std::format(
+        "The target video CONTINUES the clip \"{}\": it picks up exactly "
+        "where that clip ends, the same subjects, place, light, camera and "
+        "sound carried on -- write what happens next, not what the clip "
+        "already showed",
+        c.ok() ? c->name : std::string());
+    if (show(*req.continue_from)) {
+      line += std::format(" (a frame of it: image {} shown above)",
+                          images.size());
+    }
+    er.references.push_back(std::move(line));
   } else if (p && req.base && req.last &&
              m.has(models::Capability::ImageToVideo) &&
              jget(vp, "first_frame", false) &&
@@ -5968,10 +6394,25 @@ Controller::capture_prompt_(project::Project& p, ProjectId pid,
                                                   deps->empty()) {
         VALTZ_TRY(retext_prompt_(p, *from, text));
         if (given.empty() && !is_named(*a)) {
-          (void)p.rename_asset(*from, name);
+          (void)p.update_asset(*from, [&](project::Asset& r) {
+            r.name = name;
+            set_short_named(r, false);
+            return ok_status();
+          });
         }
         VALTZ_TRY(give(*a));
         told(*from, "edited");
+        return pinned(*from);
+      }
+    }
+  }
+  // A text that is not a prompt -- a transcript, a summary -- given as
+  // the prompt (an Atlas generate node's) with these very words: itself,
+  // pinned, so what was made is made from it.
+  if (from) {
+    auto a = p.asset(*from);
+    if (a.ok() && a->kind == project::AssetKind::Text && !is_prompt(*a)) {
+      if (auto cur = p.read_text(*from); cur.ok() && *cur == text) {
         return pinned(*from);
       }
     }
@@ -6319,7 +6760,12 @@ Controller::generate_image(GenerateImageRequest req)
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
-  return submit_build_(req.project, a.id, a.name);
+  VALTZ_ASSIGN(JobId job, submit_build_(req.project, a.id, a.name));
+  // Named after its prompt: the micro agent's short name (DESIGN §9c).
+  if (req.name.empty()) {
+    name_from_prompt_(req.project, *p, a.id);
+  }
+  return job;
 }
 
 Result<JobId>
@@ -6358,13 +6804,21 @@ Controller::generate_video(GenerateVideoRequest req)
   if (words.empty()) {
     return make_error(Code::InvalidArgument, msg::kPromptEmpty);
   }
-  const bool refs = !req.references.empty() || req.continue_from;
+  bool refs = !req.references.empty() || req.continue_from;
   if (refs && (req.first || req.last)) {
     return make_error(Code::InvalidArgument, msg::kVideoFirstOrReferences);
   }
   // With references, Auto's video `edit` pick (Ref2VA); else its generate.
   const char* op = refs ? "edit" : "generate";
   const models::ModelEntry* m = nullptr;
+  const auto auto_pick = [&](std::string_view o) {
+    for (const auto& a : auto_models()) {
+      if (a.modality == "video" && a.op == o && !a.chosen.empty()) {
+        return _catalog.find(a.chosen);
+      }
+    }
+    return static_cast<const models::ModelEntry*>(nullptr);
+  };
   if (!req.model.empty() && req.model != "auto") {
     m = _catalog.find(req.model);
     if (!m) {
@@ -6372,12 +6826,33 @@ Controller::generate_video(GenerateVideoRequest req)
                         {{"model", req.model}});
     }
   } else {
-    for (const auto& a : auto_models()) {
-      if (a.modality == "video" && a.op == op && !a.chosen.empty()) {
-        m = _catalog.find(a.chosen);
-        break;
+    m = auto_pick(op);
+  }
+  // A clip continued THROUGH its tail (DESIGN §4e): on a model that
+  // takes a guide (catalog `continuation.guide`: FL2VA) -- chosen, or
+  // Auto's clip model where none reads references -- the tail's latent
+  // frames and sound pinned over the new clip's first frames, which
+  // redo them; no references beside it.
+  const auto guide_of = [](const models::ModelEntry* e) {
+    return e ? jget(jget(jget(e->engine, "vpipe", Json::object()),
+                         "continuation", Json::object()),
+                    "guide", Json())
+             : Json();
+  };
+  Json guide;
+  const bool chosen = !req.model.empty() && req.model != "auto";
+  if (req.continue_from && req.references.empty()) {
+    if (chosen && guide_of(m).is_object()) {
+      guide = guide_of(m);
+    } else if (!chosen && (!m || !runs_soon(*m, "video", "edit"))) {
+      if (const auto* g = auto_pick("generate"); guide_of(g).is_object()) {
+        m = g;
+        guide = guide_of(g);
       }
     }
+  }
+  if (guide.is_object()) {
+    refs = false;
   }
   if (refs && (!m || !runs_soon(*m, "video", "edit"))) {
     return make_error(Code::NotFound, msg::kNoReferenceModel);
@@ -6413,10 +6888,28 @@ Controller::generate_video(GenerateVideoRequest req)
   auto up = [align](int v) {
     return std::max(align, (v + align - 1) / align * align);
   };
-  const int width = up(req.width > 0 ? req.width
-                                     : jget(defaults, "width", 960));
-  const int height = up(req.height > 0 ? req.height
-                                       : jget(defaults, "height", 544));
+  // Guided, at the size of the clip it continues -- the plain clip a
+  // guide or a timeline ends on, whose latents those are: its tail lies
+  // on the new clip's own frames.
+  int ask_w = req.width, ask_h = req.height;
+  if (guide.is_object()) {
+    VALTZ_ASSIGN(project::Asset c, p->asset(*req.continue_from));
+    if (c.kind != project::AssetKind::Video) {
+      return make_error(Code::InvalidArgument, msg::kContinueNeedsClip);
+    }
+    VALTZ_ASSIGN(auto cc, continued_clip_(req.project, *p, c,
+                                          jget<std::int64_t>(guide, "frames",
+                                                             22)));
+    project::Asset shown = c;
+    if (cc) {
+      VALTZ_ASSIGN(shown, p->asset(cc->clip));
+    }
+    VALTZ_ASSIGN(media::PixelSize own, own_frame_(*p, shown, 0));
+    ask_w = own.width;
+    ask_h = own.height;
+  }
+  const int width = up(ask_w > 0 ? ask_w : jget(defaults, "width", 960));
+  const int height = up(ask_h > 0 ? ask_h : jget(defaults, "height", 544));
   const Json grid = jget(vp, "frame_grid", Json::object());
   const int step = std::max(1, jget(grid, "step", 1));
   const int offset = std::max(1, jget(grid, "offset", 1));
@@ -6424,6 +6917,11 @@ Controller::generate_video(GenerateVideoRequest req)
   if (const int most = jget(vp, "max_frames", 0); most > 0) {
     frames = std::min(frames, most);
   }
+  // Guided, the length asked is what comes AFTER the tail it redoes:
+  // the two together on the grid.
+  const std::int64_t overlap =
+      guide.is_object() ? jget<std::int64_t>(guide, "frames", 22) : 0;
+  frames += static_cast<int>(overlap);
   frames = frames <= offset
                ? offset
                : offset + (frames - offset + step - 1) / step * step;
@@ -6436,24 +6934,18 @@ Controller::generate_video(GenerateVideoRequest req)
   // size, as it always was. Whether the refine fits is vpipe's preflight
   // to say, at the graph's launch: refused, nothing is drafted. A clip
   // from references (Ref2VA) is drafted by its model and refined by the
-  // refiner's (FL2VA); a continuation is made at its size (its seam is
-  // matched to a guide of the clip's own size).
+  // refiner's (FL2VA).
   const Json rg = jget(vp, "regenerate", Json());
   const int above = jget(rg, "above", 768);
   const bool past = rg.is_object() && std::min(width, height) > above;
-  const bool continues = req.continue_from.has_value();
+  // A continuation too: drafted from the clip's own latents -- a
+  // regenerated clip keeps its draft's -- and regenerated as it was.
   const models::ModelEntry* refiner =
-      past && !continues && req.regenerate.value_or(true)
-          ? refiner_of_(*m)
-          : nullptr;
+      past && req.regenerate.value_or(true) ? refiner_of_(*m) : nullptr;
   if (req.regenerate.value_or(false) && !refiner) {
     if (!past) {
       return make_error(Code::InvalidArgument, msg::kRegenerateNotPast,
                         {{"edge", std::to_string(above)}});
-    }
-    if (continues) {
-      return make_error(Code::InvalidArgument,
-                        msg::kRegenerateNoContinuation);
     }
     return make_error(Code::NotFound, msg::kRegenerateNotHere,
                       {{"model", m->name}});
@@ -6526,6 +7018,11 @@ Controller::generate_video(GenerateVideoRequest req)
   if (!req.preview) {
     r.params["preview"] = false;
   }
+  // Its latents kept with it, asked for where the family keeps them
+  // (DESIGN §4e): what a continuation of it may pick up from.
+  if (req.keep_latents && jget(vp, "keeps_latents", false)) {
+    r.params["keep_latents"] = true;
+  }
   // Regenerated: the draft's size, the refiner, and its arithmetic --
   // recorded, so a rebuild refines alike.
   if (refiner) {
@@ -6571,6 +7068,13 @@ Controller::generate_video(GenerateVideoRequest req)
       r.params["base_crop"] = media::to_json(req.first_crop);
     }
   }
+  // Guided: the clip it continues, its tail redone in the first
+  // `frames` (a landing marks them out: their layer starts after).
+  if (guide.is_object()) {
+    r.params["continue_guide"] = {{"frames", overlap},
+                                  {"latents", jget(guide, "latents", 7)}};
+    r.inputs.push_back({"continue", *req.continue_from, 0});
+  }
   if (refs) {
     VALTZ_ASSIGN(Json media, video_references_(*p, req, *m, fps));
     r.params["reference_media"] = media["list"];
@@ -6591,13 +7095,37 @@ Controller::generate_video(GenerateVideoRequest req)
     }
     r.params["prompt"] = templated(*m, assist::tag_inline(pf.text, tags));
   }
+  // From the latents the clip kept: they cover its tail, or it is
+  // refused now -- as it is built, they are carried.
+  if (req.continue_from && req.continue_latents) {
+    r.params["continue_latents"] = true;
+    VALTZ_TRY(latent_carry_(req.project, *p, r, *req.continue_from));
+  }
   // The words the refine reads, recorded so a rebuild refines alike.
+  // Made by rule where none were given: the micro agent rewrites them in
+  // their place (DESIGN §9c), the reference pictures shown to it, a step
+  // of the request -- its build held for it, going on with the rule's
+  // words if it says nothing usable.
+  std::optional<JobId> rewrite;
   if (refiner) {
     const auto [refine, from] = refine_words_(
         *m, *refiner, segs, jget<std::string>(r.params, "prompt", ""));
     if (!refine.empty()) {
       r.params["regenerate_prompt"] = refine;
       r.params["regenerate_prompt_from"] = from;
+    }
+    // Only where it has a picture to look at.
+    const auto pictured = [&] {
+      for (const auto& e : jget(r.params, "reference_media",
+                                Json::array())) {
+        if (jget<std::string>(e, "kind", "") == "image") {
+          return true;
+        }
+      }
+      return false;
+    };
+    if (from == "made" && _micro_refine && micro_model() && pictured()) {
+      rewrite = JobId::make();
     }
   }
   // Made from its prompt as well as its media: the prompt, captured --
@@ -6615,7 +7143,76 @@ Controller::generate_video(GenerateVideoRequest req)
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
-  return submit_build_(req.project, a.id, a.name);
+  VALTZ_ASSIGN(JobId job, submit_build_(req.project, a.id, a.name, {},
+                                        std::nullopt, rewrite));
+  if (rewrite) {
+    // Its writes join the request's command; the pictures as the model
+    // numbers them (<Picture 1>, ...), each as it looks.
+    if (project::Workspace* w = workspace_(req.project)) {
+      if (const auto seq = w->undo().recording()) {
+        std::lock_guard lk(_job_commands_mu);
+        _job_commands[*rewrite] = seq;
+      }
+    }
+    std::vector<engine::JobInput> pictures;
+    for (const auto& e : jget(r.params, "reference_media", Json::array())) {
+      const auto id = AssetId::parse(jget<std::string>(e, "asset", ""));
+      if (jget<std::string>(e, "kind", "") != "image" || !id) {
+        continue;
+      }
+      if (auto t = thumbnail(req.project, *id, 512); t.ok()) {
+        pictures.push_back({"image", *t, {}, {}});
+      }
+    }
+    const ProjectId pid = req.project;
+    const AssetId clip = a.id;
+    const JobId wid = *rewrite;
+    // Asked what each picture shows; Valtz puts that in the labels'
+    // place, the prompt's action kept as it is.
+    const int shown = static_cast<int>(pictures.size());
+    const std::string read = jget<std::string>(r.params, "prompt", "");
+    const auto landed = [this, pid, clip, wid, shown,
+                         read](std::optional<std::string> reply) {
+      const std::string w =
+          reply ? assist::micro_refine_words(
+                      read, assist::micro_pictures(*reply, shown))
+                : std::string();
+      project::Project* p = project(pid);
+      auto ca = p ? p->asset(clip)
+                  : Result<project::Asset>(
+                        make_error(Code::NotFound, "closed"));
+      auto cr = ca.ok() ? p->recipe(ca->recipe)
+                        : Result<project::Recipe>(ca.error());
+      if (w.empty() || !cr.ok()) {
+        return;
+      }
+      auto undo = join_(pid, wid);
+      project::Recipe nr = std::move(*cr);
+      nr.params["regenerate_prompt"] = w;
+      nr.params["regenerate_prompt_from"] = "micro";
+      if (auto st = p->set_recipe(clip, std::move(nr)); !st.ok()) {
+        VALTZ_LOG_WARN("micro", "the 2K pass's words not kept: {}",
+                       st.error().message);
+      }
+    };
+    auto asked =
+        shown == 0
+            ? Result<JobId>(make_error(Code::NotFound, "no picture shown"))
+            : submit_micro_(wid, "Say what the references show",
+                            assist::micro_refine_request(shown),
+                            std::move(pictures), 256, landed);
+    if (!asked.ok()) {
+      // Not asked after all: the build goes on with the rule's words.
+      VALTZ_LOG_INFO("micro", "the 2K pass's words by rule: {}",
+                     asked.error().message);
+      release_held_(wid, JobState::Finished);
+    }
+  }
+  // Named after its prompt: the micro agent's short name (DESIGN §9c).
+  if (req.name.empty()) {
+    name_from_prompt_(req.project, *p, a.id);
+  }
+  return job;
 }
 
 Result<std::string>
@@ -7756,7 +8353,12 @@ Controller::generate_audio(GenerateAudioRequest req)
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
-  return submit_build_(req.project, a.id, a.name);
+  VALTZ_ASSIGN(JobId job, submit_build_(req.project, a.id, a.name));
+  // Named after its prompt: the micro agent's short name (DESIGN §9c).
+  if (req.name.empty()) {
+    name_from_prompt_(req.project, *p, a.id);
+  }
+  return job;
 }
 
 bool
@@ -7851,7 +8453,12 @@ Controller::generate_speech_(GenerateAudioRequest& req,
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
-  return submit_build_(req.project, a.id, a.name);
+  VALTZ_ASSIGN(JobId job, submit_build_(req.project, a.id, a.name));
+  // Named after its prompt: the micro agent's short name (DESIGN §9c).
+  if (req.name.empty()) {
+    name_from_prompt_(req.project, p, a.id);
+  }
+  return job;
 }
 
 Result<JobId>
@@ -7954,7 +8561,12 @@ Controller::drama_speech_(GenerateAudioRequest& req,
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
-  return submit_build_(req.project, a.id, a.name);
+  VALTZ_ASSIGN(JobId job, submit_build_(req.project, a.id, a.name));
+  // Named after its prompt: the micro agent's short name (DESIGN §9c).
+  if (req.name.empty()) {
+    name_from_prompt_(req.project, p, a.id);
+  }
+  return job;
 }
 
 std::optional<AssetId>
@@ -8048,7 +8660,7 @@ Controller::release_held_(JobId job, JobState st)
         ++it;
         continue;
       }
-      if (st != JobState::Finished) {
+      if (st != JobState::Finished && !it->second.soft.contains(job)) {
         fail.emplace_back(it->first, std::move(it->second));
       } else if (it->second.after.empty()) {
         go.emplace_back(it->first, std::move(it->second));
@@ -8171,11 +8783,307 @@ Controller::build_asset(ProjectId pid, AssetId aid)
   return submit_build_(pid, aid, a.name);
 }
 
+namespace {
+
+// A tensor file's shape, as vpipe's save-tensor writes it: "VPTENSOR",
+// u32 version, dtype, rank and a zero, u64 count, the rank's i64 dims,
+// then its bytes and its sideband. Empty when it is not one.
+std::vector<std::int64_t>
+tensor_shape(const fs::path& path)
+{
+  std::ifstream f(path, std::ios::binary);
+  char magic[8] = {};
+  std::uint32_t head[4] = {};
+  std::uint64_t count = 0;
+  if (!f.read(magic, 8) || std::string_view(magic, 8) != "VPTENSOR" ||
+      !f.read(reinterpret_cast<char*>(head), sizeof head) ||
+      !f.read(reinterpret_cast<char*>(&count), sizeof count) ||
+      head[2] == 0 || head[2] > 8) {
+    return {};
+  }
+  std::vector<std::int64_t> dims(head[2]);
+  if (!f.read(reinterpret_cast<char*>(dims.data()),
+              static_cast<std::streamsize>(dims.size() * 8))) {
+    return {};
+  }
+  return dims;
+}
+
+}  // namespace
+
+std::optional<Json>
+Controller::latent_windows(std::int64_t frames, std::int64_t end,
+                           std::int64_t tail, std::int64_t video_latents,
+                           std::int64_t audio_latents)
+{
+  // MiniMax H3's video VAE: 17-frame chunks of five latent frames, a
+  // clip of 17n + 5 frames 5n + 2 of them. A tail is whole chunks from a
+  // chunk's first frame, else its latent frames were made with frames
+  // it does not hold.
+  constexpr std::int64_t kChunk = 17, kChunkLatents = 5;
+  constexpr std::int64_t kEnd = 5, kEndLatents = 2;
+  if (tail < kEnd || (tail - kEnd) % kChunk != 0) {
+    return std::nullopt;
+  }
+  const std::int64_t start = end - tail;
+  if (start < 0 || end > frames || start % kChunk != 0) {
+    return std::nullopt;
+  }
+  const std::int64_t v0 = start / kChunk * kChunkLatents;
+  const std::int64_t vn = (tail - kEnd) / kChunk * kChunkLatents + kEndLatents;
+  if (v0 + vn > video_latents) {
+    return std::nullopt;
+  }
+  Json out = {{"video", {{"start", v0}, {"count", vn}}}};
+  // The soundtrack at 40 latents a second, 5/3 a frame at 24, on the
+  // clip's own boundaries.
+  const std::int64_t a0 = std::llround(static_cast<double>(start) * 5 / 3);
+  const std::int64_t a1 = std::min(
+      audio_latents, std::llround(static_cast<double>(end) * 5 / 3));
+  if (a1 > a0) {
+    out["audio"] = {{"start", a0}, {"count", a1 - a0}};
+  }
+  return out;
+}
+
+std::optional<Controller::KeptLatent>
+Controller::kept_latent_(project::Project& p, const Json& latents)
+{
+  if (!latents.is_object()) {
+    return std::nullopt;
+  }
+  // A blob of the project, where it is (the working copy's, else the
+  // package's).
+  const auto file = [&](const char* k) {
+    const auto b = jget(jget(latents, k, Json::object()), "blob",
+                        project::BlobRef{});
+    std::error_code ec;
+    fs::path f = b.empty() ? fs::path() : p.blobs().path_of(b);
+    return !f.empty() && fs::is_regular_file(f, ec) ? f : fs::path();
+  };
+  KeptLatent k;
+  k.video = file("video");
+  k.shape = k.video.empty() ? std::vector<std::int64_t>{}
+                            : tensor_shape(k.video);
+  if (k.shape.size() != 4) {
+    return std::nullopt;
+  }
+  if (const fs::path a = file("audio"); !a.empty()) {
+    if (auto sh = tensor_shape(a); sh.size() == 3) {
+      k.audio = a;
+      k.audio_shape = std::move(sh);
+    }
+  }
+  return k;
+}
+
+Json
+Controller::keep_latents_(project::Project& p, const Json& files)
+{
+  Json out = Json::object();
+  if (!files.is_object()) {
+    return out;
+  }
+  for (const char* k : {"video", "audio"}) {
+    const fs::path from = jget<std::string>(files, k, "");
+    std::error_code ec;
+    if (from.empty() || !fs::is_regular_file(from, ec)) {
+      continue;
+    }
+    const auto shape = tensor_shape(from);
+    auto b = p.blobs().ingest_file(from);
+    fs::remove(from, ec);
+    if (!b.ok()) {
+      VALTZ_LOG_WARN("build", "a clip's {} latent not kept: {}", k,
+                     b.error().message);
+      continue;
+    }
+    out[k] = {{"blob", *b}, {"shape", shape}};
+  }
+  // A soundtrack's alone carries nothing.
+  if (!out.contains("video")) {
+    out = Json::object();
+  }
+  return out;
+}
+
+Result<Controller::LatentCarry>
+Controller::latent_carry_(ProjectId pid, project::Project& p,
+                          const project::Recipe& r, AssetId continued)
+{
+  // FL2VA's guide takes its catalog's frames; Ref2VA's reference the
+  // tail it reads.
+  const Json guide = jget(r.params, "continue_guide", Json());
+  const bool guided = guide.is_object();
+  std::int64_t tail = 0;
+  Json entry = Json::object();
+  if (guided) {
+    tail = jget<std::int64_t>(guide, "frames", 22);
+  } else {
+    for (const auto& e : jget(r.params, "reference_media", Json::array())) {
+      if (jget<std::string>(e, "role", "") == "continue") {
+        tail = jget<std::int64_t>(e, "tail_frames", 0);
+        entry = e;
+      }
+    }
+  }
+  VALTZ_ASSIGN(project::Asset a, p.asset(continued));
+  VALTZ_ASSIGN(auto cc, continued_clip_(pid, p, a, tail));
+  std::string name = a.name;
+  if (cc) {
+    if (auto c = p.asset(cc->clip); c.ok()) {
+      name = c->name;
+    }
+  }
+  const auto refused = [&](const Message& why) {
+    return make_error(Code::Unsupported, why, {{"clip", name}});
+  };
+  const auto kept = cc ? kept_latent_(p, cc->latents) : std::nullopt;
+  if (!kept || tail <= 0) {
+    return refused(msg::kNoKeptLatents);
+  }
+  auto win = latent_windows(cc->frames, cc->end, tail, kept->shape[1],
+                            kept->audio.empty() ? 0 : kept->audio_shape[2]);
+  if (!win) {
+    return refused(msg::kLatentsDoNotFit);
+  }
+  const models::ModelEntry* m = _catalog.find(r.model);
+  const Json vp = m ? jget(m->engine, "vpipe", Json::object())
+                    : Json::object();
+  if (guided) {
+    // Pinned over the new clip's own frames: the latent the size the
+    // model makes it at (a regenerated clip's draft's).
+    const int align = std::max(16, jget(vp, "align", 32));
+    const Json d = jget(r.params, "draft", Json());
+    const Json& sz = d.is_object() ? d : r.params;
+    const auto up = [align](int v) { return (v + align - 1) / align * align; };
+    if (kept->shape[2] * 16 != up(jget(sz, "height", 0)) ||
+        kept->shape[3] * 16 != up(jget(sz, "width", 0))) {
+      return refused(msg::kLatentsDoNotFit);
+    }
+  } else {
+    // A port more for the video rows; the soundtrack's take the sound's
+    // port -- the encoder's ports permitting.
+    int ports = 0;
+    for (const auto& e : jget(r.params, "reference_media", Json::array())) {
+      if (jget<std::string>(e, "route", "") == "port") {
+        ports += jget(e, "audio", false) ? 2 : 1;
+      }
+    }
+    if (ports + 1 > jget(jget(vp, "references", Json::object()), "ports",
+                         6)) {
+      return refused(msg::kLatentsNoPort);
+    }
+    if (!jget(entry, "audio", false)) {
+      win->erase("audio");
+    }
+  }
+  return LatentCarry{*kept, *win, cc->clip};
+}
+
+Result<Json>
+Controller::carry_latents_(ProjectId pid, project::Project& p,
+                           const project::Recipe& r,
+                           const std::vector<project::ResolvedInput>& inputs,
+                           engine::JobSpec& spec,
+                           std::vector<std::string>& scratch)
+{
+  const auto in = std::ranges::find(inputs, std::string("continue"),
+                                    &project::ResolvedInput::role);
+  if (in == inputs.end()) {
+    return Json::object();
+  }
+  // FL2VA's guide reads the tail's latents -- encoded in its graph when
+  // none were kept, unless they were asked for; Ref2VA's reference its
+  // pixels, the latents beside only when asked for.
+  const bool guided = jget(r.params, "continue_guide", Json()).is_object();
+  const bool asked = jget(r.params, "continue_latents", false);
+  Json out = {{"latent", guided ? "encoded" : "pixels"}};
+  if (!guided && !asked) {
+    return out;
+  }
+  auto plan = latent_carry_(pid, p, r, in->asset);
+  if (!plan.ok()) {
+    if (asked) {
+      return plan.error();
+    }
+    return out;
+  }
+  Json& win = plan->windows;
+  // Beside the job's other files, for it alone.
+  for (const auto& [role, w, from] :
+       {std::tuple{"continue_latent", "video", plan->kept.video},
+        std::tuple{"continue_audio_latent", "audio", plan->kept.audio}}) {
+    if (from.empty() || !win.contains(w)) {
+      win.erase(w);
+      continue;
+    }
+    const fs::path to = spec.output_dir / std::format("{}-{}.vpt",
+                                                      spec.id.str(), role);
+    std::error_code ec;
+    fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+      if (asked) {
+        return make_error(Code::Io, ec.message());
+      }
+      return out;
+    }
+    scratch.push_back(to.string());
+    VALTZ_ASSIGN(ContentHash h, hash_file(to));
+    spec.inputs.push_back({role, to, h, {}});
+  }
+  spec.params["continue_latent"] = win;
+  return Json{{"latent", "kept"},
+              {"clip", plan->clip.str()},
+              {"windows", win}};
+}
+
+Result<Json>
+Controller::kept_latents(ProjectId pid, AssetId asset,
+                         const std::vector<std::int64_t>& tails)
+{
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(asset));
+  // A composition: the clip a continuation of it would carry, by
+  // FL2VA's 22-frame guide.
+  VALTZ_ASSIGN(auto cc, continued_clip_(pid, *p, a, 22));
+  Json out = {{"kept", false}, {"fits", Json::array()}};
+  const auto k = cc ? kept_latent_(*p, cc->latents) : std::nullopt;
+  for (const auto tail : tails) {
+    bool fits = false;
+    if (k) {
+      auto at = continued_clip_(pid, *p, a, tail);
+      fits = at.ok() && *at && (*at)->clip == cc->clip &&
+             latent_windows((*at)->frames, (*at)->end, tail, k->shape[1],
+                            k->audio.empty() ? 0 : k->audio_shape[2]);
+    }
+    out["fits"].push_back(fits);
+  }
+  if (!cc) {
+    return out;
+  }
+  out["clip"] = cc->clip.str();
+  out["frames"] = cc->frames;
+  out["end"] = cc->end;
+  if (k) {
+    out["kept"] = true;
+    out["video"] = {{"file", k->video.string()}, {"shape", k->shape}};
+    if (!k->audio.empty()) {
+      out["audio"] = {{"file", k->audio.string()},
+                      {"shape", k->audio_shape}};
+    }
+  }
+  return out;
+}
+
 Result<JobId>
 Controller::submit_build_(
     ProjectId pid, AssetId aid, std::string title,
     std::vector<std::pair<std::string, AssetId>> companions,
-    std::optional<JobId> reuse)
+    std::optional<JobId> reuse, std::optional<JobId> words)
 {
   project::Project* p = project(pid);
   if (!p) {
@@ -8197,7 +9105,12 @@ Controller::submit_build_(
   }
   // An input still being made (a voice's transcript): held until it is.
   if (!reuse) {
-    HeldBuild h{pid, aid, title, companions, {}, {}};
+    HeldBuild h{pid, aid, title, companions, {}, {}, {}};
+    if (words) {
+      h.after.insert(*words);
+      h.soft.insert(*words);
+      h.names.push_back("its words (the micro agent)");
+    }
     for (const auto& in : r.inputs) {
       auto ia = p->asset(in.asset);
       if (!ia.ok() || ia->origin != project::Origin::Derived ||
@@ -8367,6 +9280,15 @@ Controller::submit_build_(
     spec.inputs.push_back(std::move(ji));
   }
 
+  // A continuation's clip carried as the latents it kept, where it can
+  // be (DESIGN §4e).
+  Json carried = Json::object();
+  std::vector<std::string> scratch;
+  if (r.op == engine::kOpGenerateVideo) {
+    VALTZ_ASSIGN(carried, carry_latents_(pid, *p, r, inputs, spec,
+                                         scratch));
+  }
+
   // Its phase clock, with how the last of its kind went.
   {
     const double frames = std::max(1, jget(r.params, "frames", 1));
@@ -8390,6 +9312,8 @@ Controller::submit_build_(
   rec.recipe = r;
   rec.inputs = inputs;
   rec.rendered_base = rendered_base;
+  rec.carried = carried;
+  rec.scratch = scratch;
   rec.created_ms = project::now_ms();
   if (reuse) {
     // Held until now: listed since it was asked for.
@@ -8397,6 +9321,8 @@ Controller::submit_build_(
       j.recipe = rec.recipe;
       j.inputs = rec.inputs;
       j.rendered_base = rec.rendered_base;
+      j.carried = rec.carried;
+      j.scratch = rec.scratch;
     });
   } else {
     _jobs.add(rec);
@@ -8519,6 +9445,15 @@ Controller::resolve_build_(const std::string& model, const Json& params,
     if (jget(t, "fast_decoder", false)) {
       VALTZ_ASSIGN(ref.fast_decoder,
                    file_of(jget<std::string>(spec, "fast_decoder", "")));
+    }
+    // VDN in place of Sol for the refine (DESIGN §4q): the branch its
+    // DiT runs, the refiner's own `vdn.branch`.
+    if (jget(t, "vdn", false)) {
+      VALTZ_ASSIGN(ref.regenerate_branch,
+                   file_of(jget<std::string>(
+                       jget(jget(re->engine, "vpipe", Json::object()), "vdn",
+                            Json::object()),
+                       "branch", "")));
     }
     // A refine on another model than the draft's (the refiner's `base`:
     // a Ref2VA clip's is FL2VA's): its folder, its parts linked apart, its
@@ -8827,6 +9762,19 @@ Controller::on_build_event_(const engine::JobEvent& ev)
     for (const char* key : {"transcript", "summary"}) {
       if (const Json t = jget(ev.data, key, Json()); t.is_object()) {
         b.outputs[key] = t;
+      }
+    }
+    // A continuation: how the clip it continues reached the model.
+    if (!rec->carried.empty()) {
+      b.outputs["continued"] = rec->carried;
+    }
+    // Its latents, asked to be kept, as generate-video made them: blobs
+    // of the project beside its file, for a continuation from them
+    // (DESIGN §4e). A fleet member's stay where it made them.
+    if (rec->runner.empty() && jget(recipe.params, "keep_latents", false)) {
+      if (Json l = keep_latents_(*p, jget(ev.data, "latents", Json()));
+          !l.empty()) {
+        b.outputs["latents"] = std::move(l);
       }
     }
     {
@@ -9653,7 +10601,8 @@ Controller::fleet_self_() const
     case Capability::UpscaleVideo: return engine::kOpUpscaleVideo;
     case Capability::PromptEnhance:
     case Capability::Intent:
-    case Capability::Caption: return engine::kOpChat;
+    case Capability::Caption:
+    case Capability::MicroAgent: return engine::kOpChat;
     case Capability::TextToAudio: return engine::kOpGenerateAudio;
     case Capability::TextToSpeech: return engine::kOpGenerateSpeech;
     case Capability::Transcribe: return engine::kOpTranscribeAudio;

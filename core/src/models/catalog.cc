@@ -21,7 +21,7 @@ struct CapName {
   const char* label;
 };
 
-constexpr std::array<CapName, 18> kCapNames = {{
+constexpr std::array<CapName, 19> kCapNames = {{
   {Capability::TextToImage, "text-to-image", "Text to image"},
   {Capability::ImageEdit, "image-edit", "Image edit"},
   {Capability::TextToVideo, "text-to-video", "Text to video"},
@@ -40,6 +40,7 @@ constexpr std::array<CapName, 18> kCapNames = {{
   {Capability::Transcribe, "audio-transcribe", "Transcribe audio"},
   {Capability::VideoSummary, "video-summary", "Video summary"},
   {Capability::AudioSeparate, "audio-separate", "Separate audio"},
+  {Capability::MicroAgent, "micro-agent", "Micro agent"},
 }};
 
 }
@@ -602,6 +603,7 @@ feature_capabilities(std::string_view f)
   if (f == "helper") { return {C::PromptEnhance, C::Intent}; }
   if (f == "video-summary") { return {C::VideoSummary}; }
   if (f == "audio-separate") { return {C::AudioSeparate}; }
+  if (f == "micro-agent") { return {C::MicroAgent}; }
   if (f == "video-upscale") { return {C::UpscaleVideo}; }
   if (f == "image-upscale") { return {C::UpscaleImage}; }
   return {};
@@ -715,6 +717,21 @@ to_json(Json& j, const ModelEntry& e)
   // The longest side it makes (FLUX.3: 4096): the app offers its 4K size.
   if (const int edge = max_edge(e); edge > 0) {
     j["max_edge"] = edge;
+  }
+  // It continues a clip THROUGH its tail (FL2VA's guide, DESIGN §4e):
+  // the frames of the tail its first ones redo -- the app keeps it
+  // chosen for Continue and counts the length after them.
+  if (const Json g = jget(jget(jget(e.engine, "vpipe", Json::object()),
+                               "continuation", Json::object()),
+                          "guide", Json());
+      g.is_object()) {
+    j["continues_through"] = jget(g, "frames", 22);
+  }
+  // It KEEPS its clip's latents when asked (DESIGN §4e): the generation
+  // card's Latents row, a continuation from them.
+  if (jget(jget(e.engine, "vpipe", Json::object()), "keeps_latents",
+           false)) {
+    j["keeps_latents"] = true;
   }
   // Its REFINER past the size it was trained at (MiniMax H3 FL2VA: Open-
   // H3-Regenerate-2K past 768 on the short side, a draft at 768; DESIGN

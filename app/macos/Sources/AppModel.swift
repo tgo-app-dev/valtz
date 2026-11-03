@@ -710,6 +710,10 @@ struct PromptAttachment: Identifiable, Hashable, Sendable {
     /// on from -- picture and sound -- rather than a reference to draw
     /// on. At most one.
     var continues = false
+    /// ...continued FROM THE LATENTS it kept (DESIGN §4e): Ref2VA
+    /// carries them beside its pixels, FL2VA is guided through its tail
+    /// by them -- Continue's latent options. Off: read as a reference.
+    var fromLatents = false
     /// A clip or a sound referenced WHOLE (Ref2VA): not cut to the clip's
     /// length, as every other one is -- its scissors badge off.
     var whole = false
@@ -750,6 +754,8 @@ struct JobInfo {
     var model = ""
     /// What it is doing now, while it runs.
     var phase: JobPhase?
+    /// The project it works on ("": none -- a download, a chat).
+    var project = ""
 
     /// Work on this Mac's models -- a download, a compress, a quantize --
     /// or a job served for a fleet member: in no project, so it runs on
@@ -931,7 +937,7 @@ struct JobPhase: Equatable {
 }
 
 @MainActor @Observable
-final class AppModel {
+final class AppModel: TuningHost {
     let core: CoreService?
     var startupError: String?
 
@@ -962,6 +968,11 @@ final class AppModel {
     @ObservationIgnored var atlasEndWatch: (any NSObjectProtocol)?
     /// Its cards' pictures, kept as they scroll out of sight and back.
     @ObservationIgnored var atlasPictures: [String: CGImage] = [:]
+    /// A GENERATE NODE opened out (its id: Views/AtlasGenerate), its
+    /// Custom panel shown, and what that panel edits.
+    var atlasNodeOpen: String?
+    var atlasNodeTuneOpen = false
+    var atlasNodeTuning: AtlasNodeTuning?
     /// VIEW ONLY (DESIGN §10a): the editor as a viewer -- the ☰ column's
     /// eye, or Tab where nothing in the window takes keys. The stage
     /// alone: the prompt or the timeline, the cards over them, the panels
@@ -1110,7 +1121,7 @@ final class AppModel {
     let monitor: MachineMonitor
     /// Auto-update (Sparkle, when built in): Check for Updates…, and
     /// Settings › General › Updates.
-    let updater = Updater()
+    var updater: Updater { Updater.shared }
     private static let statusBarKey = "view.statusBar"
     private static let statusItemsKey = "view.statusBarHidden"
     private static let agentEnabledKey = "experimental.agent"
@@ -1437,6 +1448,18 @@ final class AppModel {
     /// its soundtrack -- a music video's song, as it is -- rather than the
     /// one generated with its picture.
     var keepSongSound = true
+    /// A clip made KEEPS ITS LATENTS with it (the generation card's
+    /// Latents row; DESIGN §4e): a continuation can then carry on from
+    /// them -- the model's own frames and sound -- not only from its
+    /// picture and sound read again. Off by default: they take room in
+    /// the project.
+    var keepLatents = false
+    /// The model Start runs keeps its clip's latents when asked: the
+    /// card offers the row.
+    var offersKeepLatents: Bool {
+        activeModality == .video && modalityRuns
+            && runningModelInfo?.keepsLatents == true
+    }
     /// The prompt asset the box's words came from (DESIGN §10c): one used
     /// in the box, or the one the last Start captured. Start gives it
     /// back to the core, which keeps it for the same words, changes it in
@@ -2032,17 +2055,39 @@ final class AppModel {
     private var baseAdjustments: [String: ImageAdjustments] = [:]
     /// Its asset: what share and the inspector act on in simple mode.
     private(set) var stageAssetId: String?
-    /// The composition a project OPENED on: not played as it lands -- an
-    /// open shows the work still, where its playhead was saved. What is
-    /// put on the stage after plays as before.
-    var stillOnOpen: String?
     /// What a generated clip's landing put on the stage (the clip, or
-    /// the composition it went into): played or not, muted or not, as
-    /// Settings › General › Generations say.
+    /// the composition it went into): muted or not, as Settings › General
+    /// › Generations say.
     var landedClip: String?
+    /// What the stage's player starts playing BY ITSELF (DESIGN §10a):
+    /// a generated clip landing in the editor's sight, as Settings ›
+    /// General › Generations say, and an asset PREVIEWED -- viewed from
+    /// Assets, a made clip's Show on Stage -- each once, as its player is
+    /// made (`stageAutoplayed`). Anything else put on the stage waits,
+    /// still, and so does the stage made again: the Log or the Atlas left,
+    /// the Prompt Editor opened or shut. Every player made played, so
+    /// coming back from the Log started the timeline (2026-11-02).
+    private(set) var autoplayAsk: String?
     var stageAutoplay: Bool {
-        (stillOnOpen == nil || stillOnOpen != stageAssetId)
-            && (landedClip != stageAssetId || autoplaysNewClips)
+        autoplayAsk != nil && autoplayAsk == stageAssetId
+    }
+    /// `id` -- about to be on the stage -- played as its player is made.
+    func askAutoplay(_ id: String?) {
+        autoplayAsk = id
+    }
+    /// The stage's player started as it was asked: asked no more.
+    func stageAutoplayed() {
+        autoplayAsk = nil
+    }
+    /// The stage's player taken out of the window, showing `id` at
+    /// `frame`: one made for it again -- the editor back from the Log,
+    /// the Prompt Editor's small stage -- is put there, paused.
+    func stagePlayerGone(_ id: String?, frame: Int) {
+        guard let id, id == stageAssetId, stage.video != nil else { return }
+        // Stopped with it: its rate never said so (the transport read
+        // playing while the Log was up).
+        videoRate = 0
+        sendVideo(.seek(frame))
     }
     var stageMuted: Bool {
         landedClip == stageAssetId && autoplaysNewClips && mutesNewClips
@@ -2321,8 +2366,12 @@ final class AppModel {
     static let animationScale = ProcessInfo.processInfo
         .environment["VALTZ_ANIMATION_SCALE"].flatMap(Double.init) ?? 1
 
-    init() {
-        let svc = CoreService()
+    /// A window's model (EditorWindows): the process's one core, its
+    /// events handed over by EditorWindows; `opening` what the window
+    /// shows first -- a project that cannot be opened or made, an
+    /// anonymous session in its place.
+    init(opening: EditorWindows.Opening, createIfMissing: Bool = false) {
+        let svc = EditorWindows.shared.core
         core = svc
         monitor = MachineMonitor(core: svc)
         guard let svc else {
@@ -2331,23 +2380,17 @@ final class AppModel {
         }
         engine = svc.engine
         refreshMachine()
-        svc.startEvents { [weak self] ev in
-            Task { @MainActor in self?.handle(ev) }
-        }
         watchTextFocus()
-        if let dev = ProcessInfo.processInfo
-            .environment["VALTZ_DEFAULT_PROJECT"] {
-            openProject(path: dev, createIfMissing: true)  // dev / test runs
-        } else {
-            Self.removeOrphanSessions()  // what a crash left behind
-            startAnonymousSession()
+        switch opening {
+        case .anonymous:
+            break
+        case .open(let path):
+            // createIfMissing: dev / test runs (VALTZ_DEFAULT_PROJECT).
+            openProject(path: path, createIfMissing: createIfMissing)
+        case .create(let url):
+            createProject(at: url)
         }
-    }
-
-    func shutdown() {
-        core?.shutdown()  // jobs stopped, databases closed
-        // This Valtz's own session and share files -- never another's.
-        removeOwnSession()
+        if projectId == nil { startAnonymousSession() }
     }
 
     /// Quit, and open again -- a language change takes effect at launch.
@@ -2695,14 +2738,28 @@ final class AppModel {
     }
 
     /// Row items the clip Start makes does not read: beside a chosen
-    /// model's keyframes, the rest of its media.
+    /// model's keyframes -- or the clip it continues through its tail --
+    /// the rest of its media.
     var unreadVideoMedia: [PromptAttachment] {
         guard videoChoicePinned else { return [] }
         let k = keyframes
+        let g = guidedContinuation
         return promptAttachments.filter {
             ["image", "video", "audio"].contains($0.kind)
                 && $0.id != k?.first?.id && $0.id != k?.last?.id
+                && $0.id != g?.id
         }
+    }
+
+    /// The clip a model CHOSEN that continues THROUGH a tail (FL2VA's
+    /// guide, DESIGN §4e) carries on: the row's clip to continue. Its
+    /// last frames -- the latents it kept, else its pixels encoded --
+    /// are pinned over the new clip's first, which redo them; the clip
+    /// is made at its size, the Length after them.
+    var guidedContinuation: PromptAttachment? {
+        guard videoChoicePinned, runningModelInfo?.continuesThrough != nil
+        else { return nil }
+        return promptAttachments.first { $0.continues && $0.kind == "video" }
     }
 
     /// Start makes a clip FROM REFERENCES (Ref2VA): the row holds a clip,
@@ -2934,12 +2991,24 @@ final class AppModel {
     /// it, frozen -- never the timeline, which the continuation lands on
     /// after its last frame: no cycle of the clip made from the timeline
     /// that shows it.
-    func continueClip(seconds: Int) {
+    func continueClip(seconds: Int, method: ContinueMethod = .reference) {
         guard let core, let projectId, let clip = currentClip,
               clip.kind == "video" else { return }
         flushPanels()
+        // Through its end: a guide of the frames FL2VA redoes, at its
+        // grid -- a plain clip itself, as it is.
+        let through = method == .through ? throughModel : nil
+        if method == .through {
+            guard through != nil else { return }
+            if !clip.isComposition {
+                continueWith(clip.id, method: .through)
+                return
+            }
+        }
         let name: String
-        if seconds > 0 {
+        if through != nil {
+            name = String(localized: "\(clip.name), its end")
+        } else if seconds > 0 {
             let shown = guideLengths.first { $0.asked == seconds }
             let len = String(format: "%.1f",
                              shown?.seconds ?? Double(seconds))
@@ -2948,8 +3017,8 @@ final class AppModel {
             name = String(localized: "\(clip.name), its end")
         }
         let r = core.assetOp(project: projectId, "guide", [
-            "asset": clip.id, "seconds": Double(seconds),
-            "model": videoReferenceModel,
+            "asset": clip.id, "seconds": through != nil ? 0 : Double(seconds),
+            "model": through?.id ?? videoReferenceModel,
             "name": name,
             "capture_name": String(localized: "\(clip.name), as continued"),
         ])
@@ -2963,7 +3032,7 @@ final class AppModel {
                                                               offset: end)
         }
         reloadAssets()
-        continueWith(guide)
+        continueWith(guide, method: method)
     }
 
     /// A FRAME of the clip on the stage, where the player is: a still
@@ -2996,31 +3065,110 @@ final class AppModel {
     /// The clip on the stage carried on as it is: its tail, up to its
     /// mark-out (the catalog's length). A timeline through a guide of
     /// its end, as the menu's lengths are: never itself.
-    func continueClip() {
+    func continueClip(method: ContinueMethod = .reference) {
         guard let clip = currentClip, clip.kind == "video" else { return }
-        if clip.isComposition {
-            continueClip(seconds: 0)
+        if clip.isComposition || method == .through {
+            continueClip(seconds: 0, method: method)
             return
         }
-        continueWith(clip.id)
+        continueWith(clip.id, method: method)
     }
 
-    /// `asset` into the row as the clip to continue -- the only one. The
-    /// prompt comes back where the timeline was: what is left to do is
-    /// in its box.
-    private func continueWith(_ asset: String) {
+    /// How Continue carries a clip on (DESIGN §4e): its last seconds READ
+    /// AS A REFERENCE by Ref2VA, picture and sound, as always -- or, for
+    /// a clip that kept its latents (the card's Latents row), from THEM:
+    /// Ref2VA carrying them beside its pixels, or FL2VA guided THROUGH
+    /// its end by them, its last frames redone.
+    enum ContinueMethod: Equatable {
+        case reference, latents, through
+    }
+
+    /// The model that continues a clip through its end (FL2VA's guide):
+    /// Auto's for clips from words, where it is one.
+    var throughModel: CatalogModel? {
+        let id = autoPick("generate", .video)
+        return catalog.first { $0.id == id && $0.continuesThrough != nil }
+    }
+
+    /// What Continue's menu offers the clip on the stage: from its kept
+    /// latents -- through its end, its last seconds carried -- where they
+    /// cover them; its last seconds as a reference where Ref2VA is here.
+    struct ContinueOptions {
+        var through: (frames: Int, model: String)?
+        var latentGuides: [GuideLength] = []
+        var guides: [GuideLength] = []
+        var isEmpty: Bool {
+            through == nil && latentGuides.isEmpty && guides.isEmpty
+        }
+    }
+    var continueOptions: ContinueOptions {
+        var o = ContinueOptions()
+        let lengths = guideLengths
+        let refs = !autoPick("edit", .video).isEmpty
+        if refs { o.guides = lengths }
+        let through = throughModel
+        let tails = (through?.continuesThrough.map { [$0] } ?? [])
+            + lengths.map(\.frames)
+        let kept = stageLatents(tails: tails)
+        guard kept.kept else { return o }
+        var fits = kept.fits[...]
+        if let t = through, let n = t.continuesThrough {
+            if fits.popFirst() == true { o.through = (n, t.name) }
+        }
+        if refs {
+            o.latentGuides = zip(lengths, fits).filter(\.1).map(\.0)
+        }
+        return o
+    }
+
+    /// What the clip on the stage kept of its latents, and which tails --
+    /// frames -- they carry whole (core kept_latents): asked again as the
+    /// asset list changes.
+    @ObservationIgnored private var latentsMemo:
+        (id: String, rev: Int, tails: [Int], kept: Bool, fits: [Bool])?
+    func stageLatents(tails: [Int]) -> (kept: Bool, fits: [Bool]) {
+        let none = (kept: false, fits: tails.map { _ in false })
+        guard let core, let projectId, let clip = currentClip,
+              clip.kind == "video" else { return none }
+        if let m = latentsMemo, m.id == clip.id, m.rev == assetsRevision,
+           m.tails == tails {
+            return (m.kept, m.fits)
+        }
+        let r = core.assetOp(project: projectId, "latents",
+                             ["asset": clip.id, "tails": tails])
+        let kept = r.ok && (r["kept"] as? Bool ?? false)
+        let fits = (r["fits"] as? [Any])?.map {
+            ($0 as? NSNumber)?.boolValue ?? false
+        } ?? none.fits
+        latentsMemo = (clip.id, assetsRevision, tails, kept, fits)
+        return (kept, fits.count == tails.count ? fits : none.fits)
+    }
+
+    /// `asset` into the row as the clip to continue -- the only one --
+    /// carried on as `method` says. The prompt comes back where the
+    /// timeline was: what is left to do is in its box.
+    private func continueWith(_ asset: String,
+                              method: ContinueMethod = .reference) {
         guard let id = addAssetReferences([asset]).first else { return }
         if timelineOpen { showTimeline(false) }
         var list = promptAttachments
-        for j in list.indices { list[j].continues = list[j].id == id }
+        for j in list.indices {
+            list[j].continues = list[j].id == id
+            list[j].fromLatents = list[j].continues && method != .reference
+        }
         withAnimation(Self.motion) { promptAttachments = list }
         if modality != .video {
             withAnimation(Self.motion) { setModality(.video) }
         }
-        // A continuation is a reference model's: a model chosen that
-        // reads none gives way to Auto.
-        if videoChoicePinned { modelChoice = "" }
-        if prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        // Through its end: the model that is guided so, chosen. Else a
+        // reference model's: another chosen gives way to Auto.
+        if method == .through, let t = throughModel {
+            modelChoice = t.id
+        } else if videoChoicePinned {
+            modelChoice = ""
+        }
+        if guidedContinuation == nil,
+           prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let lead = catalog.first(where: { $0.id == videoReferenceModel })?
                .continuation, !lead.isEmpty {
             // The clip continued as the box names the row -- its tag, drawn
@@ -3037,10 +3185,15 @@ final class AppModel {
     /// A scripted snapshot asking for Continue's menu.
     var continueMenuRequest = 0
 
-    /// A finished clip on the stage can be continued here.
+    /// A finished clip on the stage can be continued here: by a model of
+    /// references, or -- from the latents it kept -- one that continues
+    /// through its tail.
     var canContinueClip: Bool {
-        clipOnStage && currentClip?.kind == "video"
-            && !autoPick("edit", .video).isEmpty && !isGenerating
+        guard clipOnStage, currentClip?.kind == "video", !isGenerating
+        else { return false }
+        if !autoPick("edit", .video).isEmpty { return true }
+        guard let n = throughModel?.continuesThrough else { return false }
+        return stageLatents(tails: [n]).fits.first == true
     }
 
     /// Make pictures or clips. A model chosen for the other kind gives way
@@ -4483,33 +4636,10 @@ final class AppModel {
         }
     }
 
-    /// One option changed in the panel. The core settles it with the
-    /// rest (its rules: HyperFlow takes a LoRA slot, not the Turbo LoRA's,
-    /// and its own steps; VDN replaces Sol-Attn), and that is what is
-    /// kept. An option that decides the steps lets them follow it.
-    func setTuning(_ key: String, flag: Bool? = nil, number: Double? = nil,
-                   choice: String? = nil, schedule: String? = nil) {
-        guard let info = tuningInfo else { return }
-        var t = info.tuning
-        if let flag { t.flags[key] = flag }
-        if let number {
-            t.numbers[key] = number
-            t.schedules[key] = nil
-        }
-        if let choice { t.choices[key] = choice }
-        // A value a step ("1,1.5,1.75") in the number's place.
-        if let schedule {
-            t.schedules[key] = schedule
-            t.numbers[key] = nil
-        }
-        let o = info.options.first { $0.key == key }
-        settleTuning(t, stepsFollow: o?.fixedSteps != nil)
-    }
-
     /// Custom's values settled by the core, kept as the family's. With
     /// `stepsFollow` the steps are left to the preset's count for what
     /// changed (an adapter's own).
-    private func settleTuning(_ t: Tuning, stepsFollow: Bool = false) {
+    func settleTuning(_ t: Tuning, stepsFollow: Bool = false) {
         guard let core else { return }
         var json = t.json
         if stepsFollow { json["steps"] = nil }
@@ -4523,163 +4653,11 @@ final class AppModel {
         saveCustomTunings()
     }
 
-    // LoRAs and checkpoints (Custom's list; core models/tuning.h).
-
-    /// Weights dropped on the panel, .safetensors files or folders: each
-    /// filed by what it is (the core reads it) -- a LoRA in the LoRA list,
-    /// a DiT or VAE checkpoint in its part's.
-    @discardableResult
-    func addWeights(_ urls: [URL]) -> Bool {
-        guard let core else { return false }
-        var loras: [URL] = []
-        var parts: [String: [URL]] = [:]
-        for url in urls {
-            switch core.checkpointKind(url) {
-            case "lora": loras.append(url)
-            case "dit": parts["dits", default: []].append(url)
-            case "vae": parts["vaes", default: []].append(url)
-            default: break
-            }
-        }
-        var added = false
-        if !loras.isEmpty { added = addLoRAs(loras) || added }
-        if !parts.isEmpty, let info = tuningInfo {
-            var t = info.tuning
-            for (key, urls) in parts {
-                var cs = t.checkpoints[key] ?? []
-                for url in urls {
-                    let path = url.standardizedFileURL.path
-                    guard !cs.contains(where: { $0.path == path }) else {
-                        continue
-                    }
-                    // On, when no other is: dropping one is choosing it.
-                    cs.append(TuningCheckpoint(
-                        path: path, on: !cs.contains { $0.on }))
-                    added = true
-                }
-                t.checkpoints[key] = cs
-            }
-            settleTuning(t)
-        }
-        if !added && !urls.isEmpty {
-            flash(String(localized: "Not weights Valtz can use here"), level: .warning)
-        }
-        return added
-    }
-
-    /// A DiT or VAE checkpoint turned on (the others off: one replaces
-    /// the model's part) or off (the model's own again).
-    func setCheckpoint(_ list: String, _ path: String, on: Bool) {
-        guard let info = tuningInfo else { return }
-        var t = info.tuning
-        var cs = t.checkpoints[list] ?? []
-        for i in cs.indices {
-            cs[i].on = cs[i].path == path ? on : (on ? false : cs[i].on)
-        }
-        t.checkpoints[list] = cs
-        settleTuning(t)
-    }
-
-    func removeCheckpoint(_ list: String, _ path: String) {
-        guard let info = tuningInfo else { return }
-        var t = info.tuning
-        t.checkpoints[list]?.removeAll { $0.path == path }
-        settleTuning(t)
-    }
-
-    /// LoRAs dropped on the panel, files or folders (the core loads a
-    /// folder's weights) not in the list yet: on while a slot is free.
-    @discardableResult
-    func addLoRAs(_ urls: [URL]) -> Bool {
-        guard let info = tuningInfo else { return false }
-        var t = info.tuning
-        var added = false
-        for url in urls {
-            let path = url.standardizedFileURL.path
-            guard !t.loras.contains(where: { $0.path == path }) else { continue }
-            let on = t.loras.filter(\.on).count < loraSlots(t, info)
-            t.loras.append(TuningLoRA(path: path, scale: 1, on: on))
-            added = true
-        }
-        if added { settleTuning(t) }
-        return added
-    }
-
-    /// How many LoRAs run at once: vpipe's slots (eight), less HyperFlow's,
-    /// Pika H3 Flex's or TaoMate's adapter.
-    private func loraSlots(_ t: Tuning, _ info: TuningInfo) -> Int {
-        (info.loraOption?.slots ?? 8)
-            - (t.flags["hyperflow"] == true || t.flags["pika_flex"] == true
-                || t.flags["taomate"] == true ? 1 : 0)
-    }
-
-    /// One LoRA changed: its strength, or on. Turned on with the slots
-    /// full, it takes one of another's -- a LoRA of one's own before the
-    /// Turbo LoRA. The Turbo LoRA turned on or off takes the steps its
-    /// preset runs with it, or without.
-    func setLoRA(_ path: String, scale: Double? = nil, on: Bool? = nil) {
-        guard let info = tuningInfo,
-              let i = info.tuning.loras.firstIndex(where: { $0.path == path })
-        else { return }
-        var t = info.tuning
-        if let scale { t.loras[i].scale = scale }
-        if let on {
-            let others = t.loras.indices.filter { $0 != i && t.loras[$0].on }
-            if on, others.count >= loraSlots(t, info) {
-                let own = others.last { t.loras[$0].path != info.turboLoRA }
-                if let j = own ?? others.last { t.loras[j].on = false }
-            }
-            t.loras[i].on = on
-        }
-        settleTuning(t, stepsFollow: on != nil && path == info.turboLoRA)
-    }
-
-    /// The ACCELERATION LoRA Custom runs (the panel's quick pick: the
-    /// model's few-step adapters, as Capabilities lists them), or none:
-    /// the others listed are turned off, the one picked goes first, on,
-    /// with the steps and shifts it was distilled for -- HyperFlow's, Pika
-    /// H3 Flex's and TaoMate's adapters, which would take its slot, off.
-    /// None: the model's own steps and shifts.
-    func setFastLoRA(_ id: String?) {
-        guard let info = tuningInfo, let opt = info.loraOption else { return }
-        var t = info.tuning
-        let fast = Set(opt.fast.map(\.path).filter { !$0.isEmpty }
-                       + [info.turboLoRA].filter { !$0.isEmpty })
-        for i in t.loras.indices where fast.contains(t.loras[i].path) {
-            t.loras[i].on = false
-        }
-        let chosen = opt.fast.first { $0.id == id && $0.installed }
-        if let f = chosen {
-            var l = TuningLoRA(path: f.path, on: true)
-            if let i = t.loras.firstIndex(where: { $0.path == f.path }) {
-                l = t.loras.remove(at: i)
-                l.on = true
-            }
-            t.loras.insert(l, at: 0)
-            for k in ["hyperflow", "pika_flex", "taomate", "taomate_lora"]
-                where t.flags[k] == true {
-                t.flags[k] = false
-            }
-            t.numbers["steps"] = Double(f.steps)
-        } else if let off = opt.stepsOff {
-            t.numbers["steps"] = Double(off)
-        }
-        // Its shifts, or the model's own.
-        for key in ["video_shift", "audio_shift"]
-            where t.numbers[key] != nil {
-            if let v = chosen?.config[key] ?? opt.shiftOff[key] {
-                t.numbers[key] = v
-            }
-        }
-        settleTuning(t)
-    }
-
-    func removeLoRA(_ path: String) {
-        guard let info = tuningInfo else { return }
-        var t = info.tuning
-        t.loras.removeAll { $0.path == path }
-        settleTuning(t, stepsFollow: path == info.turboLoRA)
-    }
+    // TuningHost: the card's Custom, for the model Start runs.
+    var tuningTitle: String { runningModelInfo?.name ?? "" }
+    var tuningRegenerates: Bool { regenerateDraft != nil }
+    var tuningCore: CoreService? { core }
+    func tuningWarn(_ text: String) { flash(text, level: .warning) }
 
     /// Custom back to a preset's values, for this model: its LoRA list
     /// is the preset's (the Turbo LoRA, on, when it runs one), and the
@@ -5157,6 +5135,15 @@ final class AppModel {
         refreshAgentPlan()
     }
 
+    /// The micro agent's model ("" Auto, "off", an id) or one of its
+    /// tasks ("names", "refine", "enhance") switched, kept by the core.
+    func setMicro(_ changes: [String: Any]) {
+        guard let core else { return }
+        let r = core.setMicro(changes)
+        if !r.ok { flash(r.message, level: .error) }
+        helpers = DTO.decode(HelperList.self, core.assistantsJSON())
+    }
+
     /// What the helper drafts with: "mtp", or "dflash" at `bits`.
     func setHelperDrafter(_ kind: String, bits: Int) {
         guard let core else { return }
@@ -5372,6 +5359,13 @@ final class AppModel {
 
     func openProject(path: String, createIfMissing: Bool = false) {
         guard let core else { return }
+        // Open in another window: that one, in front -- a project is
+        // shown in one window at a time.
+        if let other = EditorWindows.shared.model(showing: path,
+                                                  except: self) {
+            other.bringToFront()
+            return
+        }
         var r = core.openProject(path: path)
         if !r.ok && createIfMissing {
             let name = URL(fileURLWithPath: path)
@@ -5415,7 +5409,6 @@ final class AppModel {
         // timeline (not the prompt).
         if let view = projectViews.first {
             putOnStage(view)
-            stillOnOpen = view.id
             restorePlayhead(on: view)
             showTimeline(view.isTimeline)
         }
@@ -5437,6 +5430,12 @@ final class AppModel {
                url.standardizedFileURL.path
                    == URL(fileURLWithPath: projectPath).standardizedFileURL
                        .path {
+                return
+            }
+            // Open in another window: that one comes to the front.
+            if let other = EditorWindows.shared.model(showing: url.path,
+                                                      except: self) {
+                other.bringToFront()
                 return
             }
             closeProject(.open) { [weak self] in
@@ -5900,6 +5899,17 @@ final class AppModel {
     /// draft and the size it is regenerated at -- or, its refiner not
     /// here, what would regenerate it. Pixel sizes as text, ungrouped.
     var regenerateNote: String? {
+        // Through its end (FL2VA's guide): at the size of the clip it
+        // continues, whatever the row says -- its tail lies on the new
+        // clip's own frames.
+        if let g = guidedContinuation, let id = assetId(of: g),
+           let c = asset(id: id),
+           let f = c.ownFrame ?? c.info.map({
+               FrameSizeDTO(w: $0.frame.w, h: $0.frame.h)
+           }) {
+            let n = String(runningModelInfo?.continuesThrough ?? 22)
+            return String(localized: "Made at the size of the clip it continues, \(String(f.w)) × \(String(f.h)): its last \(n) frames are redone at it, then it goes on.")
+        }
         let d = dimensions
         if let draft = regenerateDraft {
             let a = "\(String(draft.width)) × \(String(draft.height))"
@@ -6105,8 +6115,27 @@ final class AppModel {
     /// Counted at each ⌘↩ Start: the Start buttons light up once.
     private(set) var startFlash = 0
 
+    /// What is being TYPED in the generation card's Size and Length
+    /// fields and not yet taken -- Return, or the keyboard elsewhere,
+    /// takes it. A click on Start (or ⌘↩) leaves the field with the
+    /// keyboard, so Start takes it itself: a clip was made at the size
+    /// shown before 1344 × 768 was typed (Valtz-122).
+    @ObservationIgnored var typedSize: String?
+    @ObservationIgnored var typedLength: String?
+    func takeTypedFields() {
+        if let t = typedSize {
+            typedSize = nil
+            if !setCustomSize(t) { NSSound.beep() }
+        }
+        if let t = typedLength {
+            typedLength = nil
+            if !setClipLength(t) { NSSound.beep() }
+        }
+    }
+
     /// Simple mode's Start.
     func start() {
+        takeTypedFields()
         guard canStart else { return }
         // The target tool on: what Start makes would take the stage.
         guard !refusedForColorTarget() else { return }
@@ -6212,6 +6241,7 @@ final class AppModel {
         if let seed = Int64(seedText) { req["seed"] = seed }
         if let pa = promptAssetId { req["prompt_asset"] = pa }
         if let n = promptGivenName { req["prompt_name"] = n }
+        if offersKeepLatents && keepLatents { req["keep_latents"] = true }
         if usesReferences {
             // The row's media as references, in its order (each through
             // its look or its trim); the clip continued, its tail; the
@@ -6227,8 +6257,26 @@ final class AppModel {
             req["whole"] = promptAttachments
                 .filter { cutsToLength($0) == false }
                 .compactMap { assetId(of: $0) }
-            if let c = r.cont { req["continue"] = c }
+            if let c = r.cont {
+                req["continue"] = c
+                // From the latents it kept, as Continue's menu said.
+                if promptAttachments.contains(where: {
+                    $0.continues && $0.fromLatents
+                }) {
+                    req["continue_latents"] = true
+                }
+            }
             req["reference_sound"] = hasSongReference && keepSongSound
+            req["inline"] = inlineAssets
+        } else if let g = guidedContinuation {
+            // Through its tail: the clip, at its size (the core's) --
+            // guided by the latents it kept.
+            guard let id = assetId(of: g) else {
+                flash(String(localized: "Still importing \(g.url.lastPathComponent)…"), level: .warning)
+                return
+            }
+            req["continue"] = id
+            if g.fromLatents { req["continue_latents"] = true }
             req["inline"] = inlineAssets
         } else if let k = keyframes {
             // As each looks: its modified copy, rendered by the core. Its
@@ -7366,6 +7414,7 @@ final class AppModel {
     /// theirs: the assistant is shown an edit's pictures and names them
     /// as the model does. A shape the user chose is part of the request.
     func enhance() {
+        takeTypedFields()
         guard let core, !prompt.isEmpty, enhanceJob == nil else { return }
         var req: [String: Any] = [
             // What Start makes, for the model it runs -- whose language
@@ -7404,6 +7453,10 @@ final class AppModel {
                 req["references"] = r.refs.compactMap { $0 }
                 if let c = r.cont { req["continue"] = c }
                 req["reference_sound"] = hasSongReference && keepSongSound
+                req.removeValue(forKey: "base")
+            } else if let g = guidedContinuation, let id = assetId(of: g) {
+                // Through its tail: told it carries that clip on.
+                req["continue"] = id
                 req.removeValue(forKey: "base")
             }
         }
@@ -8345,7 +8398,8 @@ final class AppModel {
         look.mix = ColorMix()
         look.grade = ColorGrade()
         guard let drawn = await drawnStill(look) else { return nil }
-        return CompareCanvas.shown?.sampleColor(atCanvas: p, from: drawn)
+        return CompareCanvas.shown(in: editorWindow)?
+            .sampleColor(atCanvas: p, from: drawn)
     }
 
     /// The still on the stage drawn once more, small (2048 pixels a side
@@ -9980,10 +10034,28 @@ final class AppModel {
                 closeGuard = WindowCloseGuard(window: w) { [weak self] in
                     self?.confirmWindowClose() ?? true
                 }
+                closeGuard?.onPaste = { [weak self] in
+                    self?.pasteMarkupAnywhere()
+                }
+                closeGuard?.canPaste = { [weak self] in
+                    self?.markupCan(.paste) ?? false
+                }
             }
             // Auto-update starts once the editor is there: its prompt over
             // the editor, never before it.
             updater.start()
+            // The first window where it was left; the windows after it
+            // cascade from the one in front. (Not by a scripted run: it
+            // saves no view state.)
+            if Self.keepsViewState,
+               EditorWindows.shared.models.first === self,
+               w.frameAutosaveName.isEmpty {
+                w.setFrameAutosaveName("Valtz Editor")
+            }
+            EditorWindows.shared.shown(self)
+            // Unsaved changes: the dot in its close button (RootView keeps
+            // it as they come and go).
+            w.isDocumentEdited = document.dirty && !isAnonymous
             if let size = pendingWindowSize {
                 pendingWindowSize = nil
                 applyWindowSize(size)
@@ -10010,21 +10082,43 @@ final class AppModel {
     /// Agreed, what a quit does is done; Valtz then quits as it goes.
     /// With tasks under way the window stays while they are stopped, and
     /// is closed once they have.
+    ///
+    /// Another editor window open, this one's project is closed with its
+    /// window -- the anonymous session deleted -- and Valtz goes on in the
+    /// others (EditorWindows.closed).
     func confirmWindowClose() -> Bool {
         if closeConfirmed { return true }
         switch prepareClose(.window, then: { [weak self] ok in
             guard let self, ok else { return }
-            self.closeForQuit()
-            self.closeConfirmed = true
+            self.windowClosing()
             self.editorWindow?.close()  // asks no delegate: it goes
         }) {
         case .proceed:
-            closeForQuit()
-            closeConfirmed = true
+            windowClosing()
             return true
         case .cancelled, .waiting:
             return false
         }
+    }
+
+    /// The window going, its project asked about: the last editor
+    /// window's as a quit's -- Valtz quits as it goes, Settings open or
+    /// not -- another's closed here, its model let go.
+    private func windowClosing() {
+        closeConfirmed = true
+        guard EditorWindows.shared.models.contains(where: { $0 !== self })
+        else {
+            closeForQuit()
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+            return
+        }
+        if let id = projectId {
+            retireProject(id, path: projectPath, anonymous: isAnonymous)
+        }
+        removeSession(shared: false)
+        projectId = nil
+        unwatchEvents()
+        EditorWindows.shared.closed(self)
     }
     @ObservationIgnored private var pendingWindowSize: CGSize?
 
@@ -10184,42 +10278,63 @@ final class AppModel {
     }
     var textUndo: TextUndo?
 
-    @ObservationIgnored private var textWatch: [Any] = []
+    @ObservationIgnored private var textWatch: Any?
+    @ObservationIgnored private var eventMonitors: [Any] = []
+
+    /// The window an event is in is this one's to take: its own, one over
+    /// it (a popover, a sheet) -- or, a window no editor's (Settings, a
+    /// panel), this one in front. With several windows open, each event is
+    /// one model's (EditorWindows.owner).
+    func owns(_ event: NSEvent) -> Bool {
+        EditorWindows.shared.owner(of: event.window) === self
+    }
+
+    /// Its window gone: nothing more of the app's events heard.
+    private func unwatchEvents() {
+        if let o = textWatch { NotificationCenter.default.removeObserver(o) }
+        textWatch = nil
+        for m in eventMonitors { NSEvent.removeMonitor(m) }
+        eventMonitors = []
+        if let m = tuningPressWatch { NSEvent.removeMonitor(m) }
+        tuningPressWatch = nil
+    }
 
     /// Watches the focus for the Edit menu: the text being edited -- its
     /// undo, after every event -- and a click away from it, which ends its
     /// editing as in any Mac app (⌘Z is the project's again).
     func watchTextFocus() {
-        guard textWatch.isEmpty else { return }
-        textWatch.append(NotificationCenter.default.addObserver(
+        guard textWatch == nil else { return }
+        textWatch = NotificationCenter.default.addObserver(
             forName: NSWindow.didUpdateNotification, object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshTextUndo() }
-        })
+        }
         if let m = NSEvent.addLocalMonitorForEvents(
             matching: .leftMouseDown, handler: { [weak self] event in
                 MainActor.assumeIsolated {
+                    guard let self, self.owns(event) else { return }
                     _ = ShortcutHints.shared.handle(event)
-                    self?.notePressOnBar(event)
+                    self.notePressOnBar(event)
                     Self.endTextEditing(for: event)
-                    self?.endViewingIfOutside(event)
+                    self.endViewingIfOutside(event)
                 }
                 return event
             }) {
-            textWatch.append(m)
+            eventMonitors.append(m)
         }
         // ⌘? held, the buttons' keys shown (ShortcutHints): its key or ⌘
         // let go -- or, shown from the menu, a click -- and they go.
         if let m = NSEvent.addLocalMonitorForEvents(
             matching: [.keyUp, .flagsChanged, .rightMouseDown,
-                       .otherMouseDown], handler: { event in
+                       .otherMouseDown], handler: { [weak self] event in
                 MainActor.assumeIsolated {
+                    guard let self, self.owns(event) else { return }
                     _ = ShortcutHints.shared.handle(event)
                 }
                 return event
             }) {
-            textWatch.append(m)
+            eventMonitors.append(m)
         }
         // ⌘? held: the buttons' keys shown. The brush's [ ] and ⇧[ ⇧] and
         // the markup tools' keys, wherever the keyboard is in the window
@@ -10229,21 +10344,24 @@ final class AppModel {
         if let m = NSEvent.addLocalMonitorForEvents(
             matching: .keyDown, handler: { [weak self] event in
                 let handled = MainActor.assumeIsolated {
+                    // Another window's (EditorWindows.owner).
+                    guard let self, self.owns(event) else { return false }
                     // A closed project's tasks being stopped: the window
                     // takes no key -- typing, its shortcuts, the menus'.
-                    if let self, self.closingTasks != nil,
+                    if self.closingTasks != nil,
                        event.window === self.editorWindow {
                         return true
                     }
                     if ShortcutHints.shared.handle(event) { return true }
-                    guard let self else { return false }
                     // Off the editor -- the Atlas, the Log -- nothing of
                     // the stage's, out of sight, takes a key.
                     if self.screen != .editor {
                         return self.promptKey(event)
                             || self.atlasKey(event)
                     }
-                    return self.deselectKey(event) || self.brushKey(event)
+                    return self.deselectKey(event)
+                        || self.pasteMarkupKey(event)
+                        || self.brushKey(event)
                         || self.promptKey(event)
                         || self.scissorsKey(event)
                         || self.markupToolKey(event)
@@ -10252,7 +10370,7 @@ final class AppModel {
                 }
                 return handled ? nil : event
             }) {
-            textWatch.append(m)
+            eventMonitors.append(m)
         }
     }
 
@@ -10355,9 +10473,11 @@ final class AppModel {
         }
     }
 
-    /// This process's own session folder, its lock, its share and drop
-    /// folders -- at quit and Start Over.
-    private func removeOwnSession() {
+    /// This window's own session folder and its lock -- at quit, Start
+    /// Over, its window closed -- and, `shared`, the process's share and
+    /// drop folders with them (another window may still be using them:
+    /// left for the quit).
+    func removeSession(shared: Bool) {
         let fm = FileManager.default
         if isAnonymous, !projectPath.isEmpty {
             let dir = URL(fileURLWithPath: projectPath)
@@ -10368,7 +10488,14 @@ final class AppModel {
             close(sessionLock)
             sessionLock = -1
         }
-        try? fm.removeItem(at: Self.shareRoot)
+        if shared { Self.removeSharedFolders() }
+    }
+
+    /// The process's share and drop folders: the files made to share or
+    /// drag an adjusted picture, what a drop brought that was no file.
+    static func removeSharedFolders() {
+        let fm = FileManager.default
+        try? fm.removeItem(at: shareRoot)
         try? fm.removeItem(at: DroppedMedia.root)
     }
 
@@ -10380,6 +10507,13 @@ final class AppModel {
     /// ephemeral in the core (its thumbnails stay inside it too).
     private func startAnonymousSession() {
         guard let core else { return }
+        // A name no other window's anonymous session goes by.
+        for _ in 0..<8 where EditorWindows.shared.models.contains(where: {
+            $0 !== self && $0.isAnonymous && $0.projectId != nil
+                && $0.anonymousName == anonymousName
+        }) {
+            anonymousName = Self.randomAnonymousName()
+        }
         let fm = FileManager.default
         try? fm.createDirectory(at: Self.sessionRoot,
                                 withIntermediateDirectories: true)
@@ -10410,12 +10544,66 @@ final class AppModel {
         refreshDocument()
     }
 
+    /// An anonymous session holding nothing, nothing under way in it: a
+    /// project opened goes in its place, not in a window of its own
+    /// (EditorWindows.open).
+    var holdsNothing: Bool {
+        isAnonymous && !sessionHasWork && !document.dirty && !isBusy
+            && tasks.isEmpty && closingTasks == nil && fleetServing == nil
+    }
+
+    /// Its window in front, the keyboard's.
+    func bringToFront() {
+        if editorWindow?.isMiniaturized == true {
+            editorWindow?.deminiaturize(nil)
+        }
+        editorWindow?.makeKeyAndOrderFront(nil)
+        EditorWindows.shared.makeFront(self)
+    }
+
+    /// Settings' preferences read again -- another window's Settings may
+    /// have set them (EditorWindows: the defaults changed). The window's
+    /// own view state -- its status bar, its inspector -- stays its own.
+    func readPreferences() {
+        guard Self.keepsViewState else { return }
+        func take<T: Equatable>(_ v: T,
+                                _ path: ReferenceWritableKeyPath<AppModel, T>) {
+            if self[keyPath: path] != v { self[keyPath: path] = v }
+        }
+        take(Self.storedPromptHistory(), \.promptHistory)
+        take(Self.storedLanding("timeline", default: true),
+             \.landingOpensTimeline)
+        take(Self.storedLanding("flash", default: true),
+             \.landingFlashesSwitch)
+        take(Self.storedLanding("tasks", default: true), \.revealsTasks)
+        take(Self.storedLanding("results", default: false),
+             \.revealsResults)
+        take(Self.storedLanding("autoplay", default: true),
+             \.autoplaysNewClips)
+        take(Self.storedLanding("muted", default: false), \.mutesNewClips)
+        take(Self.storedPlacement, \.clipPlacement)
+        if Self.storedAgentEnabled != agentEnabled {
+            setAgentEnabled(Self.storedAgentEnabled)
+        }
+        if Self.storedAgentShowsSpeed != agentShowsSpeed {
+            setAgentShowsSpeed(Self.storedAgentShowsSpeed)
+        }
+    }
+
     /// Something is running for the project (a generation, the
     /// assistant, an import): the session cannot be discarded under it.
     /// A download -- any work in no project -- runs on beside it.
     var isBusy: Bool {
         generationJob != nil || enhanceJob != nil
-            || jobs.values.contains { $0.live && !$0.inNoProject }
+            || jobs.values.contains { $0.live && !$0.inNoProject && isOwn($0) }
+    }
+
+    /// A job of this window's: of its project -- or of none (a chat, the
+    /// micro agent's), while it is the only window; with several, one of
+    /// another window's could be any of them.
+    func isOwn(_ j: JobInfo) -> Bool {
+        j.project.isEmpty ? !EditorWindows.shared.several
+                          : j.project == projectId
     }
 
     /// Undo and redo wait for the project's own short jobs -- an import,
@@ -10423,7 +10611,7 @@ final class AppModel {
     /// task's request undone withdraws it.
     var historyBusy: Bool {
         jobs.values.contains {
-            ($0.state == "queued" || $0.state == "running")
+            ($0.state == "queued" || $0.state == "running") && isOwn($0)
                 && ($0.purpose == "import" || $0.purpose == "refresh-links")
         }
     }
@@ -10448,7 +10636,7 @@ final class AppModel {
     private func anonymousAfresh() {
         guard let core else { return }
         if let id = projectId { _ = core.discardProject(id) }
-        removeOwnSession()
+        removeSession(shared: !EditorWindows.shared.several)
         projectId = nil
         withAnimation(Self.motion) { resetSession() }
         anonymousName = Self.randomAnonymousName()
@@ -10468,7 +10656,7 @@ final class AppModel {
         // download -- any work in no project -- runs on into the new one.
         let taskJobs = Set(tasks.map(\.job))
         guard enhanceJob == nil, !jobs.contains(where: { id, j in
-            j.live && !j.inNoProject
+            j.live && !j.inNoProject && isOwn(j)
                 && !taskJobs.contains(id) && j.purpose != "build"
                 && j.purpose != "export"
         }) else {
@@ -11137,6 +11325,12 @@ final class AppModel {
 
     func handle(_ ev: CoreEvent) {
         let p = ev.payload
+        // Another window's project's job: its own (a job in no project --
+        // a download -- is every window's).
+        if ev.kind.hasPrefix("job."), let pid = p["project"] as? String,
+           !pid.isEmpty, pid != projectId {
+            return
+        }
         if ev.kind.hasPrefix("fleet.") || ev.kind == "job.runner" {
             handleFleet(ev)
             return
@@ -11169,7 +11363,8 @@ final class AppModel {
                 jobs[job] = JobInfo(title: p["title"] as? String ?? "",
                                     purpose: p["purpose"] as? String ?? "",
                                     state: "queued", progress: 0,
-                                    model: p["model"] as? String ?? "")
+                                    model: p["model"] as? String ?? "",
+                                    project: p["project"] as? String ?? "")
             }
             if p["purpose"] as? String == "build"
                 || p["purpose"] as? String == "export" {
@@ -11290,6 +11485,8 @@ final class AppModel {
                 }
             }
         case "assist.intent":
+            // Asked as the prompt is typed: the window in front's.
+            guard EditorWindows.shared.owner(of: nil) === self else { break }
             intent = IntentInfo(
                 intent: p["intent"] as? String ?? "unknown",
                 confidence: p["confidence"] as? Double ?? 0,
@@ -11524,6 +11721,7 @@ final class AppModel {
             // A clip made, not placed: it plays as Settings say.
             if state == "finished", asset?.kind == "video" {
                 landedClip = asset?.id
+                askLandedAutoplay(asset?.id)
             }
             finishStage(state: state, asset: asset, task: ctx)
         }
@@ -11541,6 +11739,7 @@ final class AppModel {
                             task: TaskContext) {
         if state == "finished", result?.kind == "video" {
             landedClip = placed.doc.id
+            askLandedAutoplay(placed.doc.id)
         }
         finishStage(state: "finished", asset: placed.doc, result: result,
                     layer: placed.layer, task: task)
@@ -11550,7 +11749,7 @@ final class AppModel {
 
     /// Nothing on the stage of its own: no asset shown or viewed, no
     /// picture to edit, no task watched -- the mark.
-    private var stageBare: Bool {
+    var stageBare: Bool {
         stageAssetId == nil && viewedAsset == nil && stageBaseURL == nil
             && generationJob == nil && exportShow == nil
     }
@@ -11798,11 +11997,22 @@ final class AppModel {
         guard !refusedForColorTarget() else { return }
 
         finishClip(a, url)
+        // Previewed: it plays.
+        askAutoplay(a.id)
+    }
+
+    /// A generated clip landing on the stage, `id` what shows it: played
+    /// as Settings › General › Generations say -- where the editor is in
+    /// sight. One that lands while the Log or the Atlas is up waits for
+    /// the person, still, as anything else put on the stage does.
+    private func askLandedAutoplay(_ id: String?) {
+        askAutoplay(autoplaysNewClips && screen == .editor ? id : nil)
     }
 
     func putOnStage(_ asset: AssetDTO) {
-        stillOnOpen = nil
         landedClip = nil
+        // Put there, not landed or previewed: still (DESIGN §10a).
+        askAutoplay(nil)
         // Picked: the stage leaves the task it watched, which runs on --
         // and stays with this as the queue goes on.
         followsQueue = false

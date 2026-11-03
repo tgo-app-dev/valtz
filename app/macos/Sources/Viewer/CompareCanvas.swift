@@ -194,8 +194,26 @@ final class CompareCanvas: NSView {
     /// Where the pointer is over the view (its points), while it is.
     private var pointerAt: CGPoint?
     private var tracking: NSTrackingArea?
-    /// The stage on show, for the snapshot hooks.
-    static weak var shown: CompareCanvas?
+    /// The stage on show, for the snapshot hooks -- and, by its window,
+    /// for that window's model (`shown(in:)`: one a window).
+    static weak var shown: CompareCanvas? {
+        didSet {
+            if let s = shown, let w = s.window {
+                byWindow.setObject(s, forKey: w)
+            }
+        }
+    }
+    private static let byWindow =
+        NSMapTable<NSWindow, CompareCanvas>.weakToWeakObjects()
+
+    /// The stage on show in `w` -- an editor window's own (several may be
+    /// open); no window: the last shown anywhere.
+    static func shown(in w: NSWindow?) -> CompareCanvas? {
+        guard let w else { return shown }
+        if let s = shown, s.window === w { return s }
+        if let s = byWindow.object(forKey: w), s.window === w { return s }
+        return nil
+    }
     /// No arrow: the brush's outline is the pointer.
     private static let noCursor = NSCursor(
         image: NSImage(size: NSSize(width: 1, height: 1)),

@@ -146,9 +146,6 @@ inline constexpr Message kRegenerateNotHere{
     "core.regenerate_not_here",
     "{model} cannot regenerate clips here yet: get Open-H3-Regenerate-2K "
     "and its latent upscaler in Settings › Capabilities."};
-inline constexpr Message kRegenerateNoContinuation{
-    "core.regenerate_no_continuation",
-    "A continuation is not regenerated: it is made at the size asked."};
 inline constexpr Message kOutOfMemory{
     "core.out_of_memory",
     "Not enough memory: this needs about {need}, and {have} is "
@@ -344,6 +341,28 @@ inline constexpr Message kAgentNoSession{
     "core.agent_no_session", "That agent session is not here any more."};
 inline constexpr Message kAgentStopped{
     "core.agent_stopped", "That agent session has stopped: start another."};
+// The Atlas's GENERATE NODES (Controller::generate_node_op).
+inline constexpr Message kGenerateOneText{
+    "core.generate_one_text",
+    "A generation takes one text, its prompt: unlink {name} first."};
+inline constexpr Message kGeneratePictureRow{
+    "core.generate_picture_row",
+    "{name} is not a picture: a picture is made from pictures."};
+inline constexpr Message kGenerateSoundRow{
+    "core.generate_sound_row",
+    "{name} is not a sound or a clip: a sound takes a voice to speak in."};
+inline constexpr Message kGenerateLinked{
+    "core.generate_linked", "{name} is linked to it already."};
+inline constexpr Message kGenerateHasRun{
+    "core.generate_has_run",
+    "It has run: duplicate it to change it or run it again."};
+inline constexpr Message kGenerateKeyframes{
+    "core.generate_keyframes",
+    "{model} reads pictures alone, its first frame and its last: its row "
+    "takes {count} at most."};
+inline constexpr Message kGenerateNoReferenceModel{
+    "core.generate_no_reference_model",
+    "No video model that draws on references is here."};
 // A change refused while an agent works on the project (its hold).
 inline constexpr Message kAgentAtWork{
     "core.agent_at_work",
@@ -380,6 +399,13 @@ inline constexpr Message kNoAssistantModel{
     "core.no_assistant_model", "No assistant model fits this Mac."};
 inline constexpr Message kNotAnAssistant{
     "core.not_an_assistant", "{model} is not an agentic helper."};
+inline constexpr Message kNotAMicroAgent{
+    "core.not_a_micro_agent", "{model} is not a micro agent."};
+inline constexpr Message kNoMicroAgent{
+    "core.no_micro_agent",
+    "No micro agent is here: download LFM3-VL 2B in Settings › "
+    "Capabilities, or turn the Micro Agent on in Settings › Agentic "
+    "Helper."};
 inline constexpr Message kModelCannotEdit{
     "core.model_cannot_edit", "{model} cannot edit images."};
 inline constexpr Message kNoEditModel{
@@ -620,6 +646,19 @@ inline constexpr Message kVideoReferenceKind{
 inline constexpr Message kContinueNeedsClip{
     "core.continue_needs_clip",
     "Only a clip can be continued."};
+inline constexpr Message kNoKeptLatents{
+    "core.no_kept_latents",
+    "{clip} kept no latents to continue from: make clips with Latents › "
+    "Keep for continuing on, or continue it from its picture and sound."};
+inline constexpr Message kLatentsNoPort{
+    "core.latents_no_port",
+    "With this many references, the latents {clip} kept have no port "
+    "left: take a reference out, or continue it from its picture and "
+    "sound."};
+inline constexpr Message kLatentsDoNotFit{
+    "core.latents_do_not_fit",
+    "The latents {clip} kept do not cover this end of it: continue it "
+    "from its picture and sound."};
 inline constexpr Message kGrabNeedsClip{
     "core.grab_needs_clip",
     "A frame can only be grabbed from a clip."};

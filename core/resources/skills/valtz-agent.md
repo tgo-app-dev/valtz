@@ -355,6 +355,36 @@ scene longer than a few seconds -- rather than cut from their clips
    again with another `seed`, `start` where it was, then `remove_layer`
    the bad one.
 
+## Models
+
+Each tool that makes something runs a MODEL: Auto's, unless the person
+names one. `list_models` (a `task`: picture, edit, shot,
+shot_references, music, voiceover, transcribe, separate, upscale; none:
+all of them) says which are on this Mac -- each one's id, name, what it
+does, Auto's marked -- and which are not downloaded.
+
+1. "Which video models do I have?", "what can make music here?": answer
+   from `list_models`, in the person's words -- the names, Auto's, what
+   each is good at -- with no other step.
+2. "Use FLUX.3 for the pictures", "make the music with Music3": give
+   that model's id as `model` to the tool -- and to every later call of
+   that kind in their request, and to `enhance_prompt` for it, which
+   writes for that model. Say which model made it when you report.
+3. A model named loosely is matched by its name ("FLUX.3", "Music3");
+   one the tool refuses -- it does not do that, or it is not on this
+   Mac -- comes back with those that are: tell the person, and use
+   Auto's (no `model`) only if they agree or asked for the thing more
+   than for the model. You cannot download a model: the person does, in
+   Settings > Capabilities.
+4. What lands -- or fails -- names its `model`. One the person chose
+   that FAILS fails again with other words: do not retry it, and do not
+   switch to another model on your own. Stop and tell them it failed and
+   what it said (`ask_user` if the rest waits on it); a model you made it
+   with in its place is said in your answer, by name.
+5. Named nothing: leave `model` out. A shot drawing on references or
+   continuing needs a model of `shot_references`; one opening on a
+   picture, one that `opens_on_picture`.
+
 ## Prompts for pictures
 
 Write a picture's prompt as a description of the picture: the subject,

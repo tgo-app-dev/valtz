@@ -73,6 +73,9 @@ struct HelperView: View {
                         .settingsMark(String(localized: "Thinking"))
                     }
                 }
+                if let m = list.micro {
+                    microSection(m)
+                }
                 if model.agentEnabled {
                     AgentSettingsSection(model: model)
                 }
@@ -101,6 +104,68 @@ struct HelperView: View {
         }
         .formStyle(.grouped)
         .onAppear { model.refreshMachine() }
+    }
+
+    /// THE MICRO AGENT (DESIGN §9c): a small model of Valtz's own for
+    /// the short text tasks around a generation -- which one (Automatic:
+    /// the best one downloaded; Off), and which tasks it does, each of
+    /// which Valtz does without it as it did: a prompt named by its words,
+    /// a Ref2VA clip's 2K pass reading words made by rule, the helper
+    /// enhancing.
+    @ViewBuilder
+    private func microSection(_ m: HelperList.Micro) -> some View {
+        Section {
+            Picker("Model", selection: Binding(
+                get: { m.model },
+                set: { model.setMicro(["model": $0]) })) {
+                Text(microAuto(m)).tag("")
+                Text("Off").tag("off")
+                Divider()
+                ForEach(m.models) { e in
+                    Text(microLabel(e)).tag(e.id)
+                }
+            }
+            .settingsMark(String(localized: "Micro Agent"))
+            Toggle("Name prompts and what is made from them",
+                   isOn: Binding(get: { m.names },
+                                 set: { model.setMicro(["names": $0]) }))
+                .disabled(m.using.isEmpty)
+                .settingsMark(String(localized: "Name prompts and what is made from them"))
+            Toggle("Write a clip's words for its 2K pass",
+                   isOn: Binding(get: { m.refine },
+                                 set: { model.setMicro(["refine": $0]) }))
+                .disabled(m.using.isEmpty)
+                .help("A clip from references made past 768P is refined by MiniMax H3 FL2VA, which sees no references: the micro agent is shown the reference pictures and writes what the refine reads")
+                .settingsMark(String(localized: "Write a clip's words for its 2K pass"))
+            Toggle("Enhance in the helper's place",
+                   isOn: Binding(get: { m.enhance },
+                                 set: { model.setMicro(["enhance": $0]) }))
+                .disabled(m.using.isEmpty)
+                .settingsMark(String(localized: "Enhance in the helper's place"))
+        } header: {
+            Text("Micro Agent")
+                .settingsMark(String(localized: "Micro Agent"))
+        } footer: {
+            Text(m.using.isEmpty
+                 ? "A small model for short tasks: download LFM3-VL 2B (3.9 GB) in Settings › Capabilities › Micro agents. Until then a prompt is named by its words, a Ref2VA clip's 2K pass reads words made by rule, and the helper enhances."
+                 : "A small model for short tasks, kept loaded as the helper is. A new prompt is named a moment after Start, in the background, and what is made from it takes that name. A clip from references past 768P waits a few seconds for its 2K pass's words. It enhances faster than the helper, and less carefully.")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// "Automatic (LFM3-VL 2B)" while one is at work.
+    private func microAuto(_ m: HelperList.Micro) -> String {
+        guard m.model.isEmpty,
+              let e = m.models.first(where: { $0.id == m.using })
+        else { return String(localized: "Automatic") }
+        return String(localized: "Automatic (\(e.name))")
+    }
+
+    /// Its name, and what it needs where it is not here.
+    private func microLabel(_ e: HelperList.Micro.Model) -> String {
+        e.state == "installed"
+            ? e.name
+            : String(localized: "\(e.name) · not downloaded")
     }
 
     /// LONG CONVERSATIONS (DESIGN §9b): how much the helper reads at once

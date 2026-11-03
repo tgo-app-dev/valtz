@@ -21,6 +21,9 @@ import Sparkle
 /// the only window, which quit Valtz.
 @MainActor @Observable
 final class Updater {
+    /// The process's one: every window's Check for Updates… and Settings.
+    static let shared = Updater()
+
 #if VALTZ_SPARKLE
     @ObservationIgnored private let controller: SPUStandardUpdaterController
     /// Mirrors Sparkle's setting, so the toggle redraws when it changes.

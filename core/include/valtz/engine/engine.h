@@ -239,6 +239,10 @@ struct ModelRef {
   std::filesystem::path regenerate_lora;
   std::filesystem::path latent_upscaler;
   std::filesystem::path fast_decoder;
+  // ...and -- its VDN on (the refine's tuning `vdn`) -- the VDN branch
+  // the refine's DiT runs in place of its dense attention, as its folder
+  // (the refiner's catalog `vdn.branch`); the draft's is `branch`.
+  std::filesystem::path regenerate_branch;
   // ...and the model the refine runs where it is not this one (the
   // refiner's `base`: a Ref2VA clip is refined by FL2VA, its DiT and
   // its prompt encoder -- the VAE stays this model's, the same codec):

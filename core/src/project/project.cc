@@ -630,6 +630,30 @@ Project::rename_asset(AssetId id, std::string name)
   });
 }
 
+Result<std::string>
+Project::rename_unique(AssetId id, std::string_view name,
+                       std::size_t max_bytes)
+{
+  std::string got;
+  VALTZ_TRY(_env->write([&](db::Txn& txn) -> Status {
+    VALTZ_ASSIGN(auto a, get_asset_(txn, id));
+    if (!a) {
+      return make_error(Code::NotFound, "no such asset");
+    }
+    const std::string whole = max_bytes ? utf8_truncate(name, max_bytes)
+                                        : std::string(name);
+    if (a->name == whole) {
+      got = whole;
+      return ok_status();
+    }
+    VALTZ_ASSIGN(got, unique_name_(txn, name, max_bytes));
+    a->name = got;
+    a->modified_ms = now_ms();
+    return put_asset_(txn, *a);
+  }));
+  return got;
+}
+
 Status
 Project::set_modifiers(AssetId id, std::vector<Modifier> mods)
 {
@@ -1114,6 +1138,29 @@ Project::set_folders(const Json& folders)
 }
 
 Result<Json>
+Project::generate_nodes() const
+{
+  Json out = Json::array();
+  VALTZ_TRY(_env->read([&](db::Txn& txn) -> Status {
+    VALTZ_ASSIGN(auto j, get_cbor(txn, _db.meta,
+                                  db::as_bytes("generate_nodes")));
+    if (j && j->is_array()) {
+      out = std::move(*j);
+    }
+    return ok_status();
+  }));
+  return out;
+}
+
+Status
+Project::set_generate_nodes(const Json& nodes)
+{
+  return _env->write([&](db::Txn& txn) -> Status {
+    return put_cbor(txn, _db.meta, db::as_bytes("generate_nodes"), nodes);
+  });
+}
+
+Result<Json>
 Project::view_state() const
 {
   Json out = Json::object();
@@ -1280,8 +1327,19 @@ Project::held_blobs() const
     VALTZ_TRY(db::for_each_prefix(txn, _db.versions, {},
         [&](const db::Cursor::Entry& e) {
           if (auto j = from_cbor(e.value); j.ok()) {
-            if (const auto b = j->get<AssetVersion>().blob; !b.empty()) {
-              held.insert(b.hash.hex());
+            const AssetVersion v = j->get<AssetVersion>();
+            if (!v.blob.empty()) {
+              held.insert(v.blob.hash.hex());
+            }
+            // The latents a clip kept with it (DESIGN §4e): its
+            // outputs' {"video" | "audio": {"blob"}}.
+            const Json lat = jget(v.outputs, "latents", Json::object());
+            for (const char* k : {"video", "audio"}) {
+              if (const auto b = jget(jget(lat, k, Json::object()), "blob",
+                                      BlobRef{});
+                  !b.empty()) {
+                held.insert(b.hash.hex());
+              }
             }
           }
           return true;

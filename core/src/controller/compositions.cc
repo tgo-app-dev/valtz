@@ -3614,6 +3614,7 @@ Controller::place_in_project(ProjectId pid, AssetId asset,
         size, rate, p->name(), ""));
     project::Layer l0;
     l0.source = asset;
+    mark_guided_head_(*p, a, l0);
     VALTZ_TRY(p->set_layers(c, {l0}));
     VALTZ_TRY(p->set_composition(c));
     post_("assets.changed", JobId{}, {{"project", pid}, {"asset", c},
@@ -3680,6 +3681,7 @@ Controller::place_in_project(ProjectId pid, AssetId asset,
   it->time.in = -1;
   it->time.out = -1;
   it->time.rate = {0, 1};
+  mark_guided_head_(*p, a, *it);
   if (!paged(c)) {
     it->time.duration = 0;  // a still's pages stay its pages
   }
@@ -3698,6 +3700,29 @@ Controller::place_in_project(ProjectId pid, AssetId asset,
   post_("assets.changed", JobId{}, {{"project", pid}, {"asset", c.id},
                                     {"reason", "layers"}});
   return std::optional<AssetId>(c.id);
+}
+
+void
+Controller::mark_guided_head_(project::Project& p, const project::Asset& s,
+                              project::Layer& l)
+{
+  if (s.kind != AssetKind::Video || s.origin != project::Origin::Derived ||
+      l.time.in >= 0) {
+    return;
+  }
+  auto r = p.recipe(s.recipe);
+  if (!r.ok()) {
+    return;
+  }
+  const auto n = jget<std::int64_t>(
+      jget(r->params, "continue_guide", Json()), "frames", 0);
+  auto v = p.version(s.id);
+  if (n <= 0 || !v.ok() || v->info.frame_count <= n) {
+    return;
+  }
+  l.time.in = n;
+  l.time.rate =
+      v->info.frame_rate.num > 0 ? v->info.frame_rate : Rational{24, 1};
 }
 
 Result<std::pair<AssetId, std::string>>
@@ -3757,6 +3782,7 @@ Controller::place_result(ProjectId pid, AssetId asset,
       size, rate, claims ? p->name() : a.name, a.folder));
   project::Layer l0;
   l0.source = asset;
+  mark_guided_head_(*p, a, l0);
   VALTZ_TRY(p->set_layers(c, {l0}));
   if (claims) {
     VALTZ_TRY(p->set_composition(c));
@@ -3826,6 +3852,7 @@ Controller::instantiate(ProjectId pid, AssetId asset,
                ? ls[pos].name
                : std::string(utf8_prefix(one_line(s.name), 64));
   n.source = asset;
+  mark_guided_head_(*p, s, n);
   // A clip in a blank layer of a timeline: after what is there.
   const bool append = fill && sequenced_(t, s);
   // A still on a timeline runs a second from where it was put (its
@@ -4437,9 +4464,15 @@ Controller::continuation_guide(ProjectId pid, AssetId clip, double seconds,
   const std::int64_t off = std::max(1, jget(grid, "offset", 1));
   const std::int64_t fit = static_cast<std::int64_t>(std::floor(
       static_cast<double>(have.first) * fps / rate + 1e-6));
+  // Unasked, the length its continuations take: the tail a guided model
+  // redoes (FL2VA's 22 frames), else the one a reference model reads.
+  const Json through = jget(jget(vp, "continuation", Json::object()),
+                            "guide", Json());
   std::int64_t frames =
       seconds > 0
           ? static_cast<std::int64_t>(std::ceil(seconds * fps - 1e-6))
+      : through.is_object()
+          ? jget<std::int64_t>(through, "frames", 22)
           : jget<std::int64_t>(jget(vp, "references", Json::object()),
                                "tail_frames", 90);
   frames = frames <= off ? off : off + (frames - off + step - 1) / step * step;
@@ -4550,6 +4583,44 @@ Controller::continued_tail_(ProjectId pid, project::Project& p,
       std::llround(only->timing.source_at(from) * own_rate), 0,
       own.first - 1);
   return Tail{ContinuedTail{s.id, in, own.second}};
+}
+
+Result<std::optional<Controller::ContinuedClip>>
+Controller::continued_clip_(ProjectId pid, project::Project& p,
+                            const project::Asset& a, std::int64_t tail)
+{
+  using Clip = std::optional<ContinuedClip>;
+  if (a.kind != AssetKind::Video) {
+    return Clip{};
+  }
+  AssetId clip = a.id;
+  std::int64_t end = -1;
+  if (is_comp(a)) {
+    // A guide or a timeline: the plain clip its tail shows alone, where
+    // the tail ends in it.
+    VALTZ_ASSIGN(auto have, clip_frames_(p, a));
+    const double rate = have.second.to_double();
+    if (have.first <= 0 || rate <= 0 || tail <= 0) {
+      return Clip{};
+    }
+    const double seconds =
+        static_cast<double>(std::min(tail, have.first)) / rate;
+    VALTZ_ASSIGN(auto t, continued_tail_(pid, p, a, have.first, rate,
+                                         seconds));
+    if (!t) {
+      return Clip{};
+    }
+    clip = t->clip;
+    end = t->in + std::llround(seconds * t->rate.to_double());
+  } else if (a.cls != AssetClass::Flat && a.cls != AssetClass::Generated) {
+    return Clip{};
+  }
+  VALTZ_ASSIGN(project::AssetVersion v, p.version(clip));
+  ContinuedClip out{clip, v.content, v.info.frame_count,
+                    end < 0 ? v.info.frame_count : end,
+                    jget(v.outputs, "latents", Json())};
+  out.end = std::min(out.end, out.frames);
+  return Clip{out};
 }
 
 Result<AssetId>

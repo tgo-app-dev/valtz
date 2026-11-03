@@ -9,7 +9,14 @@ import UniformTypeIdentifiers
 @main
 struct ValtzApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @State private var model = AppModel()
+    /// The editor's windows, a project each (EditorWindows): the first
+    /// one's model made at launch.
+    @State private var windows: EditorWindows = {
+        EditorWindows.shared.launch()
+        return EditorWindows.shared
+    }()
+    /// What the menus and Settings act on: the window in front's.
+    private var model: AppModel { windows.menuModel }
 
     /// The selection's drawings, for the hook's "dsel": the one selected
     /// on the raster (its box), the lifted ones (theirs), the core's
@@ -841,15 +848,18 @@ struct ValtzApp: App {
     }
 
     var body: some Scene {
-        Window("Valtz", id: "main") {
-            RootView(model: model)
-                .frame(minWidth: model.windowMinWidth, minHeight: 620)
-                .onAppear { delegate.model = model }
+        // A window a project: several open at once (EditorWindows).
+        WindowGroup(id: "editor") {
+            EditorWindow()
         }
         .windowToolbarStyle(.unified(showsTitle: false))
-        // The first launch's; after it, the window as it was left -- and
-        // a project opened at the size it was last looked at.
+        // The first launch's; after it, the first window as it was left
+        // (its frame kept by AppKit), a later one cascaded from the one in
+        // front -- and a project opened at the size it was last looked at.
         .defaultSize(width: 1024, height: 768)
+        // A window's project is its own: none is brought back by itself
+        // at the next launch, which starts with one window.
+        .restorationBehavior(.disabled)
         .commands {
             CommandGroup(after: .appInfo) {
                 if model.updater.canCheck {
@@ -860,10 +870,16 @@ struct ValtzApp: App {
             }
             // While a closed project's tasks are being stopped, what would
             // change or close a document waits (AppModel.closingTasks).
+            // New Project… and Open… go in a window of their own -- in
+            // place of an anonymous session holding nothing
+            // (EditorWindows.open); New Anonymous Project in this one.
             CommandGroup(replacing: .newItem) {
                 Button("New Project…") { newProject() }
                     .keyboardShortcut("n")
                     .disabled(model.closingTasks != nil)
+                // Another window, an anonymous session in it.
+                Button("New Window") { windows.newWindow(.anonymous) }
+                    .keyboardShortcut("n", modifiers: [.command, .option])
                 // Private and untitled, as a browser's private window (⇧⌘N).
                 Button("New Anonymous Project") {
                     model.newAnonymousProject()
@@ -877,11 +893,14 @@ struct ValtzApp: App {
             // The project as a document (DESIGN §5b): Save writes its
             // working copy to its file; Revert to Saved goes back to it.
             CommandGroup(replacing: .saveItem) {
-                // ⌘W: the project closed, a new anonymous one in its
-                // place -- New Anonymous Project's -- the window staying.
-                // Another window in front (Settings) closes as ⌘W closes
-                // any.
-                Button("Close Project") { closeProjectOrWindow() }
+                // ⌘W: with another editor window open, this window closed
+                // (its project asked about first); the last one's project
+                // closed, a new anonymous one in its place -- New
+                // Anonymous Project's -- the window staying. Another
+                // window in front (Settings) closes as ⌘W closes any.
+                Button(windows.several ? "Close Window" : "Close Project") {
+                    closeProjectOrWindow()
+                }
                     .keyboardShortcut("w")
                     .disabled(model.closingTasks != nil)
                 Button("Save") { model.saveDocument() }
@@ -1076,15 +1095,12 @@ struct ValtzApp: App {
     }
 
     /// File › Close Project (⌘W): a window in front of the editor's --
-    /// Settings -- closed; else the project, as New Anonymous Project
-    /// closes it.
+    /// Settings -- closed; else, with another editor window open, this
+    /// one, as its close button closes it (its project asked about, its
+    /// tasks stopped); else the project, as New Anonymous Project closes
+    /// it.
     private func closeProjectOrWindow() {
-        if let w = NSApp.keyWindow, w !== model.editorWindow,
-           w.styleMask.contains(.closable) {
-            w.performClose(nil)
-            return
-        }
-        model.newAnonymousProject()
+        windows.closeWindowOrProject()
     }
 
     /// Dev aid: a mouse click, sent to `window`, on the first control in
@@ -1146,9 +1162,10 @@ struct ValtzApp: App {
         CFRunLoopWakeUp(CFRunLoopGetMain())
     }
 
-    /// The new project chosen first, then the one open closed -- asked
-    /// about, its tasks stopped (AppModel.closeProject): none is stopped
-    /// for a panel that is then cancelled.
+    /// The new project chosen first, then made in a window of its own --
+    /// in this one's place while it holds an empty anonymous session
+    /// (EditorWindows.create): nothing is closed for a panel that is then
+    /// cancelled.
     private func newProject() {
         let panel = NSSavePanel()
         panel.title = String(localized: "New Valtz Project")
@@ -1157,9 +1174,7 @@ struct ValtzApp: App {
         panel.directoryURL = model.panelFolder(.project)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         model.rememberPanel(.project, chose: url)
-        model.closeProject(.newProject) { [model] in
-            model.createProject(at: url)
-        }
+        windows.create(url)
     }
 
     private func openProject() {
@@ -1171,9 +1186,7 @@ struct ValtzApp: App {
         panel.directoryURL = model.panelFolder(.project)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         model.rememberPanel(.project, chose: url)
-        model.closeProject(.open) { [model] in
-            model.openProject(path: url.path)
-        }
+        windows.open(url)
     }
 
     /// Pictures and clips into the prompt, as its paperclip puts them.
@@ -1191,25 +1204,29 @@ struct ValtzApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// The window in front's model: the snapshot hooks' (a scripted run
+    /// has one window).
     @MainActor var model: AppModel? {
-        didSet { openPending() }
+        EditorWindows.shared.models.isEmpty ? nil
+            : EditorWindows.shared.menuModel
     }
-    /// Projects Finder asked Valtz to open -- a double-click, a drop on
-    /// its Dock icon -- held until the window's model is there.
-    @MainActor private var pending: [URL] = []
 
+    /// Projects the Finder asks Valtz to open -- a double-click, a drop on
+    /// its Dock icon: each in a window (EditorWindows.open) -- held until
+    /// the first window is there.
     func application(_ application: NSApplication, open urls: [URL]) {
-        pending += urls.filter { $0.pathExtension.lowercased() == "valtz" }
-        openPending()
+        for u in urls where u.pathExtension.lowercased() == "valtz" {
+            EditorWindows.shared.open(u)
+        }
     }
 
-    /// One window, one project: the last one asked for, once the one open
-    /// has been saved or let go.
-    @MainActor
-    private func openPending() {
-        guard let model, let url = pending.last else { return }
-        pending = []
-        model.closeProject(.open) { model.openProject(path: url.path) }
+    /// The Dock icon clicked with every window miniaturized: the one in
+    /// front back, not a new window (SwiftUI's WindowGroup would make one).
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag, let m = model, m.editorWindow != nil else { return true }
+        m.bringToFront()
+        return false
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -1365,6 +1382,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let v = env["VALTZ_SNAPSHOT_MODALITY"],
                let v = Modality(rawValue: v) { m.setModality(v) }
             if let id = env["VALTZ_SNAPSHOT_MODEL"] { m.modelChoice = id }
+            // The card's Latents row: a clip's kept with it ("1").
+            if let v = env["VALTZ_SNAPSHOT_KEEP_LATENTS"] {
+                m.keepLatents = v == "1"
+            }
             // Favor ("speed", ..., "custom": its panel opens), and
             // Custom's values ("sol_attn=true,steps=8"), as the panel
             // sets them.
@@ -2312,14 +2333,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     ClipBarMenu.opened?.cancelTracking()
                 }
                 // The clip carried on: its Continue under the stage --
-                // from its last N seconds (a guide), or "1" as it is.
+                // from its last N seconds (a guide), or "1" as it is;
+                // "latent:N" from its kept latents, "through" through
+                // its end (FL2VA).
                 if let c = env["VALTZ_SNAPSHOT_CONTINUE"] {
-                    if let s = Int(c), s >= 2 {
-                        m.continueClip(seconds: s)
-                    } else {
-                        m.continueClip()
-                    }
+                    Self.continueScripted(m, c)
                     try? await Task.sleep(for: .milliseconds(400))
+                    print("snapshot: continue \(c) refs=\(m.promptAttachments.map { $0.kind + ($0.continues ? ($0.fromLatents ? ">L" : ">") : "") }.joined(separator: ",")) model=\(m.modelChoice.isEmpty ? "auto" : m.modelChoice) running=\(m.runningModel) guided=\(m.guidedContinuation != nil)")
                 }
                 // ...and dragged from the stage into the prompt, as the
                 // picture to edit.
@@ -4162,11 +4182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // ("continue=1": as it is) -- the prompt back.
                     case "continue":
                         print("snapshot: timeline-continue can=\(m.canContinueClip)")
-                        if let s = Int(arg), s >= 2 {
-                            m.continueClip(seconds: s)
-                        } else {
-                            m.continueClip()
-                        }
+                        Self.continueScripted(m, arg)
                     // Grab Frame where the player is, the timeline open
                     // or not: the row's count before and after.
                     case "grab":
@@ -4429,6 +4445,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // "draw:<file.png>" (as AppKit draws it: no players) -- each
             // printing `snapshot: atlas <step> ...` (Self.atlasSummary).
             if let spec = env["VALTZ_SNAPSHOT_ATLAS"] {
+                // The generate node made or duplicated last ("newest").
+                var newest: String?
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
                         .map(String.init)
@@ -4555,6 +4573,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         }
                     case "editor":
                         if let id = named(arg) { m.atlasOpenInEditor(id) }
+                    // GENERATE NODES (AtlasGenerate): "gen:<asset>@image"
+                    // (video, audio) a node made from it, as its (+) makes
+                    // one; "link:<asset>@<node>", "unlink:<asset>@<node>";
+                    // "order:<node>@<asset>,<asset>" its row;
+                    // "nodeset:<node>@model=<id>,width=512,seed=7";
+                    // "nodestart:", "nodedup:", "noderm:", "nodeopen:"
+                    // <node>; "nodeclose"; "nodetune" its Custom panel;
+                    // "plus:<asset>" what its (+) menu offers -- <node>
+                    // "newest", or its id's end.
+                    case "gen", "link", "unlink", "order", "nodeset",
+                         "nodestart", "nodedup", "noderm", "nodeopen",
+                         "plus":
+                        let p = arg.split(separator: "@", maxSplits: 1)
+                            .map(String.init)
+                        let node = { (s: String) -> String? in
+                            if s == "newest" { return newest }
+                            return m.atlas?.graph.nodes.compactMap(\.generate)
+                                .first { $0.id == s || $0.id.hasSuffix(s) }?.id
+                        }
+                        switch kv[0] {
+                        case "gen":
+                            if p.count == 2, let a = named(p[0]) {
+                                m.atlasNewGeneration(p[1], from: a)
+                                newest = m.atlasNodeOpen
+                            }
+                        case "link", "unlink":
+                            if p.count == 2, let a = named(p[0]),
+                               let n = node(p[1]) {
+                                if kv[0] == "link" { m.atlasLink(a, to: n) }
+                                else { m.atlasUnlink(a, from: n) }
+                            }
+                        case "order":
+                            if p.count == 2, let n = node(p[0]) {
+                                m.atlasOrder(n, p[1].split(separator: ",")
+                                    .compactMap { named(String($0)) })
+                            }
+                        case "nodeset":
+                            if p.count == 2, let n = node(p[0]) {
+                                var set: [String: Any] = [:]
+                                for kv in p[1].split(separator: ",") {
+                                    let x = kv.split(separator: "=",
+                                                     maxSplits: 1)
+                                        .map(String.init)
+                                    guard x.count == 2 else { continue }
+                                    if let i = Int64(x[1]) { set[x[0]] = i }
+                                    else if let d = Double(x[1]) {
+                                        set[x[0]] = d
+                                    } else if x[1] == "true"
+                                                || x[1] == "false" {
+                                        set[x[0]] = x[1] == "true"
+                                    } else { set[x[0]] = x[1] }
+                                }
+                                m.atlasSetNode(n, set)
+                            }
+                        case "nodestart":
+                            if let n = node(arg) { m.atlasStartNode(n) }
+                        case "nodedup":
+                            if let n = node(arg) {
+                                m.atlasDuplicateNode(n)
+                                newest = m.atlasNodeOpen
+                            }
+                        case "noderm":
+                            if let n = node(arg) { m.atlasRemoveNode(n) }
+                        case "nodeopen": m.atlasNodeOpen = node(arg)
+                        default:
+                            if let a = named(arg).flatMap(m.asset(id:)) {
+                                let into = m.atlasDrafts.filter {
+                                    m.atlasCanLink(a, to: $0)
+                                }.map { String($0.id.suffix(6)) }
+                                FileHandle.standardError.write(Data(
+                                    "snapshot: atlas-plus \(a.name.replacingOccurrences(of: " ", with: "_")) new=\(AppModel.atlasTargets(for: a.kind).joined(separator: "+")) link=\(into.joined(separator: "+"))\n".utf8))
+                            }
+                        }
+                    case "nodeclose": m.atlasNodeOpen = nil
+                    case "nodetune": m.atlasNodeTuneOpen.toggle()
                     case "shot": await Self.shootWindow(to: arg)
                     case "draw": Self.drawWindow(to: arg)
                     default: break
@@ -4620,6 +4713,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // set them before Start: "size:1920x1088",
                     // "length:10" (or "100 frames"), "modality:video".
                     case "size": m.setCustomSize(arg)
+                    // Keys typed into what has the keyboard (a field
+                    // clicked first): "type:1344x768", no Return.
+                    case "type": Self.sendKeys(m, arg)
+                    // ⌘A in what has the keyboard (a field clicked).
+                    case "selectall":
+                        (m.editorWindow?.firstResponder as? NSText)?
+                            .selectAll(nil)
                     case "length":
                         if let n = Int(arg),
                            AppModel.clipLengths.contains(n) {
@@ -4797,6 +4897,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // "timeline:open|close": View › Timeline, between
                     // the other steps.
                     case "timeline": m.showTimeline(arg == "open")
+                    // "editor": into the Prompt Editor, or back out of it
+                    // (its small stage a player of its own).
+                    case "editor":
+                        withAnimation(AppModel.motion) {
+                            m.toggleImmersivePrompt()
+                        }
                     // "land:<asset id>|newest-video|newest-image": that
                     // asset landing as a result does, not watched -- a
                     // new layer of the active composition, then what
@@ -5320,6 +5426,173 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // first (VALTZ_SNAPSHOT_CLOSE answers), Cancel keeping it.
         // "cancel" | "discard" | "save:<path>": that close's answer
         // (the run's own quit takes VALTZ_SNAPSHOT_CLOSE's).
+        // Several editor WINDOWS (EditorWindows), in turn: "new" another
+        // window (File › New Window), "open:<pkg>" / "create:<pkg>" as
+        // Open… and New Project… place one, "front:<i>" window i in front,
+        // "cmdw" File › Close's ⌘W, "close:<i>" window i's close button,
+        // "prompt:<words>" words in the front one's box, "attach:<file>"
+        // a file staged in its row (an asset: it holds work), "stage" its
+        // newest picture on its stage, "markup:<ops>" its markup toolbar's
+        // MARKUP_OPS steps ("|" between), "cmdv" ⌘V posted to its window,
+        // "menupaste" Edit › Paste down its responder chain (printing
+        // `snapshot: windows-paste target=`), "unfocus" no view with its
+        // keyboard, "focusprompt" the keyboard in its prompt, "markups"
+        // what its stage holds of markup (`snapshot: windows-markups
+        // open= ready= stage= canvas= selected= banner= layers=<id>:
+        // <kind@x,y+...>`), "wait:<s>" -- each printing `snapshot: windows
+        // <step> count= visible= front= menu= item= active= sessions=
+        // list=<i>:<title>:<anon|named>:<shown>:<assets>` (item: File ›
+        // Close's title).
+        if let spec = env["VALTZ_SNAPSHOT_WINDOWS"] {
+            let ws = EditorWindows.shared
+            for step in spec.split(separator: ";").map(String.init) {
+                let kv = step.split(separator: ":", maxSplits: 1)
+                    .map(String.init)
+                let arg = kv.count > 1 ? kv[1] : ""
+                let at = Int(arg).flatMap {
+                    ws.models.indices.contains($0) ? ws.models[$0] : nil
+                }
+                switch kv[0] {
+                case "new": ws.newWindow(.anonymous)
+                case "open": ws.open(URL(fileURLWithPath: arg))
+                case "create": ws.create(URL(fileURLWithPath: arg))
+                case "front": at?.bringToFront()
+                case "cmdw": ws.closeWindowOrProject()
+                case "close": at?.editorWindow?.performClose(nil)
+                case "prompt": ws.menuModel.setPrompt(arg)
+                case "attach":
+                    ws.menuModel.addReferences([URL(fileURLWithPath: arg)])
+                case "cmdv":
+                    // ⌘V posted to the front one's window, as typed.
+                    let m = ws.menuModel
+                    if let w = m.editorWindow,
+                       let ev = NSEvent.keyEvent(
+                           with: .keyDown, location: .zero,
+                           modifierFlags: [.command], timestamp: 0,
+                           windowNumber: w.windowNumber, context: nil,
+                           characters: "v", charactersIgnoringModifiers: "v",
+                           isARepeat: false, keyCode: 9) {
+                        NSApp.postEvent(ev, atStart: false)
+                    }
+                case "menupaste":
+                    // Edit › Paste as the menu sends it: down the front
+                    // window's responder chain, to whatever takes it.
+                    let m = ws.menuModel
+                    let sel = #selector(NSText.paste(_:))
+                    var target = "-"
+                    var r: NSResponder? = m.editorWindow?.firstResponder
+                    while let x = r, !x.responds(to: sel) { r = x.nextResponder }
+                    if let x = r {
+                        target = String(describing: type(of: x))
+                        _ = NSApp.sendAction(sel, to: x, from: nil)
+                    } else if let d = m.editorWindow?.delegate,
+                              d.responds(to: sel) {
+                        target = String(describing: type(of: d))
+                        let item = NSMenuItem(title: "Paste", action: sel,
+                                              keyEquivalent: "v")
+                        let ok = (d as? NSMenuItemValidation)?
+                            .validateMenuItem(item) ?? false
+                        target += ok ? ":enabled" : ":disabled"
+                        if ok { _ = NSApp.sendAction(sel, to: d, from: nil) }
+                    }
+                    FileHandle.standardError.write(Data(
+                        "snapshot: windows-paste target=\(target)\n".utf8))
+                case "unfocus":
+                    ws.menuModel.editorWindow?.makeFirstResponder(nil)
+                case "focusprompt":
+                    let m = ws.menuModel
+                    m.focusPrompt(m.modality)
+                case "markups":
+                    // What the front one's stage holds of markup.
+                    let m = ws.menuModel
+                    let st = m.stageStack
+                    let f = st?.canvas.flatMap { c in
+                        c.fw.map { "\($0)x\(c.fh ?? 0)" } } ?? "-"
+                    var layers: [String] = []
+                    for l in st?.layerStack ?? [] {
+                        guard let mk = l.markup else { continue }
+                        let objs = mk.objects.map {
+                            "\($0.kind.rawValue)@\(Int($0.x0)),\(Int($0.y0))"
+                        }.joined(separator: "+")
+                        let raster = mk.raster.isEmpty ? "" : "+raster"
+                        layers.append("\(l.id):\(objs.isEmpty ? "-" : objs)\(raster)")
+                    }
+                    let sel = m.markup.selection.map(\.kind.rawValue)
+                        .joined(separator: "+")
+                    let line: String = "snapshot: windows-markups "
+                        + "open=\(m.markupOpen) ready=\(m.markupReady) "
+                        + "stage=\(st?.name ?? "-"):\(st?.kind ?? "-") "
+                        + "canvas=\(f) projects=\(m.projectViews.count) "
+                        + "selected=\(sel.isEmpty ? "-" : sel) "
+                        + "banner=\(m.banner ?? "-") "
+                        + "layers=\(layers.joined(separator: ","))\n"
+                    FileHandle.standardError.write(Data(line.utf8))
+                case "stage":
+                    // The front one's newest picture on its stage.
+                    let m = ws.menuModel
+                    if let a = m.assets.last(where: {
+                        $0.head > 0 && !$0.isDrawn && $0.kind == "image"
+                    }) {
+                        m.putOnStage(a)
+                    }
+                case "markup":
+                    // Its markup toolbar's steps, as MARKUP_OPS's ("|").
+                    let m = ws.menuModel
+                    m.markupOpen = true
+                    try? await Task.sleep(for: .milliseconds(300))
+                    for op in arg.split(separator: "|") {
+                        await ValtzApp.markupStep(m, String(op))
+                        try? await Task.sleep(for: .milliseconds(450))
+                    }
+                case "wait":
+                    try? await Task.sleep(for: .seconds(Double(arg) ?? 1))
+                default: break
+                }
+                try? await Task.sleep(for: .seconds(1.5))
+                let front = ws.models.firstIndex { $0 === ws.front }
+                    .map(String.init) ?? "-"
+                let list = ws.models.enumerated().map { i, m in
+                    let w = m.editorWindow
+                    let shown = w == nil ? "-"
+                        : w!.isMiniaturized ? "mini"
+                        : w!.isVisible ? "shown" : "hidden"
+                    let title: String = m.windowTitle
+                        .replacingOccurrences(of: " ", with: "_")
+                    let kind: String = m.isAnonymous ? "anon" : "named"
+                    return "\(i):\(title):\(kind):\(shown):\(m.assets.count)"
+                }.joined(separator: ",")
+                let sessions = ((try? FileManager.default
+                    .contentsOfDirectory(atPath: AppModel.sessionRoot.path))
+                    ?? []).filter { !$0.hasSuffix(".lock") }.count
+                let editors = NSApp.windows.filter {
+                    ws.isEditor($0) && $0.isVisible
+                }.count
+                // File › Close's title as the menu has it now.
+                var item = "-"
+                for top in NSApp.mainMenu?.items ?? [] {
+                    // As it opens: SwiftUI brings a menu up to date then.
+                    if let sm = top.submenu {
+                        sm.delegate?.menuNeedsUpdate?(sm)
+                        sm.update()
+                    }
+                    for i in top.submenu?.items ?? []
+                    where i.keyEquivalent == "w"
+                        && i.keyEquivalentModifierMask == .command {
+                        item = i.title.replacingOccurrences(of: " ",
+                                                            with: "_")
+                    }
+                }
+                let menu: String = ws.several ? "Close_Window"
+                    : "Close_Project"
+                let active: Bool = NSApp.isActive
+                let count: Int = ws.models.count
+                let line: String = "snapshot: windows \(step) count=\(count) "
+                    + "visible=\(editors) front=\(front) menu=\(menu) "
+                    + "item=\(item) active=\(active) sessions=\(sessions) "
+                    + "list=\(list)\n"
+                FileHandle.standardError.write(Data(line.utf8))
+            }
+        }
         if let m = model, let a = env["VALTZ_SNAPSHOT_CLOSE_WINDOW"],
            let w = m.editorWindow {
             let guarded = w.delegate is WindowCloseGuard
@@ -6775,7 +7048,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "promptText=\(m.prompt.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "\n", with: "|")) "
                 + "immersive=\(m.promptImmersive) editorEdited=\(m.editorEdited) tabs=\(m.promptTabs.count) activeTab=\(m.activePromptTab) tabTitles=\(m.promptTabs.indices.map { m.promptTabTitle($0).replacingOccurrences(of: " ", with: "_") }.joined(separator: "|")) markdown=\(m.promptMarkdown) "
                 + "promptAsset=\(m.promptAssetId ?? "-") unbound=\(m.unboundRefTags.joined(separator: ",")) refTags=\(AppModel.refTags(in: m.prompt).count) prompts=\(m.assets.filter(\.isPrompt).count) "
-                + "references=\(m.usesReferences) badges=\(m.promptAttachments.map { (m.referenceBadge($0) ?? "-") + ($0.continues ? ">" : "") }.joined(separator: ",")) canContinue=\(m.canContinueClip) guides=\(m.guideLengths.map { "\($0.asked):\($0.frames)" }.joined(separator: ",")) running=\(m.runningModel) clipRows=\(m.activeModality == .video && m.modalityRuns) canStart=\(m.canStart) "
+                + "references=\(m.usesReferences) badges=\(m.promptAttachments.map { (m.referenceBadge($0) ?? "-") + ($0.continues ? ($0.fromLatents ? ">L" : ">") : "") }.joined(separator: ",")) canContinue=\(m.canContinueClip) latentRow=\(m.offersKeepLatents ? (m.keepLatents ? "on" : "off") : "-") guides=\(m.guideLengths.map { "\($0.asked):\($0.frames)" }.joined(separator: ",")) running=\(m.runningModel) clipRows=\(m.activeModality == .video && m.modalityRuns) canStart=\(m.canStart) "
                 + "trayLead=\(trayLead) keyframes=\(keyframes) preset=\(preset) "
                 + "songPlan=\(m.songPlan.rawValue) songLength=\(m.songSeconds.map(String.init) ?? "auto") "
                 + "lyrics=\(m.songWords.sections)s/\(m.songWords.lines)l style=\(m.songWords.style.replacingOccurrences(of: " ", with: "_")) "
@@ -7266,7 +7539,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let b2 = "\(view) ns=\(ns) \(pop) markdown=\(m.promptMarkdown)"
         let c = "assets=\(assets.joined(separator: ",")) ops=\(ops.joined(separator: ","))"
         let d = "stage=\(name(m.stageAssetId)) banner=\((m.banner ?? "-").replacingOccurrences(of: " ", with: "_"))"
-        return [a, b, b2, c, d].joined(separator: " ")
+        // Generate nodes: <id's end>:<target>:<state>:<model>:p<prompt>:
+        // r<row>:s<seed>@<column>, the one opened out, its ⓧ links.
+        var gens: [String] = []
+        for n in g.graph.nodes {
+            guard let x = n.generate else { continue }
+            let state: String = switch m.atlasRun(x) {
+            case .draft: "draft"
+            case .working(let t): t.running ? "running" : "queued"
+            case .made: "made"
+            case .failed: "failed"
+            case .gone: "gone"
+            }
+            let seed = x.started.map { "\($0.seed)" + ($0.seedGiven == true ? "!" : "") }
+                ?? (x.seed < 0 ? "random" : String(x.seed))
+            let row = x.refs.map { name($0) }.joined(separator: "+")
+            gens.append("\(x.id.suffix(6)):\(x.target):\(state):\(x.started?.model ?? (x.model.isEmpty ? "auto" : x.model)):\(x.preference)\(x.custom ? "+custom" : ""):\(x.width)x\(x.height):p\(name(x.prompt)):r\(row.isEmpty ? "-" : row):s\(seed)@\(n.type == "generate" ? "g" : "op>\(name(n.into))")\(n.column)")
+        }
+        let cutCount = g.ends.indices.filter {
+            let to = g.graph.nodes[g.ends[$0].1]
+            return to.type == "generate" && to.generate?.started == nil
+        }.count
+        let e = "gen=\(gens.isEmpty ? "-" : gens.joined(separator: ",")) open=\(m.atlasNodeOpen.map { String($0.suffix(6)) } ?? "-") tune=\(m.atlasNodeTuneOpen && m.atlasNodeTuning != nil ? (m.atlasNodeTuning?.tuningInfo?.tuning.numbers["steps"]).map { "steps\(Int($0))" } ?? "on" : "-") cuts=\(cutCount)"
+        return [a, b, b2, c, d, e].joined(separator: " ")
+    }
+
+    /// A scripted Continue: "N" (2 and up) its last N seconds as a
+    /// reference, "latent:N" from the latents it kept, "through" through
+    /// its end (FL2VA, by them), anything else the clip as it is.
+    @MainActor
+    static func continueScripted(_ m: AppModel, _ how: String) {
+        if how == "through" {
+            m.continueClip(method: .through)
+        } else if how.hasPrefix("latent:"), let s = Int(how.dropFirst(7)) {
+            m.continueClip(seconds: s, method: .latents)
+        } else if let s = Int(how), s >= 2 {
+            m.continueClip(seconds: s)
+        } else {
+            m.continueClip()
+        }
     }
 
     /// The timeline as it is: "open=true rows=3 zoom=1.00 frame=48/120
@@ -7782,45 +8093,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(
         _ sender: NSApplication
     ) -> Bool {
-        MainActor.assumeIsolated { model?.editorWasShown ?? false }
+        MainActor.assumeIsolated {
+            EditorWindows.shared.models.contains { $0.editorWasShown }
+        }
     }
 
     /// Unsaved changes: saved, let go, or the quit cancelled. Tasks under
     /// way: asked about, and -- agreed -- stopped before Valtz quits, the
     /// window veiled meanwhile (AppModel.prepareClose): the quit waits.
+    /// Every window's, in turn (EditorWindows.quitReply): one asked
+    /// already, as its window closed, is not asked again.
     @MainActor
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
-        guard let m = model else { return .terminateNow }
-        // Asked already, as its window closed.
-        if m.closeConfirmed { return .terminateNow }
-        switch m.prepareClose(.quit, then: { ok in
-            if ok { m.closeForQuit() }
-            NSApp.reply(toApplicationShouldTerminate: ok)
-        }) {
-        case .proceed:
-            m.closeForQuit()
-            return .terminateNow
-        case .cancelled:
-            return .terminateCancel
-        case .waiting:
-            return .terminateLater
-        }
+        EditorWindows.shared.quitReply()
     }
 
     /// Back in front: a linked original may have moved or changed while
     /// Valtz was not -- which the project's records do not say.
     @MainActor
     func applicationDidBecomeActive(_ notification: Notification) {
-        model?.recheckLinks()
+        for m in EditorWindows.shared.models { m.recheckLinks() }
     }
 
     @MainActor
     func applicationWillTerminate(_ notification: Notification) {
         // Stop the engine (finishing or cancelling the running job) and
         // close the project databases before the process exits.
-        model?.shutdown()
+        EditorWindows.shared.shutdown()
     }
 }
 

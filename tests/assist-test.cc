@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "valtz/assist/assistant.h"
+#include "valtz/assist/micro.h"
 #include "valtz/assist/drama3.h"
 #include "valtz/assist/moss-image.h"
 #include "valtz/assist/segments.h"
@@ -1200,6 +1201,70 @@ TEST(assist, a_refine_s_words_are_made_from_the_prompt)
   CHECK(refine_prompt("a <b>bold</b> <Picture x>") ==
         "a <b>bold</b> <Picture x>");
   CHECK(refine_prompt("  ").empty());
+}
+
+// THE MICRO AGENT's name for a prompt (DESIGN §9c): asked of its words
+// alone -- segments, Markdown and the row's tags as words -- and its
+// reply read leniently: a label, quotes, end punctuation off; a sentence
+// is no title.
+TEST(assist, a_micro_agents_name_is_asked_and_read)
+{
+  const std::string q = micro_name_request(
+      "**A red fox** beside <valtz_ref_img_0> in the snow\n\n"
+      "regenerate_prompt: not for it");
+  CHECK(q.find("A red fox beside picture 1 in the snow") !=
+        std::string::npos);
+  CHECK(q.find("regenerate_prompt") == std::string::npos);
+  CHECK(q.find("**") == std::string::npos);
+  CHECK(micro_name("Fox in the Snow") == "Fox in the Snow");
+  CHECK(micro_name("\n  Title: \"Fox at Dawn.\"\nmore") == "Fox at Dawn");
+  CHECK(micro_name("**Fox at Dawn**") == "Fox at Dawn");
+  CHECK(micro_name("\xe2\x80\x9c\xe9\x9b\xaa\xe5\x9c\xb0\xe7\x8b\x90"
+                   "\xe7\x8b\xb8\xe3\x80\x82\xe2\x80\x9d") ==
+        "\xe9\x9b\xaa\xe5\x9c\xb0\xe7\x8b\x90\xe7\x8b\xb8");
+  CHECK(micro_name("A red fox trotting through fresh snow at dawn while "
+                   "the camera tracks beside it")
+            .empty());
+  CHECK(micro_name("  \n ").empty());
+  CHECK(micro_name("\"\"").empty());
+}
+
+// A Ref2VA clip's words for its 2K pass, with the micro agent (DESIGN
+// §9c): asked only what each picture shows -- a casting note's phrase --
+// its reply read leniently (a pose or a place left out, an article put
+// before it), the phrases put in the labels' place by Valtz, the
+// prompt's action as it was.
+TEST(assist, a_micro_agents_pictures_take_the_labels_place)
+{
+  const std::string q = micro_refine_request(2);
+  CHECK(q.find("Picture 1 to Picture 2") != std::string::npos);
+  CHECK(q.find("Picture 2: <phrase>") != std::string::npos);
+  CHECK(micro_refine_request(1).find("Picture 1: <phrase>\n") !=
+        std::string::npos);
+  const auto ph = micro_pictures(
+      "Here:\n* Picture 2: A sleeping orange fox with white markings, "
+      "curled up in the snow.\nPicture 1: red fox with thick fur, "
+      "black-tipped ears\nPicture 3: out of range", 2);
+  REQUIRE(ph.size() == 2);
+  CHECK(ph[0] == "a red fox with thick fur, black-tipped ears");
+  CHECK(ph[1] == "an orange fox with white markings");
+  CHECK(micro_pictures("nothing", 1) == std::vector<std::string>{""});
+  CHECK(micro_refine_words(
+            "<Picture 1> wakes up. Then <Picture 2> trots after "
+            "<Picture 1>'s tail.", ph) ==
+        "A red fox with thick fur, black-tipped ears wakes up. Then an "
+        "orange fox with white markings trots after a red fox with thick "
+        "fur, black-tipped ears's tail.");
+  // The full-reference six as the base three, the labels the phrases.
+  CHECK(micro_refine_words(
+            "subject_definitions:\n<Subject 1> is <Picture 1>.\n\n"
+            "detailed_description:\n[Shot 1] <Subject 1> runs.\n\n"
+            "overall_soundscape:\nWind.",
+            {"a red fox"}) ==
+        "integrated_multimodal_description: subject 1 is a red fox.\n"
+        "[Shot 1] subject 1 runs.\n\noverall_soundscape: Wind.");
+  // No phrase: no words of the micro agent's.
+  CHECK(micro_refine_words("<Picture 1> runs.", {""}).empty());
 }
 
 // A Ref2VA clip refined on another model: the enhancer is asked for its

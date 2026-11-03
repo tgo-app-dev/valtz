@@ -6549,6 +6549,12 @@ TEST(composition, a_timeline_is_continued_from_its_clip_not_itself)
   CHECK(guide->layers[0].source == *clip);
   CHECK(guide->layers[0].time.in == 48 - 39);
   CHECK(*ctl.composition_length(pid, *gid) == 39);
+  // Unasked, a guided model's length: the 22 frames FL2VA redoes.
+  auto through = ctl.continuation_guide(pid, *tl, 0, "minimax-h3-fl2va",
+                                        "through", "frozen");
+  REQUIRE_OK(through);
+  CHECK(jget<std::int64_t>(*through, "frames", 0) == 22);
+  CHECK(jget<std::string>(*through, "shows", "") == clip->str());
   // Its continuation (the clip again, here) landing after it: the
   // length grown to hold it.
   auto landed = ctl.place_result(pid, *clip, *tl, std::nullopt, 48);
@@ -7295,6 +7301,197 @@ TEST(composition, a_timelines_last_layer_goes_a_blank_in_its_place)
   REQUIRE(ls.size() == 1);
   CHECK(!ls[0].source);
 }
+// A GENERATE NODE (DESIGN §10a Atlas): set up from the assets -- one
+// text its prompt, pictures its row, a second text and a sound refused
+// -- its row reordered, its model and size set, drawn after its inputs
+// with each place on its edge; started, the editor's request (the row's
+// first picture the one edited, the prompt pinned, the seed written in)
+// and frozen, drawn as its result's op; duplicated a draft again, a new
+// take; the start undone a draft once more.
+TEST(composition, a_generate_node_is_set_up_linked_and_started)
+{
+  auto root = test::temp_dir("gen-node");
+  const fs::path models = root / "models";
+  fs::create_directories(models / "krea" / "Krea-2-Turbo");
+  std::ofstream(models / "krea" / "Krea-2-Turbo" / "model.safetensors")
+      << "w";
+  fake_pipeline(models / "black-forest-labs" / "flux-3-image-klein",
+                "Flux3Pipeline", "Flux3Transformer2DModel");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "G.valtz", "gen");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 16, 16, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_png(root / "blue.png", 16, 16, {0, 0, 0xff, 0xff}));
+  REQUIRE(write_tone(root / "tone.wav", 1, 440, 0.5));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  auto blue = import_and_wait(ctl, *pid, root / "blue.png");
+  auto tone = import_and_wait(ctl, *pid, root / "tone.wav");
+  REQUIRE(red && blue && tone);
+  auto words = ctl.capture_prompt(*pid, "the fox from <valtz_ref_img_1>",
+                                  {}, {}, std::nullopt, "");
+  auto other = ctl.capture_prompt(*pid, "another idea", {}, {},
+                                  std::nullopt, "");
+  REQUIRE_OK(words);
+  REQUIRE_OK(other);
+  auto op = [&](Json req) { return ctl.generate_node_op(*pid, req); };
+
+  auto added = op({{"action", "add"}, {"target", "image"},
+                   {"assets", {words->str(), red->str()}}});
+  REQUIRE_OK(added);
+  const std::string id = (*added)["node"]["id"].get<std::string>();
+  CHECK((*added)["node"]["prompt"] == words->str());
+  CHECK((*added)["node"]["refs"] == Json::array({red->str()}));
+  // One text: a second refused, naming the first; a sound no picture's.
+  auto second = op({{"action", "link"}, {"node", id},
+                    {"asset", other->str()}});
+  REQUIRE(!second.ok());
+  CHECK(second.error().message.find("one text") != std::string::npos);
+  auto sound = op({{"action", "link"}, {"node", id},
+                   {"asset", tone->str()}});
+  REQUIRE(!sound.ok());
+  CHECK(sound.error().key == msg::kGeneratePictureRow.key);
+  REQUIRE_OK(op({{"action", "link"}, {"node", id}, {"asset", blue->str()}}));
+  CHECK(!op({{"action", "link"}, {"node", id}, {"asset", red->str()}}).ok());
+  // Reordered: the same, once each.
+  CHECK(!op({{"action", "order"}, {"node", id},
+             {"refs", {blue->str()}}}).ok());
+  REQUIRE_OK(op({{"action", "order"}, {"node", id},
+                 {"refs", {blue->str(), red->str()}}}));
+  CHECK(!op({{"action", "set"}, {"node", id},
+             {"settings", {{"colour", 1}}}}).ok());
+  CHECK(!op({{"action", "set"}, {"node", id},
+             {"settings", {{"model", "no-such-model"}}}}).ok());
+  REQUIRE_OK(op({{"action", "set"}, {"node", id},
+                 {"settings", {{"model", "flux3-klein"}, {"width", 512},
+                               {"height", 512}}}}));
+
+  // Drawn after its inputs: the prompt, then the row by its places.
+  auto graph = ctl.atlas(*pid);
+  REQUIRE_OK(graph);
+  auto node_of = [](const Json& g, const std::string& nid) {
+    for (const auto& n : g["nodes"]) {
+      if (n["id"] == nid) {
+        return n;
+      }
+    }
+    return Json();
+  };
+  auto edge_of = [](const Json& g, const std::string& from,
+                    const std::string& to) {
+    for (const auto& e : g["edges"]) {
+      if (e["from"] == from && e["to"] == to) {
+        return e;
+      }
+    }
+    return Json();
+  };
+  const Json g = node_of(*graph, "g:" + id);
+  REQUIRE(g.is_object());
+  CHECK(g["type"] == "generate");
+  CHECK(g["generate"]["model"] == "flux3-klein");
+  CHECK(g["column"].get<int>() >
+        node_of(*graph, "a:" + red->str())["column"].get<int>());
+  CHECK(edge_of(*graph, "a:" + words->str(), "g:" + id)["role"] == "prompt");
+  CHECK(edge_of(*graph, "a:" + blue->str(), "g:" + id)["index"] == 0);
+  CHECK(edge_of(*graph, "a:" + red->str(), "g:" + id)["index"] == 1);
+  CHECK(!jget(node_of(*graph, "a:" + blue->str()), "leaf", true));
+
+  // Started: the editor's request, frozen.
+  auto started = op({{"action", "start"}, {"node", id}});
+  REQUIRE_OK(started);
+  const auto job = JobId::parse((*started)["job"].get<std::string>());
+  const auto result = AssetId::parse((*started)["asset"].get<std::string>());
+  REQUIRE(job && result);
+  const engine::JobSpec* spec = engine->spec(*job);
+  REQUIRE(spec != nullptr);
+  CHECK(spec->model.id == "flux3-klein");
+  const Json st = (*started)["node"]["started"];
+  CHECK(st["asset"] == result->str());
+  CHECK(st["model"] == "flux3-klein");
+  CHECK(!st["seed_given"].get<bool>());
+  CHECK(st["seed"].get<std::int64_t>() >= 0);
+  project::Project* p = ctl.project(*pid);
+  auto res = p->asset(*result);
+  REQUIRE_OK(res);
+  auto recipe = p->recipe(res->recipe);
+  REQUIRE_OK(recipe);
+  CHECK(jget<std::int64_t>(recipe->params, "seed", -2) ==
+        st["seed"].get<std::int64_t>());
+  std::map<std::string, std::string> inputs;
+  for (const auto& in : recipe->inputs) {
+    inputs[in.role] = in.asset.str();
+  }
+  CHECK(inputs["prompt"] == words->str());
+  CHECK(inputs["base"] == blue->str());
+  CHECK(inputs["reference"] == red->str());
+  auto frozen = op({{"action", "set"}, {"node", id},
+                    {"settings", {{"seed", 7}}}});
+  REQUIRE(!frozen.ok());
+  CHECK(frozen.error().message.find("duplicate") != std::string::npos);
+  CHECK(!op({{"action", "unlink"}, {"node", id},
+             {"asset", red->str()}}).ok());
+  CHECK(!op({{"action", "start"}, {"node", id}}).ok());
+  graph = ctl.atlas(*pid);
+  REQUIRE_OK(graph);
+  CHECK(node_of(*graph, "g:" + id).is_null());
+  CHECK(node_of(*graph, "r:" + result->str())["generate"]["id"] == id);
+
+  // Duplicated: a draft of the same, a new take (no seed was given).
+  auto dup = op({{"action", "duplicate"}, {"node", id}});
+  REQUIRE_OK(dup);
+  const Json d = (*dup)["node"];
+  CHECK(d["id"] != id);
+  CHECK(!d.contains("started"));
+  CHECK(d["seed"] == -1);
+  CHECK(d["model"] == "flux3-klein");
+  CHECK(d["refs"] == Json::array({blue->str(), red->str()}));
+  CHECK(d["prompt"] == words->str());
+  // A seed given goes along.
+  REQUIRE_OK(op({{"action", "set"}, {"node", d["id"]},
+                 {"settings", {{"seed", 42}}}}));
+  auto again = op({{"action", "start"}, {"node", d["id"]}});
+  REQUIRE_OK(again);
+  CHECK((*again)["node"]["started"]["seed"] == 42);
+  CHECK((*again)["node"]["started"]["seed_given"] == true);
+  auto dup2 = op({{"action", "duplicate"}, {"node", d["id"]}});
+  REQUIRE_OK(dup2);
+  CHECK((*dup2)["node"]["seed"] == 42);
+  // A draft duplicated keeps its own seed.
+  auto dup3 = op({{"action", "duplicate"}, {"node", (*dup2)["node"]["id"]}});
+  REQUIRE_OK(dup3);
+  CHECK((*dup3)["node"]["seed"] == 42);
+  REQUIRE_OK(ctl.undo(*pid));
+
+  // Undone: the duplicate gone, the second start's task withdrawn and
+  // its node a draft again.
+  REQUIRE_OK(ctl.undo(*pid));
+  REQUIRE_OK(ctl.undo(*pid));
+  auto nodes = ctl.generate_nodes(*pid);
+  REQUIRE_OK(nodes);
+  REQUIRE(nodes->size() == 2);
+  CHECK((*nodes)[0].contains("started"));
+  CHECK(!(*nodes)[1].contains("started"));
+  CHECK((*nodes)[1]["seed"] == 42);
+  REQUIRE_OK(op({{"action", "remove"}, {"node", (*nodes)[1]["id"]}}));
+  nodes = ctl.generate_nodes(*pid);
+  REQUIRE_OK(nodes);
+  CHECK(nodes->size() == 1);
+}
+
 
 TEST(composition, the_atlas_lays_out_what_each_asset_is_made_from)
 {
@@ -9808,6 +10005,10 @@ struct RegenBench {
       install(r + "latent_upsampler/"
                   "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors");
       install(r + "vae_fast/fast_h3_vae_noncausal_24l.safetensors");
+      // VDN's branch, which the refine may run in Sol's place.
+      install("OpenVDN/vdn-minimax-h3/stage-dmd-step-250/model_spec.json");
+      install("OpenVDN/vdn-minimax-h3/stage-dmd-step-250/linear_branch/"
+              "model.safetensors");
     }
     if (ref2va) {
       install("MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors");
@@ -9977,6 +10178,22 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
   CHECK(s->params["draft"] == Json({{"width", 1344}, {"height", 768}}));
   CHECK(s->model.fast_decoder.filename() ==
         "fast_h3_vae_noncausal_24l.safetensors");
+  CHECK(s->model.regenerate_branch.empty());
+  // VDN in Sol's place for the refine (Settings › Upscaling): the
+  // branch's folder for the refine's DiT, Sol off, its reach recorded.
+  REQUIRE_OK(b.ctl->set_upscale_tuning("open-h3-regenerate-2k",
+                                       {{"vdn", true}, {"vdn_range", 2}}));
+  REQUIRE_OK(ask(b, 1920, 1088));
+  s = b.job(engine::kOpGenerateVideo, 6);
+  REQUIRE(s != nullptr);
+  CHECK(s->model.regenerate_branch.filename() == "stage-dmd-step-250");
+  CHECK(s->model.branch.empty());
+  CHECK(jget(s->params["regenerate_tuning"], "vdn", false));
+  CHECK(jget(s->params["regenerate_tuning"], "vdn_range", 0) == 2);
+  CHECK(!jget(s->params["regenerate_tuning"], "sol_attn", true));
+  REQUIRE_OK(b.ctl->set_upscale_tuning("open-h3-regenerate-2k",
+                                       {{"vdn", false},
+                                        {"fast_decoder", true}}));
   // The refine's options in FL2VA's Custom, preset at Settings ›
   // Upscaling's values; Custom's own sent with the request become the
   // refine's -- out of the model's tuning.
@@ -9996,7 +10213,7 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
                    {"regenerate_i8_gemm_tier", "token"},
                    {"regenerate_fast_decoder", false}};
   REQUIRE_OK(b.ctl->generate_video(custom));
-  s = b.job(engine::kOpGenerateVideo, 6);
+  s = b.job(engine::kOpGenerateVideo, 7);
   REQUIRE(s != nullptr);
   const Json rt = s->params["regenerate_tuning"];
   CHECK(jget(rt, "i8_gemm", false));
@@ -10013,7 +10230,7 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
   GenerateVideoRequest quiet = custom;
   quiet.preview = false;
   REQUIRE_OK(b.ctl->generate_video(quiet));
-  s = b.job(engine::kOpGenerateVideo, 7);
+  s = b.job(engine::kOpGenerateVideo, 8);
   REQUIRE(s != nullptr);
   CHECK(s->params.contains("draft"));
   CHECK(!jget(s->params, "preview", true));
@@ -10022,7 +10239,7 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
   // 1.5, 1.75 at Med, 0.75 each step at Fine -- with Sage (Fast's int8
   // P·V on the video's rows alone) and int8 Per Token / Fast / Accurate;
   // what the tables leave out Settings' (its Fast Decoder, on above).
-  int n = 7;
+  int n = 8;
   for (const char* pref : {"speed", "balanced", "quality"}) {
     GenerateVideoRequest req = quiet;
     req.tuning = Json::object();
@@ -10045,7 +10262,7 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
       CHECK(jget<std::string>(rt, "i8_gemm_tier", "") ==
             (m5 ? "token" : "accurate"));
     } else if (p == "balanced") {
-      CHECK(rt["sol_tau"] == "1,1.5,1.75");
+      CHECK(rt["sol_tau"] == "1,1,1.25");
       CHECK(!jget(rt, "sage_pv8", true));
       CHECK(jget<std::string>(rt, "i8_gemm_tier", "") ==
             (m5 ? "fast" : "accurate"));
@@ -10083,6 +10300,449 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
 // made from the prompt; the model reads the prompt without it, the
 // prompt captured keeps it. A continuation is not regenerated. Its
 // Custom offers the refine's options at the preference's.
+namespace {
+
+// A tensor file as vpipe's save-tensor writes one: f32 of `dims`, zeros.
+void
+write_tensor(const fs::path& f, const std::vector<std::int64_t>& dims)
+{
+  std::ofstream o(f, std::ios::binary);
+  std::uint64_t n = 1;
+  for (auto d : dims) {
+    n *= static_cast<std::uint64_t>(d);
+  }
+  const std::uint32_t head[4] = {1, 4, static_cast<std::uint32_t>(dims.size()),
+                                 0};
+  o.write("VPTENSOR", 8);
+  o.write(reinterpret_cast<const char*>(head), sizeof head);
+  o.write(reinterpret_cast<const char*>(&n), sizeof n);
+  o.write(reinterpret_cast<const char*>(dims.data()),
+          static_cast<std::streamsize>(dims.size() * 8));
+  const std::vector<float> zeros(n, 0.0f);
+  o.write(reinterpret_cast<const char*>(zeros.data()),
+          static_cast<std::streamsize>(n * 4));
+}
+
+}  // namespace
+
+// The windows of a clip's kept latents a continuation's tail takes
+// (DESIGN §4e): whole 17-frame chunks of five latent frames, from a
+// chunk's first frame; the soundtrack at 5/3 latents a frame.
+TEST(controller, a_tails_latent_windows_are_whole_chunks)
+{
+  // Ref2VA's 90 frames of a 124-frame clip: from frame 34, latent 10.
+  auto w = Controller::latent_windows(124, 124, 90, 37, 207);
+  REQUIRE(w);
+  CHECK((*w)["video"] == Json({{"start", 10}, {"count", 27}}));
+  CHECK((*w)["audio"] == Json({{"start", 57}, {"count", 150}}));
+  // FL2VA's 22: its last chunk and the two after it.
+  w = Controller::latent_windows(124, 124, 22, 37, 207);
+  REQUIRE(w);
+  CHECK((*w)["video"] == Json({{"start", 30}, {"count", 7}}));
+  CHECK((*w)["audio"] == Json({{"start", 170}, {"count", 37}}));
+  // Ending inside a chunk (a mark-out there), a tail off the grid, past
+  // the clip or the latents: none.
+  CHECK(!Controller::latent_windows(124, 120, 22, 37, 207));
+  CHECK(!Controller::latent_windows(124, 124, 24, 37, 207));
+  CHECK(!Controller::latent_windows(124, 141, 22, 37, 207));
+  CHECK(!Controller::latent_windows(124, 124, 22, 36, 207));
+  // A guide's end at a chunk's: inside the clip, fine.
+  w = Controller::latent_windows(124, 107, 22, 37, 207);
+  REQUIRE(w);
+  CHECK((*w)["video"] == Json({{"start", 25}, {"count", 7}}));
+  // No soundtrack kept: video alone.
+  w = Controller::latent_windows(124, 124, 22, 37, 0);
+  REQUIRE(w);
+  CHECK(!w->contains("audio"));
+}
+
+// A MiniMax H3 clip's LATENTS, asked to be kept, are kept as it is
+// committed -- blobs of the project, its version's outputs naming them --
+// and CARRIED by a continuation asked to be made from them (DESIGN §4e):
+// Ref2VA's beside the clip's pixels, FL2VA's as its guide, at the clip's
+// own size, the length asked after the tail it redoes, landing marked
+// past that tail. Unasked, Ref2VA reads the clip as a reference; none
+// kept, a continuation from them is refused.
+TEST(controller, a_clips_latents_are_kept_and_carried)
+{
+  RegenBench b("latents", false, false, true);
+  REQUIRE(b.ctl && b.engine);
+  // The app's: both keep latents when asked (the card's Latents row),
+  // FL2VA continues through 22 frames of a tail.
+  const Json fl = *b.ctl->catalog().find("minimax-h3-fl2va");
+  const Json rf = *b.ctl->catalog().find("minimax-h3-ref2va");
+  CHECK(jget(fl, "keeps_latents", false) && jget(rf, "keeps_latents", false));
+  CHECK(jget(fl, "continues_through", 0) == 22);
+  CHECK(!rf.contains("continues_through"));
+  // The clip: 39 frames at 64 x 32, as a draw of a still.
+  REQUIRE(write_png(b.root / "red.png", 64, 32, {0xff, 0x20, 0x20, 0xff}));
+  auto red = import_and_wait(*b.ctl, b.pid, b.root / "red.png");
+  REQUIRE(red);
+  auto shot = b.ctl->create_composition(
+      b.pid, project::AssetClass::Composition, {64, 32}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto in_shot = b.ctl->instantiate(b.pid, *red, *shot);
+  REQUIRE_OK(in_shot);
+  project::LayerTime t39;
+  t39.duration = 39;
+  REQUIRE_OK(b.ctl->set_layer_time(b.pid, *shot, in_shot->second, t39));
+  auto movie = b.ctl->rendered(b.pid, *shot);
+  REQUIRE_OK(movie);
+  const fs::path clip_file = b.root / "clip.mov";
+  fs::copy_file(*movie, clip_file);
+  const fs::path lat = b.root / "made-latent.vpt";
+  const fs::path alat = b.root / "made-audio-latent.vpt";
+
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-fl2va";
+  req.prompt = "A red field.";
+  req.width = 64;
+  req.height = 32;
+  req.frames = 39;
+  // Not asked to keep them: none kept, whatever the engine hands back.
+  auto j0 = b.ctl->generate_video(req);
+  REQUIRE_OK(j0);
+  const engine::JobSpec* s0 = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s0 != nullptr);
+  CHECK(!s0->params.contains("keep_latents"));
+  const AssetId plain = b.ctl->jobs().get(*j0)->asset;
+  write_tensor(lat, {24, 12, 2, 4});
+  b.engine->finish(*j0, clip_file, {{"latents", {{"video", lat.string()}}}});
+  auto none = b.ctl->kept_latents(b.pid, plain, {22});
+  REQUIRE_OK(none);
+  CHECK(!jget(*none, "kept", true));
+  CHECK((*none)["fits"] == Json({false}));
+
+  // Asked: kept with the clip, blobs of the project.
+  req.keep_latents = true;
+  auto j1 = b.ctl->generate_video(req);
+  REQUIRE_OK(j1);
+  const engine::JobSpec* s1 = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s1 != nullptr);
+  CHECK(jget(s1->params, "keep_latents", false));
+  const AssetId clip = b.ctl->jobs().get(*j1)->asset;
+  write_tensor(lat, {24, 12, 2, 4});
+  write_tensor(alat, {2, 32, 65});
+  b.engine->finish(*j1, clip_file,
+                   {{"latents", {{"video", lat.string()},
+                                 {"audio", alat.string()}}}});
+  // Its tails in frames: 22 and 39 whole chunks from its end, 17 not.
+  auto kept = b.ctl->kept_latents(b.pid, clip, {22, 39, 17});
+  REQUIRE_OK(kept);
+  CHECK(jget((*kept), "kept", false));
+  CHECK((*kept)["video"]["shape"] == Json({24, 12, 2, 4}));
+  CHECK((*kept)["audio"]["shape"] == Json({2, 32, 65}));
+  CHECK((*kept)["fits"] == Json({true, true, false}));
+  CHECK(!fs::exists(lat));  // made a blob of the project
+  {
+    project::Project* p = b.ctl->project(b.pid);
+    auto v = p->version(clip);
+    REQUIRE_OK(v);
+    const auto blob = jget(v->outputs["latents"]["video"], "blob",
+                           project::BlobRef{});
+    CHECK(!blob.empty() && fs::exists(p->blobs().path_of(blob)));
+    auto held = p->held_blobs();
+    REQUIRE_OK(held);
+    CHECK(held->contains(blob.hash.hex()));
+  }
+
+  // Ref2VA continues it from its picture and sound, as a reference: its
+  // latents are not carried.
+  GenerateVideoRequest cont;
+  cont.project = b.pid;
+  cont.model = "minimax-h3-ref2va";
+  cont.prompt = "[video continuation] It continues from the end of "
+                "<Video 1>.";
+  cont.continue_from = clip;
+  cont.width = 64;
+  cont.height = 32;
+  cont.frames = 39;
+  const auto role = [&](const engine::JobSpec* sp, std::string_view r) {
+    return std::ranges::count(sp->inputs, std::string(r),
+                              &engine::JobInput::role);
+  };
+  auto jr = b.ctl->generate_video(cont);
+  REQUIRE_OK(jr);
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s != nullptr);
+  CHECK(role(s, "continue") == 1 && role(s, "continue_latent") == 0);
+  CHECK(jget<std::string>(b.ctl->jobs().get(*jr)->carried, "latent", "") ==
+        "pixels");
+
+  // ...or from its latents: the clip's pixels, and its latent beside.
+  cont.continue_latents = true;
+  REQUIRE_OK(b.ctl->generate_video(cont));
+  s = b.job(engine::kOpGenerateVideo, 2);
+  REQUIRE(s != nullptr);
+  CHECK(s->model.id == "minimax-h3-ref2va");
+  CHECK(role(s, "continue") == 1);
+  CHECK(role(s, "continue_latent") == 1);
+  // The clip has no sound: its soundtrack's latent stays out.
+  CHECK(role(s, "continue_audio_latent") == 0);
+  CHECK(s->params["continue_latent"]["video"] ==
+        Json({{"start", 0}, {"count", 12}}));
+
+  // FL2VA continues it THROUGH its tail: 17 frames asked, 39 made -- the
+  // 22 it redoes first -- at its size, its latents' last chunk and two.
+  cont.model = "minimax-h3-fl2va";
+  cont.prompt = "The red field goes on.";
+  cont.width = 1280;
+  cont.height = 720;
+  cont.frames = 17;
+  auto j3 = b.ctl->generate_video(cont);
+  REQUIRE_OK(j3);
+  s = b.job(engine::kOpGenerateVideo, 3);
+  REQUIRE(s != nullptr);
+  CHECK(s->model.id == "minimax-h3-fl2va");
+  CHECK(jget(s->params, "frames", 0) == 39);
+  CHECK(jget(s->params, "width", 0) == 64);
+  CHECK(jget(s->params, "height", 0) == 32);
+  CHECK(s->params["continue_guide"] ==
+        Json({{"frames", 22}, {"latents", 7}}));
+  CHECK(!s->params.contains("reference_media"));
+  CHECK(role(s, "continue") == 1 && role(s, "continue_latent") == 1 &&
+        role(s, "continue_audio_latent") == 1);
+  CHECK(s->params["continue_latent"]["video"] ==
+        Json({{"start", 5}, {"count", 7}}));
+  CHECK(s->params["continue_latent"]["audio"] ==
+        Json({{"start", 28}, {"count", 37}}));
+  // Landed, its layer starts past the tail it redid -- the copies of
+  // the latents it was handed gone with it.
+  const AssetId next = b.ctl->jobs().get(*j3)->asset;
+  const auto copy = std::ranges::find(s->inputs,
+                                      std::string("continue_latent"),
+                                      &engine::JobInput::role);
+  REQUIRE(copy != s->inputs.end());
+  const fs::path copied = copy->path;
+  CHECK(fs::exists(copied));
+  b.engine->finish(*j3, clip_file);
+  CHECK(!fs::exists(copied));
+  auto v3 = b.ctl->project(b.pid)->version(next);
+  REQUIRE_OK(v3);
+  CHECK(jget<std::string>(v3->outputs["continued"], "latent", "") ==
+        "kept");
+  // Not asked to keep its own: none kept.
+  CHECK(!v3->outputs.contains("latents"));
+  auto placed = b.ctl->place_result(b.pid, next, *shot);
+  REQUIRE_OK(placed);
+  auto comp = b.ctl->project(b.pid)->asset(*shot);
+  REQUIRE_OK(comp);
+  const auto l = std::ranges::find(comp->layers, placed->second,
+                                   &project::Layer::id);
+  REQUIRE(l != comp->layers.end());
+  CHECK(l->time.in == 22);
+
+  // Asked at Auto with Ref2VA here: Ref2VA's references, as before.
+  cont.model = "auto";
+  REQUIRE_OK(b.ctl->generate_video(cont));
+  s = b.job(engine::kOpGenerateVideo, 3);
+  REQUIRE(s != nullptr);
+  CHECK(s->model.id == "minimax-h3-ref2va");
+  CHECK(role(s, "continue_latent") == 1);
+
+  // A clip with none kept: from its latents refused, by name; FL2VA's
+  // tail encoded when they are not asked for.
+  REQUIRE(write_png(b.root / "blue.png", 64, 32, {0x20, 0x20, 0xff, 0xff}));
+  auto blue = import_and_wait(*b.ctl, b.pid, b.root / "blue.png");
+  REQUIRE(blue);
+  REQUIRE_OK(b.ctl->set_layer_source(b.pid, *shot, in_shot->second, *blue));
+  auto other = b.ctl->rendered(b.pid, *shot);
+  REQUIRE_OK(other);
+  fs::copy_file(*other, b.root / "blue.mov");
+  auto imported = import_and_wait(*b.ctl, b.pid, b.root / "blue.mov");
+  REQUIRE(imported);
+  cont.continue_from = *imported;
+  for (const char* model : {"minimax-h3-ref2va", "minimax-h3-fl2va"}) {
+    cont.model = model;
+    auto refused = b.ctl->generate_video(cont);
+    REQUIRE(!refused.ok());
+    CHECK(refused.error().key == "core.no_kept_latents");
+  }
+  cont.continue_latents = false;
+  auto j5 = b.ctl->generate_video(cont);
+  REQUIRE_OK(j5);
+  s = b.job(engine::kOpGenerateVideo, 4);
+  REQUIRE(s != nullptr);
+  CHECK(role(s, "continue") == 1 && role(s, "continue_latent") == 0);
+  CHECK(!s->params.contains("continue_latent"));
+  CHECK(jget<std::string>(b.ctl->jobs().get(*j5)->carried, "latent", "") ==
+        "encoded");
+}
+
+// THE MICRO AGENT (DESIGN §9c): LFM3-VL 2B, picked when it is here and
+// kept as Settings say; it NAMES a new prompt and what is made from it --
+// in the background, after the build, two Starts of the same words named
+// by one reply, a later one named at once -- and writes a Ref2VA clip's
+// words for its 2K pass, the build held for it and going on with the
+// rule's words when it says nothing usable or is stopped.
+TEST(controller, the_micro_agent_names_prompts_and_writes_2k_words)
+{
+  RegenBench b("micro", true, false, true);
+  REQUIRE(b.ctl && b.engine);
+  CHECK(b.ctl->micro_model() == nullptr);
+  const fs::path lfm = b.root / "models" / "LiquidAI" / "LFM3-VL-2B";
+  fs::create_directories(lfm);
+  std::ofstream(lfm / "config.json") << R"({"model_type": "lfm3_vl"})";
+  std::ofstream(lfm / "model.safetensors") << "w";
+  std::ofstream(lfm / "tokenizer.json") << "{}";
+  b.ctl->rescan_models();
+  REQUIRE(b.ctl->micro_model() != nullptr);
+  CHECK(b.ctl->micro_model()->id == "lfm3-vl-2b");
+  CHECK(jget<std::string>(b.ctl->micro_settings(), "using", "") ==
+        "lfm3-vl-2b");
+  // Off, and back to Auto; kept in assistant.json.
+  REQUIRE_OK(b.ctl->set_micro({{"model", "off"}}));
+  CHECK(b.ctl->micro_model() == nullptr);
+  REQUIRE_OK(b.ctl->set_micro({{"model", ""}, {"enhance", true}}));
+  CHECK(b.ctl->micro_model() != nullptr);
+  CHECK(!b.ctl->set_micro({{"model", "qwen3.5-9b"}}).ok());
+  {
+    std::ifstream in(b.root / "support" / "assistant.json");
+    const Json j = Json::parse(in, nullptr, false);
+    CHECK(jget(jget(j, "micro", Json::object()), "enhance", false));
+  }
+  REQUIRE_OK(b.ctl->set_micro({{"enhance", false}}));
+  const auto role = [&](const engine::JobSpec* sp, std::string_view r) {
+    return std::ranges::count(sp->inputs, std::string(r),
+                              &engine::JobInput::role);
+  };
+
+  // NAMES: a clip from words, asked twice before the name comes.
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-fl2va";
+  req.prompt = "A red fox trotting through fresh snow at dawn, the camera "
+               "tracking beside it.";
+  req.width = 832;
+  req.height = 480;
+  req.frames = 39;
+  auto j1 = b.ctl->generate_video(req);
+  REQUIRE_OK(j1);
+  auto j2 = b.ctl->generate_video(req);
+  REQUIRE_OK(j2);
+  const AssetId c1 = b.ctl->jobs().get(*j1)->asset;
+  const AssetId c2 = b.ctl->jobs().get(*j2)->asset;
+  REQUIRE(b.engine->held_of(engine::kOpChat).size() == 1);
+  const engine::JobSpec* chat = b.job(engine::kOpChat, 1);
+  REQUIRE(chat != nullptr);
+  CHECK(chat->model.id == "lfm3-vl-2b");
+  CHECK(jget(chat->params, "disable_thinking", false));
+  CHECK(jget<std::string>(chat->params, "text", "")
+            .find("A red fox trotting through fresh snow") !=
+        std::string::npos);
+  const JobId naming = chat->id;  // (the list moves as jobs end)
+  // Made, and on a timeline before the name comes: its layer named as
+  // it was then.
+  REQUIRE(write_png(b.root / "grey.png", 64, 32, {0x80, 0x80, 0x80, 0xff}));
+  auto grey = import_and_wait(*b.ctl, b.pid, b.root / "grey.png");
+  REQUIRE(grey);
+  auto tl = b.ctl->create_composition(b.pid,
+                                      project::AssetClass::Composition,
+                                      {64, 32}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  REQUIRE_OK(b.ctl->instantiate(b.pid, *grey, *tl));
+  auto movie = b.ctl->rendered(b.pid, *tl);
+  REQUIRE_OK(movie);
+  const fs::path clip_file = b.root / "clip.mov";
+  fs::copy_file(*movie, clip_file);
+  b.engine->finish(*j1, clip_file);
+  auto on_tl = b.ctl->instantiate(b.pid, c1, *tl);
+  REQUIRE_OK(on_tl);
+  b.engine->turn(naming, {{"text", "Title: \"Fox at Dawn.\""}});
+  project::Project* p = b.ctl->project(b.pid);
+  {
+    auto t = p->asset(*tl);
+    REQUIRE_OK(t);
+    const auto l = std::ranges::find(t->layers, on_tl->second,
+                                     &project::Layer::id);
+    REQUIRE(l != t->layers.end());
+    CHECK(l->name == "Fox at Dawn");
+  }
+  const auto prompt_of = [&](AssetId a) {
+    auto r = p->recipe(p->asset(a)->recipe);
+    return std::ranges::find(r->inputs, std::string("prompt"),
+                             &project::RecipeInput::role)
+        ->asset;
+  };
+  CHECK(p->asset(prompt_of(c1))->name == "Fox at Dawn");
+  CHECK(p->asset(c1)->name == "Fox at Dawn");
+  CHECK(p->asset(c2)->name == "Fox at Dawn (2)");
+  // Asked again: named at once, nothing asked.
+  auto j3 = b.ctl->generate_video(req);
+  REQUIRE_OK(j3);
+  CHECK(p->asset(b.ctl->jobs().get(*j3)->asset)->name == "Fox at Dawn (3)");
+  CHECK(b.engine->held_of(engine::kOpChat).empty());
+  // A name of the request's own: kept.
+  req.prompt = "A lighthouse at dusk, waves below.";
+  req.name = "Mine";
+  auto j4 = b.ctl->generate_video(req);
+  REQUIRE_OK(j4);
+  CHECK(p->asset(b.ctl->jobs().get(*j4)->asset)->name == "Mine");
+  CHECK(b.engine->held_of(engine::kOpChat).empty());
+  req.name.clear();
+
+  // THE 2K PASS's WORDS: a Ref2VA clip past 768P, its picture shown.
+  REQUIRE_OK(b.ctl->set_micro({{"names", false}}));
+  REQUIRE(write_png(b.root / "woman.png", 16, 16, {0xc0, 0x30, 0x30, 0xff}));
+  auto pic = import_and_wait(*b.ctl, b.pid, b.root / "woman.png");
+  REQUIRE(pic);
+  GenerateVideoRequest ref;
+  ref.project = b.pid;
+  ref.model = "minimax-h3-ref2va";
+  ref.references = {*pic};
+  ref.row = {*pic};
+  ref.prompt = "<valtz_ref_img_0> walks along the shore at dusk.";
+  ref.width = 2560;
+  ref.height = 1440;
+  ref.frames = 39;
+  const auto videos = b.engine->held_of(engine::kOpGenerateVideo).size();
+  auto r1 = b.ctl->generate_video(ref);
+  REQUIRE_OK(r1);
+  // Held for its words: nothing sent yet.
+  CHECK(b.engine->held_of(engine::kOpGenerateVideo).size() == videos);
+  const engine::JobSpec* words = b.job(engine::kOpChat, 1);
+  REQUIRE(words != nullptr);
+  CHECK(role(words, "image") == 1);
+  CHECK(jget<std::string>(words->params, "text", "").find("Picture 1:") !=
+        std::string::npos);
+  b.engine->turn(words->id,
+                 {{"text", "Picture 1: woman with short grey hair in a red "
+                           "coat"}});
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, videos + 1);
+  REQUIRE(s != nullptr);
+  CHECK(s->id == *r1);
+  CHECK(jget<std::string>(s->params, "regenerate_prompt_from", "") ==
+        "micro");
+  CHECK(jget<std::string>(s->params, "regenerate_prompt", "") ==
+        "A woman with short grey hair in a red coat walks along the shore "
+        "at dusk.");
+  // Nothing usable said, or stopped: the rule's words.
+  for (const bool stop : {false, true}) {
+    auto r2 = b.ctl->generate_video(ref);
+    REQUIRE_OK(r2);
+    const engine::JobSpec* w2 = b.job(engine::kOpChat, 1);
+    REQUIRE(w2 != nullptr);
+    if (stop) {
+      REQUIRE_OK(b.engine->cancel(w2->id));
+    } else {
+      b.engine->turn(w2->id, {{"text", "I cannot see the pictures."}});
+    }
+    const auto n = b.engine->held_of(engine::kOpGenerateVideo).size();
+    s = b.job(engine::kOpGenerateVideo, n);
+    REQUIRE(s != nullptr);
+    CHECK(s->id == *r2);
+    CHECK(jget<std::string>(s->params, "regenerate_prompt_from", "") ==
+          "made");
+  }
+  // Off: no step, as before.
+  REQUIRE_OK(b.ctl->set_micro({{"refine", false}}));
+  const auto before = b.engine->held_of(engine::kOpGenerateVideo).size();
+  REQUIRE_OK(b.ctl->generate_video(ref));
+  CHECK(b.engine->held_of(engine::kOpChat).empty());
+  CHECK(b.engine->held_of(engine::kOpGenerateVideo).size() == before + 1);
+}
+
 TEST(controller, a_ref2va_clip_is_regenerated_on_fl2va)
 {
   RegenBench b("regen-ref2va", true, false, true);
@@ -10139,27 +10799,18 @@ TEST(controller, a_ref2va_clip_is_regenerated_on_fl2va)
     }
   }
   CHECK(kept);
-  // A continuation: made at its size; asked to regenerate, refused
-  // (before its clip is read).
-  GenerateVideoRequest cont_req = req;
-  cont_req.references.clear();
-  cont_req.continue_from = *pic;
-  cont_req.regenerate = true;
-  const auto refused = b.ctl->generate_video(cont_req);
-  CHECK(!refused.ok() &&
-        refused.error().key == msg::kRegenerateNoContinuation.key);
-  // Its Custom: the refine's options, at Fast's.
+  // Its Custom: the refine's options, at Fast's -- a continuation's
+  // too, regenerated as any clip past 768P (DESIGN §4e).
   auto opts = b.ctl->tuning("minimax-h3-ref2va", "speed", false,
                             Json::object());
   REQUIRE_OK(opts);
   CHECK(jget<std::string>((*opts)["values"], "regenerate_sol_threshold",
                           "") == "exact");
   CHECK((*opts)["values"]["regenerate_sol_tau"] == 1.75);
-  // ...but not for a continuation.
   auto cont = b.ctl->tuning("minimax-h3-ref2va", "speed", false,
                             Json::object(), true);
   REQUIRE_OK(cont);
-  CHECK(!(*cont)["values"].contains("regenerate_sol_attn"));
+  CHECK((*cont)["values"].contains("regenerate_sol_attn"));
 }
 
 // Open-H3-Regenerate-2K as an UPSCALER (Render Upscaled, DESIGN §4q):
@@ -12107,6 +12758,258 @@ TEST(agent, a_song_is_separated_in_the_background)
                            Json::array());
   REQUIRE(landed.size() == 1);
   CHECK(jget(landed[0], "step", 0) == 2);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// The MODELS of a task, as the agent asks for them (list_models): those
+// here, Auto's marked, those not downloaded; and a model the person
+// names -- loosely, "FLUX.3", "MiniMax Music3" -- run by the tool given
+// it. One that does not do the task, or is not here, refused naming
+// those that do.
+TEST(agent, a_model_is_listed_and_chosen_by_name)
+{
+  auto root = test::temp_dir("agent-models");
+  const fs::path models = root / "models";
+  fs::create_directories(models / "krea" / "Krea-2-Turbo");
+  std::ofstream(models / "krea" / "Krea-2-Turbo" / "model.safetensors")
+      << "w";
+  fake_pipeline(models / "black-forest-labs" / "flux-3-image-klein",
+                "Flux3Pipeline", "Flux3Transformer2DModel");
+  fs::create_directories(models / "MiniMaxAI" / "MiniMax-Music3");
+  std::ofstream(models / "MiniMaxAI" / "MiniMax-Music3" / "config.json")
+      << "{}";
+  std::ofstream(models / "MiniMaxAI" / "MiniMax-Music3" /
+                "model.safetensors")
+      << "w";
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "M.valtz", "models");
+  REQUIRE_OK(pid);
+  script->replies = {
+      {call("list_models", {{"task", "picture"}})},
+      {call("generate_image", {{"prompt", "a bison in steam"},
+                               {"model", "FLUX.3"}})},
+      {call("generate_image", {{"prompt", "a bison in steam"},
+                               {"model", "music3"}})},
+      {call("list_models", {{"task", "music"}})},
+      {call("generate_music", {{"style", "warm acoustic folk"},
+                               {"seconds", 20},
+                               {"model", "MiniMax Music3"}})},
+      {call("generate_music", {{"style", "warm acoustic folk"},
+                               {"seconds", 20}, {"model", "yue2"}})},
+      {call("list_models", {{"task", "painting"}})},
+      {call("list_models", Json::object())}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A bison picture with FLUX.3, and music by Music3";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "waiting");
+  REQUIRE(jget<std::string>(st, "state", "") == "waiting");
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 8);
+  auto result = [&](int i) { return jget(steps[i], "result", Json()); };
+  auto error = [&](int i) {
+    return jget<std::string>(steps[i], "error", "");
+  };
+  auto listed = [](const Json& r, const std::string& mid) {
+    for (const auto& m : jget(r, "models", Json::array())) {
+      if (jget<std::string>(m, "id", "") == mid) {
+        return m;
+      }
+    }
+    return Json();
+  };
+  // The picture models here, Auto's marked; those not downloaded named.
+  const Json pics = result(0);
+  CHECK(jget<std::string>(pics, "tool", "") == "generate_image");
+  CHECK(jget(listed(pics, "krea2-turbo"), "auto", false));
+  const Json flux3 = listed(pics, "flux3-klein");
+  REQUIRE(flux3.is_object());
+  CHECK(!jget(flux3, "auto", false));
+  CHECK(jget(flux3, "max_side", 0) == 4096);
+  CHECK(!jget<std::string>(flux3, "about", "").empty());
+  const Json absent = jget(pics, "not_downloaded", Json::array());
+  CHECK(std::ranges::find(absent, Json("Z-Image Turbo")) != absent.end());
+  CHECK(listed(pics, "z-image-turbo").is_null());
+  // "FLUX.3": the one model of pictures its name holds, run.
+  CHECK(error(1).empty());
+  CHECK(jget<std::string>(result(1), "model", "") == "FLUX.3 Image Klein");
+  const auto images = engine->held_of(engine::kOpGenerateImage);
+  REQUIRE(images.size() == 1);
+  REQUIRE(engine->spec(images[0]) != nullptr);
+  CHECK(engine->spec(images[0])->model.id == "flux3-klein");
+  // A song model for a picture: refused, the picture models named.
+  CHECK(error(2).find("does not make pictures") != std::string::npos);
+  CHECK(error(2).find("krea2-turbo") != std::string::npos);
+  CHECK(error(2).find("Auto's") != std::string::npos);
+  // Music3 here, YuE2 not; named, Music3 sings -- its sections, for it
+  // sings only to lyrics.
+  const Json music = result(3);
+  CHECK(jget(listed(music, "minimax-music3"), "needs_lyrics", false));
+  const Json no_song = jget(music, "not_downloaded", Json::array());
+  CHECK(std::ranges::find(no_song, Json("YuE2 3B")) != no_song.end());
+  CHECK(error(4).empty());
+  CHECK(jget<std::string>(result(4), "model", "") == "MiniMax-Music3");
+  const auto songs = engine->held_of(engine::kOpGenerateAudio);
+  REQUIRE(songs.size() == 1);
+  REQUIRE(engine->spec(songs[0]) != nullptr);
+  CHECK(engine->spec(songs[0])->model.id == "minimax-music3");
+  // Not on this Mac: said so, with where it is downloaded.
+  CHECK(error(5).find("YuE2 3B is not on this Mac") != std::string::npos);
+  CHECK(error(5).find("Settings > Capabilities") != std::string::npos);
+  CHECK(error(6).find("the task is one of") != std::string::npos);
+  // Every task at once.
+  const Json every = jget(result(7), "tasks", Json::array());
+  CHECK(every.size() == 9);
+  // The chosen model failing: told with its name, so it is said (once
+  // nothing else is out).
+  engine->fail(images[0], "tokenizer load failed");
+  engine->fail(songs[0], "stopped");
+  std::string told;
+  for (int i = 0; i < 500 && told.empty(); ++i) {
+    {
+      std::lock_guard lk(script->mu);
+      for (const auto& msgs : script->seen) {
+        for (const auto& m : msgs) {
+          if (m.content.find("has finished") != std::string::npos) {
+            told = m.content;
+          }
+        }
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(told.find("\"model\":\"FLUX.3 Image Klein\"") != std::string::npos);
+  CHECK(told.find("tokenizer load failed") != std::string::npos);
+  CHECK(told.find("\"model\":\"MiniMax-Music3\"") != std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// A SHOT on the model the person names: Ref2VA from the words alone, as
+// asked; FL2VA refused for a shot drawing on references, Ref2VA for one
+// opening on a picture, "H3" asked which -- each naming those that do.
+TEST(agent, a_shot_runs_on_the_model_named)
+{
+  auto root = test::temp_dir("agent-shot-model");
+  for (const char* f :
+       {"MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors",
+        "MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors"}) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  }
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "S.valtz", "shot");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "keeper.png", 32, 32, {0x30, 0x60, 0x90, 0xff}));
+  auto keeper = import_and_wait(ctl, *pid, root / "keeper.png");
+  REQUIRE(keeper);
+  const Json words = "[Shot 1] A lighthouse keeper climbs a spiral stair.";
+  script->replies = {
+      {call("list_models", {{"task", "shot"}})},
+      {call("list_models", {{"task", "shot_references"}})},
+      {call("generate_video", {{"description", words}, {"seconds", 2},
+                               {"model", "Ref2VA"}})},
+      {call("generate_video", {{"description", words}, {"seconds", 2},
+                               {"model", "FL2VA"},
+                               {"references", {keeper->str()}}})},
+      {call("generate_video", {{"description", words}, {"seconds", 2},
+                               {"model", "minimax-h3-ref2va"},
+                               {"first", keeper->str()}})},
+      {call("generate_video", {{"description", words}, {"seconds", 2},
+                               {"model", "H3"}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A shot of the keeper, on Ref2VA";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "waiting");
+  REQUIRE(jget<std::string>(st, "state", "") == "waiting");
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 6);
+  auto result = [&](int i) { return jget(steps[i], "result", Json()); };
+  auto error = [&](int i) {
+    return jget<std::string>(steps[i], "error", "");
+  };
+  auto listed = [](const Json& r, const std::string& mid) {
+    for (const auto& m : jget(r, "models", Json::array())) {
+      if (jget<std::string>(m, "id", "") == mid) {
+        return m;
+      }
+    }
+    return Json();
+  };
+  // From words: FL2VA Auto's, opening and ending on pictures; Ref2VA too
+  // (its prompt-only request), on none.
+  const Json fl2va = listed(result(0), "minimax-h3-fl2va");
+  const Json ref2va = listed(result(0), "minimax-h3-ref2va");
+  CHECK(jget(fl2va, "auto", false));
+  CHECK(jget(fl2va, "opens_on_picture", false));
+  CHECK(jget(fl2va, "ends_on_picture", false));
+  CHECK(!jget(ref2va, "auto", false));
+  REQUIRE(ref2va.is_object());
+  CHECK(!jget(ref2va, "opens_on_picture", true));
+  // Drawing on references: Ref2VA alone.
+  CHECK(jget(listed(result(1), "minimax-h3-ref2va"), "auto", false));
+  CHECK(listed(result(1), "minimax-h3-fl2va").is_null());
+  // Ref2VA named, from the words alone: it runs the shot.
+  CHECK(error(2).empty());
+  CHECK(jget<std::string>(result(2), "model", "") == "MiniMax H3 Ref2VA");
+  const auto clips = engine->held_of(engine::kOpGenerateVideo);
+  REQUIRE(clips.size() == 1);
+  REQUIRE(engine->spec(clips[0]) != nullptr);
+  CHECK(engine->spec(clips[0])->model.id == "minimax-h3-ref2va");
+  CHECK(error(3).find("MiniMax H3 FL2VA does not make shots drawing on "
+                      "references") != std::string::npos);
+  CHECK(error(3).find("minimax-h3-ref2va") != std::string::npos);
+  CHECK(error(4).find("does not open a shot on a picture") !=
+        std::string::npos);
+  CHECK(error(5).find("could be") != std::string::npos);
+  CHECK(engine->held_of(engine::kOpGenerateVideo).size() == 1);
   REQUIRE_OK(ctl.agent_stop(*id));
 }
 

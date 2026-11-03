@@ -527,10 +527,13 @@ struct AtlasView: View {
                 Color.clear
                     .frame(width: content.width, height: content.height)
                     .contentShape(Rectangle())
-                    .onTapGesture { model.atlasSelected = nil }
+                    .onTapGesture {
+                        model.atlasSelected = nil
+                        model.atlasNodeOpen = nil
+                    }
                 if !seen.isNull {
                     AtlasEdges(layout: g, rect: seen, zoom: z, lit: lit,
-                               labels: z >= 0.6)
+                               labels: z >= 0.6, places: places(g))
                         .frame(width: seen.width * z,
                                height: seen.height * z)
                         .offset(x: inset.width + seen.minX * z,
@@ -547,13 +550,47 @@ struct AtlasView: View {
                         .offset(x: inset.width + f.minX * z,
                                 y: inset.height + f.minY * z)
                 }
+                // A link into a generate node not run: its ⓧ cuts it.
+                ForEach(cuts(g, seen: seen), id: \.id) { c in
+                    AtlasLinkCut(model: model, asset: c.asset, node: c.node,
+                                 scale: z)
+                        .position(x: inset.width + c.at.x * z,
+                                  y: inset.height + c.at.y * z)
+                }
+                // A generate node opened out, at actual size beside its
+                // card, over what lies there.
+                if let open = model.atlasNodeOpen,
+                   let i = g.graph.nodes.firstIndex(where: {
+                       $0.generate?.id == open
+                   }), let gen = g.graph.nodes[i].generate {
+                    let at = panelOrigin(g, i, inset, z)
+                    AtlasGenerateExpanded(model: model, gen: gen)
+                        .offset(x: at.x, y: at.y)
+                        .zIndex(10)
+                }
             }
-            .frame(width: content.width, height: content.height,
+            .frame(width: room(g, content, inset, z).width,
+                   height: room(g, content, inset, z).height,
                    alignment: .topLeading)
         }
         .scrollPosition($model.atlasPosition)
         .onScrollGeometryChange(for: CGRect.self) { $0.visibleRect }
             action: { _, r in model.atlasVisible = r }
+        // A node opened out: scrolled to, as far as it is out of sight.
+        .onChange(of: model.atlasNodeOpen) { _, open in
+            guard open != nil else { return }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                revealPanel()
+            }
+        }
+        // Wider and taller with Custom's options: scrolled to again.
+        .onChange(of: model.atlasNodeTuneOpen) { _, _ in
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                revealPanel()
+            }
+        }
         .onScrollGeometryChange(for: CGSize.self) { $0.containerSize }
             action: { _, s in model.atlasViewport = s }
         // About the fingers: the graph's point under them stays there.
@@ -578,9 +615,125 @@ struct AtlasView: View {
             if let id = n.asset, let a = model.asset(id: id) {
                 AtlasAssetNode(model: model, node: n, asset: a, scale: z)
             }
+        } else if let gen = n.generate {
+            AtlasGenerateNode(model: model, node: n, gen: gen, scale: z)
         } else {
             AtlasOpNode(model: model, node: n, scale: z)
         }
+    }
+
+    /// Where a generate node opened out lies: right of its card, from
+    /// its top -- one that has run, right of what it made (else it would
+    /// hide it).
+    private func panelOrigin(_ g: AtlasLayout, _ i: Int, _ inset: CGSize,
+                             _ z: CGFloat) -> CGPoint {
+        let f = g.frames[i]
+        var right = f.maxX
+        if let made = g.graph.nodes[i].into, let r = g.assetNode[made] {
+            right = max(right, g.frames[r].maxX)
+        }
+        return CGPoint(x: inset.width + right * z + 14,
+                       y: inset.height + f.minY * z)
+    }
+
+    /// About how tall it is (its Custom panel: taller).
+    private var panelHeight: CGFloat {
+        model.atlasNodeTuneOpen ? 1100 : 720
+    }
+
+    /// The content with room for a generate node opened out beside its
+    /// card, which may reach past the graph's edge.
+    private func room(_ g: AtlasLayout, _ content: CGSize, _ inset: CGSize,
+                      _ z: CGFloat) -> CGSize {
+        guard let open = model.atlasNodeOpen,
+              let i = g.graph.nodes.firstIndex(where: {
+                  $0.generate?.id == open
+              }) else { return content }
+        let at = panelOrigin(g, i, inset, z)
+        return CGSize(
+            width: max(content.width, at.x + AtlasGenerateExpanded.wide + 40),
+            height: max(content.height, at.y + panelHeight + 40))
+    }
+
+    /// The node opened out scrolled into sight: its right edge, then its
+    /// left, then as much of its height as the view holds, from its top.
+    private func revealPanel() {
+        guard let g = model.atlas, let open = model.atlasNodeOpen,
+              let i = g.graph.nodes.firstIndex(where: {
+                  $0.generate?.id == open
+              }) else { return }
+        let z = model.atlasZoom
+        let v = model.atlasViewport
+        let inset = g.inset(zoom: z, in: v)
+        let at = panelOrigin(g, i, inset, z)
+        let w = model.atlasNodeTuneOpen ? AtlasGenerateExpanded.wide
+            : AtlasGenerateExpanded.narrow
+        let pad = model.atlasInsets
+        let x0 = model.atlasVisible.minX + pad.width
+        let y0 = model.atlasVisible.minY + pad.height
+        var x = x0
+        var y = y0
+        if at.x + w + 24 > x0 + v.width { x = at.x + w + 24 - v.width }
+        if at.x - 24 < x { x = max(0, at.x - 24) }
+        let h = min(panelHeight, v.height - 48)
+        if at.y + h > y0 + v.height { y = at.y + h - v.height + 24 }
+        if at.y - 24 < y { y = max(0, at.y - 24) }
+        guard x != x0 || y != y0 else { return }
+        // As a zoom scrolls (setAtlasZoom): what comes into sight drawn
+        // with it.
+        model.atlasPosition.scrollTo(point: CGPoint(x: x, y: y))
+        model.atlasVisible.origin = CGPoint(x: x - pad.width,
+                                            y: y - pad.height)
+    }
+
+    /// A link into a generate node, named as its row's place: "Image 2"
+    /// -- as the prompt's tags name what is there.
+    private func places(_ g: AtlasLayout) -> [Int: String] {
+        var out: [Int: String] = [:]
+        for (k, e) in g.graph.edges.enumerated() {
+            guard let i = e.index, k < g.ends.count,
+                  let gen = g.graph.nodes[g.ends[k].1].generate,
+                  let a = g.graph.nodes[g.ends[k].0].asset
+                      .flatMap(model.asset(id:)),
+                  let kind = AppModel.refKind(a.kind) else { continue }
+            let n = gen.refs.prefix(i).filter {
+                model.asset(id: $0).flatMap { AppModel.refKind($0.kind) }
+                    == kind
+            }.count + 1
+            out[k] = "\(RefTagAttachment.kindName(kind)) \(n)"
+        }
+        return out
+    }
+
+    private struct Cut {
+        let id: String
+        let asset: String
+        let node: String
+        let at: CGPoint
+    }
+
+    /// The links into generate nodes not run, in sight: each one's ⓧ, a
+    /// third of the way along its curve (its role's words are further on).
+    private func cuts(_ g: AtlasLayout, seen: CGRect) -> [Cut] {
+        var out: [Cut] = []
+        for (k, e) in g.ends.enumerated() {
+            let to = g.graph.nodes[e.1]
+            guard to.type == "generate", let gen = to.generate,
+                  gen.started == nil,
+                  let asset = g.graph.nodes[e.0].asset else { continue }
+            let a = g.frames[e.0]
+            let b = g.frames[e.1]
+            let p0 = CGPoint(x: a.maxX, y: a.midY)
+            let p1 = CGPoint(x: b.minX, y: b.midY)
+            let dx = max(36, (p1.x - p0.x) / 2)
+            let at = AtlasEdges.point(0.35, p0,
+                                      CGPoint(x: p0.x + dx, y: p0.y),
+                                      CGPoint(x: p1.x - dx, y: p1.y), p1)
+            guard seen.contains(at) else { continue }
+            out.append(Cut(id: "\(k)-\(g.graph.edges[k].from)", asset: asset,
+                           node: gen.id, at: at))
+        }
+        return out
     }
 
     /// Zoom: out, the zoom (a click: 100%), in, the whole graph in view.
@@ -615,13 +768,15 @@ struct AtlasView: View {
 /// The edges in sight: a curve from an output's right edge to an input's
 /// left, lit with the node selected; a note dashed; an input's part
 /// written by its end.
-private struct AtlasEdges: View {
+struct AtlasEdges: View {
     let layout: AtlasLayout
     /// In the graph's own points; drawn at `zoom`, as the cards are.
     let rect: CGRect
     let zoom: CGFloat
     let lit: Int?
     let labels: Bool
+    /// Links into a generate node: their row's place ("Image 2").
+    var places: [Int: String] = [:]
 
     var body: some View {
         Canvas { ctx, _ in
@@ -663,8 +818,10 @@ private struct AtlasEdges: View {
                                                     height: 2 * r)),
                              with: .color(colour))
                 }
-                if labels, let role = edge.role, !role.isEmpty {
-                    let t = Text(AppModel.atlasRole(role))
+                if labels, let role = places[k] ?? edge.role.map({
+                    AppModel.atlasRole($0)
+                }), !role.isEmpty {
+                    let t = Text(verbatim: role)
                         .font(.system(size: 9.5 * z, weight: .medium))
                         .foregroundStyle(on ? Color.accentColor : .secondary)
                     // Along its own curve, before the end: inputs
@@ -678,7 +835,7 @@ private struct AtlasEdges: View {
     }
 
     /// The cubic's point at `t`.
-    private static func point(_ t: CGFloat, _ a: CGPoint, _ b: CGPoint,
+    static func point(_ t: CGFloat, _ a: CGPoint, _ b: CGPoint,
                               _ c: CGPoint, _ d: CGPoint) -> CGPoint {
         let u = 1 - t
         let w = (u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t)
@@ -758,6 +915,12 @@ struct AtlasAssetNode: View {
         .help(Text(verbatim: asset.name))
         .task(id: "\(asset.id)-\(asset.modified)-\(asset.head)-\(pixels)") {
             await loadPicture()
+        }
+        // Past its right edge, where its links leave: the (+) of a
+        // generation made from it, or linked to (AtlasGenerate).
+        .overlay(alignment: .trailing) {
+            AtlasPlus(model: model, asset: asset, scale: scale)
+                .offset(x: u(AtlasPlus.band))
         }
     }
 

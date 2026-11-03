@@ -1127,14 +1127,16 @@ TEST(graph_builder, fibo2_edits_at_its_trained_sizes)
                                       {"/b.png", {1600, 1200}, false, false},
                                       {"/c.png", {900, 900}, false, false}});
   REQUIRE_OK(e);
-  CHECK(e->width == 1424 && e->height == 800);
+  // About the area asked (1920 x 1080: two megapixels), not the one it
+  // was trained at: every picture, each at its own shape's size.
+  CHECK(e->width == 1936 && e->height == 1088);
   REQUIRE(e->references.size() == 3);
-  CHECK(e->references[0].fitted.width == 1424);
-  CHECK(e->references[0].fitted.height == 800);
-  CHECK(e->references[1].fitted.width == 1152);
-  CHECK(e->references[1].fitted.height == 864);
-  CHECK(e->references[2].fitted.width == 1024);
-  CHECK(e->references[2].fitted.height == 1024);
+  CHECK(e->references[0].fitted.width == 1936);
+  CHECK(e->references[0].fitted.height == 1088);
+  CHECK(e->references[1].fitted.width == 1664);
+  CHECK(e->references[1].fitted.height == 1248);
+  CHECK(e->references[2].fitted.width == 1440);
+  CHECK(e->references[2].fitted.height == 1440);
   for (int i = 0; i < 3; ++i) {
     const Json f = config_of(find_stage(e->spec, std::format("ref-{}-fit",
                                                              i)));
@@ -1153,14 +1155,32 @@ TEST(graph_builder, fibo2_edits_at_its_trained_sizes)
         "fibo2-model-config");
   const Json gc = config_of(gen);
   CHECK(jget(gc, "steps", 0) == 4);
-  CHECK(jget(gc, "width", 0) == 1424 && jget(gc, "height", 0) == 800);
-  // A square base at the card's own size stays the model's 1024^2.
+  CHECK(jget(gc, "width", 0) == 1936 && jget(gc, "height", 0) == 1088);
+  // The plan books the edit at that area before the pictures arrive.
+  CHECK(std::abs(jget(config_of(cfg), "megapixels", 0.0) -
+                 1920.0 * 1080 / (1024 * 1024)) < 1e-9);
+  // Smaller than it was trained at: its 1024^2, a megapixel.
   auto sq = job_for("fibo2-edit-turbo", kOpEditImage);
   sq.params["width"] = 768;
   sq.params["height"] = 768;
   auto s1 = vp::build_image_edit(sq, {{"/a.jpg", {768, 768}, false, true}});
   REQUIRE_OK(s1);
   CHECK(s1->width == 1024 && s1->height == 1024);
+  CHECK(jget(config_of(find_stage(s1->spec, "fibo2-model-config")),
+             "megapixels", 0.0) == 1.0);
+  // Bria's 4 megapixels: 2048^2, a 16:9 reference at 2816 x 1584.
+  auto big = job_for("fibo2-edit-turbo", kOpEditImage);
+  big.params["width"] = 2048;
+  big.params["height"] = 2048;
+  auto b4 = vp::build_image_edit(big, {{"/a.jpg", {3000, 3000}, false, true},
+                                       {"/b.png", {1920, 1080}, false,
+                                        false}});
+  REQUIRE_OK(b4);
+  CHECK(b4->width == 2048 && b4->height == 2048);
+  CHECK(b4->references[1].fitted.width == 2816);
+  CHECK(b4->references[1].fitted.height == 1584);
+  CHECK(jget(config_of(find_stage(b4->spec, "fibo2-model-config")),
+             "megapixels", 0.0) == 4.0);
 }
 
 // Qwen-Image 2.1 Turbo: the base model's graph -- its config stage, the
@@ -2141,6 +2161,174 @@ TEST(graph_builder, a_continuation_is_matched_at_its_seam)
   CHECK(!find_stage(words->spec, "seam"));
 }
 
+// A MiniMax H3 clip asked to KEEP its latents (DESIGN §4e):
+// generate-video's video and audio latents written by save-tensor beside
+// the clip -- a
+// regenerated clip's its draft's, before the upscaler; a clip that keeps
+// a song's sound, its video latent alone.
+TEST(graph_builder, an_h3_clip_keeps_its_latents)
+{
+  JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  j.params = {{"prompt", "a fox"}, {"width", 832}, {"height", 480},
+              {"frames", 39}};
+  // Unasked: none written.
+  auto plain = vp::build_video(j, std::nullopt);
+  REQUIRE_OK(plain);
+  CHECK(!find_stage(plain->spec, "latent-keep") && plain->latent.empty());
+  j.params["keep_latents"] = true;
+  auto g = vp::build_video(j, std::nullopt);
+  REQUIRE_OK(g);
+  const Json* lk = find_stage(g->spec, "latent-keep");
+  const Json* ak = find_stage(g->spec, "audio-latent-keep");
+  REQUIRE(lk && ak);
+  CHECK(jget<std::string>(*lk, "type", "") == "save-tensor");
+  CHECK(src_of(lk, 0) == "generate-video" && oport_of(lk, 0) == 0);
+  CHECK(src_of(ak, 0) == "generate-video" && oport_of(ak, 0) == 1);
+  CHECK(g->latent == fs::path(jget<std::string>(config_of(lk), "path", "")));
+  CHECK(g->latent.parent_path() == "/tmp/out");
+  CHECK(!g->audio_latent.empty());
+  // Regenerated: the draft's.
+  JobSpec r = j;
+  r.params["width"] = 2560;
+  r.params["height"] = 1440;
+  r.params["draft"] = {{"width", 1376}, {"height", 768}};
+  r.model.regenerate_lora = "/m/regen/lora.safetensors";
+  r.model.latent_upscaler = "/m/regen/up.safetensors";
+  auto rg = vp::build_video(r, std::nullopt);
+  REQUIRE_OK(rg);
+  CHECK(src_of(find_stage(rg->spec, "latent-keep"), 0) == "generate-video");
+  CHECK(jget(config_of(find_stage(rg->spec, "generate-video")), "width",
+             0) == 1376);
+  // A family that keeps none writes none, asked or not.
+  JobSpec other = j;
+  other.model.engine["vpipe"].erase("keeps_latents");
+  auto o = vp::build_video(other, std::nullopt);
+  REQUIRE_OK(o);
+  CHECK(!find_stage(o->spec, "latent-keep") && o->latent.empty());
+}
+
+// A Ref2VA continuation CARRIES the clip's kept latents (DESIGN §4e):
+// its pixels still on their port for the vision tower, a load-tensor
+// window of its video latent on the next -- folded onto it -- and of its
+// soundtrack's in place of its sound's PCM. The encoder skips both VAEs.
+TEST(graph_builder, a_ref2va_continuation_carries_the_clips_latents)
+{
+  JobSpec j = job_for("minimax-h3-ref2va", kOpGenerateVideo);
+  j.params = {{"prompt", "[video continuation + audio reference] ..."},
+              {"width", 832}, {"height", 480}, {"frames", 124},
+              {"fps", 24.0}};
+  std::vector<vp::RefMedia> refs(1);
+  refs[0].path = "/p/clip.mov";
+  refs[0].kind = "video";
+  refs[0].list = false;
+  refs[0].audio = true;
+  refs[0].continues = true;
+  refs[0].width = 832;
+  refs[0].height = 480;
+  refs[0].first = 34;
+  refs[0].count = 90;
+  refs[0].latent = {"/tmp/out/j-continue_latent.vpt", 10, 27, {}};
+  refs[0].audio_latent = {"/tmp/out/j-continue_audio_latent.vpt", 57, 150,
+                          {}};
+  auto g = vp::build_video(j, std::nullopt, refs);
+  REQUIRE_OK(g);
+  const Json* enc = find_stage(g->spec, "video-ref-encoder");
+  REQUIRE(enc);
+  CHECK(src_of(enc, 2) == "ref1");   // its pixels
+  CHECK(src_of(enc, 3) == "ref2");   // its video latent
+  CHECK(src_of(enc, 4) == "ref3");   // its soundtrack's
+  CHECK(src_of(enc, 5) == "<none>");
+  const Json* v = find_stage(g->spec, "ref2");
+  REQUIRE(v);
+  CHECK(jget<std::string>(*v, "type", "") == "load-tensor");
+  const Json vc = config_of(v);
+  CHECK(jget(vc, "axis", 0) == 1 && jget(vc, "start", 0) == 10 &&
+        jget(vc, "count", 0) == 27);
+  CHECK(jget(vc["sideband"], "latent", false) &&
+        jget(vc["sideband"], "attach", false));
+  const Json ac = config_of(find_stage(g->spec, "ref3"));
+  CHECK(jget(ac, "axis", 0) == 2 && jget(ac, "count", 0) == 150);
+  // No PCM port: the sound comes as its latent.
+  CHECK(!config_of(enc).contains("attach_audio"));
+  CHECK(!find_stage(g->spec, "ref3-pcm"));
+  // The seam is still matched to its pixels.
+  CHECK(src_of(find_stage(g->spec, "seam"), 1) == "ref1");
+  // No latents kept: as before, the sound on its port.
+  refs[0].latent = {};
+  refs[0].audio_latent = {};
+  auto plain = vp::build_video(j, std::nullopt, refs);
+  REQUIRE_OK(plain);
+  CHECK(jget<std::string>(*find_stage(plain->spec, "ref2"), "type", "") ==
+        "temporal-stack");
+  CHECK(config_of(find_stage(plain->spec, "video-ref-encoder"))
+            .contains("attach_audio"));
+}
+
+// An FL2VA continuation is GUIDED through the clip's tail (DESIGN §4e):
+// the windows of its kept latents on generate-video's guide ports (12
+// video, 13 audio) -- or, none kept, its tail's frames fitted to the
+// clip and through the video VAE, its sound through the audio VAE. No
+// reference encoder, no seam: its first frames redo the tail.
+TEST(graph_builder, an_fl2va_continuation_is_guided_through_the_tail)
+{
+  JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  j.params = {{"prompt", "the fox runs on"}, {"width", 832},
+              {"height", 480}, {"frames", 141}, {"fps", 24.0},
+              {"continue_guide", {{"frames", 22}, {"latents", 7}}}};
+  vp::GuideMedia kept;
+  kept.latent = {"/tmp/out/j-continue_latent.vpt", 30, 7, {}};
+  kept.audio_latent = {"/tmp/out/j-continue_audio_latent.vpt", 170, 37, {}};
+  auto g = vp::build_video(j, std::nullopt, {}, {}, nullptr, &kept);
+  REQUIRE_OK(g);
+  const Json* gen = find_stage(g->spec, "generate-video");
+  REQUIRE(gen);
+  CHECK(src_of(gen, 0) == "diffusion-conditioner");
+  CHECK(src_of(gen, 12) == "guide-latent" && src_of(gen, 13) == "guide-audio");
+  CHECK(src_of(gen, 5).empty() && src_of(gen, 11).empty());
+  const Json lv = config_of(find_stage(g->spec, "guide-latent"));
+  CHECK(jget(lv, "axis", 0) == 1 && jget(lv, "start", 0) == 30 &&
+        jget(lv, "count", 0) == 7);
+  const Json la = config_of(find_stage(g->spec, "guide-audio"));
+  CHECK(jget(la, "axis", 0) == 2 && jget(la, "count", 0) == 37);
+  CHECK(!find_stage(g->spec, "video-ref-encoder"));
+  CHECK(!find_stage(g->spec, "seam"));
+  // Its own latents kept only when asked for.
+  CHECK(!find_stage(g->spec, "latent-keep"));
+  // None kept: the tail encoded here, at the clip's size.
+  vp::GuideMedia enc;
+  enc.clip = "/p/clip.mov";
+  enc.first = 102;
+  enc.count = 22;
+  enc.width = 1280;
+  enc.height = 720;
+  enc.audio = true;
+  enc.start_s = 4.25;
+  enc.duration_s = 22 / 24.0;
+  auto e = vp::build_video(j, std::nullopt, {}, {}, nullptr, &enc);
+  REQUIRE_OK(e);
+  const Json* eg = find_stage(e->spec, "generate-video");
+  CHECK(src_of(eg, 12) == "guide-latent" && src_of(eg, 13) == "guide-audio");
+  CHECK(jget<std::string>(*find_stage(e->spec, "guide-latent"), "type",
+                          "") == "vae-encode");
+  CHECK(src_of(find_stage(e->spec, "guide-latent"), 0) == "guide-stack");
+  const Json span = config_of(find_stage(e->spec, "guide-span"));
+  CHECK(jget(span, "start", 0) == 102 && jget(span, "end", 0) == 124);
+  const Json fit = config_of(find_stage(e->spec, "guide-fit"));
+  CHECK(jget(fit, "width", 0) == 832 && jget(fit, "height", 0) == 480);
+  CHECK(jget<std::string>(*find_stage(e->spec, "guide-audio"), "type",
+                          "") == "audio-vae-encode");
+  CHECK(jget(config_of(find_stage(e->spec, "guide-sound")), "start_s",
+             0.0) == 4.25);
+  // Silent: no audio guide.
+  enc.audio = false;
+  auto s2 = vp::build_video(j, std::nullopt, {}, {}, nullptr, &enc);
+  REQUIRE_OK(s2);
+  CHECK(src_of(find_stage(s2->spec, "generate-video"), 13).empty());
+  // Opening on a picture beside it: refused.
+  vp::RefImage pic{"/tmp/fox.png", {832, 480}, false, true};
+  CHECK(!vp::build_video(j, pic, {}, {}, nullptr, &kept).ok());
+}
+
 // FL2VA from a picture: the picture is fed at its own size, cropped with
 // Lanczos to EXACTLY the clip's frame (vpipe drops an anchor of another
 // size and the clip quietly becomes text-to-video), VAE-encoded and
@@ -2395,11 +2583,15 @@ TEST(graph_builder, a_clip_past_768p_is_drafted_and_regenerated)
   REQUIRE_OK(kd);
   CHECK(jget(config_of(find_stage(kd->spec, "regenerate-config")),
              "refine_start_sigma", 0.0) == 0.7);
+  CHECK(jget(config_of(find_stage(kd->spec, "regenerate")), "steps", 0) ==
+        3);
   keep.params["regenerate_tuning"]["refine_start"] = "release";
   auto kr = vp::build_video(keep, first);
   REQUIRE_OK(kr);
   CHECK(!config_of(find_stage(kr->spec, "regenerate-config"))
              .contains("refine_start_sigma"));
+  CHECK(jget(config_of(find_stage(kr->spec, "regenerate")), "steps", 0) ==
+        3);
   // A VAE of Custom's: one source, read by both decoders.
   JobSpec own = j;
   own.model.vae = "/m/my-vae";
@@ -2420,7 +2612,7 @@ TEST(graph_builder, a_clip_past_768p_is_drafted_and_regenerated)
   JobSpec attn = j;
   attn.params["regenerate_tuning"] = {{"sol_attn", true},
                                       {"sol_threshold", "exact"},
-                                      {"sol_tau", "1,1.5,1.75"},
+                                      {"sol_tau", "1,1,1.25"},
                                       {"sage_attn", true},
                                       {"sage_pv8", true}};
   auto a = vp::build_video(attn, first);
@@ -2429,7 +2621,7 @@ TEST(graph_builder, a_clip_past_768p_is_drafted_and_regenerated)
   CHECK(jget(rc, "sol_attn", false) && jget(rc, "sage_attn", false));
   CHECK(jget(rc, "sage_pv8", false));
   CHECK(jget(rc, "sol_tau", 0.0) == 1.0);
-  CHECK(jget<std::string>(rc, "sol_tau_steps", "") == "1,1.5,1.75");
+  CHECK(jget<std::string>(rc, "sol_tau_steps", "") == "1,1,1.25");
   CHECK(jget<std::string>(rc, "sol_threshold", "") == "exact");
   const Json dc = config_of(find_stage(a->spec, "generate-video"));
   CHECK(!dc.contains("sage_pv8"));
@@ -2450,6 +2642,31 @@ TEST(graph_builder, a_clip_past_768p_is_drafted_and_regenerated)
   REQUIRE_OK(off);
   CHECK(!config_of(find_stage(off->spec, "regenerate"))
              .contains("sol_threshold"));
+  // VDN in Sol's place: the branch on the refine's OWN config stage (the
+  // draft's stays without it), its reach on the refine's generate-video.
+  JobSpec vdn = j;
+  vdn.params["regenerate_tuning"] = {{"vdn", true}, {"vdn_range", 2}};
+  vdn.model.regenerate_branch = "/m/vdn/stage-dmd-step-250";
+  auto vg = vp::build_video(vdn, first);
+  REQUIRE_OK(vg);
+  CHECK(jget<std::string>(config_of(find_stage(vg->spec,
+                                               "regenerate-config")),
+                          "linear_branch", "") ==
+        vdn.model.regenerate_branch.string());
+  CHECK(!config_of(find_stage(vg->spec, "minimax-h3-model-config"))
+             .contains("linear_branch"));
+  const Json vr = config_of(find_stage(vg->spec, "regenerate"));
+  CHECK(jget(vr, "vdn_range", -1) == 2 && !vr.contains("sol_attn"));
+  CHECK(!vr.contains("vdn_range_steps"));
+  // ...its reach a step: the refine's three.
+  vdn.params["regenerate_tuning"]["vdn_range"] = "3,1,1";
+  auto vs = vp::build_video(vdn, first);
+  REQUIRE_OK(vs);
+  const Json vsr = config_of(find_stage(vs->spec, "regenerate"));
+  CHECK(jget(vsr, "vdn_range", -1) == 3);
+  CHECK(jget<std::string>(vsr, "vdn_range_steps", "") == "3,1,1");
+  CHECK(!config_of(find_stage(vg->spec, "generate-video"))
+             .contains("vdn_range"));
   // A draft without the refiner's files is refused; none asked, the clip
   // is made at its size as it always was.
   JobSpec bare = j;
@@ -2470,7 +2687,7 @@ TEST(graph_builder, a_clip_past_768p_is_drafted_and_regenerated)
 // refiner's base -- against words of its own, read by FL2VA's prompt
 // encoder: FL2VA's model-select, DiT and conditioner, Ref2VA's VAE. An
 // FL2VA clip given words for its refine reads them through its own
-// encoder; a continuation is not regenerated.
+// encoder; a continuation is regenerated too (DESIGN §4e).
 TEST(graph_builder, a_ref2va_clip_is_drafted_and_refined_on_fl2va)
 {
   static auto cat = models::Catalog::builtin();
@@ -2543,11 +2760,17 @@ TEST(graph_builder, a_ref2va_clip_is_drafted_and_refined_on_fl2va)
   CHECK(jget<std::string>(
             config_of(find_stage(linked->spec, "regenerate-conditioner")),
             "encoder_dir", "") == "/m/fl2va-encoder.ckpt");
-  // A continuation: refused.
+  // A continuation: drafted from the clip it continues and regenerated
+  // too, its seam matched on the refine's frames.
   refs[0].kind = "video";
   refs[0].list = false;
   refs[0].continues = true;
-  CHECK(!vp::build_video(j, std::nullopt, refs).ok());
+  auto cont = vp::build_video(j, std::nullopt, refs);
+  REQUIRE_OK(cont);
+  CHECK(find_stage(cont->spec, "latent-upscale"));
+  const Json* seam = find_stage(cont->spec, "seam");
+  REQUIRE(seam);
+  CHECK(src_of(seam, 0) == "regenerate-decode");
   // FL2VA given words for its refine: its own encoder reads them, on its
   // own model-select; none given, the draft's conditioning as before.
   JobSpec f = job_for("minimax-h3-fl2va", kOpGenerateVideo);
@@ -2788,6 +3011,29 @@ TEST(graph_builder, tuning_reaches_the_stages)
   CHECK(jget(gc, "sage_attn", false) && jget(gc, "motion_cache", false));
   CHECK(!jget(gc, "i8_gemm", true));  // Custom's, over the catalog's
   CHECK(!gc.contains("hyperflow") && !gc.contains("turbo"));
+  // VDN's reach, with VDN on alone.
+  CHECK(!gc.contains("vdn_range"));
+  JobSpec reach = j;
+  reach.params["tuning"]["vdn"] = true;
+  reach.params["tuning"]["vdn_range"] = 0;
+  auto rg = vp::build_video(reach, std::nullopt);
+  REQUIRE_OK(rg);
+  CHECK(jget(config_of(find_stage(rg->spec, "generate-video")),
+             "vdn_range", -1) == 0);
+  // ...a reach a STEP: vpipe's vdn_range_steps, its first entry the
+  // vdn_range beside it.
+  reach.params["tuning"]["vdn_range"] = "2,1,1";
+  auto sg = vp::build_video(reach, std::nullopt);
+  REQUIRE_OK(sg);
+  const Json stc = config_of(find_stage(sg->spec, "generate-video"));
+  CHECK(jget(stc, "vdn_range", -1) == 2);
+  CHECK(jget<std::string>(stc, "vdn_range_steps", "") == "2,1,1");
+  // VDN off: neither.
+  reach.params["tuning"]["vdn"] = false;
+  auto ng = vp::build_video(reach, std::nullopt);
+  REQUIRE_OK(ng);
+  CHECK(!config_of(find_stage(ng->spec, "generate-video"))
+             .contains("vdn_range_steps"));
 
   // A picture: the scheduler's shift, and the tiers generate-image takes.
   JobSpec p = job_for("krea2-turbo", kOpGenerateImage);

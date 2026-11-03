@@ -44,6 +44,20 @@ struct RefImage {
   ContentHash           hash = {};
 };
 
+// A window of a LATENT a clip kept when it was made (MiniMax H3's,
+// DESIGN §4e): a save-tensor file of generate-video's `latent` or
+// `audio_latent` oport, read back by vpipe's load-tensor -- `count` of
+// its time axis (1 a video latent's [z, T, h, w], 2 an audio latent's
+// [2, channels, n]) from `start`. Its file's hash names it in a kept
+// encoding's key. Empty path: none.
+struct LatentWindow {
+  std::filesystem::path path;
+  std::int64_t          start = 0;
+  std::int64_t          count = 0;
+  ContentHash           hash = {};
+  bool empty() const { return path.empty(); }
+};
+
 // A clip's REFERENCE (MiniMax H3 Ref2VA; DESIGN §4e), in the order the
 // model reads it: read WHOLE by its file (vpipe's `references` list: a
 // picture, a sound) or a SPAN on a reference port (a clip, a trimmed
@@ -73,6 +87,34 @@ struct RefMedia {
   double                start_s = 0;
   double                duration_s = 0;
   ContentHash           hash = {};     // as RefImage's
+  // The clip continued, CARRIED: its tail's own latents, kept when it
+  // was made, on ports of their own after its pixels -- the video rows
+  // folded onto the clip (`latent`, `attach`), whose pixels still feed
+  // the encoder's vision tower; the soundtrack's rows in place of its
+  // sound (no PCM port then). The VAE round trip skipped either way.
+  LatentWindow          latent;
+  LatentWindow          audio_latent;
+};
+
+// A clip continued THROUGH its tail (FL2VA's GUIDE, DESIGN §4e): the
+// tail's latent frames and its soundtrack pinned over the new clip's
+// first `frames` frames, the new clip generated through them -- kept
+// latents (windows), else the tail itself encoded in the graph: its
+// frames [first, first + count) of `clip` fitted to the clip's size and
+// through the video VAE, its sound's seconds through the audio VAE.
+struct GuideMedia {
+  LatentWindow          latent;
+  LatentWindow          audio_latent;
+  std::filesystem::path clip;          // encoded here when no latent
+  std::int64_t          first = 0;
+  std::int64_t          count = 0;
+  int                   width = 0;     // the clip's frame
+  int                   height = 0;
+  bool                  audio = false; // it has a sound to encode
+  double                start_s = 0;
+  double                duration_s = 0;
+  ContentHash           hash = {};
+  bool kept() const { return !latent.empty(); }
 };
 
 // A picture the engine must feed after launch: decode `path` into a
@@ -284,6 +326,13 @@ struct BuiltGraph {
   // Encoders' outputs tapped to be kept, or fed from what was (given an
   // EncodingCache): a generation's.
   std::vector<EncodingIo> encodings;
+  // A clip's LATENTS as generate-video made them (catalog
+  // `vpipe.keeps_latents`: MiniMax H3; asked for by the job's param
+  // "keep_latents"), written by save-tensor beside it
+  // -- a regenerated clip's its draft's -- for a continuation of it to
+  // carry (DESIGN §4e). Empty: none written.
+  std::filesystem::path latent;
+  std::filesystem::path audio_latent;
 };
 
 // Given an EncodingCache, a generation KEEPS what its encoders make: each
@@ -354,12 +403,21 @@ Result<BuiltGraph> build_image_edit(const JobSpec&,
 // latent, never decoded, goes straight into the latent upscaler, a
 // refine at `width` x `height` under Open-H3-Regenerate-2K's merged LoRA
 // (its arithmetic param "regenerate_tuning") and the decode; the
-// soundtrack is the draft's. Not with references.
+// soundtrack is the draft's.
+//
+// A family that keeps its latents (`vpipe.keeps_latents`) writes them
+// beside the clip when its job asks (param "keep_latents";
+// BuiltGraph::latent / audio_latent): the draft's, regenerated. A
+// Ref2VA continuation from them CARRIES the clip's own
+// (RefMedia::latent); an FL2VA one is GUIDED through the clip's tail
+// (`guide`: generate-video's ports 12 and 13), its latents kept or
+// encoded here.
 Result<BuiltGraph> build_video(const JobSpec&,
                                const std::optional<RefImage>& first,
                                const std::vector<RefMedia>& refs = {},
                                const std::optional<RefImage>& last = {},
-                               const EncodingCache* = nullptr);
+                               const EncodingCache* = nullptr,
+                               const GuideMedia* guide = nullptr);
 // generate-audio (DESIGN §4d): a song from words, in the shapes of
 // vpipe's YuE2 graphs (docs/pipelines/yue2-text-to-music,
 // yue2-songs-from-lyrics). The style, the score's plan, the seed and the

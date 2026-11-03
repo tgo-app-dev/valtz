@@ -102,6 +102,23 @@ accel_from(const Json& t)
   if (jget(t, "i8_gemm", false) && tier != "accurate") {
     out["i8_gemm_tier"] = tier;
   }
+  // VDN's reach (vpipe's `vdn_range`: its softmax half, in chunks either
+  // side), with VDN on only -- the branch itself is the config stage's.
+  // (A vpipe from before it ignores the key -- and runs the checkpoint's.)
+  if (jget(t, "vdn", false) && t.contains("vdn_range") &&
+      t["vdn_range"].is_number()) {
+    out["vdn_range"] = t["vdn_range"].get<int>();
+  }
+  // ...and a reach a STEP ("2,1,1": tuning.h) is vpipe's `vdn_range_steps`,
+  // its first entry the `vdn_range` beside it. (A vpipe from before it
+  // ignores the list -- and runs that first reach every step.)
+  if (jget(t, "vdn", false) && t.contains("vdn_range") &&
+      t["vdn_range"].is_string()) {
+    const auto steps = t["vdn_range"].get<std::string>();
+    out["vdn_range"] = static_cast<int>(std::strtol(steps.c_str(), nullptr,
+                                                    10));
+    out["vdn_range_steps"] = steps;
+  }
   // SageAttention's int8 P*V, only on, and only with SageAttention: a job
   // without it has the graph it always had. (A vpipe from before it
   // ignores the key -- and runs SageAttention alone.)
@@ -378,6 +395,8 @@ fit_area(media::PixelSize sz, double area, int align)
 // its pipeline crops each picture -- of the sides divisible by `multiple`,
 // at least four of it, within 10% of `area`, the one cropping least from
 // a picture of that aspect, then the one nearest `area`, then the wider.
+// About any area: Bria's 1 and 4 megapixels, or another (vpipe's
+// size-about-area, image-resample `crop_to_area`).
 media::PixelSize
 trained_size(double aspect, double area, int multiple)
 {
@@ -388,9 +407,15 @@ trained_size(double aspect, double area, int multiple)
   long long best_dist = 0;
   bool have = false;
   for (long long w = lo; w < 2 * a0 / lo; w += m) {
-    for (long long h = lo; h < 2 * a0 / w; h += m) {
+    // Only the heights whose area is near it: at 4 megapixels the whole
+    // range is millions of sides. The window below still decides.
+    const long long h0 = std::max(
+        lo, static_cast<long long>(0.9 * area / static_cast<double>(w)) /
+                m * m);
+    for (long long h = h0; h < 2 * a0 / w; h += m) {
       const long long a = w * h;
-      if (a < 0.9 * area || a > 1.1 * area) { continue; }
+      if (a > 1.1 * area) { break; }
+      if (a < 0.9 * area) { continue; }
       const double r = static_cast<double>(w) / static_cast<double>(h);
       // Compared at nine decimals, as the reference rounds them.
       const double crop =
@@ -511,10 +536,15 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs,
   }
   // A model trained at a few sizes (catalog `reference_fit`
   // "trained_size": Fibo 2.0) makes the one for the shape asked, as its
-  // own pipeline makes the first picture's.
+  // own pipeline makes the first picture's -- about the AREA asked, never
+  // below the one it was trained at (Bria's 1 megapixel; its service's 4,
+  // or any: vpipe sizes any area so). Every picture is cropped about the
+  // same area, as Bria's 4 MP edit crops them.
   const bool trained = edit && jget<std::string>(ed, "reference_fit", "") ==
                                    "trained_size";
-  const double trained_area = jget(ed, "trained_area", 1024.0 * 1024.0);
+  const double trained_area =
+      std::max(jget(ed, "trained_area", 1024.0 * 1024.0),
+               static_cast<double>(width) * height);
   if (trained) {
     const auto t = trained_size(static_cast<double>(width) / height,
                                 trained_area, align);
@@ -669,6 +699,12 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs,
       cfg["preview_every"] = jget(job.params, "preview_every", 1);
       cfg["preview_max_edge"] = jget(job.params, "preview_max_edge", 512);
       g.preview_sink = "preview-sink";
+    }
+    // The area a trained-size model makes its picture about, so vpipe's
+    // plan books that edit before the pictures arrive (fibo2-model-
+    // config's `megapixels`; 1 when unset).
+    if (trained) {
+      cfg["megapixels"] = trained_area / (1024.0 * 1024.0);
     }
     cfg = merged(cfg, declared_of(job, "config"));
     // The schedule's shift where the family's config stage takes it
@@ -952,7 +988,9 @@ regenerate_spec(const JobSpec& job)
 // a clip's Custom): the DiT's int8 GEMMs and tier, the Neural Engine's
 // share, Sol, Sage and Sage's int8 P·V -- the tiers vpipe checked under
 // the merged LoRA, Sol and Sage on its banded forward too (vpipe
-// 51273173) -- and, off Accurate, the same tier on the upscaler and the
+// 51273173) -- or VDN in Sol's place (its branch, its reach: the refine
+// then runs whole, vpipe bands no VDN forward) -- and, off Accurate, the
+// same tier on the upscaler and the
 // fast decoder, as vpipe's -fast-m5 graph runs them. The refine writes
 // no soundtrack: it is conditioned on an encoded silence. Returns the
 // decode's id.
@@ -1016,6 +1054,12 @@ regenerate_stages(const JobSpec& job, const Json& cond, const Json& latent,
                {"lora_scale", 1.0}};
   if (jget<std::string>(t, "refine_start", "release") == "draft") {
     rcfg["refine_start_sigma"] = jget(spec, "keep_draft_sigma", 0.7);
+  }
+  // VDN in place of Sol (its tuning `vdn`): the branch on the refine's
+  // own config stage -- the draft's may run without it -- its reach on
+  // the refine's generate-video (accel_from).
+  if (jget(t, "vdn", false) && !job.model.regenerate_branch.empty()) {
+    rcfg["linear_branch"] = job.model.regenerate_branch.string();
   }
   stages.push_back(stage("regenerate-config",
                          jget<std::string>(bvp, "config_stage", cfg_stage),
@@ -1125,7 +1169,7 @@ Result<BuiltGraph>
 build_video(const JobSpec& job, const std::optional<RefImage>& first,
             const std::vector<RefMedia>& refs,
             const std::optional<RefImage>& last,
-            const EncodingCache* cache)
+            const EncodingCache* cache, const GuideMedia* guide)
 {
   const Json vp = jget(job.model.engine, "vpipe", Json::object());
   std::string cfg_stage = jget<std::string>(vp, "config_stage", "");
@@ -1172,12 +1216,16 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                       "a draft regenerated needs the refiner's files");
   }
   // References (Ref2VA) are the draft's to read; the refine runs on
-  // the refiner's model against words of its own. A continuation is not
-  // regenerated: its seam is matched to a guide of the clip's own size.
-  if (regen && (job.model.latent_upscaler.empty() ||
-                std::ranges::any_of(refs, &RefMedia::continues))) {
+  // the refiner's model against words of its own. A continuation is
+  // drafted from the clip's own latents -- a regenerated clip keeps its
+  // draft's -- and regenerated as the clip was.
+  if (regen && job.model.latent_upscaler.empty()) {
     return make_error(Code::InvalidArgument,
-                      "a continuation is not regenerated");
+                      "a draft regenerated needs its latent upscaler");
+  }
+  if (guide && (first || last || !refs.empty())) {
+    return make_error(Code::InvalidArgument,
+                      "a clip guided through a tail opens on nothing else");
   }
   // The size the model makes: the draft's, or the clip's.
   const int gen_w = regen ? ceil_to(jget(draft, "width", width), align)
@@ -1379,6 +1427,17 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                       {"first", r.first}, {"count", r.count},
                       {"fps", r.fps}, {"start_s", r.start_s},
                       {"duration_s", r.duration_s}, {"whole", r.whole}});
+      // Carried latents are part of what it reads: by their bytes and
+      // the window taken.
+      for (const auto& [k, w] : {std::pair{"latent", &r.latent},
+                                 std::pair{"audio_latent",
+                                           &r.audio_latent}}) {
+        if (!w->empty()) {
+          hashed = hashed && !w->hash.is_zero();
+          made.back()[k] = {{"hash", w->hash.hex()}, {"start", w->start},
+                            {"count", w->count}};
+        }
+      }
       if (r.list) {
         files.push_back(r.path.string());
         continue;
@@ -1417,6 +1476,33 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
         enc_in.push_back(port(id));
         if (r.continues) {
           seam_ref = id;
+        }
+        // Its own latents, CARRIED: a load-tensor window on a port of
+        // its own, folded onto the clip (vpipe's `attach`) -- the video
+        // rows the VAE would have made, the soundtrack's in place of its
+        // sound.
+        const auto carried = [&](const LatentWindow& w, int axis) {
+          const std::string lid = std::format("ref{}", ++ref);
+          Json sb = {{"latent", true}, {"attach", true}};
+          if (axis == 1) {
+            sb["fps"] = r.fps;
+          }
+          Json ls = Json::array();
+          ls.push_back(stage(lid, "load-tensor", Json::array(),
+                             {{"path", w.path.string()},
+                              {"axis", axis},
+                              {"start", w.start},
+                              {"count", w.count},
+                              {"sideband", sb}}));
+          port_stages.emplace_back(lid, std::move(ls));
+          enc_in.push_back(port(lid));
+        };
+        if (!r.latent.empty()) {
+          carried(r.latent, 1);
+        }
+        if (!r.audio_latent.empty()) {
+          carried(r.audio_latent, 2);
+          continue;
         }
         if (!r.audio) {
           continue;
@@ -1612,12 +1698,94 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
     anchor_last = keyframe(*last, "last", false);
   }
 
+  // A GUIDE (FL2VA, DESIGN §4e): the clip continued's tail, its latent
+  // frames and its soundtrack pinned over the new clip's first frames
+  // (generate-video's guide ports, vpipe's frame 0 by default) -- the
+  // windows of the latents it kept, else its tail encoded here: its
+  // frames fitted to the clip's size and through the video VAE, its
+  // sound through the audio VAE.
+  Json guide_video = unwired(), guide_audio = unwired();
+  if (guide && guide->kept()) {
+    stages.push_back(stage("guide-latent", "load-tensor", Json::array(),
+                           {{"path", guide->latent.path.string()},
+                            {"axis", 1},
+                            {"start", guide->latent.start},
+                            {"count", guide->latent.count}}));
+    guide_video = port("guide-latent");
+    if (!guide->audio_latent.empty()) {
+      stages.push_back(stage("guide-audio", "load-tensor", Json::array(),
+                             {{"path", guide->audio_latent.path.string()},
+                              {"axis", 2},
+                              {"start", guide->audio_latent.start},
+                              {"count", guide->audio_latent.count}}));
+      guide_audio = port("guide-audio");
+    }
+  } else if (guide) {
+    stages.push_back(stage("guide-read", "load-video", Json::array(),
+                           {{"input_url", guide->clip.string()},
+                            {"enable_audio", false}}));
+    stages.push_back(stage("guide-rgb", "video-to-rgb",
+                           Json::array({port("guide-read")}),
+                           {{"output_dtype", "u8"}}));
+    stages.push_back(stage("guide-span", "temporal-slice",
+                           Json::array({port("guide-rgb")}),
+                           {{"start", guide->first},
+                            {"end", guide->first + guide->count}}));
+    stages.push_back(stage("guide-fit", "image-resample",
+                           Json::array({port("guide-span")}),
+                           {{"width", gen_w}, {"height", gen_h},
+                            {"fit", "crop"}, {"algorithm", "lanczos"}}));
+    const double mb = static_cast<double>(std::max<std::int64_t>(
+                          guide->count, 1)) *
+                      3.0 * gen_w * gen_h / (1024.0 * 1024.0);
+    stages.push_back(stage("guide-stack", "temporal-stack",
+                           Json::array({port("guide-fit")}),
+                           {{"mode", "video"}, {"group_size", 0},
+                            {"max_mb", std::max(256, static_cast<int>(mb) +
+                                                         64)}}));
+    stages.push_back(stage("guide-latent", "vae-encode",
+                           Json::array({port("guide-stack"),
+                                        port("model-select")}),
+                           with_vae({{"unload_when_idle", "always"}}, job)));
+    guide_video = port("guide-latent");
+    if (guide->audio) {
+      Json read = {{"input_url", guide->clip.string()}};
+      if (guide->start_s > 0) {
+        read["start_s"] = guide->start_s;
+      }
+      if (guide->duration_s > 0) {
+        read["duration_s"] = guide->duration_s;
+      }
+      stages.push_back(stage("guide-sound", "load-audio", Json::array(),
+                             std::move(read)));
+      stages.push_back(stage("guide-pcm", "audio-to-pcm",
+                             Json::array({port("guide-sound")}),
+                             {{"output_sample_rate", 32000},
+                              {"channels", 2},
+                              {"chunk_duration_s",
+                               std::max(guide->duration_s, 1.0)},
+                              {"max_chunk_duration_s", 60.0}}));
+      stages.push_back(stage("guide-audio", "audio-vae-encode",
+                             Json::array({port("guide-pcm"),
+                                          port("model-select")}),
+                             with_vae({{"unload_when_idle", "always"}},
+                                      job)));
+      guide_audio = port("guide-audio");
+    }
+  }
+
   // generate-video: 0 cond, 1 neg (inert: H3 is guidance-distilled),
   // 2 model, 3 sampler, 4 scheduler (H3 brings its own), 5 / 6 first /
-  // last keyframe, 7 / 8 Ref2VA rows, 9 model_config.
+  // last keyframe, 7 / 8 Ref2VA rows, 9 model_config -- and 12 / 13 a
+  // guide's latent and soundtrack.
   Json gen_in = Json::array({cond, unwired(), port("model-select"),
                              unwired(), unwired(), anchor, anchor_last,
                              ref_video, ref_audio, port(cfg_stage)});
+  if (guide) {
+    for (const Json& j : {unwired(), unwired(), guide_video, guide_audio}) {
+      gen_in.push_back(j);
+    }
+  }
   Json gen_cfg = {{"width", gen_w}, {"height", gen_h}, {"frames", frames},
                   {"fps", fps}, {"steps", steps}, {"seed", seed}};
   gen_cfg = merged(gen_cfg, jget(vp, "generate", Json::object()));
@@ -1635,6 +1803,26 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   if (!g.preview_sink.empty()) {
     stages.push_back(sink(g.preview_sink, port("generate-video", 2),
                           /*latest_only=*/true));
+  }
+  // Its LATENTS kept beside it, asked for (param "keep_latents", where
+  // the family can: `vpipe.keeps_latents`; DESIGN §4e): what a
+  // continuation of it carries, never decoded again -- a regenerated
+  // clip's its draft's, made at the size a continuation of it is drafted
+  // at; its soundtrack the generated one's, unless the clip keeps a
+  // song's.
+  if (jget(vp, "keeps_latents", false) &&
+      jget(job.params, "keep_latents", false)) {
+    g.latent = job.output_dir / std::format("{}-latent.vpt", jid);
+    stages.push_back(stage("latent-keep", "save-tensor",
+                           Json::array({port("generate-video", 0)}),
+                           {{"path", g.latent.string()}}));
+    if (!(song && jget(job.params, "reference_sound", false))) {
+      g.audio_latent = job.output_dir /
+                       std::format("{}-audio-latent.vpt", jid);
+      stages.push_back(stage("audio-latent-keep", "save-tensor",
+                             Json::array({port("generate-video", 1)}),
+                             {{"path", g.audio_latent.string()}}));
+    }
   }
 
   // The picture: decoded in F16 and written in the project's intermediate

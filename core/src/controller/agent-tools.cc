@@ -86,6 +86,9 @@ const char* kCompDoc =
 const char* kPageDoc =
     "the page, from 1 (needed on a still of more than one page)";
 const char* kLayerDoc = "the layer's id (\"0\" is the bottom one)";
+const char* kModelDoc =
+    "the model's id (list_models) when the person names one -- kept for "
+    "the rest of their request; omitted: Auto's";
 const char* kStartDoc =
     "on a timeline: when it shows, seconds; 0 by default";
 const char* kDurationDoc =
@@ -889,26 +892,119 @@ numbered(std::string form, int n)
   return form;
 }
 
-// A model as the agent names it -- its id, its name as shown, "auto" --
-// as a catalog id ("" for Auto's).
-std::string
-model_id(const models::Catalog& cat, std::string named)
+// The TASKS a model is chosen for (list_models, each tool's `model`):
+// the tool that does it, and what it makes, as the agent is told.
+struct ModelTask {
+  const char* name;
+  const char* tool;
+  const char* what;
+};
+constexpr ModelTask kModelTasks[] = {
+    {"picture", "generate_image", "pictures"},
+    {"edit", "generate_image with base or references", "picture edits"},
+    {"shot", "generate_video", "shots from words, or opening or ending on "
+                               "a picture"},
+    {"shot_references", "generate_video with references or continues",
+     "shots drawing on references or carrying one on"},
+    {"music", "generate_music", "music"},
+    {"voiceover", "generate_voiceover", "voice-overs"},
+    {"transcribe", "transcribe", "transcripts"},
+    {"separate", "separate_sound", "a song's voice and accompaniment"},
+    {"upscale", "upscale_layer", "upscales"},
+};
+
+const ModelTask*
+model_task(std::string_view name)
 {
-  std::string low = named;
-  for (auto& ch : low) {
-    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  }
-  if (low == "auto" || low == "default" || low == "auto's") {
-    return {};
-  }
-  if (!named.empty() && !cat.find(named)) {
-    for (const auto& m : cat.models()) {
-      if (m.name == named) {
-        return m.id;
-      }
+  for (const auto& t : kModelTasks) {
+    if (name == t.name) {
+      return &t;
     }
   }
-  return named;
+  return nullptr;
+}
+
+// The modality and op a generating task asks Controller::runs about
+// ("" for an asset operation's).
+std::pair<std::string_view, std::string_view>
+task_runs(std::string_view task)
+{
+  if (task == "picture") return {"image", "generate"};
+  if (task == "edit") return {"image", "edit"};
+  if (task == "shot") return {"video", "generate"};
+  if (task == "shot_references") return {"video", "edit"};
+  if (task == "music" || task == "voiceover") return {"audio", "generate"};
+  return {};
+}
+
+// The capability an asset operation's model has for `m` (an upscaler
+// for clips or pictures).
+models::Capability
+task_capability(std::string_view task, const models::ModelEntry& m)
+{
+  using C = models::Capability;
+  if (task == "transcribe") return C::Transcribe;
+  if (task == "separate") return C::AudioSeparate;
+  return m.has(C::UpscaleVideo) ? C::UpscaleVideo : C::UpscaleImage;
+}
+
+// Does `m` do the task at all -- here, or once downloaded? A quantized
+// variant is its source's to pick (Favor), never named apart.
+bool
+does_task(const models::ModelEntry& m, std::string_view task)
+{
+  using C = models::Capability;
+  if (!m.quantize_from.empty()) {
+    return false;
+  }
+  const Json vp = jget(m.engine, "vpipe", Json::object());
+  if (task == "picture") return m.has(C::TextToImage);
+  if (task == "edit") return m.has(C::ImageEdit);
+  // From words: a text-to-video model's, or Ref2VA's prompt-only request.
+  if (task == "shot") {
+    return m.has(C::TextToVideo) ||
+           (m.has(C::ReferenceToVideo) &&
+            jget(jget(vp, "references", Json::object()), "prompt_only",
+                 false));
+  }
+  if (task == "shot_references") return m.has(C::ReferenceToVideo);
+  if (task == "music") return m.has(C::TextToAudio);
+  if (task == "voiceover") return m.has(C::TextToSpeech);
+  if (task == "transcribe") return m.has(C::Transcribe);
+  if (task == "separate") return m.has(C::AudioSeparate);
+  if (task == "upscale") {
+    return m.has(C::UpscaleVideo) || m.has(C::UpscaleImage);
+  }
+  return false;
+}
+
+// A name as matched: lower case, letters and digits alone -- "FLUX.3
+// Image Klein", "flux3-klein" and "flux 3" meet in "flux3".
+std::string
+squeezed(std::string_view s)
+{
+  std::string out;
+  for (const char ch : s) {
+    const auto u = static_cast<unsigned char>(ch);
+    if (std::isalnum(u)) {
+      out.push_back(static_cast<char>(std::tolower(u)));
+    }
+  }
+  return out;
+}
+
+// A catalog note's first sentence, short: what the model is.
+std::string
+about(std::string_view notes)
+{
+  std::string_view s = notes;
+  if (const auto dot = s.find(". "); dot != std::string_view::npos) {
+    s = s.substr(0, dot + 1);
+  }
+  if (s.size() <= 200) {
+    return std::string(s);
+  }
+  return std::string(utf8_prefix(s, 200)) + "...";
 }
 
 // A POLYGON's points (canvas pixels) as media/markup.h keeps them: its box
@@ -1597,8 +1693,29 @@ Controller::AgentHost::tools()
     t.push_back({"get_project", "read", "Look at the project",
                  "The project: its compositions (size, pages), its other "
                  "assets, which composition is active, and the picture "
-                 "models that run here.",
+                 "models that run here (list_models: every task's).",
                  schema(Json::object()), &H::t_get_project});
+    {
+      std::vector<std::string> names;
+      for (const auto& mt : kModelTasks) {
+        names.emplace_back(mt.name);
+      }
+      t.push_back(
+          {"list_models", "read", "Look at the models",
+           "The MODELS that run here for a task -- each one's id, name, "
+           "what it does, Auto's pick marked -- and those not downloaded. "
+           "When the person names a model (\"use FLUX.3 for the "
+           "pictures\", \"which music models do I have?\"), look here and "
+           "give its id as the tool's `model`.",
+           schema({{"task", one_of(names,
+                                   "picture, edit (a picture changed), "
+                                   "shot (generate_video from words or a "
+                                   "picture), shot_references (drawing on "
+                                   "references, continuing), music, "
+                                   "voiceover, transcribe, separate, "
+                                   "upscale; omitted: every task")}}),
+           &H::t_list_models});
+    }
     t.push_back({"get_composition", "read", "Look at a composition",
                  "A composition's size, pages and layers, bottom first: "
                  "what each shows, its box, its pages, and a markup "
@@ -2114,7 +2231,8 @@ Controller::AgentHost::tools()
                  "bigger than its pixels) rendered sharp at that size, in "
                  "the background (a picture seconds, a clip minutes).",
                  schema({{"composition", str(kCompDoc)},
-                         {"layer", str(kLayerDoc)}},
+                         {"layer", str(kLayerDoc)},
+                         {"model", str(kModelDoc)}},
                         {"layer"}),
                  &H::t_upscale_layer});
     t.push_back({"set_layer_pages", "edit", "Set a layer's pages",
@@ -2217,8 +2335,9 @@ Controller::AgentHost::tools()
                  {"idea", str("what you want, in your words; pictures "
                               "named <Picture 1>, ... as the tool does")},
                  {"style", str("the look it must keep (the deck's)")},
-                 {"model", str("a picture model's id (get_project); "
-                               "omitted: the one generate_image would run")},
+                 {"model", str("the model the tool that makes it is "
+                               "given (list_models); omitted: the one it "
+                               "would run")},
                  {"base", str("a picture: the one an edit changes")},
                  {"references", ids("pictures it draws on")},
                  {"first", str("a shot: the picture it opens on")},
@@ -2245,9 +2364,7 @@ Controller::AgentHost::tools()
                       {"page", integer(kPageDoc)},
                       {"below_all", boolean("under every layer of the "
                                             "page (a background)")},
-                      {"model", str("a picture model's id from "
-                                    "get_project; omitted: Auto's (its "
-                                    "edit model for an edit)")},
+                      {"model", str(kModelDoc)},
                       {"base", str("an EDIT: the picture to change")},
                       {"references", ids("pictures to draw on")},
                       {"long_side", integer("its longer side, pixels, up to "
@@ -2279,13 +2396,17 @@ Controller::AgentHost::tools()
          "What is SAID in a sound or a clip, line by line with each line's "
          "span in its own seconds, and the sounds heard -- kept in the "
          "project as its transcript.",
-         schema({{"asset", str("the sound's or the clip's id")}}, {"asset"}),
+         schema({{"asset", str("the sound's or the clip's id")},
+                 {"model", str(kModelDoc)}},
+                {"asset"}),
          &H::t_transcribe});
     t.push_back(
         {"separate_sound", "generate", "Separate a song",
          "A song split, in the background, into its VOICE and its "
          "ACCOMPANIMENT, each a new sound of the project.",
-         schema({{"asset", str("the song's id (a sound)")}}, {"asset"}),
+         schema({{"asset", str("the song's id (a sound)")},
+                 {"model", str(kModelDoc)}},
+                {"asset"}),
          &H::t_separate_sound});
     t.push_back(
         {"view_frames", "read", "Look at frames",
@@ -2416,6 +2537,7 @@ Controller::AgentHost::tools()
                  {"fade_in", num("seconds; 0 by default")},
                  {"fade_out", num("seconds; 2 by default")},
                  {"composition", str(kCompDoc)},
+                 {"model", str(kModelDoc)},
                  {"name", str("the asset's name")}},
                 {"style", "seconds"}),
          &H::t_generate_music});
@@ -2435,6 +2557,7 @@ Controller::AgentHost::tools()
                  {"start", num("timeline seconds; 0 by default")},
                  {"volume", num("0 to 1; 1 by default")},
                  {"composition", str(kCompDoc)},
+                 {"model", str(kModelDoc)},
                  {"name", str("the asset's name")}},
                 {"text"}),
          &H::t_generate_voiceover});
@@ -2503,6 +2626,7 @@ Controller::AgentHost::tools()
                  {"seed", integer("another number: another take of the "
                                   "same shot")},
                  {"composition", str(kCompDoc)},
+                 {"model", str(kModelDoc)},
                  {"name", str("the asset's name; omitted: \"Shot N\"")}},
                 {"description"}),
          &H::t_generate_video});
@@ -2540,6 +2664,251 @@ Controller::AgentHost::tools_json() const
 }
 
 // ---- helpers ----------------------------------------------------------------
+
+std::string
+Controller::AgentHost::model_state_(const models::ModelEntry& m,
+                                    std::string_view task) const
+{
+  if (!does_task(m, task)) {
+    return {};
+  }
+  if (const auto [modality, op] = task_runs(task); !modality.empty()) {
+    return _c.runs(m, modality, op)        ? "here"
+           : _c.runs_soon(m, modality, op) ? "downloading"
+                                           : "";
+  }
+  // An asset operation: the engine has its graph, and the model is here
+  // with what it needs beside it -- or on its way.
+  if (!_c.engine_runs_(task_capability(task, m))) {
+    return {};
+  }
+  return _c.ready_(m) ? "here" : _c.coming_(m) ? "downloading" : "";
+}
+
+const models::ModelEntry*
+Controller::AgentHost::voice_model_() const
+{
+  const models::ModelEntry* m = nullptr;
+  for (const auto& e : _c._catalog.models()) {
+    if (does_task(e, "voiceover") && _c.runs(e, "audio", "generate") &&
+        (!m || e.rank > m->rank)) {
+      m = &e;
+    }
+  }
+  return m;
+}
+
+std::vector<const models::ModelEntry*>
+Controller::AgentHost::auto_for_(std::string_view task) const
+{
+  using C = models::Capability;
+  std::vector<const models::ModelEntry*> out;
+  auto add = [&](const models::ModelEntry* m) {
+    if (m && std::ranges::find(out, m) == out.end()) {
+      out.push_back(m);
+    }
+  };
+  if (const auto [modality, op] = task_runs(task);
+      !modality.empty() && task != "voiceover") {
+    for (const auto& a : _c.auto_models()) {
+      if (a.modality == modality && a.op == op && !a.chosen.empty()) {
+        add(_c._catalog.find(a.chosen));
+      }
+    }
+  } else if (task == "voiceover") {
+    add(voice_model_());
+  } else if (task == "transcribe") {
+    add(_c.operation_model_(C::Transcribe, "auto"));
+  } else if (task == "separate") {
+    add(_c.operation_model_(C::AudioSeparate, "auto"));
+  } else if (task == "upscale") {
+    for (const auto c : {C::UpscaleVideo, C::UpscaleImage}) {
+      add(_c.operation_model_(c, "auto", _c.chosen_upscaler_(c)));
+    }
+  }
+  return out;
+}
+
+Result<const models::ModelEntry*>
+Controller::AgentHost::model_for_(std::string_view task,
+                                  const std::string& named) const
+{
+  const std::string q = squeezed(named);
+  if (q.empty() || q == "auto" || q == "default" || q == "autos") {
+    return static_cast<const models::ModelEntry*>(nullptr);
+  }
+  const ModelTask* t = model_task(task);
+  const auto& all = _c._catalog.models();
+  // Named exactly -- its id, its name -- else the one of the task whose
+  // id or name holds the words, those here first; of several, the one
+  // whose name every other's begins with (Qwen-Image 2.1, not its Turbo).
+  const models::ModelEntry* m = nullptr;
+  for (const auto& e : all) {
+    if (!m && e.quantize_from.empty() &&
+        (squeezed(e.id) == q || squeezed(e.name) == q)) {
+      m = &e;
+    }
+  }
+  if (!m) {
+    std::vector<const models::ModelEntry*> loose, others;
+    for (const auto& e : all) {
+      if (squeezed(e.id).find(q) != std::string::npos ||
+          squeezed(e.name).find(q) != std::string::npos) {
+        (does_task(e, task) ? loose : others).push_back(&e);
+      }
+    }
+    const auto here = std::ranges::count_if(loose, [&](const auto* e) {
+      return !model_state_(*e, task).empty();
+    });
+    if (here > 0) {
+      std::erase_if(loose, [&](const auto* e) {
+        return model_state_(*e, task).empty();
+      });
+    }
+    for (const auto* e : loose) {
+      const std::string mine = squeezed(e->name);
+      if (std::ranges::all_of(loose, [&](const auto* o) {
+            return squeezed(o->name).starts_with(mine);
+          })) {
+        m = e;
+      }
+    }
+    if (!m && loose.size() > 1) {
+      std::string names;
+      for (const auto* e : loose) {
+        names += std::format("{}{} ({})", names.empty() ? "" : ", ",
+                             e->name, e->id);
+      }
+      return make_error(Code::InvalidArgument, std::format(
+          "\"{}\" could be {}: give one's id", named, names));
+    }
+    if (!m && !loose.empty()) {
+      m = loose.front();
+    }
+    if (!m && !others.empty()) {
+      m = others.front();
+    }
+  }
+  // Those here that do it, Auto's marked: what the person may choose.
+  const auto autos = auto_for_(task);
+  std::string offer;
+  for (const auto& e : all) {
+    if (!model_state_(e, task).empty()) {
+      offer += std::format("{}{} ({}{})", offer.empty() ? "" : ", ", e.name,
+                           e.id,
+                           std::ranges::find(autos, &e) != autos.end()
+                               ? ", Auto's"
+                               : "");
+    }
+  }
+  if (offer.empty()) {
+    offer = "none";
+  }
+  if (!m) {
+    return make_error(Code::NotFound, std::format(
+        "no model is named \"{}\". Here for {}: {} (list_models)", named,
+        t->what, offer));
+  }
+  if (!does_task(*m, task)) {
+    return make_error(Code::InvalidArgument, std::format(
+        "{} does not make {}. Here for {}: {}; or leave `model` out for "
+        "Auto's", m->name, t->what, t->what, offer));
+  }
+  if (model_state_(*m, task).empty()) {
+    return make_error(Code::Unsupported, std::format(
+        "{} is not on this Mac (or not with what it needs): the person "
+        "can download it in Settings > Capabilities. Here for {}: {}",
+        m->name, t->what, offer));
+  }
+  return m;
+}
+
+Result<Json>
+Controller::AgentHost::t_list_models(Session&, Step&, const Json& args,
+                                     std::vector<fs::path>&)
+{
+  const std::string only = text_arg(args, "task");
+  if (!only.empty() && !model_task(only)) {
+    std::string names;
+    for (const auto& t : kModelTasks) {
+      names += std::format("{}{}", names.empty() ? "" : ", ", t.name);
+    }
+    return make_error(Code::InvalidArgument,
+                      std::format("the task is one of: {}", names));
+  }
+  Json tasks = Json::array();
+  for (const auto& t : kModelTasks) {
+    if (!only.empty() && only != t.name) {
+      continue;
+    }
+    const auto autos = auto_for_(t.name);
+    Json here = Json::array(), absent = Json::array();
+    for (const auto& m : _c._catalog.models()) {
+      if (!does_task(m, t.name)) {
+        continue;
+      }
+      const std::string state = model_state_(m, t.name);
+      if (state.empty()) {
+        absent.push_back(m.name);
+        continue;
+      }
+      Json j = {{"id", m.id}, {"name", m.name}};
+      if (std::ranges::find(autos, &m) != autos.end()) {
+        j["auto"] = true;
+      }
+      if (state == "downloading") {
+        j["downloading"] = true;
+      }
+      if (m.by_name) {
+        j["by_name_only"] = true;
+      }
+      const Json vp = jget(m.engine, "vpipe", Json::object());
+      const std::string_view task = t.name;
+      if (task == "picture" || task == "edit") {
+        j["max_side"] = models::max_edge(m) > 0 ? models::max_edge(m) : 2048;
+      }
+      if (task == "picture") {
+        j["edits"] = _c.runs_soon(m, "image", "edit");
+      }
+      if (task == "edit") {
+        j["max_pictures"] = std::max(
+            1, jget(jget(vp, "edit", Json::object()), "max_references", 1));
+      }
+      if (task == "shot") {
+        j["opens_on_picture"] = m.has(models::Capability::ImageToVideo);
+        j["ends_on_picture"] = jget(vp, "last_frame", false);
+      }
+      if (task == "music") {
+        j["needs_lyrics"] = jget(jget(vp, "song", Json::object()),
+                                 "lyrics_required", false);
+      }
+      if (task == "upscale") {
+        j["for"] = m.has(models::Capability::UpscaleVideo) ? "clips"
+                                                           : "pictures";
+      }
+      if (!m.license.empty()) {
+        j["license"] = m.license;
+      }
+      if (!m.notes.empty()) {
+        j["about"] = about(m.notes);
+      }
+      here.push_back(std::move(j));
+    }
+    tasks.push_back({{"task", t.name}, {"tool", t.tool},
+                     {"models", std::move(here)},
+                     {"not_downloaded", std::move(absent)}});
+  }
+  const char* note =
+      "Give a model's id as `model` to its tool when the person names "
+      "one; else leave it out (Auto's). A model not downloaded is the "
+      "person's to download, in Settings > Capabilities.";
+  if (!only.empty()) {
+    Json r = tasks.front();
+    r["note"] = note;
+    return r;
+  }
+  return Json{{"tasks", std::move(tasks)}, {"note", note}};
+}
 
 Result<AssetId>
 Controller::AgentHost::composition_(const Session& s, const Json& args)
@@ -5641,6 +6010,8 @@ Controller::AgentHost::t_upscale_layer(Session& s, Step& step,
 {
   VALTZ_ASSIGN(AssetId comp, composition_(s, args));
   VALTZ_ASSIGN(std::string layer, layer_(args));
+  VALTZ_ASSIGN(const models::ModelEntry* named,
+               model_for_("upscale", text_arg(args, "model")));
   auto undo = _c.command_(s.project, "agent", comp, layer,
                           {{"tool", step.tool}, {"title", step.title}});
   Controller::AssetOpRequest req;
@@ -5648,6 +6019,9 @@ Controller::AgentHost::t_upscale_layer(Session& s, Step& step,
   req.asset = comp;
   req.operation = "upscale";
   req.layer = layer;
+  if (named) {
+    req.model = named->id;
+  }
   VALTZ_ASSIGN(auto made, _c.run_asset_operation(std::move(req)));
   book_(s, step, made.job);
   Json r = {{"job", made.job.str()}, {"queued", true},
@@ -5888,7 +6262,10 @@ Controller::AgentHost::t_enhance_prompt(Session& s, Step&, const Json& args,
     row.insert(row.end(), refs.begin(), refs.end());
     const bool edit = !row.empty();
     // The model generate_image would run: the one named, else Auto's.
-    std::string id = model_id(_c._catalog, text_arg(args, "model"));
+    VALTZ_ASSIGN(const models::ModelEntry* named,
+                 model_for_(edit ? "edit" : "picture",
+                            text_arg(args, "model")));
+    std::string id = named ? named->id : std::string();
     for (const auto& a : _c.auto_models()) {
       if (id.empty() && a.modality == "image" &&
           a.op == (edit ? "edit" : "generate")) {
@@ -5936,18 +6313,24 @@ Controller::AgentHost::t_enhance_prompt(Session& s, Step&, const Json& args,
                         "references and carries on from a clip -- not both");
     }
     const bool drawn = from || !refs.empty();
-    if (drawn) {
+    // The one named, else Auto's.
+    VALTZ_ASSIGN(m, model_for_(drawn ? "shot_references" : "shot",
+                               text_arg(args, "model")));
+    if (!m && drawn) {
       m = _c.reference_model_("");
-    } else {
-      for (const auto& a : _c.auto_models()) {
-        if (!m && a.modality == "video" && a.op == "generate" &&
-            !a.chosen.empty()) {
-          m = _c._catalog.find(a.chosen);
-        }
+    }
+    for (const auto& a : _c.auto_models()) {
+      if (!m && !drawn && a.modality == "video" && a.op == "generate" &&
+          !a.chosen.empty()) {
+        m = _c._catalog.find(a.chosen);
       }
     }
     if (!m) {
       return make_error(Code::Unsupported, "no video model runs here");
+    }
+    if (first && !m->has(models::Capability::ImageToVideo)) {
+      return make_error(Code::Unsupported, std::format(
+          "{} does not open a shot on a picture", m->name));
     }
     req.target = "video";
     req.model = m->id;
@@ -5996,18 +6379,16 @@ Controller::AgentHost::t_enhance_prompt(Session& s, Step&, const Json& args,
     }
   } else if (what == "music") {
     tool = "generate_music";
+    VALTZ_ASSIGN(m, model_for_("music", text_arg(args, "model")));
     req.target = "audio";
-    req.model = "auto";
+    req.model = m ? m->id : "auto";
     req.seconds = std::max(0.0, number(args, "seconds", 0));
   } else if (what == "voiceover") {
     tool = "generate_voiceover";
     // The speech model generate_voiceover speaks with.
-    for (const auto& e : _c._catalog.models()) {
-      if (e.has(models::Capability::TextToSpeech) &&
-          e.quantize_from.empty() && _c.runs(e, "audio", "generate") &&
-          (!m || e.rank > m->rank)) {
-        m = &e;
-      }
+    VALTZ_ASSIGN(m, model_for_("voiceover", text_arg(args, "model")));
+    if (!m) {
+      m = voice_model_();
     }
     if (!m) {
       return make_error(Code::Unsupported, "no speech model runs here");
@@ -6198,22 +6579,23 @@ Controller::AgentHost::t_generate_image(Session& s, Step& step,
   VALTZ_ASSIGN(auto base, maybe_asset(*p, args, "base"));
   VALTZ_ASSIGN(auto refs, pictures_of(*p, args, "references"));
   const bool edit = base || !refs.empty();
-  // "Auto" as the person would say it; a model by its name as shown --
-  // and, for a size asked, how large it makes (Auto's: its pick).
+  // The model the person named -- one that edits, for an edit -- else
+  // Auto's; and, for a size asked, how large it makes (Auto's: its pick).
   GenerateImageRequest req;
-  req.model = model_id(_c._catalog, text_arg(args, "model"));
+  VALTZ_ASSIGN(const models::ModelEntry* named,
+               model_for_(edit ? "edit" : "picture",
+                          text_arg(args, "model")));
+  req.model = named ? named->id : std::string();
   int most = 2048;
-  {
-    std::string id = req.model;
-    for (const auto& a : _c.auto_models()) {
-      if (id.empty() && a.modality == "image" &&
-          a.op == (edit ? "edit" : "generate")) {
-        id = a.chosen;
-      }
+  const models::ModelEntry* runs = named;
+  for (const auto& a : _c.auto_models()) {
+    if (!runs && a.modality == "image" &&
+        a.op == (edit ? "edit" : "generate")) {
+      runs = _c._catalog.find(a.chosen);
     }
-    if (const auto* m = _c._catalog.find(id); m && models::max_edge(*m)) {
-      most = models::max_edge(*m);
-    }
+  }
+  if (runs && models::max_edge(*runs)) {
+    most = models::max_edge(*runs);
   }
   const bool sized = args.contains("long_side");
   const double side = number(args, "long_side", 1024);
@@ -6258,6 +6640,9 @@ Controller::AgentHost::t_generate_image(Session& s, Step& step,
     req.base = base;
     req.references = refs;
   }
+  if (runs) {
+    l.model = runs->name;
+  }
   auto undo = _c.command_(s.project, "agent",
                           l.composition.value_or(AssetId{}), "",
                           {{"tool", step.tool}, {"title", step.title}});
@@ -6273,6 +6658,9 @@ Controller::AgentHost::t_generate_image(Session& s, Step& step,
   }
   step.job = job;
   Json r = {{"job", job.str()}, {"queued", true}};
+  if (runs) {
+    r["model"] = runs->name;
+  }
   if (size.first > 0) {
     r["size"] = {size.first, size.second};
   }
@@ -6450,8 +6838,11 @@ Controller::AgentHost::t_transcribe(Session& s, Step&, const Json& args,
     return make_error(Code::InvalidArgument, std::format(
         "\"{}\" is not a sound or a clip", src.name));
   }
+  // The model the person named, else Auto's.
+  VALTZ_ASSIGN(const models::ModelEntry* named,
+               model_for_("transcribe", text_arg(args, "model")));
   // Heard before -- by the person, or an earlier step -- and still about
-  // it as it is: that transcript.
+  // it as it is (by the model named, if one is): that transcript.
   std::optional<AssetId> text;
   if (auto deps = p->dependents(*asset, false); deps.ok()) {
     for (const auto& d : *deps) {
@@ -6461,7 +6852,7 @@ Controller::AgentHost::t_transcribe(Session& s, Step&, const Json& args,
                                            Code::NotFound, "none"));
       auto st = p->staleness(d);
       if (r.ok() && r->op == engine::kOpTranscribeAudio && st.ok() &&
-          st->fresh()) {
+          st->fresh() && (!named || r->model == named->id)) {
         text = d;
       }
     }
@@ -6471,6 +6862,9 @@ Controller::AgentHost::t_transcribe(Session& s, Step&, const Json& args,
     req.project = s.project;
     req.asset = *asset;
     req.operation = "transcribe";
+    if (named) {
+      req.model = named->id;
+    }
     VALTZ_ASSIGN(auto made, _c.run_asset_operation(std::move(req)));
     text = made.made.front();
     if (!wait_job_(s, made.job)) {
@@ -6541,12 +6935,17 @@ Controller::AgentHost::t_separate_sound(Session& s, Step& step,
   if (!asset) {
     return make_error(Code::InvalidArgument, "which song?");
   }
+  VALTZ_ASSIGN(const models::ModelEntry* named,
+               model_for_("separate", text_arg(args, "model")));
   auto undo = _c.command_(s.project, "agent", AssetId{}, "",
                           {{"tool", step.tool}, {"title", step.title}});
   Controller::AssetOpRequest req;
   req.project = s.project;
   req.asset = *asset;
   req.operation = "separate";
+  if (named) {
+    req.model = named->id;
+  }
   VALTZ_ASSIGN(auto made, _c.run_asset_operation(std::move(req)));
   book_(s, step, made.job);
   Json r = {{"job", made.job.str()}, {"queued", true}};
@@ -7144,18 +7543,22 @@ Controller::AgentHost::t_generate_music(Session& s, Step& step,
   if (!one_line(lyrics).empty() && lyrics.find('[') == std::string::npos) {
     lyrics = "[Verse]\n" + lyrics;
   }
+  // The model the person named, else Auto's.
+  VALTZ_ASSIGN(const models::ModelEntry* m,
+               model_for_("music", text_arg(args, "model")));
+  const models::ModelEntry* sings = m;
+  for (const auto& a : _c.auto_models()) {
+    if (!sings && a.modality == "audio" && a.op == "generate") {
+      sings = _c._catalog.find(a.chosen);
+    }
+  }
   // Instrumental on a model that sings only to lyrics (MiniMax-Music3,
   // catalog song.lyrics_required): its sections without words.
-  if (one_line(lyrics).empty()) {
-    for (const auto& a : _c.auto_models()) {
-      const auto* m = a.modality == "audio" && a.op == "generate"
-                          ? _c._catalog.find(a.chosen) : nullptr;
-      if (m && jget(jget(jget(m->engine, "vpipe", Json::object()), "song",
-                         Json::object()),
-                    "lyrics_required", false)) {
-        lyrics = "[Intro]\n[Instrumental]\n[Outro]";
-      }
-    }
+  if (one_line(lyrics).empty() && sings &&
+      jget(jget(jget(sings->engine, "vpipe", Json::object()), "song",
+                Json::object()),
+           "lyrics_required", false)) {
+    lyrics = "[Intro]\n[Instrumental]\n[Outro]";
   }
   Landing l;
   l.session = s.id;
@@ -7167,6 +7570,9 @@ Controller::AgentHost::t_generate_music(Session& s, Step& step,
   l.fade_in = std::max(0.0, number(args, "fade_in", 0));
   l.fade_out = std::max(0.0, number(args, "fade_out", 2));
   l.fit = true;
+  if (sings) {
+    l.model = sings->name;
+  }
   // Onto the timeline named, or the one open; else an asset alone.
   std::optional<AssetId> comp;
   if (args.contains("composition")) {
@@ -7183,6 +7589,9 @@ Controller::AgentHost::t_generate_music(Session& s, Step& step,
   GenerateAudioRequest req;
   req.project = s.project;
   req.prompt = one_line(lyrics).empty() ? style : style + "\n\n" + lyrics;
+  if (m) {
+    req.model = m->id;
+  }
   req.name = one_line(text_arg(args, "name"));
   // A little past where it is cut: the cut fades out over music.
   req.max_seconds = std::ceil(l.seconds + l.fade_out);
@@ -7200,6 +7609,9 @@ Controller::AgentHost::t_generate_music(Session& s, Step& step,
   }
   step.job = job;
   Json r = {{"job", job.str()}, {"queued", true}};
+  if (sings) {
+    r["model"] = sings->name;
+  }
   if (auto rec = _c._jobs.get(job); rec && !rec->asset.is_nil()) {
     r["asset"] = rec->asset.str();
   }
@@ -7221,15 +7633,12 @@ Controller::AgentHost::t_generate_voiceover(Session& s, Step& step,
   if (one_line(words).empty()) {
     return make_error(Code::InvalidArgument, "no words to speak");
   }
-  // The model that speaks here (a quantized variant is its source's
-  // choice, by Favor).
-  const models::ModelEntry* m = nullptr;
-  for (const auto& e : _c._catalog.models()) {
-    if (e.has(models::Capability::TextToSpeech) &&
-        e.quantize_from.empty() && _c.runs(e, "audio", "generate") &&
-        (!m || e.rank > m->rank)) {
-      m = &e;
-    }
+  // The model the person named, else the best that speaks here (a
+  // quantized variant is its source's choice, by Favor).
+  VALTZ_ASSIGN(const models::ModelEntry* m,
+               model_for_("voiceover", text_arg(args, "model")));
+  if (!m) {
+    m = voice_model_();
   }
   if (!m) {
     return make_error(Code::Unsupported, "no speech model runs here");
@@ -7249,6 +7658,7 @@ Controller::AgentHost::t_generate_voiceover(Session& s, Step& step,
   l.step = step.n;
   l.project = s.project;
   l.sound = true;
+  l.model = m->name;
   l.volume = std::clamp(number(args, "volume", 1), 0.0, 2.0);
   std::optional<AssetId> comp;
   if (args.contains("composition")) {
@@ -7364,16 +7774,20 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
                       "not both");
   }
   const bool refs = continues || !from_text.empty() || !pictures.empty();
-  // The model Auto runs it on: FL2VA from words or a picture, Ref2VA
+  // The model the person named -- one that draws on references, for a
+  // shot that does -- else Auto's: FL2VA from words or a picture, Ref2VA
   // carrying on or drawing on references.
-  const models::ModelEntry* m = nullptr;
-  if (refs) {
+  VALTZ_ASSIGN(const models::ModelEntry* m,
+               model_for_(refs ? "shot_references" : "shot",
+                          text_arg(args, "model")));
+  const bool named = m != nullptr;
+  if (!m && refs) {
     m = _c.reference_model_("");
-  } else {
-    for (const auto& a : _c.auto_models()) {
-      if (a.modality == "video" && a.op == "generate" && !a.chosen.empty()) {
-        m = _c._catalog.find(a.chosen);
-      }
+  }
+  for (const auto& a : _c.auto_models()) {
+    if (!m && !refs && a.modality == "video" && a.op == "generate" &&
+        !a.chosen.empty()) {
+      m = _c._catalog.find(a.chosen);
     }
   }
   if (!m || !_c.runs_soon(*m, "video", refs ? "edit" : "generate")) {
@@ -7381,6 +7795,12 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
                       refs ? "no video model that carries a clip on or "
                              "draws on references runs here"
                            : "no video model runs here");
+  }
+  // Ref2VA from the prompt alone has no keyframe to open on.
+  if (named && first && !m->has(models::Capability::ImageToVideo)) {
+    return make_error(Code::Unsupported, std::format(
+        "{} does not open a shot on a picture: leave `model` out for "
+        "this shot (Auto's opens on one)", m->name));
   }
   // Where it lands: the timeline named, or the one open; else an asset
   // alone.
@@ -7420,6 +7840,7 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
   l.step = step.n;
   l.project = s.project;
   l.clip = true;
+  l.model = m->name;
   l.seconds = length;
   GenerateVideoRequest req;
   req.project = s.project;

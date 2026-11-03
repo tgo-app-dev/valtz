@@ -163,6 +163,11 @@ final class CoreService: @unchecked Sendable {
     func chooseAssistant(_ id: String) -> CoreReply {
         send(core.choose_assistant, ["model": id])
     }
+    /// The micro agent's settings (DESIGN §9c): any of "model" ("" Auto,
+    /// "off", an id), "names", "refine", "enhance".
+    func setMicro(_ changes: [String: Any]) -> CoreReply {
+        send(core.choose_assistant, ["micro": changes])
+    }
     func setAssistantKeepLoaded(_ seconds: Double) -> CoreReply {
         send(core.choose_assistant, ["keep_loaded": seconds])
     }
@@ -596,6 +601,17 @@ final class CoreService: @unchecked Sendable {
     /// The asset list (valtz-bridge.h asset_op): "create-folder",
     /// "rename-folder", "delete-folder", "move", "remove", "modify",
     /// "capture", "unfreeze".
+    /// An Atlas GENERATE NODE changed (core generate_node_op): `action`
+    /// add | link | unlink | order | set | start | duplicate | remove |
+    /// get, with its `node`, `asset`, `target`, `assets`, `refs`,
+    /// `settings`. The node comes back as "node".
+    func generateNode(project: String, _ action: String,
+                      _ extra: [String: Any] = [:]) -> CoreReply {
+        var req = extra
+        req["action"] = action
+        return assetOp(project: project, "generate-node", req)
+    }
+
     func assetOp(project: String, _ op: String,
                  _ extra: [String: Any] = [:]) -> CoreReply {
         var req: [String: Any] = ["project": project, "op": op]

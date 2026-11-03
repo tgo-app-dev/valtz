@@ -316,6 +316,7 @@ extension AppModel {
     static func agentToolTitle(_ tool: String) -> String {
         switch tool {
         case "get_project": String(localized: "Look at the Project")
+        case "list_models": String(localized: "Look at the Models")
         case "get_composition": String(localized: "Look at a Composition")
         case "view_page": String(localized: "Look at a Page")
         case "view_asset": String(localized: "Look at an Asset")

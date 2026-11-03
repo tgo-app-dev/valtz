@@ -279,6 +279,30 @@ struct HelperList: Decodable, Sendable {
     /// own, as far as this Mac's memory holds it).
     var context: Int?
     var models: [Helper]
+    /// THE MICRO AGENT (DESIGN §9c): the small model naming prompts and
+    /// their results, writing a Ref2VA clip's words for its 2K pass, and,
+    /// asked, enhancing in the helper's place.
+    var micro: Micro?
+
+    struct Micro: Decodable, Sendable {
+        /// As chosen: "" Auto (the best ranked one here), "off", an id.
+        var model: String
+        /// The one at work; "" none.
+        var using: String
+        var names: Bool
+        var refine: Bool
+        var enhance: Bool
+        var models: [Model]
+
+        struct Model: Decodable, Sendable, Identifiable {
+            var id: String
+            var name: String
+            var state: String
+            var diskGb: Double
+            var minRamGb: Int
+            var license: String
+        }
+    }
 
     struct Helper: Decodable, Sendable, Identifiable {
         var id: String

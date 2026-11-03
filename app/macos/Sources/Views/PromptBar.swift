@@ -89,7 +89,7 @@ struct PromptBar: View {
         // Semi-transient (AppKit's): open while Valtz is left, so weights
         // can be dragged into Tune's options inside it from the Finder.
         .appKitPopover(isPresented: $model.showsGenerationSettings,
-                       arrowEdge: .bottom) {
+                       arrowEdge: .bottom, fitted: true) {
             GenerationSettingsPopover(model: model)
         }
         // Shut, it takes Tune's options with it.

@@ -260,6 +260,18 @@ struct GenerateVideoRequest {
   // sound, the clip the new one carries on from.
   std::optional<AssetId> continue_from;
   double               tail_seconds = 0;  // 0: the catalog's (3.75 s)
+  // Continued FROM THE LATENTS the clip kept (DESIGN §4e), not its
+  // picture and sound read again as a reference: Ref2VA carries them
+  // beside its pixels, a model that takes a guide (FL2VA) is guided
+  // through its tail by them. Refused where it kept none, or none that
+  // cover the tail. Off: Ref2VA reads the clip as a reference, as it
+  // always did (FL2VA, chosen, encodes the tail it is guided by).
+  bool                 continue_latents = false;
+  // KEEP LATENTS (catalog `keeps_latents`: MiniMax H3's): the clip's own
+  // -- its video's and its soundtrack's, a regenerated clip's draft's --
+  // written beside it and kept with it in the project (its version's
+  // outputs "latents"), for a continuation from them. Off: none.
+  bool                 keep_latents = false;
   // The result's soundtrack is the first sound reference's own, over the
   // clip's length -- a music video's song, as it is -- in place of the
   // one generated with the picture.
@@ -1059,7 +1071,29 @@ public:
   // them. A LEAF -- nothing made from it (any of its versions), on no
   // layer, not the project's composition -- may be removed, as
   // remove_asset allows. {"nodes", "edges", "columns", "height"}.
+  // A GENERATE NODE (below) not yet run is an op of its own ("generate")
+  // after its inputs; one run is its result's op, the node beside it.
   Result<Json> atlas(ProjectId);
+  // The Atlas's GENERATE NODES (DESIGN §10a Atlas): a generation SET UP
+  // before it runs -- what it makes (`target`: image | video | audio),
+  // from what -- ONE TEXT, its prompt, and its REFERENCE ROW in order
+  // (the prompt's tags name the row's places) -- and how: its model (""
+  // Auto's), Favor (`preference`; Custom's `tuning` with `custom`),
+  // `width` / `height` (0: the model's, an edit's base's), `seconds` (0:
+  // the model's), `plan` (a song's score), `seed` (-1: random). Kept in
+  // the project (its meta), each change a command, undone as any.
+  // STARTED it is frozen -- the seed it ran with written in, its job and
+  // the asset it makes recorded, in its generation's command -- and made
+  // again by Duplicate (its seed with it only when one was given).
+  Result<Json> generate_nodes(ProjectId);
+  // One change, `req`'s "action": "add" ("target", "assets": linked in
+  // order) | "link" / "unlink" ("node", "asset") | "order" ("node",
+  // "refs": the row reordered) | "set" ("node", "settings": the fields
+  // above, laid over its own) | "start" | "duplicate" | "remove"
+  // ("node"). {"node": as it is after} -- "start" adds "job", "asset".
+  // Refused: a second text, a medium the target does not read, a node
+  // that has run (but for duplicate and remove).
+  Result<Json> generate_node_op(ProjectId, const Json& req);
   // A result placed in the project's composition (DESIGN §6a). None yet:
   // made of it -- a picture makes a still at its size, a clip a timeline
   // at its size and rate, a song a timeline of sound. A result of the
@@ -1395,6 +1429,33 @@ public:
   // "mtp", "drafter"?: {"id", "state"}, "dflash"?: {"id", "name",
   // "state", "disk_gb"}, "sampling"}]}.
   Json assistants() const;
+  // THE MICRO AGENT (DESIGN §9c): a small model of Valtz's own -- the
+  // tier's first, LFM3-VL 2B (catalog role "micro") -- for the short text
+  // tasks around a generation, too small a job for the helper: a
+  // prompt's short NAME, which its results take; a Ref2VA clip's words
+  // REWRITTEN for its 2K pass (the reference pictures shown to it); and,
+  // asked for, ENHANCE in the helper's place. Each falls back to what
+  // Valtz does without it: the words as the name, the words made by rule
+  // (assist::refine_prompt), the helper. Settings > Agentic Helper >
+  // Micro Agent: its model ("" Auto -- the best ranked one installed --
+  // "off", or one by id) and its tasks ("names", "refine" on, "enhance"
+  // off), kept in assistant.json "micro"; valtzctl `micro`.
+  const models::ModelEntry* micro_model() const;
+  // {"model", "using", "names", "refine", "enhance", "models": [{"id",
+  // "name", "state", "disk_gb", "min_ram_gb", "license"}]}.
+  Json micro_settings() const;
+  // Any of {"model", "names", "refine", "enhance"}, kept.
+  Status set_micro(const Json& changes);
+  // `text` asked of the micro agent as its tasks are, the pictures at
+  // `images` shown ahead of it, its reply waited for: valtzctl `micro
+  // ask`, to try a task's words.
+  Result<std::string> ask_micro(std::string text,
+                                const std::vector<std::filesystem::path>&
+                                    images,
+                                int max_new_tokens = 512);
+  // Until the names the micro agent was asked for have landed (or not):
+  // valtzctl, whose process ends with its job. False past `timeout_ms`.
+  bool wait_micro(int timeout_ms);
   // Download a catalog model into the store's download root. A GATED
   // one (catalog `gated`: its publisher's license accepted on Hugging
   // Face first) takes the person's access token, `hf_token`: it goes to
@@ -1702,6 +1763,26 @@ public:
                                   const std::string& model = "",
                                   std::string name = {},
                                   std::string capture_name = {});
+  // The windows of a MiniMax H3 clip's kept latents (DESIGN §4e) a tail
+  // of `tail` frames ending at frame `end` (exclusive) of a clip of
+  // `frames` takes: {"video": {"start", "count"}, "audio": {...}} --
+  // video latent frames in its own 17-frame chunks of five (17n + 5
+  // frames are 5n + 2), audio at 5/3 a frame, on the clip's own
+  // boundaries. None where the tail is not whole chunks from a chunk's
+  // first frame (a mark-out inside one: its pixels are read instead) or
+  // runs past what the latents hold.
+  static std::optional<Json> latent_windows(std::int64_t frames,
+                                            std::int64_t end,
+                                            std::int64_t tail,
+                                            std::int64_t video_latents,
+                                            std::int64_t audio_latents);
+  // A clip's kept latents (DESIGN §4e), as `valtzctl latent` and
+  // Continue's menu say them: {"kept", "clip", "frames", "end", "video":
+  // {"file", "shape"}, "audio": {...}, "fits": [bool, ...]} of `asset`'s
+  // head -- or of the clip a continuation of it would carry -- "fits"
+  // whether a tail of each of `tails` frames is carried whole by them.
+  Result<Json> kept_latents(ProjectId, AssetId asset,
+                            const std::vector<std::int64_t>& tails = {});
   // A FRAME grabbed from a clip or a timeline: a still composition at its
   // size, one layer showing it from `frame` (its mark-in, in its own
   // frames: the frame a still shows of a clip). One command.
@@ -1863,10 +1944,13 @@ private:
   // one a fleet member sent.
   Status resolve_build_(const std::string& model, const Json& params,
                         engine::ModelRef& ref, Json& helpers) const;
-  // A chat as this Mac's assistant runs it.
+  // A chat as this Mac's assistant runs it -- or `model`, another of
+  // this Mac's (the micro agent enhancing, DESIGN §9c).
   Result<engine::JobSpec> chat_spec_(JobId, std::string text,
                                      std::vector<engine::JobInput> images,
-                                     int max_new_tokens) const;
+                                     int max_new_tokens,
+                                     const models::ModelEntry* model =
+                                         nullptr) const;
   // How the helper `m` is loaded and decodes, as its chat and a video
   // summary hand it to vpipe -- alike, so the model one keeps warm is the
   // other's: {mtp, sampling, keep_loaded, context_tokens?, mtp_model?,
@@ -1985,10 +2069,14 @@ private:
   // An input still being made (a voice's transcript, Drama 3's words):
   // the build is HELD -- its task listed, nothing sent -- until that job
   // ends, then submitted as `reuse`, its own id (release_held_).
+  // `words`: a micro agent's job writing what the recipe reads (a 2K
+  // pass's words, DESIGN §9c) -- held for it too, but going on whether
+  // it made them or not: the recipe has words of Valtz's own meanwhile.
   Result<JobId> submit_build_(
       ProjectId, AssetId, std::string title,
       std::vector<std::pair<std::string, AssetId>> companions = {},
-      std::optional<JobId> reuse = std::nullopt);
+      std::optional<JobId> reuse = std::nullopt,
+      std::optional<JobId> words = std::nullopt);
   struct HeldBuild {
     ProjectId                                    project;
     AssetId                                      asset;
@@ -1996,6 +2084,7 @@ private:
     std::vector<std::pair<std::string, AssetId>> companions;
     std::set<JobId>                              after;
     std::vector<std::string>                     names;  // what it waits for
+    std::set<JobId>                              soft;   // ...not needing
   };
   // A job ended: the builds held for it go on, once nothing else holds
   // them -- or fail, it not having made what they need.
@@ -2137,6 +2226,63 @@ private:
   Result<std::optional<ContinuedTail>>
   continued_tail_(ProjectId, project::Project&, const project::Asset& tl,
                   std::int64_t frames, double rate, double seconds);
+  // The clip a continuation of `a` picks up from (DESIGN §4e): a clip
+  // itself, from its end; a guide or a timeline whose last `tail` frames
+  // one plain clip shows alone, that clip where they end. Its head's
+  // head holds its kept latents. None otherwise.
+  struct ContinuedClip {
+    AssetId      clip;
+    ContentHash  hash;
+    std::int64_t frames = 0;  // the clip's, at its rate
+    std::int64_t end = 0;     // the tail's end in it, exclusive
+    Json         latents;     // its head's outputs "latents", if kept
+  };
+  Result<std::optional<ContinuedClip>>
+  continued_clip_(ProjectId, project::Project&, const project::Asset& a,
+                  std::int64_t tail);
+  // A clip GUIDED through the tail it continues (param "continue_guide")
+  // redoes that tail in its first frames: a layer showing it starts
+  // after them -- marked, not cut, there to see. `l` unmarked so far.
+  void mark_guided_head_(project::Project&, const project::Asset& s,
+                         project::Layer& l);
+  // A MiniMax H3 clip's KEPT LATENTS (DESIGN §4e), asked for when it was
+  // made (`keep_latents`): the files its generate-video wrote -- a
+  // regenerated clip's its draft's -- made blobs of the project as it is
+  // committed, named by its version's outputs "latents" (each {"blob",
+  // "shape"}), saved and moved with it as its file is.
+  struct KeptLatent {
+    std::filesystem::path     video;
+    std::filesystem::path     audio;   // empty: none kept
+    std::vector<std::int64_t> shape;   // the video's [z, T, h, w]
+    std::vector<std::int64_t> audio_shape;  // [2, channels, n]
+  };
+  std::optional<KeptLatent> kept_latent_(project::Project&,
+                                         const Json& latents);
+  Json keep_latents_(project::Project&, const Json& files);
+  // What of the clip a continuation recipe `r` continues (`continued`)
+  // its kept latents carry: their windows of its tail -- or why not
+  // (kNoKeptLatents, kLatentsDoNotFit). Checked as it is asked for, and
+  // again as it is built.
+  struct LatentCarry {
+    KeptLatent kept;
+    Json       windows;
+    AssetId    clip;
+  };
+  Result<LatentCarry> latent_carry_(ProjectId, project::Project&,
+                                    const project::Recipe& r,
+                                    AssetId continued);
+  // A continuation's clip carried as its kept latents, where it is asked
+  // to be (param "continue_latents") or guided through (FL2VA): its
+  // windows and the files laid on `spec` (inputs "continue_latent" /
+  // "continue_audio_latent", param "continue_latent") -- else nothing,
+  // the clip read as a reference, or its tail encoded for a guide. What
+  // was done, for the version's record.
+  // `scratch` the copies laid beside the job's inputs, for it alone.
+  Result<Json> carry_latents_(ProjectId, project::Project&,
+                              const project::Recipe&,
+                              const std::vector<project::ResolvedInput>&,
+                              engine::JobSpec& spec,
+                              std::vector<std::string>& scratch);
   // `images`: pictures the assistant is shown ahead of the text.
   // `song`: a song's request, whose own sectioned lyrics the reply
   // keeps (assist::keep_song_lyrics); "" for anything else.
@@ -2213,6 +2359,22 @@ private:
                                       const std::vector<AssetId>& refs);
   void on_build_event_(const engine::JobEvent&);
   void on_export_event_(const engine::JobEvent&);
+  // A MICRO AGENT's task (DESIGN §9c): `text` (pictures ahead of it) to
+  // the micro model, without thinking, on the work lane ahead of the
+  // tasks queued, unannounced; `reply` handed its reply -- or nothing,
+  // failed or stopped -- before the job ends (and what waited for it
+  // goes on).
+  using MicroReply = std::function<void(std::optional<std::string>)>;
+  Result<JobId> submit_micro_(JobId, std::string title, std::string text,
+                              std::vector<engine::JobInput> images,
+                              int max_new_tokens, MicroReply reply);
+  // A request's result named after its PROMPT (DESIGN §9c): a prompt the
+  // micro agent named, by that name now; one new and named by its words,
+  // by the name the micro agent gives it -- asked in the background,
+  // after the request's build, the prompt and what was made from it
+  // since renamed when it lands (in the request's command), each unless
+  // renamed meanwhile. A prompt the person named: as before.
+  void name_from_prompt_(ProjectId, project::Project&, AssetId made);
   // `stats`: an Output's cost and speed (agent::turn_stats), carried on
   // assist.enhanced as "stats" for the person debugging the helper.
   void on_chat_event_(const engine::JobEvent&, const std::string& purpose,
@@ -2474,6 +2636,21 @@ private:
   std::int64_t                       _assistant_context = 0;  // 0 Auto
   double                             _video_every = 0;  // 0: Auto
   std::string                        _video_size = "standard";
+  // The micro agent (micro_settings): "" Auto, "off", or a model's id.
+  std::string                        _micro_choice;
+  bool                               _micro_names = true;
+  bool                               _micro_refine = true;
+  bool                               _micro_enhance = false;
+  // A prompt the micro agent is naming (name_from_prompt_): its project,
+  // the name it had, and each asset made from it since with the name
+  // it had -- renamed when the name lands, unless renamed meanwhile.
+  struct Naming {
+    ProjectId                                     project;
+    std::string                                   was;
+    std::vector<std::pair<AssetId, std::string>>  made;
+  };
+  std::mutex                         _naming_mu;
+  std::map<AssetId, Naming>          _naming;
   models::Catalog                    _catalog;
   // Every package found at launch, as taken (fixed for the run).
   std::vector<ext::Extension>        _extensions;

@@ -84,8 +84,26 @@ final class ClipMarkupNSView: NSView {
     /// No arrow: the brush's outline is the pointer.
     private static let noCursor = NSCursor(
         image: NSImage(size: NSSize(width: 1, height: 1)), hotSpot: .zero)
-    /// The view on show, for the snapshot hooks.
-    static weak var shown: ClipMarkupNSView?
+    /// The view on show, for the snapshot hooks -- and, by its window,
+    /// for that window's model (`shown(in:)`: one a window).
+    static weak var shown: ClipMarkupNSView? {
+        didSet {
+            if let s = shown, let w = s.window {
+                byWindow.setObject(s, forKey: w)
+            }
+        }
+    }
+    private static let byWindow =
+        NSMapTable<NSWindow, ClipMarkupNSView>.weakToWeakObjects()
+
+    /// The view on show in `w` -- an editor window's own (several may be
+    /// open); no window: the last shown anywhere.
+    static func shown(in w: NSWindow?) -> ClipMarkupNSView? {
+        guard let w else { return shown }
+        if let s = shown, s.window === w { return s }
+        if let s = byWindow.object(forKey: w), s.window === w { return s }
+        return nil
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)

@@ -100,7 +100,9 @@ public:
   // {"ok"}: that one chosen ("" Auto), kept for later runs;
   // {"keep_loaded": seconds}: how long it stays loaded after a request;
   // {"drafter": "mtp" | "dflash", "drafter_bits": 8 | 4}: what it
-  // drafts with; {"context": tokens}: its context at most (0 Auto).
+  // drafts with; {"context": tokens}: its context at most (0 Auto);
+  // {"micro": {"model", "names", "refine", "enhance"}}: the micro agent
+  // (its settings in assistants_json's "micro").
   std::string assistants_json() const;
   // The FLEET (Controller::fleet_status, DESIGN §11): this Mac's place in
   // one, its members, the fleets on the network, the job it serves.
@@ -251,7 +253,9 @@ public:
   //  pictures, clips, sounds,
   //  in order], "whole"?: [those clips and sounds kept whole, not cut
   //  to the clip's length], "continue"?: a clip to carry on from (its tail),
-  //  "tail_seconds"?, "reference_sound"?: bool (the first sound's own as
+  //  "tail_seconds"?, "continue_latents"?: bool (from the latents it
+  //  kept), "keep_latents"?: bool (this clip's kept with it),
+  //  "reference_sound"?: bool (the first sound's own as
   //  the soundtrack), "inline"?: [asset ids mentioned in the prompt]}:
   // a clip with its soundtrack (Controller::generate_video). Its
   // job.preview events are clips too (take_preview_clip).
@@ -445,6 +449,8 @@ public:
   // "rate_den"?, "as_project"?, "name"?) -> {"asset"}; "guide" ("asset":
   // a clip, "seconds", "model"?, "name"?) -> {"asset", "frames",
   // "seconds", "fps"}: its last seconds as a continuation reads them;
+  // "latents" ("asset", "tails"?: [frames]) -> {"kept", "clip"?, "fits":
+  // [bool]}: the latents a clip kept (Controller::kept_latents);
   // "grab" ("asset", "frame", "name"?) -> {"asset"}: a still of its frame.
   // assets_json lists
   // the "folders" too, and marks the project's composition "project".

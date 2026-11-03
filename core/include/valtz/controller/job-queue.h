@@ -52,6 +52,13 @@ struct JobRecord {
   std::string                runner;
   std::string                runner_name;
   std::string                runner_engine;
+  // A continuation's: how the clip it continues reached the model -- its
+  // kept latents carried, or its pixels read (DESIGN §4e). Kept with
+  // the version it makes (its outputs' "continued").
+  Json                       carried = Json::object();
+  // Files laid beside its inputs for it alone (a continuation's copies
+  // of the latents it carries): gone when it ends, however it ends.
+  std::vector<std::string>   scratch;
   JobState                   state = JobState::Queued;
   float                      progress = 0.0f;
   std::string                message;

@@ -1854,6 +1854,9 @@ Controller::AgentHost::land_(JobId job, const std::string& kind,
     _landings.erase(it);
   }
   Json result = {{"job", job.str()}};
+  if (!l.model.empty()) {
+    result["model"] = l.model;
+  }
   bool ok = kind == "job.finished";
   if (ok) {
     const auto asset = AssetId::parse(jget<std::string>(data, "asset", ""));

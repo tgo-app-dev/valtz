@@ -570,8 +570,10 @@ private struct StagePlayer: View {
         // A voice-over's take plays once to the end, never over again.
         VideoPlayerView(url: url,
                         loops: model.loopClips && !model.voiceOverRecording,
-                        // Not as a project opens: still, where saved.
+                        // Only a generated clip landing and a preview
+                        // (DESIGN §10a); the rest is put there still.
                         autoplay: model.stageAutoplay,
+                        identity: model.stageAssetId,
                         muted: model.stageMuted,
                         rate: model.stageFrameRate,
                         command: model.videoCommand,
@@ -589,6 +591,8 @@ private struct StagePlayer: View {
                         onRate: { model.videoRate = $0 },
                         onMuted: { model.videoMuted = $0 },
                         onCue: { model.voiceOverCued($0) },
+                        onAutoplay: { model.stageAutoplayed() },
+                        onGone: { model.stagePlayerGone($0, frame: $1) },
                         // The title bar's zoom (not the small stage's).
                         zoom: small ? nil : model.stage.zoomRequests,
                         growth: growth,
@@ -736,8 +740,12 @@ private struct ResultStage: View {
                             // project: nothing made from it.
                             canContinue: model.canContinueClip
                                 && !model.viewOnly && !model.agentHolds,
-                            guides: model.guideLengths,
-                            continueClip: { model.continueClip(seconds: $0) },
+                            options: { model.continueOptions },
+                            referenceModel: model.modelName(
+                                model.videoReferenceModel),
+                            continueClip: {
+                                model.continueClip(seconds: $0, method: $1)
+                            },
                             menuRequest: model.continueMenuRequest,
                             canGrab: model.clipOnStage && !model.isGenerating
                                 && !model.viewOnly && !model.agentHolds,
@@ -1062,16 +1070,19 @@ enum ClipBarMenu {
 /// What a finished clip offers under the stage, in the compare bar's
 /// style: whether it plays once or loops, its TRANSPORT (StageTransport;
 /// none while the timeline, whose own is the fuller one, is open), a
-/// still of the frame shown, and -- where a model reads clips (Ref2VA)
-/// -- carrying it on from its last seconds, the guide's length chosen
-/// from a menu.
+/// still of the frame shown, and -- where a model reads clips (Ref2VA),
+/// or the clip kept its latents -- carrying it on, from a menu: its last
+/// seconds read as a reference; for a clip that kept its latents, from
+/// them too (DESIGN §4e).
 private struct ClipBar: View {
     let loops: Bool
     let toggle: () -> Void
     var transport: StageTransport?
     var canContinue = false
-    var guides: [AppModel.GuideLength] = []
-    var continueClip: (Int) -> Void = { _ in }
+    /// Asked as the menu opens: the core says what the latents cover.
+    var options: () -> AppModel.ContinueOptions = { .init() }
+    var referenceModel = ""
+    var continueClip: (Int, AppModel.ContinueMethod) -> Void = { _, _ in }
     /// A scripted snapshot opening the menu (VALTZ_SNAPSHOT_CONTINUE_MENU).
     var menuRequest = 0
     var canGrab = false
@@ -1099,7 +1110,7 @@ private struct ClipBar: View {
             if canContinue {
                 TitleBarButton(symbol: "arrow.right.to.line",
                                title: "Continue",
-                               help: "Continue the clip from its last seconds, picture and sound",
+                               help: "Continue the clip from its end: its picture and sound, or the latents it kept",
                                on: false, action: openMenu)
                     .background(MenuAnchorView(anchor: anchor))
                     .titleBarCapsule()
@@ -1110,25 +1121,60 @@ private struct ClipBar: View {
     }
 
     /// The guide's lengths: what was asked, and under it what the model
-    /// takes ("2.3 s · 56 frames").
+    /// takes ("2.3 s · 56 frames"). A clip that kept its latents: first
+    /// what they carry -- through its end (FL2VA), its last seconds
+    /// (Ref2VA) -- then its last seconds read as a reference.
     private func openMenu() {
-        guard !guides.isEmpty else { return }
+        let o = options()
+        guard !o.isEmpty else { return }
         let menu = NSMenu()
-        let head = NSMenuItem(
-            title: String(localized: "Continue from the Clip's Last"),
-            action: nil, keyEquivalent: "")
-        head.isEnabled = false
-        menu.addItem(head)
-        for g in guides {
-            let item = MenuAction.item(
-                String(localized: "\(String(g.asked)) Seconds"),
-                symbol: "arrow.right.to.line") { [continueClip] in
-                continueClip(g.asked)
-            }
-            let s = String(format: "%.1f", g.seconds)
-            let n = String(g.frames)
-            item.subtitle = String(localized: "\(s) s · \(n) frames")
+        func head(_ title: String) {
+            let item = NSMenuItem(title: title, action: nil,
+                                  keyEquivalent: "")
+            item.isEnabled = false
             menu.addItem(item)
+        }
+        func lengths(_ guides: [AppModel.GuideLength],
+                     _ method: AppModel.ContinueMethod, named: Bool) {
+            for g in guides {
+                let item = MenuAction.item(
+                    named ? String(localized: "Last \(String(g.asked)) Seconds")
+                           : String(localized: "\(String(g.asked)) Seconds"),
+                    symbol: "arrow.right.to.line") { [continueClip] in
+                    continueClip(g.asked, method)
+                }
+                let s = String(format: "%.1f", g.seconds)
+                let n = String(g.frames)
+                item.subtitle = named
+                    ? String(localized: "\(s) s · \(n) frames · \(referenceModel)")
+                    : String(localized: "\(s) s · \(n) frames")
+                menu.addItem(item)
+            }
+        }
+        let latent = o.through != nil || !o.latentGuides.isEmpty
+        if latent {
+            head(String(localized: "From Its Kept Latents"))
+            if let t = o.through {
+                let item = MenuAction.item(
+                    String(localized: "Through Its End"),
+                    symbol: "arrow.right.to.line.compact") { [continueClip] in
+                    continueClip(0, .through)
+                }
+                let n = String(t.frames)
+                item.subtitle = String(localized: "\(n) frames redone · \(t.model)")
+                menu.addItem(item)
+            }
+            lengths(o.latentGuides, .latents, named: true)
+        }
+        if !o.guides.isEmpty {
+            if latent {
+                menu.addItem(.separator())
+                head(String(localized: "From Its Picture and Sound"))
+                lengths(o.guides, .reference, named: true)
+            } else {
+                head(String(localized: "Continue from the Clip's Last"))
+                lengths(o.guides, .reference, named: false)
+            }
         }
         ClipBarMenu.opened = menu
         if let v = anchor.view, v.window != nil {

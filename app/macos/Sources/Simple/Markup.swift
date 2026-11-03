@@ -905,8 +905,9 @@ extension AppModel {
 
     /// Where the in-place text editor goes: the stage markup works on.
     var markupTextHost: MarkupOverlayView? {
-        markupOnClip ? ClipMarkupNSView.shown?.markupOverlayHost
-                     : CompareCanvas.shown?.markupOverlayHost
+        markupOnClip
+            ? ClipMarkupNSView.shown(in: editorWindow)?.markupOverlayHost
+            : CompareCanvas.shown(in: editorWindow)?.markupOverlayHost
     }
 
     /// A dragged point let go: anchored to the connector it is on, else
@@ -947,7 +948,7 @@ extension AppModel {
             }
         case .cut: copySelectedObjects(cut: true)
         case .copy: copySelectedObjects(cut: false)
-        case .paste: pasteObjects()
+        case .paste: pasteMarkupAnywhere()
         case .smaller, .larger:
             let m = markup
             m.radius = MarkupState.stepRadius(m.radius, up: k == .larger)
@@ -1029,13 +1030,17 @@ extension AppModel {
 
     /// Whether the Edit menu's command has something to work on.
     func markupCan(_ k: MarkupKey) -> Bool {
+        // Pasted wherever the stage is: the toolbar opens for it.
+        if k == .paste {
+            return Self.pasteboardHoldsMarkup && screen == .editor
+                && !viewOnly && !agentHolds
+        }
         guard markupReady else { return false }
         switch k {
         case .cut, .copy, .delete:
             return !markup.selection.isEmpty || markup.drawing
         case .paste:
-            return NSPasteboard.general.availableType(
-                from: [Self.markupPasteboardType]) != nil
+            return false  // above
         case .escape, .smaller, .larger, .softer, .harder: return true
         case .enter:
             return !markup.polygon.isEmpty || !markup.pen.isEmpty
@@ -1369,7 +1374,8 @@ extension AppModel {
     /// a time, as the pointer comes). nil off the picture.
     func sampledColor(at p: CGPoint) -> RGBA? {
         guard markupOnClip else {
-            return CompareCanvas.shown?.sampleColor(atCanvas: p)
+            return CompareCanvas.shown(in: editorWindow)?
+                .sampleColor(atCanvas: p)
         }
         let key = clipSampleKey
         let m = markup
@@ -1470,7 +1476,8 @@ extension AppModel {
                     y: y0 + CGFloat(k / side - h) + 0.5)
         }
         guard markupOnClip else {
-            return CompareCanvas.shown?.sampleColors(atCanvas: points)
+            return CompareCanvas.shown(in: editorWindow)?
+                .sampleColors(atCanvas: points)
         }
         if let f = markup.sampleFrame, f.key == clipSampleKey {
             guard let img = f.image else { return nil }
@@ -1539,7 +1546,7 @@ extension AppModel {
                 try? FileManager.default.removeItem(at: url)
             }
         }
-        let doc: [String: Any] = [
+        var doc: [String: Any] = [
             "objects": m.selection.filter { $0.kind != .drawing }
                 .map(\.json),
             "asset": markupAsset?.id ?? "",
@@ -1547,6 +1554,11 @@ extension AppModel {
             "drawing": png != nil,
             "cut": cut,
         ]
+        // The canvas they lie on: a project with nothing to draw on is
+        // given a still this size to hold them (pasteMarkupAnywhere).
+        if let f = markupFrame {
+            doc["frame"] = [Int(f.width.rounded()), Int(f.height.rounded())]
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: doc)
         else { return }
         let pb = NSPasteboard.general
@@ -1560,6 +1572,93 @@ extension AppModel {
         m.pastes = 0
         m.pasteboardChange = pb.changeCount
         if cut { deleteSelectedObjects() }
+    }
+
+    /// Markup objects copied -- in this project or another -- are on the
+    /// pasteboard.
+    static var pasteboardHoldsMarkup: Bool {
+        NSPasteboard.general.availableType(
+            from: [markupPasteboardType]) != nil
+    }
+
+    /// The canvas the pasteboard's objects were copied from.
+    private static var pastedFrame: CGSize? {
+        guard let d = NSPasteboard.general.data(forType: markupPasteboardType),
+              let doc = try? JSONSerialization.jsonObject(with: d)
+                as? [String: Any],
+              let f = doc["frame"] as? [Int], f.count == 2,
+              f[0] > 0, f[1] > 0 else { return nil }
+        return CGSize(width: f[0], height: f[1])
+    }
+
+    /// ⌘V with markup objects on the pasteboard -- copied here or in
+    /// another project's window -- WHEREVER the stage is: on a picture or
+    /// a clip, the markup toolbar opened by itself (the compare ended);
+    /// with nothing on the stage, the project's composition put there --
+    /// none yet, a new still made the project's, the size of the canvas
+    /// they were copied from. It needed the toolbar open on a picture.
+    /// True: the key was this paste's (nothing to paste on is said).
+    @discardableResult
+    func pasteMarkupAnywhere() -> Bool {
+        guard Self.pasteboardHoldsMarkup, screen == .editor, !viewOnly,
+              closingTasks == nil, fleetServing == nil else { return false }
+        if agentHolds {
+            flash(String(localized: "The agent is working on this project: nothing is drawn on it until it is done."), level: .warning)
+            return true
+        }
+        if isGenerating {
+            flash(String(localized: "The stage is showing a task: paste once it shows a picture or a clip."), level: .warning)
+            return true
+        }
+        if markupAsset == nil, stageBare {
+            if let v = projectViews.first {
+                putOnStage(v)
+            } else {
+                let f = Self.pastedFrame ?? CGSize(width: 1920, height: 1080)
+                newProjectComposition(still: true, width: Int(f.width),
+                                      height: Int(f.height))
+            }
+        }
+        if compareOn { endCompare() }
+        if !markupOpen {
+            withAnimation(Self.motion) { markupOpen = true }
+        }
+        guard markupReady else {
+            // A picture just put there is drawn a moment later.
+            Task { @MainActor [weak self] in
+                for _ in 0..<30 {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    guard let self else { return }
+                    if self.markupReady {
+                        self.pasteObjects()
+                        return
+                    }
+                }
+                self?.flash(String(localized: "Markup goes on a picture or a clip: show one on the stage to paste it."), level: .warning)
+            }
+            return true
+        }
+        pasteObjects()
+        return true
+    }
+
+    /// ⌘V where no text has the keyboard, markup on the pasteboard: the
+    /// window's key monitor's, so it reaches the stage from wherever the
+    /// keyboard is (a list, nothing) -- pasteMarkupAnywhere.
+    func pasteMarkupKey(_ e: NSEvent) -> Bool {
+        guard !e.isARepeat, Self.pasteboardHoldsMarkup,
+              let w = e.window, !(w is NSPanel),
+              editorWindow == nil || w === editorWindow else { return false }
+        let mods = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            .subtracting([.capsLock, .numericPad, .function])
+        guard mods == .command else { return false }
+        let ch = (e.charactersIgnoringModifiers ?? "").lowercased()
+        let latin = ch.count == 1 && ch.first.map {
+            $0.isASCII && $0.isLetter } == true
+        guard latin ? ch == "v" : e.keyCode == 9 else { return false }
+        // Text takes its own paste: the prompt, a field, a name.
+        if w.firstResponder is NSText { return false }
+        return pasteMarkupAnywhere()
     }
 
     /// The pasteboard's objects on the layer the next mark goes on,

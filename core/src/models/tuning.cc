@@ -41,8 +41,9 @@ struct Offer {
   std::string needs;
   Json        extra = Json::object();  // per-option detail for the panel
   Json        choices = Json::array();  // a Choice's values, in order
-  // A Real that takes a SCHEDULE too: a value a denoising step, written
-  // "1.0,1.5,1.75" (H3's sol_tau, vpipe's sol_tau_steps).
+  // A Real -- or an Int -- that takes a SCHEDULE too: a value a denoising
+  // step, written "1.0,1.5,1.75" (H3's sol_tau, vpipe's sol_tau_steps;
+  // its vdn_range, "2,1,1", vpipe's vdn_range_steps).
   bool        schedule = false;
   // An extension's own option (catalog `engine.vpipe.options`): the text
   // the panel shows for it (the app has none of its own), read in the
@@ -286,7 +287,7 @@ declared_offers(const Json& vp, const TuningContext& ctx,
 {
   static const std::set<std::string> kOwn = {
     "steps", "loras", "dits", "vaes", "hyperflow", "pika_flex",
-    "taomate", "vdn",
+    "taomate", "vdn", "vdn_range",
     "sol_attn", "sol_threshold",
     "sol_tau", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm",
     "i8_gemm_tier", "vae_i8_gemm",
@@ -424,11 +425,21 @@ offers(const ModelEntry& m, const TuningContext& ctx,
   // TaoMate-H3: a streaming METHOD with its own adapter, not a few-step
   // LoRA -- an alternative Custom offers, which no preset picks:
   // measured slower than Fast's 4-step LoRA, and off its prompt.
+  // Not for a clip continued THROUGH a tail (catalog `continuation.
+  // guide`: FL2VA's, DESIGN §4e): TaoMate streams from the prompt alone,
+  // and vpipe drops the guide beside it -- the clip would open on frames
+  // of its own where its first 22 were to redo the tail.
+  const bool guided =
+      ctx.continuation &&
+      jget(jget(vp, "continuation", Json::object()), "guide", Json())
+          .is_object();
   if (const Json tm = jget(vp, "taomate", Json()); tm.is_object()) {
     Offer o{"taomate", Kind::Bool};
-    o.available = ctx.taomate_installed;
-    o.why = o.available ? "" : "not-installed";
-    o.preset = taomate_preset(vp, ctx, preference);
+    o.available = ctx.taomate_installed && !guided;
+    o.why = !ctx.taomate_installed ? "not-installed"
+            : guided               ? "continues-through"
+                                   : "";
+    o.preset = o.available && taomate_preset(vp, ctx, preference);
     // It takes a LoRA slot, the Turbo LoRA's (settle_loras); three steps
     // a chunk are the method's own.
     o.fixes = {{"steps", jget(tm, "steps", 3)}};
@@ -440,6 +451,8 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     }
     o.excludes = Json::array({"hyperflow", "pika_flex", "vdn",
                               "motion_cache"});
+    const bool tm_available = o.available;
+    const std::string tm_why = o.why;
     out.push_back(std::move(o));
     // ...or its adapter ALONE, as an ordinary few-step LoRA: three steps
     // over the whole clip, no soundtrack pass, no chunks, no cache
@@ -448,8 +461,8 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     // look right on FL2VA; vpipe keeps the mode for comparison.
     if (const Json lo = jget(tm, "lora_only", Json()); lo.is_object()) {
       Offer l{"taomate_lora", Kind::Bool};
-      l.available = ctx.taomate_installed;
-      l.why = l.available ? "" : "not-installed";
+      l.available = tm_available;
+      l.why = tm_why;
       l.preset = false;
       l.needs = "taomate";
       l.fixes = {{"steps", jget(lo, "steps", 3)}};
@@ -468,6 +481,23 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     o.preset = false;
     o.excludes = Json::array({"sol_attn"});
     out.push_back(std::move(o));
+    // ...and how far its SOFTMAX half reaches, in chunks of 5 latent
+    // frames either side of the query's (vpipe's `vdn_range`): the
+    // softmax / linear split. Preset at what the branch was trained at
+    // (its block's `range`); wider is more of the original attention and
+    // its cost, narrower more of the delta rule -- outside its training
+    // either way, so judged by eye. A window over the whole clip turns
+    // the linear half off (vpipe's full cover).
+    Offer r{"vdn_range", Kind::Int, 0, 8, 1};
+    r.available = ctx.vdn_installed;
+    r.why = r.available ? "" : "not-installed";
+    r.preset = jget(jget(vp, "vdn", Json::object()), "range", 1);
+    r.needs = "vdn";
+    // ...a reach a STEP where the model's stage takes one (vpipe's
+    // `vdn_range_steps`: MiniMax H3), as Sol's threshold: the first,
+    // structure-deciding steps may keep more of the original attention.
+    r.schedule = takes(vp, "vdn_range_steps");
+    out.push_back(std::move(r));
   }
   {
     Offer o{"sol_attn", Kind::Bool};
@@ -814,7 +844,7 @@ offers(const ModelEntry& m, const TuningContext& ctx,
   // the model's under kRegeneratePrefix -- each preset at what the refine
   // runs out of Custom (the refiner's values), what refers to another
   // (needs, excludes, fixes) referring to it so.
-  if (ctx.refiner && ctx.refiner != &m && !ctx.continuation) {
+  if (ctx.refiner && ctx.refiner != &m) {
     TuningContext rc = ctx;
     rc.refiner = nullptr;
     rc.loras.clear();
@@ -879,9 +909,9 @@ offers(const ModelEntry& m, const TuningContext& ctx,
 }
 
 // A schedule's text as `o` takes it: comma-separated numbers, each held
-// to its range, written back the shortest way ("1,1.5,1.75") -- vpipe
-// reads it so; one entry is that number. Null when any entry is not a
-// number.
+// to its range -- an Int's rounded -- written back the shortest way
+// ("1,1.5,1.75", "2,1,1") -- vpipe reads it so; one entry is that number.
+// Null when any entry is not a number.
 Json
 schedule_of(const Offer& o, const std::string& text)
 {
@@ -902,13 +932,17 @@ schedule_of(const Offer& o, const std::string& text)
     if (tok.empty() || !rest || *rest != '\0' || !std::isfinite(d)) {
       return Json();
     }
-    steps.push_back(std::clamp(d, o.min, o.max));
+    steps.push_back(std::clamp(o.kind == Kind::Int ? std::round(d) : d,
+                               o.min, o.max));
     at = end + 1;
   }
   if (steps.empty()) {
     return Json();
   }
   if (steps.size() == 1) {
+    if (o.kind == Kind::Int) {
+      return static_cast<int>(steps.front());
+    }
     return steps.front();
   }
   std::string out;
@@ -928,6 +962,9 @@ coerce(const Offer& o, const Json& v)
   case Kind::Bool:
     return v.is_boolean() ? v : Json();
   case Kind::Int: {
+    if (v.is_string() && o.schedule) {
+      return schedule_of(o, v.get<std::string>());
+    }
     if (!v.is_number()) {
       return Json();
     }

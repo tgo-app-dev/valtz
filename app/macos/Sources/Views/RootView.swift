@@ -89,7 +89,7 @@ struct RootView: View {
         .onChange(of: model.searchText) { model.searchChanged() }
         // Unsaved changes: the dot in the window's close button.
         .onChange(of: model.document.dirty, initial: true) { _, dirty in
-            NSApp.windows.first { $0.isVisible }?.isDocumentEdited =
+            model.editorWindow?.isDocumentEdited =
                 dirty && !model.isAnonymous
         }
         // The markup toolbar put away, or another picture on the stage:
@@ -339,7 +339,8 @@ struct ClosingTasksOverlay: View {
     }
 }
 
-final class WindowCloseGuard: NSObject, NSWindowDelegate {
+final class WindowCloseGuard: NSObject, NSWindowDelegate,
+                              NSMenuItemValidation {
     weak var window: NSWindow?
     nonisolated(unsafe) private weak var inner: NSWindowDelegate?
     private let ask: @MainActor () -> Bool
@@ -357,6 +358,19 @@ final class WindowCloseGuard: NSObject, NSWindowDelegate {
             return false
         }
         return ask()
+    }
+
+    /// Edit › Paste reaching the window -- no view on its way took it (an
+    /// empty stage, a list with the keyboard): markup objects pasted on the
+    /// stage (AppModel.pasteMarkupAnywhere).
+    var onPaste: (@MainActor () -> Void)?
+    var canPaste: (@MainActor () -> Bool)?
+
+    @MainActor @objc func paste(_ sender: Any?) { onPaste?() }
+
+    @MainActor func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(paste(_:)) { return canPaste?() ?? false }
+        return true
     }
 
     nonisolated override func responds(to aSelector: Selector!) -> Bool {

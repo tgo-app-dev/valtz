@@ -357,6 +357,14 @@ Core::choose_assistant(const std::string& request_json)
     if (!j.ok()) {
       return err(j.error());
     }
+    // {"micro": {"model"?, "names"?, "refine"?, "enhance"?}}: the micro
+    // agent (Controller::set_micro).
+    if (j->contains("micro")) {
+      auto st = _impl->ctl->set_micro((*j)["micro"]);
+      if (!st.ok() || j->size() == 1) {
+        return st.ok() ? ok() : err(st.error());
+      }
+    }
     // {"model"}: the helper chosen; {"keep_loaded"}: how long it stays;
     // {"drafter", "drafter_bits"}: what it drafts with; {"video_every"}:
     // a video summary's seconds a frame (0 Auto); {"video_size"}: its
@@ -1214,6 +1222,12 @@ Core::asset_op(const std::string& request_json)
       return ok({{"objects", std::move(r->first)},
                  {"stamp", std::move(r->second)}});
     }
+    // The Atlas's GENERATE NODES -- {"action", "node", "asset", "target",
+    // "assets", "refs", "settings"}: Controller::generate_node_op.
+    if (op == "generate-node") {
+      auto r = c.generate_node_op(*pid, *j);
+      return r.ok() ? ok(std::move(*r)) : err(r.error());
+    }
     if (op == "create-folder") {
       auto f = c.create_folder(*pid, name);
       return f.ok() ? ok({{"folder", *f}}) : err(f.error());
@@ -1369,6 +1383,18 @@ Core::asset_op(const std::string& request_json)
       return put.ok() ? ok({{"asset", put->first.str()},
                             {"layer", put->second}})
                       : err(put.error());
+    }
+    if (op == "latents") {
+      // The latents a clip kept (DESIGN §4e), and which tails -- frames
+      // -- they carry whole: Continue's menu.
+      std::vector<std::int64_t> tails;
+      for (const auto& t : jget(*j, "tails", Json::array())) {
+        if (t.is_number_integer()) {
+          tails.push_back(t.get<std::int64_t>());
+        }
+      }
+      auto k = c.kept_latents(*pid, *aid, tails);
+      return k.ok() ? ok(*k) : err(k.error());
     }
     if (op == "guide") {
       auto g = c.continuation_guide(
@@ -1568,6 +1594,8 @@ Core::generate_video(const std::string& request_json)
       req.continue_from = *c;
     }
     req.tail_seconds = jget(*j, "tail_seconds", 0.0);
+    req.continue_latents = jget(*j, "continue_latents", false);
+    req.keep_latents = jget(*j, "keep_latents", false);
     req.reference_sound = jget(*j, "reference_sound", false);
     // Past 768P, drafted and regenerated (DESIGN §4q): unsaid, where it
     // can be.

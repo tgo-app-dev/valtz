@@ -68,9 +68,13 @@ struct ClipView: NSViewRepresentable {
 /// A finished clip on the stage: AVKit's player -- its controls floating
 /// over the picture as in QuickTime Player (play, the scrubber, volume,
 /// full screen) where `controls` asks for them; the stage's transport is
-/// its own, under the picture (StageTransport). It plays once when it lands -- with its sound: the
-/// soundtrack was made with the picture -- and stops on the last frame;
-/// `loops` plays it again and again. It says which frame it shows
+/// its own, under the picture (StageTransport). It starts by itself only
+/// where `autoplay` asks, as it first shows that asset (`identity`) --
+/// with its sound: the soundtrack was made with the picture -- and stops
+/// on the last frame; `loops` plays it again and again. Made again for
+/// the same asset (its file changed, a canvas, a length) it stays where
+/// it was, playing or paused; a player made anew (the stage made again)
+/// takes no play asked of the one before. It says which frame it shows
 /// (`onFrame`, by `rate`) as it plays and as it is scrubbed, and goes to a
 /// frame exactly when asked (`seek`: the Trim panel's jumps).
 ///
@@ -81,7 +85,13 @@ struct ClipView: NSViewRepresentable {
 struct VideoPlayerView: NSViewRepresentable {
     let url: URL
     var loops = false
-    var autoplay = true
+    /// Starts by itself as it first shows `identity` (DESIGN §10a): only
+    /// what the stage asks to play -- a generated clip landing, an asset
+    /// previewed -- and once: the ask used up as it is seen (`onAutoplay`).
+    var autoplay = false
+    /// What it shows (the stage's asset): made again for the same one it
+    /// stays where it was, playing or paused, whatever its file.
+    var identity: String? = nil
     /// Its sound off as it starts (a generated clip played by itself,
     /// Settings say so); the player's own volume turns it on.
     var muted = false
@@ -110,6 +120,13 @@ struct VideoPlayerView: NSViewRepresentable {
     /// A cued start's host time (VideoCommand.cued), seconds of the host
     /// clock: where a voice-over's take is lined up with the picture.
     var onCue: (Double) -> Void = { _ in }
+    /// `autoplay` seen -- played as it first showed `identity`, or shown
+    /// already: asked no more.
+    var onAutoplay: () -> Void = {}
+    /// Taken out of the window (the Log, the Atlas, the Prompt Editor's
+    /// stage in its place), showing `identity` at that frame: where a
+    /// player made for it again is put, paused.
+    var onGone: (String?, Int) -> Void = { _, _ in }
     /// The title bar's zoom asked so far (ClipZoomView); nil, no zoom:
     /// the Prompt Editor's small stage.
     var zoom: ZoomRequests? = nil
@@ -144,8 +161,14 @@ struct VideoPlayerView: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         var url: URL?
+        /// What it shows (VideoPlayerView.identity).
+        var identity: String?
         var loops = false
         var commandToken: Int?
+        /// The command waiting as it was made: asked of the player before
+        /// it, so its play is not this one's (only where it puts it).
+        var bornCommand: Int?
+        var onGone: (String?, Int) -> Void = { _, _ in }
         var player: AVPlayer?
         var rateObservation: NSKeyValueObservation?
         var onRate: (Float) -> Void = { _ in }
@@ -400,6 +423,7 @@ struct VideoPlayerView: NSViewRepresentable {
         let c = Coordinator()
         // Asked before this player: not for it.
         c.zoomSeen = zoom
+        c.bornCommand = command?.token
         return c
     }
 
@@ -485,6 +509,24 @@ struct VideoPlayerView: NSViewRepresentable {
         c.onRate = onRate
         c.onMuted = onMuted
         c.onCue = onCue
+        c.onGone = onGone
+        // Another asset in this player, or a player made anew: what the
+        // stage asked of it -- to play -- is for now, and used up as seen.
+        let fresh = c.identity != identity
+        if fresh, autoplay {
+            // A player of its own, from its start -- its file may be the
+            // one here (a timeline's clip previewed), which is otherwise
+            // kept where it is (an edited copy made of the clip shown).
+            c.url = nil
+        }
+        defer {
+            c.identity = identity
+            if autoplay {
+                // Not inside SwiftUI's update.
+                let done = onAutoplay
+                DispatchQueue.main.async { done() }
+            }
+        }
         defer { applyCommand(c) }
         let lookChanged = !c.lookKnown || c.look != look
         if lookChanged {
@@ -525,9 +567,12 @@ struct VideoPlayerView: NSViewRepresentable {
                 }
                 return
             }
-            // The same clip made again (a canvas, a length): it stays
-            // where it was, playing or paused.
-            let resume = c.url == url ? c.player?.currentTime() : nil
+            // The same clip made again (a canvas, a length) -- or the same
+            // asset's file another: it stays where it was, playing or
+            // paused.
+            let same = c.url == url
+                || (identity != nil && c.identity == identity)
+            let resume = same ? c.player?.currentTime() : nil
             let playing = (c.player?.rate ?? 0) != 0
             // Muted it stays so (a generated clip started muted).
             let wasMuted = c.player?.isMuted ?? false
@@ -544,7 +589,7 @@ struct VideoPlayerView: NSViewRepresentable {
             let box = c.stackBox
             box.resetCounts()
             StackBox.shown = box
-            let autoplay = resume == nil ? autoplay : playing
+            let autoplay = (autoplay && fresh) || (resume != nil && playing)
             let room = c.room
             Task { @MainActor [weak c] in
                 guard let made = await StackCompositor.item(stack, box,
@@ -587,12 +632,18 @@ struct VideoPlayerView: NSViewRepresentable {
             if lookChanged { c.recompose() }
             return
         }
+        // The same asset's file another: where it was, playing or paused.
+        if resume == nil, identity != nil, c.identity == identity,
+           let p = c.player {
+            resume = p.currentTime()
+            playing = p.rate != 0
+        }
         c.stop()
         c.url = url
         let item = AVPlayerItem(asset: AVURLAsset(url: url))
         c.lastIndex = nil
         attach(item, to: v, c, rate: rate,
-               autoplay: resume == nil ? autoplay : playing,
+               autoplay: (autoplay && fresh) || (resume != nil && playing),
                muted: resume == nil ? muted : wasMuted, lastIndex: nil,
                at: resume)
         // Every frame through the look (Core Image).
@@ -783,6 +834,22 @@ struct VideoPlayerView: NSViewRepresentable {
             return
         }
         c.commandToken = command.token
+        // Asked of the player before this one (the stage made again: the
+        // Log left, the Prompt Editor opened): where it put the clip is
+        // taken, never its play -- a play pressed long before started the
+        // clip again as the editor came back.
+        if command.token == c.bornCommand {
+            switch command.kind {
+            case .seek(let n), .place(let n), .scrubbed(let n, _):
+                p.pause()
+                c.seek(to: c.clamp(n))
+            case .mute(let on):
+                p.isMuted = on
+            case .play, .step, .cued:
+                break
+            }
+            return
+        }
         switch command.kind {
         case .seek(let n):
             p.pause()
@@ -857,6 +924,11 @@ struct VideoPlayerView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ v: AVPlayerView, coordinator: Coordinator) {
+        let gone = coordinator.onGone
+        let shown = (coordinator.identity, coordinator.lastFrame)
+        if coordinator.player != nil, shown.1 >= 0 {
+            DispatchQueue.main.async { gone(shown.0, shown.1) }
+        }
         coordinator.stop()
         coordinator.zoomView?.onShown?(nil)
         if let m = coordinator.moveRelay {

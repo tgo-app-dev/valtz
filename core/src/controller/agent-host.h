@@ -114,6 +114,9 @@ public:
     // Music: ended with the clips, if they end before it would.
     bool                        fit = false;
     bool                        clip = false;  // a shot
+    // The model it runs on, by name: told with what landed -- or failed
+    // -- so the agent can say which made it.
+    std::string                 model;
   };
   struct Decision {
     int         step = 0;
@@ -315,6 +318,11 @@ private:
                                std::vector<std::filesystem::path>&);
   Result<Json> t_generate_image(Session&, Step&, const Json&,
                                 std::vector<std::filesystem::path>&);
+  // The MODELS of a task -- pictures, shots, music, ... -- that run here,
+  // Auto's pick among them, and those not downloaded: what the person
+  // may choose from by name (each tool's `model`).
+  Result<Json> t_list_models(Session&, Step&, const Json&,
+                             std::vector<std::filesystem::path>&);
   // The PROMPT ENHANCER (Controller::enhance_prompt) on the agent's words:
   // the fields of the tool that makes it, and what to look at in them.
   Result<Json> t_enhance_prompt(Session&, Step&, const Json&,
@@ -355,6 +363,25 @@ private:
                                 std::vector<std::filesystem::path>&);
 
   // Tool helpers (agent-tools.cc)
+  //
+  // The MODEL a task runs on as the person names it (each tool's `model`):
+  // its id or its name as shown, loosely -- "FLUX.3", "music3" -- or null
+  // for Auto's ("", "auto"), which each tool works out as before. One
+  // that does not do the task, or is not on this Mac, is refused naming
+  // those here that do: the agent tells the person, or leaves it out.
+  Result<const models::ModelEntry*> model_for_(std::string_view task,
+                                               const std::string& named)
+      const;
+  // A model of the task here: "here" (runs now), "downloading" (its job
+  // waits for it), "" (not here).
+  std::string model_state_(const models::ModelEntry&,
+                           std::string_view task) const;
+  // Auto's model for the task -- for upscales, a clip's and a picture's.
+  std::vector<const models::ModelEntry*> auto_for_(std::string_view task)
+      const;
+  // The speech model a voice-over speaks with by default: the best-ranked
+  // that runs here.
+  const models::ModelEntry* voice_model_() const;
   Result<AssetId> composition_(const Session& s, const Json& args);
   Result<std::string> layer_(const Json& args);
   // A page argument (from 1) as the composition's (from 0), checked.
