@@ -225,7 +225,8 @@ struct UpscalerSettings: Identifiable, Equatable, Sendable {
         ready = j["ready"] as? Bool ?? (j["state"] as? String == "installed")
         let options = opts.map(TuningOption.init)
         info = TuningInfo(family: t["family"] as? String ?? "",
-                          tuning: Tuning(values, options), options: options)
+                          tuning: Tuning(values, options), options: options,
+                          setBy: t["set_by"] as? [String: String] ?? [:])
     }
 
     /// What the page lists: the options this upscaler takes at all.

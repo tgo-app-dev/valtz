@@ -9,9 +9,11 @@
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
 #include "valtz/base/tree-copy.h"
+#include "valtz/base/version.h"
 #include "valtz/media/layers.h"
 #include "valtz/media/model-input.h"
 #include "valtz/media/sound.h"
+#include "valtz/media/stamp.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/thumbnail.h"
 
@@ -105,6 +107,17 @@ write_settings(const fs::path& file, const Json& j)
                                             file.string(), ec.message()));
   }
   return {};
+}
+
+// Assets as a JSON list of their ids (a recorded generation's row).
+Json
+id_list(const std::vector<AssetId>& ids)
+{
+  Json out = Json::array();
+  for (const auto& id : ids) {
+    out.push_back(id.str());
+  }
+  return out;
 }
 
 std::int64_t
@@ -672,6 +685,102 @@ Controller::engine_description() const
   return _engine ? _engine->description() : "none";
 }
 
+std::string
+Controller::software() const
+{
+  // The engine running, else the one linked: a Valtz that started none
+  // (valtzctl's flatten) names the vpipe it would run.
+  std::string e = _engine ? _engine->software() : std::string();
+  if (e.empty()) {
+    e = engine::linked_engine_software();
+  }
+  return software_stamp(e);
+}
+
+Status
+Controller::stamp_file(const fs::path& file) const
+{
+  return media::stamp_software(file, software());
+}
+
+Status
+Controller::stamp_file(const fs::path& file, ProjectId pid, AssetId asset,
+                       const std::string& only) const
+{
+  std::string model;
+  if (only.empty()) {
+    model = made_with(pid, asset);
+  } else if (const project::Project* p = project(pid)) {
+    // One layer alone: what it shows.
+    if (auto a = p->asset(asset); a.ok()) {
+      for (const auto& l : a->layers) {
+        if (l.id == only && l.source) {
+          model = made_with(pid, *l.source);
+        }
+      }
+    }
+  }
+  return media::stamp_software(file, media::with_model(software(), model),
+                               false);
+}
+
+namespace {
+
+// The models `id`'s pixels were made with, into `out` -- "" for what no
+// model made (a markup, a photo, a blank still). `depth` bounds nesting.
+void
+models_of(const project::Project& p, const AssetId& id,
+          std::set<std::string>& out, int depth)
+{
+  auto a = p.asset(id);
+  if (!a.ok() || depth > 16) {
+    out.insert("");
+    return;
+  }
+  switch (a->cls) {
+  case project::AssetClass::Markup:
+    out.insert("");
+    return;
+  case project::AssetClass::Still:
+  case project::AssetClass::Composition: {
+    bool any = false;
+    for (const auto& l : a->layers) {
+      // What is drawn: a hidden layer is not, nor a mask's own pixels.
+      if (!l.visible || l.mask || !l.source) {
+        continue;
+      }
+      any = true;
+      models_of(p, *l.source, out, depth + 1);
+    }
+    if (!any) {
+      out.insert("");
+    }
+    return;
+  }
+  default: {
+    auto v = p.version(id);
+    out.insert(v.ok() ? media::stamped_model(jget<std::string>(
+                            v->info.exif, "Software", ""))
+                      : std::string());
+    return;
+  }
+  }
+}
+
+}
+
+std::string
+Controller::made_with(ProjectId pid, AssetId asset) const
+{
+  const project::Project* p = project(pid);
+  if (!p) {
+    return {};
+  }
+  std::set<std::string> models;
+  models_of(*p, asset, models, 0);
+  return models.size() == 1 ? *models.begin() : std::string();
+}
+
 Json
 Controller::log_since(std::uint64_t seq, std::size_t max) const
 {
@@ -849,6 +958,14 @@ Controller::memory_held()
                  e->requires_models.end());
     }
     std::uint64_t bytes = jget<std::uint64_t>(w, "bytes", 0);
+    // A language model's whole hold where vpipe says it (its memory
+    // report's held_bytes): its wired bytes leave out what it filled
+    // after its load -- Flash-Next's n-gram table held in memory, 38 GB,
+    // never wired -- which would read as working memory.
+    if (const auto held = jget<std::uint64_t>(w, "held_bytes", 0);
+        lm && held > bytes) {
+      bytes = held;
+    }
     bool estimated = false;
     // The drafters' weight sets, and all it folds in.
     std::uint64_t folded_bytes = 0, folded_all = 0;
@@ -2269,6 +2386,11 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
     slots.push_back({jget<std::string>(jget(vp, "taomate", Json::object()),
                                        "lora", ""), "", 1.0});
   }
+  // A model that IS another's DiT under an adapter (catalog `adapter`:
+  // P-H3-Image's, on FL2VA): always on, first, whatever Custom says.
+  if (const auto a = jget<std::string>(vp, "adapter", ""); !a.empty()) {
+    slots.insert(slots.begin(), Slot{a, "", 1.0});
+  }
   // A LoRA of the catalog (the family's, installed) is recorded by its
   // id, so a rebuild finds it wherever it is kept.
   std::map<std::string, std::string> catalog_ids;
@@ -2322,6 +2444,13 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
       }
     }
   }
+  // A DiT another model's (catalog `dit_from`: P-H3-Image runs FL2VA's),
+  // recorded by its id where Custom names none of its own: resolved
+  // where the job runs (resolve_build_), its files wherever they are.
+  if (const auto d = jget<std::string>(vp, "dit_from", "");
+      !d.empty() && !r.params.contains("dit_file")) {
+    r.params["dit_model"] = d;
+  }
   // The parts the model is linked to apart (Draw Things checkpoints,
   // Settings > Capabilities), recorded: its DiT and VAE where Custom
   // names none of its own (its VAE is read as a whole model's, by
@@ -2341,6 +2470,11 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
   if (jget(t, "vdn", false)) {
     r.params["branch"] = jget<std::string>(jget(vp, "vdn", Json::object()),
                                            "branch", "");
+  }
+  // Weights Custom had on whose files are gone: left out (the settled
+  // values say so, "wanted"), and said -- the app warns at Start.
+  for (const auto& f : models::left_out(t)) {
+    VALTZ_LOG_WARN("tuning", "{} not found: {} runs without it", f, m.name);
   }
   // The rest as settled: what the graph builder lays on the stages.
   r.params["tuning"] = t;
@@ -2742,6 +2876,16 @@ Controller::agent_i8_prefill_(const models::ModelEntry& m) const
   return a != nullptr && a->id == m.id ? (v == "on" ? 1 : 0) : -1;
 }
 
+bool
+Controller::agent_ngram_asked_(const models::ModelEntry& m) const
+{
+  if (!_agent || m.ngram_gb <= 0 || !_agent->ngram_resident()) {
+    return false;
+  }
+  const auto* a = agent_model();
+  return a != nullptr && a->id == m.id;
+}
+
 namespace {
 
 // The working memory vpipe books beside a streamed model's context --
@@ -2751,7 +2895,54 @@ namespace {
 // the load.
 constexpr std::uint64_t kStreamedWorking = 7'000'000'000;
 
+// A model's routed experts, GB: the catalog's, else what it has on disk
+// past its resident part and its table.
+double
+experts_of(const models::ModelEntry& m)
+{
+  return m.experts_gb > 0
+             ? m.experts_gb
+             : std::max(0.0, m.disk_gb - m.resident_gb - m.ngram_gb);
+}
+
 }  // namespace
+
+bool
+Controller::agent_ngram_held_(const models::ModelEntry& m) const
+{
+  if (!agent_ngram_asked_(m)) {
+    return false;
+  }
+  // vpipe takes it only with every expert resident: never under a cache
+  // asked for that holds fewer (MetalQwenModel::lm_ngram_resident).
+  const double experts = experts_of(m);
+  if (const auto asked = agent_expert_cache_(m);
+      asked > 0 && static_cast<double>(asked) < experts * 1e9) {
+    return false;
+  }
+  // The model whole -- what it holds beside its experts, all of them, the
+  // table -- its context beside it as it would be given then, and the
+  // working memory, within the memory vpipe sizes it in. A figure to show
+  // by: vpipe decides at the load, beside what its plan holds then.
+  auto lc = models::language_context(_store->info(m).path());
+  if (m.context_bytes_per_token > 0) {
+    lc.kv_bytes = static_cast<std::uint64_t>(m.context_bytes_per_token);
+  }
+  std::int64_t n = helper_context_fits_(m, true);
+  if (m.context_tokens > 0) {
+    n = std::min<std::int64_t>(n, m.context_tokens);
+  }
+  if (_assistant_context > 0) {
+    n = std::min<std::int64_t>(n, _assistant_context);
+  }
+  const double held = m.held_beside_cache_gb() + experts + m.ngram_gb;
+  const std::uint64_t need =
+      static_cast<std::uint64_t>(held * 1e9) +
+      static_cast<std::uint64_t>(std::max<std::int64_t>(0, n)) *
+          lc.kv_bytes +
+      kStreamedWorking;
+  return need <= streamed_budget_(m);
+}
 
 Json
 Controller::agent_memory_plan_() const
@@ -2784,6 +2975,25 @@ Controller::agent_memory_plan_() const
                          {"here", here},
                          {"kv_bytes", lc.kv_bytes}}},
             {"context_gb", context_gb}};
+  // A table it reads by row from disk (catalog `ngram_gb`: Flash-Next's)
+  // and where it is: "off" (read from disk, as asked), "held" (the
+  // Agent's N-gram Table on, and it fits), "disk" -- asked, but vpipe
+  // will not take it: a cache asked for under every expert ("cache"), or
+  // not room for it beside the model, every expert and the context
+  // ("memory").
+  const bool table = agent_ngram_held_(*m);
+  if (m->ngram_gb > 0) {
+    p["ngram_gb"] = m->ngram_gb;
+    const bool asked_table = agent_ngram_asked_(*m);
+    p["ngram"] = !asked_table ? "off" : table ? "held" : "disk";
+    if (asked_table && !table) {
+      const auto c = agent_expert_cache_(*m);
+      p["ngram_why"] =
+          c > 0 && static_cast<double>(c) < experts_of(*m) * 1e9
+              ? "cache"
+              : "memory";
+    }
+  }
   if (!streams) {
     return p;
   }
@@ -2799,15 +3009,19 @@ Controller::agent_memory_plan_() const
   // which are never cached) and its experts alone, where the catalog says;
   // what it holds beside them.
   const double ssd = disk - m->resident_gb;
-  const double experts = m->experts_gb > 0 ? m->experts_gb : ssd;
+  const double experts = experts_of(*m);
   const double floor = m->expert_cache_floor_gb;
   const double rest = m->held_beside_cache_gb();
   const double auto_cache =
       std::min(experts, std::max(floor, mem - run - rest));
   const double asked =
       static_cast<double>(agent_expert_cache_(*m)) / 1e9;
+  // Its table held: every expert resident beside it (vpipe takes it only
+  // so), the table in what it holds.
   const double cache =
-      asked > 0 ? std::max(floor, std::min(asked, auto_cache)) : auto_cache;
+      table ? experts
+      : asked > 0 ? std::max(floor, std::min(asked, auto_cache))
+                  : auto_cache;
   p["ssd_gb"] = ssd;
   p["rest_gb"] = rest;
   p["working_gb"] = static_cast<double>(kStreamedWorking) / 1e9;
@@ -2817,7 +3031,7 @@ Controller::agent_memory_plan_() const
   p["cache_auto_gb"] = auto_cache;
   p["cache_gb"] = cache;
   p["all_resident"] = cache >= experts;
-  p["holds_gb"] = rest + cache + run;
+  p["holds_gb"] = rest + cache + run + (table ? m->ngram_gb : 0.0);
   return p;
 }
 
@@ -4013,13 +4227,23 @@ Controller::adopt_(std::unique_ptr<project::Workspace> ws,
     }
   }
   data["missing_extensions"] = std::move(missing);
+  // The files it uses that are not there: opened all the same, to be
+  // looked at -- drawn without them -- not changed (write_guard_).
+  Json lacking = missing_media_json_(w->project());
+  if (!lacking.empty()) {
+    VALTZ_LOG_WARN("project", "{} of its files are missing (first: {}): "
+                   "open to be looked at, not changed", lacking.size(),
+                   jget<std::string>(lacking[0], "path", ""));
+  }
+  data["missing_media"] = lacking;
   w->undo().on_change([this, id] { post_state_(id); });
   // An agent at work on it: the person's writes refused (agent_hold_).
   w->project().env().set_guard(
       [this, id, w] { return write_guard_(id, *w); });
   {
     std::lock_guard lk(_projects_mu);
-    _projects[id] = OpenProject{std::move(ws), false, data};
+    _projects[id] = OpenProject{std::move(ws), false, data,
+                                std::move(lacking)};
   }
   post_("project.opened", JobId{}, data);
   post_state_(id);
@@ -4136,11 +4360,68 @@ Status
 Controller::write_guard_(ProjectId pid, project::Workspace& w) const
 {
   // The core's own, or in no command (a view, the playhead, the guides).
-  if (t_core_writes > 0 || w.undo().recording() == 0 ||
-      !agent_holds_(pid)) {
+  if (t_core_writes > 0 || w.undo().recording() == 0) {
     return ok_status();
   }
-  return make_error(Code::Busy, msg::kAgentAtWork);
+  if (agent_holds_(pid)) {
+    return make_error(Code::Busy, msg::kAgentAtWork);
+  }
+  // Files it uses are missing: looked at, not changed.
+  if (const std::size_t n = missing_count_(pid); n > 0) {
+    return make_error(Code::NotFound, msg::kProjectMissingMedia,
+                      {{"count", std::to_string(n)}});
+  }
+  return ok_status();
+}
+
+Json
+Controller::missing_media_json_(const project::Project& p)
+{
+  Json out = Json::array();
+  auto list = p.missing_media();
+  if (!list.ok()) {
+    VALTZ_LOG_WARN("project", "its media not looked for: {}",
+                   list.error().message);
+    return out;
+  }
+  for (const auto& m : *list) {
+    out.push_back({{"asset", m.id.str()}, {"name", m.name},
+                   {"path", m.path.string()}, {"how", m.how}});
+  }
+  return out;
+}
+
+void
+Controller::recheck_missing_(ProjectId pid)
+{
+  project::Workspace* w = workspace_(pid);
+  if (!w) {
+    return;
+  }
+  Json now = missing_media_json_(w->project());
+  bool changed = false;
+  {
+    std::lock_guard lk(_projects_mu);
+    if (auto it = _projects.find(pid); it != _projects.end()) {
+      changed = it->second.missing != now;
+      it->second.missing = std::move(now);
+    }
+  }
+  if (changed) {
+    VALTZ_LOG_INFO("project", "its missing files read again: {} missing",
+                   missing_count_(pid));
+    post_("assets.changed", JobId{}, {{"project", pid},
+                                      {"reason", "missing-media"}});
+    post_state_(pid);
+  }
+}
+
+std::size_t
+Controller::missing_count_(ProjectId pid) const
+{
+  std::lock_guard lk(_projects_mu);
+  auto it = _projects.find(pid);
+  return it == _projects.end() ? 0 : it->second.missing.size();
 }
 
 project::UndoLog::Scope
@@ -4231,6 +4512,13 @@ Controller::project_state(ProjectId pid) const
           {"busy", project_busy_(pid)},
           // An agent at work on it: read-only to the person.
           {"agent", agent_holds_(pid)},
+          // Files it uses that are missing: read-only too, and which.
+          {"missing_media", [&] {
+             std::lock_guard lk(_projects_mu);
+             auto it = _projects.find(pid);
+             return it == _projects.end() ? Json::array()
+                                          : it->second.missing;
+           }()},
           {"undo", brief(w->undo().next_undo())},
           {"redo", brief(w->undo().next_redo())}};
 }
@@ -4330,6 +4618,10 @@ Controller::revert_project(ProjectId pid)
   if (agent_holds_(pid)) {
     return make_error(Code::Busy, msg::kAgentAtWork);
   }
+  if (const std::size_t n = missing_count_(pid); n > 0) {
+    return make_error(Code::NotFound, msg::kProjectMissingMedia,
+                      {{"count", std::to_string(n)}});
+  }
   if (project_busy_(pid)) {
     return make_error(Code::Busy, msg::kProjectBusy);
   }
@@ -4352,6 +4644,10 @@ Controller::undo(ProjectId pid)
   if (agent_holds_(pid)) {
     return make_error(Code::Busy, msg::kAgentAtWork);
   }
+  if (const std::size_t n = missing_count_(pid); n > 0) {
+    return make_error(Code::NotFound, msg::kProjectMissingMedia,
+                      {{"count", std::to_string(n)}});
+  }
   // Taking back a task's request withdraws the task.
   if (const auto next = w->undo().next_undo()) {
     withdraw_tasks_(pid, next->seq);
@@ -4373,6 +4669,10 @@ Controller::redo(ProjectId pid)
   }
   if (agent_holds_(pid)) {
     return make_error(Code::Busy, msg::kAgentAtWork);
+  }
+  if (const std::size_t n = missing_count_(pid); n > 0) {
+    return make_error(Code::NotFound, msg::kProjectMissingMedia,
+                      {{"count", std::to_string(n)}});
   }
   VALTZ_ASSIGN(auto c, w->undo().redo());
   post_("assets.changed", JobId{}, {{"project", pid},
@@ -4545,6 +4845,8 @@ Controller::refresh_links(ProjectId pid)
   }
   JobId jid = JobId::make();
   if (linked.empty() && clips.empty()) {
+    // No original to look for: its blobs only (put back by hand, say).
+    recheck_missing_(pid);
     return jid;  // nothing to do; no events
   }
   JobRecord rec;
@@ -4589,6 +4891,8 @@ Controller::refresh_links(ProjectId pid)
               {{"project", pid}, {"asset", id}, {"reason", "turn"}});
       }
     }
+    // What is missing now -- an original found again, or gone since.
+    recheck_missing_(pid);
     finish_job_(jid, JobState::Finished,
                 missing ? std::format("{} originals missing", missing) : "");
     post_("job.finished", jid, {{"project", pid}, {"missing", missing}});
@@ -4763,6 +5067,10 @@ Controller::import_files(ProjectId pid, std::vector<fs::path> files,
   JobId jid = rec.id;
   std::lock_guard lk(_bg_mu);
   _bg.emplace_back([this, p, pid, jid, files = std::move(files), opts] {
+    // An import ADDS: nothing an agent at work has looked at changes, so
+    // its hold lets it through -- a picture attached to a chat's words
+    // while the agent with Valtz's tools works (DESIGN §9b).
+    CoreWrites adds;
     // One command, every file of it.
     auto undo = command_(pid, "import", {}, "",
                          {{"count", files.size()}});
@@ -5469,6 +5777,12 @@ Controller::helper_params_(const models::ModelEntry& m) const
   if (const auto c = agent_expert_cache_(m); c > 0) {
     p["expert_cache_mb"] = c >> 20;
   }
+  // Its n-gram table in memory as the Agent's N-gram Table asks (vpipe's
+  // ngram_resident): vpipe takes it where the model with every expert and
+  // the table fit, else reads its rows from disk as before.
+  if (agent_ngram_asked_(m)) {
+    p["ngram_resident"] = true;
+  }
   // Its whole context where this Mac holds it (Qwen3.5's and 3.8's
   // 262,144): an agent's long session runs to the model's limit, not
   // ours. Its K/V grows as it fills.
@@ -5513,7 +5827,8 @@ Controller::streamed_budget_(const models::ModelEntry& m) const
 }
 
 int
-Controller::helper_context_fits_(const models::ModelEntry& m) const
+Controller::helper_context_fits_(const models::ModelEntry& m,
+                                 std::optional<bool> table) const
 {
   // The memory it is counted in: the Mac's, or the agent's Memory.
   std::uint64_t ram = _hw.ram_bytes;
@@ -5558,13 +5873,23 @@ Controller::helper_context_fits_(const models::ModelEntry& m) const
   // cache asked for, what it holds beside the cache and the cache, in the
   // memory vpipe sizes it in (as much of it as the budget leaves). The
   // context gets its share of what they leave.
+  //
+  // A table it reads by row from disk (catalog `ngram_gb`: Flash-Next's
+  // 38.4 GB) is held only where the Agent's N-gram Table has vpipe take it
+  // (agent_ngram_held_), and counted then alone.
+  const bool held_table =
+      m.ngram_gb > 0 && (table ? *table : agent_ngram_held_(m));
+  const auto table_bytes = static_cast<std::uint64_t>(
+      held_table ? 0.0 : m.ngram_gb * 1e9);
   std::uint64_t held =
       static_cast<std::uint64_t>(std::max(0.0, m.disk_gb) * 1e9);
+  held = held > table_bytes ? held - table_bytes : 0;
   if (m.resident_gb > 0 && asked > 0) {
     ram = streamed_budget_(m);
     const std::uint64_t used = rest + kStreamedWorking;
     const std::uint64_t room = ram > used ? ram - used : 0;
-    held = rest + std::max(floor, std::min(asked, room));
+    held = rest + std::max(floor, std::min(asked, room)) +
+           static_cast<std::uint64_t>(held_table ? m.ngram_gb * 1e9 : 0.0);
   }
   return models::helper_context(lc, ram, held);
 }
@@ -6761,6 +7086,49 @@ Controller::generate_image(GenerateImageRequest req)
                                     {"asset", a.id},
                                     {"reason", "defined"}});
   VALTZ_ASSIGN(JobId job, submit_build_(req.project, a.id, a.name));
+  // Recorded as a node that ran, to be recalled and made again from the
+  // Atlas: its pictures in the row's order -- the one edited named, the
+  // whole row where it holds more than them -- and what else it asked.
+  if (req.node.empty()) {
+    std::vector<AssetId> refs;
+    for (const auto& id : row) {
+      if (std::ranges::find(pictures, id) != pictures.end() &&
+          std::ranges::find(refs, id) == refs.end()) {
+        refs.push_back(id);
+      }
+    }
+    for (const auto& id : pictures) {
+      if (std::ranges::find(refs, id) == refs.end()) {
+        refs.push_back(id);
+      }
+    }
+    Json x = Json::object();
+    if (base) {
+      x["base_asset"] = req.base->str();
+    } else if (!pictures.empty()) {
+      x["no_base"] = true;
+    }
+    if (row != refs) {
+      x["row"] = id_list(row);
+    }
+    if (req.steps > 0) {
+      x["steps"] = req.steps;
+    }
+    if (req.mode != "auto") {
+      x["mode"] = req.mode;
+    }
+    if (!req.negative.empty()) {
+      x["negative"] = req.negative;
+    }
+    record_generation_(
+        req.project, job,
+        {{"target", "image"}, {"prompt", pin.asset.str()},
+         {"refs", id_list(refs)}, {"model", m->id},
+         {"preference", req.preference},
+         {"custom", req.tuning.is_object() && !req.tuning.empty()},
+         {"tuning", req.tuning}, {"width", req.width},
+         {"height", req.height}, {"seed", req.seed}, {"extra", x}});
+  }
   // Named after its prompt: the micro agent's short name (DESIGN §9c).
   if (req.name.empty()) {
     name_from_prompt_(req.project, *p, a.id);
@@ -7145,6 +7513,74 @@ Controller::generate_video(GenerateVideoRequest req)
                                     {"reason", "defined"}});
   VALTZ_ASSIGN(JobId job, submit_build_(req.project, a.id, a.name, {},
                                         std::nullopt, rewrite));
+  // Recorded as a node that ran (as a picture's): its keyframes or its
+  // references, the clip it continues and how, what it keeps whole.
+  if (req.node.empty()) {
+    std::vector<AssetId> refs;
+    Json x = Json::object();
+    if (req.first || req.last) {
+      if (req.first) {
+        refs.push_back(*req.first);
+      }
+      if (req.last) {
+        refs.push_back(*req.last);
+      }
+      if (!req.first) {
+        x["keyframes"] = "last";
+      }
+    } else {
+      refs = req.references;
+    }
+    if (row != refs) {
+      x["row"] = id_list(row);
+    }
+    if (req.continue_from) {
+      x["continue_from"] = req.continue_from->str();
+    }
+    if (req.tail_seconds > 0) {
+      x["tail_seconds"] = req.tail_seconds;
+    }
+    if (req.continue_latents) {
+      x["continue_latents"] = true;
+    }
+    if (req.keep_latents) {
+      x["keep_latents"] = true;
+    }
+    if (req.reference_sound) {
+      x["reference_sound"] = true;
+    }
+    if (!req.whole.empty()) {
+      x["whole"] = id_list(req.whole);
+    }
+    if (req.regenerate) {
+      x["regenerate"] = *req.regenerate;
+    }
+    if (req.steps > 0) {
+      x["steps"] = req.steps;
+    }
+    if (!req.turbo) {
+      x["turbo"] = false;
+    }
+    if (req.fps > 0) {
+      x["fps"] = req.fps;
+    }
+    // Its length in seconds at the rate the node runs it at.
+    const double rate =
+        req.fps > 0 ? req.fps
+                    : jget(jget(jget(m->engine, "vpipe", Json::object()),
+                                "defaults", Json::object()),
+                           "fps", 24.0);
+    record_generation_(
+        req.project, job,
+        {{"target", "video"}, {"prompt", pin.asset.str()},
+         {"refs", id_list(refs)}, {"model", m->id},
+         {"preference", req.preference},
+         {"custom", req.tuning.is_object() && !req.tuning.empty()},
+         {"tuning", req.tuning}, {"width", req.width},
+         {"height", req.height},
+         {"seconds", req.frames > 0 ? req.frames / rate : 0.0},
+         {"seed", req.seed}, {"extra", x}});
+  }
   if (rewrite) {
     // Its writes join the request's command; the pictures as the model
     // numbers them (<Picture 1>, ...), each as it looks.
@@ -8226,6 +8662,45 @@ Controller::generate_audio(GenerateAudioRequest req)
   const bool speech = m && m->has(models::Capability::TextToSpeech);
   auto undo = command_(req.project,
                        speech ? "generate.speech" : "generate.audio");
+  // Recorded as a node that ran (as a picture's): the voice it spoke in,
+  // the voices of a scene and their words, lyrics given apart, a score.
+  const auto record = [&](JobId job, const project::RecipeInput& pin,
+                          const models::ModelEntry& made_by) {
+    if (!req.node.empty()) {
+      return;
+    }
+    Json x = Json::object();
+    if (req.voice) {
+      x["voice"] = req.voice->str();
+    }
+    if (!req.voices.empty()) {
+      x["voices"] = id_list(req.voices);
+    }
+    if (!req.voice_texts.empty()) {
+      x["voice_texts"] = req.voice_texts;
+    }
+    if (!req.lyrics.empty()) {
+      x["lyrics"] = req.lyrics;
+    }
+    if (!req.score.empty()) {
+      x["score"] = req.score;
+    }
+    if (req.steps > 0) {
+      x["steps"] = req.steps;
+    }
+    const bool speaks = made_by.has(models::Capability::TextToSpeech);
+    record_generation_(
+        req.project, job,
+        {{"target", "audio"}, {"prompt", pin.asset.str()},
+         {"refs", id_list(req.row)},
+         {"model", made_by.quantize_from.empty() ? made_by.id
+                                                 : made_by.quantize_from},
+         {"preference", req.preference},
+         {"custom", req.tuning.is_object() && !req.tuning.empty()},
+         {"tuning", req.tuning},
+         {"seconds", speaks ? req.seconds : req.max_seconds},
+         {"plan", req.plan}, {"seed", req.seed}, {"extra", x}});
+  };
   if (speech) {
     // The file its weights are held at: Fast and Med its 8-bit pack.
     m = &weights_variant_(*m, models::resolve_tuning(
@@ -8237,7 +8712,11 @@ Controller::generate_audio(GenerateAudioRequest req)
     VALTZ_ASSIGN(project::RecipeInput pin,
                  capture_prompt_(*p, req.project, pf.positional,
                                  req.prompt_asset, req.prompt_name));
-    return generate_speech_(req, *m, *p, words, pin);
+    auto job = generate_speech_(req, *m, *p, words, pin);
+    if (job.ok()) {
+      record(*job, pin, *m);
+    }
+    return job;
   }
   // Words first, then a model to sing them.
   if (const assist::SongText any = assist::split_song(words);
@@ -8354,6 +8833,7 @@ Controller::generate_audio(GenerateAudioRequest req)
                                     {"asset", a.id},
                                     {"reason", "defined"}});
   VALTZ_ASSIGN(JobId job, submit_build_(req.project, a.id, a.name));
+  record(job, pin, *m);
   // Named after its prompt: the micro agent's short name (DESIGN §9c).
   if (req.name.empty()) {
     name_from_prompt_(req.project, *p, a.id);
@@ -9178,7 +9658,7 @@ Controller::submit_build_(
   }
   std::vector<std::string> needs = {r.model};
   for (const char* k : {"lora", "decoder", "encoder", "branch", "vad",
-                        "tagger"}) {
+                        "tagger", "dit_model"}) {
     if (const auto id = jget<std::string>(r.params, k, ""); !id.empty()) {
       needs.push_back(id);
     }
@@ -9585,6 +10065,25 @@ Controller::resolve_build_(const std::string& model, const Json& params,
       return make_error(Code::NotFound, msg::kWeightsMissing, {{"file", f}});
     }
     *slot = f;
+  }
+  // Another model's DiT (P-H3-Image's FL2VA, param "dit_model"): its
+  // DiT linked apart (a Draw Things checkpoint), else its folder -- the
+  // one in use, a compressed copy's -- unless a checkpoint of one's own
+  // is given (above).
+  if (const auto dm = jget<std::string>(rp, "dit_model", "");
+      !dm.empty() && ref.dit.empty()) {
+    const auto* de = _catalog.find(dm);
+    if (!de) {
+      return make_error(Code::NotFound, msg::kRecipeModelUnknown,
+                        {{"model", dm}});
+    }
+    const auto di = _store->info(*de);
+    if (di.state != models::InstallState::Installed) {
+      return make_error(Code::NotFound, msg::kModelNotInstalled,
+                        {{"model", de->name}});
+    }
+    const fs::path part = di.part("dit");
+    ref.dit = part.empty() ? di.path() : part;
   }
   // A second checkpoint beside the model (H3's VDN branch), by its
   // folder.
@@ -10221,6 +10720,10 @@ Controller::export_asset(ExportRequest req)
     _timing.insert_or_assign(spec.id, JobTiming(steady_seconds(), Json(),
                                                 0, 1));
   }
+
+  // Who made it, for the writer's name it is stamped with: the one model
+  // its pixels were made with, else none (made_with).
+  spec.params["made_with"] = made_with(req.project, req.asset);
 
   JobRecord rec;
   rec.id = spec.id;

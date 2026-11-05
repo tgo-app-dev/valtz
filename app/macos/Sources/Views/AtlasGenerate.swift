@@ -214,17 +214,33 @@ extension AppModel {
     /// graph after it, its task in Assets.
     func atlasStartNode(_ node: String) {
         guard let core, let projectId, !refusedForAgent() else { return }
+        let leftOut = atlasLeftOut(node)
         let r = core.generateNode(project: projectId, "start",
                                   ["node": node])
         if !r.ok {
             flash(r.message, level: .error)
             return
         }
+        if !leftOut.isEmpty { warnLeftOut(leftOut) }
         atlasNodeTuning = nil
         atlasNodeTuneOpen = false
         reloadTasks()
         reloadAssets(force: true)
         reloadAtlas(force: true)
+    }
+
+    /// The weights a node's Custom has on whose files are gone, as the
+    /// card's Start finds them: the core runs it without them.
+    private func atlasLeftOut(_ node: String) -> [String] {
+        guard let core, let projectId, let n = atlasGenerateNode(node),
+              n.custom else { return [] }
+        let r = core.generateNode(project: projectId, "get", ["node": node])
+        let raw = (r.payload["node"] as? [String: Any])?["tuning"]
+            as? [String: Any] ?? [:]
+        let base = Preference(rawValue: n.preference) ?? .balanced
+        return leftOutWeights(core.tuning(
+            model: atlasNodeModel(n), preference: base.rawValue,
+            edit: n.target == "image" && !n.refs.isEmpty, overrides: raw))
     }
 
     /// Set up again from one: its settings and links, a draft, opened.
@@ -286,7 +302,14 @@ final class AtlasNodeTuning: TuningHost {
     }
 
     var tuningTitle: String { app?.modelName(modelId) ?? modelId }
-    var tuningRegenerates: Bool { false }
+    /// A clip past its model's trained size, the refiner here: the
+    /// refine's options (the "High resolution pass") show, as the card's.
+    var tuningRegenerates: Bool {
+        guard let app, let n = app.atlasGenerateNode(node),
+              n.target == "video" else { return false }
+        return app.regenerateDraft(model: modelId, width: n.width,
+                                   height: n.height) != nil
+    }
     var tuningCore: CoreService? { app?.core }
     func tuningWarn(_ text: String) { app?.flash(text, level: .warning) }
 
@@ -623,11 +646,15 @@ struct AtlasGenerateExpanded: View {
     @Bindable var model: AppModel
     let gen: GenerateNodeDTO
     @State private var thumbs: [String: CGImage] = [:]
-    @State private var width = ""
-    @State private var height = ""
-    @State private var seconds = ""
-    @State private var seed = ""
     @State private var dragging: String?
+    @FocusState private var focus: Field?
+
+    /// Its typed fields: what is typed is the model's (atlasNodeFields)
+    /// until it is taken -- on Return, as the keyboard leaves the field,
+    /// as the panel shuts -- so shutting it and opening it again keeps it.
+    private enum Field: String, Hashable {
+        case width, height, seconds, seed
+    }
 
     static let narrow: CGFloat = 460
     static let wide: CGFloat = 720
@@ -641,34 +668,58 @@ struct AtlasGenerateExpanded: View {
             section(gen.refs.isEmpty ? String(localized: "References")
                     : String(localized: "References (\(String(gen.refs.count)))"))
             { row }
-            section(String(localized: "Settings")) { settings }
-            if tune, let host = model.atlasNodeTuning {
-                Divider()
-                ScrollView {
-                    TuningPanel(model: host, embedded: true)
-                        .disabled(frozen)
+            section(String(localized: "Settings")) {
+                settings
+                if !also.isEmpty {
+                    Text(verbatim: String(localized: "Also: \(also.joined(separator: " · "))"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxHeight: 360)
+            }
+            if tune, let host = model.atlasNodeTuning {
+                Group {
+                    Divider()
+                    ScrollView {
+                        TuningPanel(model: host, embedded: true)
+                            .disabled(frozen)
+                    }
+                    .frame(maxHeight: 360)
+                }
+                .transition(.opacity)
             }
         }
         .padding(14)
         .frame(width: tune ? Self.wide : Self.narrow, alignment: .leading)
         .background(Color.valtzPanel,
                     in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        // Its rows laid out at the width it goes to: shown as it widens.
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.accentColor, lineWidth: 1.5)
         }
         .shadow(color: .black.opacity(0.28), radius: 18, y: 6)
+        // Custom's options shown and hidden: the panel widens and grows
+        // to them, and back.
+        .animation(AppModel.motion, value: tune)
         .controlSize(.small)
-        .onAppear { fill() }
-        .onChange(of: gen) { fill() }
+        .onChange(of: focus) { old, _ in
+            if let old { commit(old) }
+        }
+        .onAppear { prune() }
+        .onChange(of: gen) { prune() }
+        .onDisappear { commitAll() }
         .task(id: gen.refs.joined(separator: ",")) { await loadThumbs() }
         .task(id: "\(gen.id)-\(gen.model)-\(gen.preference)-\(gen.custom)-\(tune)") {
             if tune, model.atlasNodeTuning?.node != gen.id
                 || model.atlasNodeTuning?.modelId
                     != (gen.started?.model ?? model.atlasNodeModel(gen)) {
-                model.atlasNodeTuning = AtlasNodeTuning(app: model, node: gen)
+                // Read as the panel opens: its options come in with it.
+                let host = AtlasNodeTuning(app: model, node: gen)
+                withAnimation(AppModel.motion) {
+                    model.atlasNodeTuning = host
+                }
             }
         }
     }
@@ -861,7 +912,7 @@ struct AtlasGenerateExpanded: View {
                 }
             }
             .opacity(dragging == id ? 0.4 : 1)
-            Text(verbatim: i == 0 && gen.target == "image"
+            Text(verbatim: id == edited
                  ? String(localized: "Edited")
                  : a?.name ?? "")
                 .font(.caption2)
@@ -879,6 +930,60 @@ struct AtlasGenerateExpanded: View {
     }
 
     static let dragPrefix = "valtz-node-ref:"
+
+    /// The picture a picture's generation edits: the one it was asked
+    /// to (recorded), else its row's first; none where it composed from
+    /// its pictures alone.
+    private var edited: String? {
+        guard gen.target == "image", !gen.refs.isEmpty,
+              gen.extra?.noBase != true else { return nil }
+        if let b = gen.extra?.baseAsset, gen.refs.contains(b) { return b }
+        return gen.refs.first
+    }
+
+    /// What it was asked beyond its settings, said in a line.
+    private var also: [String] {
+        guard let x = gen.extra else { return [] }
+        var out: [String] = []
+        if let c = x.continueFrom {
+            let name = model.asset(id: c)?.name ?? ""
+            out.append(x.continueLatents == true
+                ? String(localized: "continues “\(name)” from its kept latents")
+                : String(localized: "continues “\(name)”"))
+        }
+        if x.keyframes == "last" {
+            out.append(String(localized: "ends on its picture"))
+        }
+        if x.noBase == true {
+            out.append(String(localized: "composed from its pictures, none edited"))
+        }
+        if x.keepLatents == true {
+            out.append(String(localized: "keeps its latents"))
+        }
+        if let w = x.whole, !w.isEmpty {
+            out.append(String(localized: "\(String(w.count)) kept whole"))
+        }
+        if x.referenceSound == true {
+            out.append(String(localized: "the song as its soundtrack"))
+        }
+        if let r = x.regenerate {
+            out.append(r ? String(localized: "regenerated past 768P")
+                         : String(localized: "not regenerated"))
+        }
+        if let n = x.steps, n > 0 {
+            out.append(String(localized: "\(String(n)) steps"))
+        }
+        if let l = x.lyrics, !l.isEmpty {
+            out.append(String(localized: "lyrics given apart"))
+        }
+        if let sc = x.score, !sc.isEmpty {
+            out.append(String(localized: "a score to follow"))
+        }
+        if let v = x.voices, v.count > 1 {
+            out.append(String(localized: "\(String(v.count)) voices"))
+        }
+        return out
+    }
 
     /// A row item dropped on another: it takes that one's place.
     private struct RowDrop: DropDelegate {
@@ -923,15 +1028,26 @@ struct AtlasGenerateExpanded: View {
                     label("Size")
                     sizeRow
                 }
+                if let note = sizeNote {
+                    GridRow {
+                        Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])
+                        Text(verbatim: note)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: 340, alignment: .leading)
+                    }
+                }
             }
             if gen.target != "image" {
                 GridRow {
                     label(gen.target == "audio" && !model.atlasNodeSpeaks(gen)
                           ? "Length at most" : "Length")
                     HStack(spacing: 4) {
-                        TextField("Default", text: $seconds)
+                        TextField("Default", text: text(.seconds))
                             .frame(width: 64)
-                            .onSubmit { commitSeconds() }
+                            .focused($focus, equals: .seconds)
+                            .onSubmit { commit(.seconds) }
                         Text("s").foregroundStyle(.secondary)
                     }
                     .disabled(frozen)
@@ -948,9 +1064,10 @@ struct AtlasGenerateExpanded: View {
                         .monospacedDigit()
                         .textSelection(.enabled)
                 } else {
-                    TextField("Random", text: $seed)
+                    TextField("Random", text: text(.seed))
                         .frame(width: 120)
-                        .onSubmit { commitSeed() }
+                        .focused($focus, equals: .seed)
+                        .onSubmit { commit(.seed) }
                         .disabled(frozen)
                 }
             }
@@ -1000,16 +1117,20 @@ struct AtlasGenerateExpanded: View {
 
     private var sizeRow: some View {
         HStack(spacing: 4) {
-            TextField("Auto", text: $width)
+            TextField("Auto", text: text(.width))
                 .frame(width: 56)
-                .onSubmit { commitSize() }
+                .focused($focus, equals: .width)
+                .onSubmit { commit(.width) }
             Text(verbatim: "×").foregroundStyle(.secondary)
-            TextField("Auto", text: $height)
+            TextField("Auto", text: text(.height))
                 .frame(width: 56)
-                .onSubmit { commitSize() }
+                .focused($focus, equals: .height)
+                .onSubmit { commit(.height) }
             Menu {
                 ForEach(presets, id: \.0) { p in
                     Button(p.0) {
+                        model.atlasNodeFields[gen.id]?["width"] = nil
+                        model.atlasNodeFields[gen.id]?["height"] = nil
                         model.atlasSetNode(gen.id, ["width": p.1,
                                                     "height": p.2])
                     }
@@ -1031,11 +1152,20 @@ struct AtlasGenerateExpanded: View {
             ? String(localized: "Auto: as the picture edited")
             : String(localized: "Auto: the model's")
         if gen.target == "video" {
-            return [(own, 0, 0), ("16:9 · 832 × 480", 832, 480),
-                    ("9:16 · 480 × 832", 480, 832),
-                    ("16:9 · 1344 × 768", 1344, 768),
-                    ("9:16 · 768 × 1344", 768, 1344),
-                    ("1:1 · 640 × 640", 640, 640)]
+            var out = [(own, 0, 0), ("16:9 · 832 × 480", 832, 480),
+                       ("9:16 · 480 × 832", 480, 832),
+                       ("16:9 · 1344 × 768", 1344, 768),
+                       ("9:16 · 768 × 1344", 768, 1344),
+                       ("1:1 · 640 × 640", 640, 640)]
+            // Past 768P where its refiner is here: drafted and
+            // regenerated (Open-H3-Regenerate-2K), as the card's 2K.
+            if model.regenerateDraft(model: nodeModel, width: 2560,
+                                     height: 1440) != nil {
+                out += [("16:9 · 1920 × 1088", 1920, 1088),
+                        ("16:9 · 2560 × 1440 · 2K", 2560, 1440),
+                        ("9:16 · 1440 × 2560 · 2K", 1440, 2560)]
+            }
+            return out
         }
         return [(own, 0, 0), ("1:1 · 1024 × 1024", 1024, 1024),
                 ("3:2 · 1216 × 832", 1216, 832),
@@ -1078,28 +1208,99 @@ struct AtlasGenerateExpanded: View {
         }
     }
 
-    // The fields as the node has them, again after each change.
-    private func fill() {
-        width = gen.width > 0 ? String(gen.width) : ""
-        height = gen.height > 0 ? String(gen.height) : ""
-        seconds = gen.seconds > 0 ? String(format: "%g", gen.seconds) : ""
-        seed = gen.seed >= 0 ? String(gen.seed) : ""
+    /// The model it runs, as run or as it would.
+    private var nodeModel: String {
+        gen.started?.model ?? model.atlasNodeModel(gen)
     }
 
-    private func commitSize() {
-        let w = Int(width.trimmingCharacters(in: .whitespaces)) ?? 0
-        let h = Int(height.trimmingCharacters(in: .whitespaces)) ?? 0
-        model.atlasSetNode(gen.id, ["width": max(0, w), "height": max(0, h)])
+    /// Under Size, past 768P: the draft and the size it is regenerated at
+    /// -- or, its refiner not here, what would regenerate it -- as the
+    /// card says it.
+    private var sizeNote: String? {
+        guard gen.target == "video", gen.width > 0, gen.height > 0,
+              let m = model.catalog.first(where: { $0.id == nodeModel }),
+              let r = m.regenerate else { return nil }
+        let b = "\(String(gen.width)) × \(String(gen.height))"
+        if let draft = model.regenerateDraft(model: nodeModel,
+                                             width: gen.width,
+                                             height: gen.height) {
+            let a = "\(String(draft.width)) × \(String(draft.height))"
+            if m.capabilities.contains("reference-to-video") {
+                return String(localized: "Drafted at \(a) from the references, then regenerated at \(b) by Open-H3-Regenerate-2K on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line.")
+            }
+            return String(localized: "Drafted at \(a), then regenerated at \(b) by Open-H3-Regenerate-2K: several times the draft's time.")
+        }
+        if min(gen.width, gen.height) > r.above {
+            return String(localized: "Past \(String(r.above)) on its short side the clip is made at this size directly. Open-H3-Regenerate-2K drafts it at \(String(r.draft)) and regenerates it: get it in Settings › Capabilities › MiniMax H3.")
+        }
+        return nil
     }
 
-    private func commitSeconds() {
-        let s = Double(seconds.trimmingCharacters(in: .whitespaces)) ?? 0
-        model.atlasSetNode(gen.id, ["seconds": max(0, s)])
+    /// A field's text: as typed, else as the node has it.
+    private func text(_ f: Field) -> Binding<String> {
+        Binding(get: { model.atlasNodeFields[gen.id]?[f.rawValue] ?? shown(f) },
+                set: { model.atlasNodeFields[gen.id, default: [:]][f.rawValue] = $0 })
     }
 
-    private func commitSeed() {
-        let t = seed.trimmingCharacters(in: .whitespaces)
-        model.atlasSetNode(gen.id, ["seed": Int64(t).map { max(0, $0) } ?? -1])
+    private func shown(_ f: Field) -> String {
+        switch f {
+        case .width: gen.width > 0 ? String(gen.width) : ""
+        case .height: gen.height > 0 ? String(gen.height) : ""
+        case .seconds: gen.seconds > 0 ? String(format: "%g", gen.seconds) : ""
+        case .seed: gen.seed >= 0 ? String(gen.seed) : ""
+        }
+    }
+
+    private func typed(_ f: Field) -> String {
+        (model.atlasNodeFields[gen.id]?[f.rawValue] ?? shown(f))
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// What is typed taken into the node, where it reads: a size when
+    /// both sides do (or neither: Auto), a length, a seed (empty:
+    /// random). One that does not read stays typed, kept.
+    private func commit(_ f: Field) {
+        guard !frozen, gen.started == nil else { return }
+        switch f {
+        case .width, .height:
+            let w = typed(.width), h = typed(.height)
+            if w.isEmpty && h.isEmpty {
+                if gen.width != 0 || gen.height != 0 {
+                    model.atlasSetNode(gen.id, ["width": 0, "height": 0])
+                }
+            } else if let wi = Int(w), let hi = Int(h), wi > 0, hi > 0,
+                      wi != gen.width || hi != gen.height {
+                model.atlasSetNode(gen.id, ["width": wi, "height": hi])
+            }
+        case .seconds:
+            let t = typed(.seconds)
+            if let s = t.isEmpty ? 0 : Double(t), s >= 0, s != gen.seconds {
+                model.atlasSetNode(gen.id, ["seconds": s])
+            }
+        case .seed:
+            let t = typed(.seed)
+            if let v = t.isEmpty ? -1 : Int64(t), v >= -1, v != gen.seed {
+                model.atlasSetNode(gen.id, ["seed": v])
+            }
+        }
+    }
+
+    private func commitAll() {
+        commit(.width)
+        commit(.seconds)
+        commit(.seed)
+    }
+
+    /// What is typed and now the node's own is no longer kept apart.
+    private func prune() {
+        guard var f = model.atlasNodeFields[gen.id] else { return }
+        for k in f.keys {
+            if let field = Field(rawValue: k),
+               f[k]?.trimmingCharacters(in: .whitespaces) == shown(field) {
+                f[k] = nil
+            }
+        }
+        model.atlasNodeFields[gen.id] = f.isEmpty ? nil : f
     }
 
     private func loadThumbs() async {

@@ -603,6 +603,43 @@ struct AgentSettingsSection: View {
             expertCacheRows(s, p)
         }
         prefillRows(s)
+        if let p = s.plan, (p.ngramGb ?? 0) > 0 {
+            ngramRows(s, p)
+        }
+    }
+
+    /// THE N-GRAM TABLE IN MEMORY: Qwen3.8 Flash-Next reads a prompt's
+    /// n-gram rows from disk -- a few hundred thousand small reads, the
+    /// first part of a long prompt waiting on its own -- or, on, holds
+    /// the table (38 GB) in memory, filled after the load: a long prompt
+    /// read about a third faster. vpipe takes it only where the model with
+    /// every expert and the table fit; the note says what it costs here.
+    @ViewBuilder
+    private func ngramRows(_ s: AgentSettings, _ p: AgentMemoryPlan)
+        -> some View {
+        Toggle("N-gram Table in Memory", isOn: Binding(
+            get: { s.ngramResident ?? false },
+            set: { model.setAgentSettings(["ngram_resident": $0]) }))
+            .settingsMark(String(localized: "N-gram Table in Memory"))
+        Text(ngramNote(p))
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func ngramNote(_ p: AgentMemoryPlan) -> String {
+        let table = Self.gb(p.ngramGb ?? 0)
+        let what = String(localized: "Holds the model's \(table) n-gram table in memory, filled after it loads, instead of reading a prompt's rows from the SSD: a long prompt read about a third faster, the replies the same.")
+        switch p.ngram {
+        case "held":
+            return what + " " + String(localized: "It fits here, beside every expert: the model then holds about \(Self.gb(p.holdsGb ?? 0)), \(table) more, which leaves less room for its conversation and for pictures and clips beside it. For the model's next load.")
+        case "disk":
+            if p.ngramWhy == "cache" {
+                return what + " " + String(localized: "Not with the Expert Cache set below every expert: the table is held only beside all of them. Its rows are read from the SSD.")
+            }
+            return what + " " + String(localized: "It does not fit here beside every expert and the conversation: its rows are read from the SSD, as when it is off.")
+        default:
+            return what + " " + String(localized: "Taken only where the model with every expert and the table fit -- about \(table) more than it holds now. For the model's next load.")
+        }
     }
 
     private static let memorySizes = [64, 128, 192]
@@ -696,8 +733,12 @@ struct AgentSettingsSection: View {
     /// trades.
     private func cacheNote(_ p: AgentMemoryPlan) -> String {
         let held = String(localized: "It holds about \(Self.gb(p.holdsGb ?? 0)): \(Self.gb(p.restGb ?? p.residentGb)) always in memory, a \(Self.gb(p.cacheGb ?? 0)) cache of its \(Self.gb(p.expertsGb ?? 0)) of experts -- the rest read from the SSD as they are picked -- and its conversation, up to \(p.context.here) tokens, about \(Self.gb(p.contextGb)).")
+        // Its n-gram table held beside every expert: in what it holds.
+        let table = p.ngram == "held"
+            ? " " + String(localized: "With them, its \(Self.gb(p.ngramGb ?? 0)) n-gram table, held in memory (N-gram Table in Memory, below).")
+            : ""
         let trade = String(localized: "Auto gives the cache what the conversation leaves. A size holds the cache to it: smaller leaves room for a longer conversation (Agentic Helper › Context: up to \(p.context.fits ?? p.context.auto) tokens with this cache) and for pictures and clips beside it, so it stays loaded through them; larger reads fewer experts from the SSD, so it reads prompts and writes replies faster. For the model's next load.")
-        return held + " " + trade
+        return held + table + " " + trade
     }
 
     /// "44 GB", "3.9 GB": a size as the person reads it (decimal).

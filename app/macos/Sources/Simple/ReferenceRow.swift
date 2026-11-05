@@ -77,7 +77,7 @@ struct ReferenceRow: View {
         // Media dropped on the row are staged, mentioned nowhere: files,
         // assets dragged from the list, what a drag from outside makes a
         // file of (RowDrop).
-        .onDrop(of: DroppedMedia.dropTypes, delegate: RowDrop(model: model))
+        .onDrop(of: DroppedMedia.dropTypes, delegate: PromptRowDrop(model: model))
     }
 
     /// While a thumbnail is dragged. SwiftUI's drop targets hear nothing
@@ -415,16 +415,20 @@ private struct BaseHint: View {
     }
 }
 
-/// A drop on the prompt's row: assets of the list and files staged; the
-/// stage itself (its drag carries a file too) captured; what a drag from
-/// outside makes a file of -- a browser's or Photos' picture, an app's
-/// bytes, a link (DroppedMedia) -- imported as a copy and staged as its
-/// asset. Read off the drag's pasteboard (an onDrop closure is handed
-/// providers, promises received, before it runs).
-private struct RowDrop: DropDelegate {
+/// A drop on the prompt's row -- or the agent's chat, its input: assets
+/// of the list and files staged; the stage itself (its drag carries a
+/// file too) captured; what a drag from outside makes a file of -- a
+/// browser's or Photos' picture, an app's bytes, a link (DroppedMedia) --
+/// imported as a copy and staged as its asset. Read off the drag's
+/// pasteboard (an onDrop closure is handed providers, promises received,
+/// before it runs). `targeted`: lit while a drag it takes is over it.
+struct PromptRowDrop: DropDelegate {
     let model: AppModel
+    var targeted: Binding<Bool>?
 
-    private var pasteboard: NSPasteboard { NSPasteboard(name: .drag) }
+    /// The drag's own pasteboard (DragBoard: a Dock stack's is not the
+    /// named drag pasteboard).
+    private var pasteboard: NSPasteboard { DragBoard.pasteboard }
 
     func validateDrop(info: DropInfo) -> Bool {
         let pb = pasteboard
@@ -432,8 +436,21 @@ private struct RowDrop: DropDelegate {
             || DroppedMedia.peek(pb).media
     }
 
+    func dropEntered(info: DropInfo) {
+        if validateDrop(info: info) { targeted?.wrappedValue = true }
+    }
+
+    func dropExited(info: DropInfo) {
+        targeted?.wrappedValue = false
+    }
+
     func performDrop(info: DropInfo) -> Bool {
-        let pb = pasteboard
+        targeted?.wrappedValue = false
+        return take(pasteboard)
+    }
+
+    /// The drop's pasteboard taken (a dev hook hands one of its own).
+    func take(_ pb: NSPasteboard) -> Bool {
         let ids = DroppedMedia.rows(pb)
         if !ids.isEmpty {
             model.addAssetReferences(ids)

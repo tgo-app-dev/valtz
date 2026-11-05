@@ -11,20 +11,14 @@ struct PromptBar: View {
     @Bindable var model: AppModel
 
     var body: some View {
+        // The agent's chat (AgentChat) has its own input, its paperclip
+        // and Send: the toolbar keeps what Start makes and its settings.
+        let chat = model.agentChat
         HStack(spacing: 12) {
-            HStack(spacing: 2) {
-                format(.bold, symbol: "bold",
-                       help: String(localized: "Bold (⌘B)"))
-                    .shortcutHint("⌘B")
-                format(.italic, symbol: "italic",
-                       help: String(localized: "Italic (⌘I)"))
-                    .shortcutHint("⌘I")
-                format(.underline, symbol: "underline",
-                       help: String(localized: "Underline (⌘U)"))
-                    .shortcutHint("⌘U")
+            if !chat {
+                formatting
+                Divider().frame(height: 18)
             }
-            markdownToggle
-            Divider().frame(height: 18)
             Picker("Create", selection: Binding(
                 get: { model.modality },
                 set: { m in
@@ -45,25 +39,11 @@ struct PromptBar: View {
                     .help("The model Start runs -- the generation card's, one choice")
             }
             settingsButton
-            Divider().frame(height: 18)
-            HStack(spacing: 2) {
-                AttachMenu(model: model)
-                Button(action: model.assistantPressed) {
-                    Group {
-                        if model.enhanceJob != nil {
-                            ProgressView().controlSize(.mini)
-                        } else {
-                            Image(systemName: "sparkles")
-                        }
-                    }
-                    .frame(width: 26, height: 22)
-                    .contentShape(Rectangle())
-                }
-                .disabled(!model.assistantEnabled)
-                .help(model.assistantHelp)
+            if !chat {
+                Divider().frame(height: 18)
+                actions
+                startButton
             }
-            .buttonStyle(.borderless)
-            startButton
         }
         .controlSize(.small)
         .padding(.horizontal, 12)
@@ -71,6 +51,45 @@ struct PromptBar: View {
         .frame(maxWidth: .infinity)
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
+    }
+
+    /// Markdown's bold, italic and underline, and whether it is drawn.
+    private var formatting: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 2) {
+                format(.bold, symbol: "bold",
+                       help: String(localized: "Bold (⌘B)"))
+                    .shortcutHint("⌘B")
+                format(.italic, symbol: "italic",
+                       help: String(localized: "Italic (⌘I)"))
+                    .shortcutHint("⌘I")
+                format(.underline, symbol: "underline",
+                       help: String(localized: "Underline (⌘U)"))
+                    .shortcutHint("⌘U")
+            }
+            markdownToggle
+        }
+    }
+
+    /// Attach and the assistant.
+    private var actions: some View {
+        HStack(spacing: 2) {
+            AttachMenu(model: model)
+            Button(action: model.assistantPressed) {
+                Group {
+                    if model.enhanceJob != nil {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "sparkles")
+                    }
+                }
+                .frame(width: 26, height: 22)
+                .contentShape(Rectangle())
+            }
+            .disabled(!model.assistantEnabled)
+            .help(model.assistantHelp)
+        }
+        .buttonStyle(.borderless)
     }
 
     /// The generation card's settings -- size, length, Favor, seed -- in

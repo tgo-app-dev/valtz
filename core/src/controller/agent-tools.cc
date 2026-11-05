@@ -861,6 +861,29 @@ picture_size_long(double w, double h, double side, int most)
   return {down(pw), down(ph)};
 }
 
+// A shape asked by its ratio ("16:9", "3:2", "1:1"): its two sides, or
+// none.
+std::optional<std::pair<double, double>>
+aspect_of(const std::string& s)
+{
+  const auto colon = s.find(':');
+  if (colon == std::string::npos) {
+    return std::nullopt;
+  }
+  double w = 0;
+  double h = 0;
+  try {
+    w = std::stod(s.substr(0, colon));
+    h = std::stod(s.substr(colon + 1));
+  } catch (...) {
+    return std::nullopt;
+  }
+  if (!(w > 0 && h > 0 && w / h < 8 && h / w < 8)) {
+    return std::nullopt;
+  }
+  return std::pair{w, h};
+}
+
 // A shot's length as the model makes lengths (17n + 5 frames for H3: 5 s
 // is 124 frames, 5.17 s): its frames and their rate.
 std::pair<int, double>
@@ -2370,6 +2393,10 @@ Controller::AgentHost::tools()
                       {"long_side", integer("its longer side, pixels, up to "
                                             "the model's max_side; about a "
                                             "megapixel by default")},
+                      {"aspect", str("an asset alone (no box): its shape, "
+                                     "\"16:9\", \"3:2\", \"1:1\", "
+                                     "\"2:3\", \"9:16\"; square by "
+                                     "default")},
                       {"name", str("the asset's name")}},
                      box_props),
                 {"prompt"}),
@@ -2640,11 +2667,76 @@ Controller::AgentHost::tools()
   return table;
 }
 
+const std::vector<Controller::AgentHost::Tool>&
+Controller::AgentHost::chat_tools()
+{
+  using H = AgentHost;
+  static const std::vector<Tool> table = [] {
+    // The full table's that look -- or add, and only add: a clip's
+    // summary, a transcript, a prompt kept -- as they are.
+    static constexpr std::string_view kKept[] = {
+        "get_project",  "list_models",   "get_composition",
+        "view_page",    "view_asset",    "get_exif",
+        "view_frames",  "describe_clip", "transcribe",
+        "enhance_prompt", "create_prompt", "wait_for_generations"};
+    std::vector<Tool> t;
+    for (const auto name : kKept) {
+      for (const auto& x : tools()) {
+        if (x.name == name) {
+          t.push_back(x);
+        }
+      }
+    }
+    // A picture made as an asset alone: generate_image placed nowhere.
+    t.push_back(
+        {"generate_image", "generate", "Generate a picture",
+         "A picture made from a prompt by a picture model, in the "
+         "background: an asset of the project when it is done (you are "
+         "told; view_asset shows it). With `base` it EDITS that picture, "
+         "with `references` draws on pictures: <Picture 1>, ... in the "
+         "prompt, the base first.",
+         schema({{"prompt", str("what the picture shows: subject, "
+                                "setting, light, style; no words. An "
+                                "edit: the change")},
+                 {"aspect", str("its shape: \"16:9\", \"3:2\", "
+                                "\"1:1\", \"2:3\", \"9:16\"; square by "
+                                "default; an edit, its base's")},
+                 {"model", str(kModelDoc)},
+                 {"base", str("an EDIT: the picture to change")},
+                 {"references", ids("pictures to draw on")},
+                 {"long_side", integer("its longer side, pixels, up to "
+                                       "the model's max_side; about a "
+                                       "megapixel by default")},
+                 {"name", str("the asset's name")}},
+                {"prompt"}),
+         &H::t_chat_picture});
+    t.push_back({"save_text", "edit", "Keep a text",
+                 "Words KEPT in the project as a text asset -- notes, a "
+                 "story, a script, a list -- for the person to open and "
+                 "use.",
+                 schema({{"text", str("the words; Markdown reads as such")},
+                         {"name", str("its name; omitted: its first "
+                                      "words")}},
+                        {"text"}),
+                 &H::t_save_text});
+    return t;
+  }();
+  return table;
+}
+
+const std::vector<Controller::AgentHost::Tool>&
+Controller::AgentHost::tools_for(std::string_view skills)
+{
+  static const std::vector<Tool> none;
+  return skills == "chat" ? chat_tools() : skills == "none" ? none
+                                                            : tools();
+}
+
 std::vector<agent::ToolSpec>
-Controller::AgentHost::tool_specs()
+Controller::AgentHost::tool_specs(std::string_view skills)
 {
   std::vector<agent::ToolSpec> out;
-  for (const auto& t : tools()) {
+  for (const auto& t : tools_for(skills)) {
     out.push_back({t.name, t.description, t.parameters});
   }
   return out;
@@ -2653,14 +2745,20 @@ Controller::AgentHost::tool_specs()
 Json
 Controller::AgentHost::tools_json() const
 {
-  Json list = Json::array();
-  for (const auto& t : tools()) {
-    list.push_back({{"name", t.name}, {"kind", t.kind}, {"title", t.title},
-                    {"description", t.description},
-                    {"parameters", t.parameters}});
-  }
-  return {{"tools", std::move(list)},
-          {"skill", _c.skill_text("valtz-agent")}};
+  auto listed = [](const std::vector<Tool>& table) {
+    Json list = Json::array();
+    for (const auto& t : table) {
+      list.push_back({{"name", t.name}, {"kind", t.kind},
+                      {"title", t.title}, {"description", t.description},
+                      {"parameters", t.parameters}});
+    }
+    return list;
+  };
+  return {{"tools", listed(tools())},
+          {"skill", _c.skill_text("valtz-agent")},
+          // A chat's (AgentRequest::skills "chat").
+          {"chat", {{"tools", listed(chat_tools())},
+                    {"skill", _c.skill_text("valtz-chat")}}}};
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -6222,6 +6320,46 @@ Controller::AgentHost::t_create_prompt(Session& s, Step& step,
   return Json{{"asset", id.str()}};
 }
 
+Result<Json>
+Controller::AgentHost::t_save_text(Session& s, Step& step, const Json& args,
+                                   std::vector<fs::path>&)
+{
+  const std::string text = text_arg(args, "text");
+  if (one_line(text).empty()) {
+    return make_error(Code::InvalidArgument, "the text is empty");
+  }
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  std::string name = one_line(text_arg(args, "name"));
+  if (name.empty()) {
+    name = std::string(utf8_prefix(one_line(text), 48));
+  }
+  auto undo = _c.command_(s.project, "agent", {}, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  VALTZ_ASSIGN(project::Asset made, p->add_text(name, text, {}));
+  _c.post_("assets.changed", JobId{}, {{"project", s.project},
+                                       {"asset", made.id},
+                                       {"reason", "agent"}});
+  return Json{{"asset", made.id.str()}, {"name", made.name}};
+}
+
+Result<Json>
+Controller::AgentHost::t_chat_picture(Session& s, Step& step,
+                                      const Json& args,
+                                      std::vector<fs::path>& shown)
+{
+  // Placed nowhere: a box, a page or a composition it was given anyway
+  // (the editor's generate_image takes them) left out.
+  Json a = args;
+  for (const char* k : {"composition", "page", "below_all", "x", "y",
+                        "width", "height"}) {
+    a.erase(k);
+  }
+  return t_generate_image(s, step, a, shown);
+}
+
 // ---- generating -------------------------------------------------------------
 
 Result<Json>
@@ -6620,6 +6758,11 @@ Controller::AgentHost::t_generate_image(Session& s, Step& step,
       size = picture_size_long(v->info.frame.width, v->info.frame.height,
                                side, most);
     }
+  } else if (const auto shape = aspect_of(text_arg(args, "aspect"))) {
+    // An asset alone, at the shape asked.
+    size = sized ? picture_size_long(shape->first, shape->second, side,
+                                     most)
+                 : picture_size(shape->first, shape->second);
   } else if (sized) {
     size = picture_size_long(1, 1, side, most);
   }

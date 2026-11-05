@@ -1,5 +1,7 @@
 #include "valtz/media/movie.h"
 
+#include "valtz/media/stamp.h"
+
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
 
@@ -110,6 +112,53 @@ why(NSError* e)
 {
   return e ? std::string(e.localizedDescription.UTF8String ?: "")
            : std::string("unknown error");
+}
+
+// Who wrote a movie or a sound, as its container keeps it (stamp.h):
+// QuickTime's software keys in a .mov, iTunes' encoding tool (ffprobe's
+// "encoder") in an .mp4, .m4v or .m4a -- the two an AVAssetWriter writes
+// for each. `kept` -- the source's own items -- go with it but the ones
+// these replace.
+NSArray<AVMetadataItem*>*
+software_items(AVFileType type, std::string_view software,
+               NSArray<AVMetadataItem*>* kept = nil)
+{
+  NSMutableArray<AVMetadataItem*>* out = [NSMutableArray array];
+  if (software.empty()) {
+    return kept ?: out;
+  }
+  const bool qt = [type isEqualToString:AVFileTypeQuickTimeMovie];
+  NSArray<AVMetadataIdentifier>* ids =
+      qt ? @[ AVMetadataIdentifierQuickTimeMetadataSoftware,
+              AVMetadataIdentifierQuickTimeUserDataSoftware ]
+         : @[ AVMetadataIdentifieriTunesMetadataEncodingTool ];
+  NSString* value = [[NSString alloc] initWithBytes:software.data()
+                                             length:software.size()
+                                           encoding:NSUTF8StringEncoding];
+  for (AVMetadataItem* m in kept) {
+    if (![ids containsObject:m.identifier]) {
+      [out addObject:m];
+    }
+  }
+  for (AVMetadataIdentifier ident in ids) {
+    AVMutableMetadataItem* m = [AVMutableMetadataItem metadataItem];
+    m.identifier = ident;
+    m.value = value ?: @"Valtz";
+    m.dataType = (__bridge NSString*)kCMMetadataBaseDataType_UTF8;
+    [out addObject:m];
+  }
+  return out;
+}
+
+AVFileType
+movie_type(const fs::path& out)
+{
+  const std::string ext = out.extension().string();
+  return ext == ".mov"   ? AVFileTypeQuickTimeMovie
+         : ext == ".m4v" ? AVFileTypeAppleM4V
+         : ext == ".m4a" ? AVFileTypeAppleM4A
+         : ext == ".wav" ? AVFileTypeWAVE
+                         : AVFileTypeMPEG4;
 }
 
 // AAC as Apple's encoder takes it for `channels` of a sound at `rate` Hz:
@@ -250,7 +299,7 @@ is_prores(std::string_view f)
 Status
 add_soundtrack(const fs::path& video, const fs::path& audio,
                const fs::path& out, double start, double duration,
-               SoundCodec sound)
+               SoundCodec sound, std::string_view software)
 {
   @autoreleasepool {
     AVURLAsset* va = [AVURLAsset URLAssetWithURL:file_url(video) options:nil];
@@ -322,6 +371,7 @@ add_soundtrack(const fs::path& video, const fs::path& audio,
     if (!w) {
       return make_error(Code::Io, "cannot write the movie: " + why(err));
     }
+    w.metadata = software_items(type, software);
     auto vfmt = (__bridge CMFormatDescriptionRef)vt.formatDescriptions
                     .firstObject;
     AVAssetWriterInput* vin =
@@ -405,7 +455,8 @@ add_soundtrack(const fs::path& video, const fs::path& audio,
 
 Status
 write_sound(const fs::path& src, const fs::path& out,
-            std::string_view format, double start, double duration)
+            std::string_view format, double start, double duration,
+            std::string_view software)
 {
   if (format != "wav" && format != "m4a") {
     return make_error(Code::InvalidArgument, std::format(
@@ -478,6 +529,11 @@ write_sound(const fs::path& src, const fs::path& out,
     if (!w) {
       return make_error(Code::Io, "cannot write the sound: " + why(err));
     }
+    // An .m4a names who wrote it in its metadata; a WAV's INFO chunk,
+    // which AVAssetWriter does not write, is added once it is done.
+    if (!wav) {
+      w.metadata = software_items(AVFileTypeAppleM4A, software);
+    }
     // PCM as deep as the sound is (16 bits for a model's WAV); a float
     // or compressed one has no depth of its own to keep: 24 bits.
     const bool int_pcm = asbd->mFormatID == kAudioFormatLinearPCM &&
@@ -534,6 +590,104 @@ write_sound(const fs::path& src, const fs::path& out,
     if (w.status != AVAssetWriterStatusCompleted) {
       fs::remove(out, ec);
       return make_error(Code::Io, "writing the sound failed: " +
+                        why(w.error));
+    }
+  }
+  if (format == "wav" && !software.empty()) {
+    // The sound is written: its INFO is not worth failing it over.
+    (void)stamp_software(out, software);
+  }
+  return ok_status();
+}
+
+Status
+remux_with_software(const fs::path& in, const fs::path& out,
+                    std::string_view software)
+{
+  @autoreleasepool {
+    AVURLAsset* a = [AVURLAsset URLAssetWithURL:file_url(in) options:nil];
+    load_keys(a, @[ @"tracks", @"metadata" ]);
+    NSError* err = nil;
+    AVAssetReader* r = [AVAssetReader assetReaderWithAsset:a error:&err];
+    if (!r) {
+      return make_error(Code::Io, "cannot read the movie: " + why(err));
+    }
+    std::error_code ec;
+    fs::remove(out, ec);
+    const AVFileType type = movie_type(out);
+    AVAssetWriter* w = [AVAssetWriter assetWriterWithURL:file_url(out)
+                                                fileType:type
+                                                   error:&err];
+    if (!w) {
+      return make_error(Code::Io, "cannot write the movie: " + why(err));
+    }
+    w.metadata = software_items(type, software, a.metadata);
+    // Every picture and sound as it is stored (nil settings: no decode).
+    std::vector<std::pair<AVAssetReaderTrackOutput*, AVAssetWriterInput*>>
+        pairs;
+    for (AVAssetTrack* t in a.tracks) {
+      if (![t.mediaType isEqualToString:AVMediaTypeVideo] &&
+          ![t.mediaType isEqualToString:AVMediaTypeAudio]) {
+        continue;
+      }
+      load_keys(t, @[ @"formatDescriptions", @"preferredTransform" ]);
+      AVAssetReaderTrackOutput* o =
+          [AVAssetReaderTrackOutput assetReaderTrackOutputWithTrack:t
+                                                     outputSettings:nil];
+      o.alwaysCopiesSampleData = NO;
+      auto hint = (__bridge CMFormatDescriptionRef)t.formatDescriptions
+                      .firstObject;
+      AVAssetWriterInput* i =
+          [AVAssetWriterInput assetWriterInputWithMediaType:t.mediaType
+                                             outputSettings:nil
+                                           sourceFormatHint:hint];
+      i.transform = t.preferredTransform;
+      i.expectsMediaDataInRealTime = NO;
+      if (![r canAddOutput:o] || ![w canAddInput:i]) {
+        return make_error(Code::Unsupported, std::format(
+            "{} cannot hold this movie's tracks",
+            out.extension().string()));
+      }
+      [r addOutput:o];
+      [w addInput:i];
+      pairs.emplace_back(o, i);
+    }
+    if (pairs.empty()) {
+      return make_error(Code::Corrupt, std::format(
+          "{} has no picture or sound", in.filename().string()));
+    }
+    if (![r startReading]) {
+      return make_error(Code::Io, "cannot read the movie: " + why(r.error));
+    }
+    if (![w startWriting]) {
+      [r cancelReading];
+      return make_error(Code::Io, "cannot write the movie: " +
+                        why(w.error));
+    }
+    [w startSessionAtSourceTime:kCMTimeZero];
+    // A queue a track: interleaved, one waits for another.
+    dispatch_group_t group = dispatch_group_create();
+    for (auto& [o, i] : pairs) {
+      pump(o, i,
+           dispatch_queue_create("valtz.remux", DISPATCH_QUEUE_SERIAL),
+           group);
+    }
+    dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+    if (r.status == AVAssetReaderStatusFailed ||
+        w.status == AVAssetWriterStatusFailed) {
+      NSError* e = w.status == AVAssetWriterStatusFailed ? w.error : r.error;
+      [w cancelWriting];
+      fs::remove(out, ec);
+      return make_error(Code::Io, "rewriting the movie failed: " + why(e));
+    }
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    [w finishWritingWithCompletionHandler:^{
+      dispatch_semaphore_signal(sem);
+    }];
+    dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+    if (w.status != AVAssetWriterStatusCompleted) {
+      fs::remove(out, ec);
+      return make_error(Code::Io, "rewriting the movie failed: " +
                         why(w.error));
     }
   }

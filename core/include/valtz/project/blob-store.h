@@ -54,6 +54,9 @@ public:
     return path_of(b.hash, b.ext);
   }
   bool contains(const BlobRef&) const;
+  // Where a blob that is nowhere was to be found, for a person to be told:
+  // the last read root's place (the saved package's), else the own root's.
+  std::filesystem::path saved_path_of(const BlobRef&) const;
 
   // Hash `src` and store it (clone when possible, else copy).
   Result<BlobRef> ingest_file(const std::filesystem::path& src);

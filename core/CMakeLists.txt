@@ -13,6 +13,7 @@ set(VALTZ_CORE_SOURCES
   src/base/result.cc
   src/base/text.cc
   src/base/tree-copy.cc
+  src/base/version.cc
   src/cache/cache-store.cc
   src/db/lmdb.cc
   src/media/adjust.cc
@@ -29,6 +30,7 @@ set(VALTZ_CORE_SOURCES
   src/media/pdf.mm
   src/media/probe.mm
   src/media/sound.mm
+  src/media/stamp.mm
   src/media/text-flow.cc
   src/media/thumbnail.mm
   src/media/timing.cc
@@ -121,6 +123,10 @@ valtz_embed(
 # The agent's guide to the editor's tools: Valtz's own (DESIGN §9b).
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/valtz-agent.md"
   kValtzAgentSkill valtz-agent-skill.cc)
+# A chat's guide: looking at the project and adding to its assets, the
+# editor's tools left to the one agent that changes it (DESIGN §9b).
+valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/valtz-chat.md"
+  kValtzChatSkill valtz-chat-skill.cc)
 # MOSS-TTS's voice director: Valtz's own, from the model's prompt fields
 # (TTS-Audio-Suite's MOSS_TTS_PROMPT_FIELDS_GUIDE; DESIGN §4g).
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/moss-tts.md"
@@ -202,12 +208,13 @@ target_link_libraries(valtz_core PUBLIC
 # -D takes no value.
 target_compile_definitions(valtz_core PRIVATE
   VALTZ_VERSION="${PROJECT_VERSION}"
+  VALTZ_BUILD="${VALTZ_APP_BUILD}"
   $<$<BOOL:${VALTZ_HAVE_VPIPE}>:VALTZ_HAVE_VPIPE=1>)
 set_source_files_properties(
   src/media/camera.mm src/media/capture.mm
   src/fleet/fleet.mm src/agent/cloud.mm
   src/media/exif.mm src/media/markup.mm src/media/model-input.mm
-  src/media/movie.mm src/media/pdf.mm
+  src/media/movie.mm src/media/pdf.mm src/media/stamp.mm
   src/media/probe.mm src/media/thumbnail.mm
   src/models/hardware.mm src/project/bookmark.mm
   PROPERTIES COMPILE_OPTIONS "-fobjc-arc")

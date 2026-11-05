@@ -76,6 +76,12 @@ struct AtlasLayout {
     /// Where the zoomed graph lies in it: in the middle where it is
     /// smaller than the viewport, else from its top left.
     func inset(zoom z: CGFloat, in v: CGSize) -> CGSize {
+        Self.inset(size, zoom: z, in: v)
+    }
+
+    /// The same for a graph of `size` -- a moving one's, on its way.
+    static func inset(_ size: CGSize, zoom z: CGFloat,
+                      in v: CGSize) -> CGSize {
         CGSize(width: max(0, (v.width - size.width * z) / 2),
                height: max(0, (v.height - size.height * z) / 2))
     }
@@ -88,6 +94,122 @@ struct AtlasLayout {
     /// The edges in and out of node `i`, as places in `graph.edges`.
     func edges(of i: Int) -> [Int] {
         ends.indices.filter { ends[$0].0 == i || ends[$0].1 == i }
+    }
+
+    /// Where a generate node opened out lies, its card at `f`: right of
+    /// it, from its top -- one that has run, right of what it made (at
+    /// `made`: else it would hide it).
+    static func panelOrigin(_ f: CGRect, made: CGRect?, inset: CGSize,
+                            zoom z: CGFloat) -> CGPoint {
+        let right = max(f.maxX, made?.maxX ?? f.maxX)
+        return CGPoint(x: inset.width + right * z + 14,
+                       y: inset.height + f.minY * z)
+    }
+
+    /// The same for node `i`, its frames as drawn.
+    func panelOrigin(_ i: Int, _ frames: [CGRect], inset: CGSize,
+                     zoom z: CGFloat) -> CGPoint {
+        let made = graph.nodes[i].into.flatMap { assetNode[$0] }
+        return Self.panelOrigin(frames[i], made: made.map { frames[$0] },
+                                inset: inset, zoom: z)
+    }
+
+    /// An edge told apart from the others as the graph is read again.
+    static func key(_ e: AtlasEdgeDTO) -> String {
+        "\(e.from)>\(e.to)>\(e.kind)>\(e.role ?? "")>\(e.index ?? -1)"
+    }
+}
+
+/// The graph MOVING from one layout to the next (DESIGN §10a Atlas): a
+/// node from where it was drawn as the graph was read again -- midway
+/// through a motion, where that one had brought it -- to where the core
+/// lays it now; a new node fading in where it lands, an edge gone fading
+/// out between where its ends go. Every card, edge, link's ⓧ and open
+/// panel is drawn at one PHASE of the way (AtlasStage): cards slid by
+/// their own offsets would leave the edges -- one Canvas -- behind.
+struct AtlasMotion {
+    /// Where each node was drawn, by its id.
+    var from: [String: CGRect] = [:]
+    /// The nodes and edges gone (an edge by its ends' ids).
+    var goneNodes: [AtlasNodeDTO] = []
+    var gone: [AtlasEdgeDTO] = []
+    /// The new layout's edges that were not there: they fade in.
+    var fresh: Set<Int> = []
+    /// The graph's size as it was: what moves out of the new one's
+    /// bounds is drawn on its way.
+    var size: CGSize = .zero
+    /// The phase it runs from and to.
+    var start: Double = 0
+    var end: Double = 0
+
+    /// How far it has come at `phase`: 0 where it was, 1 there.
+    func progress(_ phase: Double) -> CGFloat {
+        guard end > start else { return 1 }
+        return CGFloat(min(1, max(0, (phase - start) / (end - start))))
+    }
+
+    /// Node `id`'s frame, `to` in the new layout, at `t`.
+    func frame(_ id: String, _ to: CGRect, _ t: CGFloat) -> CGRect {
+        guard t < 1, let a = from[id] else { return to }
+        return CGRect(x: a.minX + (to.minX - a.minX) * t,
+                      y: a.minY + (to.minY - a.minY) * t,
+                      width: a.width + (to.width - a.width) * t,
+                      height: a.height + (to.height - a.height) * t)
+    }
+
+    /// The graph's size at `t`, `to` the new one's: where it is centred
+    /// in a viewport larger than it glides with it.
+    func drawnSize(_ to: CGSize, _ t: CGFloat) -> CGSize {
+        guard t < 1, size != .zero else { return to }
+        return CGSize(width: size.width + (to.width - size.width) * t,
+                      height: size.height + (to.height - size.height) * t)
+    }
+
+    /// Every node's frame in `g` at `t`: its own where nothing moves.
+    func frames(_ g: AtlasLayout, _ t: CGFloat) -> [CGRect] {
+        guard t < 1, !from.isEmpty else { return g.frames }
+        return g.frames.indices.map {
+            frame(g.graph.nodes[$0].id, g.frames[$0], t)
+        }
+    }
+
+    /// Whether node `id` came with the new layout (it fades in).
+    func isNew(_ id: String) -> Bool { !from.isEmpty && from[id] == nil }
+
+    /// The motion from `before` -- drawn at `t` of `was` -- to `next`;
+    /// nil where nothing moves, comes or goes, or the two share no node
+    /// (another project's).
+    static func between(_ before: AtlasLayout, drawn was: AtlasMotion,
+                        at t: CGFloat, _ next: AtlasLayout,
+                        phase: Double, to end: Double) -> AtlasMotion? {
+        var m = AtlasMotion(start: phase, end: end)
+        for (i, n) in before.graph.nodes.enumerated() {
+            m.from[n.id] = was.frame(n.id, before.frames[i], t)
+        }
+        var shared = false
+        var moved = before.graph.nodes.count != next.graph.nodes.count
+        for (i, n) in next.graph.nodes.enumerated() {
+            if let f = m.from[n.id] {
+                shared = true
+                if f != next.frames[i] { moved = true }
+            } else {
+                moved = true
+            }
+        }
+        m.goneNodes = before.graph.nodes.filter { next.index[$0.id] == nil }
+        if !m.goneNodes.isEmpty { moved = true }
+        let keys = Set(next.graph.edges.map(AtlasLayout.key))
+        let had = Set(before.graph.edges.map(AtlasLayout.key))
+        m.gone = before.graph.edges.filter {
+            !keys.contains(AtlasLayout.key($0))
+        }
+        m.fresh = Set(next.graph.edges.indices.filter {
+            !had.contains(AtlasLayout.key(next.graph.edges[$0]))
+        })
+        m.size = before.size
+        guard shared, moved || !m.gone.isEmpty || !m.fresh.isEmpty
+        else { return nil }
+        return m
     }
 }
 
@@ -115,7 +237,7 @@ extension AppModel {
                 return
             }
             self.atlasRead = g.revision
-            self.atlas = AtlasLayout(g)
+            self.showAtlas(AtlasLayout(g))
             // What it showed may be gone.
             if let e = self.atlasExpanded, self.asset(id: e) == nil {
                 self.atlasExpanded = nil
@@ -127,6 +249,26 @@ extension AppModel {
                 self.atlasSelected = nil
             }
         }
+    }
+
+    /// The graph read again, MOVED to (AtlasMotion): from where it is
+    /// drawn -- a motion caught midway going on from there -- to where
+    /// the core laid it; another project's, or nothing changed, put
+    /// there at once.
+    private func showAtlas(_ next: AtlasLayout) {
+        guard let before = atlas,
+              let m = AtlasMotion.between(
+                  before, drawn: atlasMotion,
+                  at: atlasMotion.progress(atlasShownPhase), next,
+                  phase: atlasShownPhase, to: atlasPhase + 1) else {
+            atlasMotion = AtlasMotion()
+            atlas = next
+            return
+        }
+        // At its start as the new layout is first drawn, then on its way.
+        atlasMotion = m
+        atlas = next
+        withAnimation(Self.motion) { atlasPhase += 1 }
     }
 
     /// The screen left: nothing plays on in it.
@@ -336,6 +478,32 @@ extension AppModel {
                        y: (y + p.y - i.height) / z)
     }
 
+    /// Scrolled to `to` (a point as ScrollPosition counts it), GLIDING:
+    /// set a frame at a time along an ease, as AppModel.motion runs. A
+    /// ScrollPosition set inside an animation, or AppKit's clip view
+    /// animated, did not move SwiftUI's scroll view at all (macOS 27); set
+    /// plainly, it does -- and what it passes over is drawn as it goes.
+    func atlasGlide(to: CGPoint) {
+        atlasGlideTask?.cancel()
+        let pad = atlasInsets
+        let from = CGPoint(x: atlasVisible.minX + pad.width,
+                           y: atlasVisible.minY + pad.height)
+        let span = 0.45 * Self.animationScale
+        let start = Date()
+        atlasGlideTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let u = min(1, Date().timeIntervalSince(start) / span)
+                let e = u * u * (3 - 2 * u)
+                self.atlasPosition.scrollTo(point: CGPoint(
+                    x: from.x + (to.x - from.x) * e,
+                    y: from.y + (to.y - from.y) * e))
+                if u >= 1 { return }
+                try? await Task.sleep(for: .milliseconds(16))
+            }
+        }
+    }
+
     /// Zoomed by `f` about the viewport's middle: the zoom buttons'.
     func atlasZoom(by f: CGFloat) {
         setAtlasZoom(atlasZoom * f)
@@ -348,6 +516,7 @@ extension AppModel {
     func setAtlasZoom(_ z: CGFloat, at: CGPoint? = nil,
                       point: CGPoint? = nil) {
         let z1 = min(2, max(0.2, z))
+        atlasGlideTask?.cancel()
         guard let g = atlas else {
             atlasZoom = z1
             return
@@ -374,6 +543,7 @@ extension AppModel {
     func atlasFit() {
         guard let g = atlas, g.size.width > 0, g.size.height > 0
         else { return }
+        atlasGlideTask?.cancel()
         let v = atlasViewport
         atlasZoom = min(2, max(0.2, min(1, v.width / g.size.width,
                                         v.height / g.size.height)))
@@ -438,10 +608,6 @@ extension AppModel {
 
 struct AtlasView: View {
     @Bindable var model: AppModel
-    private struct Shown: Identifiable {
-        let i: Int
-        let id: String
-    }
     /// A pinch under way: the zoom it began at, where the fingers were
     /// (in the viewport), the graph's point there -- kept under them.
     private struct Pinch {
@@ -460,10 +626,15 @@ struct AtlasView: View {
             } else {
                 ProgressView().controlSize(.small)
             }
-            if let id = model.atlasExpanded, let a = model.asset(id: id) {
-                AtlasExpanded(model: model, asset: a)
-                    .transition(.opacity)
+            // Opened large and shut, faded: its card's button, a
+            // double-click, its menu, the hooks.
+            ZStack {
+                if let id = model.atlasExpanded, let a = model.asset(id: id) {
+                    AtlasExpanded(model: model, asset: a)
+                        .transition(.opacity)
+                }
             }
+            .animation(AppModel.motion, value: model.atlasExpanded)
         }
         .overlay(alignment: .bottomTrailing) {
             if model.atlas.map({ !$0.graph.nodes.isEmpty }) == true,
@@ -508,82 +679,38 @@ struct AtlasView: View {
 
     private func graph(_ g: AtlasLayout) -> some View {
         let z = model.atlasZoom
-        let v = model.atlasVisible
         let inset = g.inset(zoom: z, in: model.atlasViewport)
         let content = g.content(zoom: z, in: model.atlasViewport)
-        // In the graph's own points, with room to scroll into.
-        let seen = CGRect(x: (v.minX - inset.width) / z,
-                          y: (v.minY - inset.height) / z,
-                          width: v.width / z, height: v.height / z)
-            .insetBy(dx: -240, dy: -240)
-            .intersection(CGRect(origin: .zero, size: g.size))
-        let shown = g.nodes(in: seen)
-        let lit = model.atlasSelected.flatMap { g.index[$0] }
-        // Each card LAID OUT at the zoom, not scaled after: its type, its
-        // lines and its picture drawn at the size they are seen (a scale
-        // effect zoomed their bitmaps).
+        let target = room(g, content, inset, z)
+        // Never less than what is in sight: a panel shut, or the graph
+        // grown smaller, while scrolled clamped the scroll at once -- the
+        // graph jumping -- so it glides back (settleScroll), the content
+        // following it in.
+        let v = model.atlasVisible
+        let room = CGSize(width: max(target.width, v.maxX),
+                          height: max(target.height, v.maxY))
         return ScrollView([.horizontal, .vertical]) {
-            ZStack(alignment: .topLeading) {
-                Color.clear
-                    .frame(width: content.width, height: content.height)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        model.atlasSelected = nil
-                        model.atlasNodeOpen = nil
-                    }
-                if !seen.isNull {
-                    AtlasEdges(layout: g, rect: seen, zoom: z, lit: lit,
-                               labels: z >= 0.6, places: places(g))
-                        .frame(width: seen.width * z,
-                               height: seen.height * z)
-                        .offset(x: inset.width + seen.minX * z,
-                                y: inset.height + seen.minY * z)
-                        .allowsHitTesting(false)
-                }
-                // By the node's id: a graph read again keeps each card
-                // its own (its picture, its hover).
-                ForEach(shown.map { Shown(i: $0, id: g.graph.nodes[$0].id) })
-                { s in
-                    let f = g.frames[s.i]
-                    node(g, s.i, zoom: z)
-                        .frame(width: f.width * z, height: f.height * z)
-                        .offset(x: inset.width + f.minX * z,
-                                y: inset.height + f.minY * z)
-                }
-                // A link into a generate node not run: its ⓧ cuts it.
-                ForEach(cuts(g, seen: seen), id: \.id) { c in
-                    AtlasLinkCut(model: model, asset: c.asset, node: c.node,
-                                 scale: z)
-                        .position(x: inset.width + c.at.x * z,
-                                  y: inset.height + c.at.y * z)
-                }
-                // A generate node opened out, at actual size beside its
-                // card, over what lies there.
-                if let open = model.atlasNodeOpen,
-                   let i = g.graph.nodes.firstIndex(where: {
-                       $0.generate?.id == open
-                   }), let gen = g.graph.nodes[i].generate {
-                    let at = panelOrigin(g, i, inset, z)
-                    AtlasGenerateExpanded(model: model, gen: gen)
-                        .offset(x: at.x, y: at.y)
-                        .zIndex(10)
-                }
-            }
-            .frame(width: room(g, content, inset, z).width,
-                   height: room(g, content, inset, z).height,
-                   alignment: .topLeading)
+            AtlasStage(model: model, layout: g, motion: model.atlasMotion,
+                       phase: model.atlasPhase, zoom: z,
+                       visible: model.atlasVisible,
+                       viewport: model.atlasViewport, content: content)
+                .frame(width: room.width, height: room.height,
+                       alignment: .topLeading)
         }
         .scrollPosition($model.atlasPosition)
         .onScrollGeometryChange(for: CGRect.self) { $0.visibleRect }
             action: { _, r in model.atlasVisible = r }
-        // A node opened out: scrolled to, as far as it is out of sight.
-        .onChange(of: model.atlasNodeOpen) { _, open in
+        // A node opened out -- or come into the graph opened, as one made
+        // from a (+) does once the graph is read again -- scrolled to, as
+        // far as it is out of sight.
+        .onChange(of: openShown(g)) { _, open in
             guard open != nil else { return }
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(80))
                 revealPanel()
             }
         }
+        .onChange(of: target) { _, t in settleScroll(t) }
         // Wider and taller with Custom's options: scrolled to again.
         .onChange(of: model.atlasNodeTuneOpen) { _, _ in
             Task { @MainActor in
@@ -607,33 +734,12 @@ struct AtlasView: View {
             .onEnded { _ in pinch = nil })
     }
 
-    @ViewBuilder
-    private func node(_ g: AtlasLayout, _ i: Int,
-                      zoom z: CGFloat) -> some View {
-        let n = g.graph.nodes[i]
-        if n.isAsset {
-            if let id = n.asset, let a = model.asset(id: id) {
-                AtlasAssetNode(model: model, node: n, asset: a, scale: z)
-            }
-        } else if let gen = n.generate {
-            AtlasGenerateNode(model: model, node: n, gen: gen, scale: z)
-        } else {
-            AtlasOpNode(model: model, node: n, scale: z)
-        }
-    }
-
-    /// Where a generate node opened out lies: right of its card, from
-    /// its top -- one that has run, right of what it made (else it would
-    /// hide it).
-    private func panelOrigin(_ g: AtlasLayout, _ i: Int, _ inset: CGSize,
-                             _ z: CGFloat) -> CGPoint {
-        let f = g.frames[i]
-        var right = f.maxX
-        if let made = g.graph.nodes[i].into, let r = g.assetNode[made] {
-            right = max(right, g.frames[r].maxX)
-        }
-        return CGPoint(x: inset.width + right * z + 14,
-                       y: inset.height + f.minY * z)
+    /// The node opened out, once it is in the graph.
+    private func openShown(_ g: AtlasLayout) -> String? {
+        guard let open = model.atlasNodeOpen,
+              g.graph.nodes.contains(where: { $0.generate?.id == open })
+        else { return nil }
+        return open
     }
 
     /// About how tall it is (its Custom panel: taller).
@@ -649,14 +755,15 @@ struct AtlasView: View {
               let i = g.graph.nodes.firstIndex(where: {
                   $0.generate?.id == open
               }) else { return content }
-        let at = panelOrigin(g, i, inset, z)
+        let at = g.panelOrigin(i, g.frames, inset: inset, zoom: z)
         return CGSize(
             width: max(content.width, at.x + AtlasGenerateExpanded.wide + 40),
             height: max(content.height, at.y + panelHeight + 40))
     }
 
     /// The node opened out scrolled into sight: its right edge, then its
-    /// left, then as much of its height as the view holds, from its top.
+    /// left, then as much of its height as the view holds, from its top
+    /// -- gliding there, as the panel unfolds.
     private func revealPanel() {
         guard let g = model.atlas, let open = model.atlasNodeOpen,
               let i = g.graph.nodes.firstIndex(where: {
@@ -665,7 +772,7 @@ struct AtlasView: View {
         let z = model.atlasZoom
         let v = model.atlasViewport
         let inset = g.inset(zoom: z, in: v)
-        let at = panelOrigin(g, i, inset, z)
+        let at = g.panelOrigin(i, g.frames, inset: inset, zoom: z)
         let w = model.atlasNodeTuneOpen ? AtlasGenerateExpanded.wide
             : AtlasGenerateExpanded.narrow
         let pad = model.atlasInsets
@@ -679,61 +786,19 @@ struct AtlasView: View {
         if at.y + h > y0 + v.height { y = at.y + h - v.height + 24 }
         if at.y - 24 < y { y = max(0, at.y - 24) }
         guard x != x0 || y != y0 else { return }
-        // As a zoom scrolls (setAtlasZoom): what comes into sight drawn
-        // with it.
-        model.atlasPosition.scrollTo(point: CGPoint(x: x, y: y))
-        model.atlasVisible.origin = CGPoint(x: x - pad.width,
-                                            y: y - pad.height)
+        model.atlasGlide(to: CGPoint(x: x, y: y))
     }
 
-    /// A link into a generate node, named as its row's place: "Image 2"
-    /// -- as the prompt's tags name what is there.
-    private func places(_ g: AtlasLayout) -> [Int: String] {
-        var out: [Int: String] = [:]
-        for (k, e) in g.graph.edges.enumerated() {
-            guard let i = e.index, k < g.ends.count,
-                  let gen = g.graph.nodes[g.ends[k].1].generate,
-                  let a = g.graph.nodes[g.ends[k].0].asset
-                      .flatMap(model.asset(id:)),
-                  let kind = AppModel.refKind(a.kind) else { continue }
-            let n = gen.refs.prefix(i).filter {
-                model.asset(id: $0).flatMap { AppModel.refKind($0.kind) }
-                    == kind
-            }.count + 1
-            out[k] = "\(RefTagAttachment.kindName(kind)) \(n)"
-        }
-        return out
-    }
-
-    private struct Cut {
-        let id: String
-        let asset: String
-        let node: String
-        let at: CGPoint
-    }
-
-    /// The links into generate nodes not run, in sight: each one's ⓧ, a
-    /// third of the way along its curve (its role's words are further on).
-    private func cuts(_ g: AtlasLayout, seen: CGRect) -> [Cut] {
-        var out: [Cut] = []
-        for (k, e) in g.ends.enumerated() {
-            let to = g.graph.nodes[e.1]
-            guard to.type == "generate", let gen = to.generate,
-                  gen.started == nil,
-                  let asset = g.graph.nodes[e.0].asset else { continue }
-            let a = g.frames[e.0]
-            let b = g.frames[e.1]
-            let p0 = CGPoint(x: a.maxX, y: a.midY)
-            let p1 = CGPoint(x: b.minX, y: b.midY)
-            let dx = max(36, (p1.x - p0.x) / 2)
-            let at = AtlasEdges.point(0.35, p0,
-                                      CGPoint(x: p0.x + dx, y: p0.y),
-                                      CGPoint(x: p1.x - dx, y: p1.y), p1)
-            guard seen.contains(at) else { continue }
-            out.append(Cut(id: "\(k)-\(g.graph.edges[k].from)", asset: asset,
-                           node: gen.id, at: at))
-        }
-        return out
+    /// Scrolled past what the graph now holds: back within it, gliding.
+    private func settleScroll(_ room: CGSize) {
+        let pad = model.atlasInsets
+        let v = model.atlasViewport
+        let x0 = model.atlasVisible.minX + pad.width
+        let y0 = model.atlasVisible.minY + pad.height
+        let x = min(x0, max(0, room.width - v.width))
+        let y = min(y0, max(0, room.height - v.height))
+        guard x < x0 || y < y0 else { return }
+        model.atlasGlide(to: CGPoint(x: x, y: y))
     }
 
     /// Zoom: out, the zoom (a click: 100%), in, the whole graph in view.
@@ -765,11 +830,258 @@ struct AtlasView: View {
     }
 }
 
+/// The graph in its scroll view, drawn at the motion's PHASE
+/// (AtlasMotion): its cards, edges, links' ⓧ and the node opened out at
+/// one point of the way from the layout before to this one. Animatable:
+/// the phase is animated a layout a step, and the body drawn again at
+/// each frame of it -- what does not move, as it was.
+/// (SwiftUI reads the phase on the main actor: @preconcurrency.)
+private struct AtlasStage: View, @preconcurrency Animatable {
+    @Bindable var model: AppModel
+    let layout: AtlasLayout
+    let motion: AtlasMotion
+    var phase: Double
+    let zoom: CGFloat
+    /// What is in sight (the scroll view's, zoomed points), of the
+    /// viewport.
+    let visible: CGRect
+    let viewport: CGSize
+    let content: CGSize
+    @State private var panel = PanelPlace()
+
+    var animatableData: Double {
+        get { phase }
+        set { phase = newValue }
+    }
+
+    private struct Shown: Identifiable {
+        let i: Int
+        let id: String
+    }
+
+    /// Where the node opened out was last drawn: it folds away there.
+    private final class PanelPlace {
+        var at: CGPoint = .zero
+    }
+
+    var body: some View {
+        let g = layout
+        let z = zoom
+        let t = drawn()
+        let frames = motion.frames(g, t)
+        let moving = t < 1
+        // Centred where it is smaller than the viewport: as its size goes.
+        let inset = AtlasLayout.inset(motion.drawnSize(g.size, t), zoom: z,
+                                      in: viewport)
+        // In the graph's own points, with room to scroll into -- moving,
+        // the graph as it was too: what leaves its bounds is drawn on its
+        // way.
+        let bounds = CGRect(origin: .zero, size: g.size).union(
+            CGRect(origin: .zero, size: moving ? motion.size : .zero))
+        let seen = CGRect(x: (visible.minX - inset.width) / z,
+                          y: (visible.minY - inset.height) / z,
+                          width: visible.width / z,
+                          height: visible.height / z)
+            .insetBy(dx: -240, dy: -240)
+            .intersection(bounds)
+        let shown = seen.isNull ? []
+            : frames.indices.filter { frames[$0].intersects(seen) }
+        let lit = model.atlasSelected.flatMap { g.index[$0] }
+        let opened = openNode(g)
+        let at = panelAt(g, frames, opened, inset)
+        // Each card LAID OUT at the zoom, not scaled after: its type, its
+        // lines and its picture drawn at the size they are seen (a scale
+        // effect zoomed their bitmaps).
+        ZStack(alignment: .topLeading) {
+            Color.clear
+                .frame(width: content.width, height: content.height)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    model.atlasSelected = nil
+                    model.atlasNodeOpen = nil
+                }
+            if !seen.isNull {
+                AtlasEdges(layout: g, frames: frames, rect: seen, zoom: z,
+                           lit: lit, labels: z >= 0.6, places: places(g),
+                           fade: moving ? fade(g, frames, t) : nil)
+                    .frame(width: seen.width * z,
+                           height: seen.height * z)
+                    .offset(x: inset.width + seen.minX * z,
+                            y: inset.height + seen.minY * z)
+                    .allowsHitTesting(false)
+            }
+            // What the graph lost, fading where it was: a layer cut, a
+            // node removed (an asset gone has nothing left to draw).
+            if moving {
+                ForEach(motion.goneNodes.filter {
+                    motion.from[$0.id]?.intersects(seen) == true
+                }, id: \.id) { n in
+                    let f = motion.from[n.id] ?? .zero
+                    node(n, zoom: z)
+                        .frame(width: f.width * z, height: f.height * z)
+                        .opacity(Double(1 - t))
+                        .offset(x: inset.width + f.minX * z,
+                                y: inset.height + f.minY * z)
+                        .allowsHitTesting(false)
+                }
+            }
+            // By the node's id: a graph read again keeps each card its own
+            // (its picture, its hover) -- and moves it.
+            ForEach(shown.map { Shown(i: $0, id: g.graph.nodes[$0].id) })
+            { s in
+                let f = frames[s.i]
+                let fresh = moving && motion.isNew(s.id)
+                node(g.graph.nodes[s.i], zoom: z)
+                    .frame(width: f.width * z, height: f.height * z)
+                    .scaleEffect(fresh ? 0.9 + 0.1 * t : 1)
+                    .opacity(fresh ? Double(t) : 1)
+                    .offset(x: inset.width + f.minX * z,
+                            y: inset.height + f.minY * z)
+            }
+            // A link into a generate node not run: its ⓧ cuts it.
+            ForEach(cuts(g, frames, seen: seen), id: \.id) { c in
+                AtlasLinkCut(model: model, asset: c.asset, node: c.node,
+                             scale: z)
+                    .opacity(moving && motion.fresh.contains(c.edge)
+                             ? Double(t) : 1)
+                    .position(x: inset.width + c.at.x * z,
+                              y: inset.height + c.at.y * z)
+            }
+            // A generate node opened out, at actual size beside its card,
+            // over what lies there: unfolding from its top left as it
+            // opens, folding back there as it shuts, moving with its card.
+            ZStack(alignment: .topLeading) {
+                if let o = opened {
+                    AtlasGenerateExpanded(model: model, gen: o.gen)
+                        .transition(.scale(scale: 0.92, anchor: .topLeading)
+                            .combined(with: .opacity))
+                }
+            }
+            .animation(AppModel.motion, value: opened?.gen.id)
+            .offset(x: at.x, y: at.y)
+            .zIndex(10)
+        }
+    }
+
+    /// The motion's progress as drawn now, noted for the next one: a
+    /// graph read again midway goes on from here (AppModel.showAtlas).
+    private func drawn() -> CGFloat {
+        model.atlasShownPhase = phase
+        return motion.progress(phase)
+    }
+
+    @ViewBuilder
+    private func node(_ n: AtlasNodeDTO, zoom z: CGFloat) -> some View {
+        if n.isAsset {
+            if let id = n.asset, let a = model.asset(id: id) {
+                AtlasAssetNode(model: model, node: n, asset: a, scale: z)
+            }
+        } else if let gen = n.generate {
+            AtlasGenerateNode(model: model, node: n, gen: gen, scale: z)
+        } else {
+            AtlasOpNode(model: model, node: n, scale: z)
+        }
+    }
+
+    /// The generate node opened out, in this graph.
+    private func openNode(_ g: AtlasLayout)
+        -> (i: Int, gen: GenerateNodeDTO)? {
+        guard let open = model.atlasNodeOpen,
+              let i = g.graph.nodes.firstIndex(where: {
+                  $0.generate?.id == open
+              }), let gen = g.graph.nodes[i].generate else { return nil }
+        return (i, gen)
+    }
+
+    /// Where it is drawn: beside its card as drawn now -- and, shut,
+    /// where it last was, folding away there.
+    private func panelAt(_ g: AtlasLayout, _ frames: [CGRect],
+                         _ o: (i: Int, gen: GenerateNodeDTO)?,
+                         _ inset: CGSize) -> CGPoint {
+        guard let o else { return panel.at }
+        let at = g.panelOrigin(o.i, frames, inset: inset, zoom: zoom)
+        panel.at = at
+        return at
+    }
+
+    /// The edges coming and going as it moves: those new fading in, those
+    /// gone fading out between their ends as drawn now -- or as they were,
+    /// for an end gone too.
+    private func fade(_ g: AtlasLayout, _ frames: [CGRect],
+                      _ t: CGFloat) -> AtlasEdges.Fade {
+        func at(_ id: String) -> CGRect? {
+            g.index[id].map { frames[$0] } ?? motion.from[id]
+        }
+        let ghosts = motion.gone.compactMap { e -> AtlasEdges.Ghost? in
+            guard let a = at(e.from), let b = at(e.to) else { return nil }
+            return AtlasEdges.Ghost(from: a, to: b, edge: e)
+        }
+        return AtlasEdges.Fade(t: t, fresh: motion.fresh, ghosts: ghosts)
+    }
+
+    /// A link into a generate node, named as its row's place: "Image 2"
+    /// -- as the prompt's tags name what is there.
+    private func places(_ g: AtlasLayout) -> [Int: String] {
+        var out: [Int: String] = [:]
+        for (k, e) in g.graph.edges.enumerated() {
+            guard let i = e.index, k < g.ends.count,
+                  let gen = g.graph.nodes[g.ends[k].1].generate,
+                  let a = g.graph.nodes[g.ends[k].0].asset
+                      .flatMap(model.asset(id:)),
+                  let kind = AppModel.refKind(a.kind) else { continue }
+            let n = gen.refs.prefix(i).filter {
+                model.asset(id: $0).flatMap { AppModel.refKind($0.kind) }
+                    == kind
+            }.count + 1
+            out[k] = "\(RefTagAttachment.kindName(kind)) \(n)"
+        }
+        return out
+    }
+
+    private struct Cut {
+        let id: String
+        let asset: String
+        let node: String
+        /// Its place in the graph's edges.
+        let edge: Int
+        let at: CGPoint
+    }
+
+    /// The links into generate nodes not run, in sight: each one's ⓧ, a
+    /// third of the way along its curve (its role's words are further on).
+    private func cuts(_ g: AtlasLayout, _ frames: [CGRect],
+                      seen: CGRect) -> [Cut] {
+        guard !seen.isNull else { return [] }
+        var out: [Cut] = []
+        for (k, e) in g.ends.enumerated() {
+            let to = g.graph.nodes[e.1]
+            guard to.type == "generate", let gen = to.generate,
+                  gen.started == nil,
+                  let asset = g.graph.nodes[e.0].asset else { continue }
+            let a = frames[e.0]
+            let b = frames[e.1]
+            let p0 = CGPoint(x: a.maxX, y: a.midY)
+            let p1 = CGPoint(x: b.minX, y: b.midY)
+            let dx = max(36, (p1.x - p0.x) / 2)
+            let at = AtlasEdges.point(0.35, p0,
+                                      CGPoint(x: p0.x + dx, y: p0.y),
+                                      CGPoint(x: p1.x - dx, y: p1.y), p1)
+            guard seen.contains(at) else { continue }
+            out.append(Cut(id: "\(k)-\(g.graph.edges[k].from)", asset: asset,
+                           node: gen.id, edge: k, at: at))
+        }
+        return out
+    }
+}
+
 /// The edges in sight: a curve from an output's right edge to an input's
 /// left, lit with the node selected; a note dashed; an input's part
-/// written by its end.
+/// written by its end. Between the nodes as they are drawn -- moving,
+/// on their way (AtlasMotion) -- the new ones fading in, those gone out.
 struct AtlasEdges: View {
     let layout: AtlasLayout
+    /// Each node's frame as drawn, by its place in the layout.
+    let frames: [CGRect]
     /// In the graph's own points; drawn at `zoom`, as the cards are.
     let rect: CGRect
     let zoom: CGFloat
@@ -777,60 +1089,87 @@ struct AtlasEdges: View {
     let labels: Bool
     /// Links into a generate node: their row's place ("Image 2").
     var places: [Int: String] = [:]
+    /// While the graph moves: how far, the edges come with it, those gone.
+    var fade: Fade?
+
+    struct Fade {
+        let t: CGFloat
+        let fresh: Set<Int>
+        let ghosts: [Ghost]
+    }
+
+    /// An edge gone, between its ends' frames as drawn.
+    struct Ghost {
+        let from: CGRect
+        let to: CGRect
+        let edge: AtlasEdgeDTO
+    }
 
     var body: some View {
         Canvas { ctx, _ in
-            let z = zoom
-            ctx.translateBy(x: -rect.minX * z, y: -rect.minY * z)
+            ctx.translateBy(x: -rect.minX * zoom, y: -rect.minY * zoom)
             for (k, e) in layout.ends.enumerated() {
-                let a = layout.frames[e.0]
-                let b = layout.frames[e.1]
-                let box = CGRect(x: min(a.maxX, b.minX),
-                                 y: min(a.midY, b.midY),
-                                 width: abs(b.minX - a.maxX),
-                                 height: abs(b.midY - a.midY))
-                    .insetBy(dx: -40, dy: -40)
-                guard box.intersects(rect) else { continue }
-                let p0 = CGPoint(x: a.maxX * z, y: a.midY * z)
-                let p1 = CGPoint(x: b.minX * z, y: b.midY * z)
-                let edge = layout.graph.edges[k]
-                let dx = max(36 * z, (p1.x - p0.x) / 2)
-                let c1 = CGPoint(x: p0.x + dx, y: p0.y)
-                let c2 = CGPoint(x: p1.x - dx, y: p1.y)
-                var path = Path()
-                path.move(to: p0)
-                path.addCurve(to: p1, control1: c1, control2: c2)
                 let on = lit == e.0 || lit == e.1
-                let placing = edge.kind == "layer" || edge.kind == "into"
-                let colour: Color = on ? .accentColor
-                    : placing ? Color.accentColor.opacity(0.45)
-                    : Color.secondary.opacity(0.55)
-                let style = StrokeStyle(
-                    lineWidth: max(0.75, (on ? 2.5 : 1.5) * z),
-                    lineCap: .round,
-                    dash: edge.kind == "note" ? [4 * z, 4 * z] : [])
-                ctx.stroke(path, with: .color(colour), style: style)
-                // The ends: a dot where it leaves, where it arrives.
-                let r = max(1.5, 3 * z)
-                for p in [p0, p1] {
-                    ctx.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r,
-                                                    width: 2 * r,
-                                                    height: 2 * r)),
-                             with: .color(colour))
-                }
-                if labels, let role = places[k] ?? edge.role.map({
-                    AppModel.atlasRole($0)
-                }), !role.isEmpty {
-                    let t = Text(verbatim: role)
-                        .font(.system(size: 9.5 * z, weight: .medium))
-                        .foregroundStyle(on ? Color.accentColor : .secondary)
-                    // Along its own curve, before the end: inputs
-                    // meeting at one dot drew their words on one another.
-                    let at = Self.point(0.62, p0, c1, c2, p1)
-                    ctx.draw(t, at: CGPoint(x: at.x, y: at.y - 3 * z),
-                             anchor: .bottom)
-                }
+                let alpha = fade.map { $0.fresh.contains(k) ? $0.t : 1 } ?? 1
+                draw(&ctx, frames[e.0], frames[e.1], layout.graph.edges[k],
+                     on: on, alpha: alpha,
+                     label: places[k] ?? layout.graph.edges[k].role.map {
+                         AppModel.atlasRole($0)
+                     })
             }
+            for g in fade?.ghosts ?? [] {
+                draw(&ctx, g.from, g.to, g.edge, on: false,
+                     alpha: 1 - (fade?.t ?? 1),
+                     label: g.edge.role.map { AppModel.atlasRole($0) })
+            }
+        }
+    }
+
+    /// One edge from `a`'s right edge to `b`'s left, at `alpha`.
+    private func draw(_ ctx: inout GraphicsContext, _ a: CGRect,
+                      _ b: CGRect, _ edge: AtlasEdgeDTO, on: Bool,
+                      alpha: CGFloat, label: String?) {
+        let box = CGRect(x: min(a.maxX, b.minX), y: min(a.midY, b.midY),
+                         width: abs(b.minX - a.maxX),
+                         height: abs(b.midY - a.midY))
+            .insetBy(dx: -40, dy: -40)
+        guard alpha > 0, box.intersects(rect) else { return }
+        let z = zoom
+        var c = ctx
+        c.opacity = Double(alpha)
+        let p0 = CGPoint(x: a.maxX * z, y: a.midY * z)
+        let p1 = CGPoint(x: b.minX * z, y: b.midY * z)
+        let dx = max(36 * z, (p1.x - p0.x) / 2)
+        let c1 = CGPoint(x: p0.x + dx, y: p0.y)
+        let c2 = CGPoint(x: p1.x - dx, y: p1.y)
+        var path = Path()
+        path.move(to: p0)
+        path.addCurve(to: p1, control1: c1, control2: c2)
+        let placing = edge.kind == "layer" || edge.kind == "into"
+        let colour: Color = on ? .accentColor
+            : placing ? Color.accentColor.opacity(0.45)
+            : Color.secondary.opacity(0.55)
+        let style = StrokeStyle(
+            lineWidth: max(0.75, (on ? 2.5 : 1.5) * z),
+            lineCap: .round,
+            dash: edge.kind == "note" ? [4 * z, 4 * z] : [])
+        c.stroke(path, with: .color(colour), style: style)
+        // The ends: a dot where it leaves, where it arrives.
+        let r = max(1.5, 3 * z)
+        for p in [p0, p1] {
+            c.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r,
+                                          width: 2 * r, height: 2 * r)),
+                   with: .color(colour))
+        }
+        if labels, let label, !label.isEmpty {
+            let t = Text(verbatim: label)
+                .font(.system(size: 9.5 * z, weight: .medium))
+                .foregroundStyle(on ? Color.accentColor : .secondary)
+            // Along its own curve, before the end: inputs meeting at one
+            // dot drew their words on one another.
+            let at = Self.point(0.62, p0, c1, c2, p1)
+            c.draw(t, at: CGPoint(x: at.x, y: at.y - 3 * z),
+                   anchor: .bottom)
         }
     }
 

@@ -443,6 +443,7 @@ Core::agent_start(const std::string& request_json)
     req.row = row_of(*j);
     req.review = jget(*j, "review", true);
     req.backend = jget<std::string>(*j, "backend", "");
+    req.skills = jget<std::string>(*j, "skills", "full");
     req.stage = jget(*j, "stage", Json::object());
     auto id = _impl->ctl->agent_start(std::move(req));
     if (!id.ok()) {
@@ -462,7 +463,8 @@ Core::agent_say(const std::string& request_json)
     }
     auto st = _impl->ctl->agent_say(jget<std::string>(*j, "agent", ""),
                                     jget<std::string>(*j, "text", ""),
-                                    jget(*j, "stage", Json::object()));
+                                    jget(*j, "stage", Json::object()),
+                                    row_of(*j));
     return st.ok() ? ok() : err(st.error());
   });
 }
@@ -1056,6 +1058,22 @@ Core::assets_json(const std::string& project_id) const
         }
         if (auto path = p->media_path(a, *head); path.ok()) {
           j["path"] = path->string();
+        } else if (path.error().key == msg::kMediaMissing.key) {
+          // Its file is not there (an original moved, a blob gone from
+          // the package): where it was looked for, for the list to say.
+          for (const auto& [k, v] : path.error().args) {
+            if (k == "path") {
+              j["missing"] = v;
+            }
+          }
+        }
+      }
+      // A markup whose raster is gone: drawn without it, and said so.
+      if (a.markup && !a.markup->raster.empty()) {
+        const fs::path r = p->blobs().path_of(a.markup->raster);
+        std::error_code ec;
+        if (!fs::exists(r, ec)) {
+          j["missing"] = p->blobs().saved_path_of(a.markup->raster).string();
         }
       }
       // A composition: the frame its layers lie on, a timeline's length
@@ -2572,9 +2590,39 @@ Core::flatten(const std::string& request_json)
     if (!r.ok()) {
       return err(r.error());
     }
-    auto st = _impl->ctl->flatten(r->project, r->asset,
-                                  jget<std::string>(*j, "path", ""), r->look,
+    const std::string path = jget<std::string>(*j, "path", "");
+    auto st = _impl->ctl->flatten(r->project, r->asset, path, r->look,
                                   r->only, r->hidden, r->page);
+    if (!st.ok()) {
+      return err(st.error());
+    }
+    // A file of the person's -- shared, dragged out -- names its writer,
+    // and the model its pixels were made with when one made them all.
+    if (auto s = _impl->ctl->stamp_file(path, r->project, r->asset,
+                                        r->only.value_or(""));
+        !s.ok()) {
+      VALTZ_LOG_WARN("bridge", "{} not stamped: {}", path,
+                     s.error().message);
+    }
+    return ok();
+  });
+}
+
+std::string
+Core::stamp_file(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    const std::string path = jget<std::string>(*j, "path", "");
+    // A picture of an asset: named with that asset's model (or none).
+    auto pid = parse_id<ProjectId>(jget<std::string>(*j, "project", ""));
+    auto aid = parse_id<AssetId>(jget<std::string>(*j, "asset", ""));
+    auto st = pid.ok() && aid.ok()
+                  ? _impl->ctl->stamp_file(path, *pid, *aid)
+                  : _impl->ctl->stamp_file(path);
     return st.ok() ? ok() : err(st.error());
   });
 }

@@ -677,6 +677,30 @@ struct GenerateNodeDTO: Decodable, Sendable, Hashable {
     /// -1: random.
     var seed: Int64
     var started: Started?
+    /// Recorded as it was asked -- the editor's Start, the agent's -- not
+    /// set up here: Duplicate makes it again.
+    var recorded: Bool?
+    /// What its own settings do not say, as asked (core
+    /// record_generation_): the picture edited, a clip continued and how,
+    /// latents kept, references kept whole, lyrics apart, steps.
+    var extra: Extra?
+
+    struct Extra: Decodable, Sendable, Hashable {
+        var baseAsset: String?
+        var noBase: Bool?
+        var mode: String?
+        var keyframes: String?
+        var continueFrom: String?
+        var continueLatents: Bool?
+        var keepLatents: Bool?
+        var whole: [String]?
+        var referenceSound: Bool?
+        var regenerate: Bool?
+        var steps: Int?
+        var lyrics: String?
+        var score: String?
+        var voices: [String]?
+    }
 }
 
 /// An edge: "input" (with its role), "made", "layer", "into", "note".
@@ -826,6 +850,9 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
     var stale: String?
     var recipe: RecipeDTO?
     var linkState: String?  // ok | relocated | modified | missing
+    /// Where its file was looked for when it is not there (an original
+    /// moved, a blob gone from the package); nil when it is.
+    var missing: String?
     /// Non-destructive changes recorded on the image (core
     /// project::Modifier), applied when a file is made from it.
     var modifiers: [ModifierDTO]?
@@ -1320,6 +1347,12 @@ struct TuningOption: Identifiable, Equatable, Sendable {
     let fixes: [String: Double]
     let needs: String?        // the option it refines (Sol's threshold)
     let choices: [String]     // a choice's values, in order
+    /// A choice's values a switch on withholds, by the switch (the int8
+    /// tier's Fast while ANE FFN is on): not to be picked then.
+    let withheld: [String: [String]]
+    /// The choice that sets it while in force (the ANE's int8, the int8
+    /// tier): TuningInfo.setBy says when.
+    let follows: String?
     /// A real that takes a value a denoising step too (MiniMax H3's Sol
     /// threshold): its value a number, or a schedule "1,1.5,1.75".
     let schedule: Bool
@@ -1361,6 +1394,8 @@ struct TuningOption: Identifiable, Equatable, Sendable {
         }
         needs = j["needs"] as? String
         choices = j["choices"] as? [String] ?? []
+        withheld = j["withheld"] as? [String: [String]] ?? [:]
+        follows = j["follows"] as? String
         schedule = j["schedule"] as? Bool ?? false
         slots = j["slots"] as? Int ?? 8
         turbo = j["turbo"] as? String ?? ""
@@ -1409,6 +1444,8 @@ struct FastLoRA: Equatable, Sendable, Identifiable {
 struct TuningLoRA: Equatable, Codable, Sendable, Identifiable {
     var path: String
     var scale: Double = 1
+    /// On; for a file not found (`missing`), on as it was -- it does not
+    /// run, Start says so, and it runs again once the file is back.
     var on = false
     var missing = false
     var id: String { path }
@@ -1484,17 +1521,23 @@ struct Tuning: Equatable, Codable, Sendable {
             case "choice":
                 choices[o.key] = values[o.key] as? String ?? o.choices.first
             case "list" where o.key == "loras":
+                // A file not found is off in the core's values, "wanted"
+                // where it was on: kept on here, so the choice is sent
+                // back and holds until the file is back (core loras_of).
                 loras = (values[o.key] as? [[String: Any]] ?? []).map {
                     TuningLoRA(path: $0["path"] as? String ?? "",
                                scale: $0["scale"] as? Double ?? 1,
-                               on: $0["on"] as? Bool ?? false,
+                               on: $0["on"] as? Bool ?? false
+                                   || $0["wanted"] as? Bool ?? false,
                                missing: $0["missing"] as? Bool ?? false)
                 }
             case "list":
                 checkpoints[o.key] = (values[o.key] as? [[String: Any]] ?? [])
                     .map {
                         TuningCheckpoint(path: $0["path"] as? String ?? "",
-                                         on: $0["on"] as? Bool ?? false,
+                                         on: $0["on"] as? Bool ?? false
+                                             || $0["wanted"] as? Bool
+                                             ?? false,
                                          missing: $0["missing"] as? Bool
                                              ?? false)
                     }
@@ -1529,6 +1572,9 @@ struct TuningInfo: Equatable, Sendable {
     let family: String
     let tuning: Tuning
     let options: [TuningOption]
+    /// The options another one SET as the values stand, by that one
+    /// (core tuning_options' "set_by": the ANE's int8 by the int8 tier).
+    var setBy: [String: String] = [:]
 
     /// The LoRA list's option (its slots, the Turbo LoRA's file, names).
     var loraOption: TuningOption? { options.first { $0.key == "loras" } }
@@ -1752,6 +1798,12 @@ struct AgentMessage: Decodable, Sendable, Equatable {
     var content: String
     var calls: [String]?
     var name: String?
+    /// The person's own words, as typed (the content adds where they
+    /// were, and Valtz's notes), and the assets they attached.
+    var said: String?
+    var attached: [String]?
+    /// Pictures shown to the model with it.
+    var shown: Int?
     /// An assistant's: what its turn cost and how fast it went.
     var stats: AgentTurnStats?
     /// A compaction's (role "compaction"): the messages it summarized,
@@ -1871,6 +1923,8 @@ struct AgentSession: Decodable, Sendable, Equatable {
     /// failed | stopped (starting, before its first turn)
     var state: String
     var review: Bool
+    /// Its Valtz tools: "full" | "chat" | "none" (AgentTab).
+    var skills: String?
     var backend: AgentBackendInfo?
     var prompt: String
     var composition: String?
@@ -1885,6 +1939,12 @@ struct AgentSession: Decodable, Sendable, Equatable {
     var messages: [AgentMessage]?
     /// The last turn's cost and speed.
     var stats: AgentTurnStats?
+    /// How full its model's context is: the chat's ring.
+    var context: AgentContext?
+    /// Times the conversation was compacted to go on within it.
+    var compactions: Int?
+    /// Its transcript in Assets (a text asset), once it has rested.
+    var transcript: String?
 
     /// Working on its own: the person need not answer.
     var busy: Bool {
@@ -1901,6 +1961,23 @@ struct AgentSession: Decodable, Sendable, Equatable {
     var errorText: String? {
         guard let e = error, !e.isEmpty else { return nil }
         return errorFields?.text ?? e
+    }
+}
+
+/// How full a session's model's context is (the core's estimate of what
+/// its next turn would take, past the last turn's count) -- and where it
+/// is compacted to go on.
+struct AgentContext: Decodable, Sendable, Equatable {
+    var used: Int?
+    var counted: Int?
+    var limit: Int?
+    /// The share it is compacted at, percent; 0: never (it stops there).
+    var compactAt: Int?
+
+    /// Its share of the context, 0...1; nil while its size is not known.
+    var fraction: Double? {
+        guard let limit, limit > 0 else { return nil }
+        return min(1, max(0, Double(used ?? 0) / Double(limit)))
     }
 }
 
@@ -1940,6 +2017,13 @@ struct AgentMemoryPlan: Decodable, Sendable, Equatable {
     var cacheGb: Double?
     var allResident: Bool?
     var holdsGb: Double?
+    /// A table it reads by row from disk (Qwen3.8 Flash-Next's n-gram
+    /// embedding) and where it is: "off" (read from disk), "held" (the
+    /// Agent's N-gram Table on, and it fits), "disk" (on, but not taken:
+    /// `ngramWhy` "cache" -- a cache under every expert -- or "memory").
+    var ngramGb: Double?
+    var ngram: String?
+    var ngramWhy: String?
 }
 
 struct AgentSettings: Decodable, Sendable, Equatable {
@@ -1963,6 +2047,9 @@ struct AgentSettings: Decodable, Sendable, Equatable {
     var i8Prefill: String?
     var i8PrefillModel: Bool?
     var matrixCores: Bool?
+    /// Its n-gram table held in memory where it fits (vpipe's
+    /// ngram_resident; the plan's `ngram` says whether it is).
+    var ngramResident: Bool?
     /// What that model holds here, as the core works it out.
     var plan: AgentMemoryPlan?
     var review: Bool
@@ -1970,6 +2057,9 @@ struct AgentSettings: Decodable, Sendable, Equatable {
     /// A long conversation compacted past its model's context (DESIGN
     /// §9b); off, a session stops there.
     var compact: Bool?
+    /// The context a new session's model would have here, tokens (the
+    /// chat's ring before anything is said); 0 not known.
+    var contextTokens: Int?
     var cloud: AgentCloudSettings
     var keys: [String: Bool]
 }

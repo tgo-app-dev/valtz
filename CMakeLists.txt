@@ -67,6 +67,21 @@ if(VALTZ_BUILD_APP)
   enable_language(Swift)
 endif()
 
+# The BUILD NUMBER: the source tree's commit count -- the app's
+# CFBundleVersion, which must increase monotonically for Sparkle and not
+# depend on who builds, and what the core stamps into every file it hands
+# out ("Valtz 0.1.0 build 141", base/version.h). A tree without history (a
+# tarball, a shallow clone) falls back rather than failing the configure.
+# Taken at configure time: reconfigure to refresh.
+execute_process(
+  COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-list --count HEAD
+  OUTPUT_VARIABLE VALTZ_APP_BUILD
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET)
+if(NOT VALTZ_APP_BUILD)
+  set(VALTZ_APP_BUILD 1)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 include(valtz-deps)
 include(valtz-warnings)

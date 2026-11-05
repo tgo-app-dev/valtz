@@ -180,7 +180,17 @@ struct InspectorView: View {
         Group {
             if let a = model.currentAsset {
                 ScrollView {
-                    details(a)
+                    VStack(alignment: .leading, spacing: 10) {
+                        missingFiles
+                        details(a)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else if model.missingHolds {
+                ScrollView {
+                    missingFiles
                         .padding(.horizontal, 16)
                         .padding(.vertical, 14)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -208,6 +218,42 @@ struct InspectorView: View {
                     description: Text(
                         "Generate an image to see its details here."))
                     .controlSize(.small)
+            }
+        }
+    }
+
+    /// The files the project uses that are missing (AppModel.missingHolds):
+    /// each one's asset and where it was looked for -- the project open to
+    /// be looked at, drawn without them, not changed.
+    @ViewBuilder
+    private var missingFiles: some View {
+        let missing = model.document.missing
+        if !missing.isEmpty {
+            section("Missing Files") {
+                Text("This project can be looked at, not changed, while these are missing: what uses them is drawn without them. Reconnect them and open the project again.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(missing.prefix(50), id: \.self) { m in
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(verbatim: m.name)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Text(verbatim: m.path)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.red)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                    .help(m.how == "original"
+                          ? String(localized: "A linked original: moved, renamed, or on a drive not connected")
+                          : String(localized: "A file of the project's own, gone from its package"))
+                }
+                if missing.count > 50 {
+                    Text("and \(missing.count - 50) more")
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
@@ -337,7 +383,18 @@ struct InspectorView: View {
             // A view of its own: the look changes with each step of a
             // drag, and read here the whole inspector was evaluated again.
             AdjustmentsInfo(model: model)
-            if let url = a.url, a.standIn != true {
+            if let missing = a.missing {
+                // Its file is not there: where it was looked for.
+                section("File") {
+                    row("Missing") {
+                        Text(verbatim: missing)
+                            .foregroundStyle(.red)
+                            .lineLimit(3)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                }
+            } else if let url = a.url, a.standIn != true {
                 section("File") {
                     row("Name") {
                         Text(verbatim: url.lastPathComponent)

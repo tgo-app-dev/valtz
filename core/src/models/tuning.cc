@@ -41,6 +41,15 @@ struct Offer {
   std::string needs;
   Json        extra = Json::object();  // per-option detail for the panel
   Json        choices = Json::array();  // a Choice's values, in order
+  // A Choice's values a switch on WITHHOLDS, by the switch: {"ane_ffn":
+  // ["fast"]} -- while it is on, such a value goes back to the first.
+  Json        withheld = Json::object();
+  // An option SET by a choice while that choice is in force (available,
+  // what it needs on) and its own needs are on: `follow` maps the
+  // choice's value to this one's; a value it does not map leaves this
+  // one as it is. The Neural Engine's int8 following the GPU's tier.
+  std::string follows;
+  Json        follow = Json::object();
   // A Real -- or an Int -- that takes a SCHEDULE too: a value a denoising
   // step, written "1.0,1.5,1.75" (H3's sol_tau, vpipe's sol_tau_steps;
   // its vdn_range, "2,1,1", vpipe's vdn_range_steps).
@@ -209,7 +218,9 @@ largest_weights(const std::filesystem::path& dir)
 }
 
 // The LoRAs a Custom names (its "loras"), as they can be used: each by
-// its file, once; a file that is not there kept, marked missing and off.
+// its file, once; a file that is not there kept, marked missing and off
+// -- and "wanted" where it was on, so the choice outlives the file's
+// absence (on again when it is back) and Start can say what it left out.
 // How many may be on -- vpipe's slots, kLoraSlots -- is settled after
 // (settle_loras).
 Json
@@ -227,18 +238,23 @@ loras_of(const Json& in)
     }
     std::error_code ec;
     const bool missing = !std::filesystem::exists(path, ec);
+    const bool asked = jget(l, "on", false) || jget(l, "wanted", false);
     double scale = jget(l, "scale", 1.0);
     scale = std::isfinite(scale) ? std::clamp(scale, 0.0, 2.0) : 1.0;
-    out.push_back({{"path", path}, {"scale", scale},
-                   {"on", !missing && jget(l, "on", false)},
-                   {"missing", missing}});
+    Json e = {{"path", path}, {"scale", scale}, {"on", !missing && asked},
+              {"missing", missing}};
+    if (missing && asked) {
+      e["wanted"] = true;
+    }
+    out.push_back(std::move(e));
   }
   return out;
 }
 
 // Community checkpoints a Custom names for one part (its "dits" or
-// "vaes"): each file or folder, marked missing when it is not there; the
-// one on -- at most one, and not a missing one -- replaces the model's.
+// "vaes"): each file or folder, marked missing when it is not there (and
+// "wanted" where it was on, as a LoRA); the one on -- at most one, and
+// not a missing one -- replaces the model's.
 Json
 checkpoints_of(const Json& overrides, const char* key)
 {
@@ -255,9 +271,14 @@ checkpoints_of(const Json& overrides, const char* key)
     }
     std::error_code ec;
     const bool missing = !std::filesystem::exists(path, ec);
-    const bool on = !missing && jget(c, "on", false) && !one_on;
+    const bool asked = jget(c, "on", false) || jget(c, "wanted", false);
+    const bool on = !missing && asked && !one_on;
     one_on = one_on || on;
-    out.push_back({{"path", path}, {"on", on}, {"missing", missing}});
+    Json e = {{"path", path}, {"on", on}, {"missing", missing}};
+    if (missing && asked) {
+      e["wanted"] = true;
+    }
+    out.push_back(std::move(e));
   }
   return out;
 }
@@ -291,7 +312,7 @@ declared_offers(const Json& vp, const TuningContext& ctx,
     "sol_attn", "sol_threshold",
     "sol_tau", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm",
     "i8_gemm_tier", "vae_i8_gemm",
-    "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
+    "vae_i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8", "ane_int8_tier",
     "motion_cache", "video_shift", "audio_shift", "shift", "turbo",
     "fast_decoder", "refine_start"};
   for (const auto& d : jget(vp, "options", Json::array())) {
@@ -597,6 +618,13 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     o.choices = Json::array({"accurate", "fast", "token", "token_plain"});
     o.preset = "accurate";
     o.needs = "i8_gemm";
+    // With the Neural Engine beside the GPU, Fast is not: the ANE has no
+    // module of its groups (vpipe's grouped one is internal), and a DiT
+    // keeps no fast layout beside the ANE's stagers. The two per-token
+    // tiers stay -- the ANE's int8 runs them too (ane_int8_tier).
+    if (takes(vp, "ane_ffn")) {
+      o.withheld = {{"ane_ffn", Json::array({"fast"})}};
+    }
     out.push_back(std::move(o));
   }
   if (takes(vp, "vae_i8_gemm")) {
@@ -644,11 +672,6 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     f.available = takes(vp, "ane_ffn");
     f.why = f.available ? "" : "not-for-model";
     f.preset = f.available && lend;
-    // vpipe runs its int8 tiers off the Neural Engine's route: with it,
-    // the accurate one, whatever is chosen.
-    if (takes(vp, "i8_gemm_tier")) {
-      f.excludes = Json::array({"i8_gemm_tier"});
-    }
     const bool f_on = f.preset.get<bool>();
     out.push_back(std::move(f));
     Offer q{"ane_qkv", Kind::Bool};
@@ -661,6 +684,41 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     q.preset = q.available && f_on && qkv_fits;
     q.needs = "ane_ffn";
     out.push_back(std::move(q));
+  }
+  if (takes(vp, "ane_ffn") && takes(vp, "ane_int8")) {
+    // The Neural Engine's modules in INT8 (vpipe's `ane_int8`, W8A8, its
+    // `ane_int8_tier`): the GPU's two per-token int8 tiers on the ANE's
+    // rows -- TOKEN each weight row and each projection's input rotated
+    // per 256 and given one step a row / a token, TOKEN_PLAIN the same
+    // unrotated -- each as far from exact as the GPU tier of its name.
+    // Lossy, so off in every preset. MEASURED by vpipe on an M4 Pro,
+    // MiniMax H3, two real blocks: the feed-forward split 1.26x the GPU
+    // alone in fp16, 1.36x in int8; with q|k|v 1.41x / 1.65x; the
+    // video 0.0035 from the GPU's in fp16, 0.0048 token, 0.0081
+    // token_plain. Where the module cannot run it (macOS before 26, a
+    // width it does not take) vpipe builds the fp16 one.
+    //
+    // Where the GPU's int8 runs a per-token tier, the ANE's runs the same
+    // (follows): one arithmetic over the rows. Elsewhere -- a Mac without
+    // matrix cores, the GPU's int8 off or Accurate -- it is one's own.
+    const bool tiered = takes(vp, "i8_gemm_tier");
+    Offer i{"ane_int8", Kind::Bool};
+    i.preset = false;
+    i.needs = "ane_ffn";
+    if (tiered) {
+      i.follows = "i8_gemm_tier";
+      i.follow = {{"token", true}, {"token_plain", true}};
+    }
+    out.push_back(std::move(i));
+    Offer t{"ane_int8_tier", Kind::Choice};
+    t.choices = Json::array({"token", "token_plain"});
+    t.preset = "token";
+    t.needs = "ane_int8";
+    if (tiered) {
+      t.follows = "i8_gemm_tier";
+      t.follow = {{"token", "token"}, {"token_plain", "token_plain"}};
+    }
+    out.push_back(std::move(t));
   }
   if (takes(vp, "motion_cache")) {
     Offer o{"motion_cache", Kind::Bool};
@@ -753,7 +811,10 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     // counts are what it was distilled for, not a scaling of the model's.
     // An adapter distilled at its own shift (lightx2v's 768p ones: video
     // 6.0) brings it, and gives it back when turned off.
-    o.extra = {{"slots", kLoraSlots},
+    // A model run under an adapter (catalog `adapter`: P-H3-Image's on
+    // FL2VA) has it in the first slot, always: one fewer for Custom.
+    o.extra = {{"slots", kLoraSlots - (jget<std::string>(vp, "adapter", "")
+                                           .empty() ? 0 : 1)},
                {"shift_on", turbo_on ? pick.config
                                      : jget(block, "config",
                                             Json::object())},
@@ -902,6 +963,14 @@ offers(const ModelEntry& m, const TuningContext& ctx,
         fixes[pre + it.key()] = it.value();
       }
       o.fixes = std::move(fixes);
+      Json withheld = Json::object();
+      for (auto it = o.withheld.begin(); it != o.withheld.end(); ++it) {
+        withheld[pre + it.key()] = it.value();
+      }
+      o.withheld = std::move(withheld);
+      if (!o.follows.empty()) {
+        o.follows = pre + o.follows;
+      }
       out.push_back(std::move(o));
     }
   }
@@ -1109,6 +1178,30 @@ settle_loras(const Offer& o, Json& values, const Json& overrides)
   }
 }
 
+// The value `o` is SET to by the choice it follows (Offer::follows), or
+// null when that choice is not in force -- not offered, not to be had
+// here, what it needs off, or a value it does not map -- or `o`'s own
+// needs are off.
+const Json*
+followed(const Offer& o, const std::vector<Offer>& offered,
+         const Json& values)
+{
+  if (o.follows.empty() || !o.available ||
+      (!o.needs.empty() && !jget(values, o.needs.c_str(), false))) {
+    return nullptr;
+  }
+  const auto c = std::ranges::find(offered, o.follows, &Offer::key);
+  if (c == offered.end() || !c->available ||
+      (!c->needs.empty() && !jget(values, c->needs.c_str(), false))) {
+    return nullptr;
+  }
+  const Json v = jget(values, o.follows.c_str(), Json());
+  if (!v.is_string() || !o.follow.contains(v.get<std::string>())) {
+    return nullptr;
+  }
+  return &o.follow[v.get<std::string>()];
+}
+
 Json
 settle(const std::vector<Offer>& offered, const Json& overrides)
 {
@@ -1165,7 +1258,40 @@ settle(const std::vector<Offer>& offered, const Json& overrides)
       values[it.key()] = it.value();
     }
   }
+  // A choice's value a switch on withholds goes back to its first (the
+  // GPU's Fast int8 beside the Neural Engine: Accurate).
+  for (const auto& o : offered) {
+    for (auto it = o.withheld.begin(); it != o.withheld.end(); ++it) {
+      if (!o.choices.empty() && jget(values, it.key().c_str(), false) &&
+          std::ranges::find(it.value(), values[o.key]) !=
+              it.value().end()) {
+        values[o.key] = o.choices.front();
+      }
+    }
+  }
+  // Then what follows a choice in force takes its value: the ANE's int8
+  // the GPU's per-token tier. In order, so a follower's needs may be one
+  // set just before it (the ANE's tier needs its int8).
+  for (const auto& o : offered) {
+    if (const Json* v = followed(o, offered, values)) {
+      values[o.key] = *v;
+    }
+  }
   return values;
+}
+
+// Each option set by another as `values` stand, by the one setting it
+// (the panel shows it so, not to be changed there).
+Json
+set_by(const std::vector<Offer>& offered, const Json& values)
+{
+  Json out = Json::object();
+  for (const auto& o : offered) {
+    if (followed(o, offered, values) != nullptr) {
+      out[o.key] = o.follows;
+    }
+  }
+  return out;
 }
 
 }
@@ -1217,6 +1343,20 @@ preset_steps(const ModelEntry& m, std::string_view preference, bool edit,
     return (base * 3 + 1) / 2;
   }
   return base;
+}
+
+std::vector<std::string>
+left_out(const Json& values)
+{
+  std::vector<std::string> out;
+  for (const char* list : {"loras", "dits", "vaes"}) {
+    for (const auto& e : jget(values, list, Json::array())) {
+      if (jget(e, "wanted", false)) {
+        out.push_back(jget<std::string>(e, "path", ""));
+      }
+    }
+  }
+  return out;
 }
 
 Json
@@ -1281,6 +1421,12 @@ tuning_options(const ModelEntry& m, const TuningContext& ctx,
     if (!o.needs.empty()) {
       j["needs"] = o.needs;
     }
+    if (!o.withheld.empty()) {
+      j["withheld"] = o.withheld;
+    }
+    if (!o.follows.empty()) {
+      j["follows"] = o.follows;
+    }
     for (auto it = o.extra.begin(); it != o.extra.end(); ++it) {
       j[it.key()] = it.value();
     }
@@ -1302,9 +1448,11 @@ tuning_options(const ModelEntry& m, const TuningContext& ctx,
   // TaoMate or Pika H3 Flex in the Turbo LoRA's place needs none. (Read
   // before `values` is moved into the result.)
   Json missing = missing_loras(m, ctx, preference, overrides);
+  Json by = set_by(offered, values);
   return {{"family", m.family}, {"preference", std::string(preference)},
           {"values", std::move(values)}, {"options", std::move(opts)},
-          {"turbo", std::move(turbo)}, {"missing", std::move(missing)}};
+          {"turbo", std::move(turbo)}, {"missing", std::move(missing)},
+          {"set_by", std::move(by)}};
 }
 
 

@@ -312,7 +312,9 @@ struct StageDrop: DropDelegate {
     let model: AppModel
     @Binding var targeted: Bool
 
-    private var pasteboard: NSPasteboard { NSPasteboard(name: .drag) }
+    /// The drag's own pasteboard (DragBoard: a Dock stack's is not the
+    /// named drag pasteboard).
+    private var pasteboard: NSPasteboard { DragBoard.pasteboard }
 
     func validateDrop(info: DropInfo) -> Bool {
         let pb = pasteboard

@@ -23,6 +23,7 @@ extern const char kMossTtsSkill[];
 extern const char kDrama3Skill[];
 extern const char kDrama3Guide[];
 extern const char kValtzAgentSkill[];
+extern const char kValtzChatSkill[];
 extern const char kMinimaxH3Skill[];
 extern const char kMinimaxH3BaseGuide[];
 extern const char kMinimaxH3RefGuide[];
@@ -85,6 +86,9 @@ rewrite_prompt(std::string_view name)
   }
   if (name == "valtz-agent") {
     return resources::kValtzAgentSkill;
+  }
+  if (name == "valtz-chat") {
+    return resources::kValtzChatSkill;
   }
   if (name == "minimax-h3-base") {
     static const std::string s = h3_skill(false);

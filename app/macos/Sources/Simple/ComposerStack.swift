@@ -249,8 +249,79 @@ struct ComposerStack: View {
     }
 
     /// The row of staged media over the text, which stays still while the
-    /// text scrolls, and the text.
+    /// text scrolls, and the text -- or, the agent's in the editor, its
+    /// chat: the conversation, the status row, the input (AgentChat).
     private var promptCard: some View {
+        VStack(spacing: 0) {
+            if agentChat {
+                AgentChat(model: model)
+                    .transition(.opacity)
+                AgentStatusRow(model: model)
+                    .padding(.horizontal, 18)
+                chatInput
+                    .padding(.horizontal, 14)
+                    .padding(.top, 4)
+                    .padding(.bottom, 14)
+            } else {
+                promptStack
+            }
+        }
+        .frame(maxHeight: immersive ? .infinity : nil, alignment: .top)
+        .coordinateSpace(.named(Self.cardSpace))
+        // A capture's card flying into the thumbnail it became.
+        .overlay(alignment: .topLeading) {
+            if let g = captureGhost {
+                captureGhostView
+                    .frame(width: g.width, height: g.height)
+                    .offset(x: g.minX, y: g.minY)
+                    .allowsHitTesting(false)
+            }
+        }
+        .onChange(of: model.capturedItem) { _, item in
+            // Captured: the ghost where the card was.
+            ghostFlying = false
+            if item != nil, captureFrame.width > 0 {
+                captureGhost = captureFrame
+                flyGhost()
+            } else if item == nil {
+                captureGhost = nil
+            }
+        }
+        .onChange(of: model.capturedThumbFrame) { _, _ in flyGhost() }
+        .clipShape(cardShape)
+        .background(cardShape
+            .fill(Color(nsColor: .textBackgroundColor)))
+        .overlay(
+            cardShape
+                .strokeBorder(dropTargeted && !agentChat
+                              ? Color.accentColor
+                              : Color.primary.opacity(0.08),
+                              lineWidth: dropTargeted && !agentChat
+                                  ? 2 : 0.5))
+        .shadow(color: .black.opacity(0.13), radius: 18, y: 8)
+        // The editor's tabs, behind the card's left edge: a tray stood on
+        // its side -- the prompts', or beside the agent's chat its
+        // conversations (AgentTabRail).
+        .background(alignment: .topLeading) {
+            if immersive && !agentChat {
+                GeometryReader { g in
+                    PromptTabRail(model: model, height: g.size.height)
+                        .offset(x: -PromptTabRail.outset)
+                }
+                .transition(.opacity.combined(with: .offset(x: 30)))
+            } else if agentChat {
+                GeometryReader { g in
+                    AgentTabRail(model: model, height: g.size.height)
+                        .offset(x: -PromptTabRail.outset)
+                }
+                .transition(.opacity.combined(with: .offset(x: 30)))
+            }
+        }
+        .animation(.smooth(duration: 0.2), value: dropTargeted)
+    }
+
+    /// The prompt's own card: its row, a capture's card, the text.
+    private var promptStack: some View {
         VStack(spacing: 0) {
             if !model.promptAttachments.isEmpty {
                 ReferenceRow(model: model)
@@ -291,88 +362,24 @@ struct ComposerStack: View {
             textArea
         }
         .frame(maxHeight: immersive ? .infinity : nil, alignment: .top)
-        .coordinateSpace(.named(Self.cardSpace))
-        // A capture's card flying into the thumbnail it became.
-        .overlay(alignment: .topLeading) {
-            if let g = captureGhost {
-                captureGhostView
-                    .frame(width: g.width, height: g.height)
-                    .offset(x: g.minX, y: g.minY)
-                    .allowsHitTesting(false)
-            }
-        }
-        .onChange(of: model.capturedItem) { _, item in
-            // Captured: the ghost where the card was.
-            ghostFlying = false
-            if item != nil, captureFrame.width > 0 {
-                captureGhost = captureFrame
-                flyGhost()
-            } else if item == nil {
-                captureGhost = nil
-            }
-        }
-        .onChange(of: model.capturedThumbFrame) { _, _ in flyGhost() }
-        .clipShape(cardShape)
-        .background(cardShape
-            .fill(Color(nsColor: .textBackgroundColor)))
-        .overlay(
-            cardShape
-                .strokeBorder(dropTargeted
-                              ? Color.accentColor
-                              : Color.primary.opacity(0.08),
-                              lineWidth: dropTargeted ? 2 : 0.5))
-        .shadow(color: .black.opacity(0.13), radius: 18, y: 8)
-        // The editor's tabs, behind the card's left edge: a tray stood on
-        // its side.
-        .background(alignment: .topLeading) {
-            if immersive {
-                GeometryReader { g in
-                    PromptTabRail(model: model, height: g.size.height)
-                        .offset(x: -PromptTabRail.outset)
-                }
-                .transition(.opacity.combined(with: .offset(x: 30)))
-            }
-        }
-        .animation(.smooth(duration: 0.2), value: dropTargeted)
     }
 
     /// In the editor with the assistant's suggestion, the card split in
     /// two halves (DESIGN §10c).
     private var splitting: Bool { immersive && model.suggesting }
 
-    /// The agent's session, in the Agent tab.
-    private var agentSession: AgentSession? {
-        model.activeModality == .agent ? model.agent : nil
-    }
-
-    /// In the editor, the agent's session takes the card -- its whole
-    /// width, the card its own: the request it began from is in it, the
-    /// box emptied by Start. The box stays at its foot, a few lines, for
-    /// what is said to it next (an answer, more to do).
-    private var agentFills: Bool {
-        immersive && agentSession != nil && !model.suggesting
-    }
-
-    /// The box's height under the agent's session: three lines.
-    static let replyHeight: CGFloat = 96
+    /// In the editor, the Agent tab is a CHAT (AppModel.agentChat): the
+    /// conversation takes the card at its own width, the status row and
+    /// the input -- a field of its own, the row of what is attached in it
+    /// -- at its foot.
+    private var agentChat: Bool { immersive && model.agentChat }
 
     /// The text -- and, in the editor while there is a suggestion, beside
     /// it the suggestion's half, each with its header. The half opens
     /// and closes by its width, its own laid out whole and cut, so it
-    /// slides away rather than squeezes. The agent's session goes over
-    /// the text, which keeps its place (the same view: the caret, its
-    /// words carry on).
+    /// slides away rather than squeezes.
     private var textArea: some View {
         VStack(spacing: 0) {
-            if agentFills, let a = agentSession {
-                AgentPane(model: model, shown: a)
-                    .frame(maxHeight: .infinity)
-                    .transition(.opacity)
-                Rectangle()
-                    .fill(Color(nsColor: .separatorColor))
-                    .frame(height: 0.5)
-                    .padding(.horizontal, 14)
-            }
             HStack(spacing: 0) {
                 VStack(spacing: 0) {
                     if immersive {
@@ -398,8 +405,135 @@ struct ComposerStack: View {
                         .accessibilityHidden(!splitting)
                 }
             }
-            .frame(height: agentFills ? Self.replyHeight : nil)
         }
+    }
+
+    // MARK: The agent's chat input
+
+    /// The chat's input: a field at the card's foot -- what is attached in
+    /// a row on top (pasted, dropped, from the paperclip), the words, the
+    /// paperclip and Send. Return sends, ⇧Return a new line.
+    private var chatInput: some View {
+        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+        return VStack(spacing: 0) {
+            if !model.promptAttachments.isEmpty {
+                ReferenceRow(model: model)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                Rectangle()
+                    .fill(Color(nsColor: .separatorColor))
+                    .frame(height: 0.5)
+                    .padding(.horizontal, 12)
+            }
+            if model.attachCapture != nil {
+                AttachCaptureCard(model: model)
+                    .onGeometryChange(for: CGRect.self) {
+                        $0.frame(in: .named(Self.cardSpace))
+                    } action: { captureFrame = $0 }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .transition(.opacity)
+            }
+            HStack(alignment: .bottom, spacing: 2) {
+                chatText
+                // Side by side in one frame each: a menu sizes itself to
+                // its glyph, whatever its label's frame says, and sat
+                // lower than Send.
+                AttachMenu(model: model, size: 26)
+                    .frame(width: 26, height: 26)
+                    .padding(.bottom, 7)
+                sendButton
+                    .frame(width: 26, height: 26)
+                    .padding(.trailing, 6)
+                    .padding(.bottom, 7)
+            }
+        }
+        .background(shape.fill(Color.primary.opacity(0.035)))
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(dropTargeted ? Color.accentColor
+                                    : Color.primary.opacity(0.13),
+                                    lineWidth: dropTargeted ? 2 : 1))
+        // Clear, on its top-right corner: the words and what is attached
+        // (undone by ⌘Z) -- over the edge, clear of the paperclip and
+        // Send under it.
+        .overlay(alignment: .topTrailing) {
+            if hasPromptContent {
+                chatClearButton
+                    .offset(x: 7, y: -7)
+                    .transition(.opacity)
+            }
+        }
+        // A picture dropped on the field's edges goes in its row too.
+        .onDrop(of: DroppedMedia.dropTypes,
+                delegate: PromptRowDrop(model: model, targeted: $dropTargeted))
+    }
+
+    /// The input's words: as the box takes them, a line or two at first,
+    /// growing to a quarter of the card.
+    private var chatText: some View {
+        PromptEditor(model: model, height: $promptHeight,
+                     dropTargeted: $dropTargeted, lines: $promptLines,
+                     compact: false,
+                     minHeight: PromptEditor.chatMinHeight,
+                     maxHeight: max(PromptEditor.chatMinHeight,
+                                    maxPromptHeight / 2),
+                     fullHeight: $promptFullHeight,
+                     highlight: model.searchText,
+                     inset: PromptEditor.chatInset, chat: true)
+            .frame(height: promptHeight)
+            .overlay(alignment: .topLeading) {
+                if model.prompt.isEmpty {
+                    Text(verbatim: model.promptHint)
+                        .font(Font(PromptEditor.font))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .padding(.leading, PromptEditor.chatInset.width + 5)
+                        .padding(.top, PromptEditor.chatInset.height)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+
+    /// The input's Clear: a badge on its corner, the card's ground
+    /// round it so it reads over the edge.
+    private var chatClearButton: some View {
+        Button {
+            withAnimation(AppModel.motion) { model.clearPrompt() }
+        } label: {
+            Image(systemName: "xmark.circle.fill")
+                .font(.system(size: 15))
+                .foregroundStyle(.secondary)
+                .background(Circle()
+                    .fill(Color(nsColor: .textBackgroundColor))
+                    .padding(1))
+                .frame(width: 18, height: 18)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Clear the message and its pictures")
+        .accessibilityLabel(Text("Clear Message"))
+    }
+
+    /// Send: the words (and what is attached) to the agent -- a new
+    /// conversation, or the one listening or at work (told at its next
+    /// turn). ⌘↩ too. Beside the paperclip, as it is: the same glyph's
+    /// size in the same frame, lit when there is something to send.
+    private var sendButton: some View {
+        Button(action: model.startPressed) {
+            Image(systemName: "arrow.up.circle")
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(model.canStart ? Color.accentColor
+                         : Color.secondary.opacity(0.5))
+        .disabled(!model.canStart)
+        .keyboardShortcut(.return, modifiers: .command)
+        .startFlash(model.startFlash)
+        .help(model.agent.map { !$0.ended && !$0.listening } == true
+              ? "Send: it reads your words at its next turn (Return)"
+              : "Send (Return; ⇧Return for a new line)")
+        .accessibilityLabel(Text("Send"))
+        .shortcutHint("↩")
     }
 
     private var promptText: some View {
@@ -1149,8 +1283,11 @@ struct AttachMenu: View {
         .fixedSize()
         // File › Attach Media…: its Browse….
         .shortcutHint("⇧⌘I")
-        // An agent at work: nothing imported into the project it holds.
-        .disabled(model.attachCapture != nil || model.agentHolds)
+        // An agent at work: its box's attachments still go in (an import
+        // adds: the hold lets it through; while held the box is the
+        // agent's).
+        .disabled(model.attachCapture != nil
+                  || (model.agentHolds && model.activeModality != .agent))
         .help("Attach: a file, a sound recorded, a photo or a video from the camera")
     }
 }
@@ -2006,8 +2143,24 @@ private struct DrawerSettings: View {
                      selection: sizeChoice)
             SizeField(model: model)
         }
+        // Past 768P with the refiner here (DESIGN §4q): drafted there and
+        // regenerated at the size -- the default -- or made in one pass.
+        if model.regenerateOffered != nil {
+            GridRow {
+                label("High-res pass", row: SettingsRow.highRes)
+                selector("High-res pass",
+                         [(true, String(localized: "Draft and Regenerate")),
+                          (false, String(localized: "One Pass"))],
+                         tips: [String(localized: "Drafted at 768P, then regenerated at the size by Open-H3-Regenerate-2K"),
+                                String(localized: "Made at the size directly, as the model makes it")],
+                         selection: optional($model.regenerateHighRes))
+                    .gridCellColumns(2)
+            }
+            .transition(.opacity)
+        }
         // Past 768P (DESIGN §4q): drafted there and regenerated at the
-        // size -- or, its refiner not here, what would.
+        // size, or made in one pass -- or, its refiner not here, what
+        // would regenerate it.
         if let note = model.regenerateNote {
             GridRow {
                 Color.clear.gridCellUnsizedAxes([.horizontal, .vertical])

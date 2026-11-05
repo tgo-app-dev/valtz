@@ -1,5 +1,6 @@
 #include "valtz/media/pdf.h"
 
+#include "valtz/base/version.h"
 #include "valtz/media/layers.h"
 #include "valtz/media/markup.h"
 
@@ -654,7 +655,8 @@ files_of(const PdfDocument& doc)
 
 Status
 write_pdf(const PdfDocument& doc, const fs::path& out,
-          const std::function<bool(int, int)>& page_done)
+          const std::function<bool(int, int)>& page_done,
+          std::string_view software)
 {
   if (doc.pages.empty()) {
     return make_error(Code::InvalidArgument, "a PDF needs a page");
@@ -673,7 +675,12 @@ write_pdf(const PdfDocument& doc, const fs::path& out,
       fs::create_directories(out.parent_path(), ec);
     }
     NSMutableDictionary* info = [NSMutableDictionary dictionary];
-    info[(__bridge NSString*)kCGPDFContextCreator] = @"Valtz";
+    const std::string creator =
+        software.empty() ? valtz_software() : std::string(software);
+    info[(__bridge NSString*)kCGPDFContextCreator] =
+        [[NSString alloc] initWithBytes:creator.data()
+                                 length:creator.size()
+                               encoding:NSUTF8StringEncoding] ?: @"Valtz";
     if (!doc.title.empty()) {
       info[(__bridge NSString*)kCGPDFContextTitle] =
           [[NSString alloc] initWithBytes:doc.title.data()

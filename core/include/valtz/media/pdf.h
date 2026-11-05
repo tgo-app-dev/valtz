@@ -42,6 +42,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace valtz::media {
@@ -82,9 +83,11 @@ std::vector<std::filesystem::path> files_of(const PdfDocument&);
 
 // `doc` written to `out`, a page at a time. `page_done` (pages from 1,
 // of all) after each stops it by answering false: nothing is left at
-// `out`, and Code::Cancelled.
+// `out`, and Code::Cancelled. Its Creator is `software` (base/version.h's
+// software_stamp(), stamp.h), else Valtz's own line.
 Status write_pdf(const PdfDocument& doc, const std::filesystem::path& out,
-                 const std::function<bool(int, int)>& page_done = {});
+                 const std::function<bool(int, int)>& page_done = {},
+                 std::string_view software = {});
 
 }
 

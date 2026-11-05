@@ -226,11 +226,62 @@ enum DroppedMedia {
         }
     }
 
+    /// What a PASTE holds of media: a picture's (a clip's, a sound's)
+    /// BYTES -- a screenshot copied to the clipboard, a browser's Copy
+    /// Image -- with no words beside them but a link. Words copied are
+    /// pasted as words: a table copied from Numbers or Word carries a
+    /// picture of itself too. Files copied in the Finder are the text
+    /// view's own (`fileURLs`).
+    private static func pastedItems(_ pb: NSPasteboard) -> [Item] {
+        // Named as pasted where they bring no name of their own.
+        let fallback = Set(["image", "video", "audio"].map {
+            name(of: NSPasteboardItem(), link: nil, kind: $0)
+        })
+        let bytes = items(pb, links: .media).compactMap { item -> Item? in
+            guard case let .data(i, t, u, named, ext) = item else {
+                return nil
+            }
+            guard fallback.contains(named) else { return item }
+            let pasted: String = switch kind(u) {
+            case "video": String(localized: "Pasted Clip")
+            case "audio": String(localized: "Pasted Sound")
+            default: String(localized: "Pasted Picture")
+            }
+            return .data(i, t, u, name: pasted, ext: ext)
+        }
+        guard !bytes.isEmpty else { return [] }
+        for item in pb.pasteboardItems ?? [] {
+            guard let s = item.string(forType: .string)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !s.isEmpty else { continue }
+            let link = URL(string: s)
+            if link?.scheme == nil || s.contains(where: \.isWhitespace) {
+                return []
+            }
+        }
+        return bytes
+    }
+
+    /// Whether ⌘V would stage media (Paste offered for them).
+    static func pastes(_ pb: NSPasteboard) -> Bool {
+        !pastedItems(pb).isEmpty
+    }
+
+    /// A paste's picture TAKEN (its bytes written to a file of `root`),
+    /// nil when it holds words instead.
+    static func pasted(_ pb: NSPasteboard) -> Intake? {
+        let list = pastedItems(pb)
+        return list.isEmpty ? nil : take(pb, list: list)
+    }
+
     /// The drag TAKEN, in a perform -- AppKit receives a promise only
     /// then: its files, its words, and what it holds that is no file yet,
     /// being made one (`Intake.made`).
     static func take(_ pb: NSPasteboard, links: Links = .any) -> Intake {
-        let list = items(pb, links: links)
+        take(pb, list: items(pb, links: links))
+    }
+
+    private static func take(_ pb: NSPasteboard, list: [Item]) -> Intake {
         let intake = Intake()
         var receivers: [NSFilePromiseReceiver]?
         for item in list {
@@ -482,5 +533,132 @@ private final class Counter: @unchecked Sendable {
 private extension Array {
     subscript(safe i: Int) -> Element? {
         indices.contains(i) ? self[i] : nil
+    }
+}
+
+/// The pasteboard of the drag over an editor window NOW, as AppKit hands
+/// it to the window's SwiftUI drop view (`watch`). SwiftUI's drop
+/// delegates are given item providers, not the drag (DroppedMedia reads
+/// a pasteboard), and the system's named drag pasteboard is the drag's
+/// for most drags but not all: a DOCK STACK's -- the Downloads folder in
+/// the Dock -- drags on a pasteboard of its own, so a drop read the named
+/// one took the files of the drag before it (two files last moved in the
+/// Finder, nowhere near the one dragged). So the window's drop view is
+/// watched: each drag's own pasteboard noted as it enters, moves, is
+/// prepared and performed, let go as it leaves or concludes.
+@MainActor
+enum DragBoard {
+    private static var current: NSPasteboard?
+    private static var hooked = Set<ObjectIdentifier>()
+
+    /// The drag's own pasteboard while one is over a watched view; else
+    /// the named drag pasteboard, as before.
+    static var pasteboard: NSPasteboard {
+        current ?? NSPasteboard(name: .drag)
+    }
+
+    /// The window's SwiftUI drop views watched -- their classes, once.
+    /// Made as the window's content is laid out, they may come after the
+    /// window: looked for again a few times.
+    static func watch(_ window: NSWindow, tries: Int = 6) {
+        guard let root = window.contentView?.superview
+                ?? window.contentView else { return }
+        var found = false
+        func walk(_ v: NSView) {
+            // SwiftUI's own (its _PlatformDraggingDestinationView); an
+            // AppKit view of Valtz's reads the drag it is handed.
+            let name = NSStringFromClass(type(of: v))
+            if !v.registeredDraggedTypes.isEmpty, name.contains("SwiftUI"),
+               let cls = object_getClass(v) {
+                hook(cls)
+                found = true
+            }
+            v.subviews.forEach(walk)
+        }
+        walk(root)
+        guard !found, tries > 0 else { return }
+        Task { @MainActor [weak window] in
+            try? await Task.sleep(for: .milliseconds(500))
+            if let window { watch(window, tries: tries - 1) }
+        }
+    }
+
+    private typealias OpFn = @convention(c) (NSObject, Selector,
+                                             NSDraggingInfo) -> NSDragOperation
+    private typealias BoolFn = @convention(c) (NSObject, Selector,
+                                               NSDraggingInfo) -> Bool
+    private typealias EndFn = @convention(c) (NSObject, Selector,
+                                              NSDraggingInfo?) -> Void
+
+    private static func hook(_ cls: AnyClass) {
+        guard hooked.insert(ObjectIdentifier(cls)).inserted else { return }
+        // AppKit calls a drag destination on the main thread.
+        let note: @Sendable (NSDraggingInfo) -> Void = { info in
+            nonisolated(unsafe) let info = info
+            MainActor.assumeIsolated { current = info.draggingPasteboard }
+        }
+        let forget: @Sendable () -> Void = {
+            MainActor.assumeIsolated { current = nil }
+        }
+        for sel in [#selector(NSDraggingDestination.draggingEntered(_:)),
+                    #selector(NSDraggingDestination.draggingUpdated(_:))] {
+            replace(cls, sel) { orig in
+                let f = unsafeBitCast(orig, to: OpFn.self)
+                let b: @convention(block) (NSObject, NSDraggingInfo)
+                    -> NSDragOperation = { me, info in
+                        note(info)
+                        return f(me, sel, info)
+                    }
+                return b
+            }
+        }
+        for sel in [
+            #selector(NSDraggingDestination.prepareForDragOperation(_:)),
+            #selector(NSDraggingDestination.performDragOperation(_:)),
+        ] {
+            replace(cls, sel) { orig in
+                let f = unsafeBitCast(orig, to: BoolFn.self)
+                let b: @convention(block) (NSObject, NSDraggingInfo)
+                    -> Bool = { me, info in
+                        note(info)
+                        return f(me, sel, info)
+                    }
+                return b
+            }
+        }
+        // Gone or done: the named pasteboard again (a drop elsewhere,
+        // not watched, reads that).
+        for sel in [#selector(NSDraggingDestination.draggingExited(_:)),
+                    #selector(NSDraggingDestination.concludeDragOperation(_:))] {
+            let had = class_getInstanceMethod(cls, sel)
+            let orig = had.map(method_getImplementation)
+            let b: @convention(block) (NSObject, NSDraggingInfo?) -> Void = {
+                me, info in
+                if let orig {
+                    unsafeBitCast(orig, to: EndFn.self)(me, sel, info)
+                }
+                forget()
+            }
+            let imp = imp_implementationWithBlock(b)
+            if let had {
+                if !class_addMethod(cls, sel, imp,
+                                    method_getTypeEncoding(had)) {
+                    method_setImplementation(had, imp)
+                }
+            } else {
+                class_addMethod(cls, sel, imp, "v@:@")
+            }
+        }
+    }
+
+    /// `sel` of `cls` (its own or inherited) replaced on `cls` by what
+    /// `make` builds around the original.
+    private static func replace(_ cls: AnyClass, _ sel: Selector,
+                                _ make: (IMP) -> Any) {
+        guard let m = class_getInstanceMethod(cls, sel) else { return }
+        let imp = imp_implementationWithBlock(make(method_getImplementation(m)))
+        if !class_addMethod(cls, sel, imp, method_getTypeEncoding(m)) {
+            method_setImplementation(m, imp)
+        }
     }
 }

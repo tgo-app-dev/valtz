@@ -1603,7 +1603,9 @@ extension AppModel {
         guard Self.pasteboardHoldsMarkup, screen == .editor, !viewOnly,
               closingTasks == nil, fleetServing == nil else { return false }
         if agentHolds {
-            flash(String(localized: "The agent is working on this project: nothing is drawn on it until it is done."), level: .warning)
+            flash(document.agent
+                  ? String(localized: "The agent is working on this project: nothing is drawn on it until it is done.")
+                  : missingNotice, level: .warning)
             return true
         }
         if isGenerating {

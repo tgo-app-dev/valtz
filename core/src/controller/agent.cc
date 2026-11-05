@@ -7,6 +7,7 @@
 #include "valtz/base/log.h"
 #include "valtz/base/message.h"
 #include "valtz/base/text.h"
+#include "valtz/media/thumbnail.h"
 
 #include <algorithm>
 #include <chrono>
@@ -25,6 +26,9 @@ constexpr int kTurnTokens = 2048;
 // rest the estimates' slack -- into half of it at most: the head, the
 // notes, the latest turns.
 constexpr std::int64_t kCompactReserve = 2 * kTurnTokens + 512;
+// The helper's K/V page (the graph builder's kHelperPageTokens): a turn's
+// ctx_pos within one of its context's end has filled it.
+constexpr std::int64_t kPageTokens = 16;
 constexpr std::int64_t kCompactAtPct = 90;
 constexpr std::int64_t kCompactToPct = 50;
 // The steps the notes list, the latest; each line cut so; all of them
@@ -38,6 +42,23 @@ constexpr std::int64_t kSaidShare = 10;
 // calling tools in a loop is stopped by this, not by the person's budget.
 constexpr int kMaxTurns = 200;
 constexpr double kDefaultLease = 600;
+// The pictures a person's message comes with that are SHOWN to a model
+// that sees, the first of them, each this long at most: 768 a side is
+// about 600 tokens to Qwen3.5's tower, where a page looked at is 1024.
+constexpr std::size_t kShownAttached = 4;
+constexpr int kAttachedSide = 768;
+// A transcript's step: what it was asked and what came back, each cut so.
+constexpr std::size_t kTranscriptArgs = 400;
+constexpr std::size_t kTranscriptResult = 300;
+constexpr std::size_t kTranscriptNote = 300;
+// What marks a session's transcript in Assets, and its folder.
+constexpr const char* kTranscriptTag = "agent-transcript";
+constexpr const char* kTranscriptFolderRole = "agent";
+constexpr const char* kTranscriptFolderName = "Agent Sessions";
+// How with_stage_ tells where the person is, after their words.
+constexpr std::string_view kWhereOpen =
+    "\n\n[Where the person is as they say this: ";
+constexpr std::string_view kWhereClose = ". \"This page\"";
 // A turn that wrote a tool call nothing could read is taken again, told
 // so, at most this many times running: it is not the session's end. The
 // form shown is the one the helper's own template teaches (Qwen3.5 /
@@ -102,6 +123,80 @@ write_json(const fs::path& file, const Json& j)
                                             file.string()));
   }
   return ok_status();
+}
+
+// The person's own words in a user message: as typed (`said`), or --
+// one saved before it was kept -- its content up to where they were.
+std::string
+person_words_of(const agent::Message& m)
+{
+  if (!m.said.empty()) {
+    return m.said;
+  }
+  std::string t = m.content;
+  for (std::string_view marker :
+       {kWhereOpen, std::string_view("\n[Valtz]"),
+        std::string_view("\n[The person attached:")}) {
+    if (const auto at = t.find(marker); at != std::string::npos) {
+      t.resize(at);
+    }
+  }
+  return t;
+}
+
+// Where the person was as they said it -- the composition, its page or
+// frame, the layer -- as with_stage_ told it; "" where it told nothing.
+std::string
+where_said(const std::string& content)
+{
+  const auto at = content.find(kWhereOpen);
+  if (at == std::string::npos) {
+    return {};
+  }
+  const auto from = at + kWhereOpen.size();
+  auto to = content.find(kWhereClose, from);
+  if (to == std::string::npos) {
+    to = content.find(']', from);
+  }
+  return content.substr(from, to == std::string::npos ? std::string::npos
+                                                      : to - from);
+}
+
+// Text cut to `bytes` on a character -- at a word's end where one is in
+// its last third -- "..." where it was.
+std::string
+cut(std::string_view t, std::size_t bytes)
+{
+  std::string_view kept = utf8_prefix(t, bytes);
+  if (kept.size() == t.size()) {
+    return std::string(kept);
+  }
+  if (const auto sp = kept.rfind(' ');
+      sp != std::string_view::npos && sp > kept.size() * 2 / 3) {
+    kept = kept.substr(0, sp);
+  }
+  return std::string(kept) + " ...";
+}
+
+// Inside a transcript's `code`: one line, no backtick to end it early.
+std::string
+code_span(std::string_view t, std::size_t bytes)
+{
+  std::string s = cut(one_line(std::string(t)), bytes);
+  std::ranges::replace(s, '`', '\'');
+  return "`" + s + "`";
+}
+
+// A time a person reads, local: "2026-11-03 14:02".
+std::string
+local_time(std::int64_t ms)
+{
+  const std::time_t t = static_cast<std::time_t>(ms / 1000);
+  std::tm tm{};
+  localtime_r(&t, &tm);
+  char b[32];
+  std::strftime(b, sizeof b, "%Y-%m-%d %H:%M", &tm);
+  return b;
 }
 
 std::int64_t
@@ -324,6 +419,15 @@ public:
       }
     }
     if (w->code != Code::Ok) {
+      // No turn at all near its context's end: its prefill found no
+      // pages (vpipe's log says so) -- a context full too.
+      const std::int64_t cap = context_tokens();
+      if (w->error.find("returned no turn") != std::string::npos &&
+          cap > 0 && agent::estimate_tokens(messages) +
+                             agent::estimate_tokens(tools) >= cap / 2) {
+        return make_error(Code::OutOfMemory, msg::kAgentContextFull,
+                          {{"tokens", std::to_string(cap)}});
+      }
       return make_error(w->code, w->error);
     }
     if (!w->turn.is_object() || w->turn.empty()) {
@@ -343,6 +447,26 @@ public:
       }
       return make_error(Code::Engine,
                         "the helper took no turn (the log says why)");
+    }
+    // Its reply cut off by the CONTEXT: text-chat decodes a reply only as
+    // far as its K/V pages go -- "length" at the last page, as if its
+    // reply budget were spent -- or its decode failed there ("error":
+    // pages memory did not give). A context full: compacted and tried
+    // again, or, compaction off, said. Taken as it came, the turn ended
+    // "done" on the words so far -- no error, nothing compacted
+    // (2026-11-04: Flash-Next on the M5 Ultra, reproduced with the 9B
+    // at a 1,024-token context: 919 tokens decoded to ctx_pos 1024).
+    {
+      const std::string finish = jget<std::string>(w->turn, "finish", "");
+      const std::int64_t pos = jget<std::int64_t>(w->turn, "ctx_pos", 0);
+      const std::int64_t cap = context_tokens();
+      if (finish == "error" ||
+          (finish == "length" && cap > 0 && pos + kPageTokens >= cap)) {
+        VALTZ_LOG_WARN("agent", "the helper's reply was cut off by its "
+                       "context ({}, ctx_pos {} of {})", finish, pos, cap);
+        return make_error(Code::OutOfMemory, msg::kAgentContextFull,
+                          {{"tokens", std::to_string(cap)}});
+      }
     }
     return agent::reply_from_turn(w->turn, ++_turns);
   }
@@ -464,6 +588,13 @@ Controller::AgentHost::i8_prefill() const
   return jget<std::string>(_settings, "i8_prefill", "auto");
 }
 
+bool
+Controller::AgentHost::ngram_resident() const
+{
+  std::lock_guard lk(_mu);
+  return jget(_settings, "ngram_resident", false);
+}
+
 Json
 Controller::AgentHost::settings() const
 {
@@ -480,6 +611,10 @@ Controller::AgentHost::settings() const
       jget(jget(using_->engine, "vpipe", Json::object()), "i8_prefill",
            false);
   const bool cores = _c._hw.gpu_matrix_cores;
+  // The context a new session's model would have here (its backend's
+  // context_tokens): the chat's ring before anything is said.
+  const std::int64_t helper_context =
+      using_ != nullptr ? _c.helper_context_(*using_) : 0;
   std::lock_guard lk(_mu);
   Json s = {{"backend", jget<std::string>(_settings, "backend", "helper")},
             {"model", jget<std::string>(_settings, "model", "")},
@@ -490,6 +625,7 @@ Controller::AgentHost::settings() const
             {"i8_prefill",
              jget<std::string>(_settings, "i8_prefill", "auto")},
             {"i8_prefill_model", own_i8},
+            {"ngram_resident", jget(_settings, "ngram_resident", false)},
             {"matrix_cores", cores},
             {"plan", std::move(plan)},
             {"review", jget(_settings, "review", true)},
@@ -504,6 +640,9 @@ Controller::AgentHost::settings() const
     cloud.model = agent::default_cloud_model(cloud.provider);
   }
   s["cloud"] = agent::to_json(cloud);
+  s["context_tokens"] = jget<std::string>(s, "backend", "") == "cloud"
+                            ? agent::cloud_context_tokens(cloud)
+                            : helper_context;
   Json keys = Json::object();
   for (const char* p : {"anthropic", "openai", "openai-compatible"}) {
     keys[p] = agent::has_api_key(p);
@@ -552,10 +691,19 @@ Controller::AgentHost::set_settings(const Json& j)
           to_text(j["i8_prefill"])));
     }
   }
+  // Its n-gram table held in memory (vpipe's ngram_resident): on or off.
+  if (j.contains("ngram_resident") && !j["ngram_resident"].is_boolean()) {
+    return make_error(Code::InvalidArgument, std::format(
+        "the agent's n-gram table in memory is true or false, not {}",
+        to_text(j["ngram_resident"])));
+  }
   std::lock_guard lk(_mu);
   Json next = _settings;
   if (j.contains("model")) {
     next["model"] = jget<std::string>(j, "model", "");
+  }
+  if (j.contains("ngram_resident")) {
+    next["ngram_resident"] = jget(j, "ngram_resident", false);
   }
   if (j.contains("i8_prefill")) {
     next["i8_prefill"] = jget<std::string>(j, "i8_prefill", "auto");
@@ -629,16 +777,28 @@ Controller::AgentHost::backend_(const std::string& kind,
 std::string
 Controller::AgentHost::system_text_(const Session& s)
 {
-  std::string t = _c.skill_text("valtz-agent");
-  t += "\n## This session\n\n";
-  t += std::format("Today is {}.\n", [] {
+  const std::string today = [] {
     const std::time_t now = std::time(nullptr);
     std::tm tm{};
     localtime_r(&now, &tm);
     char b[32];
     std::strftime(b, sizeof b, "%Y-%m-%d", &tm);
     return std::string(b);
-  }());
+  }();
+  // Without Valtz's tools: no guide -- a few words, the conversation's
+  // room the person's (the guide and the tools take some 20,000 tokens).
+  if (s.skills == "none") {
+    return std::format(
+        "You are a helpful assistant, chatting with the person in Valtz, "
+        "an app for making pictures, clips and sound. You have no tools "
+        "here: answer in words. The pictures the person attaches are "
+        "shown to you when you can see pictures.\n\nToday is {}.\n",
+        today);
+  }
+  std::string t = _c.skill_text(s.skills == "chat" ? "valtz-chat"
+                                                   : "valtz-agent");
+  t += "\n## This session\n\n";
+  t += std::format("Today is {}.\n", today);
   if (auto* p = _c.project(s.project)) {
     if (s.target) {
       if (auto a = p->asset(*s.target); a.ok()) {
@@ -772,15 +932,471 @@ Controller::AgentHost::with_stage_(ProjectId pid, const std::string& words,
          "selected layer\" mean these.]";
 }
 
+agent::Message
+Controller::AgentHost::person_message_(ProjectId pid,
+                                       const std::string& words,
+                                       const Json& stage,
+                                       const std::vector<AssetId>& attached,
+                                       bool list, bool tools)
+{
+  // Where they are, for the tools to look at; without tools, words the
+  // model can do nothing with (a chat without them answered about the
+  // composition it was told of).
+  agent::Message m{.role = "user",
+                   .content = tools ? with_stage_(pid, words, stage)
+                                    : words};
+  m.said = words;
+  auto* p = _c.project(pid);
+  std::string told;
+  for (const auto& id : attached) {
+    auto a = p ? p->asset(id) : Result<project::Asset>(make_error(
+                                    Code::NotFound, msg::kProjectNotOpen));
+    if (!a.ok() || std::ranges::find(m.attached, id.str()) !=
+                       m.attached.end()) {
+      continue;
+    }
+    m.attached.push_back(id.str());
+    std::string what = project::to_str(a->kind);
+    if (auto v = p->version(id); v.ok() && v->info.frame.width > 0) {
+      what += std::format(", {} x {}", v->info.frame.width,
+                          v->info.frame.height);
+    }
+    told += tools ? std::format("{}\"{}\" (id {}, {})",
+                                told.empty() ? "" : "; ", a->name,
+                                id.str(), what)
+                  : std::format("{}\"{}\" ({})", told.empty() ? "" : "; ",
+                                a->name, what);
+  }
+  if (list && !told.empty()) {
+    m.content += "\n[The person attached: " + told +
+                 (tools ? ". Your tools take them by these ids.]" : ".]");
+  }
+  return m;
+}
+
+void
+Controller::AgentHost::show_attached_(Session& s, agent::Message& m)
+{
+  if (m.attached.empty() || !s.backend || !s.backend->sees()) {
+    return;
+  }
+  auto* p = _c.project(s.project);
+  if (p == nullptr) {
+    return;
+  }
+  for (const auto& t : m.attached) {
+    if (m.images.size() >= kShownAttached) {
+      break;
+    }
+    const auto id = AssetId::parse(t);
+    if (!id) {
+      continue;
+    }
+    auto a = p->asset(*id);
+    // Pictures and stills (a still's first page); a clip or a sound is
+    // listed, the tools look at it.
+    if (!a.ok() || a->head == 0 ||
+        (a->kind != project::AssetKind::Image &&
+         a->cls != project::AssetClass::Still)) {
+      continue;
+    }
+    const std::string name = "attached-" + JobId::make().str();
+    Result<fs::path> drawn = make_error(Code::NotFound, "not drawn");
+    if (a->cls == project::AssetClass::Still) {
+      const fs::path f = s.dir / (name + ".png");
+      auto st = _c.flatten(s.project, *id, f, std::nullopt, std::nullopt,
+                           {}, 0);
+      drawn = st.ok() ? Result<fs::path>(f) : Result<fs::path>(st.error());
+    } else {
+      drawn = _c.rendered_frame_(s.project, *id, 0, 0, 0);
+    }
+    const fs::path small = s.dir / (name + ".jpg");
+    if (!drawn.ok() ||
+        !media::write_thumbnail(*drawn, media::MediaType::Image,
+                                kAttachedSide, small).ok()) {
+      VALTZ_LOG_WARN("agent", "session {}: \"{}\" attached could not be "
+                     "shown", s.id, a->name);
+      continue;
+    }
+    if (a->cls == project::AssetClass::Still) {
+      std::error_code ec;
+      fs::remove(*drawn, ec);
+    }
+    m.images.push_back(small);
+  }
+}
+
+void
+Controller::AgentHost::take_said_(Session& s)
+{
+  std::deque<agent::Message> said;
+  {
+    std::lock_guard lk(s.mu);
+    said.swap(s.said);
+  }
+  if (said.empty()) {
+    return;
+  }
+  for (auto& m : said) {
+    show_attached_(s, m);
+  }
+  // Only this thread adds to the conversation: in the order said.
+  std::lock_guard lk(s.mu);
+  for (auto& m : said) {
+    s.messages.push_back(std::move(m));
+  }
+}
+
+std::int64_t
+Controller::AgentHost::context_estimate_(const Session& s) const
+{
+  // (The session's lock held.) The guide and the tools are most of a
+  // first turn: counted once.
+  static const std::int64_t full = agent::estimate_tokens(tool_specs());
+  static const std::int64_t chat =
+      agent::estimate_tokens(tool_specs("chat"));
+  const std::int64_t specs = s.skills == "full"   ? full
+                             : s.skills == "chat" ? chat
+                                                  : 0;
+  if (s.ctx_used > 0 && s.ctx_counted <= s.messages.size()) {
+    return s.ctx_used +
+           agent::estimate_tokens(s.messages, s.ctx_counted) * 5 / 4;
+  }
+  return agent::estimate_tokens(s.messages) + specs;
+}
+
+// ---- the transcript (DESIGN §9b) -------------------------------------
+
+std::string
+Controller::AgentHost::transcript_text_(const Session& s) const
+{
+  const Json backend = s.backend ? s.backend->describe() : Json::object();
+  const std::int64_t limit = s.backend ? s.backend->context_tokens() : 0;
+  std::string works_on;
+  if (s.target) {
+    if (auto* p = _c.project(s.project)) {
+      if (auto a = p->asset(*s.target); a.ok()) {
+        works_on = a->name;
+      }
+    }
+  }
+  std::lock_guard lk(s.mu);
+  auto names = [&](const std::vector<std::string>& ids) {
+    std::string out;
+    auto* p = _c.project(s.project);
+    for (const auto& t : ids) {
+      const auto id = AssetId::parse(t);
+      auto a = p && id ? p->asset(*id)
+                       : Result<project::Asset>(make_error(
+                             Code::NotFound, "no such asset"));
+      out += (out.empty() ? "" : ", ") +
+             (a.ok() ? std::format("“{}” ({})", a->name,
+                                   project::to_str(a->kind))
+                     : std::format("an asset since removed ({})", t));
+    }
+    return out;
+  };
+
+  std::string t = "# Agent: " + cut(one_line(s.prompt), 80) + "\n\n";
+  // Who thought, on what, how far it went.
+  std::string model = jget<std::string>(backend, "model", "");
+  const std::string where = jget<std::string>(backend, "where", "");
+  if (jget<std::string>(backend, "kind", "") == "local") {
+    model += model.empty() ? "this Mac's helper" : " on this Mac";
+  } else if (!where.empty()) {
+    model += (model.empty() ? "" : " on ") + where;
+  }
+  t += "**Began** " + local_time(s.created_ms);
+  if (!model.empty()) {
+    t += " · **Thinks on** " + model;
+  }
+  if (!works_on.empty() && s.skills == "full") {
+    t += " · **Works on** “" + works_on + "”";
+  }
+  // A chat's tools, or none: the editor's go unsaid.
+  if (s.skills == "chat") {
+    t += " · **Tools** the chat's: it looks and adds";
+  } else if (s.skills == "none") {
+    t += " · **Tools** none";
+  }
+  t += "\n";
+  std::map<std::string, int> by_state;
+  for (const auto& st : s.steps) {
+    ++by_state[st.state];
+  }
+  std::string counts;
+  for (const auto& [state, n] : by_state) {
+    counts += std::format("{}{} {}", counts.empty() ? "" : ", ", n, state);
+  }
+  t += std::format("**Steps** {}{} · **Turns** {}", s.steps.size(),
+                   counts.empty() ? "" : " (" + counts + ")", s.turns);
+  if (s.compactions > 0) {
+    t += std::format(" · **Compacted** {} time{}", s.compactions,
+                     s.compactions == 1 ? "" : "s");
+  }
+  if (limit > 0) {
+    t += std::format(" · **Context** about {} of {} tokens",
+                     context_estimate_(s), limit);
+  }
+  t += "\n**State** " + s.state + " · written " +
+       local_time(now_ms()) + "\n";
+  if (!s.error.empty()) {
+    t += "**Error** " + cut(one_line(s.error), kTranscriptNote) + "\n";
+  }
+
+  // The conversation, as the app's chat shows it: the person's words,
+  // the agent's, its steps under the turn that asked for them.
+  std::size_t next = 0;
+  std::string last;   // who spoke last: "you", "agent"
+  auto heading = [&](const char* who, const char* title) {
+    if (last != who) {
+      t += std::string("\n## ") + title + "\n\n";
+      last = who;
+    }
+  };
+  auto step_text = [&](const Step& st) {
+    std::string line = std::format("{}. **{}** ({}) — ", st.n,
+                                   st.title, code_span(st.tool, 64));
+    if (st.state == "failed") {
+      line += "failed: " + cut(one_line(st.error), kTranscriptResult);
+    } else if (st.state == "skipped") {
+      line += "skipped";
+      const std::string note = jget<std::string>(st.result, "note", "");
+      if (!note.empty()) {
+        line += ": " + cut(one_line(note), kTranscriptResult);
+      }
+    } else if (st.state == "proposed") {
+      line += "waiting for your word";
+    } else {
+      line += st.state;
+    }
+    line += "\n";
+    if (st.tool == "ask_user") {
+      const std::string q = jget<std::string>(st.args, "question", "");
+      const std::string a = jget<std::string>(st.result, "answer", "");
+      line += "   It asked: " + cut(one_line(q), kTranscriptNote) + "\n";
+      if (!a.empty()) {
+        agent::Message said{.role = "user", .content = a};
+        line += "   You answered: " +
+                cut(one_line(person_words_of(said)), kTranscriptNote) +
+                "\n";
+      }
+      return line;
+    }
+    if (!st.args.empty()) {
+      line += "   " + code_span(to_text(st.args), kTranscriptArgs) + "\n";
+    }
+    if (st.state == "done" || st.state == "waiting") {
+      if (!st.result.is_null() && !st.result.empty()) {
+        line += "   → " +
+                code_span(to_text(st.result), kTranscriptResult) + "\n";
+      }
+    }
+    return line;
+  };
+  auto show = [&](const agent::Message& m) {
+    if (m.role == "system" || m.role == "tool") {
+      return;
+    }
+    if (agent::is_compaction(m)) {
+      t += std::format(
+          "\n*Compacted here: the {} messages before it were summarized "
+          "for the model (about {} of {} tokens); this transcript keeps "
+          "them whole.*\n",
+          jget(m.stats, "compacted", 0),
+          jget<std::int64_t>(m.stats, "tokens", 0),
+          jget<std::int64_t>(m.stats, "limit", 0));
+      return;
+    }
+    if (m.role == "user") {
+      if (m.said.empty() && m.content.starts_with("[Valtz]")) {
+        std::string note = one_line(m.content.substr(8));
+        if (!m.images.empty()) {
+          note += std::format(" ({} picture{} shown)", m.images.size(),
+                              m.images.size() == 1 ? "" : "s");
+        }
+        t += "\n*Valtz: " + cut(note, kTranscriptNote) + "*\n";
+        return;
+      }
+      heading("you", "You");
+      t += person_words_of(m);
+      t += "\n";
+      if (const std::string w = where_said(m.content); !w.empty()) {
+        t += "\n*Where: " + one_line(w) + "*\n";
+      }
+      if (!m.attached.empty()) {
+        t += "\n*Attached: " + names(m.attached) + "*\n";
+      }
+      return;
+    }
+    if (m.role == "assistant") {
+      const std::string words = one_line(m.content).empty()
+                                    ? std::string()
+                                    : m.content;
+      if (!words.empty() || !m.calls.empty()) {
+        heading("agent", "Agent");
+      }
+      if (!words.empty()) {
+        t += words;
+        t += "\n";
+      }
+      if (!m.calls.empty()) {
+        t += "\n";
+        for (std::size_t i = 0; i < m.calls.size() &&
+                                next < s.steps.size(); ++i) {
+          t += step_text(s.steps[next++]);
+        }
+      }
+    }
+  };
+  const std::size_t head = agent::compaction_head(s.messages);
+  for (std::size_t i = 0; i < head; ++i) {
+    show(s.messages[i]);
+  }
+  for (const auto& m : s.earlier) {
+    show(m);
+  }
+  for (std::size_t i = head; i < s.messages.size(); ++i) {
+    show(s.messages[i]);
+  }
+  // Steps of a turn not yet written back.
+  if (next < s.steps.size()) {
+    heading("agent", "Agent");
+    t += "\n";
+    while (next < s.steps.size()) {
+      t += step_text(s.steps[next++]);
+    }
+  }
+  return t;
+}
+
+void
+Controller::AgentHost::write_transcript_(Session& s)
+{
+  {
+    std::lock_guard lk(_mu);
+    if (_stop) {
+      return;
+    }
+  }
+  auto* p = _c.project(s.project);
+  if (p == nullptr) {
+    return;
+  }
+  const std::string text = transcript_text_(s);
+  // The session's own write: never refused by a hold (a session's
+  // working again meanwhile).
+  CoreWrites own;
+  std::optional<AssetId> id;
+  {
+    std::lock_guard lk(s.mu);
+    id = s.transcript;
+  }
+  if (id) {
+    // Removed by the person: left so.
+    if (!p->asset(*id).ok()) {
+      return;
+    }
+    if (auto was = p->read_text(*id); was.ok() && *was == text) {
+      return;
+    }
+    if (auto r = p->update_text(*id, text); !r.ok()) {
+      VALTZ_LOG_WARN("agent", "session {}: its transcript was not "
+                     "written: {}", s.id, r.error().message);
+      return;
+    }
+    _c.post_("assets.changed", JobId{}, {{"project", s.project},
+                                         {"asset", *id},
+                                         {"reason", "edited"}});
+    return;
+  }
+  auto made = p->add_text("Agent: " + cut(one_line(s.prompt), 60), text,
+                          {kTranscriptTag});
+  if (!made.ok()) {
+    VALTZ_LOG_WARN("agent", "session {}: its transcript was not made: {}",
+                   s.id, made.error().message);
+    return;
+  }
+  // In the Agent Sessions folder -- found by its role, whatever the
+  // person renamed it; made the first time.
+  if (auto folders = p->folders(); folders.ok()) {
+    std::string folder;
+    for (const auto& f : *folders) {
+      if (jget<std::string>(f, "role", "") == kTranscriptFolderRole) {
+        folder = jget<std::string>(f, "id", "");
+      }
+    }
+    if (folder.empty()) {
+      folder = AssetId::make().str();
+      folders->push_back({{"id", folder},
+                          {"name", kTranscriptFolderName},
+                          {"role", kTranscriptFolderRole}});
+      if (!p->set_folders(*folders).ok()) {
+        folder.clear();
+      }
+    }
+    if (!folder.empty()) {
+      (void)p->set_asset_folder(made->id, folder);
+    }
+  }
+  std::string state;
+  {
+    std::lock_guard lk(s.mu);
+    s.transcript = made->id;
+    state = s.state;
+  }
+  VALTZ_LOG_INFO("agent", "session {}: its transcript is \"{}\"", s.id,
+                 made->name);
+  _c.post_("assets.changed", JobId{}, {{"project", s.project},
+                                       {"asset", made->id},
+                                       {"reason", "agent-transcript"}});
+  // The app's card links to it.
+  _c.post_("agent.changed", JobId{},
+           {{"agent", s.id}, {"project", s.project.str()},
+            {"state", state}});
+}
+
 Result<std::string>
 Controller::AgentHost::start(AgentRequest req)
 {
   if (one_line(req.prompt).empty()) {
     return make_error(Code::InvalidArgument, msg::kAgentEmptyRequest);
   }
+  if (req.skills.empty()) {
+    req.skills = "full";
+  }
+  if (req.skills != "full" && req.skills != "chat" &&
+      req.skills != "none") {
+    return make_error(Code::InvalidArgument,
+                      std::format("no agent skills '{}': full, chat or "
+                                  "none", req.skills));
+  }
   auto* ws = _c.workspace_(req.project);
   if (ws == nullptr) {
     return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  // One agent at a time CHANGES a project: a second with the editor's
+  // tools refused while one is there to be spoken to (stopped, it is
+  // not). Chats beside it look and add. Starts one at a time, so two
+  // asked at once cannot both pass; each session's lock taken apart from
+  // the host's, never one inside the other.
+  std::lock_guard starting(_start_mu);
+  if (req.skills == "full") {
+    std::vector<std::shared_ptr<Session>> mine;
+    {
+      std::lock_guard lk(_mu);
+      for (const auto& [id, o] : _sessions) {
+        if (o->project == req.project && o->skills == "full") {
+          mine.push_back(o);
+        }
+      }
+    }
+    for (const auto& o : mine) {
+      std::lock_guard olk(o->mu);
+      if (!o->stop_asked && o->state != "stopped") {
+        return make_error(Code::Busy, msg::kAgentOneEditor);
+      }
+    }
   }
   auto s = std::make_shared<Session>();
   s->id = JobId::make().str();
@@ -791,6 +1407,7 @@ Controller::AgentHost::start(AgentRequest req)
   }
   s->prompt = req.prompt;
   s->row = req.row;
+  s->skills = req.skills;
   s->review = req.review;
   s->created_ms = now_ms();
   // In the project's working copy: an anonymous session's goes with it.
@@ -808,9 +1425,11 @@ Controller::AgentHost::start(AgentRequest req)
     s->compact = jget(_settings, "compact", true);
   }
   s->messages.push_back({.role = "system", .content = system_text_(*s)});
-  s->messages.push_back(
-      {.role = "user",
-       .content = with_stage_(req.project, req.prompt, req.stage)});
+  // The request, the row's media its attachments: the system message
+  // lists them already -- by id, for the tools; with none, here.
+  const bool tools = s->skills != "none";
+  s->messages.push_back(person_message_(req.project, req.prompt, req.stage,
+                                        req.row, /*list=*/!tools, tools));
   {
     std::lock_guard lk(_mu);
     if (_stop) {
@@ -818,13 +1437,17 @@ Controller::AgentHost::start(AgentRequest req)
     }
     _sessions[s->id] = s;
   }
-  VALTZ_LOG_INFO("agent", "session {} started ({})", s->id,
-                 to_text(s->backend->describe()));
-  // Held from the request: read-only to the person until it is done.
+  VALTZ_LOG_INFO("agent", "session {} started ({}, skills {})", s->id,
+                 to_text(s->backend->describe()), s->skills);
+  // Held from the request: read-only to the person until it is done --
+  // an editor's; a chat holds nothing.
   s->working = true;
-  _c.agent_hold_(s->project, s->id, true);
+  if (s->skills == "full") {
+    _c.agent_hold_(s->project, s->id, true);
+  }
   s->thread = std::thread([this, s] {
-    // Its writes are the agent's own: never refused by its hold.
+    // Its writes are the agent's own: never refused by its hold -- nor a
+    // chat's, adding to the assets, by an editor's.
     CoreWrites own;
     run_(*s);
     // Over: the project the person's again.
@@ -871,8 +1494,14 @@ Controller::AgentHost::post_(Session& s, std::optional<int> step)
     std::lock_guard lk(s.mu);
     s.seen_seq = last;
   }
-  _c.agent_hold_(s.project, s.id, working);
+  _c.agent_hold_(s.project, s.id, working && s.skills == "full");
   _c.post_("agent.changed", JobId{}, std::move(d));
+  // At rest -- done, failed, stopped -- its transcript written: the
+  // project the person's again first, a session's own write meanwhile
+  // never in their command (commands are a thread's).
+  if (stopped_working) {
+    write_transcript_(s);
+  }
 }
 
 std::uint64_t
@@ -913,6 +1542,7 @@ Controller::AgentHost::state_json_(const Session& s, bool messages) const
             {"project", s.project.str()},
             {"state", s.state},
             {"review", s.review},
+            {"skills", s.skills},
             {"backend", backend},
             {"prompt", s.prompt},
             {"composition", s.target ? s.target->str() : std::string()},
@@ -926,8 +1556,14 @@ Controller::AgentHost::state_json_(const Session& s, bool messages) const
             {"pending", static_cast<int>(s.pending.size())},
             {"created", s.created_ms},
             {"compactions", s.compactions},
-            {"context", {{"used", s.ctx_used}, {"limit", limit}}},
+            {"context", {{"used", context_estimate_(s)},
+                         {"counted", s.ctx_used},
+                         {"limit", limit},
+                         {"compact_at", s.compact ? kCompactAtPct : 0}}},
             {"steps", std::move(steps)}};
+  if (s.transcript) {
+    j["transcript"] = s.transcript->str();
+  }
   if (messages) {
     Json ms = Json::array();
     // Shown whole: what was compacted away in its place, and each
@@ -958,6 +1594,17 @@ Controller::AgentHost::state_json_(const Session& s, bool messages) const
       }
       if (!m.stats.empty()) {
         x["stats"] = m.stats;
+      }
+      // The person's own words and what they attached; the pictures
+      // shown with it, counted.
+      if (!m.said.empty()) {
+        x["said"] = m.said;
+      }
+      if (!m.attached.empty()) {
+        x["attached"] = m.attached;
+      }
+      if (!m.images.empty()) {
+        x["shown"] = m.images.size();
       }
       ms.push_back(std::move(x));
     };
@@ -1025,16 +1672,15 @@ Controller::AgentHost::gate_(Session& s)
 bool
 Controller::AgentHost::wait_words_(Session& s)
 {
-  std::unique_lock lk(s.mu);
-  s.cv.wait(lk, [&] { return s.stop_asked || !s.said.empty(); });
-  if (s.stop_asked) {
-    return false;
+  {
+    std::unique_lock lk(s.mu);
+    s.cv.wait(lk, [&] { return s.stop_asked || !s.said.empty(); });
+    if (s.stop_asked) {
+      return false;
+    }
+    s.error.clear();
   }
-  while (!s.said.empty()) {
-    s.messages.push_back({.role = "user", .content = s.said.front()});
-    s.said.pop_front();
-  }
-  s.error.clear();
+  take_said_(s);
   return true;
 }
 
@@ -1077,25 +1723,37 @@ Controller::AgentHost::tell_landed_(Session& s)
 void
 Controller::AgentHost::run_(Session& s)
 {
-  const auto& table = tools();
-  const auto specs = tool_specs();
+  const auto& table = tools_for(s.skills);
+  const auto specs = tool_specs(s.skills);
   bool told_after_done = false;
   // The last turn did not fit, and the conversation was compacted for it.
   bool overflowed = false;
   // Turns running that wrote a call nothing could read.
   int unread = 0;
+  // The pictures the request came with, shown with it.
+  {
+    agent::Message first;
+    {
+      std::lock_guard lk(s.mu);
+      if (s.messages.size() > 1) {
+        first = s.messages[1];
+      }
+    }
+    show_attached_(s, first);
+    if (!first.images.empty()) {
+      std::lock_guard lk(s.mu);
+      s.messages[1].images = std::move(first.images);
+    }
+  }
   for (;;) {
     if (!gate_(s)) {
       break;
     }
     tell_landed_(s);
+    // Words the person said while it worked: told at this turn.
+    take_said_(s);
     {
       std::lock_guard lk(s.mu);
-      // Words the person said while it worked: told at this turn.
-      while (!s.said.empty()) {
-        s.messages.push_back({.role = "user", .content = s.said.front()});
-        s.said.pop_front();
-      }
       if (s.turns >= kMaxTurns) {
         s.error_fields = message_fields(
             msg::kAgentTooManyTurns,
@@ -1613,7 +2271,8 @@ Controller::AgentHost::compact_(Session& s,
 
 Status
 Controller::AgentHost::say(const std::string& id, const std::string& words,
-                           const Json& stage)
+                           const Json& stage,
+                           const std::vector<AssetId>& attached)
 {
   auto s = find_(id);
   if (!s) {
@@ -1622,16 +2281,17 @@ Controller::AgentHost::say(const std::string& id, const std::string& words,
   if (one_line(words).empty()) {
     return make_error(Code::InvalidArgument, msg::kAgentEmptyRequest);
   }
-  std::string text = with_stage_(s->project, words, stage);
+  agent::Message m = person_message_(s->project, words, stage, attached,
+                                     /*list=*/true, s->skills != "none");
   // Done and spoken to again: what the person changed since -- it held
   // nothing meanwhile -- makes what it last saw out of date.
   const std::uint64_t last = last_command_(s->project);
   {
     std::lock_guard lk(s->mu);
     if (!s->working && last != s->seen_seq) {
-      text += "\n[Valtz] The person changed the project since you "
-              "finished: look again at what you work on before you "
-              "change it.";
+      m.content += "\n[Valtz] The person changed the project since you "
+                   "finished: look again at what you work on before you "
+                   "change it.";
     }
   }
   {
@@ -1639,10 +2299,12 @@ Controller::AgentHost::say(const std::string& id, const std::string& words,
     if (s->state == "stopped") {
       return make_error(Code::InvalidArgument, msg::kAgentStopped);
     }
+    // An answer to its question: the ask's result (what it attached
+    // listed in it, for its tools).
     if (s->answer.has_value() || s->state == "asking") {
-      s->answer = text;
+      s->answer = m.content;
     } else {
-      s->said.push_back(text);
+      s->said.push_back(std::move(m));
     }
     s->pause_asked = false;
   }
@@ -1731,7 +2393,7 @@ Controller::AgentHost::resume(const std::string& id)
     s->pause_asked = false;
     // Failed: resumed, it tries the turn again.
     if (s->state == "failed" && s->said.empty()) {
-      s->said.push_back("Go on.");
+      s->said.push_back({.role = "user", .content = "Go on."});
     }
   }
   s->cv.notify_all();
@@ -2091,9 +2753,10 @@ Controller::agent_start(AgentRequest req)
 
 Status
 Controller::agent_say(const std::string& agent, const std::string& text,
-                      const Json& stage)
+                      const Json& stage,
+                      const std::vector<AssetId>& attached)
 {
-  return _agent->say(agent, text, stage);
+  return _agent->say(agent, text, stage, attached);
 }
 
 Status

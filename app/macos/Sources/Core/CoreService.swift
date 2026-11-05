@@ -134,9 +134,12 @@ final class CoreService: @unchecked Sendable {
     func agentStart(_ request: [String: Any]) -> CoreReply {
         send(core.agent_start, request)
     }
+    /// The person's next words, and the assets attached to them.
     func agentSay(_ agent: String, _ text: String,
-                  stage: [String: Any] = [:]) -> CoreReply {
-        send(core.agent_say, ["agent": agent, "text": text, "stage": stage])
+                  stage: [String: Any] = [:],
+                  row: [String] = []) -> CoreReply {
+        send(core.agent_say, ["agent": agent, "text": text, "stage": stage,
+                              "row": row])
     }
     func agentReview(_ agent: String, step: Int, decision: String,
                      note: String = "") -> CoreReply {
@@ -649,6 +652,21 @@ final class CoreService: @unchecked Sendable {
         return send(core.flatten, req)
     }
 
+    /// A file handed out -- a picture shared or dragged from the stage --
+    /// named as written by this Valtz and vpipe (bridge stamp_file): as a
+    /// picture of `asset`, with the one model it was made with, or none.
+    /// A failure is no reason to withhold the file: the log says why.
+    @discardableResult
+    func stampFile(_ path: String, project: String? = nil,
+                   asset: String? = nil) -> CoreReply {
+        var req: [String: Any] = ["path": path]
+        if let project, let asset {
+            req["project"] = project
+            req["asset"] = asset
+        }
+        return send(core.stamp_file, req)
+    }
+
     /// The stack drawn for the screen, by the GPU into a surface a layer
     /// shows as it is (bridge flatten_surface): no PNG made and read back.
     /// nil on a failure (the log says why).
@@ -752,7 +770,8 @@ final class CoreService: @unchecked Sendable {
               let opts = r["options"] as? [[String: Any]] else { return nil }
         let options = opts.map(TuningOption.init)
         return TuningInfo(family: r["family"] as? String ?? "",
-                          tuning: Tuning(values, options), options: options)
+                          tuning: Tuning(values, options), options: options,
+                          setBy: r["set_by"] as? [String: String] ?? [:])
     }
 
     /// Settings › Upscaling: each upscaler and its options, and which one

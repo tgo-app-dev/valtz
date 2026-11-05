@@ -973,6 +973,18 @@ final class AppModel: TuningHost {
     var atlasNodeOpen: String?
     var atlasNodeTuneOpen = false
     var atlasNodeTuning: AtlasNodeTuning?
+    /// What is typed in a node's fields (by node, then field) and not yet
+    /// taken -- kept while its panel is shut and opened again.
+    var atlasNodeFields: [String: [String: String]] = [:]
+    /// The graph moving to the layout read last (AtlasMotion): where it
+    /// moves from, and the phase it moves by -- animated, one step a
+    /// layout -- and the phase as last drawn, where a motion caught
+    /// midway goes on from.
+    var atlasMotion = AtlasMotion()
+    var atlasPhase: Double = 0
+    @ObservationIgnored var atlasShownPhase: Double = 0
+    /// A glide of its scroll view under way (atlasGlide).
+    @ObservationIgnored var atlasGlideTask: Task<Void, Never>?
     /// VIEW ONLY (DESIGN §10a): the editor as a viewer -- the ☰ column's
     /// eye, or Tab where nothing in the window takes keys. The stage
     /// alone: the prompt or the timeline, the cards over them, the panels
@@ -1232,6 +1244,11 @@ final class AppModel: TuningHost {
     /// words as they are written this turn.
     var agent: AgentSession?
     var agentWriting = ""
+    /// The agent's TABS (Simple/AgentTabs): a conversation each, one with
+    /// Valtz's tools at most; the one shown (`agentTabIndex`) is live in
+    /// `agent`, `agentWriting` and the box.
+    var agentTabs: [AgentTab] = [AgentTab(skills: "full")]
+    var agentTabIndex = 0
     /// A step's note, typed before it is skipped (told to the model).
     var agentNote = ""
     /// The stage FOLLOWS the agent's work (its composition, the page or
@@ -1244,6 +1261,9 @@ final class AppModel: TuningHost {
     /// The stage moved by following the agent, not by the person: it does
     /// not stop the following.
     @ObservationIgnored var agentSteering = false
+    /// Where the agent's chat lies in the window (SwiftUI's global space):
+    /// a dev hook's drop is aimed at it.
+    @ObservationIgnored var agentChatFrame: CGRect = .zero
     /// The fleet (DESIGN §11): this Mac's place in one, the job it serves
     /// for a member (its window given over to it, the mark in blue), the
     /// offers waiting for an answer.
@@ -1454,6 +1474,12 @@ final class AppModel: TuningHost {
     /// picture and sound read again. Off by default: they take room in
     /// the project.
     var keepLatents = false
+    /// A clip past its model's trained size (768P for MiniMax H3), its
+    /// refiner here, is DRAFTED there and REGENERATED at the size by
+    /// Open-H3-Regenerate-2K -- the default -- or, off, made at the size
+    /// in ONE PASS, as the model makes any length (the generation card's
+    /// High-res pass row; the request's `regenerate`: DESIGN §4q).
+    var regenerateHighRes = true
     /// The model Start runs keeps its clip's latents when asked: the
     /// card offers the row.
     var offersKeepLatents: Bool {
@@ -3235,7 +3261,7 @@ final class AppModel: TuningHost {
 
     /// Words into the box, the row as it is: a mention of media no longer
     /// in the row goes with it.
-    private func setPromptWords(_ w: PromptWords) {
+    func setPromptWords(_ w: PromptWords) {
         let ids = Set(promptAttachments.map(\.id))
         promptAssetId = w.assetId
         promptName = w.name
@@ -4192,6 +4218,9 @@ final class AppModel: TuningHost {
     /// A sound's values were written: its poster (a composition of sound
     /// alone: its mix's waveform) drawn again with the next plan.
     @ObservationIgnored var stackPosterAgain = false
+    /// A poster was asked for and has not been put on the stage yet: the
+    /// next plan to land asks again (refreshStackPlan).
+    @ObservationIgnored private var stackPosterOwed = false
     /// Dev and snapshot aid: the stack plans made, the last one's making
     /// (ms, its mix's or shaped sound's included) and when one was last
     /// put on the stage.
@@ -4262,11 +4291,18 @@ final class AppModel: TuningHost {
                 self.stackPosterAgain = false
                 self.stackPlayback = made
                 if let old { self.releaseLater(old.plan) }
-                // And whenever the stage has no picture: a clip landing on
-                // an empty stage was planned twice (its layer selected),
-                // the first plan's poster dropped as stale and the second
-                // not the first -- the card laid out square, posterless.
-                if firstPoster || reshaped || self.stage.a == nil {
+                // And whenever the poster asked for is still owed, or the
+                // stage's picture is not of the plan's shape. A poster is
+                // dropped as stale when a newer plan lands before it --
+                // a clip landing on an empty stage, a canvas resized, a
+                // clip placed: two plans in a row -- and the newer one,
+                // of the same shape, asked for none: the card stayed laid
+                // out square, posterless, or as the composition shown
+                // before (the project's wide canvas over a portrait one).
+                if firstPoster || reshaped || self.stackPosterOwed
+                    || !self.stagePosterFits(made) {
+                    // (A sound's waveform as before: its mix rendered.)
+                    self.stackPosterOwed = !made.soundOnly
                     self.stackPoster(made, id)
                 }
             } else if let made {
@@ -4299,6 +4335,7 @@ final class AppModel: TuningHost {
                       let self, self.currentClip?.id == id,
                       self.stackPlayback?.plan == s.plan else { return }
                 self.stage.a = img
+                self.stackPosterOwed = false
             }
             return
         }
@@ -4311,7 +4348,19 @@ final class AppModel: TuningHost {
             guard let self, let img, self.currentClip?.id == id,
                   self.stackPlayback?.plan == s.plan else { return }
             self.stage.a = img
+            self.stackPosterOwed = false
         }
+    }
+
+    /// The stage's picture has the plan's frame's shape, to a pixel (the
+    /// card is laid out by it: StageState.layoutAspect). A composition
+    /// of sound alone's is its waveform, whatever its shape.
+    private func stagePosterFits(_ s: StackPlayback) -> Bool {
+        guard let a = stage.a, a.width > 0, a.height > 0 else { return false }
+        guard !s.soundOnly, s.width > 0, s.height > 0 else { return true }
+        let want = Double(s.width) / Double(s.height)
+        let w = Double(a.width), h = Double(a.height)
+        return abs(h * want - w) <= 1 || abs(w / want - h) <= 1
     }
 
     /// A black picture of a frame's shape (its longer edge 256 pixels):
@@ -4636,6 +4685,28 @@ final class AppModel: TuningHost {
         }
     }
 
+    /// Weights Custom has on whose files are gone (core models::left_out:
+    /// "wanted", not found) -- each LoRA's, DiT's and VAE's name -- which
+    /// a generation leaves out.
+    func leftOutWeights(_ info: TuningInfo?) -> [String] {
+        guard let info else { return [] }
+        let loras = info.tuning.loras.filter { $0.missing && $0.on }
+            .map { info.name($0) }
+        let parts = ["dits", "vaes"]
+            .flatMap { info.tuning.checkpoints[$0] ?? [] }
+            .filter { $0.missing && $0.on }
+            .map(\.name)
+        return loras + parts
+    }
+
+    /// Start's word for them, once its task is begun.
+    func warnLeftOut(_ names: [String]) {
+        let list = names.formatted(.list(type: .and))
+        flash(String(localized: "Not found, so left out: \(list). The generation runs without them; put the files back, or remove them from Custom's list."), level: .warning)
+    }
+    /// What `start` found left out, said by `began`.
+    @ObservationIgnored private var startLeftOut: [String] = []
+
     /// Custom's values settled by the core, kept as the family's. With
     /// `stepsFollow` the steps are left to the preset's count for what
     /// changed (an adapter's own).
@@ -4739,6 +4810,11 @@ final class AppModel: TuningHost {
                       tier != "accurate" {
                 let shown = TuningPanel.choiceLabel("vae_i8_gemm_tier", tier)
                 parts.append(String(localized: "VAE int8 \(shown)"))
+            } else if k == "ane_ffn", t.flags["ane_int8"] == true {
+                // The Neural Engine's int8: "ANE int8 Per Token".
+                let shown = TuningPanel.choiceLabel(
+                    "ane_int8_tier", t.choices["ane_int8_tier"] ?? "token")
+                parts.append(String(localized: "ANE int8 \(shown)"))
             } else {
                 parts.append(name)
             }
@@ -4871,11 +4947,18 @@ final class AppModel: TuningHost {
             return String(localized: "Describe the picture — subject, setting, light, style")
         case .agent:
             if agent?.listening == true {
+                if agentSkills != "full" {
+                    return String(localized: "Reply — paste or drop pictures to talk about them")
+                }
                 return String(localized: "Tell the agent what to do next")
             }
             // At work: what is said now is told at its next turn.
             if let a = agent, !a.ended {
                 return String(localized: "Tell the agent more — it reads it at its next turn")
+            }
+            // A tab without Valtz's tools: a chat.
+            if agentSkills != "full" {
+                return String(localized: "Ask anything — paste or drop pictures to talk about them")
             }
             return String(localized: "Ask for something to make — “a five-slide deck on the water cycle, a picture on each”")
         }
@@ -5688,7 +5771,9 @@ final class AppModel: TuningHost {
         // prompt -- is that asset already: nothing to import.
         let fresh = urls.filter { asset(forFile: $0) == nil }
         guard let core, let projectId, !fresh.isEmpty else { return nil }
-        guard !refusedForAgent() else { return nil }
+        // An import ADDS: let through while an agent works, as the core's
+        // hold lets it -- a picture attached to a chat's words beside the
+        // agent with Valtz's tools (DESIGN §9b).
         var req: [String: Any] = ["project": projectId,
                                   "paths": fresh.map { $0.path }]
         if let placement { req["placement"] = placement }
@@ -5844,9 +5929,10 @@ final class AppModel: TuningHost {
 
     /// The REFINER of the clip model Start runs (catalog `regenerate`:
     /// MiniMax H3's Open-H3-Regenerate-2K, for FL2VA and Ref2VA; DESIGN
-    /// §4q) -- a continuation is made at the size asked; nil for none.
+    /// §4q) -- a continuation's too, as the core regenerates one past
+    /// 768P (from its clip's kept draft latent); nil for none.
     var videoRefiner: CatalogModel.Regenerate? {
-        guard activeModality == .video, !tuningContinues else { return nil }
+        guard activeModality == .video else { return nil }
         return runningModelInfo?.regenerate
     }
 
@@ -5865,25 +5951,50 @@ final class AppModel: TuningHost {
     /// Upscaling's listing says it).
     var refinerReady: Bool {
         guard let r = videoRefiner else { return false }
-        return upscalers.first { $0.id == r.with }?.ready ?? false
+        return refinerReady(r)
     }
 
     /// The clip Start makes is DRAFTED at this size and REGENERATED at
     /// the size asked: past the model's trained size (768 on H3's short
-    /// side), its refiner here -- as the core decides it
-    /// (Controller::generate_video); nil when it is made at the size.
+    /// side), its refiner here, the High-res pass row on -- as the core
+    /// decides it (Controller::generate_video); nil when it is made at
+    /// the size.
     var regenerateDraft: PixelSize? {
-        guard let r = videoRefiner, refinerReady else { return nil }
+        regenerateHighRes ? regenerateOffered : nil
+    }
+
+    /// The clip Start makes COULD be drafted at this size and regenerated
+    /// (past the trained size, its refiner here): the card offers the
+    /// High-res pass row; nil when there is no choice to make.
+    var regenerateOffered: PixelSize? {
+        guard videoRefiner != nil, let m = runningModelInfo else { return nil }
         let d = dimensions
-        guard min(d.width, d.height) > r.above else { return nil }
-        let g = max(16, runningModelInfo?.sizeAlign ?? 32)
+        return regenerateDraft(model: m.id, width: d.width, height: d.height)
+    }
+
+    /// A clip of `model` asked at `width` x `height` is drafted at this
+    /// size and regenerated at the size asked -- past the model's trained
+    /// size, its refiner here (as the core decides it) -- or nil: made
+    /// at the size. The card's, an Atlas generate node's.
+    func regenerateDraft(model id: String, width: Int,
+                         height: Int) -> PixelSize? {
+        guard let m = catalog.first(where: { $0.id == id }),
+              let r = m.regenerate, refinerReady(r),
+              min(width, height) > r.above else { return nil }
+        let g = max(16, m.sizeAlign ?? 32)
         func other(_ along: Int, _ across: Int) -> Int {
             let v = Double(r.draft) * Double(along) / Double(across)
             return max(g, Int((v / Double(g)).rounded()) * g)
         }
-        return d.width >= d.height
-            ? PixelSize(width: other(d.width, d.height), height: r.draft)
-            : PixelSize(width: r.draft, height: other(d.height, d.width))
+        return width >= height
+            ? PixelSize(width: other(width, height), height: r.draft)
+            : PixelSize(width: r.draft, height: other(height, width))
+    }
+
+    /// A refiner is here: installed with its latent upscaler and its
+    /// model, on an engine that has the latent upscaler.
+    func refinerReady(_ r: CatalogModel.Regenerate) -> Bool {
+        upscalers.first { $0.id == r.with }?.ready ?? false
     }
 
     /// Past the clip model's trained size with its refiner NOT here: made
@@ -5918,6 +6029,10 @@ final class AppModel: TuningHost {
                 return String(localized: "Drafted at \(a) from the references, then regenerated at \(b) by Open-H3-Regenerate-2K on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line.")
             }
             return String(localized: "Drafted at \(a), then regenerated at \(b) by Open-H3-Regenerate-2K: several times the draft's time.")
+        }
+        if regenerateOffered != nil, let r = videoRefiner {
+            let b = "\(String(d.width)) × \(String(d.height))"
+            return String(localized: "Made at \(b) in one pass, past the \(String(r.above)) on its short side the model was trained at: no draft and no refine, and refused before it starts if it does not fit in memory.")
         }
         if regenerateMissing, let r = videoRefiner {
             return String(localized: "Past \(String(r.above)) on its short side the clip is made at this size directly. Open-H3-Regenerate-2K drafts it at \(String(r.draft)) and regenerates it: get it in Settings › Capabilities › MiniMax H3.")
@@ -6154,6 +6269,14 @@ final class AppModel: TuningHost {
             askForPresetLoRA(missing)
             return
         }
+        // Custom's weights whose files are gone: the core leaves them out;
+        // said once the task is begun. Read again now -- a file may have
+        // gone since the panel was last open.
+        startLeftOut = []
+        if preference == .custom, activeModality != .agent {
+            refreshTuning()
+            startLeftOut = leftOutWeights(tuningInfo)
+        }
         // The stage shows the work: a picture clicked in the row goes.
         clearReferenceFocus()
         if activeModality == .agent {
@@ -6242,6 +6365,12 @@ final class AppModel: TuningHost {
         if let pa = promptAssetId { req["prompt_asset"] = pa }
         if let n = promptGivenName { req["prompt_name"] = n }
         if offersKeepLatents && keepLatents { req["keep_latents"] = true }
+        // Past 768P with the refiner here: drafted and regenerated unless
+        // the High-res pass row says one pass (the core's default is to
+        // regenerate where it can).
+        if regenerateOffered != nil && !regenerateHighRes {
+            req["regenerate"] = false
+        }
         if usesReferences {
             // The row's media as references, in its order (each through
             // its look or its trim); the clip continued, its tail; the
@@ -6353,6 +6482,10 @@ final class AppModel: TuningHost {
     private func began(job: String, kind: Modality = .image,
                        continues: String? = nil) {
         markSweep += 1
+        if !startLeftOut.isEmpty {
+            warnLeftOut(startLeftOut)
+            startLeftOut = []
+        }
         // It lands in the ACTIVE composition, as a new layer: above its
         // selected layer -- in it, when blank -- at the frame or page
         // shown, when it is the one on the stage; else on top. A
@@ -9495,8 +9628,21 @@ final class AppModel: TuningHost {
         var redo: String?
         /// An agent at work on it holds it: read-only to the person.
         var agent = false
+        /// The files it uses that are not there -- an original moved or
+        /// on a drive not connected, a blob gone from the package
+        /// (Project::missing_media): read-only too, to be looked at.
+        var missing: [MissingMedia] = []
     }
     var document = DocumentState()
+
+    /// A file the project uses that is missing (the core's
+    /// "missing_media").
+    struct MissingMedia: Equatable, Hashable {
+        var asset: String
+        var name: String
+        var path: String
+        var how: String   // "original" | "blob"
+    }
 
     /// THE AGENT AT WORK on the project (DESIGN §9b): a session of its --
     /// thinking, acting, waiting for its pictures or the person's word,
@@ -9508,14 +9654,37 @@ final class AppModel: TuningHost {
     /// what only looks goes on: the stage, its pages and transport, zoom,
     /// the compare, Assets and Layers to look through, the agent's own
     /// box and card.
-    var agentHolds: Bool { document.agent }
+    ///
+    /// A project whose FILES ARE MISSING -- copied from another Mac
+    /// without them, an original's drive not connected -- is held alike:
+    /// open to be looked at (drawn without them), not changed, until they
+    /// are back and it is opened again (the core's kProjectMissingMedia).
+    var agentHolds: Bool { document.agent || missingHolds }
+    /// Files it uses are missing: read-only (above), the agent aside.
+    var missingHolds: Bool { !document.missing.isEmpty }
 
     /// Something would change the project: refused before the core is
     /// asked while an agent holds it, said once in a notice.
     func refusedForAgent() -> Bool {
         guard agentHolds else { return false }
-        flash(String(localized: "The agent is working on this project: look around freely; changes wait until it is done, or stopped."), level: .warning)
+        if document.agent {
+            flash(String(localized: "The agent is working on this project: look around freely; changes wait until it is done, or stopped."), level: .warning)
+        } else {
+            flash(missingNotice, level: .warning)
+        }
         return true
+    }
+
+    /// What a project with missing files says: how many, the first, and
+    /// that it is looked at, not changed.
+    var missingNotice: String {
+        let n = document.missing.count
+        let first = document.missing.first.map {
+            URL(fileURLWithPath: $0.path).lastPathComponent
+        } ?? ""
+        return n == 1
+            ? String(localized: "A file this project uses is missing (\(first)): it can be looked at, not changed. Reconnect it and open the project again.")
+            : String(localized: "\(n) files this project uses are missing (\(first), …): it can be looked at, not changed. Reconnect them and open the project again.")
     }
 
     /// The agent took the project: what was open to change it goes -- the
@@ -9541,10 +9710,33 @@ final class AppModel: TuningHost {
             untitled: p["untitled"] as? Bool ?? false,
             undo: Self.commandKind(p["undo"]),
             redo: Self.commandKind(p["redo"]),
-            agent: p["agent"] as? Bool ?? false)
+            agent: p["agent"] as? Bool ?? false,
+            missing: (p["missing_media"] as? [[String: Any]] ?? []).map {
+                MissingMedia(asset: $0["asset"] as? String ?? "",
+                             name: $0["name"] as? String ?? "",
+                             path: $0["path"] as? String ?? "",
+                             how: $0["how"] as? String ?? "")
+            })
         let took = next.agent && !document.agent
+        // Its files missing from the first: what would change it put away,
+        // and said once (the open's notice).
+        let lacking = !next.missing.isEmpty && document.missing.isEmpty
         if next != document { document = next }
         if took { agentTookProject() }
+        if lacking { missingTookProject() }
+    }
+
+    /// Files the project uses are missing: what was open to change it
+    /// goes -- the markup toolbar, the panels, the scissors -- and the
+    /// notice says what is missing.
+    private func missingTookProject() {
+        withAnimation(Self.motion) {
+            if markupOpen { markupOpen = false }
+            openPanel = nil
+            timelineCutting = false
+        }
+        note("warning", missingNotice)
+        flash(missingNotice, level: .warning)
     }
 
     /// The state asked for (after an open, a save).
@@ -9872,7 +10064,7 @@ final class AppModel: TuningHost {
         let ask = confirm ?? { [unowned self] in self.confirmClose() }
         reloadTasks()
         let live = tasks
-        let agent = agentAtWork
+        let agent = agentsAtWork
         guard !live.isEmpty || agent else {
             return ask() ? .proceed : .cancelled
         }
@@ -9947,7 +10139,7 @@ final class AppModel: TuningHost {
         }
         // Nothing typed meanwhile.
         editorWindow?.makeFirstResponder(nil)
-        if agent { agentControl("stop") }
+        if agent { stopAgentTabs() }
         for t in live.sorted(by: { !$0.running && $1.running }) {
             cancel(job: t.job)
         }
@@ -10029,6 +10221,8 @@ final class AppModel: TuningHost {
         didSet {
             guard let w = editorWindow else { return }
             editorWasShown = true
+            // Its drops read the drag's own pasteboard (DragBoard).
+            DragBoard.watch(w)
             // Its close asks about the project while it is still there.
             if closeGuard?.window !== w {
                 closeGuard = WindowCloseGuard(window: w) { [weak self] in
@@ -10710,9 +10904,12 @@ final class AppModel: TuningHost {
         // this one put them back, after Start Over too.
         promptWordsBy = [:]
         agentWordsSent = nil
-        // Its agent's session was that project's (stopped with it).
+        // Its agent's sessions were that project's (stopped with it):
+        // one tab again, Valtz's tools its.
         agent = nil
         agentWriting = ""
+        agentTabs = [AgentTab(skills: "full")]
+        agentTabIndex = 0
         agentFollows = true
         referenceThumbs = [:]
         promptMentions = []
@@ -11055,7 +11252,10 @@ final class AppModel: TuningHost {
         try? FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true)
         let out = dir.appendingPathComponent(exportFileName)
-        return Self.writePNG(img, to: out) ? out : nil
+        guard Self.writePNG(img, to: out) else { return nil }
+        core?.stampFile(out.path, project: projectId,
+                        asset: currentAsset?.id)
+        return out
     }
 
     /// What is on the stage can be saved, shared and dragged out: an
@@ -11083,8 +11283,15 @@ final class AppModel: TuningHost {
         let out = dir.appendingPathComponent(exportFileName)
         try? FileManager.default.removeItem(at: out)
         // A clone on APFS: no bytes copied.
-        return (try? FileManager.default.copyItem(at: url, to: out)) != nil
-            ? out : url
+        guard (try? FileManager.default.copyItem(at: url, to: out)) != nil
+        else { return url }
+        // A picture names its writer, its chunks rewritten beside the
+        // blob. A clip or a sound goes as made: stamping it would rewrite
+        // the whole file here, on the main thread, as the sheet opens.
+        if a.kind == "image" {
+            core?.stampFile(out.path, project: projectId, asset: a.id)
+        }
+        return out
     }
 
     /// The picture Save… would write, as shown -- for the save panel's
@@ -11457,10 +11664,14 @@ final class AppModel: TuningHost {
         case "agent.changed":
             if (p["agent"] as? String) == agent?.agent {
                 reloadAgent()
+            } else if let id = p["agent"] as? String {
+                reloadAgentTab(session: id)
             }
         case "agent.text":
             if (p["agent"] as? String) == agent?.agent {
                 agentWriting += p["text"] as? String ?? ""
+            } else if let id = p["agent"] as? String {
+                agentTabWrote(session: id, p["text"] as? String ?? "")
             }
         case "assist.partial":
             if ev.job == enhanceJob {
@@ -11793,6 +12004,17 @@ final class AppModel: TuningHost {
                 }
                 flash(Self.endLabel(state), level: state == "cancelled"
                       ? .info : state == "finished" ? .warning : .error)
+                return
+            }
+            // Its file is missing (a project copied without it, an
+            // original's drive not connected): said as that, not as a
+            // result that could not be shown.
+            if state == "finished", let asset, let missing = asset.missing {
+                if stageVisible {
+                    stage.aLabel = String(localized: "File missing")
+                }
+                flash(String(localized: "The file of “\(asset.name)” is missing: \(missing)"),
+                      level: .warning)
                 return
             }
             if stageVisible {

@@ -1213,7 +1213,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Projects the Finder asks Valtz to open -- a double-click, a drop on
     /// its Dock icon: each in a window (EditorWindows.open) -- held until
-    /// the first window is there.
+    /// the first window is there, which is then shown (a launch that
+    /// opens them leaves it ordered out).
     func application(_ application: NSApplication, open urls: [URL]) {
         for u in urls where u.pathExtension.lowercased() == "valtz" {
             EditorWindows.shared.open(u)
@@ -1386,6 +1387,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let v = env["VALTZ_SNAPSHOT_KEEP_LATENTS"] {
                 m.keepLatents = v == "1"
             }
+            // The card's High-res pass row past 768P: drafted and
+            // regenerated ("on", the default) or one pass ("off").
+            if let v = env["VALTZ_SNAPSHOT_HIGHRES"] {
+                m.regenerateHighRes = v != "off"
+            }
             // Favor ("speed", ..., "custom": its panel opens), and
             // Custom's values ("sol_attn=true,steps=8"), as the panel
             // sets them.
@@ -1403,6 +1409,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 m.addWeights(spec.split(separator: ",").map {
                     URL(fileURLWithPath: String($0))
                 })
+            }
+            // Weights Custom lists, ON, whose files are not there --
+            // "lora:<path>,vae:<path>,dit:<path>" -- as a list kept from
+            // before they were moved or deleted.
+            if let spec = env["VALTZ_SNAPSHOT_WEIGHTS_GONE"],
+               var t = m.tuningInfo?.tuning {
+                for item in spec.split(separator: ",").map(String.init) {
+                    let kv = item.split(separator: ":", maxSplits: 1)
+                        .map(String.init)
+                    guard kv.count == 2 else { continue }
+                    if kv[0] == "lora" {
+                        t.loras.append(TuningLoRA(path: kv[1], on: true))
+                    } else {
+                        t.checkpoints[kv[0] + "s", default: []]
+                            .append(TuningCheckpoint(path: kv[1], on: true))
+                    }
+                }
+                m.settleTuning(t)
+                print("snapshot: weights-gone left=\(m.leftOutWeights(m.tuningInfo)) rows=\(m.tuningInfo.map { i in (i.tuning.loras.map { "\(i.name($0)):\($0.on ? "on" : "off")\($0.missing ? "!" : "")" } + (i.tuning.checkpoints["vaes"] ?? []).map { "\($0.name):\($0.on ? "on" : "off")\($0.missing ? "!" : "")" }).joined(separator: ",") } ?? "-")")
             }
             if let spec = env["VALTZ_SNAPSHOT_TUNE"] {
                 // A number after a number's own comma continues it, a
@@ -4584,7 +4609,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // "newest", or its id's end.
                     case "gen", "link", "unlink", "order", "nodeset",
                          "nodestart", "nodedup", "noderm", "nodeopen",
-                         "plus":
+                         "plus", "nodetype":
                         let p = arg.split(separator: "@", maxSplits: 1)
                             .map(String.init)
                         let node = { (s: String) -> String? in
@@ -4636,6 +4661,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         case "noderm":
                             if let n = node(arg) { m.atlasRemoveNode(n) }
+                        // Typed into its panel's fields, no Return:
+                        // "nodetype:<node>@width=1920,height=1088".
+                        case "nodetype":
+                            if p.count == 2, let n = node(p[0]) {
+                                for kv in p[1].split(separator: ",") {
+                                    let x = kv.split(separator: "=",
+                                                     maxSplits: 1)
+                                        .map(String.init)
+                                    m.atlasNodeFields[n, default: [:]][x[0]] =
+                                        x.count > 1 ? x[1] : ""
+                                }
+                            }
                         case "nodeopen": m.atlasNodeOpen = node(arg)
                         default:
                             if let a = named(arg).flatMap(m.asset(id:)) {
@@ -5135,7 +5172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try? await Task.sleep(for: .milliseconds(400))
                     FileHandle.standardError.write(Data(
-                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.asset(id: id)?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary()) \(Self.stageShowSummary(m))\n".utf8))
+                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.asset(id: id)?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary()) \(Self.stageShowSummary(m)) notice=\(m.notice.map { "\($0.level):" + $0.text.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
                 }
             }
             // THE AGENT (DESIGN §9b), driven as its card drives it:
@@ -5151,6 +5188,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // newest-image|<id>", "nav:page:<n>", "nav:seek:<frame>",
             // "nav:active:<id>" the person looking elsewhere, and "follow"
             // the card's Follow (each step's line: holds=, follows=).
+            // The CHAT (the editor's Agent tab): "paste:<file>" a picture
+            // pasted into the box, "drop:<file>" dropped on the chat (each
+            // printing `snapshot: agent-paste|drop took= row= assets=`),
+            // "pastetext:<words>" words that stay words, "target" the Agent
+            // tab with nothing asked, "transcript" its
+            // transcript opened, "newchat" the session put away, "shot:" /
+            // "draw:<file.png>" the window captured / drawn; its TABS:
+            // "tab:new" one more, "tab:<n>" the n-th shown (from 1),
+            // "tabclose:<n>" closed (the last: the chat left too),
+            // "skills:full|chat|none" the shown tab's tools (before its
+            // first words), "leave" the chat's (x), "clearinput" its
+            // input's Clear, "startover" Start Over, "context:<tokens>"
+            // the helper's Context, "memory" what the engine keeps warm
+            // (`snapshot: agent-memory warm=`); each
+            // step's `snapshot: agent-chat chat= chatRect= ctx=used/limit@
+            // compact transcript= row= said=<words>:<attached>s<shown>
+            // tabs=<n>:<skills>:<state>:<steps>[*shown],...`.
             if let spec = env["VALTZ_SNAPSHOT_AGENT"] {
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
@@ -5165,6 +5219,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "say":
                         m.setPrompt(arg)
                         m.start()
+                    // The Agent tab, nothing asked yet.
+                    case "target": m.setModality(.agent)
                     // Words typed into the box as the keyboard types
                     // them, then Start pressed: the text view holds
                     // them, as a person's do.
@@ -5250,8 +5306,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         default: break
                         }
                     case "follow": m.followAgent()
-                    // The window as the screen shows it, now.
+                    // A picture PASTED into the box, as ⌘V pastes one --
+                    // its bytes on a pasteboard of the run's own (the
+                    // person's clipboard left alone) -- or DROPPED on the
+                    // chat as a browser's picture drops; `pastetext:`
+                    // words pasted, which stay words.
+                    case "paste", "drop", "pastetext":
+                        let pb = NSPasteboard(name: NSPasteboard.Name(
+                            "com.tgous.valtz.snapshot-paste"))
+                        pb.clearContents()
+                        if kv[0] == "pastetext" {
+                            pb.setString(arg, forType: .string)
+                        } else {
+                            let url = URL(fileURLWithPath: arg)
+                            let t = UTType(filenameExtension:
+                                               url.pathExtension)
+                                .map { NSPasteboard.PasteboardType($0.identifier) }
+                                ?? .png
+                            if let d = try? Data(contentsOf: url) {
+                                pb.setData(d, forType: t)
+                            }
+                        }
+                        let before = m.rowAssetIds.count
+                        let tv = NSApp.windows.first(where: { $0.isVisible })?
+                            .contentView?.superview
+                            .flatMap { Self.find(PromptTextView.self, in: $0) }
+                        let took = kv[0] == "drop"
+                            ? PromptRowDrop(model: m).take(pb)
+                            : tv?.pasteMedia(from: pb) ?? false
+                        // Imported, then staged as its asset.
+                        for _ in 0..<40 where took
+                            && m.rowAssetIds.count <= before {
+                            try? await Task.sleep(for: .milliseconds(250))
+                        }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: agent-\(kv[0]) took=\(took) row=\(m.promptAttachments.map(\.kind).joined(separator: ",")) assets=\(m.rowAssetIds.count) prompt=\(m.prompt.count) offered=\(DroppedMedia.pastes(pb))\n".utf8))
+                    // Its transcript opened from the status row.
+                    case "transcript": m.openAgentTranscript()
+                    // A new chat: the session put away.
+                    case "newchat": m.agentDismiss()
+                    // The tabs: another, one shown, one closed, the shown
+                    // one's tools.
+                    case "tab":
+                        if arg == "new" {
+                            m.newAgentTab()
+                        } else if let n = Int(arg) {
+                            m.selectAgentTab(n - 1)
+                        }
+                    case "tabclose":
+                        if let n = Int(arg) { m.closeAgentTab(n - 1) }
+                    case "skills": m.setAgentSkills(arg)
+                    // The chat's (x), and its input's Clear.
+                    case "leave": m.leaveAgentChat()
+                    case "clearinput": m.clearPrompt()
+                    // Start Over between chats; the helper's Context as
+                    // Settings sets it; what the engine keeps warm now:
+                    // `snapshot: agent-memory warm=<folder>:<MB>+<kvMB>
+                    // @<s left>,...` (each a model loaded and held).
+                    case "startover": m.startOver()
+                    case "context":
+                        if let n = Int(arg) { m.setHelperContext(n) }
+                    case "memory":
+                        let held = (try? JSONSerialization.jsonObject(
+                            with: m.core?.memoryHeldJSON() ?? Data()))
+                            as? [String: Any] ?? [:]
+                        let warm = (held["warm"] as? [[String: Any]] ?? [])
+                            .map { w -> String in
+                                let dir = (w["dir"] as? String ?? "")
+                                    .split(separator: "/").last
+                                    .map(String.init) ?? "-"
+                                let mb = ((w["bytes"] as? NSNumber)?
+                                    .int64Value ?? 0) >> 20
+                                let kv = ((w["kv_bytes"] as? NSNumber)?
+                                    .int64Value ?? 0) >> 20
+                                let left = (w["left"] as? NSNumber)?
+                                    .intValue ?? -1
+                                return "\(dir):\(mb)+\(kv)@\(left)"
+                            }
+                        FileHandle.standardError.write(Data(
+                            "snapshot: agent-memory warm=\(warm.isEmpty ? "-" : warm.joined(separator: ","))\n".utf8))
+                    // The window as the screen shows it, now -- or as
+                    // AppKit draws it (`draw:`), where the screen cannot
+                    // be captured (a locked display).
                     case "shot": await Self.shootWindow(to: arg)
+                    case "draw": Self.drawWindow(to: arg)
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(400))
@@ -5265,6 +5403,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let hint = m.prompt.isEmpty && m.promptAttachments.isEmpty
                     FileHandle.standardError.write(Data(
                         "snapshot: agent-box box=\(box) prompt=\(m.prompt.count) hint=\(hint) immersive=\(m.promptImmersive) boxRect=\(Self.promptBoxRect())\n".utf8))
+                    // The chat: on or not, where it lies, its ring, its
+                    // transcript, what is attached in the input, and the
+                    // person's messages (words:attachments).
+                    let cf = m.agentChatFrame
+                    let ctx = m.agentContext
+                    let said = (a?.messages ?? []).filter {
+                        $0.role == "user" && $0.said != nil
+                    }.map { "\($0.said?.count ?? 0):\($0.attached?.count ?? 0)\($0.shown.map { "s\($0)" } ?? "")" }
+                    FileHandle.standardError.write(Data(
+                        "snapshot: agent-chat chat=\(m.agentChat) chatRect=\(Int(cf.minX)),\(Int(cf.minY)),\(Int(cf.width))x\(Int(cf.height)) ctx=\(ctx?.used ?? -1)/\(ctx?.limit ?? -1)@\(ctx?.compactAt ?? -1) transcript=\(a?.transcript.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") row=\(m.promptAttachments.count) said=\(said.joined(separator: ",")) tab=\(m.activePromptTab) look=\(m.activeTabDoNotApply) tabs=\(m.agentTabs.indices.map { i in let t = m.agentTabSession(i); return "\(i + 1):\(m.agentTabs[i].skills):\(t?.state ?? "-"):\(t?.steps.count ?? 0)\(i == m.agentTabIndex ? "*" : "")" }.joined(separator: ","))\n".utf8))
                     FileHandle.standardError.write(Data(
                         "snapshot: agent \(step.replacingOccurrences(of: " ", with: "_").prefix(40)) state=\(a?.state ?? "-") steps=\(a?.steps.count ?? 0) proposed=\(a?.proposed?.tool ?? "-") last=\(a?.steps.last.map { "\($0.tool):\($0.state)" } ?? "-") review=\(a?.review ?? false) backend=\(a?.backend?.kind ?? "-") composition=\(m.activeComposition?.name.replacingOccurrences(of: " ", with: "_") ?? "-") pages=\(m.activeComposition?.pages ?? 0) writing=\(m.agentWriting.count) holds=\(m.agentHolds) follows=\(m.agentFollows) viewed=\(m.viewedAsset.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") page=\(m.stagePage + 1) error=\(a?.errorText?.replacingOccurrences(of: " ", with: "_").prefix(60) ?? "-") speed=\(a?.stats.flatMap { $0.isEmpty ? nil : $0.line.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
                 }
@@ -6428,6 +6576,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Its Int8 Prefill: auto | on | off.
                 case "agent-i8":
                     m.setAgentSettings(["i8_prefill": arg])
+                // Its N-gram Table in Memory: on | off.
+                case "agent-ngram":
+                    m.setAgentSettings(["ngram_resident": arg == "on"])
                 case "offload", "share":
                     let kv2 = arg.split(separator: "=").map(String.init)
                     guard kv2.count == 2 else { break }
@@ -6518,6 +6669,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     line += " i8=\(a.i8Prefill ?? "auto"):"
                     line += (a.i8PrefillModel == true ? "on" : "off")
                     line += a.matrixCores == false ? ":nocores" : ""
+                    // Its N-gram Table: asked:where it is (off | held |
+                    // disk[/why]) of its GB, what the model then holds.
+                    if let p = a.plan, let t = p.ngramGb, t > 0 {
+                        line += " ngram=\(a.ngramResident == true ? "on" : "off")"
+                        line += ":\(p.ngram ?? "-")"
+                        line += p.ngramWhy.map { "/\($0)" } ?? ""
+                        line += String(format: ":%.1f,holds=%.1f", t,
+                                       p.holdsGb ?? 0)
+                    }
                 }
                 // Where it is: open, its frame and the editor's (the
                 // screen's points), and whether it is centred on it.
@@ -6800,7 +6960,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let outside = ["data:", "link:", "text:"].first {
                         parts[0].hasPrefix($0)
                     }
-                    let info = ref.map {
+                    // "dock:<file>+<stale>": a Dock stack's drag -- the
+                    // file on a pasteboard of its own, the named drag
+                    // pasteboard still holding the stale file.
+                    let dock = parts[0].hasPrefix("dock:")
+                        ? parts[0].dropFirst(5).split(separator: "+")
+                            .map { URL(fileURLWithPath: String($0)) }
+                        : []
+                    let info = dock.count == 2
+                        ? FakeDrag(dock: dock[0], stale: dock[1], at: p,
+                                   window: w)
+                        : ref.map {
                         FakeDrag(text: PromptTextView.referencePrefix
                                      + $0.uuidString,
                                  at: p, window: w)
@@ -6814,6 +6984,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     } ?? FakeDrag(
                         file: URL(fileURLWithPath: parts[0]),
                         at: p, window: w)
+                    let took = model?.assets.map(\.name) ?? []
                     // Where AppKit itself would hand this drag.
                     let find = NSSelectorFromString("_findDragTargetFrom:")
                     // Coming in elsewhere first, as a real drag crosses
@@ -6869,7 +7040,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 .name ?? fid)
                     }
                     FileHandle.standardError.write(Data(
-                        "snapshot: fake-drop at=\(parts[1]) crossed=\(crossed) view=\(hit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") entered=\(entered.rawValue) updated=\(updated.rawValue) performed=\(performed) assets=\(before)>\(model?.assets.count ?? 0) rowFolder=\(rowFolder) inside=\(inside.map { "\(type(of: $0))" } ?? "-") appkit=\(appkit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") mentions=\(model?.promptMentions.count ?? 0) banner=\(model?.banner ?? "-")\n".utf8))
+                        "snapshot: fake-drop at=\(parts[1]) crossed=\(crossed) view=\(hit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") entered=\(entered.rawValue) updated=\(updated.rawValue) performed=\(performed) assets=\(before)>\(model?.assets.count ?? 0) rowFolder=\(rowFolder) came=\((model?.assets.map(\.name) ?? []).filter { !took.contains($0) }.map { $0.replacingOccurrences(of: " ", with: "_") }.joined(separator: "+")) row=\(model?.promptAttachments.map { $0.url.lastPathComponent }.joined(separator: "+") ?? "-") inside=\(inside.map { "\(type(of: $0))" } ?? "-") appkit=\(appkit.map { "\(type(of: $0))@\(Int($0.convert($0.bounds, to: nil).minX)),\(Int(h - $0.convert($0.bounds, to: nil).maxY))" } ?? "-") mentions=\(model?.promptMentions.count ?? 0) banner=\(model?.banner ?? "-")\n".utf8))
                 }
             }
         }
@@ -6985,6 +7156,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "output=\(m.dimensions.width)x\(m.dimensions.height) "
                 + "sizes=\(m.sizeClasses.map { "\($0)" }.joined(separator: ",")) "
                 + "regenerate=\(m.regenerateDraft.map { "\($0.width)x\($0.height)>\(m.dimensions.width)x\(m.dimensions.height)" } ?? (m.regenerateMissing ? "missing" : "-")) "
+                + "highRes=\(m.regenerateOffered == nil ? "-" : m.regenerateHighRes ? "on" : "off") tuneRegen=\(m.tuningRegenerates) "
+                + "leftOut=\(m.leftOutWeights(m.tuningInfo).joined(separator: "+").isEmpty ? "-" : m.leftOutWeights(m.tuningInfo).joined(separator: "+")) "
                 + "composer=\(Int(m.composerWidth))/\(Int(m.composerColumn)) "
                 + "drawers=\(m.drawerWidths.sorted { $0.key < $1.key }.map { "\($0.key):\(Int($0.value))" }.joined(separator: ",")) "
                 + "sizeShown=\(m.sizeChoice.map { "\($0)" } ?? "custom") "
@@ -7554,14 +7727,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let seed = x.started.map { "\($0.seed)" + ($0.seedGiven == true ? "!" : "") }
                 ?? (x.seed < 0 ? "random" : String(x.seed))
             let row = x.refs.map { name($0) }.joined(separator: "+")
-            gens.append("\(x.id.suffix(6)):\(x.target):\(state):\(x.started?.model ?? (x.model.isEmpty ? "auto" : x.model)):\(x.preference)\(x.custom ? "+custom" : ""):\(x.width)x\(x.height):p\(name(x.prompt)):r\(row.isEmpty ? "-" : row):s\(seed)@\(n.type == "generate" ? "g" : "op>\(name(n.into))")\(n.column)")
+            gens.append("\(x.recorded == true ? "rec:" : "")\(x.id.suffix(6)):\(x.target):\(state):\(x.started?.model ?? (x.model.isEmpty ? "auto" : x.model)):\(x.preference)\(x.custom ? "+custom" : ""):\(x.width)x\(x.height):p\(name(x.prompt)):r\(row.isEmpty ? "-" : row):s\(seed)@\(n.type == "generate" ? "g" : "op>\(name(n.into))")\(n.column)")
         }
         let cutCount = g.ends.indices.filter {
             let to = g.graph.nodes[g.ends[$0].1]
             return to.type == "generate" && to.generate?.started == nil
         }.count
-        let e = "gen=\(gens.isEmpty ? "-" : gens.joined(separator: ",")) open=\(m.atlasNodeOpen.map { String($0.suffix(6)) } ?? "-") tune=\(m.atlasNodeTuneOpen && m.atlasNodeTuning != nil ? (m.atlasNodeTuning?.tuningInfo?.tuning.numbers["steps"]).map { "steps\(Int($0))" } ?? "on" : "-") cuts=\(cutCount)"
-        return [a, b, b2, c, d, e].joined(separator: " ")
+        // What is typed and not taken, by node; the open node's draft
+        // size (regenerated past 768P) and its Custom's refine group.
+        let typed = m.atlasNodeFields.map { n, f in
+            "\(n.suffix(6)):" + f.keys.sorted().map { "\($0)=\(f[$0] ?? "")" }
+                .joined(separator: "+")
+        }.joined(separator: ",")
+        let openGen = m.atlasNodeOpen.flatMap(m.atlasGenerateNode)
+        let regen = openGen.flatMap { x in
+            m.regenerateDraft(model: x.started?.model ?? m.atlasNodeModel(x),
+                              width: x.width, height: x.height)
+        }.map { "\($0.width)x\($0.height)" } ?? "-"
+        let e0 = "typed=\(typed.isEmpty ? "-" : typed) regen=\(regen) tuneRegen=\(m.atlasNodeTuning?.tuningRegenerates ?? false)"
+        let e = "\(e0) gen=\(gens.isEmpty ? "-" : gens.joined(separator: ",")) open=\(m.atlasNodeOpen.map { String($0.suffix(6)) } ?? "-") tune=\(m.atlasNodeTuneOpen && m.atlasNodeTuning != nil ? (m.atlasNodeTuning?.tuningInfo?.tuning.numbers["steps"]).map { "steps\(Int($0))" } ?? "on" : "-") cuts=\(cutCount)"
+        // The graph moving (AtlasMotion): how far as last drawn, nodes
+        // moved, come and gone, edges come and gone.
+        let mo = m.atlasMotion
+        let moved = g.graph.nodes.indices.filter { i in
+            mo.from[g.graph.nodes[i].id].map { $0 != g.frames[i] } ?? false
+        }.count
+        let came = g.graph.nodes.filter { mo.isNew($0.id) }.count
+        let f = "motion=\(String(format: "%.2f", mo.progress(m.atlasShownPhase))):\(moved)moved+\(came)new+\(mo.goneNodes.count)gone+\(mo.fresh.count)edges-new+\(mo.gone.count)edges-gone"
+        return [a, b, b2, c, d, e, f].joined(separator: " ")
     }
 
     /// A scripted Continue: "N" (2 and up) its last N seconds as a
@@ -8146,6 +8339,25 @@ final class FakeDrag: NSObject, @preconcurrency NSDraggingInfo {
     /// node type -- a path URL took drops a real drag did not.
     init(file: URL, at: NSPoint, window: NSWindow) {
         pasteboard = Self.dragBoard()
+        Self.write(file, to: pasteboard)
+        location = at
+        self.window = window
+    }
+
+    /// A drag from a DOCK STACK: the file on a pasteboard of the drag's
+    /// own, the named drag pasteboard left holding `stale` -- the last
+    /// Finder drag's, as a real one leaves it.
+    init(dock file: URL, stale: URL, at: NSPoint, window: NSWindow) {
+        Self.write(stale, to: Self.dragBoard())
+        pasteboard = NSPasteboard(name: NSPasteboard.Name(
+            "com.tgous.valtz.snapshot-dock"))
+        pasteboard.clearContents()
+        Self.write(file, to: pasteboard)
+        location = at
+        self.window = window
+    }
+
+    private static func write(_ file: URL, to pb: NSPasteboard) {
         // Through Core Foundation: Swift's URL makes a reference a path.
         let s = CFURLCreateFileReferenceURL(nil, file as CFURL, nil)
             .map { CFURLGetString($0.takeRetainedValue()) as String }
@@ -8154,9 +8366,7 @@ final class FakeDrag: NSObject, @preconcurrency NSDraggingInfo {
         item.setString(s, forType: .fileURL)
         item.setString(s, forType: NSPasteboard.PasteboardType(
             "com.apple.finder.node"))
-        pasteboard.writeObjects([item])
-        location = at
-        self.window = window
+        pb.writeObjects([item])
     }
 
     /// A row's drag: its text, as NSItemProvider(object: NSString) has it.

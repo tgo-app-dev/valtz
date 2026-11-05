@@ -56,11 +56,18 @@ struct Message {
   std::vector<ToolCall> calls;    // an assistant's
   std::string           call_id;  // a tool message: the call it answers
   std::string           name;     // a tool message: its tool
-  // Pictures shown with it (a user message: a page as it is drawn).
+  // Pictures shown with it (a user message: a page as it is drawn, the
+  // pictures the person attached).
   std::vector<std::filesystem::path> images;
   // An assistant's: what its turn cost and how fast it went (turn_stats)
   // -- shown to the person debugging it, never sent to a model.
   Json                  stats = Json::object();
+  // A user message the PERSON wrote: their words as typed -- the content
+  // adds where they were and Valtz's notes -- and the assets they
+  // attached to it, by id. For the app's chat and the transcript; never
+  // sent to a model (the content says what it needs to know).
+  std::string              said;
+  std::vector<std::string> attached;
 };
 
 Json to_json(const Message&);

@@ -491,7 +491,8 @@ extension AppModel {
     /// files staged, what it made a file of (DroppedMedia) imported as
     /// copies and staged as their assets once they are.
     func stageDropped(_ intake: DroppedMedia.Intake) {
-        guard !refusedForAgent() else { return }
+        // While an agent works too: an import adds, and its hold lets it
+        // through (importFiles).
         if !intake.files.isEmpty { addReferences(intake.files) }
         guard intake.makes else { return }
         Task { @MainActor [weak self] in
@@ -1002,7 +1003,9 @@ private struct AssetsDrop: DropDelegate {
     let folder: String
     @Binding var targeted: Bool
 
-    private var pasteboard: NSPasteboard { NSPasteboard(name: .drag) }
+    /// The drag's own pasteboard (DragBoard: a Dock stack's is not the
+    /// named drag pasteboard).
+    private var pasteboard: NSPasteboard { DragBoard.pasteboard }
 
     func validateDrop(info: DropInfo) -> Bool {
         // An agent at work holds the project: nothing goes into it.
@@ -1137,6 +1140,18 @@ private struct AssetRow: View {
                             .background(Capsule().fill(
                                 Color.accentColor.opacity(0.15)))
                             .help("On the stage: every panel works on it")
+                    }
+                    if let missing = a.missing {
+                        // Its file is not there: drawn as nothing where
+                        // it is used, the project read-only.
+                        Text("Missing")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.red)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(
+                                Color.red.opacity(0.15)))
+                            .help("Its file is missing: \(missing)")
                     }
                     if stale {
                         Text("Unused")

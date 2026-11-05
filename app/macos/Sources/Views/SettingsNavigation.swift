@@ -64,6 +64,7 @@ enum SettingsPlace: Hashable, Sendable {
          String(localized: "DeepSeek"), String(localized: "Agent Memory"),
          String(localized: "Expert Cache"),
          String(localized: "Int8 Prefill"),
+         String(localized: "N-gram Table in Memory"),
          String(localized: "A member keeps its context"),
          String(localized: "Provider"), String(localized: "Model"),
          String(localized: "Server"), String(localized: "API Key")]

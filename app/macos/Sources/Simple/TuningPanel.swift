@@ -132,7 +132,7 @@ struct TuningPanel: View {
     @ViewBuilder
     private func optionRow(_ o: TuningOption, _ info: TuningInfo) -> some View {
         let t = info.tuning
-        let block = blocker(o, info)
+        let block = Self.blocker(o, info)
         GridRow {
             Text(Self.title(o))
                 .gridColumnAlignment(.trailing)
@@ -150,6 +150,8 @@ struct TuningPanel: View {
                         set: { model.setTuning(o.key, choice: $0) })) {
                         ForEach(o.choices, id: \.self) { c in
                             Text(Self.choiceLabel(o.key, c)).tag(c)
+                                .selectionDisabled(
+                                    Self.isWithheld(o, c, t))
                         }
                     }
                     .labelsHidden()
@@ -168,7 +170,7 @@ struct TuningPanel: View {
             .gridColumnAlignment(.leading)
             Text(block ?? o.declaredNote
                  ?? (o.type == "choice"
-                     ? Self.choiceNote(o.key, t.choices[o.key] ?? "")
+                     ? Self.choiceNote(o, info)
                      : Self.note(o)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -340,6 +342,20 @@ struct TuningPanel: View {
                     .help(missing
                           ? String(localized: "File not found: \(path)")
                           : path)
+                // Its file moved or deleted: said on the row, not only in
+                // its tooltip; Start leaves it out and says so. Kept on
+                // as it was, it runs again once the file is back; (-)
+                // takes it off the list.
+                if missing {
+                    Text("Not found")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.red.opacity(0.14), in: Capsule())
+                        .fixedSize()
+                        .help(String(localized: "File not found: \(path)"))
+                }
                 Spacer(minLength: 0)
                 Button(action: remove) {
                     Image(systemName: "minus.circle")
@@ -358,31 +374,55 @@ struct TuningPanel: View {
     ])
 
     /// Why `o` cannot be changed now, or nil when it can: this Mac or
-    /// install cannot have it, another option on has taken its place,
-    /// fixed it, or it refines one that is off.
-    private func blocker(_ o: TuningOption, _ info: TuningInfo) -> String? {
-        if !o.available { return Self.why(o.why) }
+    /// install cannot have it, a choice in force sets it (the ANE's int8
+    /// the int8 tier), another option on has taken its place, fixed it,
+    /// or it refines one that is off. Settings › Upscaling's too.
+    static func blocker(_ o: TuningOption, _ info: TuningInfo) -> String? {
+        if !o.available { return why(o.why) }
         let t = info.tuning
+        if let by = info.setBy[o.key] {
+            let name = info.options.first { $0.key == by }
+                .map(title) ?? label(by)
+            let value = choiceLabel(by, t.choices[by] ?? "")
+            return String(localized: "Follows \(name): \(value)")
+        }
         for other in info.options where t.flags[other.key] == true {
             if other.excludes.contains(o.key) {
-                return String(localized: "Replaced by \(Self.title(other))")
+                return String(localized: "Replaced by \(title(other))")
             }
             if o.key == "steps", let n = other.fixedSteps {
                 let steps = String(n)
-                return String(localized: "\(Self.title(other)) runs its own \(steps)")
+                return String(localized: "\(title(other)) runs its own \(steps)")
             }
             // Any other value it decides (TaoMate's shifts), shown as set.
             if o.key != "steps", let v = other.fixes[o.key] {
                 let value = v == v.rounded() ? String(Int(v)) : String(v)
-                return String(localized: "\(Self.title(other)) sets it to \(value)")
+                return String(localized: "\(title(other)) sets it to \(value)")
             }
         }
         if let needs = o.needs, t.flags[needs] != true {
             let name = info.options.first { $0.key == needs }
-                .map(Self.title) ?? Self.label(needs)
+                .map(title) ?? label(needs)
             return String(localized: "With \(name) on")
         }
         return nil
+    }
+
+    /// A choice's value a switch on withholds now (the int8 tier's Fast
+    /// while ANE FFN is on): listed, not to be picked.
+    static func isWithheld(_ o: TuningOption, _ value: String,
+                           _ t: Tuning) -> Bool {
+        o.withheld.contains { t.flags[$0.key] == true
+                              && $0.value.contains(value) }
+    }
+
+    /// The note beside a choice: its value's -- or, while it sets
+    /// others (the int8 tier the ANE's int8), that it does.
+    static func choiceNote(_ o: TuningOption, _ info: TuningInfo) -> String {
+        if info.setBy.values.contains(o.key) {
+            return String(localized: "The Neural Engine's int8 runs it too")
+        }
+        return choiceNote(o.key, info.tuning.choices[o.key] ?? "")
     }
 
     /// What an option goes by: an extension's own text, else Valtz's.
@@ -415,6 +455,8 @@ struct TuningPanel: View {
         case "vae_i8_gemm_tier": String(localized: "VAE int8 tier")
         case "ane_ffn": String(localized: "ANE FFN")
         case "ane_qkv": String(localized: "ANE QKV")
+        case "ane_int8": String(localized: "ANE int8")
+        case "ane_int8_tier": String(localized: "ANE int8 tier")
         case "motion_cache": String(localized: "MotionCache")
         case "video_shift": String(localized: "Video shift")
         case "audio_shift": String(localized: "Audio shift")
@@ -472,6 +514,7 @@ struct TuningPanel: View {
         case "vae_i8_gemm": String(localized: "int8 convolutions in the VAE, its decode 1.15-1.26×")
         case "ane_ffn": String(localized: "Feed-forward on the Neural Engine, beside the GPU")
         case "ane_qkv": String(localized: "q|k|v projection on the Neural Engine too")
+        case "ane_int8": String(localized: "The Neural Engine's modules in int8: faster, lossy")
         case "motion_cache": String(localized: "Reuses steps it can predict (16+ steps)")
         case "video_shift": String(localized: "Sigma shift of the video schedule")
         case "audio_shift": String(localized: "Sigma shift of the audio schedule")
@@ -498,11 +541,13 @@ struct TuningPanel: View {
         case "sage_pv8": String(localized: "Runs attention's second product, P·V, in int8 as well: the product is kept in 32-bit integers across the key blocks, the probabilities on an 8-bit grid. For a clip, the first quarter of the steps keep SageAttention alone; a picture runs it on every step. On an M5 Ultra, a 1344×768 clip of 362 frames denoised about 8% sooner than with SageAttention alone (its attention 1.18×). Needs SageAttention; off in every Favor preset.")
         case "sage_pv8_all_rows": String(localized: "With int8 P·V on, a clip's prompt and soundtrack rows, under 1% of its rows, keep SageAttention alone unless this is on.")
         case "i8_gemm": String(localized: "Dynamic int8 for the block's large matrix products, at int8 quality. Needs the M5's matrix cores.")
-        case "i8_gemm_tier": String(localized: "Which int8 matrix product runs with int8 GEMM on. Accurate quantizes the weights and the activations in groups of 64 at every call. Fast keeps the block's weights as int8 in groups of 512, each group turned by a Hadamard rotation on both sides so that one large channel does not set its scale. Per Token gives each weight row and each token one scale across the whole product, after a rotation in blocks of 256: the fastest (Qwen-Image 2.1 on an M5: 1.4-1.7× Accurate). Per Token, Unrotated skips the rotation: a little faster again, its pictures further from the bf16 model's. Faster down the list, less exact. A full-precision model's blocks take it only while kept in memory: those it streams, on a smaller Mac, stay Accurate (an 8-bit compressed copy's take it either way). With ANE FFN on, it is Accurate.")
+        case "i8_gemm_tier": String(localized: "Which int8 matrix product runs with int8 GEMM on. Accurate quantizes the weights and the activations in groups of 64 at every call. Fast keeps the block's weights as int8 in groups of 512, each group turned by a Hadamard rotation on both sides so that one large channel does not set its scale. Per Token gives each weight row and each token one scale across the whole product, after a rotation in blocks of 256: the fastest (Qwen-Image 2.1 on an M5: 1.4-1.7× Accurate). Per Token, Unrotated skips the rotation: a little faster again, its pictures further from the bf16 model's. Faster down the list, less exact. A full-precision model's blocks take it only while kept in memory: those it streams, on a smaller Mac, stay Accurate (an 8-bit compressed copy's take it either way). With ANE FFN on, Fast is not offered, the Neural Engine having no int8 of its groups, and Per Token or Per Token, Unrotated sets the Neural Engine's int8 to the same tier.")
         case "vae_i8_gemm": String(localized: "Runs the VAE's 3×3 convolutions and its attention's matrix products in int8 on the M5's matrix cores: the decode that makes the picture, and the encode of an edit's pictures. Each channel of a convolution's input gets a scale of its own. On an M5 Pro, a 1024×1024 picture decodes about 0.15-0.26 s sooner, 50-60 dB from the full-precision decode. Off in every Favor preset: the VAE is the last step before the pixels, with nothing after it to absorb an error.")
         case "vae_i8_gemm_tier": String(localized: "Which of the VAE's convolutions run in int8 with VAE int8 on. Accurate takes those inside its residual blocks, whose inputs are normalized: about 1.15× the decode. Fast takes every 3×3 convolution, the upsampling ones too: about 1.26×, a little further from the full-precision picture.")
         case "ane_ffn": String(localized: "Runs each block's feed-forward on the Apple Neural Engine at the same time as the GPU, its rows split between the two (fp16). Most worthwhile where the GPU has no int8 path (M4); the plan decides whether its module fits.")
         case "ane_qkv": String(localized: "Adds the block's q|k|v projection to the Neural Engine as a second module. Needs ANE FFN: the two are granted together, and the pair costs more memory than the feed-forward alone.")
+        case "ane_int8": String(localized: "Runs the Neural Engine's modules (the feed-forward, and q|k|v with ANE QKV) in int8, weights and activations, instead of fp16: the arithmetic of the GPU's per-token int8 tiers on the Neural Engine's rows. On an M4 Pro, MiniMax H3's blocks ran 1.36× the GPU alone with the feed-forward in int8 against 1.26× in fp16, and 1.65× against 1.41× with q|k|v too; each lands as far from the exact result as the GPU tier of its name. While int8 GEMM runs Per Token or Per Token, Unrotated, this is on at that tier. Needs ANE FFN and macOS 26; a module that cannot run int8 is built in fp16. Off in every Favor preset.")
+        case "ane_int8_tier": String(localized: "Which int8 the Neural Engine runs with ANE int8 on. Per Token turns each weight row and each projection's input by a Hadamard rotation in blocks of 256, then gives each row and each token one scale, so that one large channel does not set it. Per Token, Unrotated skips the rotation: about the same speed, and in a MiniMax H3 clip about 1.7× the error. While int8 GEMM runs one of these tiers, this is the same one.")
         case "motion_cache": String(localized: "Before each step, predicts how far the model's answer moved since the last one that ran; when little, reuses it. Little to gain on short schedules.")
         case "color_fix": String(localized: "Corrects each restored frame's colour toward its source frame, so the upscaled layer keeps the colours of the clip it replaces. FlashVSR 1.1 moves each channel's mean and spread to the source's (AdaIN); FlashVSR+ takes the source's low frequencies and keeps its own detail (a wavelet fix).")
         case "guidance_scale": String(localized: "Classifier-free guidance: each step runs the model twice, with the prompt and with an empty one, and moves the picture away from the empty one's by this much. MOSS-Image's own setting is 3. Higher follows the words more literally, with harder colours; 1 runs one forward a step, about twice as fast, the prompt followed less.")
@@ -530,6 +575,9 @@ struct TuningPanel: View {
             String(localized: "Per Token, Unrotated")
         case ("vae_i8_gemm_tier", "accurate"): String(localized: "Accurate")
         case ("vae_i8_gemm_tier", "fast"): String(localized: "Fast")
+        case ("ane_int8_tier", "token"): String(localized: "Per Token")
+        case ("ane_int8_tier", "token_plain"):
+            String(localized: "Per Token, Unrotated")
         case ("sol_threshold", "diag"): String(localized: "Diagonal")
         case ("sol_threshold", "exact"): String(localized: "Exact")
         case ("refine_start", "draft"): String(localized: "Keep the Draft")
@@ -552,6 +600,10 @@ struct TuningPanel: View {
             String(localized: "The residual blocks' convolutions")
         case ("vae_i8_gemm_tier", "fast"):
             String(localized: "Every 3×3 convolution: faster, less exact")
+        case ("ane_int8_tier", "token"):
+            String(localized: "Rotated, a scale a row and a token: the GPU's Per Token")
+        case ("ane_int8_tier", "token_plain"):
+            String(localized: "Not rotated: the same speed, less exact")
         case ("sol_threshold", "diag"):
             String(localized: "The blocks' variance, channel by channel")
         case ("sol_threshold", "exact"):
@@ -617,7 +669,8 @@ private enum TuningGroup: CaseIterable, Identifiable {
              "sage_attn", "sage_pv8", "sage_pv8_all_rows":
             .attention
         case "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier",
-             "ane_ffn", "ane_qkv", "motion_cache": .compute
+             "ane_ffn", "ane_qkv", "ane_int8", "ane_int8_tier",
+             "motion_cache": .compute
         default: .schedule
         }
     }

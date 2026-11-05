@@ -113,8 +113,10 @@ inline constexpr char kSummaryType[] = "valtz-video-summary";
 // hold (MB, 0 none: vpipe's load_spec::kMemoryLimitMb -- the agent's
 // Memory, where it is the agent's model), its experts' cache (MB, 0
 // the model's own sizing: load_spec::kExpertCacheMb -- the agent's Expert
-// Cache) and the dtype it computes in (bf16; Ternary-Bonsai's f16, its
-// scales' own: the catalog's engine.vpipe.compute_dtype).
+// Cache), its n-gram table held in memory (load_spec::kNgramResident --
+// the agent's N-gram Table: Flash-Next's, where it fits) and the dtype it
+// computes in (bf16; Ternary-Bonsai's f16, its scales' own: the
+// catalog's engine.vpipe.compute_dtype).
 inline constexpr char kSummaryModel[] = "hf_dir";
 inline constexpr char kSummaryMtpModel[] = "mtp_model";
 inline constexpr char kSummaryDraftModel[] = "draft_model";
@@ -123,6 +125,7 @@ inline constexpr char kSummaryKeepLoaded[] = "keep_loaded";
 inline constexpr char kSummaryWireWeights[] = "wire_weights";
 inline constexpr char kSummaryMemoryLimitMb[] = "memory_limit_mb";
 inline constexpr char kSummaryExpertCacheMb[] = "expert_cache_mb";
+inline constexpr char kSummaryNgramResident[] = "ngram_resident";
 inline constexpr char kSummaryComputeDtype[] = "compute_dtype";
 // The K/V pages, as the chat sizes them (the cache key: shared only
 // alike).

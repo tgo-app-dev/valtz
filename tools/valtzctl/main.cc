@@ -560,12 +560,13 @@ usage()
       "         two on one Mac)\n"
       "  agent <project> <request> [--auto] [--backend helper|cloud]\n"
       "        [--composition <id>] [--ref <file|asset-id>]... [--speed]\n"
-      "        [--assistant <id>]\n"
+      "        [--assistant <id>] [--skills full|chat|none]\n"
       "        | agent tools | agent settings [backend=helper|cloud]\n"
       "            [helper=<id>|same] [memory=64|128|192|<GB>|none]\n"
       "            [expert_cache=<GB>|auto] [i8_prefill=auto|on|off]\n"
-      "            [review=on|off] [lease=<s>] [provider=anthropic|openai|\n"
-      "            openai-compatible] [model=<id>] [base_url=<url>]\n"
+      "            [ngram=on|off] [review=on|off] [lease=<s>]\n"
+      "            [provider=anthropic|openai|openai-compatible]\n"
+      "            [model=<id>] [base_url=<url>]\n"
       "            [max_tokens=<n>] [context=<tokens>] [compact=on|off]\n"
       "        | agent key <provider> [--remove]\n"
       "         (the AGENT: the request worked on in the project by the\n"
@@ -574,8 +575,12 @@ usage()
       "         unless --auto. settings helper: the model it thinks with\n"
       "         here -- DeepSeek V4.1 Flash, a Qwen -- same: the Agentic\n"
       "         Helper's; memory: the most that model may hold, its expert\n"
-      "         cache sized within it. key: a cloud provider's API key,\n"
-      "         asked for unechoed, kept in the Keychain)\n"
+      "         cache sized within it; ngram: Flash-Next's n-gram table\n"
+      "         held in memory where it fits (38 GB more held, prompts\n"
+      "         read faster). key: a cloud provider's API key,\n"
+      "         asked for unechoed, kept in the Keychain. --skills:\n"
+      "         full the editor's tools, one such agent a project; chat\n"
+      "         looks and adds to Assets; none: words alone)\n"
       "  download <model-id> [--hf-token] [--from <source>]\n"
       "          [--pause-after <s> | --cancel-after <s>]\n"
       "        | download <model-id> --cancel\n"
@@ -1777,6 +1782,11 @@ agent_command(Controller& c, std::vector<std::string> args)
         set["expert_cache_gb"] = v == "auto" ? 0 : std::atoi(v.c_str());
       } else if (k == "i8_prefill") {
         set["i8_prefill"] = v;
+      } else if (k == "ngram") {
+        if (v != "on" && v != "off") {
+          return usage();
+        }
+        set["ngram_resident"] = v == "on";
       } else if (k == "review") {
         set["review"] = v == "on" || v == "true";
       } else if (k == "compact") {
@@ -1849,6 +1859,9 @@ agent_command(Controller& c, std::vector<std::string> args)
       speed = true;
     } else if (a == "--backend") {
       req.backend = next();
+    } else if (a == "--skills") {
+      // Its Valtz tools: full (edits), chat (looks and adds), none.
+      req.skills = next();
     } else if (a == "--assistant") {
       // Another catalog helper for this run only (its turns and its
       // enhancer): a smaller one beside a picture model on a small Mac.
@@ -2037,6 +2050,13 @@ agent_command(Controller& c, std::vector<std::string> args)
         (void)c.agent_say(*id, more);
       }
     } else if (state == "stopped") {
+      // Its transcript, in the project's Assets (DESIGN §9b).
+      if (auto t = AssetId::parse(jget<std::string>(st, "transcript", ""))) {
+        if (auto a = c.project(req.project)->asset(*t); a.ok()) {
+          std::fprintf(stderr, "agent: its transcript is \"%s\" (%s)\n",
+                       a->name.c_str(), t->str().c_str());
+        }
+      }
       return jget<std::string>(st, "error", "").empty() ? 0 : 1;
     }
   }
@@ -3248,6 +3268,9 @@ main(int argc, char** argv)
       }
       auto st = c.flatten(*pid, *aid, args[3], std::nullopt, std::nullopt,
                           {}, page);
+      if (st.ok()) {
+        (void)c.stamp_file(args[3]);  // its writer named; never fatal
+      }
       return st.ok() ? 0 : fail(st.error());
     }
     // A flag's value among the args (pages count from 1), and the args

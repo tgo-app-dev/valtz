@@ -92,7 +92,9 @@
 //                          "token_plain" (unrotated) -- faster down the
 //                          list, further from the dense picture. Only
 //                          where the catalog's `accel` names it (vpipe's
-//                          Qwen-Image 2.1 and MiniMax H3 DiTs)
+//                          Qwen-Image 2.1 and MiniMax H3 DiTs). With
+//                          ane_ffn on, "fast" is withheld (Accurate):
+//                          the Neural Engine runs no grouped int8
 //   vae_i8_gemm    bool    the VAE's int8 -- its 3x3 convs and its
 //                          attention's GEMMs -- as vae-decode / vae-encode
 //                          take `i8_gemm` (M5 matrix cores); off in every
@@ -103,6 +105,18 @@
 //   ane_ffn        bool    the block's feed-forward on the Neural Engine,
 //                          rows split with the GPU
 //   ane_qkv        bool    its q|k|v projection there too (needs ane_ffn)
+//   ane_int8       bool    the Neural Engine's modules in int8, W8A8
+//                          (vpipe's `ane_int8`, needs ane_ffn; macOS
+//                          26): lossy, off in every preset. Where the
+//                          catalog's `accel` names it
+//   ane_int8_tier  choice  which: "token" (rotated per 256, a step a
+//                          row and a token), "token_plain" (unrotated)
+//                          -- the GPU's tiers of those names on the
+//                          ANE's rows. Both FOLLOW i8_gemm_tier while
+//                          it is in force at one of them (int8 GEMM on,
+//                          matrix cores): ane_int8 on, the same tier.
+//                          tuning_options' "set_by" names what another
+//                          option set so
 //   video_shift    int     H3: the video schedule's sigma shift
 //   audio_shift    int     H3: the audio schedule's
 //   shift          real    an image family's scheduler shift (Krea 2's
@@ -135,6 +149,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace valtz::models {
 
@@ -212,11 +227,18 @@ Json missing_loras(const ModelEntry& m, const TuningContext& ctx,
                    std::string_view preference,
                    const Json& overrides = Json());
 
+// The weights Custom had on that are not there, so left out: each
+// LoRA's, DiT's and VAE's file marked "wanted" in settled `values`
+// (resolve_tuning), in list order.
+std::vector<std::string> left_out(const Json& values);
+
 // The options `m` offers, as the app draws them:
 //   {"family", "preference",
 //    "values": {key: value, ...},      settled (see resolve_tuning)
 //    "turbo": the preset's adapter, {"id", "name", "steps"} or null,
 //    "missing": missing_loras,
+//    "set_by": {key: the choice that set it, as values stand -- the
+//      ANE's int8 by the GPU's tier: not changed in the panel},
 //    "options": [{"key", "type": "bool" | "int" | "real" | "list" |
 //                   "choice",
 //                 "available": bool, "why": "" | "not-installed" |
@@ -229,6 +251,10 @@ Json missing_loras(const ModelEntry& m, const TuningContext& ctx,
 //                 "excludes": [keys turned off with it on],
 //                 "fixes": {key: value while it is on},
 //                 "needs": key it refines (sol_tau: sol_attn),
+//                 "withheld": {switch: [a choice's values withheld
+//                   while it is on]} (i8_gemm_tier: {"ane_ffn":
+//                   ["fast"]}),
+//                 "follows": the choice that sets it while in force,
 //                 "extra": the loras list's {"slots", "turbo" (the
 //                   catalog Turbo LoRA's file), "names" (file: name),
 //                   "steps_on", "steps_off", "shift_off", "fast": the

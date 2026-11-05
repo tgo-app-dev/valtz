@@ -64,9 +64,9 @@
     "image": {
       "generate": ["krea2-turbo", "qwen-image-2.1-turbo", "qwen-image-2.1",
                    "z-image-turbo", "flux3-klein", "flux2-klein-9b",
-                   "moss-image-sft", "moss-image-base"],
+                   "moss-image-sft", "moss-image-base", "p-h3-image"],
       "edit": ["qwen-image-2.1", "qwen-image-2.1-turbo", "flux3-klein",
-               "flux2-klein-9b", "fibo2-edit-turbo"]
+               "flux2-klein-9b", "fibo2-edit-turbo", "p-h3-image"]
     },
     "video": {
       "generate": ["minimax-h3-fl2va", "minimax-h3-ref2va"],
@@ -98,6 +98,8 @@
         {"model": "minimax-h3-vdn", "label": "VDN linear branch"},
         {"model": "minimax-h3-hyperflow", "label": "HyperFlow (8-step)"},
         {"model": "minimax-h3-image-vae", "label": "Image VAE (Mamad8)"},
+        {"model": "p-h3-image", "label": "P-H3-Image (PrunaAI): pictures and edits on FL2VA"},
+        {"model": "p-h3-image-lora", "label": "P-H3-Image adapter, FL2VA (PrunaAI)"},
         {"model": "open-h3-regenerate-2k", "label": "Open-H3-Regenerate-2K refiner (NVIDIA): clips past 768P"},
         {"model": "open-h3-latent-upscaler", "label": "Latent upscaler (for the refiner)"},
         {"model": "open-h3-fast-vae", "label": "Fast decoder (for the refiner, lossy)"}
@@ -337,7 +339,8 @@
       "check": {"is": {"config.json": "qwen4_exp"}},
       "capabilities": ["prompt-enhance", "intent", "caption", "video-summary"],
       "disk_gb": 128.6, "disk_measured": true,
-      "min_ram_gb": 64, "resident_gb": 6.8, "rank": 0, "by_name": true,
+      "min_ram_gb": 64, "resident_gb": 6.8,
+      "experts_gb": 84.8, "ngram_gb": 38.4, "rank": 0, "by_name": true,
       "license": "qwen-community-1.0",
       "engine": {"vpipe": {"mtp": true,
                            "dflash_drafter": "qwen3.8-flash-next-dflash2",
@@ -454,7 +457,8 @@
         "vpipe": {
           "config_stage": "z-image-model-config",
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
-                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
+                    "ane_int8"],
           "config": { "guidance_scale": 0.0 },
           "scheduler": { "steps": 8, "shift": 3.0, "type": "simple", "shift_type": "linear" },
           "defaults": { "steps": 8, "width": 1024, "height": 1024 },
@@ -484,7 +488,7 @@
         "vpipe": {
           "config_stage": "flux3-model-config",
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm",
-                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn"],
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_int8"],
           "config": {},
           "defaults": { "steps": 16, "width": 1024, "height": 1024 },
           "max_edge": 4096,
@@ -538,7 +542,8 @@
           "negative": "conditioner",
           "config_shift": 5.0,
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
-                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
+                    "ane_int8"],
           "config": {},
           "defaults": { "steps": 50, "width": 1024, "height": 1024 },
           "presets": {
@@ -590,7 +595,8 @@
           "negative": "conditioner",
           "config_shift": 5.0,
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
-                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
+                    "ane_int8"],
           "config": {},
           "defaults": { "steps": 50, "width": 1024, "height": 1024 },
           "presets": {
@@ -640,7 +646,8 @@
         "vpipe": {
           "config_stage": "flux2-model-config",
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
-                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
+                    "ane_int8"],
           "config": {},
           "defaults": { "steps": 4, "width": 1024, "height": 1024 },
           "presets": {
@@ -674,7 +681,8 @@
         "vpipe": {
           "config_stage": "fibo2-model-config",
           "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
-                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
+                    "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv",
+                    "ane_int8"],
           "config": {},
           "defaults": { "steps": 4, "width": 1024, "height": 1024 },
           "steps": { "speed": 4, "balanced": 4, "quality": 4 },
@@ -698,6 +706,51 @@
       "notes": "Bria's 8B DiT (Z-Image's block, a Perceiver squeezing the words into 256-512 gist tokens, five blocks cross-attending their own text bundle), distilled to edit in 4 steps with no guidance: an instruction, or a JSON object with an edit_instruction and a structured_caption of the result; up to five pictures, named image_1, image_2, ... Editing only (Bria's text-to-image model is Fibo 2.0 Dev, not run). Its text encoder Qwen3-VL-4B reads the words and the pictures (thumbnailed to 768 a side); fifteen of its layers condition the DiT. Trained at about one megapixel: each picture is cropped to the trained size of its shape (1024 x 1024, 1152 x 864, 1248 x 832, 1424 x 800, 1568 x 672, ...), the result at the first's. Its VAE is FLUX.2's (its int8 in Custom and Fast); its live preview FLUX.2's TAE (FLUX klein's). Streams on 16 GB: a 1024^2 edit 101 s at int8 Per Token on a base M5, 100 s dense on an M4 Pro (vpipe 17c53d63). Gated on Hugging Face; CC BY-NC 4.0, non-commercial."
     },
     {
+      "id": "p-h3-image",
+      "name": "P-H3-Image",
+      "family": "p-h3-image",
+      "role": "image",
+      "hf_path": "PrunaAI/P-H3-Image",
+      "fetch_variant": "PrunaAI/P-H3-Image-no-dit",
+      "check": {"is": {"modular_model_index.json": "PH3ImageModularPipeline",
+                       "text_connector/config.json": "PH3ImageTextConnector",
+                       "vae/config.json": "AutoencoderKLPH3Image"}},
+      "capabilities": ["text-to-image", "image-edit"],
+      "requires": ["minimax-h3-fl2va", "p-h3-image-lora"],
+      "disk_gb": 14.7, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 2,
+      "license": "minimax",
+      "engine": {
+        "vpipe": {
+          "shape": "h3-image",
+          "config_stage": "minimax-h3-model-config",
+          "dit_from": "minimax-h3-fl2va",
+          "adapter": "p-h3-image-lora",
+          "steps_fixed": true,
+          "align": 32,
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
+                    "ane_ffn", "ane_int8"],
+          "config": {},
+          "conditioner": { "unload_when_idle": "always" },
+          "generate": { "unload_when_idle": "always" },
+          "defaults": { "steps": 8, "width": 1024, "height": 1024 },
+          "presets": {
+            "speed": { "sage_attn": true, "sage_pv8": true, "i8_gemm": true,
+                       "i8_gemm_tier": "token" },
+            "balanced": { "sage_attn": true, "i8_gemm": true },
+            "quality": { "sol_attn": false, "sage_attn": false,
+                         "i8_gemm": false }
+          },
+          "edit": {
+            "max_references": 8,
+            "encoder": { "unload_when_idle": "auto" }
+          }
+        }
+      },
+      "prompting": {"language": "english", "reference_tag": "<Picture {n}>"},
+      "notes": "PrunaAI's image model on MiniMax H3: text to image, and an instruction editing a picture with up to seven more beside it (<Picture 1> the one edited, <Picture 2> ...), 8 steps on its own grid, no guidance. Its DiT is MiniMax H3 FL2VA's under PrunaAI's rank-128 adapter -- both needed, FL2VA downloaded or linked -- streamed as FL2VA streams; its text encoder a Qwen3-VL-4B through a connector, its VAE H3's encoder with a decoder for one frame. Best at 8 megapixels (2912 x 2912) for pictures and 4-8 for edits, from long, detailed prompts read as written: an edit's picture is held at 4 MP at least. MEASURED by vpipe on an M4 Pro, FL2VA bf16: 1024^2 in 2 min 48 s, 8 MP in 10 min 49 s, a 2048^2 edit in 12 min 16 s (vpipe 9366a96e). Its prompt upsampler (a Qwen3.5-9B) is not run. MiniMax H3 Community License; the Qwen3-VL parts Apache-2.0."
+    },
+    {
       "id": "krea2-turbo",
       "name": "Krea 2 Turbo",
       "family": "krea2",
@@ -715,7 +768,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "krea2-model-config",
-          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "config": {},
           "scheduler": { "steps": 8, "shift": 0.3 },
           "defaults": { "steps": 8, "width": 1024, "height": 1024 },
@@ -755,7 +808,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "qwen-image-21-model-config",
-          "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "config": {},
           "scheduler": { "steps": 20 },
           "defaults": { "steps": 20, "width": 1024, "height": 1024 },
@@ -812,7 +865,7 @@
       "engine": {
         "vpipe": {
           "config_stage": "qwen-image-21-model-config",
-          "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier", "vae_i8_gemm", "vae_i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "config": {},
           "steps_fixed": true,
           "defaults": { "steps": 8, "width": 1024, "height": 1024 },
@@ -914,7 +967,7 @@
           "vdn": {"branch": "minimax-h3-vdn", "range": 1},
           "regenerate": {"with": "open-h3-regenerate-2k", "above": 768,
                          "draft": 768},
-          "accel": ["sol_attn", "sol_tau_steps", "vdn_range_steps", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sol_tau_steps", "vdn_range_steps", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "ane_qkv_min_ram_gb": 24,
           "first_frame": true,
           "last_frame": true,
@@ -1034,7 +1087,7 @@
             "speed": {"turbo": [], "hyperflow": true},
             "balanced": {"turbo": [], "hyperflow": true, "sol_attn": false}
           },
-          "accel": ["sol_attn", "sol_tau_steps", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+          "accel": ["sol_attn", "sol_tau_steps", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "ane_qkv_min_ram_gb": 24,
           "references": {
             "max_pictures": 9, "max_clips": 3, "max_sounds": 3,
@@ -1619,6 +1672,18 @@
       "notes": "Mamad8's single-latent-frame decoder: H3 decodes one frame as a still with it (vpipe's vae-decode takes it for a one-frame latent)."
     },
     {
+      "id": "p-h3-image-lora", "name": "P-H3-Image adapter (FL2VA)",
+      "family": "p-h3-image", "role": "lora",
+      "hf_path": "PrunaAI/P-H3-Image-Comfy",
+      "check": {"tensors": ["lora"]},
+      "file": "loras/p-h3-image_lora_bf16.safetensors",
+      "fetch_variant": "PrunaAI/P-H3-Image-lora",
+      "capabilities": [],
+      "disk_gb": 2.0, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "minimax",
+      "notes": "PrunaAI's rank-128 adapter that makes MiniMax H3 FL2VA's DiT P-H3-Image's: always on under it, in the first LoRA slot (P-H3-Image-Comfy's file)."
+    },
+    {
       "id": "minimax-h3-pika-flex", "name": "MiniMax H3 Pika H3 Flex adapter (FL2VA)",
       "family": "minimax-h3", "role": "lora",
       "hf_path": "Pika-Labs/Pika-H3-Flex",
@@ -1694,7 +1759,7 @@
           },
           "accel": ["sol_attn", "sol_tau_steps", "vdn_range_steps",
                     "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm",
-                    "i8_gemm_tier", "ane_ffn", "ane_qkv"],
+                    "i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "ane_qkv_min_ram_gb": 24,
           "steps_fixed": true,
           "defaults": {"steps": 3}

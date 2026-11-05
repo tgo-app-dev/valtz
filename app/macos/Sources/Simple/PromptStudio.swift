@@ -124,8 +124,8 @@ struct PromptTabRail: View {
 
     /// A tab's length for its whole title: its number, the title, its
     /// ends -- within the bounds a tab has.
-    private static func natural(_ title: String, number: Int,
-                                locked: Bool = false) -> CGFloat {
+    static func natural(_ title: String, number: Int,
+                        locked: Bool = false) -> CGFloat {
         let w = { (s: String) in
             (s as NSString).size(withAttributes: [.font: font]).width
         }
@@ -165,8 +165,13 @@ struct PromptTabRail: View {
 }
 
 /// One tab: a card on its side, its number and title running up it; the
-/// number turns into × on hover. Renamed, the title is a field.
-private struct PromptTabCard: View {
+/// number turns into × on hover. Renamed, the title is a field. The
+/// agent's tabs too (AgentTabRail): its tools' glyph after the number, a
+/// dot while it works, its menu a chat's.
+struct PromptTabCard: View {
+    /// What its menu calls it.
+    enum Words { case prompt, chat }
+
     let number: Int
     let title: String
     let length: CGFloat
@@ -177,14 +182,22 @@ private struct PromptTabCard: View {
     var lookOnly = false
     var locked = false
     var editing = false
+    /// A glyph after the number (an agent tab's tools), and a dot after
+    /// it while its conversation works.
+    var symbol: String?
+    var busy = false
+    var words = Words.prompt
     let select: () -> Void
     let close: () -> Void
     let new: () -> Void
-    /// Its title made a field; and what was typed there (nil: Escape).
-    let rename: () -> Void
+    /// Its title made a field (none: not named); and what was typed there
+    /// (nil: Escape).
+    let rename: (() -> Void)?
     /// A locked prompt's copy to edit (none for another).
     let duplicate: (() -> Void)?
     let named: (String?) -> Void
+    /// Its tooltip, in place of the prompt's.
+    var tip: String?
     @State private var hovering = false
 
     private var run: CGFloat { max(0, length - 28) }
@@ -209,25 +222,37 @@ private struct PromptTabCard: View {
                 // A double-click on it names it (a click alone selects at
                 // once: no wait for a second).
                 .onClick({ if !editing { select() } },
-                         double: { if !editing { rename() } })
+                         double: { if !editing { rename?() } })
                 .onHover { hovering = $0 }
         }
         .animation(.smooth(duration: 0.15), value: hovering)
         .contextMenu {
-            Button("New Prompt", action: new)
-            Button("Rename Prompt", action: rename)
-            if let duplicate {
-                Button("Duplicate and Edit", action: duplicate)
-            }
-            if closable {
-                Button("Close Prompt", action: close)
+            switch words {
+            case .prompt:
+                Button("New Prompt", action: new)
+                if let rename {
+                    Button("Rename Prompt", action: rename)
+                }
+                if let duplicate {
+                    Button("Duplicate and Edit", action: duplicate)
+                }
+                if closable {
+                    Button("Close Prompt", action: close)
+                }
+            case .chat:
+                Button("New Chat", action: new)
+                if closable {
+                    Button("Close Chat", action: close)
+                }
             }
         }
-        .help(editing ? "" : String(localized: "\(title) -- double-click to name it"))
+        .help(editing ? "" : tip ?? String(localized: "\(title) -- double-click to name it"))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(verbatim: "\(number) \(title)"))
         .accessibilityAddTraits(open ? [.isSelected, .isButton] : .isButton)
-        .accessibilityAction(named: Text("Close Prompt"), close)
+        .accessibilityAction(named: words == .chat ? Text("Close Chat")
+                                                   : Text("Close Prompt"),
+                             close)
     }
 
     /// Laid out along the tab, then stood up: it reads from the bottom.
@@ -242,11 +267,21 @@ private struct PromptTabCard: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-                .help("Close this prompt")
+                .help(words == .chat ? "Close this chat" : "Close this prompt")
             } else {
                 Text(verbatim: String(number))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(open ? Color.accentColor : .secondary)
+            }
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: 9))
+                    .foregroundStyle(open ? Color.accentColor : .secondary)
+            }
+            if busy {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 5, height: 5)
             }
             if locked {
                 Image(systemName: "lock.fill")

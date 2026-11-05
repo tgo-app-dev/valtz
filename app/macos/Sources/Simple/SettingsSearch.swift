@@ -12,7 +12,7 @@ struct SettingsRow: Identifiable, Sendable {
     static let length = "length"
     static let songPlan = "song-plan", songLength = "song-length"
     static let lyrics = "lyrics", soundtrack = "soundtrack"
-    static let latents = "latents"
+    static let latents = "latents", highRes = "high-res"
     static let voice = "voice", speechLength = "speech-length"
     static let cropZoom = "crop-zoom", cropPad = "crop-pad"
     static let cropRotate = "crop-rotate"
@@ -176,6 +176,15 @@ struct SettingsRow: Identifiable, Sendable {
                     + AppModel.clipLengths.map {
                         String(localized: "\($0) s")
                     }))
+        }
+        // A clip past 768P: drafted and regenerated, or one pass.
+        if m.regenerateOffered != nil {
+            rows.append(SettingsRow(
+                id: highRes, panel: .generate,
+                terms: [String(localized: "High-res pass"),
+                        String(localized: "Draft and Regenerate"),
+                        String(localized: "One Pass"), "2K",
+                        "Open-H3-Regenerate-2K"]))
         }
         // A clip's latents kept, for a continuation from them.
         if m.offersKeepLatents {

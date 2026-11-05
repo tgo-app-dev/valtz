@@ -121,6 +121,9 @@ const ConfigKey kAttrs[] = {
   {.key = ex::kSummaryExpertCacheMb, .type = ConfigType::Int,
    .doc = "its experts' cache, MB, at most (0: the model's own sizing)",
    .def_int = 0},
+  {.key = ex::kSummaryNgramResident, .type = ConfigType::Bool,
+   .doc = "an n-gram table read by row from disk held in memory where it "
+          "fits, as the chat's ngram_resident", .def_bool = false},
   {.key = ex::kSummaryComputeDtype, .type = ConfigType::String,
    .doc = "the dtype it computes in, as the chat's: bf16 | f16",
    .def_str = "bf16"},
@@ -228,6 +231,7 @@ public:
         0, attr_int(ex::kSummaryMemoryLimitMb));
     _expert_cache_mb = std::max<std::int64_t>(
         0, attr_int(ex::kSummaryExpertCacheMb));
+    _ngram_resident = attr_bool(ex::kSummaryNgramResident);
     _compute_dtype = attr_str(ex::kSummaryComputeDtype);
     if (_compute_dtype.empty()) {
       _compute_dtype = "bf16";
@@ -323,6 +327,10 @@ public:
     if (_expert_cache_mb > 0) {
       vpipe::bag::set_integer(spec.extra, genai::load_spec::kExpertCacheMb,
                               _expert_cache_mb);
+    }
+    if (_ngram_resident) {
+      vpipe::bag::set_flag(spec.extra, genai::load_spec::kNgramResident,
+                           true);
     }
     _lm = mgr->load(spec);
     if (!_lm || !_lm->valid()) {
@@ -545,6 +553,7 @@ private:
   bool        _wire = true;
   std::int64_t _memory_limit_mb = 0;
   std::int64_t _expert_cache_mb = 0;
+  bool        _ngram_resident = false;
   std::string _compute_dtype = "bf16";
   std::string _scene_prompt;
   std::string _overall_prompt;

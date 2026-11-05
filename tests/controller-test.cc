@@ -9,13 +9,16 @@
 #include "valtz/base/tree-copy.h"
 #include "valtz/controller/controller.h"
 #include "valtz/media/camera.h"
+#include "valtz/media/exif.h"
 #include "valtz/media/markup.h"
 #include "valtz/media/model-input.h"
 #include "valtz/media/movie.h"
 #include "valtz/media/pdf.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/sound.h"
+#include "valtz/media/stamp.h"
 #include "valtz/media/text-flow.h"
+#include "valtz/models/tuning.h"
 #include "valtz/project/migrate.h"
 #include "valtz/project/project-file.h"
 
@@ -875,6 +878,101 @@ TEST(composition, a_still_has_pages)
   CHECK(page_path("/x/Doc.png", 0, 3) == fs::path("/x/Doc-1.png"));
   CHECK(page_path("/x/Doc.png", 0, 12) == fs::path("/x/Doc-01.png"));
   CHECK(page_path("/x/Doc.png", 11, 12) == fs::path("/x/Doc-12.png"));
+}
+
+// The model a file handed out names (DESIGN §7 Export): a picture's own,
+// as its file says; a still's when every layer it shows was made with that
+// one model -- nested stills too, hidden layers not counted -- and none
+// for two models, a model beside a photo or a markup, a markup alone, an
+// empty still. A picture flattened and stamped names it so.
+TEST(composition, a_file_names_the_one_model_it_was_made_with)
+{
+  Bench b("made-with");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  const std::string sw = "Valtz 0.1.0 (Vpipe 0.1 t)";
+  auto made = [&](const std::string& name, std::string_view model,
+                  std::array<std::uint8_t, 4> rgba)
+      -> std::optional<AssetId> {
+    const fs::path f = b.root / name;
+    if (!write_png(f, 8, 8, rgba) ||
+        (!model.empty() &&
+         !media::stamp_software(f, media::with_model(sw, model), false)
+              .ok())) {
+      return std::nullopt;
+    }
+    return import_and_wait(ctl, pid, f);
+  };
+  auto krea = made("krea.png", "Krea 2", {0xff, 0, 0, 0xff});
+  auto krea_b = made("krea-b.png", "Krea 2", {0, 0xff, 0, 0xff});
+  auto flux = made("flux.png", "FLUX.3", {0, 0, 0xff, 0xff});
+  auto photo = made("photo.png", "", {0x80, 0x80, 0x80, 0xff});
+  REQUIRE(krea && krea_b && flux && photo);
+  CHECK(ctl.made_with(pid, *krea) == "Krea 2");
+  CHECK(ctl.made_with(pid, *flux) == "FLUX.3");
+  CHECK(ctl.made_with(pid, *photo).empty());
+  std::vector<std::string> layer_ids;
+  auto still = [&](const std::vector<AssetId>& sources) {
+    auto c = ctl.create_composition(pid, project::AssetClass::Still, {8, 8});
+    CHECK(c.ok());
+    layer_ids.clear();
+    if (!c.ok()) {
+      return AssetId();
+    }
+    std::string below;
+    for (const auto& src : sources) {
+      auto l = below.empty() ? ctl.add_layer(pid, *c)
+                             : ctl.add_layer(pid, *c, below);
+      CHECK(l.ok());
+      if (!l.ok()) {
+        break;
+      }
+      CHECK(ctl.set_layer_source(pid, *c, *l, src).ok());
+      layer_ids.push_back(*l);
+      below = *l;
+    }
+    return *c;
+  };
+  CHECK(ctl.made_with(pid, still({*krea})) == "Krea 2");
+  CHECK(ctl.made_with(pid, still({*krea, *krea_b})) == "Krea 2");
+  CHECK(ctl.made_with(pid, still({*krea, *flux})).empty());
+  CHECK(ctl.made_with(pid, still({*krea, *photo})).empty());
+  CHECK(ctl.made_with(pid, still({})).empty());
+  // Nested: a still showing a still of Krea 2's, beside another of its.
+  const AssetId inner = still({*krea});
+  CHECK(ctl.made_with(pid, still({inner, *krea_b})) == "Krea 2");
+  // A layer hidden draws nothing: FLUX.3's out of sight, Krea 2's alone.
+  const AssetId two = still({*krea, *flux});
+  const std::string flux_layer = layer_ids.back();
+  REQUIRE_OK(ctl.set_layer_visible(pid, two, flux_layer, false));
+  CHECK(ctl.made_with(pid, two) == "Krea 2");
+  // Markup: alone, none; over a Krea 2 picture, none either.
+  const AssetId marked = still({});
+  REQUIRE_OK(ctl.markup_layer(pid, marked, {}));
+  CHECK(ctl.made_with(pid, marked).empty());
+  const AssetId over = still({*krea});
+  REQUIRE_OK(ctl.markup_layer(pid, over, {}));
+  CHECK(ctl.made_with(pid, over).empty());
+
+  // Flattened and stamped as a picture of the asset: the one model named,
+  // or none -- whatever the file itself says.
+  const fs::path f = b.root / "flat.png";
+  auto software = [&](AssetId a) {
+    CHECK(ctl.flatten(pid, a, f).ok());
+    CHECK(ctl.stamp_file(f, pid, a).ok());
+    return jget<std::string>(media::exif_fields(f), "Software", "");
+  };
+  CHECK(software(still({*krea, *krea_b})) ==
+        media::with_model(ctl.software(), "Krea 2"));
+  REQUIRE_OK(ctl.set_layer_visible(pid, two, flux_layer, true));
+  CHECK(software(two) == ctl.software());
+  CHECK(software(over) == ctl.software());
+  // ...a picture's own file, copied out, the same.
+  REQUIRE_OK(ctl.stamp_file(b.root / "flux.png", pid, *flux));
+  CHECK(jget<std::string>(media::exif_fields(b.root / "flux.png"),
+                          "Software", "") ==
+        media::with_model(ctl.software(), "FLUX.3"));
 }
 
 // CANVAS SIZE: a composition on a bigger or smaller canvas, anchored --
@@ -2310,6 +2408,114 @@ TEST(controller, flux3_klein_makes_up_to_4096_a_side)
   CHECK(big.error().message.find("4096") != std::string::npos);
 }
 
+// P-H3-Image (DESIGN §4r): its recipe names the adapter (the first LoRA,
+// by its catalog id) and the DiT it runs on (FL2VA, by its id) beside
+// its own 8 steps; the job is handed their files. Custom's LoRAs come
+// after the adapter. An edit's pictures are named as H3 names them. One
+// whose adapter is not here is refused by its name.
+TEST(controller, p_h3_image_runs_on_fl2va_under_its_adapter)
+{
+  auto root = test::temp_dir("ctl-ph3");
+  const fs::path models = root / "models";
+  auto install = [&](const std::string& f) {
+    fs::create_directories((models / f).parent_path());
+    std::ofstream(models / f) << "w";
+  };
+  install("MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors");
+  install("PrunaAI/P-H3-Image/modular_model_index.json");
+  install("PrunaAI/P-H3-Image/vae/diffusion_pytorch_model.safetensors");
+  auto make = [&](HeldEngine*& engine) {
+    ControllerConfig cfg;
+    cfg.support_root = root / "support";
+    cfg.model_roots = {models};
+    cfg.with_engine = false;
+    cfg.extensions = false;
+    cfg.engine_factory = [&engine] {
+      auto e = std::make_unique<HeldEngine>();
+      engine = e.get();
+      return std::unique_ptr<engine::Engine>(std::move(e));
+    };
+    return Controller::create(cfg);
+  };
+  // Its adapter not here: refused, naming it.
+  {
+    HeldEngine* engine = nullptr;
+    auto made = make(engine);
+    REQUIRE_OK(made);
+    auto pid = (*made)->create_project(root / "A.valtz", "ph3-a");
+    REQUIRE_OK(pid);
+    GenerateImageRequest req;
+    req.project = *pid;
+    req.prompt = "A lighthouse at dusk";
+    req.model = "p-h3-image";
+    req.width = 1024;
+    req.height = 1024;
+    auto job = (*made)->generate_image(req);
+    REQUIRE(!job.ok());
+    CHECK(job.error().message.find("P-H3-Image adapter") !=
+          std::string::npos);
+  }
+  install("PrunaAI/P-H3-Image-Comfy/loras/p-h3-image_lora_bf16.safetensors");
+  HeldEngine* engine = nullptr;
+  auto made = make(engine);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "P.valtz", "ph3");
+  REQUIRE_OK(pid);
+  GenerateImageRequest req;
+  req.project = *pid;
+  req.prompt = "A lighthouse at dusk";
+  req.model = "p-h3-image";
+  req.width = 1024;
+  req.height = 1024;
+  req.steps = 20;
+  req.tuning = {{"loras", Json::array({{{"path", "/l/style.safetensors"},
+                                        {"scale", 0.5}, {"on", true}}})}};
+  REQUIRE(write_png(root / "style.safetensors", 4, 4));
+  req.tuning["loras"][0]["path"] = (root / "style.safetensors").string();
+  auto job = ctl.generate_image(req);
+  REQUIRE_OK(job);
+  const auto* spec = engine->spec(*job);
+  REQUIRE(spec != nullptr);
+  CHECK(spec->op == engine::kOpGenerateImage);
+  CHECK(jget<std::string>(spec->params, "lora", "") == "p-h3-image-lora");
+  CHECK(jget(spec->params, "lora_scale", 0.0) == 1.0);
+  CHECK(jget<std::string>(spec->params, "dit_model", "") ==
+        "minimax-h3-fl2va");
+  CHECK(jget(spec->params, "steps", 0) == 8);
+  CHECK(fs::path(jget<std::string>(spec->params, "lora2_file", ""))
+            .filename() == "style.safetensors");
+  CHECK(jget(spec->params, "lora2_scale", 0.0) == 0.5);
+  CHECK(spec->model.lora.filename() == "p-h3-image_lora_bf16.safetensors");
+  CHECK(spec->model.dit.filename() == "FL2VA");
+  REQUIRE(spec->model.more_loras.size() == 1);
+  // An edit: the base Picture 1, the reference Picture 2.
+  REQUIRE(write_png(root / "red.png", 16, 16, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_png(root / "blue.png", 16, 16, {0, 0, 0xff, 0xff}));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  auto blue = import_and_wait(ctl, *pid, root / "blue.png");
+  REQUIRE(red && blue);
+  GenerateImageRequest ed;
+  ed.project = *pid;
+  ed.prompt = "put the cat from <valtz_ref_img_0> on the chair";
+  ed.row = {*red, *blue};
+  ed.base = *blue;
+  ed.references = {*red};
+  ed.model = "p-h3-image";
+  ed.width = 1024;
+  ed.height = 768;
+  auto ej = ctl.generate_image(ed);
+  REQUIRE_OK(ej);
+  const auto* es = engine->spec(*ej);
+  REQUIRE(es != nullptr);
+  CHECK(es->op == engine::kOpEditImage);
+  CHECK(jget<std::string>(es->params, "prompt", "").find("<Picture 2>") !=
+        std::string::npos);
+  REQUIRE(es->inputs.size() >= 2);
+  CHECK(es->inputs[0].role == "base");
+  CHECK(es->model.dit.filename() == "FL2VA");
+}
+
 TEST(controller, a_job_waits_only_for_what_it_needs_downloading)
 {
   auto root = test::temp_dir("ctl-downloads");
@@ -3725,6 +3931,116 @@ TEST(composition, a_clip_lands_at_the_playhead_or_at_the_end)
                               std::nullopt, true);
   REQUIRE_OK(pic);
   CHECK(start_of(pic->second) == 5);
+}
+
+// A project whose FILES ARE MISSING -- a linked original moved, a blob
+// gone from its package (one copied without its media) -- opens all the
+// same: what is missing is said (the open's and the state's
+// "missing_media", where each was looked for), a still using one is drawn
+// without it, a file of it named as missing, and the project is looked
+// at, not changed (kProjectMissingMedia: writes, undo, revert). A file
+// put back is found by the next check of the links.
+TEST(controller, a_project_with_missing_files_opens_to_be_looked_at)
+{
+  auto root = test::temp_dir("ctl-missing");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  REQUIRE(write_png(root / "linked.png", 32, 24, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_png(root / "copied.png", 16, 16, {0, 0, 0xff, 0xff}));
+  const auto pkg = root / "M.valtz";
+  auto pid = ctl.create_project(pkg, "M");
+  REQUIRE_OK(pid);
+  auto wait_job = [&](Result<JobId> job) {
+    REQUIRE_OK(job);
+    for (int i = 0; i < 50; ++i) {
+      Event ev;
+      if (ctl.events().wait(ev, 100) && ev.job == *job &&
+          ev.kind == "job.finished") {
+        return;
+      }
+    }
+  };
+  project::ImportOptions link;
+  link.placement = project::Placement::Link;
+  wait_job(ctl.import_files(*pid, {root / "linked.png"}, link));
+  wait_job(ctl.import_files(*pid, {root / "copied.png"}));
+  auto assets = ctl.project(*pid)->assets();
+  REQUIRE_OK(assets);
+  REQUIRE(assets->size() == 2);
+  const AssetId linked = (*assets)[0].id;
+  const AssetId copied = (*assets)[1].id;
+  CHECK((*assets)[0].linked && !(*assets)[1].linked);
+  auto still = ctl.create_composition(*pid, project::AssetClass::Still,
+                                      {32, 24}, {0, 1}, "S");
+  REQUIRE_OK(still);
+  REQUIRE_OK(ctl.instantiate(*pid, linked, *still));
+  REQUIRE_OK(ctl.instantiate(*pid, copied, *still, std::nullopt, 0,
+                             false));
+  REQUIRE_OK(ctl.save_project(*pid));
+  CHECK(jget(ctl.project_state(*pid), "missing_media", Json()).empty());
+  REQUIRE_OK(ctl.close_project(*pid));
+
+  // The original gone (moved, its bookmark would find it), the copied
+  // picture's blob gone.
+  fs::rename(root / "linked.png", root / "kept.png");
+  REQUIRE(fs::copy_file(root / "kept.png", root / "away.png"));
+  REQUIRE(fs::remove(root / "kept.png"));
+  fs::path blob;
+  for (const auto& f : fs::recursive_directory_iterator(pkg / "blobs")) {
+    if (f.is_regular_file()) {
+      blob = f.path();
+    }
+  }
+  REQUIRE(!blob.empty());
+  REQUIRE(fs::remove(blob));
+
+  auto again = ctl.open_project(pkg);
+  REQUIRE_OK(again);
+  const Json missing = jget(ctl.project_state(*again), "missing_media",
+                            Json::array());
+  REQUIRE(missing.size() == 2);
+  std::set<std::string> hows;
+  for (const auto& m : missing) {
+    hows.insert(jget<std::string>(m, "how", ""));
+  }
+  CHECK((hows == std::set<std::string>{"original", "blob"}));
+  for (const auto& m : missing) {
+    if (jget<std::string>(m, "how", "") == "blob") {
+      // Where the saved package keeps it, not the working copy.
+      const std::string at = jget<std::string>(m, "path", "");
+      CHECK(at.ends_with((fs::path("M.valtz") / "blobs" /
+                          blob.parent_path().filename() /
+                          blob.filename()).string()));
+    }
+  }
+  // Drawn without them: a still of its two missing layers.
+  CHECK(ctl.flatten(*again, *still, root / "flat.png").ok());
+  CHECK(fs::exists(root / "flat.png"));
+  // A file of it is named as missing.
+  auto path = ctl.project(*again)->media_path(copied);
+  REQUIRE(!path.ok());
+  CHECK(path.error().key == msg::kMediaMissing.key);
+  CHECK(path.error().message.find("copied.png") != std::string::npos);
+  // Looked at, not changed.
+  auto renamed = ctl.rename_asset(*again, copied, "B");
+  REQUIRE(!renamed.ok());
+  CHECK(renamed.error().key == msg::kProjectMissingMedia.key);
+  CHECK(ctl.undo(*again).error().key == msg::kProjectMissingMedia.key);
+  CHECK(ctl.revert_project(*again).error().key ==
+        msg::kProjectMissingMedia.key);
+  // The original back where it was: found by the links' check, the blob
+  // still missing.
+  REQUIRE(fs::copy_file(root / "away.png", root / "linked.png"));
+  wait_job(ctl.refresh_links(*again));
+  CHECK(eventually([&] {
+    return jget(ctl.project_state(*again), "missing_media",
+                Json::array()).size() == 1;
+  }, 5));
 }
 
 // How a project was last looked at -- the app's window size -- is saved
@@ -7492,6 +7808,131 @@ TEST(composition, a_generate_node_is_set_up_linked_and_started)
   CHECK(nodes->size() == 1);
 }
 
+// A generation asked as the editor asks it -- not from a node -- is
+// RECORDED as a node that ran: its prompt, its pictures in the row's
+// order with the one edited named (here the row's second), its model,
+// size, the seed its recipe has; the Atlas draws it on its result.
+// Duplicated and run, it is the same request; undone, the record goes
+// with the generation.
+TEST(composition, a_generation_is_recorded_to_be_made_again)
+{
+  auto root = test::temp_dir("gen-record");
+  const fs::path models = root / "models";
+  fake_pipeline(models / "black-forest-labs" / "flux-3-image-klein",
+                "Flux3Pipeline", "Flux3Transformer2DModel");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "R.valtz", "record");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 16, 16, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_png(root / "blue.png", 16, 16, {0, 0, 0xff, 0xff}));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  auto blue = import_and_wait(ctl, *pid, root / "blue.png");
+  REQUIRE(red && blue);
+
+  GenerateImageRequest req;
+  req.project = *pid;
+  req.prompt = "the fox from <valtz_ref_img_0> beside the sea";
+  req.row = {*red, *blue};
+  req.base = *blue;
+  req.references = {*red};
+  req.model = "flux3-klein";
+  req.width = 512;
+  req.height = 512;
+  auto job = ctl.generate_image(req);
+  REQUIRE_OK(job);
+  auto nodes = ctl.generate_nodes(*pid);
+  REQUIRE_OK(nodes);
+  REQUIRE(nodes->size() == 1);
+  const Json n = (*nodes)[0];
+  CHECK(jget(n, "recorded", false));
+  CHECK(n["target"] == "image");
+  CHECK(n["model"] == "flux3-klein");
+  CHECK(n["refs"] == Json::array({red->str(), blue->str()}));
+  CHECK(n["extra"]["base_asset"] == blue->str());
+  CHECK(!n["extra"].contains("row"));
+  CHECK(n["width"] == 512 && n["height"] == 512);
+  CHECK(n["seed"] == -1);
+  const Json st = n["started"];
+  CHECK(st["job"] == job->str());
+  CHECK(!st["seed_given"].get<bool>());
+  project::Project* p = ctl.project(*pid);
+  const auto result = AssetId::parse(st["asset"].get<std::string>());
+  REQUIRE(result);
+  auto ra = p->asset(*result);
+  REQUIRE_OK(ra);
+  auto recipe = p->recipe(ra->recipe);
+  REQUIRE_OK(recipe);
+  CHECK(st["seed"] == recipe->params["seed"]);
+  std::map<std::string, std::string> in;
+  for (const auto& i : recipe->inputs) {
+    in[i.role] = i.asset.str();
+  }
+  CHECK(n["prompt"] == in["prompt"]);
+  // On its result, in the Atlas.
+  auto graph = ctl.atlas(*pid);
+  REQUIRE_OK(graph);
+  bool drawn = false;
+  for (const auto& g : (*graph)["nodes"]) {
+    if (g["id"] == "r:" + result->str()) {
+      drawn = jget(g, "generate", Json::object())["id"] == n["id"];
+    }
+    CHECK(g["type"] != "generate");
+  }
+  CHECK(drawn);
+
+  // Made again: the same request, a new take.
+  auto dup = ctl.generate_node_op(*pid, {{"action", "duplicate"},
+                                         {"node", n["id"]}});
+  REQUIRE_OK(dup);
+  const Json d = (*dup)["node"];
+  CHECK(d["seed"] == -1);
+  CHECK(!d.contains("recorded"));
+  CHECK(d["extra"]["base_asset"] == blue->str());
+  auto again = ctl.generate_node_op(*pid, {{"action", "start"},
+                                           {"node", d["id"]}});
+  REQUIRE_OK(again);
+  const auto j2 = JobId::parse((*again)["job"].get<std::string>());
+  REQUIRE(j2);
+  CHECK(engine->spec(*j2)->model.id == "flux3-klein");
+  auto r2 = p->asset(*AssetId::parse((*again)["asset"].get<std::string>()));
+  REQUIRE_OK(r2);
+  auto rec2 = p->recipe(r2->recipe);
+  REQUIRE_OK(rec2);
+  std::map<std::string, std::string> in2;
+  for (const auto& i : rec2->inputs) {
+    in2[i.role] = i.asset.str();
+  }
+  CHECK(in2["base"] == blue->str());
+  CHECK(in2["reference"] == red->str());
+  CHECK(in2["prompt"] == in["prompt"]);
+  CHECK(jget(rec2->params, "width", 0) == 512);
+  // Run from a node, it is that node's: not recorded again.
+  nodes = ctl.generate_nodes(*pid);
+  REQUIRE_OK(nodes);
+  CHECK(nodes->size() == 2);
+  // Undone: the run, the duplicate, then the generation with its record.
+  REQUIRE_OK(ctl.undo(*pid));
+  REQUIRE_OK(ctl.undo(*pid));
+  REQUIRE_OK(ctl.undo(*pid));
+  nodes = ctl.generate_nodes(*pid);
+  REQUIRE_OK(nodes);
+  CHECK(nodes->empty());
+}
+
 
 TEST(composition, the_atlas_lays_out_what_each_asset_is_made_from)
 {
@@ -9293,6 +9734,135 @@ TEST(controller, the_agents_int8_prefill_follows_its_setting)
   }
 }
 
+// THE AGENT'S N-GRAM TABLE IN MEMORY (Settings › Agentic Helper ›
+// Agent, DESIGN §9b; vpipe 29ef2378's ngram_resident): Qwen3.8
+// Flash-Next reads a prompt's n-gram rows from disk, or -- on -- holds
+// its 38.4 GB table. vpipe takes it only where the model with every
+// expert and the table fit, never beside a cache asked for under every
+// expert; Valtz counts it so -- in what the model holds, and so in the
+// context that fits -- and says where it is. Off, the table is not
+// counted at all (it was: the whole checkpoint read as held). Kept in
+// agent.json; a model without one has no such setting to apply.
+TEST(controller, the_agents_ngram_table_is_held_where_it_fits)
+{
+  auto root = test::temp_dir("ctl-ngram");
+  const fs::path helper =
+      root / "models" / "mlx-community" / "Qwen3.5-9B-OptiQ-4bit";
+  const fs::path next = root / "models" / "mlx-community" /
+                        "Qwen3.8-Flash-Next-Uncensored-oQ5e-mtp";
+  for (const auto& d : {helper, next}) {
+    fs::create_directories(d);
+    std::ofstream(d / "model.safetensors") << "w";
+  }
+  std::ofstream(helper / "config.json") << "{}";
+  // Flash-Next's own shape: 12 of 48 layers keeping K/V, 24,576 bytes a
+  // token, 262,144 tokens.
+  std::ofstream(next / "config.json") << R"({"model_type": "qwen4_exp",
+      "text_config": {"model_type": "qwen4_exp_text",
+                      "max_position_embeddings": 262144,
+                      "num_hidden_layers": 48, "full_attention_interval": 4,
+                      "num_attention_heads": 24, "num_key_value_heads": 2,
+                      "head_dim": 256, "hidden_size": 2560}})";
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto mac = [&](const char* gb, const char* ws) {
+    ::setenv("VALTZ_RAM_LIMIT_GB", gb, 1);
+    ::setenv("VALTZ_GPU_WORKING_SET_GB", ws, 1);
+    auto made = Controller::create(cfg);
+    ::unsetenv("VALTZ_RAM_LIMIT_GB");
+    ::unsetenv("VALTZ_GPU_WORKING_SET_GB");
+    return made;
+  };
+  {
+    auto made = mac("256", "240");
+    REQUIRE_OK(made);
+    Controller& ctl = **made;
+    REQUIRE(engine != nullptr);
+    // Flash-Next the Agentic Helper and so the agent's: an Enhance hands
+    // the engine the params an agent's turn has (helper_params_).
+    REQUIRE_OK(ctl.choose_assistant("qwen3.8-flash-next"));
+    auto enhance = [&]() -> Json {
+      EnhancePromptRequest req;
+      req.prompt = "a fox in snow";
+      auto job = ctl.enhance_prompt(req);
+      CHECK(job.ok());
+      const auto chats = engine->held_of(engine::kOpChat);
+      CHECK(chats.size() == 1);
+      const engine::JobSpec* spec =
+          chats.size() == 1 ? engine->spec(chats[0]) : nullptr;
+      if (spec == nullptr) {
+        return Json();
+      }
+      Json q = spec->params;
+      engine->turn(chats[0], {{"text", R"({"prompt": "A fox."})"}});
+      return q;
+    };
+    auto asked = [](const Json& q) {
+      return jget(q, "ngram_resident", false);
+    };
+    auto plan = [&] { return ctl.agent_settings()["plan"]; };
+    Json s = ctl.agent_settings();
+    CHECK(s["using"] == "qwen3.8-flash-next");
+    CHECK(s["ngram_resident"] == false);
+    Json p = plan();
+    REQUIRE(p.is_object());
+    CHECK(std::abs(jget(p, "ngram_gb", 0.0) - 38.4) < 1e-9);
+    CHECK(p["ngram"] == "off");
+    CHECK(std::abs(jget(p, "experts_gb", 0.0) - 84.8) < 1e-9);
+    CHECK(!asked(enhance()));
+    const double off_holds = jget(p, "holds_gb", 0.0);
+    const int off_fits = p["context"]["fits"].get<int>();
+    // On, and room for it here: told to vpipe, every expert resident,
+    // the table in what it holds.
+    REQUIRE_OK(ctl.set_agent_settings({{"ngram_resident", true}}));
+    CHECK(ctl.agent_settings()["ngram_resident"] == true);
+    p = plan();
+    CHECK(p["ngram"] == "held");
+    CHECK(p["all_resident"] == true);
+    CHECK(std::abs(jget(p, "cache_gb", 0.0) - 84.8) < 1e-9);
+    CHECK(jget(p, "holds_gb", 0.0) >= off_holds + 38.0);
+    CHECK(p["context"]["fits"].get<int>() <= off_fits);
+    CHECK(asked(enhance()));
+    // A cache asked for under every expert: vpipe will not take it.
+    REQUIRE_OK(ctl.set_agent_settings({{"expert_cache_gb", 32}}));
+    p = plan();
+    CHECK(p["ngram"] == "disk");
+    CHECK(p["ngram_why"] == "cache");
+    REQUIRE_OK(ctl.set_agent_settings({{"expert_cache_gb", 0}}));
+    CHECK(plan()["ngram"] == "held");
+    // Refused: anything but true or false.
+    CHECK(ctl.set_agent_settings({{"ngram_resident", "on"}}).code() ==
+          Code::InvalidArgument);
+    // The 9B the agent's model: nothing of it reaches the engine, and
+    // no table to show.
+    REQUIRE_OK(ctl.choose_assistant("qwen3.5-9b"));
+    p = plan();
+    CHECK(p["model"] == "qwen3.5-9b");
+    CHECK(!p.contains("ngram"));
+    CHECK(!asked(enhance()));
+    REQUIRE_OK(ctl.choose_assistant("qwen3.8-flash-next"));
+  }
+  // Kept for a later run -- and on a Mac without room for the model
+  // whole, read from disk as before.
+  {
+    auto made = mac("128", "96");
+    REQUIRE_OK(made);
+    const Json s = (*made)->agent_settings();
+    CHECK(s["ngram_resident"] == true);
+    CHECK(s["plan"]["ngram"] == "disk");
+    CHECK(s["plan"]["ngram_why"] == "memory");
+  }
+}
+
 // THE UPSCALERS' OPTIONS (Settings › Upscaling, DESIGN §4f): an upscale
 // has no generation card, so each upscaler's arithmetic -- int8 GEMMs,
 // Sage, Sol where it takes it -- is set once, kept in the support folder
@@ -10209,9 +10779,16 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
   custom.width = 2560;
   custom.height = 1440;
   custom.frames = 39;
+  // A VAE of Custom's: with the Fast Decoder off, it is the clip's
+  // decoder -- the refine's decode reads it (graph_builder.a_clip_past_
+  // 768p_is_drafted_and_regenerated), not the model's own.
+  const fs::path own_vae = b.root / "my-h3-vae.safetensors";
+  std::ofstream(own_vae) << "w";
   custom.tuning = {{"regenerate_i8_gemm", true},
                    {"regenerate_i8_gemm_tier", "token"},
-                   {"regenerate_fast_decoder", false}};
+                   {"regenerate_fast_decoder", false},
+                   {"vaes", Json::array({{{"path", own_vae.string()},
+                                          {"on", true}}})}};
   REQUIRE_OK(b.ctl->generate_video(custom));
   s = b.job(engine::kOpGenerateVideo, 7);
   REQUIRE(s != nullptr);
@@ -10221,6 +10798,20 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
         (m5 ? "token" : "accurate"));
   CHECK(!jget(rt, "fast_decoder", true));
   CHECK(s->model.fast_decoder.empty());
+  CHECK(s->params.contains("draft"));
+  CHECK(s->model.vae.filename() == "my-h3-vae.safetensors");
+  // Its file gone: the clip is made with the model's own VAE, the VAE
+  // marked wanted in what is recorded.
+  {
+    GenerateVideoRequest gone = custom;
+    gone.tuning["vaes"][0]["path"] = (b.root / "gone-vae").string();
+    REQUIRE_OK(b.ctl->generate_video(gone));
+    const engine::JobSpec* g = b.job(engine::kOpGenerateVideo, 8);
+    REQUIRE(g != nullptr);
+    CHECK(g->model.vae.empty());
+    CHECK(models::left_out(g->params["tuning"]).size() == 1);
+  }
+  custom.tuning.erase("vaes");
   for (const auto& [k, v] : s->params["tuning"].items()) {
     CHECK(!k.starts_with("regenerate_"));
   }
@@ -10230,7 +10821,7 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
   GenerateVideoRequest quiet = custom;
   quiet.preview = false;
   REQUIRE_OK(b.ctl->generate_video(quiet));
-  s = b.job(engine::kOpGenerateVideo, 8);
+  s = b.job(engine::kOpGenerateVideo, 9);
   REQUIRE(s != nullptr);
   CHECK(s->params.contains("draft"));
   CHECK(!jget(s->params, "preview", true));
@@ -10239,7 +10830,7 @@ TEST(controller, a_clip_past_768p_is_drafted_and_regenerated)
   // 1.5, 1.75 at Med, 0.75 each step at Fine -- with Sage (Fast's int8
   // P·V on the video's rows alone) and int8 Per Token / Fast / Accurate;
   // what the tables leave out Settings' (its Fast Decoder, on above).
-  int n = 8;
+  int n = 9;
   for (const char* pref : {"speed", "balanced", "quality"}) {
     GenerateVideoRequest req = quiet;
     req.tuning = Json::object();
@@ -11030,6 +11621,8 @@ public:
     std::mutex                                    mu;
     std::deque<std::vector<agent::ToolCall>>      replies;
     std::vector<std::vector<agent::Message>>      seen;
+    // The tools it was offered each turn, by name.
+    std::vector<std::vector<std::string>>         offered;
     // A model that sees pictures (the view tools then show them).
     bool                                          sees = false;
     // COMPACTION: its context (0: not said) -- set at turn `shrink_at`
@@ -11059,6 +11652,10 @@ public:
   {
     std::lock_guard lk(_s->mu);
     _s->seen.push_back(messages);
+    _s->offered.emplace_back();
+    for (const auto& t : tools) {
+      _s->offered.back().push_back(t.name);
+    }
     agent::Reply r;
     const std::size_t n = _s->seen.size() - 1;
     if (static_cast<int>(n) == _s->overflow_at) {
@@ -11674,6 +12271,333 @@ TEST(agent, a_picture_in_assets_is_seen)
   REQUIRE_OK(ctl.agent_stop(*blind));
 }
 
+// CHATS BESIDE THE EDITOR (DESIGN §9b): one agent with Valtz's tools a
+// project -- a second refused while it is there to be spoken to -- and
+// chats beside it: "chat" with the chat guide's tools (looking, adding:
+// a text kept; an editing tool not theirs), holding nothing, so the
+// person goes on changing the project; "none" with no guide and no
+// tool, its pictures still shown, named without ids. And an import adds
+// while the editor holds the project: a picture attached to a chat.
+TEST(agent, chats_beside_the_editor_look_and_add)
+{
+  auto root = test::temp_dir("agent-chats");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  script->sees = true;
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "C.valtz", "chats");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 48, 32, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_png(root / "blue.png", 40, 40, {0, 0, 0xff, 0xff}));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  REQUIRE(red.has_value());
+
+  // The editor: done, and there to be spoken to.
+  AgentRequest full;
+  full.project = *pid;
+  full.prompt = "A poster";
+  full.review = false;
+  auto editor = ctl.agent_start(full);
+  REQUIRE_OK(editor);
+  REQUIRE(jget<std::string>(agent_wait(ctl, *editor, "done"), "state",
+                            "") == "done");
+  {
+    std::lock_guard lk(script->mu);
+    REQUIRE(!script->offered.empty());
+    CHECK(std::ranges::find(script->offered.back(), "add_text") !=
+          script->offered.back().end());
+  }
+  // A second editor of the project refused.
+  auto second = ctl.agent_start(full);
+  REQUIRE(!second.ok());
+  CHECK(second.error().key == "core.agent_one_editor");
+
+  // A chat: the chat guide, its tools; waiting for the person's word on
+  // a text it keeps, it holds nothing -- the person renames meanwhile.
+  script->replies = {{call("save_text", {{"text", "Red, 48 by 32."},
+                                         {"name", "Red notes"}})},
+                     {call("add_text", {{"text", "Hello"}})}};
+  AgentRequest chat;
+  chat.project = *pid;
+  chat.prompt = "What is this picture?";
+  chat.row = {*red};
+  chat.skills = "chat";
+  chat.review = true;
+  auto c = ctl.agent_start(chat);
+  REQUIRE_OK(c);
+  Json st = agent_wait(ctl, *c, "review");
+  REQUIRE(jget<std::string>(st, "state", "") == "review");
+  CHECK(jget<std::string>(st, "skills", "") == "chat");
+  REQUIRE_OK(ctl.rename_asset(*pid, *red, "Mine"));
+  {
+    std::lock_guard lk(script->mu);
+    const auto& names = script->offered.back();
+    for (const char* t : {"get_project", "view_asset", "generate_image",
+                          "save_text", "create_prompt",
+                          "wait_for_generations"}) {
+      CHECK(std::ranges::find(names, t) != names.end());
+    }
+    for (const char* t : {"add_text", "place_asset", "remove_layer",
+                          "set_layer_box", "ask_user"}) {
+      CHECK(std::ranges::find(names, t) == names.end());
+    }
+    const auto& first = script->seen.back();
+    CHECK(first[0].content.starts_with("# Chatting in Valtz"));
+    CHECK(first[0].content.find("(id " + red->str()) != std::string::npos);
+    REQUIRE(first[1].images.size() == 1);
+  }
+  REQUIRE_OK(ctl.agent_review(*c, 1, "approve"));
+  st = agent_wait(ctl, *c, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 2);
+  CHECK(jget<std::string>(steps[0], "state", "") == "done");
+  const auto kept = AssetId::parse(
+      jget<std::string>(jget(steps[0], "result", Json::object()), "asset",
+                        ""));
+  REQUIRE(kept.has_value());
+  auto* p = ctl.project(*pid);
+  auto text = p->read_text(*kept);
+  REQUIRE_OK(text);
+  CHECK(*text == "Red, 48 by 32.");
+  CHECK(p->asset(*kept)->name == "Red notes");
+  // An editing tool is not a chat's.
+  CHECK(jget<std::string>(steps[1], "state", "") == "failed");
+  CHECK(jget<std::string>(steps[1], "error", "")
+            .starts_with("there is no tool 'add_text'"));
+
+  // Without tools: no guide, none offered; the picture shown, named
+  // without an id; where the person is left unsaid.
+  AgentRequest plain;
+  plain.project = *pid;
+  plain.prompt = "Describe it";
+  plain.row = {*red};
+  plain.skills = "none";
+  auto shown = ctl.create_composition(*pid, project::AssetClass::Still,
+                                      {640, 480});
+  REQUIRE_OK(shown);
+  plain.stage = {{"composition", shown->str()}};
+  auto n = ctl.agent_start(plain);
+  REQUIRE_OK(n);
+  REQUIRE(jget<std::string>(agent_wait(ctl, *n, "done"), "state", "") ==
+          "done");
+  {
+    std::lock_guard lk(script->mu);
+    CHECK(script->offered.back().empty());
+    const auto& first = script->seen.back();
+    CHECK(first[0].content.starts_with("You are a helpful assistant"));
+    CHECK(first[0].content.find("Chatting in Valtz") == std::string::npos);
+    CHECK(first[1].content.find("[The person attached: \"Mine\" (image, "
+                                "48 x 32).]") != std::string::npos);
+    CHECK(first[1].content.find(red->str()) == std::string::npos);
+    CHECK(first[1].content.find("[Where the person is") ==
+          std::string::npos);
+    CHECK(first[1].images.size() == 1);
+  }
+  // Skills that are not: refused.
+  plain.skills = "most";
+  CHECK(!ctl.agent_start(plain).ok());
+
+  // The editor stopped: another may start -- and, holding the project
+  // while it waits for a word, an import still adds.
+  REQUIRE_OK(ctl.agent_stop(*editor));
+  agent_wait(ctl, *editor, "stopped");
+  script->replies = {{call("add_text", {{"text", "Title"}})}};
+  full.review = true;
+  auto again = ctl.agent_start(full);
+  REQUIRE_OK(again);
+  REQUIRE(jget<std::string>(agent_wait(ctl, *again, "review"), "state",
+                            "") == "review");
+  CHECK(!ctl.rename_asset(*pid, *red, "Again").ok());
+  auto blue = import_and_wait(ctl, *pid, root / "blue.png");
+  CHECK(blue.has_value());
+  REQUIRE_OK(ctl.agent_stop(*again));
+  REQUIRE_OK(ctl.agent_stop(*c));
+  REQUIRE_OK(ctl.agent_stop(*n));
+}
+
+// A SESSION KEPT AS ITS TRANSCRIPT (DESIGN §9b): pictures attached to
+// the person's words -- the request's row, then words said later -- are
+// shown to a model that sees and listed by id for its tools, the
+// person's own words kept apart; the session's context counted for the
+// app's ring; and at each rest its conversation written in Markdown to
+// one text asset of the project, in its Agent Sessions folder.
+TEST(agent, a_session_is_kept_as_a_transcript)
+{
+  auto root = test::temp_dir("agent-transcript");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  script->sees = true;
+  script->context = 100000;
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "T.valtz", "transcript");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 48, 32, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_png(root / "blue.png", 40, 40, {0, 0, 0xff, 0xff}));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  auto blue = import_and_wait(ctl, *pid, root / "blue.png");
+  REQUIRE(red.has_value() && blue.has_value());
+
+  script->replies = {{call("get_project", Json::object())}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A poster in the style of this picture";
+  req.row = {*red};
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  // Waited for: done, and its transcript written as it rested.
+  auto rested = [&](int turns) {
+    Json st;
+    for (int i = 0; i < 500; ++i) {
+      st = ctl.agent_state(*id);
+      if (jget<std::string>(st, "state", "") == "done" &&
+          jget(st, "turns", 0) >= turns && st.contains("transcript")) {
+        auto t = AssetId::parse(jget<std::string>(st, "transcript", ""));
+        auto* p = ctl.project(*pid);
+        if (t && p && p->asset(*t).ok() &&
+            static_cast<int>(p->asset(*t)->head) >= turns - 1) {
+          return st;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return st;
+  };
+  Json st = rested(2);
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  {
+    // The request's picture shown with it; its words and attachment kept.
+    std::lock_guard lk(script->mu);
+    REQUIRE(!script->seen.empty());
+    const auto& first = script->seen.front()[1];
+    CHECK(first.role == "user");
+    CHECK(first.said == req.prompt);
+    REQUIRE(first.attached.size() == 1);
+    CHECK(first.attached[0] == red->str());
+    REQUIRE(first.images.size() == 1);
+    const auto px = pixel_at(first.images[0], 24, 16);
+    CHECK(px[0] > 200 && px[1] < 60 && px[2] < 60);
+  }
+  // Its context as the ring shows it: counted, of its model's.
+  const Json ctx = jget(st, "context", Json::object());
+  CHECK(jget<std::int64_t>(ctx, "used", 0) > 0);
+  CHECK(jget<std::int64_t>(ctx, "limit", 0) == 100000);
+  CHECK(jget(ctx, "compact_at", 0) == 90);
+
+  // The transcript: one text asset, tagged, in its folder.
+  const auto tid = AssetId::parse(jget<std::string>(st, "transcript", ""));
+  REQUIRE(tid.has_value());
+  auto* p = ctl.project(*pid);
+  auto ta = p->asset(*tid);
+  REQUIRE_OK(ta);
+  CHECK(ta->kind == project::AssetKind::Text);
+  CHECK(std::ranges::find(ta->tags, std::string("agent-transcript")) !=
+        ta->tags.end());
+  CHECK(ta->name == "Agent: A poster in the style of this picture");
+  auto folders = p->folders();
+  REQUIRE_OK(folders);
+  std::string folder_name;
+  for (const auto& f : *folders) {
+    if (jget<std::string>(f, "id", "") == ta->folder) {
+      folder_name = jget<std::string>(f, "name", "");
+    }
+  }
+  CHECK(folder_name == "Agent Sessions");
+  auto text = p->read_text(*tid);
+  REQUIRE_OK(text);
+  CHECK(text->starts_with("# Agent: A poster in the style"));
+  CHECK(text->find("## You\n\nA poster in the style of this picture") !=
+        std::string::npos);
+  CHECK(text->find("*Attached: “red.png” (image)*") !=
+        std::string::npos);
+  CHECK(text->find("## Agent") != std::string::npos);
+  CHECK(text->find("1. **Look at the project** (`get_project`) — "
+                   "done") != std::string::npos);
+  CHECK(text->find("Done.") != std::string::npos);
+  CHECK(text->find("**State** done") != std::string::npos);
+
+  // Words said later with a picture: listed for its tools, shown, kept
+  // as said -- and the same transcript written again.
+  script->replies = {};
+  REQUIRE_OK(ctl.agent_say(*id, "and use this one too", Json::object(),
+                           {*blue}));
+  st = rested(3);
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  {
+    std::lock_guard lk(script->mu);
+    const agent::Message* said = nullptr;
+    for (const auto& m : script->seen.back()) {
+      if (m.role == "user" && m.said == "and use this one too") {
+        said = &m;
+      }
+    }
+    REQUIRE(said != nullptr);
+    CHECK(said->content.starts_with("and use this one too"));
+    CHECK(said->content.find("[The person attached: \"blue.png\" (id " +
+                             blue->str() + ", image, 40 x 40)") !=
+          std::string::npos);
+    REQUIRE(said->images.size() == 1);
+    const auto px = pixel_at(said->images[0], 20, 20);
+    CHECK(px[2] > 200 && px[0] < 60);
+  }
+  // The app's messages: the person's own words, what they attached.
+  bool listed = false;
+  for (const auto& m : jget(st, "messages", Json::array())) {
+    if (jget<std::string>(m, "said", "") == "and use this one too") {
+      listed = jget(m, "attached", Json::array()) ==
+               Json::array({blue->str()});
+      CHECK(jget(m, "shown", 0) == 1);
+    }
+  }
+  CHECK(listed);
+  CHECK(jget<std::string>(st, "transcript", "") == tid->str());
+  text = p->read_text(*tid);
+  REQUIRE_OK(text);
+  CHECK(text->find("and use this one too") != std::string::npos);
+  CHECK(text->find("“blue.png”") != std::string::npos);
+  CHECK(text->find("[The person attached") == std::string::npos);
+
+  // Removed by the person, it is not made again.
+  REQUIRE_OK(ctl.remove_asset(*pid, *tid));
+  REQUIRE_OK(ctl.agent_say(*id, "one more thing"));
+  for (int i = 0; i < 500 && jget(ctl.agent_state(*id), "turns", 0) < 4;
+       ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  agent_wait(ctl, *id, "done");
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  int transcripts = 0;
+  auto all = p->assets();
+  REQUIRE_OK(all);
+  for (const auto& a : *all) {
+    transcripts += std::ranges::find(a.tags, std::string(
+                       "agent-transcript")) != a.tags.end();
+  }
+  CHECK(transcripts == 0);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
 // DRAWING (DESIGN §9b): a polygon smooth through its points is a curve
 // -- four round a box an ellipse, where the corners would have cut it --
 // an open one a line with no inside; brush strokes painted over the
@@ -11776,6 +12700,9 @@ TEST(agent, the_tools_draw_curves_strokes_and_arrange)
                                 {"layer", layer_id},
                                 {"objects", J::array({rect})},
                                 {"how", "to-bottom"}})}};
+  // One editor a project: the first put away.
+  REQUIRE_OK(ctl.agent_stop(*id));
+  agent_wait(ctl, *id, "stopped");
   auto again = ctl.agent_start(req);
   REQUIRE_OK(again);
   st = agent_wait(ctl, *again, "done");
@@ -13003,6 +13930,14 @@ TEST(agent, a_shot_runs_on_the_model_named)
   REQUIRE(clips.size() == 1);
   REQUIRE(engine->spec(clips[0]) != nullptr);
   CHECK(engine->spec(clips[0])->model.id == "minimax-h3-ref2va");
+  // Recorded, as the agent asked it: to be made again from the Atlas.
+  auto recorded = ctl.generate_nodes(*pid);
+  REQUIRE_OK(recorded);
+  REQUIRE(recorded->size() == 1);
+  CHECK(jget(recorded->at(0), "recorded", false));
+  CHECK(recorded->at(0)["target"] == "video");
+  CHECK(recorded->at(0)["model"] == "minimax-h3-ref2va");
+  CHECK(jget(recorded->at(0), "seconds", 0.0) > 1.9);
   CHECK(error(3).find("MiniMax H3 FL2VA does not make shots drawing on "
                       "references") != std::string::npos);
   CHECK(error(3).find("minimax-h3-ref2va") != std::string::npos);

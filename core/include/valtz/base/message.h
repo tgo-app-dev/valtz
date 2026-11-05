@@ -364,10 +364,28 @@ inline constexpr Message kGenerateNoReferenceModel{
     "core.generate_no_reference_model",
     "No video model that draws on references is here."};
 // A change refused while an agent works on the project (its hold).
+// A file a project uses that is not where it should be: a linked
+// original moved or on a drive not connected, a blob missing from its
+// package (Project::media_path).
+inline constexpr Message kMediaMissing{
+    "core.media_missing",
+    "The file of “{name}” is missing: {path}"};
+// A project whose media are missing opens to be looked at, not changed
+// (Controller::write_guard_).
+inline constexpr Message kProjectMissingMedia{
+    "core.project_missing_media",
+    "{count} of the files this project uses are missing, so it can be "
+    "looked at but not changed. Reconnect them and open it again."};
 inline constexpr Message kAgentAtWork{
     "core.agent_at_work",
     "The agent is working on this project: it can be looked at but not "
     "changed until the agent is done, or stopped."};
+// A second agent with the editor's tools on one project: one changes it
+// at a time (AgentRequest::skills).
+inline constexpr Message kAgentOneEditor{
+    "core.agent_one_editor",
+    "Another chat has Valtz's tools on this project: one agent at a time "
+    "may change it. Chat here with Look and Add, or without tools."};
 inline constexpr Message kAgentStepNotWaiting{
     "core.agent_step_not_waiting",
     "That step is not waiting for your word any more."};

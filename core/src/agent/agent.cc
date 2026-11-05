@@ -222,6 +222,12 @@ to_json(const Message& m)
   if (!m.stats.empty()) {
     j["stats"] = m.stats;
   }
+  if (!m.said.empty()) {
+    j["said"] = m.said;
+  }
+  if (!m.attached.empty()) {
+    j["attached"] = m.attached;
+  }
   return j;
 }
 
@@ -245,6 +251,12 @@ message_from_json(const Json& j)
     }
   }
   m.stats = jget(j, "stats", Json::object());
+  m.said = jget<std::string>(j, "said", "");
+  for (const auto& a : jget(j, "attached", Json::array())) {
+    if (a.is_string()) {
+      m.attached.push_back(a.get<std::string>());
+    }
+  }
   return m;
 }
 

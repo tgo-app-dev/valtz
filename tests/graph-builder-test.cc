@@ -1183,6 +1183,127 @@ TEST(graph_builder, fibo2_edits_at_its_trained_sizes)
              "megapixels", 0.0) == 4.0);
 }
 
+// P-H3-Image (DESIGN §4r; vpipe's p-h3-image graphs): ONE latent frame
+// of generate-video on FL2VA's DiT (`dit_dir`) under the adapter (the
+// config beat's first slot), decoded by its own one-frame decoder into a
+// 16-bit PNG -- no soundtrack, no shift, its own 8 steps. A picture from
+// words through diffusion-conditioner; an edit's pictures, eight at
+// most, BY FILE through video-ref-encoder's list in their order, its
+// three outputs on generate-video's 0, 7, 8 and the base's EXIF kept.
+// Kept, the encoder goes and its outputs are fed.
+TEST(graph_builder, p_h3_image_makes_a_picture_on_fl2va)
+{
+  auto job = job_for("p-h3-image", kOpGenerateImage);
+  REQUIRE(job.model.id == "p-h3-image");
+  job.model.dit = "/models/MiniMaxAI/MiniMax-H3/FL2VA";
+  job.model.lora = "/models/PrunaAI/P-H3-Image-Comfy/loras/a.safetensors";
+  job.model.more_loras = {"/loras/style.safetensors"};
+  job.params["width"] = 1000;
+  job.params["height"] = 750;
+  auto g = vp::build_text_to_image(job);
+  REQUIRE_OK(g);
+  CHECK(g->width == 992 && g->height == 736);
+  const Json* gen = find_stage(g->spec, "generate-video");
+  REQUIRE(gen);
+  CHECK(!find_stage(g->spec, "generate-image"));
+  const Json gc = config_of(gen);
+  CHECK(jget<std::string>(gc, "dit_dir", "") ==
+        "/models/MiniMaxAI/MiniMax-H3/FL2VA");
+  CHECK(jget(gc, "steps", 0) == 8);   // its own, whatever was asked
+  CHECK(jget(gc, "seed", 0) == 7);
+  CHECK(jget(gc, "width", 0) == 992 && jget(gc, "height", 0) == 736);
+  CHECK(!gc.contains("frames"));
+  CHECK(src_of(gen, 0) == "diffusion-conditioner");
+  CHECK(src_of(gen, 2) == "model-select");
+  CHECK(src_of(gen, 7).empty() && src_of(gen, 8).empty());
+  CHECK(src_of(gen, 9) == "minimax-h3-model-config");
+  const Json cfg = config_of(find_stage(g->spec, "minimax-h3-model-config"));
+  CHECK(jget<std::string>(cfg, "lora", "").ends_with("a.safetensors"));
+  CHECK(jget<std::string>(cfg, "lora2", "") == "/loras/style.safetensors");
+  CHECK(!cfg.contains("video_shift") && !cfg.contains("audio_shift"));
+  const Json* cond = find_stage(g->spec, "diffusion-conditioner");
+  REQUIRE(cond);
+  CHECK(src_of(cond, 0) == "text-prompt" && src_of(cond, 2) == "model-select");
+  CHECK(src_of(find_stage(g->spec, "vae-decode"), 0) == "generate-video");
+  const Json* save = find_stage(g->spec, "save-image");
+  REQUIRE(save);
+  CHECK(src_of(save, 0) == "vae-decode");
+  CHECK(jget(config_of(save), "bit_depth", 0) == 16);
+  for (const char* gone : {"audio-vae-decode", "avf-save-video",
+                           "video-ref-encoder", "save-audio"}) {
+    CHECK(!find_stage(g->spec, gone));
+  }
+  // Without the DiT it runs on: refused, not a graph vpipe would refuse.
+  auto bare = job;
+  bare.model.dit.clear();
+  CHECK(!vp::build_text_to_image(bare).ok());
+
+  // An edit: nine pictures given, the first eight by file, in order.
+  auto ej = job_for("p-h3-image", kOpEditImage);
+  ej.model.dit = job.model.dit;
+  ej.model.lora = job.model.lora;
+  std::vector<vp::RefImage> refs;
+  refs.push_back({"/base.png", {1024, 768}, false, true});
+  for (int i = 2; i <= 9; ++i) {
+    refs.push_back({std::format("/p{}.jpg", i), {800, 800}, false, false});
+  }
+  auto e = vp::build_image_edit(ej, refs);
+  REQUIRE_OK(e);
+  const Json* enc = find_stage(e->spec, "video-ref-encoder");
+  REQUIRE(enc);
+  CHECK(src_of(enc, 0) == "text-prompt" && src_of(enc, 1) == "model-select");
+  const Json files = config_of(enc)["references"];
+  REQUIRE(files.size() == 8);
+  CHECK(files[0] == "/base.png" && files[7] == "/p8.jpg");
+  CHECK(e->references.empty());   // nothing fed: vpipe reads the files
+  const Json* eg = find_stage(e->spec, "generate-video");
+  REQUIRE(eg);
+  CHECK(src_of(eg, 0) == "video-ref-encoder");
+  CHECK(src_of(eg, 7) == "video-ref-encoder" &&
+        src_of(eg, 8) == "video-ref-encoder");
+  CHECK((*eg)["iports"][8]["oport"] == 2);
+  CHECK(!find_stage(e->spec, "diffusion-conditioner"));
+  // No size asked: the edit renders at its picture's, as vpipe sizes it.
+  CHECK(!config_of(eg).contains("width"));
+  CHECK(e->exif_from == "/base.png");
+  CHECK(src_of(find_stage(e->spec, "save-image"), 1) == vp::kExifSource);
+
+  // KEPT: the encoder goes, its outputs fed -- the words' for a picture,
+  // the three for an edit.
+  vp::EncodingCache cache;
+  cache.engine = "vpipe test";
+  cache.model = "stamp";
+  cache.kept = [](const std::string&) { return true; };
+  auto k = vp::build_text_to_image(job, &cache);
+  REQUIRE_OK(k);
+  CHECK(!find_stage(k->spec, "diffusion-conditioner"));
+  CHECK(!find_stage(k->spec, "text-prompt"));
+  CHECK(src_of(find_stage(k->spec, "generate-video"), 0) ==
+        vp::kKeptConditioning);
+  REQUIRE(k->encodings.size() == 1);
+  CHECK(k->encodings[0].fed && k->encodings[0].what == "conditioning");
+  for (auto& r : refs) {
+    r.hash = ContentHash::of(r.path.string());
+  }
+  auto ke = vp::build_image_edit(ej, refs, &cache);
+  REQUIRE_OK(ke);
+  CHECK(!find_stage(ke->spec, "video-ref-encoder"));
+  CHECK(src_of(find_stage(ke->spec, "generate-video"), 7) ==
+        "references-kept-ref_video");
+  REQUIRE(ke->encodings.size() == 1);
+  CHECK(ke->encodings[0].ports.size() == 3);
+  // Not kept: tapped, under a key the base's look is part of.
+  cache.kept = [](const std::string&) { return false; };
+  auto t1 = vp::build_image_edit(ej, refs, &cache);
+  ej.params["base_adjust"] = {{"exposure", 0.5}};
+  auto t2 = vp::build_image_edit(ej, refs, &cache);
+  REQUIRE_OK(t1);
+  REQUIRE_OK(t2);
+  REQUIRE(t1->encodings.size() == 1 && t2->encodings.size() == 1);
+  CHECK(!t1->encodings[0].fed);
+  CHECK(t1->encodings[0].key != t2->encodings[0].key);
+}
+
 // Qwen-Image 2.1 Turbo: the base model's graph -- its config stage, the
 // conditioner reading the pictures -- with NO scheduler (its schedule is
 // in its files) and its own 8 steps whatever was asked; vpipe would run
@@ -1407,6 +1528,53 @@ TEST(graph_builder, sage_pv8_goes_on_generate_video_with_sage)
   const Json* gen = find_stage(g->spec, "generate-image");
   REQUIRE(gen);
   CHECK(jget(config_of(gen), "sage_pv8", false));
+}
+
+// The Neural Engine's int8 reaches the generating stage (generate-video,
+// generate-image) only on and only with ANE FFN; its tier only when not
+// vpipe's own, token: any other job's graph is as it always was.
+TEST(graph_builder, the_anes_int8_goes_on_its_generating_stage)
+{
+  auto gen_cfg = [](const Json& tuning) {
+    JobSpec v = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+    v.params = {{"prompt", "a fox in snow"}, {"width", 832},
+                {"height", 480}, {"frames", 39}, {"fps", 24.0},
+                {"steps", 8}, {"seed", 7}, {"tuning", tuning}};
+    auto g = vp::build_video(v, std::nullopt);
+    CHECK(g.ok());
+    const Json* gen = g.ok() ? find_stage(g->spec, "generate-video")
+                             : nullptr;
+    CHECK(gen != nullptr);
+    return gen ? config_of(gen) : Json::object();
+  };
+  Json c = gen_cfg({{"ane_ffn", true}, {"ane_int8", true},
+                    {"ane_int8_tier", "token"}});
+  CHECK(jget(c, "ane_ffn", false) && jget(c, "ane_int8", false));
+  CHECK(!c.contains("ane_int8_tier"));
+  c = gen_cfg({{"ane_ffn", true}, {"ane_qkv", true}, {"ane_int8", true},
+               {"ane_int8_tier", "token_plain"},
+               {"i8_gemm", true}, {"i8_gemm_tier", "token_plain"}});
+  CHECK(jget(c, "ane_int8", false) && jget(c, "ane_qkv", false));
+  CHECK(jget<std::string>(c, "ane_int8_tier", "") == "token_plain");
+  CHECK(jget<std::string>(c, "i8_gemm_tier", "") == "token_plain");
+  c = gen_cfg({{"ane_ffn", false}, {"ane_int8", true},
+               {"ane_int8_tier", "token_plain"}});
+  CHECK(!c.contains("ane_int8") && !c.contains("ane_int8_tier"));
+  c = gen_cfg({{"ane_ffn", true}, {"ane_int8", false},
+               {"ane_int8_tier", "token_plain"}});
+  CHECK(!c.contains("ane_int8") && !c.contains("ane_int8_tier"));
+
+  // A picture's generate-image takes them the same way.
+  JobSpec j = job_for("qwen-image-2.1", kOpGenerateImage);
+  j.params["tuning"] = {{"ane_ffn", true}, {"ane_int8", true},
+                        {"ane_int8_tier", "token_plain"}};
+  auto g = vp::build_text_to_image(j);
+  REQUIRE_OK(g);
+  const Json* gen = find_stage(g->spec, "generate-image");
+  REQUIRE(gen);
+  CHECK(jget(config_of(gen), "ane_int8", false));
+  CHECK(jget<std::string>(config_of(gen), "ane_int8_tier", "") ==
+        "token_plain");
 }
 
 // MiniMax H3 text-to-video, shaped like vpipe's turbo + preview graphs:
@@ -2605,6 +2773,20 @@ TEST(graph_builder, a_clip_past_768p_is_drafted_and_regenerated)
   CHECK(src_of(find_stage(o->spec, "draft-decode"), 1) == "vae-select");
   CHECK(src_of(find_stage(o->spec, "regenerate-decode"), 1) ==
         "vae-select");
+  CHECK(jget<std::string>(config_of(find_stage(o->spec, "vae-select")),
+                          "hf_dir", "") == "/m/my-vae");
+  // The Fast Decoder off: the refine's decode is that VAE's alone; on,
+  // the fast decoder decodes in its place (vpipe's vae-decode).
+  CHECK(!config_of(find_stage(o->spec, "regenerate-decode"))
+             .contains("fast_decoder"));
+  JobSpec own_fast = own;
+  own_fast.model.fast_decoder = "/m/vae_fast/fast.safetensors";
+  auto of = vp::build_video(own_fast, first);
+  REQUIRE_OK(of);
+  CHECK(jget<std::string>(config_of(find_stage(of->spec,
+                                               "regenerate-decode")),
+                          "fast_decoder", "") ==
+        "/m/vae_fast/fast.safetensors");
   // Sol, Sage and its int8 P·V on the refine alone (vpipe's banded
   // forward takes them): the draft runs its own Favor. Sol's exact
   // flavour and a threshold a step (Med's refine): vpipe's sol_threshold

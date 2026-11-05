@@ -41,12 +41,22 @@ enum class SoundCodec { Aac, Pcm };
 // at its rate and channels, whatever it was. With a `duration`
 // (seconds), only the sound from `start` for that long, moved to the
 // start -- a trimmed clip's: decoded and encoded again, so it is cut to
-// the sample. Blocking.
+// the sample. `software` (base/version.h's software_stamp()), when given,
+// names who wrote the file in its metadata (stamp.h). Blocking.
 Status add_soundtrack(const std::filesystem::path& video,
                       const std::filesystem::path& audio,
                       const std::filesystem::path& out, double start = 0,
                       double duration = 0,
-                      SoundCodec sound = SoundCodec::Aac);
+                      SoundCodec sound = SoundCodec::Aac,
+                      std::string_view software = {});
+
+// `in` written again as `out` (.mov, .mp4, .m4v, .m4a; replaced if
+// there), every video and audio track passed through as stored, its
+// metadata kept and `software` named in it -- QuickTime's software keys in
+// a .mov, iTunes' encoding tool in the rest (stamp.h). Blocking.
+Status remux_with_software(const std::filesystem::path& in,
+                           const std::filesystem::path& out,
+                           std::string_view software);
 
 // A SOUND written out (a song saved, trimmed): `src`'s first audio track
 // as `format` -- "wav" (PCM, as deep as the sound: its own integer
@@ -54,11 +64,13 @@ Status add_soundtrack(const std::filesystem::path& video,
 // (replaced if there). With a `duration` (seconds), only the sound from
 // `start` for that long, moved to the start: decoded, so cut to the
 // SAMPLE -- vpipe's load-audio cuts to the packet, and its save-audio
-// writes AAC through FFmpeg, which the app does not ship. Blocking.
+// writes AAC through FFmpeg, which the app does not ship. `software`,
+// when given, names who wrote it (stamp.h): an .m4a's encoding tool, a
+// WAV's INFO. Blocking.
 Status write_sound(const std::filesystem::path& src,
                    const std::filesystem::path& out,
                    std::string_view format, double start = 0,
-                   double duration = 0);
+                   double duration = 0, std::string_view software = {});
 
 }
 

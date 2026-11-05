@@ -4,6 +4,7 @@
 
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
+#include "valtz/base/version.h"
 #include "valtz-vpipe/exchange.h"
 
 #include <algorithm>
@@ -118,6 +119,17 @@ accel_from(const Json& t)
     out["vdn_range"] = static_cast<int>(std::strtol(steps.c_str(), nullptr,
                                                     10));
     out["vdn_range_steps"] = steps;
+  }
+  // The Neural Engine's modules in int8, only on and only with its
+  // feed-forward on (alone it means nothing to vpipe); its tier only when
+  // it is not the one vpipe runs anyway, token. (A vpipe from before them
+  // ignores both keys -- and builds the modules fp16.)
+  if (jget(t, "ane_ffn", false) && jget(t, "ane_int8", false)) {
+    out["ane_int8"] = true;
+    const auto ane_tier = jget<std::string>(t, "ane_int8_tier", "token");
+    if (ane_tier != "token") {
+      out["ane_int8_tier"] = ane_tier;
+    }
   }
   // SageAttention's int8 P*V, only on, and only with SageAttention: a job
   // without it has the graph it always had. (A vpipe from before it
@@ -495,12 +507,253 @@ encoding_doc(const EncodingCache& c, const JobSpec& job,
   return made_from;
 }
 
+// P-H3-Image's graph (catalog `shape` "h3-image"; vpipe's
+// p-h3-image-text-to-image / -edit): a MiniMax H3 picture, ONE latent
+// frame of generate-video, on the DiT of another model (`dit_from`:
+// FL2VA's, ModelRef::dit) under its adapter (ModelRef::lora, the config
+// beat's first slot):
+//
+//   text: [text-prompt] -> diffusion-conditioner -0-> generate-video
+//   edit: [text-prompt] + pictures -> video-ref-encoder -0,1,2->
+//         generate-video's 0, 7, 8
+//   generate-video -0-> vae-decode (its one-frame decoder) -> save-image
+//
+// An edit's pictures go in BY FILE, in order -- the encoder's
+// `references` list, read before its six ports, so all eight keep their
+// numbers -- as the engine made them readable (a look rendered in, a RAW
+// developed: VpipeEngine). vpipe sizes them by the model's own rules;
+// the canvas is the size asked (the picture edited held at 4 MP at
+// least). No guidance, its own 8-step grid, no shift: vpipe's.
+Result<BuiltGraph>
+build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
+               const EncodingCache* cache)
+{
+  const bool edit = job.op == kOpEditImage;
+  const Json vp = jget(job.model.engine, "vpipe", Json::object());
+  const std::string cfg_stage = jget<std::string>(vp, "config_stage", "");
+  if (cfg_stage.empty()) {
+    return make_error(Code::Unsupported, std::format(
+        "{} has no vpipe recipe for {}", job.model.id, job.op));
+  }
+  if (job.model.dit.empty()) {
+    return make_error(Code::InvalidArgument, std::format(
+        "{} runs on another model's DiT, and none is given",
+        job.model.id));
+  }
+  const std::string prompt = jget<std::string>(job.params, "prompt", "");
+  if (prompt.empty()) {
+    return make_error(Code::InvalidArgument, "prompt is empty");
+  }
+  if (edit && refs.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "an edit needs a reference picture");
+  }
+  const Json ed = jget(vp, "edit", Json::object());
+  const Json defaults = jget(vp, "defaults", Json::object());
+  const int align = std::max(16, jget(vp, "align", 32));
+  // The canvas: the size asked, else the model's default -- an edit's,
+  // unasked, its picture's (vpipe's rule: into 4-8 megapixels).
+  int width = jget(job.params, "width", 0);
+  int height = jget(job.params, "height", 0);
+  const bool sized = width > 0 && height > 0;
+  if (!sized && !edit) {
+    width = jget(defaults, "width", 1024);
+    height = jget(defaults, "height", 1024);
+  }
+  if (width > 0 && height > 0) {
+    width = round_to(width, align);
+    height = round_to(height, align);
+  }
+  const int steps = jget(defaults, "steps", 8);
+  const auto seed = jget<std::int64_t>(job.params, "seed", 0);
+
+  BuiltGraph g;
+  const std::string jid = job.id.str();
+  g.output = job.output_dir / std::format("{}.png", jid);
+
+  const int max_refs = std::clamp(jget(ed, "max_references", 8), 1, 8);
+  const std::size_t npic = std::min<std::size_t>(refs.size(), max_refs);
+  if (refs.size() > npic) {
+    VALTZ_LOG_WARN("engine", "{} takes {} picture(s); using the first {} "
+                   "of {}", job.model.id, max_refs, npic, refs.size());
+  }
+
+  // KEPT ENCODINGS (encoding-cache.h): text-to-image's conditioning (the
+  // words and the conditioner's config), an edit's three outputs of the
+  // encoder (the words, its config, every picture by its bytes and the
+  // look laid on the one edited).
+  const Json ccfg = jget(vp, "conditioner", Json::object());
+  Json enc = jget(ed, "encoder", Json::object());
+  std::string key;
+  if (cache) {
+    if (edit) {
+      Json pics = Json::array();
+      bool hashed = true;
+      for (std::size_t i = 0; i < npic; ++i) {
+        hashed = hashed && !refs[i].hash.is_zero();
+        Json pic = {{"hash", refs[i].hash.hex()}};
+        if (refs[i].base && i == 0) {
+          pic["adjust"] = jget(job.params, "base_adjust", Json::object());
+          pic["crop"] = jget(job.params, "base_crop", Json::object());
+        }
+        pics.push_back(std::move(pic));
+      }
+      if (hashed) {
+        key = encoding_key("references",
+                           encoding_doc(*cache, job, "references",
+                                        {{"stage", "video-ref-encoder"},
+                                         {"config", enc},
+                                         {"prompt", prompt},
+                                         {"pictures", pics}}));
+      }
+    } else {
+      key = encoding_key("conditioning",
+                         encoding_doc(*cache, job, "conditioning",
+                                      {{"stage", "diffusion-conditioner"},
+                                       {"config", ccfg},
+                                       {"prompt", prompt}}));
+    }
+  }
+  const bool kept = !key.empty() && cache->kept(key);
+
+  Json stages = Json::array();
+  stages.push_back(stage("model-select", "model-select", Json::array(),
+                         {{"hf_dir", job.model.dir.string()}}));
+  if (!kept) {
+    stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
+                           {{"text", prompt}}));
+  }
+  Json cond = unwired(), ref_video = unwired(), ref_audio = unwired();
+  static constexpr std::array<const char*, 3> kRefPorts = {
+      "conditioning", "ref_video", "ref_audio"};
+  if (edit && kept) {
+    EncodingIo io{key, "references", true, {}};
+    std::array<Json, 3> fed;
+    for (std::size_t k = 0; k < kRefPorts.size(); ++k) {
+      const std::string id = std::format("references-kept-{}", kRefPorts[k]);
+      stages.push_back(stage(id, ex::kSourceType, Json::array(),
+                             Json::object()));
+      io.ports.push_back({kRefPorts[k], id});
+      fed[k] = port(id);
+    }
+    g.encodings.push_back(std::move(io));
+    cond = fed[0];
+    ref_video = fed[1];
+    ref_audio = fed[2];
+  } else if (edit) {
+    Json files = Json::array();
+    for (std::size_t i = 0; i < npic; ++i) {
+      files.push_back(refs[i].path.string());
+    }
+    enc["references"] = std::move(files);
+    stages.push_back(stage("video-ref-encoder", "video-ref-encoder",
+                           Json::array({port("text-prompt"),
+                                        port("model-select")}),
+                           with_vae(with_encoder(enc, job), job)));
+    cond = port("video-ref-encoder", 0);
+    ref_video = port("video-ref-encoder", 1);
+    ref_audio = port("video-ref-encoder", 2);
+    if (!key.empty()) {
+      EncodingIo io{key, "references", false, {}};
+      for (std::size_t k = 0; k < kRefPorts.size(); ++k) {
+        const std::string id = std::format("references-tap-{}",
+                                           kRefPorts[k]);
+        stages.push_back(sink(id, port("video-ref-encoder",
+                                       static_cast<int>(k)), false));
+        io.ports.push_back({kRefPorts[k], id});
+      }
+      g.encodings.push_back(std::move(io));
+    }
+  } else if (kept) {
+    stages.push_back(stage(kKeptConditioning, ex::kSourceType, Json::array(),
+                           Json::object()));
+    cond = port(kKeptConditioning);
+    g.encodings.push_back({key, "conditioning", true,
+                           {{"conditioning", kKeptConditioning}}});
+  } else {
+    stages.push_back(stage("diffusion-conditioner", "diffusion-conditioner",
+                           Json::array({port("text-prompt"), unwired(),
+                                        port("model-select")}),
+                           with_encoder(ccfg, job)));
+    cond = port("diffusion-conditioner");
+    if (!key.empty()) {
+      stages.push_back(sink(kConditioningTap, cond, false));
+      g.encodings.push_back({key, "conditioning", false,
+                             {{"conditioning", kConditioningTap}}});
+    }
+  }
+
+  // Its config beat: the adapter in the first slot, Custom's LoRAs after
+  // it -- no shifts (vpipe runs the checkpoint's grid as given).
+  Json cfg = jget(vp, "config", Json::object());
+  lay_loras(cfg, job);
+  if (!job.model.preview.empty() && jget(job.params, "preview", true)) {
+    cfg["preview_vae"] = job.model.preview.string();
+    cfg["preview_every"] = jget(job.params, "preview_every", 1);
+    cfg["preview_max_edge"] = jget(job.params, "preview_max_edge", 512);
+    g.preview_sink = "preview-sink";
+  }
+  cfg = merged(cfg, declared_of(job, "config"));
+  stages.push_back(stage(cfg_stage, cfg_stage, Json::array(), cfg));
+
+  // generate-video: 0 cond, 1 neg (none: no guidance), 2 model, 3 / 4
+  // sampler and scheduler (its own grid), 5 / 6 keyframes (none), 7 / 8
+  // an edit's picture rows, 9 the config beat.
+  Json gen_in = Json::array({cond, unwired(), port("model-select"),
+                             unwired(), unwired(), unwired(), unwired(),
+                             ref_video, ref_audio, port(cfg_stage)});
+  Json gen_cfg = {{"steps", steps}, {"seed", seed},
+                  {"dit_dir", job.model.dit.string()}};
+  if (width > 0 && height > 0) {
+    gen_cfg["width"] = width;
+    gen_cfg["height"] = height;
+  }
+  gen_cfg = merged(gen_cfg, jget(vp, "generate", Json::object()));
+  gen_cfg = merged(gen_cfg, accel_of(job));
+  gen_cfg = merged(gen_cfg, declared_of(job, "generate"));
+  gen_cfg = merged(gen_cfg, jget(job.params, "vpipe_generate",
+                                 Json::object()));
+  stages.push_back(stage("generate-video", "generate-video", gen_in,
+                         gen_cfg));
+  if (!g.preview_sink.empty()) {
+    stages.push_back(sink(g.preview_sink, port("generate-video", 2),
+                          /*latest_only=*/true));
+  }
+  // The picture: its one latent frame through the model's own decoder,
+  // F16, written as a 16-bit PNG -- an edit's carrying its base's EXIF.
+  const std::string vae = vae_source(job, stages);
+  stages.push_back(stage("vae-decode", "vae-decode",
+                         Json::array({port("generate-video"), port(vae)}),
+                         with_vae({{"dtype", "f16"}}, job)));
+  Json save_in = Json::array({port("vae-decode")});
+  if (edit && refs[0].base) {
+    g.exif_from = refs[0].path;
+    stages.push_back(stage(kExifSource, ex::kSourceType, Json::array(),
+                           Json::object()));
+    save_in.push_back(port(kExifSource));
+  }
+  stages.push_back(stage("save-image", "save-image", std::move(save_in),
+                         {{"path", g.output.string()},
+                          {"bit_depth", 16},
+                          {"software_host", valtz_software()}}));
+
+  g.width = width;
+  g.height = height;
+  g.spec = {{"id", "valtz-" + jid},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
 Result<BuiltGraph>
 build_image(const JobSpec& job, const std::vector<RefImage>& refs,
             const EncodingCache* cache)
 {
   const bool edit = job.op == kOpEditImage;
   const Json vp = jget(job.model.engine, "vpipe", Json::object());
+  if (jget<std::string>(vp, "shape", "") == "h3-image") {
+    return build_h3_image(job, refs, cache);
+  }
   const Json ed = jget(vp, "edit", Json());
   if (!vp.is_object() || vp.empty() || (edit && !ed.is_object())) {
     return make_error(Code::Unsupported, std::format(
@@ -916,7 +1169,8 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs,
                                          codec_accel_of(job)),
                                   job)));
   // save-image: 0 the image, 1 metadata -- the base's EXIF, carried to
-  // the result. Software names Valtz, with vpipe's own line in brackets.
+  // the result. Software names Valtz and its build, with vpipe's own line
+  // in brackets (base/version.h).
   Json save_in = Json::array({port("vae-decode")});
   for (const auto& f : feeds) {
     if (f.base) {
@@ -930,8 +1184,7 @@ build_image(const JobSpec& job, const std::vector<RefImage>& refs,
   stages.push_back(stage("save-image", "save-image", std::move(save_in),
                          {{"path", g.output.string()},
                           {"bit_depth", 16},
-                          {"software_host",
-                           std::string("Valtz ") + VALTZ_VERSION}}));
+                          {"software_host", valtz_software()}}));
 
   g.width = width;
   g.height = height;
@@ -2351,6 +2604,12 @@ helper_chat_config(const JobSpec& job)
       mb > 0) {
     chat_cfg["expert_cache_mb"] = mb;
   }
+  // Its n-gram table held in memory (the Agent's N-gram Table: vpipe's
+  // ngram_resident, vpipe 29ef2378) -- taken where it fits, else read by
+  // row from disk as before.
+  if (jget(job.params, "ngram_resident", false)) {
+    chat_cfg["ngram_resident"] = true;
+  }
   // The dtype it computes in where the model wants one (Ternary-Bonsai's
   // f16, its scales' own); else vpipe's bf16.
   if (const auto d = jget<std::string>(job.params, "compute_dtype", "");
@@ -3469,6 +3728,9 @@ build_summarize_video(const JobSpec& job, media::PixelSize size)
   if (const auto mb = jget<std::int64_t>(job.params, "expert_cache_mb", 0);
       mb > 0) {
     cfg[ex::kSummaryExpertCacheMb] = mb;
+  }
+  if (jget(job.params, "ngram_resident", false)) {
+    cfg[ex::kSummaryNgramResident] = true;
   }
   if (const auto d = jget<std::string>(job.params, "compute_dtype", "");
       !d.empty()) {

@@ -119,7 +119,9 @@ public:
   std::string choose_assistant(const std::string& request_json);
   // THE AGENT (Controller::agent_start, DESIGN §9b): agent_start
   // ({"project", "prompt", "composition"?, "row": [ids], "review",
-  // "backend"?} -> {"agent"}); agent_say ({"agent", "text"});
+  // "backend"?, "skills"?: full | chat | none} -> {"agent"}); agent_say
+  // ({"agent", "text", "stage"?,
+  // "row"?: the assets attached to these words});
   // agent_review ({"agent", "step", "decision": approve | skip |
   // approve_all, "args"?, "note"?}); agent_control ({"agent", "action":
   // pause | resume | stop | review | auto}); agent_state ({"agent"} ->
@@ -461,8 +463,14 @@ public:
   // picture's stack (or the picture with its look) flattened into a
   // 16-bit PNG at path -- with one layer's values as the panel holds
   // them, or that layer alone; without the markup objects the app is
-  // drawing itself.
+  // drawing itself. Stamped with its writer (Controller::stamp_file).
   std::string flatten(const std::string& request_json);
+  // {"path", "project"?, "asset"?} -> {"ok"}: a file handed out -- a
+  // picture shared or dragged out -- stamped with Valtz's and vpipe's
+  // versions (media/stamp.h): as a picture of that asset, with the one
+  // model it was made with or none (Controller::made_with); else with
+  // the model the file names.
+  std::string stamp_file(const std::string& request_json);
   // {"prompt", "target"?: "image"|"video", "style"?, "base"?, "last"?:
   //  a picture a clip ends on, "base" the one it opens on (FL2VA), ...}
   std::string enhance_prompt(const std::string& request_json);

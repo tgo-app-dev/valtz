@@ -307,6 +307,11 @@ Controller::atlas(ProjectId pid)
             continue;
           }
         }
+        // A generation recorded as it was asked (the editor's, the
+        // agent's) goes with its result: never a node of its own.
+        if (jget(g, "recorded", false)) {
+          continue;
+        }
       }
       const int o = op(-1,
                        {{"id", "g:" + jget<std::string>(g, "id", "")},

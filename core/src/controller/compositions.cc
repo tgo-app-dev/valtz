@@ -29,6 +29,46 @@ using project::AssetKind;
 
 namespace {
 
+// Drawn AROUND a missing file (a project copied without its media, an
+// original on a drive not connected): the layer that shows it draws as
+// nothing, counted here on this thread, so a drawing made so is never
+// kept as what its sources make (cached_). Project::media_path names a
+// missing file with msg::kMediaMissing.
+thread_local int t_partial = 0;
+
+bool
+missing_media(const Error& e)
+{
+  return e.key == msg::kMediaMissing.key;
+}
+
+// A file found, else nothing in its place where it is missing (counted);
+// any other failure is the caller's.
+Result<fs::path>
+or_nothing(Result<fs::path> r)
+{
+  if (!r.ok() && missing_media(r.error())) {
+    ++t_partial;
+    VALTZ_LOG_INFO("compose", "drawn without it: {}", r.error().message);
+    return fs::path();
+  }
+  return r;
+}
+
+// A markup's raster where it is; none (counted) where it is missing.
+fs::path
+raster_or_nothing(const fs::path& raster)
+{
+  std::error_code ec;
+  if (raster.empty() || fs::exists(raster, ec)) {
+    return raster;
+  }
+  ++t_partial;
+  VALTZ_LOG_INFO("compose", "a markup drawn without its raster: {}",
+                 raster.string());
+  return fs::path();
+}
+
 // A file as what its content is for a key: its path, size and time.
 std::string
 file_stamp(const fs::path& f)
@@ -2467,9 +2507,17 @@ Controller::cached_(ProjectId pid, const std::string& key,
     }
     fs::create_directories(dir, ec);
     const fs::path part = dir / (".part-" + key);
+    const int partial = t_partial;
     if (auto st = make(part); !st.ok()) {
       fs::remove(part, ec);
       return st.error();
+    }
+    if (t_partial != partial) {
+      const fs::path once = dir / std::format("partial-{}-{}",
+                                              JobId::make().str(), key);
+      fs::rename(part, once, ec);
+      return ec ? Result<fs::path>(make_error(Code::Io, ec.message()))
+                : Result<fs::path>(once);
     }
     fs::rename(part, out, ec);
     if (ec) {
@@ -2486,9 +2534,24 @@ Controller::cached_(ProjectId pid, const std::string& key,
   const fs::path staged = _cache->staging_path(key);
   const fs::path part = staged.parent_path() / (".part-" + key);
   std::error_code ec;
+  const int partial = t_partial;
   if (auto st = make(part); !st.ok()) {
     fs::remove(part, ec);
     return st.error();
+  }
+  if (t_partial != partial) {
+    // Drawn without a missing file: not what its sources make, so not
+    // kept under their key -- handed out once from the working copy.
+    const fs::path dir = p->blobs().tmp_dir() / "partial";
+    fs::create_directories(dir, ec);
+    const fs::path out = dir / std::format("{}-{}",
+                                           JobId::make().str(), key);
+    fs::rename(part, out, ec);
+    if (ec) {
+      return make_error(Code::Io, std::format("cannot keep {}: {}",
+                                              out.string(), ec.message()));
+    }
+    return out;
   }
   fs::rename(part, staged, ec);
   if (ec) {
@@ -2747,8 +2810,8 @@ Controller::layer_picture_(ProjectId pid, project::Project& p,
     const media::PixelSize size =
         mk.width > 0 && mk.height > 0 ? media::PixelSize{mk.width, mk.height}
                                       : frame;
-    const fs::path raster = mk.raster.empty()
-                                ? fs::path() : p.blobs().path_of(mk.raster);
+    const fs::path raster = raster_or_nothing(
+        mk.raster.empty() ? fs::path() : p.blobs().path_of(mk.raster));
     const bool drawn = std::any_of(
         mk.objects.begin(), mk.objects.end(), [&](const Json& o) {
           return !hidden.count(jget<std::string>(o, "id", ""));
@@ -2772,22 +2835,23 @@ Controller::layer_picture_(ProjectId pid, project::Project& p,
   }
   if (clip_like(s)) {
     // A still shows the frame at its mark-in.
-    VALTZ_ASSIGN(pic.file, rendered_frame_(pid, s.id, l.source_version,
-                                           std::max<std::int64_t>(
-                                               0, l.time.in),
-                                           depth + 1));
+    VALTZ_ASSIGN(pic.file, or_nothing(rendered_frame_(
+                               pid, s.id, l.source_version,
+                               std::max<std::int64_t>(0, l.time.in),
+                               depth + 1)));
     return ok_status();
   }
   (void)comp;
   if (paged(s)) {
     // A still with pages: the page at its mark-in, as a clip's frame.
-    VALTZ_ASSIGN(pic.file, rendered_page_(pid, s.id,
-                                          std::max<std::int64_t>(
-                                              0, l.time.in),
-                                          depth + 1));
+    VALTZ_ASSIGN(pic.file, or_nothing(rendered_page_(
+                               pid, s.id,
+                               std::max<std::int64_t>(0, l.time.in),
+                               depth + 1)));
     return ok_status();
   }
-  VALTZ_ASSIGN(pic.file, rendered_(pid, s.id, l.source_version, depth + 1));
+  VALTZ_ASSIGN(pic.file, or_nothing(rendered_(pid, s.id, l.source_version,
+                                              depth + 1)));
   return ok_status();
 }
 
@@ -3062,13 +3126,13 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
     const media::PixelSize size =
         mk.width > 0 && mk.height > 0 ? media::PixelSize{mk.width, mk.height}
                                       : frame;
-    const fs::path raster =
-        mk.raster.empty() ? fs::path() : p.blobs().path_of(mk.raster);
+    const fs::path raster = raster_or_nothing(
+        mk.raster.empty() ? fs::path() : p.blobs().path_of(mk.raster));
     if (mk.objects.empty()) {
       t.file = raster;
     } else if (for_job) {
       // Drawn into a file the job reads.
-      VALTZ_ASSIGN(t.file, rendered_(pid, s.id, 0, depth + 1));
+      VALTZ_ASSIGN(t.file, or_nothing(rendered_(pid, s.id, 0, depth + 1)));
     } else {
       const auto canvas = markup_canvas_(s.id);
       if (auto k = canvas->kept(mk.stamp, raster, size, hidden)) {
@@ -3083,9 +3147,9 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
   }
   if (s.cls == AssetClass::Still) {
     // With pages: the page at its mark-in, a picture for its span.
-    VALTZ_ASSIGN(t.file, rendered_page_(pid, s.id,
-                                        std::max<std::int64_t>(0, l.time.in),
-                                        depth + 1));
+    VALTZ_ASSIGN(t.file, or_nothing(rendered_page_(
+                             pid, s.id, std::max<std::int64_t>(0, l.time.in),
+                             depth + 1)));
     return t;
   }
   // A clip in a composition of sound gives its sound alone, marked in
@@ -3097,7 +3161,8 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
   // scissors' wait was the clip's length, the app's beachball).
   if (const project::Layer* in = part_layer(p, s)) {
     VALTZ_ASSIGN(project::Asset raw, p.asset(*in->source));
-    VALTZ_ASSIGN(t.file, p.media_path(raw.id, in->source_version));
+    VALTZ_ASSIGN(t.file, or_nothing(p.media_path(raw.id,
+                                                 in->source_version)));
     VALTZ_ASSIGN(project::AssetVersion v,
                  p.version(raw.id, in->source_version));
     // A part of sound (a composition of sound alone) is a sound,
@@ -3136,8 +3201,8 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
       t.mark_rate = {1000, 1};
       return t;
     }
-    VALTZ_ASSIGN(t.file, rendered_(pid, s.id, 0, depth + 1));
-    t.video = s.kind == AssetKind::Video;
+    VALTZ_ASSIGN(t.file, or_nothing(rendered_(pid, s.id, 0, depth + 1)));
+    t.video = s.kind == AssetKind::Video && !t.file.empty();
     t.audio_only = s.kind == AssetKind::Audio;
     t.mark_rate = r;
     return t;
@@ -3145,13 +3210,20 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
   VALTZ_ASSIGN(project::AssetVersion v,
                p.version(s.id, l.source_version > 0 ? l.source_version
                                                     : s.head));
-  VALTZ_ASSIGN(t.file, p.media_path(s, v));
+  VALTZ_ASSIGN(t.file, or_nothing(p.media_path(s, v)));
   t.video = s.kind == AssetKind::Video && !clip_sound;
   t.audio_only = s.kind == AssetKind::Audio || clip_sound;
   if (t.video || t.audio_only) {
     t.seconds = seconds_of(v, t.video);
     t.mark_rate = t.video && v.info.frame_rate.num > 0
                       ? v.info.frame_rate : Rational{1000, 1};
+  }
+  if (t.file.empty()) {
+    // Missing: nothing drawn or heard, at the time it would take (its
+    // record's length and marks).
+    t.video = false;
+    t.audio_only = false;
+    return t;
   }
   if (plain) {
     plain->emplace(key, t);

@@ -229,13 +229,40 @@ final class PromptTextView: NSTextView {
             window?.firstResponder === self)
     }
 
+    /// ⌘V: files copied in the Finder, and a PICTURE copied -- a
+    /// screenshot to the clipboard, a browser's Copy Image -- staged in the
+    /// row as a drop stages them (the agent's chat attaching them); words,
+    /// words, plain.
     override func paste(_ sender: Any?) {
-        let urls = Self.fileURLs(NSPasteboard.general)
-        if urls.isEmpty {
+        if !pasteMedia(from: .general) {
             pasteAsPlainText(sender)  // no fonts or colors from elsewhere
-        } else {
-            _ = onFilesDropped?(urls)  // staged in the row
         }
+    }
+
+    /// The pasteboard's files or picture staged in the row; false when it
+    /// holds neither (words to paste).
+    @discardableResult
+    func pasteMedia(from pb: NSPasteboard) -> Bool {
+        let urls = Self.fileURLs(pb)
+        if !urls.isEmpty {
+            _ = onFilesDropped?(urls)  // staged in the row
+            return true
+        }
+        guard let taken = onMediaTaken, let intake = DroppedMedia.pasted(pb)
+        else { return false }
+        taken(intake)
+        return true
+    }
+
+    /// Paste is offered for a picture alone too: the text view takes no
+    /// pictures of its own (importsGraphics off), so it would grey it.
+    override func validateUserInterfaceItem(
+        _ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(paste(_:)), isEditable,
+           onMediaTaken != nil, DroppedMedia.pastes(.general) {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -760,6 +787,9 @@ struct PromptEditor: NSViewRepresentable {
     /// Room around the text: the box's own, or immersive editing's wider
     /// margins.
     var inset = PromptEditor.inset
+    /// The agent's chat input (AgentChat): Return sends, ⇧Return (⌥Return)
+    /// breaks the line.
+    var chat = false
 
     /// The prompt's type: Georgia -- a serif keeps a long prompt, as a
     /// model's template makes it, readable -- falling back to the system's
@@ -792,6 +822,9 @@ struct PromptEditor: NSViewRepresentable {
     }()
     static let cjkParagraph = NSParagraphStyle.default
     static let inset = NSSize(width: 14, height: 17)
+    /// The chat input's: a line and its room.
+    static let chatInset = NSSize(width: 10, height: 10)
+    static let chatMinHeight: CGFloat = 40
 
     /// Han, kana, Hangul, and their punctuation: CJK text.
     nonisolated static func hasCJK(_ s: String) -> Bool {
@@ -825,6 +858,29 @@ struct PromptEditor: NSViewRepresentable {
         var caretParagraph = NSRange(location: NSNotFound, length: 0)
 
         init(_ p: PromptEditor) { parent = p }
+
+        /// In the agent's chat, Return SENDS -- Start, as the Send button
+        /// -- and ⇧Return or ⌥Return breaks the line. (An input method
+        /// composing takes its own Return: it never comes here.)
+        func textView(_ textView: NSTextView,
+                      doCommandBy selector: Selector) -> Bool {
+            guard parent.chat else { return false }
+            switch selector {
+            case #selector(NSResponder.insertNewline(_:)):
+                let flags = NSApp.currentEvent?.modifierFlags ?? []
+                if flags.contains(.shift) || flags.contains(.option) {
+                    textView.insertNewlineIgnoringFieldEditor(nil)
+                } else {
+                    parent.model.startPressed()
+                }
+                return true
+            case #selector(NSResponder.insertLineBreak(_:)):
+                textView.insertNewlineIgnoringFieldEditor(nil)
+                return true
+            default:
+                return false
+            }
+        }
 
         func textDidChange(_ notification: Notification) {
             // Typed (the person's change, never a load): the editor is

@@ -197,6 +197,11 @@ struct GenerateImageRequest {
   // first; the base at the very start needs none. The recipe records the
   // tagged prompt, and the result's name is the words alone.
   std::vector<std::optional<AssetId>> inline_pictures;
+  // The Atlas generate node it runs, if one does (generate_node_op):
+  // that node records it. Any other is recorded as a node that RAN --
+  // its settings and links, the seed it ran with -- so the Atlas recalls
+  // it and Duplicate makes it again (record_generation_).
+  std::string node;
 };
 
 // A clip -- and its soundtrack, made with it -- from a prompt (MiniMax H3
@@ -287,6 +292,7 @@ struct GenerateVideoRequest {
   // with references, each becomes what the model calls it (<Picture 1>,
   // <Video 1>, <Audio 1>); otherwise it is dropped.
   std::vector<std::optional<AssetId>> inline_media;
+  std::string          node;         // as for a picture
 };
 
 // A SONG from words (YuE2; DESIGN §4d). The prompt holds its style and,
@@ -336,6 +342,7 @@ struct GenerateAudioRequest {
   // kept), the speech waiting for it.
   std::vector<AssetId>     voices;
   std::vector<std::string> voice_texts;
+  std::string              node;     // as for a picture
 };
 
 // A model QUANTIZED from its source (catalog `quantize`; vpipe's
@@ -437,6 +444,13 @@ struct AgentRequest {
   // Where its model thinks: "" Settings'; "helper" -- this Mac's, or a
   // fleet member's as agent turns' offload policy says; "cloud".
   std::string            backend;
+  // Its VALTZ TOOLS (DESIGN §9b): "full" -- the editor's tools and their
+  // guide: it changes the project, holding it while it works, one such
+  // session a project at a time (kAgentOneEditor); "chat" -- the chat
+  // guide's few: it looks at the project and adds to its assets
+  // (pictures made, texts kept), holding nothing; "none" -- no guide, no
+  // tool: words, and the pictures attached to them.
+  std::string            skills = "full";
 };
 
 class Controller {
@@ -456,6 +470,27 @@ public:
   const models::ModelStore& model_store() const noexcept { return *_store; }
   std::string version() const;
   std::string engine_description() const;
+  // Who wrote a file Valtz hands out: "Valtz 0.1.0 build 141 (Vpipe 0.1
+  // 29ef2378*0)" (base/version.h). An export stamps its own; a picture
+  // flattened to a file, shared or dragged out, is stamped by stamp_file
+  // (media/stamp.h: never failed over it -- the error is the caller's to
+  // log or drop).
+  std::string software() const;
+  Status stamp_file(const std::filesystem::path& file) const;
+  // ...as a picture of `asset` (`only` that layer of it, a layer dragged
+  // out alone): named with the model made_with finds, never what the file
+  // itself carries over.
+  Status stamp_file(const std::filesystem::path& file, ProjectId,
+                    AssetId asset, const std::string& only = {}) const;
+  // The ONE model `asset`'s pixels were made with, as its writer's name
+  // names it (media::stamped_model: "Krea 2", "PrunaAI/P-H3-Image"): a
+  // flat or generated asset's, from its file's recorded Software; a
+  // composition's (still, timeline, edited copy, nested ones) when every
+  // layer it shows -- not hidden, not a mask -- was made with that one.
+  // "" when none was (a markup, a photo, an empty still) or the layers
+  // were made by several, or by a model and something else: an export
+  // then names Valtz and vpipe alone (DESIGN §7 Export).
+  std::string made_with(ProjectId, AssetId asset) const;
 
   // ---- where things are kept (base/paths.h) ---------------------------
 
@@ -1355,6 +1390,18 @@ public:
   // use of the model alike, an Enhance on it too: the copy kept warm is
   // one.
   int agent_i8_prefill_(const models::ModelEntry& m) const;
+  // The agent's N-gram Table in Memory (DESIGN §9b; vpipe's
+  // ngram_resident): ASKED -- the agent's model, a table read by row from
+  // disk (catalog `ngram_gb`: Qwen3.8 Flash-Next's 38.4 GB), the setting
+  // on -- and HELD, where vpipe would take it: no expert cache asked
+  // under every expert, and the model with every expert resident, the
+  // table, its context and the working memory within the memory it is
+  // sized in (streamed_budget_). Asked, vpipe is told -- it decides at the
+  // load, the rows from disk where it does not fit; held, Valtz counts
+  // the table in what the model holds (its context, the plan Settings
+  // shows). False for any other model.
+  bool agent_ngram_asked_(const models::ModelEntry& m) const;
+  bool agent_ngram_held_(const models::ModelEntry& m) const;
   // What the agent's model holds here, for Settings: its resident part,
   // its experts, the cache asked for and what Auto's would be, its
   // context (its own, Auto's, the most this Mac holds, what it is given)
@@ -1641,9 +1688,13 @@ public:
   // failed | stopped -- and "agent.text" {agent, text}: the model's words
   // as they are written.
   Result<std::string> agent_start(AgentRequest);
-  // The person's next words: an answer to its question, more to do.
+  // The person's next words: an answer to its question, more to do --
+  // and the assets they attached to them (the chat's pasted or dropped
+  // pictures): listed for its tools, the pictures shown to a model that
+  // sees.
   Status agent_say(const std::string& agent, const std::string& text,
-                   const Json& stage = Json::object());
+                   const Json& stage = Json::object(),
+                   const std::vector<AssetId>& attached = {});
   // The person's word on a step waiting for it: "approve" (with `args`
   // in place of the model's, when not null), "skip" (`note` told to the
   // model), "approve_all" (this one and every one after: Auto).
@@ -1657,9 +1708,13 @@ public:
   Status agent_stop(const std::string& agent);
   // {"agent", "project", "state", "review", "backend": {kind, model,
   //  where}, "prompt", "composition", "error", "writing" (this turn's
-  //  words so far), "usage", "steps": [{"n", "tool", "title", "args",
-  //  "state" (proposed | running | waiting | done | failed | skipped),
-  //  "result", "error", "job"}], "messages": [{"role", "content"}]}
+  //  words so far), "usage", "context": {"used" (the tokens its next
+  //  turn would take, estimated past the last count), "counted" (the
+  //  last turn's), "limit" (its model's), "compact_at" (the share it is
+  //  compacted at, %; 0 never)}, "transcript" (its asset, once made),
+  //  "steps": [{"n", "tool", "title", "args", "state" (proposed |
+  //  running | waiting | done | failed | skipped), "result", "error",
+  //  "job"}], "messages": [{"role", "content", "said"?, "attached"?}]}
   Json agent_state(const std::string& agent) const;
   // The project's sessions, newest first, each as agent_state without
   // its messages.
@@ -1882,7 +1937,20 @@ private:
     std::unique_ptr<project::Workspace> ws;
     bool ephemeral = false;
     Json opened = Json::object();  // project.opened's
+    // The files it uses that are not there (Project::missing_media), as
+    // the app is told them; while any is, the person's writes are
+    // refused (write_guard_): it is looked at, not changed.
+    Json missing = Json::array();
   };
+  // The files `p` uses that are not there, as JSON: {asset, name, path,
+  // how}, in the list's order.
+  static Json missing_media_json_(const project::Project& p);
+  // Read again what is missing (at an open, after the links' check); the
+  // app told when it changed (project.changed's "missing_media",
+  // assets.changed).
+  void recheck_missing_(ProjectId);
+  // How many files the project lacks (0: none, or not open).
+  std::size_t missing_count_(ProjectId) const;
   project::Workspace* workspace_(ProjectId) const;
   // The command a public action records into (UndoLog::command); a no-op
   // without the project.
@@ -1967,7 +2035,10 @@ private:
   // `context_bytes_per_token`) -- its resident part and that cache.
   int helper_context_(const models::ModelEntry& m, bool chosen = true) const;
   // The most of its context this Mac's memory holds (as above, no cap).
-  int helper_context_fits_(const models::ModelEntry& m) const;
+  // A model with a table it may hold (catalog `ngram_gb`) holds it as
+  // `table` says, else as agent_ngram_held_ does.
+  int helper_context_fits_(const models::ModelEntry& m,
+                           std::optional<bool> table = std::nullopt) const;
   // The memory vpipe sizes a model streaming its experts in, bytes: the
   // Mac's less the 8 GB it keeps back, 85% of the GPU's working set
   // (every byte of it a Metal buffer), the agent's Memory -- the least.
@@ -2212,6 +2283,12 @@ private:
   // The model a clip's references are for: `model`, or ("" / "auto")
   // Auto's video edit pick; none when neither is there.
   const models::ModelEntry* reference_model_(const std::string& model);
+  // A generation asked from anywhere but a generate node -- the editor's
+  // Start, the agent, valtzctl -- recorded as a node that RAN (`node`:
+  // its target, prompt, row, settings and `extra`, what a node's own
+  // settings do not say), its job and result, the seed the recipe has:
+  // in the request's command, undone with it (generate-nodes.cc).
+  void record_generation_(ProjectId, JobId, Json node);
   // A clip's or a timeline's length in its own frames, and its rate.
   Result<std::pair<std::int64_t, Rational>> clip_frames_(project::Project&,
                                                          const project::Asset&);

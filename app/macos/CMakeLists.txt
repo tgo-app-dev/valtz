@@ -12,19 +12,8 @@
 
 set(VALTZ_BUNDLE_ID "com.tgous.valtz" CACHE STRING "Valtz bundle id")
 
-# CFBundleVersion must increase monotonically for Sparkle to recognise an
-# update, and must not depend on who builds. The source tree's commit
-# count is both -- in the PUBLIC tree a release is built from. A tree
-# without history (a tarball, a shallow clone) falls back rather than
-# failing the configure. Taken at configure time: reconfigure to refresh.
-execute_process(
-  COMMAND git -C "${PROJECT_SOURCE_DIR}" rev-list --count HEAD
-  OUTPUT_VARIABLE VALTZ_APP_BUILD
-  OUTPUT_STRIP_TRAILING_WHITESPACE
-  ERROR_QUIET)
-if(NOT VALTZ_APP_BUILD)
-  set(VALTZ_APP_BUILD 1)
-endif()
+# CFBundleVersion is VALTZ_APP_BUILD, the source tree's commit count (the
+# top-level CMakeLists.txt): the number the core stamps into its files too.
 
 # Sparkle auto-update. Optional, and off unless a framework is supplied:
 # a 15 MB binary dependency only a published build needs, so
@@ -128,6 +117,8 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/PromptMarkdown.swift
   Sources/Simple/PromptStudio.swift
   Sources/Simple/SuggestionPane.swift
+  Sources/Simple/AgentChat.swift
+  Sources/Simple/AgentTabs.swift
   Sources/Simple/AgentModel.swift
   Sources/Simple/AgentViews.swift
   Sources/Simple/ReferenceRow.swift

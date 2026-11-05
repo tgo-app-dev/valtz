@@ -37,7 +37,8 @@ public:
 
   Result<std::string> start(AgentRequest);
   Status say(const std::string& id, const std::string& text,
-             const Json& stage = Json::object());
+             const Json& stage = Json::object(),
+             const std::vector<AssetId>& attached = {});
   Status review(const std::string& id, int step, const std::string& what,
                 const Json& args, const std::string& note);
   Status set_review(const std::string& id, bool review);
@@ -50,13 +51,15 @@ public:
   Json settings() const;
   Status set_settings(const Json&);
   // Its settings' "model" ("" the Agentic Helper's), "memory_gb" (0
-  // none), "expert_cache_gb" (0 Auto) and "i8_prefill" ("auto" the
-  // model's own, "on", "off"): Controller::agent_model,
-  // agent_memory_limit_, agent_expert_cache_, agent_i8_prefill_.
+  // none), "expert_cache_gb" (0 Auto), "i8_prefill" ("auto" the
+  // model's own, "on", "off") and "ngram_resident" (false): Controller::
+  // agent_model, agent_memory_limit_, agent_expert_cache_,
+  // agent_i8_prefill_, agent_ngram_asked_.
   std::string model_choice() const;
   int memory_gb() const;
   int expert_cache_gb() const;
   std::string i8_prefill() const;
+  bool ngram_resident() const;
   Json tools_json() const;
 
   // A job's event as the controller posts it: an agent's picture landing
@@ -130,6 +133,9 @@ public:
     std::optional<AssetId>              target;
     std::string                         prompt;
     std::vector<AssetId>                row;
+    // Its Valtz tools (AgentRequest::skills): "full" alone edits and
+    // holds the project.
+    std::string                         skills = "full";
     std::vector<agent::Message>         messages;
     std::vector<Step>                   steps;
     std::unique_ptr<agent::Backend>     backend;
@@ -141,7 +147,9 @@ public:
     bool                                pause_asked = false;
     bool                                stop_asked = false;
     std::atomic<bool>                   cancel{false};
-    std::deque<std::string>             said;
+    // The person's words said while it worked or listened, as the user
+    // messages they become (person_message_).
+    std::deque<agent::Message>          said;
     std::optional<Decision>             decision;
     // Its pictures not yet landed, and what landed since the model was
     // last told.
@@ -191,6 +199,9 @@ public:
     // started: off, a session ends where its model's context does.
     bool                                compact = true;
     std::int64_t                        created_ms = 0;
+    // Its TRANSCRIPT in the project's Assets (write_transcript_): made
+    // as it first rests, written again at each rest after.
+    std::optional<AssetId>              transcript;
     std::thread                         thread;
   };
 
@@ -206,7 +217,15 @@ public:
     ToolFn      run = nullptr;
   };
   static const std::vector<Tool>& tools();
-  static std::vector<agent::ToolSpec> tool_specs();
+  // A CHAT's tools ("chat"): the full table's that look -- at the
+  // project, its pictures, clips and sounds -- and that ADD to its assets
+  // (a picture made as an asset alone, a text kept, a prompt saved);
+  // none that changes what is there.
+  static const std::vector<Tool>& chat_tools();
+  // The tools of a session's skills: "full", "chat", "none" (none).
+  static const std::vector<Tool>& tools_for(std::string_view skills);
+  static std::vector<agent::ToolSpec>
+  tool_specs(std::string_view skills = "full");
 
 private:
   // This Mac's helper, or a fleet member's (agent.cc).
@@ -226,6 +245,9 @@ private:
   bool gate_(Session& s);
   // The person's next words (done, failed): false when stopped.
   bool wait_words_(Session& s);
+  // The person's words said meanwhile into the conversation, in order,
+  // their pictures shown (show_attached_).
+  void take_said_(Session& s);
   void set_state_(Session& s, std::string state);
   // agent.changed posted -- and the project held while it works.
   void post_(Session& s, std::optional<int> step = std::nullopt);
@@ -241,6 +263,32 @@ private:
   // and objects; the words alone with nothing to say.
   std::string with_stage_(ProjectId pid, const std::string& words,
                           const Json& stage);
+  // The person's words as the user message the model is handed: where
+  // they were, and -- `list` -- the assets they attached, by name and
+  // id for the tools. Their own words and those ids kept apart (said,
+  // attached) for the app and the transcript.
+  // `tools`: told by id, for them; without tools, by name alone.
+  agent::Message person_message_(ProjectId pid, const std::string& words,
+                                 const Json& stage,
+                                 const std::vector<AssetId>& attached,
+                                 bool list, bool tools = true);
+  // The pictures among a person's message's attachments SHOWN with it,
+  // where its model sees: drawn small into the session's folder, the
+  // first kShownAttached of them. On the session's thread, before the
+  // message joins the conversation.
+  void show_attached_(Session& s, agent::Message& m);
+  // The tokens the conversation takes now, as its next turn would be
+  // handed it: the last turn's count and an estimate of what came since
+  // (all estimated before any) -- what the app's ring shows.
+  std::int64_t context_estimate_(const Session& s) const;
+  // The session's TRANSCRIPT (DESIGN §9b): its conversation in Markdown
+  // -- the person's words and attachments, the agent's words, each step
+  // with what it was asked and how it went, Valtz's notes, the
+  // compactions -- a text asset of the project, in its Agent Sessions
+  // folder, written at each rest (done, failed, stopped). In no command:
+  // a record of what happened, not undone with the steps it tells.
+  void write_transcript_(Session& s);
+  std::string transcript_text_(const Session& s) const;
   std::unique_ptr<agent::Backend> backend_(const std::string& kind,
                                            const std::string& key,
                                            const std::filesystem::path& dir);
@@ -318,6 +366,13 @@ private:
                                std::vector<std::filesystem::path>&);
   Result<Json> t_generate_image(Session&, Step&, const Json&,
                                 std::vector<std::filesystem::path>&);
+  // ---- a chat's own (chat_tools): a picture made as an asset alone --
+  // generate_image placed nowhere, whatever it is given -- and words
+  // kept as a text asset.
+  Result<Json> t_chat_picture(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
+  Result<Json> t_save_text(Session&, Step&, const Json&,
+                           std::vector<std::filesystem::path>&);
   // The MODELS of a task -- pictures, shots, music, ... -- that run here,
   // Auto's pick among them, and those not downloaded: what the person
   // may choose from by name (each tool's `model`).
@@ -504,6 +559,8 @@ private:
 
   Controller&                                      _c;
   mutable std::mutex                               _mu;
+  // Sessions started one at a time: one editor a project (start).
+  std::mutex                                       _start_mu;
   std::map<std::string, std::shared_ptr<Session>>  _sessions;
   std::map<JobId, Landing>                         _landings;
   // Shots HELD (generate_video `continues` a shot still being made): each

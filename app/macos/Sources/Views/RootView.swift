@@ -424,7 +424,9 @@ struct ProjectDropDelegate: DropDelegate {
     /// Read off the drag's pasteboard, not its providers (DroppedMedia):
     /// asked while the drag moves, a promise's providers would receive
     /// its files -- which AppKit refuses outside a perform, aborting.
-    private var pasteboard: NSPasteboard { NSPasteboard(name: .drag) }
+    /// The drag's own pasteboard (DragBoard: a Dock stack's is not the
+    /// named drag pasteboard).
+    private var pasteboard: NSPasteboard { DragBoard.pasteboard }
 
     func validateDrop(info: DropInfo) -> Bool {
         holds(pasteboard) != .nothing

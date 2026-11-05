@@ -180,6 +180,7 @@ read_entry(const Json& m, const Contributor& who, ModelEntry& e,
   e.experts_gb = std::max(0.0, jget(m, "experts_gb", 0.0));
   e.expert_cache_floor_gb =
       std::max(0.0, jget(m, "expert_cache_floor_gb", 0.0));
+  e.ngram_gb = std::max(0.0, jget(m, "ngram_gb", 0.0));
   e.by_name = jget(m, "by_name", false);
   e.rank = jget(m, "rank", 0);
   const Json rf = jget(m, "rank_for", Json::object());
@@ -314,6 +315,14 @@ missing_reference(const Catalog& cat, const ModelEntry& e,
       !d.empty() && !cat.find(d)) {
     *what = "decodes with";
     return d;
+  }
+  for (const auto& [key, says] : {std::pair{"dit_from", "runs the DiT of"},
+                                  std::pair{"adapter", "runs under"}}) {
+    if (const auto d = jget<std::string>(vp, key, "");
+        !d.empty() && !cat.find(d)) {
+      *what = says;
+      return d;
+    }
   }
   if (!e.quantize_from.empty() && !cat.find(e.quantize_from)) {
     *what = "is quantized from";

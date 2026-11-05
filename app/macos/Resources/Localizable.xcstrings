@@ -479,6 +479,16 @@
         }
       }
     },
+    "%@ kept whole" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 个保持完整"
+          }
+        }
+      }
+    },
     "%@ keyframes · frame %@" : {
       "localizations" : {
         "en" : {
@@ -828,6 +838,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 步，使用它自己的偏移"
+          }
+        }
+      }
+    },
+    "%@ voices" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 个嗓音"
           }
         }
       }
@@ -1293,6 +1313,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%lld 核 · 矩阵核心"
+          }
+        }
+      }
+    },
+    "%lld files this project uses are missing (%@, …): it can be looked at, not changed. Reconnect them and open the project again." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld files this project uses are missing (%2$@, …): it can be looked at, not changed. Reconnect them and open the project again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此项目使用的 %lld 个文件缺失（%@ 等）：项目可以查看，但不能更改。请重新连接这些文件，然后再次打开项目。"
           }
         }
       }
@@ -1795,6 +1831,26 @@
         }
       }
     },
+    "A file of the project's own, gone from its package" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "项目自身的文件，已不在项目包中"
+          }
+        }
+      }
+    },
+    "A file this project uses is missing (%@): it can be looked at, not changed. Reconnect it and open the project again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此项目使用的一个文件缺失（%@）：项目可以查看，但不能更改。请重新连接该文件，然后再次打开项目。"
+          }
+        }
+      }
+    },
     "A flat asset of it as it looks: a picture, a movie or a sound" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1842,6 +1898,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "钥匙串中已存有密钥。"
+          }
+        }
+      }
+    },
+    "A linked original: moved, renamed, or on a drive not connected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "链接的原始文件：已被移动、重命名，或所在的驱动器未连接"
           }
         }
       }
@@ -2112,6 +2178,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "ANE QKV"
+          }
+        }
+      }
+    },
+    "ANE int8" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "ANE int8"
+          }
+        }
+      }
+    },
+    "ANE int8 %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "ANE int8 %@"
+          }
+        }
+      }
+    },
+    "ANE int8 tier" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "ANE int8 档位"
           }
         }
       }
@@ -2921,6 +3017,16 @@
         }
       }
     },
+    "Also: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "另外：%@"
+          }
+        }
+      }
+    },
     "Altitude" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2937,6 +3043,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "始终"
+          }
+        }
+      }
+    },
+    "An asset since removed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "一个已被移除的素材"
           }
         }
       }
@@ -3252,6 +3368,16 @@
         }
       }
     },
+    "Ask anything — paste or drop pictures to talk about them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "随便问——粘贴或拖放图片来谈论它们"
+          }
+        }
+      }
+    },
     "Ask before each step" : {
       "localizations" : {
         "zh-Hans" : {
@@ -3268,6 +3394,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "请它做点什么——“一份关于水循环的五页幻灯片，每页一张图片”"
+          }
+        }
+      }
+    },
+    "Ask the Agent" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "向智能体提问"
           }
         }
       }
@@ -4501,6 +4637,26 @@
         }
       }
     },
+    "Chat Without Tools" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不带工具的聊天"
+          }
+        }
+      }
+    },
+    "Chat: Look and Add" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "聊天：查看与添加"
+          }
+        }
+      }
+    },
     "Check Files" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4681,6 +4837,16 @@
         }
       }
     },
+    "Clear Message" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "清除消息"
+          }
+        }
+      }
+    },
     "Clear Prompt" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4707,6 +4873,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "清除日志"
+          }
+        }
+      }
+    },
+    "Clear the message and its pictures" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "清除消息及其图片"
           }
         }
       }
@@ -4918,6 +5094,16 @@
         }
       }
     },
+    "Close Chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关闭聊天"
+          }
+        }
+      }
+    },
     "Close Project" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4984,6 +5170,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "关闭预览：回到正在编辑的合成"
+          }
+        }
+      }
+    },
+    "Close this chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "关闭此聊天"
           }
         }
       }
@@ -5079,12 +5275,43 @@
         }
       }
     },
+    "Compacted %lld times so far." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "到目前为止已压缩 %lld 次。"
+          }
+        }
+      }
+    },
+    "Compacted once so far." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "到目前为止已压缩一次。"
+          }
+        }
+      }
+    },
     "Compacted to stay within the model’s context: the %lld messages before summarized." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "为不超出模型的上下文已压缩：之前的 %lld 条消息已归纳为摘要。"
+          }
+        }
+      }
+    },
+    "Compacted: the %lld messages above summarized for the model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已压缩：以上 %lld 条消息已为模型归纳为摘要"
           }
         }
       }
@@ -5095,6 +5322,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在压缩对话…"
+          }
+        }
+      }
+    },
+    "Compaction is off: it stops when the context is full." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "压缩已关闭：上下文满时它会停止。"
           }
         }
       }
@@ -5420,6 +5657,42 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "上下文"
+          }
+        }
+      }
+    },
+    "Context: %lld tokens. Nothing said yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上下文：%lld 个词元。尚未说任何话。"
+          }
+        }
+      }
+    },
+    "Context: about %lld of %lld tokens (%lld%%)." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Context: about %1$lld of %2$lld tokens (%3$lld%%)."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上下文：约 %1$lld / %2$lld 个词元（%3$lld%%）。"
+          }
+        }
+      }
+    },
+    "Context: this model’s size is not known." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上下文：此模型的上下文大小未知。"
           }
         }
       }
@@ -6804,6 +7077,16 @@
         }
       }
     },
+    "Draft and Regenerate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "草稿后重新生成"
+          }
+        }
+      }
+    },
     "Drafted at %@ from the references, then regenerated at %@ by Open-H3-Regenerate-2K on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line." : {
       "localizations" : {
         "en" : {
@@ -6832,6 +7115,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "先以 %@ 生成草稿，再由 Open-H3-Regenerate-2K 以 %@ 重新生成：耗时是草稿的数倍。"
+          }
+        }
+      }
+    },
+    "Drafted at 768P, then regenerated at the size by Open-H3-Regenerate-2K" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "先以 768P 生成草稿，再由 Open-H3-Regenerate-2K 按此尺寸重新生成"
           }
         }
       }
@@ -7931,6 +8224,16 @@
         }
       }
     },
+    "File missing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "文件缺失"
+          }
+        }
+      }
+    },
     "File not found: %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8278,6 +8581,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "跟随速度"
+          }
+        }
+      }
+    },
+    "Follows %@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Follows %1$@: %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跟随 %1$@：%2$@"
           }
         }
       }
@@ -9422,6 +9741,16 @@
         }
       }
     },
+    "High-res pass" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "高分辨率处理"
+          }
+        }
+      }
+    },
     "Higher keeps fewer blocks: faster, less exact" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9548,6 +9877,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "保持：速度改变时音高不变。跟随速度：音高随速度升降，如同磁带——快一倍，高一个八度"
+          }
+        }
+      }
+    },
+    "Holds the model's %@ n-gram table in memory, filled after it loads, instead of reading a prompt's rows from the SSD: a long prompt read about a third faster, the replies the same." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "把模型 %@ 的 n-gram 表保存在内存中（模型加载后再填入），不再从 SSD 读取提示词的各行：长提示词的读取约快三分之一，回复不变。"
           }
         }
       }
@@ -10185,12 +10524,38 @@
         }
       }
     },
+    "It does not fit here beside every expert and the conversation: its rows are read from the SSD, as when it is off." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在这台 Mac 上，它放不下所有专家和对话之外的空间：各行仍从 SSD 读取，与关闭时相同。"
+          }
+        }
+      }
+    },
     "It drafts a block of words at a time, which the model checks in one pass. It holds more memory beside the model; on a Mac without much to spare, the MTP head is as fast." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "它一次起草一段词，由模型一次性校验。它在模型之外还要占用更多内存；在内存不宽裕的 Mac 上，MTP 预测头一样快。"
+          }
+        }
+      }
+    },
+    "It fits here, beside every expert: the model then holds about %@, %@ more, which leaves less room for its conversation and for pictures and clips beside it. For the model's next load." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "It fits here, beside every expert: the model then holds about %1$@, %2$@ more, which leaves less room for its conversation and for pictures and clips beside it. For the model's next load."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这台 Mac 放得下它和所有专家：模型届时约占 %1$@，多出 %2$@，留给对话以及同时生成的图片和视频的空间随之减少。在模型下次加载时生效。"
           }
         }
       }
@@ -10207,6 +10572,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "它约占用 %1$@：%2$@ 常驻内存，其 %4$@ 专家中缓存 %3$@——其余在被选中时从 SSD 读取——以及它的对话，最多 %5$lld 个 token，约 %6$@。"
+          }
+        }
+      }
+    },
+    "It looks at your project — pictures, pages, clips, sounds — and adds to Assets: pictures it makes, texts it keeps. It changes nothing that is there: the tab with Valtz’s tools does. Paste or drop pictures here to talk about them." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它查看你的项目——图片、页面、片段、声音——并向素材中添加：它生成的图片、它保存的文字。它不更改已有的内容：那是带 Valtz 工具的标签页的事。把图片粘贴或拖放到这里来谈论它们。"
           }
         }
       }
@@ -10237,6 +10612,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "完成当前这一步后暂停"
+          }
+        }
+      }
+    },
+    "It works on the document with the editor’s tools — pages, texts, pictures, clips and music — step by step, as you watch. Paste or drop pictures here to show it what you mean." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它用编辑器的工具在文档上工作——页面、文字、图片、片段和音乐——一步一步，你可以看着它做。把图片粘贴或拖放到这里，向它说明你的意思。"
           }
         }
       }
@@ -10313,6 +10698,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "删除文件夹后，其中的素材仍保留在项目中"
+          }
+        }
+      }
+    },
+    "Its file is missing: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "其文件缺失：%@"
           }
         }
       }
@@ -10413,6 +10808,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "速度已更改"
+          }
+        }
+      }
+    },
+    "Its transcript is not in Assets any more." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它的记录已不在“素材”中。"
+          }
+        }
+      }
+    },
+    "Its transcript, in Assets: the conversation and each step, to review" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它在“素材”中的记录：对话和每一步，供回顾"
           }
         }
       }
@@ -10533,6 +10948,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "留在原处"
+          }
+        }
+      }
+    },
+    "Keep a Text" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保存文字"
           }
         }
       }
@@ -11005,6 +11430,16 @@
         }
       }
     },
+    "Leave Chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "离开聊天"
+          }
+        }
+      }
+    },
     "Leave Fleet" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11021,6 +11456,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "留在原处"
+          }
+        }
+      }
+    },
+    "Leave the chat: back to the prompt box (⇧⌘E)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "离开聊天：回到提示框（⇧⌘E）"
           }
         }
       }
@@ -11497,6 +11942,16 @@
         }
       }
     },
+    "Look and Add" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "查看与添加"
+          }
+        }
+      }
+    },
     "Look at Frames" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11577,6 +12032,16 @@
         }
       }
     },
+    "Looks at the project and adds to Assets -- pictures it makes, texts it keeps -- without changing what is there." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "查看项目并向素材中添加——它生成的图片、它保存的文字——不更改已有的内容。"
+          }
+        }
+      }
+    },
     "Loop" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11643,6 +12108,32 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已生成"
+          }
+        }
+      }
+    },
+    "Made at %@ in one pass, past the %@ on its short side the model was trained at: no draft and no refine, and refused before it starts if it does not fit in memory." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Made at %1$@ in one pass, past the %2$@ on its short side the model was trained at: no draft and no refine, and refused before it starts if it does not fit in memory."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "以 %1$@ 一次生成，超出模型训练时短边的 %2$@：没有草稿，也没有精修；内存不够时，开始前即被拒绝。"
+          }
+        }
+      }
+    },
+    "Made at the size directly, as the model makes it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "由模型直接按此尺寸生成"
           }
         }
       }
@@ -12186,6 +12677,26 @@
         }
       }
     },
+    "Missing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "缺失"
+          }
+        }
+      }
+    },
+    "Missing Files" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "缺失的文件"
+          }
+        }
+      }
+    },
     "Mix the clip's colours" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12557,6 +13068,16 @@
         }
       }
     },
+    "N-gram Table in Memory" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "n-gram 表常驻内存"
+          }
+        }
+      }
+    },
     "NVIDIA's Recipe" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12688,6 +13209,16 @@
         }
       }
     },
+    "New Chat" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "新对话"
+          }
+        }
+      }
+    },
     "New Clip Generation" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12804,6 +13335,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "新建窗口"
+          }
+        }
+      }
+    },
+    "New chat: it looks and adds, or talks without tools, beside the one that edits" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "新聊天：在负责编辑的那个旁边，查看与添加，或不带工具地交谈"
           }
         }
       }
@@ -12935,6 +13476,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无结果"
+          }
+        }
+      }
+    },
+    "No Tools" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "无工具"
           }
         }
       }
@@ -13351,6 +13902,26 @@
         }
       }
     },
+    "Not found" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未找到"
+          }
+        }
+      }
+    },
+    "Not found, so left out: %@. The generation runs without them; put the files back, or remove them from Custom's list." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未找到，已略去：%@。本次生成不使用它们；请把文件放回原处，或从自定义列表中移除。"
+          }
+        }
+      }
+    },
     "Not installed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13447,6 +14018,16 @@
         }
       }
     },
+    "Not rotated: the same speed, less exact" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不旋转：速度相同，精度更低"
+          }
+        }
+      }
+    },
     "Not run on this Mac" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13523,6 +14104,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "不是 Valtz 在此可用的权重"
+          }
+        }
+      }
+    },
+    "Not with the Expert Cache set below every expert: the table is held only beside all of them. Its rows are read from the SSD." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "专家缓存设得小于全部专家时不会生效：只有全部专家都在内存中时才保存此表。各行从 SSD 读取。"
           }
         }
       }
@@ -13865,6 +14456,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在舞台上：所有面板都作用于它"
+          }
+        }
+      }
+    },
+    "One Pass" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "一次生成"
           }
         }
       }
@@ -14418,6 +15019,16 @@
         }
       }
     },
+    "Past %lld%%, the conversation is compacted to go on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "超过 %lld%% 后，对话会被压缩以继续进行。"
+          }
+        }
+      }
+    },
     "Paste Drawing" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14434,6 +15045,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在此粘贴令牌："
+          }
+        }
+      }
+    },
+    "Pasted Clip" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "粘贴的片段"
+          }
+        }
+      }
+    },
+    "Pasted Picture" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "粘贴的图片"
+          }
+        }
+      }
+    },
+    "Pasted Sound" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "粘贴的声音"
           }
         }
       }
@@ -15409,6 +16050,16 @@
         }
       }
     },
+    "Put this conversation away: the next words start a new one. Its transcript stays in Assets." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "收起此对话：接下来的话会开始一个新对话。它的记录保留在“素材”中。"
+          }
+        }
+      }
+    },
     "Put this prompt in the box: its references bind to the row's media by position" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15653,7 +16304,6 @@
       }
     },
     "Ready" : {
-      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -16324,6 +16974,16 @@
         }
       }
     },
+    "Reply — paste or drop pictures to talk about them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "回复——粘贴或拖放图片来谈论它们"
+          }
+        }
+      }
+    },
     "Rescan" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16647,6 +17307,16 @@
         }
       }
     },
+    "Rotated, a scale a row and a token: the GPU's Per Token" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "先旋转，每行、每个 token 一个尺度：与 GPU 的逐 token 相同"
+          }
+        }
+      }
+    },
     "Rotation" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16813,6 +17483,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "只在成员上运行，从不在本机运行；没有成员能接手时会被拒绝。"
+          }
+        }
+      }
+    },
+    "Runs the Neural Engine's modules (the feed-forward, and q|k|v with ANE QKV) in int8, weights and activations, instead of fp16: the arithmetic of the GPU's per-token int8 tiers on the Neural Engine's rows. On an M4 Pro, MiniMax H3's blocks ran 1.36× the GPU alone with the feed-forward in int8 against 1.26× in fp16, and 1.65× against 1.41× with q|k|v too; each lands as far from the exact result as the GPU tier of its name. While int8 GEMM runs Per Token or Per Token, Unrotated, this is on at that tier. Needs ANE FFN and macOS 26; a module that cannot run int8 is built in fp16. Off in every Favor preset." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在神经网络引擎上把它的模块（前馈层，开启 ANE QKV 时还有 q|k|v）以 int8 运行，权重和激活都是 int8，而不是 fp16：即 GPU 逐 token int8 档的算法，用在神经网络引擎分担的行上。在 M4 Pro 上，MiniMax H3 的块在前馈层用 int8 时是 GPU 单独运行的 1.36 倍（fp16 为 1.26 倍），再加上 q|k|v 时为 1.65 倍（fp16 为 1.41 倍）；每种都与同名的 GPU 档离精确结果一样远。int8 GEMM 使用逐 token 或逐 token，不旋转时，这里自动开启并使用同一档。需要 ANE FFN 和 macOS 26；无法以 int8 运行的模块会按 fp16 构建。所有“偏好”预设中都关闭。"
           }
         }
       }
@@ -17149,6 +17829,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "升高（+）或降低（−）的半音数，以整半音为步进；按住 ⌥ 以十分之一为步进。是否同时随速度变化，在“修剪”中速度旁设置。连按两次取消。"
+          }
+        }
+      }
+    },
+    "Send" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "发送"
+          }
+        }
+      }
+    },
+    "Send (Return; ⇧Return for a new line)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "发送（Return；⇧Return 换行）"
+          }
+        }
+      }
+    },
+    "Send: it reads your words at its next turn (Return)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "发送：它会在下一轮读到你的话（Return）"
           }
         }
       }
@@ -18950,6 +19660,16 @@
         }
       }
     },
+    "Tab %@ has Valtz’s tools: one agent at a time changes the project." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "标签页 %@ 已有 Valtz 工具：同一时间只有一个智能体可以更改项目。"
+          }
+        }
+      }
+    },
     "Take %@ added at %@" : {
       "localizations" : {
         "en" : {
@@ -19022,6 +19742,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "拍摄时间"
+          }
+        }
+      }
+    },
+    "Taken only where the model with every expert and the table fit -- about %@ more than it holds now. For the model's next load." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "只在模型连同全部专家和此表都放得下时才启用——比现在多占约 %@。在模型下次加载时生效。"
           }
         }
       }
@@ -19352,6 +20082,26 @@
         }
       }
     },
+    "The Neural Engine's int8 runs it too" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "神经网络引擎的 int8 也按此档运行"
+          }
+        }
+      }
+    },
+    "The Neural Engine's modules in int8: faster, lossy" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "神经网络引擎上的模块用 int8：更快，有损"
+          }
+        }
+      }
+    },
     "The Neural Engine, estimated from its power where the counter is live, else from how long its fabric sat above idle" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19598,6 +20348,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "原样保存文件，不重新编码"
+          }
+        }
+      }
+    },
+    "The file of “%@” is missing: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The file of “%1$@” is missing: %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“%@”的文件缺失：%@"
           }
         }
       }
@@ -20207,6 +20973,16 @@
         }
       }
     },
+    "The tab with Valtz’s tools is working: the project is read-only until it is done. This chat still looks and adds." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "带 Valtz 工具的标签页正在工作：在它完成之前项目为只读。此聊天仍可查看与添加。"
+          }
+        }
+      }
+    },
     "The timeline shows a clip's or a sound's composition, or a still with pages." : {
       "localizations" : {
         "zh-Hans" : {
@@ -20477,6 +21253,16 @@
         }
       }
     },
+    "This project can be looked at, not changed, while these are missing: what uses them is drawn without them. Reconnect them and open the project again." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这些文件缺失时，此项目只能查看，不能更改：使用它们的内容会在没有它们的情况下绘制。请重新连接这些文件，然后再次打开项目。"
+          }
+        }
+      }
+    },
     "This project uses extensions that aren't installed (%@): their parts are skipped, and kept for the next save." : {
       "localizations" : {
         "zh-Hans" : {
@@ -20683,6 +21469,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "到下一个关键帧 —— %@"
+          }
+        }
+      }
+    },
+    "Tools" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "工具"
           }
         }
       }
@@ -21654,6 +22450,16 @@
       },
       "shouldTranslate" : false
     },
+    "Valtz Tools" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 工具"
+          }
+        }
+      }
+    },
     "Valtz could not start" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -22557,12 +23363,33 @@
         }
       }
     },
+    "Which int8 matrix product runs with int8 GEMM on. Accurate quantizes the weights and the activations in groups of 64 at every call. Fast keeps the block's weights as int8 in groups of 512, each group turned by a Hadamard rotation on both sides so that one large channel does not set its scale. Per Token gives each weight row and each token one scale across the whole product, after a rotation in blocks of 256: the fastest (Qwen-Image 2.1 on an M5: 1.4-1.7× Accurate). Per Token, Unrotated skips the rotation: a little faster again, its pictures further from the bf16 model's. Faster down the list, less exact. A full-precision model's blocks take it only while kept in memory: those it streams, on a smaller Mac, stay Accurate (an 8-bit compressed copy's take it either way). With ANE FFN on, Fast is not offered, the Neural Engine having no int8 of its groups, and Per Token or Per Token, Unrotated sets the Neural Engine's int8 to the same tier." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "int8 GEMM 开启时使用哪一种 int8 矩阵乘。精确：每次调用时把权重和激活都按 64 分组量化。快速：把块的权重以 int8 按 512 分组保存，每组在两侧都做一次 Hadamard 旋转，使单个较大的通道不会决定整组的尺度。逐 token：每个权重行和每个 token 在整个乘积上只取一个尺度，先按 256 分块旋转：最快（M5 上的 Qwen-Image 2.1：精确档的 1.4-1.7 倍）。逐 token，不旋转：省去旋转，再快一点，画面离 bf16 模型更远。越往下越快，精度越低。全精度模型的块只有留在内存中时才使用它：在内存较小的 Mac 上流式读取的块仍按精确档运行（8 位压缩副本的块两种情况下都使用）。开启 ANE FFN 时不提供快速档（神经网络引擎没有分组的 int8）；选逐 token 或逐 token，不旋转时，神经网络引擎的 int8 也设为同一档。"
+          }
+        }
+      }
+    },
     "Which int8 matrix product runs with int8 GEMM on. Accurate quantizes the weights and the activations in groups of 64 at every call. Fast keeps the block's weights as int8 in groups of 512, each group turned by a Hadamard rotation on both sides so that one large channel does not set its scale. Per Token gives each weight row and each token one scale across the whole product, after a rotation in blocks of 256: the fastest (Qwen-Image 2.1 on an M5: 1.4-1.7× Accurate). Per Token, Unrotated skips the rotation: a little faster again, its pictures further from the bf16 model's. Faster down the list, less exact. A full-precision model's blocks take it only while kept in memory: those it streams, on a smaller Mac, stay Accurate (an 8-bit compressed copy's take it either way). With ANE FFN on, it is Accurate." : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "int8 GEMM 开启时使用哪一种 int8 矩阵乘。精确：每次调用时把权重和激活都按 64 分组量化。快速：把块的权重以 int8 按 512 分组保存，每组在两侧都做一次 Hadamard 旋转，使单个较大的通道不会决定整组的尺度。逐 token：每个权重行和每个 token 在整个乘积上只取一个尺度，先按 256 分块旋转：最快（M5 上的 Qwen-Image 2.1：精确档的 1.4-1.7 倍）。逐 token，不旋转：省去旋转，再快一点，画面离 bf16 模型更远。越往下越快，精度越低。全精度模型的块只有留在内存中时才使用它：在内存较小的 Mac 上流式读取的块仍按精确档运行（8 位压缩副本的块两种情况下都使用）。开启 ANE FFN 时按精确档运行。"
+          }
+        }
+      }
+    },
+    "Which int8 the Neural Engine runs with ANE int8 on. Per Token turns each weight row and each projection's input by a Hadamard rotation in blocks of 256, then gives each row and each token one scale, so that one large channel does not set it. Per Token, Unrotated skips the rotation: about the same speed, and in a MiniMax H3 clip about 1.7× the error. While int8 GEMM runs one of these tiers, this is the same one." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "开启 ANE int8 时神经网络引擎使用哪一种 int8。逐 token：每个权重行和每个投影的输入都先按 256 分块做 Hadamard 旋转，再让每行、每个 token 只取一个尺度，使单个较大的通道不会决定它。逐 token，不旋转：省去旋转，速度大致相同，在 MiniMax H3 的视频中误差约为 1.7 倍。int8 GEMM 使用其中一档时，这里也是同一档。"
           }
         }
       }
@@ -22707,6 +23534,16 @@
         }
       }
     },
+    "With them, its %@ n-gram table, held in memory (N-gram Table in Memory, below)." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此外还有它 %@ 的 n-gram 表，常驻内存（见下方“n-gram 表常驻内存”）。"
+          }
+        }
+      }
+    },
     "Withhold" : {
       "localizations" : {
         "zh-Hans" : {
@@ -22723,6 +23560,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "歌词"
+          }
+        }
+      }
+    },
+    "Words alone: no Valtz tools, so its context is the conversation’s. Paste or drop pictures here: they are shown to it with your words." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "只有文字：没有 Valtz 工具，因此它的上下文全部留给对话。把图片粘贴或拖放到这里：它们会随你的话一起展示给它。"
+          }
+        }
+      }
+    },
+    "Words alone: no Valtz tools, so its context is the conversation’s. Pictures you attach are still shown to it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "只有文字：没有 Valtz 工具，因此它的上下文全部留给对话。你附加的图片仍会展示给它。"
           }
         }
       }
@@ -22763,6 +23620,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "处理对象"
+          }
+        }
+      }
+    },
+    "Works on %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "处理对象：%@"
+          }
+        }
+      }
+    },
+    "Works on the document with the editor’s tools. One tab at a time has them." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "用编辑器的工具处理文档。同一时间只有一个标签页拥有这些工具。"
           }
         }
       }
@@ -23091,12 +23968,32 @@
         }
       }
     },
+    "a new composition" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "一个新合成"
+          }
+        }
+      }
+    },
     "a new conversation" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "新对话"
+          }
+        }
+      }
+    },
+    "a score to follow" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按乐谱演奏"
           }
         }
       }
@@ -23132,12 +24029,52 @@
         }
       }
     },
+    "and %lld more" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "另有 %lld 个"
+          }
+        }
+      }
+    },
     "bf16 weights" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "bf16 权重"
+          }
+        }
+      }
+    },
+    "composed from its pictures, none edited" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "由图片合成，不编辑其中任何一张"
+          }
+        }
+      }
+    },
+    "continues “%@”" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "接续“%@”"
+          }
+        }
+      }
+    },
+    "continues “%@” from its kept latents" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从保留的潜变量接续“%@”"
           }
         }
       }
@@ -23308,6 +24245,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "该智能体会话已不存在。"
+          }
+        }
+      }
+    },
+    "core.agent_one_editor" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Another chat has Valtz's tools on this project: one agent at a time may change it. Chat here with Look and Add, or without tools."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "另一个聊天已在此项目上拥有 Valtz 工具：同一时间只有一个智能体可以更改它。请在这里用“查看与添加”或不带工具聊天。"
           }
         }
       }
@@ -25182,6 +26136,23 @@
         }
       }
     },
+    "core.media_missing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The file of “{name}” is missing: {path}"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“{name}”的文件缺失：{path}"
+          }
+        }
+      }
+    },
     "core.merge_across_mask" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -25977,6 +26948,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "项目的合成不能移除：它就是项目本身。"
+          }
+        }
+      }
+    },
+    "core.project_missing_media" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{count} of the files this project uses are missing, so it can be looked at but not changed. Reconnect them and open it again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此项目使用的文件中有 {count} 个缺失，因此只能查看，不能更改。请重新连接这些文件，然后再次打开。"
           }
         }
       }
@@ -26870,6 +27858,16 @@
         }
       }
     },
+    "ends on its picture" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "以这张图片结束"
+          }
+        }
+      }
+    },
     "engine support in progress" : {
       "localizations" : {
         "zh-Hans" : {
@@ -27000,6 +27998,16 @@
         }
       }
     },
+    "keeps its latents" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "保留潜变量"
+          }
+        }
+      }
+    },
     "kept %@ more" : {
       "localizations" : {
         "zh-Hans" : {
@@ -27036,6 +28044,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已链接"
+          }
+        }
+      }
+    },
+    "lyrics given apart" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "歌词另行提供"
           }
         }
       }
@@ -27107,6 +28125,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "不保留：无人使用时释放"
+          }
+        }
+      }
+    },
+    "not regenerated" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不重新生成"
           }
         }
       }
@@ -27227,6 +28255,16 @@
         }
       }
     },
+    "regenerated past 768P" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "超过 768P 时重新生成"
+          }
+        }
+      }
+    },
     "repetition penalty %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -27293,6 +28331,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "云端"
+          }
+        }
+      }
+    },
+    "the song as its soundtrack" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "以这首歌作为配乐"
           }
         }
       }

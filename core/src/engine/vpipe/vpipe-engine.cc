@@ -43,13 +43,16 @@
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
+#include "valtz/base/version.h"
 #include "valtz/cache/cache-store.h"
 #include "valtz/media/exif.h"
+#include "valtz/media/layers.h"
 #include "valtz/media/model-input.h"
 #include "valtz/media/movie.h"
 #include "valtz/media/pdf.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/sound.h"
+#include "valtz/media/stamp.h"
 #include "engine/vpipe/encoding-cache.h"
 #include "engine/vpipe/flex-json.h"
 #include "engine/vpipe/graph-builder.h"
@@ -66,6 +69,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -276,6 +280,7 @@ public:
   ~VpipeEngine() override { shutdown(); }
 
   std::string description() const override { return _desc; }
+  std::string software() const override { return linked_engine_software(); }
   bool available() const override { return _session != nullptr; }
   Json backends() const override { return _backends; }
 
@@ -808,7 +813,8 @@ private:
     fs::create_directories(spec.output_dir, ec);
     const fs::path out = spec.output_dir /
         std::format("{}.{}", spec.id.str(), f.extension);
-    if (auto st = media::write_sound(in.path, out, f.name, start, duration);
+    if (auto st = media::write_sound(in.path, out, f.name, start, duration,
+                                     export_stamp_(spec));
         !st.ok()) {
       fail_(q, st.code(), st.error().message);
       return;
@@ -834,6 +840,17 @@ private:
     done.kind = JobEventKind::Finished;
     done.progress = 1.0f;
     q.sink(done);
+  }
+
+  // An export's writer's name: Valtz's build and vpipe's, with the model
+  // the controller found the picture made with (its "made_with", "" when
+  // none or several: Controller::made_with).
+  std::string
+  export_stamp_(const JobSpec& spec) const
+  {
+    return media::with_model(software_stamp(software()),
+                             jget<std::string>(spec.params, "made_with",
+                                               ""));
   }
 
   // A still written as a PDF (export-media's "pdf"): no graph -- Core
@@ -868,7 +885,9 @@ private:
       q.sink(p);
       return !lane.cancel.load();
     };
-    if (auto st = media::write_pdf(doc, out, page_done); !st.ok()) {
+    if (auto st = media::write_pdf(doc, out, page_done,
+                                   export_stamp_(spec));
+        !st.ok()) {
       if (st.code() == Code::Cancelled) {
         JobEvent ev;
         ev.job = spec.id;
@@ -1014,8 +1033,22 @@ private:
         built = vp::build_text_to_image(here, enc);
       } else {
         auto refs = reference_images_(spec);
+        // P-H3-Image reads its pictures by file: those it cannot read
+        // as they are made readable first, the base's EXIF from its own.
+        std::optional<fs::path> exif;
+        if (refs.ok() && by_file_(spec)) {
+          if (!refs->empty() && refs->front().base) {
+            exif = refs->front().path;
+          }
+          if (auto st = readable_pictures_(spec, *refs); !st.ok()) {
+            refs = Result<std::vector<vp::RefImage>>(st.error());
+          }
+        }
         built = refs.ok() ? vp::build_image_edit(here, *refs, enc)
                           : Result<vp::BuiltGraph>(refs.error());
+        if (built.ok() && exif && !built->exif_from.empty()) {
+          built->exif_from = *exif;
+        }
       }
     } else if (spec.op == kOpGenerateVideo) {
       auto first = keyframe_(spec, "first");
@@ -1594,13 +1627,36 @@ private:
     // A clip comes out in two halves -- vpipe's Apple-native writer is
     // video only -- joined here: the picture passed through, the sound
     // encoded to AAC.
+    // An EXPORT names who wrote it (DESIGN §7 Export, media/stamp.h):
+    // Valtz's build and vpipe's, and the model the controller found the
+    // picture made with ("made_with": its one model, or none) -- not what
+    // the file vpipe wrote happens to carry over from a source.
+    const std::string stamp = spec.op == kOpExportMedia
+                                  ? export_stamp_(spec)
+                                  : std::string();
     if (!g.video_part.empty()) {
       if (reports) {
         report(/*force=*/true);  // the reports are closed: finishing
       }
-      if (auto st = join_clip_(g); !st.ok()) {
+      if (auto st = join_clip_(g, stamp); !st.ok()) {
         fail_(q, st.code(), st.error().message);
         return;
+      }
+    } else if (!stamp.empty()) {
+      // Pictures, a still's pages, a movie with no sound to join: as
+      // vpipe wrote them, stamped. Never failed over it.
+      std::vector<fs::path> files = g.pages;
+      if (files.empty()) {
+        files.push_back(g.output);
+      }
+      for (const auto& f : files) {
+        if (!fs::is_regular_file(f, ec)) {
+          continue;  // said below
+        }
+        if (auto st = media::stamp_software(f, stamp, false); !st.ok()) {
+          VALTZ_LOG_WARN("engine", "{} not stamped: {}",
+                         f.filename().string(), st.error().message);
+        }
       }
     }
     if (!g.pages.empty()) {
@@ -1803,6 +1859,51 @@ private:
     return refs;
   }
 
+  // A model whose edit reads its pictures BY FILE (catalog `shape`
+  // "h3-image": P-H3-Image, through its encoder's `references` list).
+  static bool
+  by_file_(const JobSpec& spec)
+  {
+    return jget<std::string>(jget(spec.model.engine, "vpipe",
+                                  Json::object()),
+                             "shape", "") == "h3-image";
+  }
+
+  // Each picture as vpipe reads a file: a PNG or JPEG as it is; anything
+  // else (a TIFF, a HEIC, a camera RAW) developed as Valtz develops it,
+  // and the base with the look the request lays on it (params
+  // "base_adjust", "base_crop") -- each written as a 16-bit PNG beside
+  // the job's output.
+  static Status
+  readable_pictures_(const JobSpec& spec, std::vector<vp::RefImage>& refs)
+  {
+    for (std::size_t i = 0; i < refs.size(); ++i) {
+      auto& r = refs[i];
+      media::LayerPicture lp;
+      lp.file = r.path;
+      if (r.base) {
+        lp.adjust = media::adjustments_from_json(
+            jget(spec.params, "base_adjust", Json::object()));
+        lp.crop = media::crop_from_json(
+            jget(spec.params, "base_crop", Json::object()));
+      }
+      std::string ext = r.path.extension().string();
+      std::ranges::transform(ext, ext.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+      });
+      const bool plain = ext == ".png" || ext == ".jpg" || ext == ".jpeg";
+      if (plain && lp.adjust.identity() && lp.crop.identity()) {
+        continue;
+      }
+      const fs::path out = spec.output_dir /
+          std::format("{}-picture-{}.png", spec.id.str(), i + 1);
+      VALTZ_TRY(media::flatten_layers({lp}, out));
+      VALTZ_ASSIGN(r.size, media::oriented_size(out));
+      r.path = out;
+    }
+    return ok_status();
+  }
+
   // The picture a clip opens on (input role "first") or ends on
   // ("last"), if it has one.
   static Result<std::optional<vp::RefImage>>
@@ -1981,7 +2082,7 @@ private:
   // picture alone. The scratch halves go either way; an export's sound
   // is its source, which stays.
   static Status
-  join_clip_(const vp::BuiltGraph& g)
+  join_clip_(const vp::BuiltGraph& g, std::string_view software = {})
   {
     std::error_code ec;
     if (!fs::is_regular_file(g.video_part, ec)) {
@@ -1992,12 +2093,19 @@ private:
     Status st = ok_status();
     if (fs::is_regular_file(g.audio_part, ec)) {
       st = media::add_soundtrack(g.video_part, g.audio_part, g.output,
-                                 g.audio_start, g.audio_duration, g.sound);
+                                 g.audio_start, g.audio_duration, g.sound,
+                                 software);
     } else {
       VALTZ_LOG_WARN("engine", "the clip has no soundtrack");
       fs::rename(g.video_part, g.output, ec);
       if (ec) {
         st = make_error(Code::Io, ec.message());
+      } else if (!software.empty()) {
+        if (auto s = media::stamp_software(g.output, software, false);
+            !s.ok()) {
+          VALTZ_LOG_WARN("engine", "{} not stamped: {}",
+                         g.output.filename().string(), s.error().message);
+        }
       }
     }
     fs::remove(g.video_part, ec);
@@ -2332,6 +2440,13 @@ private:
   bool                                  _wired_pending = false;
 };
 
+}
+
+std::string
+linked_engine_software()
+{
+  return std::format("Vpipe {} {}", vpipe::vpipe_version_number(),
+                     vpipe::vpipe_build_hash());
 }
 
 std::unique_ptr<Engine>

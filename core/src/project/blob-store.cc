@@ -64,6 +64,12 @@ BlobStore::path_of(const ContentHash& h, std::string_view ext) const
   return own;
 }
 
+fs::path
+BlobStore::saved_path_of(const BlobRef& b) const
+{
+  return under(_read.empty() ? _root : _read.back(), b.hash, b.ext);
+}
+
 bool
 BlobStore::contains(const BlobRef& b) const
 {

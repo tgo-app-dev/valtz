@@ -1,6 +1,7 @@
 #include "valtz/project/project.h"
 
 #include "valtz/base/log.h"
+#include "valtz/base/message.h"
 #include "valtz/base/text.h"
 #include "valtz/media/probe.h"
 #include "project/bookmark.h"
@@ -818,7 +819,17 @@ Result<fs::path>
 Project::media_path(const Asset& a, const AssetVersion& v) const
 {
   if (!v.blob.empty()) {
-    return _blobs.path_of(v.blob);
+    // A blob gone from the package (a project copied without it, a file
+    // deleted by hand) is said by name, as a missing original is: not
+    // found later, by whatever reads it.
+    fs::path p = _blobs.path_of(v.blob);
+    std::error_code ec;
+    if (!fs::exists(p, ec)) {
+      return make_error(Code::NotFound, msg::kMediaMissing,
+                        {{"name", a.name},
+                         {"path", _blobs.saved_path_of(v.blob).string()}});
+    }
+    return p;
   }
   if (!a.linked) {
     return make_error(Code::NotFound, "asset version has no media");
@@ -841,9 +852,45 @@ Project::media_path(const Asset& a, const AssetVersion& v) const
   case LinkState::Missing:
     break;
   }
-  return make_error(Code::NotFound, std::format(
-      "the original of {} is missing ({}) -- is its drive connected?",
-      a.name, a.source_path));
+  return make_error(Code::NotFound, msg::kMediaMissing,
+                    {{"name", a.name}, {"path", a.source_path}});
+}
+
+Result<std::vector<MissingMedia>>
+Project::missing_media() const
+{
+  VALTZ_ASSIGN(auto assets, this->assets());
+  std::vector<MissingMedia> out;
+  std::error_code ec;
+  for (const auto& a : assets) {
+    if (a.linked) {
+      auto chk = check_link(a.id);
+      if (chk.ok() && chk->state == LinkState::Missing) {
+        out.push_back({a.id, a.name, a.source_path, "original"});
+      }
+      continue;
+    }
+    if (a.markup && !a.markup->raster.empty()) {
+      const fs::path r = _blobs.path_of(a.markup->raster);
+      if (!fs::exists(r, ec)) {
+        out.push_back({a.id, a.name, _blobs.saved_path_of(a.markup->raster),
+                       "blob"});
+      }
+      continue;
+    }
+    if (a.head == 0) {
+      continue;
+    }
+    auto v = version(a.id, a.head);
+    if (!v.ok() || v->blob.empty()) {
+      continue;
+    }
+    const fs::path f = _blobs.path_of(v->blob);
+    if (!fs::exists(f, ec)) {
+      out.push_back({a.id, a.name, _blobs.saved_path_of(v->blob), "blob"});
+    }
+  }
+  return out;
 }
 
 Result<std::string>

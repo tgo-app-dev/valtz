@@ -53,6 +53,13 @@ final class EditorWindows {
     /// SwiftUI's, to open another window (EditorWindow hands it over).
     @ObservationIgnored var openWindow: OpenWindowAction?
     /// Projects the Finder asked Valtz to open before a window was there.
+    /// Handed over as the Finder LAUNCHES Valtz -- a double-click, a drop
+    /// on its Dock icon -- they come in place of the first window's
+    /// showing: SwiftUI makes it, but orders it in only for a launch that
+    /// opens no documents (the external event its own URL handling would
+    /// take, which the delegate's application(_:open:) does instead) --
+    /// Valtz opened, the project opened in it, no window on screen. So a
+    /// window a project opens in is shown (`showHidden`).
     @ObservationIgnored private var pending: [URL] = []
     @ObservationIgnored private var watch: [Any] = []
     /// The quit's models still to be asked about (quitReply).
@@ -138,6 +145,15 @@ final class EditorWindows {
         let urls = pending
         pending = []
         for u in urls { open(u) }
+    }
+
+    /// `m`'s window on screen where it is not: the first window, made by
+    /// SwiftUI but left ordered out at a launch that opens a project
+    /// (`pending`).
+    private func showHidden(_ m: AppModel) {
+        guard let w = m.editorWindow, !w.isVisible else { return }
+        m.bringToFront()
+        NSApp.activate()
     }
 
     private func becameMain(_ w: NSWindow?) {
@@ -231,6 +247,7 @@ final class EditorWindows {
         }
         let f = menuModel
         if f.holdsNothing {
+            showHidden(f)
             f.closeProject(.open) { f.openProject(path: url.path) }
         } else {
             newWindow(.open(url.path))

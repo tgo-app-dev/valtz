@@ -10,8 +10,12 @@
 #include "engine/vpipe/flex-json.h"
 #include "engine/vpipe/host-exchange.h"
 #include "engine/vpipe/job-progress.h"
+#include "valtz/base/version.h"
 #include "valtz/engine/engine.h"
+#include "valtz/media/exif.h"
+#include "valtz/media/stamp.h"
 #include "valtz/media/pdf.h"
+#include "valtz/media/probe.h"
 #include "valtz/models/catalog.h"
 #include "valtz-vpipe/exchange.h"
 #include "scene-cut.h"
@@ -19,6 +23,9 @@
 #include "common/perf-flops.h"
 #include "vpipe/vpipe.h"
 #include "stages/model-catalog.h"
+
+#include <CoreGraphics/CoreGraphics.h>
+#include <ImageIO/ImageIO.h>
 
 #include <array>
 #include <chrono>
@@ -898,6 +905,32 @@ TEST(vpipe_plugin, a_refused_download_fails_in_words)
 // A still exported as a PDF runs in the export lane with no graph
 // (media::write_pdf): started, a page counted as each is drawn, the file
 // handed over -- one PDF of the document's pages.
+namespace {
+
+// A file's URL for Core Graphics and ImageIO, released with the
+// expression it is made in.
+struct CfUrl {
+  CFURLRef url;
+  explicit CfUrl(const fs::path& p)
+      : url(CFURLCreateFromFileSystemRepresentation(
+            nullptr, reinterpret_cast<const UInt8*>(p.c_str()),
+            static_cast<CFIndex>(std::strlen(p.c_str())), false))
+  {
+  }
+  ~CfUrl() { CFRelease(url); }
+  CfUrl(const CfUrl&) = delete;
+  CfUrl& operator=(const CfUrl&) = delete;
+  operator CFURLRef() const { return url; }
+};
+
+CfUrl
+cf_url(const fs::path& p)
+{
+  return CfUrl(p);
+}
+
+}  // namespace
+
 TEST(vpipe_plugin, a_pdf_export_is_written_in_the_export_lane)
 {
   if (!plugin_present()) {
@@ -965,6 +998,210 @@ TEST(vpipe_plugin, a_pdf_export_is_written_in_the_export_lane)
   std::string head(5, '\0');
   f.read(head.data(), 5);
   CHECK(head == "%PDF-");
+  // Its Creator names who wrote it: Valtz's build, vpipe's own line.
+  {
+    CGPDFDocumentRef pdf = CGPDFDocumentCreateWithURL(cf_url(out));
+    REQUIRE(pdf != nullptr);
+    CGPDFStringRef creator = nullptr;
+    CHECK(CGPDFDictionaryGetString(CGPDFDocumentGetInfo(pdf), "Creator",
+                                   &creator));
+    std::string s;
+    if (creator) {
+      if (CFStringRef t = CGPDFStringCopyTextString(creator)) {
+        char buf[256] = {};
+        CFStringGetCString(t, buf, sizeof buf, kCFStringEncodingUTF8);
+        s = buf;
+        CFRelease(t);
+      }
+    }
+    CHECK(s.starts_with("Valtz ") && s.find(" build ") != std::string::npos);
+    CHECK(s.find("(Vpipe ") != std::string::npos);
+    CGPDFDocumentRelease(pdf);
+  }
+  e->shutdown();
+}
+
+// An EXPORT names its writer (DESIGN §7 Export, media/stamp.h) though no
+// model made it: a photo's export through vpipe's load-image and
+// save-image says Valtz's build and vpipe's in its Software -- not the
+// camera's firmware it was imported with.
+TEST(vpipe_plugin, an_export_names_its_writer)
+{
+  if (!plugin_present()) {
+    SKIP("valtz-vpipe.so not found");
+  }
+  const auto dir = test::temp_dir("export-stamp");
+  EngineConfig cfg;
+  cfg.state_dir = dir / "engine";
+  cfg.temp_dir = dir / "tmp";
+  cfg.log_level = "error";
+  auto e = make_vpipe_engine(cfg);
+  REQUIRE(e && e->available());
+  CHECK(e->software().starts_with("Vpipe "));
+  // A camera's picture: Make and Software its own.
+  const fs::path photo = dir / "photo.jpg";
+  {
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef c = CGBitmapContextCreate(
+        nullptr, 64, 48, 8, 0, cs,
+        static_cast<std::uint32_t>(kCGImageAlphaNoneSkipLast));
+    CGContextSetRGBFillColor(c, 0.2, 0.5, 0.8, 1);
+    CGContextFillRect(c, CGRectMake(0, 0, 64, 48));
+    CGImageRef img = CGBitmapContextCreateImage(c);
+    const void* tk[] = {kCGImagePropertyTIFFMake,
+                        kCGImagePropertyTIFFSoftware};
+    const void* tv[] = {CFSTR("Canon"), CFSTR("Firmware 1.3")};
+    CFDictionaryRef tiff = CFDictionaryCreate(
+        nullptr, tk, tv, 2, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+    const void* pk[] = {kCGImagePropertyTIFFDictionary};
+    const void* pv[] = {tiff};
+    CFDictionaryRef props = CFDictionaryCreate(
+        nullptr, pk, pv, 1, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+    CGImageDestinationRef d = CGImageDestinationCreateWithURL(
+        cf_url(photo), CFSTR("public.jpeg"), 1, nullptr);
+    CGImageDestinationAddImage(d, img, props);
+    REQUIRE(CGImageDestinationFinalize(d));
+    CFRelease(d);
+    CFRelease(props);
+    CFRelease(tiff);
+    CGImageRelease(img);
+    CGContextRelease(c);
+    CGColorSpaceRelease(cs);
+  }
+  CHECK(jget<std::string>(media::exif_fields(photo), "Software", "") ==
+        "Firmware 1.3");
+  auto info = media::probe_file(photo);
+  REQUIRE_OK(info);
+  for (const char* format : {"png16", "jpeg", "tiff"}) {
+    JobSpec spec;
+    spec.id = JobId::make();
+    spec.op = std::string(kOpExportMedia);
+    spec.params = {{"format", format}};
+    spec.output_dir = dir / "out";
+    spec.inputs.push_back({"source", photo, {}, *info});
+    std::mutex mu;
+    std::condition_variable cv;
+    fs::path out;
+    bool ended = false, finished = false;
+    REQUIRE_OK(e->submit(spec, [&](const JobEvent& ev) {
+      std::lock_guard lk(mu);
+      if (ev.kind == JobEventKind::Output) {
+        out = ev.output;
+      }
+      finished = finished || ev.kind == JobEventKind::Finished;
+      ended = ended || ev.terminal();
+      cv.notify_all();
+    }));
+    {
+      std::unique_lock lk(mu);
+      REQUIRE(cv.wait_for(lk, std::chrono::seconds(60),
+                          [&] { return ended; }));
+    }
+    REQUIRE(finished);
+    REQUIRE(fs::exists(out));
+    const auto sw = jget<std::string>(media::exif_fields(out), "Software",
+                                      "");
+    CHECK(sw == software_stamp(e->software()));
+    CHECK(sw.find(" build ") != std::string::npos);
+    // The camera's own fields go with it.
+    CHECK(jget<std::string>(media::exif_fields(out), "Make", "") ==
+          "Canon");
+  }
+
+  // A GENERATED picture as vpipe writes one: its Software in the PNG's
+  // text, no EXIF. Exported, it names the model the controller found it
+  // made with ("made_with") -- or none, whatever it says itself -- where
+  // ImageIO reads it as TIFF's Software (Preview's TIFF tab, Spotlight's
+  // Creator): a JPEG had XMP alone, a PNG an EXIF block ImageIO skipped.
+  const fs::path made = dir / "made.png";
+  {
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef c = CGBitmapContextCreate(
+        nullptr, 64, 48, 8, 0, cs,
+        static_cast<std::uint32_t>(kCGImageAlphaNoneSkipLast));
+    CGContextSetRGBFillColor(c, 0.8, 0.4, 0.1, 1);
+    CGContextFillRect(c, CGRectMake(0, 0, 64, 48));
+    CGImageRef img = CGBitmapContextCreateImage(c);
+    const void* tk[] = {kCGImagePropertyPNGSoftware};
+    const void* tv[] = {CFSTR("Valtz 0.1.0 (Vpipe 0.1 t with Krea 2)")};
+    CFDictionaryRef png = CFDictionaryCreate(
+        nullptr, tk, tv, 1, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+    const void* pk[] = {kCGImagePropertyPNGDictionary};
+    const void* pv[] = {png};
+    CFDictionaryRef props = CFDictionaryCreate(
+        nullptr, pk, pv, 1, &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks);
+    CGImageDestinationRef d = CGImageDestinationCreateWithURL(
+        cf_url(made), CFSTR("public.png"), 1, nullptr);
+    CGImageDestinationAddImage(d, img, props);
+    REQUIRE(CGImageDestinationFinalize(d));
+    CFRelease(d);
+    CFRelease(props);
+    CFRelease(png);
+    CGImageRelease(img);
+    CGContextRelease(c);
+    CGColorSpaceRelease(cs);
+  }
+  auto made_info = media::probe_file(made);
+  REQUIRE_OK(made_info);
+  auto tiff_software = [](const fs::path& f) {
+    std::string out;
+    CGImageSourceRef s = CGImageSourceCreateWithURL(cf_url(f), nullptr);
+    if (!s) {
+      return out;
+    }
+    CFDictionaryRef p = CGImageSourceCopyPropertiesAtIndex(s, 0, nullptr);
+    if (p) {
+      auto t = static_cast<CFDictionaryRef>(
+          CFDictionaryGetValue(p, kCGImagePropertyTIFFDictionary));
+      auto v = t ? static_cast<CFStringRef>(CFDictionaryGetValue(
+                       t, kCGImagePropertyTIFFSoftware))
+                 : nullptr;
+      char buf[512] = {};
+      if (v && CFStringGetCString(v, buf, sizeof buf,
+                                  kCFStringEncodingUTF8)) {
+        out = buf;
+      }
+      CFRelease(p);
+    }
+    CFRelease(s);
+    return out;
+  };
+  for (const char* format : {"png", "jpeg", "tiff"}) {
+    for (const char* model : {"Krea 2", ""}) {
+      JobSpec spec;
+      spec.id = JobId::make();
+      spec.op = std::string(kOpExportMedia);
+      spec.params = {{"format", format}, {"made_with", model}};
+      spec.output_dir = dir / "out";
+      spec.inputs.push_back({"source", made, {}, *made_info});
+      std::mutex mu;
+      std::condition_variable cv;
+      fs::path out;
+      bool ended = false, finished = false;
+      REQUIRE_OK(e->submit(spec, [&](const JobEvent& ev) {
+        std::lock_guard lk(mu);
+        if (ev.kind == JobEventKind::Output) {
+          out = ev.output;
+        }
+        finished = finished || ev.kind == JobEventKind::Finished;
+        ended = ended || ev.terminal();
+        cv.notify_all();
+      }));
+      {
+        std::unique_lock lk(mu);
+        REQUIRE(cv.wait_for(lk, std::chrono::seconds(60),
+                            [&] { return ended; }));
+      }
+      REQUIRE(finished);
+      REQUIRE(fs::exists(out));
+      CHECK(tiff_software(out) ==
+            media::with_model(software_stamp(e->software()), model));
+    }
+  }
   e->shutdown();
 }
 

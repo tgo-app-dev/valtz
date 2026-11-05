@@ -19,7 +19,11 @@ add_executable(valtz_test
   controller-test.cc
   model-input-test.cc
   gpu-planar-test.mm
+  stamp-test.mm
   i18n-test.cc)
+# ARC for the stamp test's AVFoundation and ImageIO objects.
+set_source_files_properties(stamp-test.mm PROPERTIES COMPILE_OPTIONS
+  "-fobjc-arc")
 if(VALTZ_HAVE_VPIPE)
   # The valtz-vpipe plugin in a real vpipe session (no models needed).
   # The summary stage's scene cuts are plain C++: tested here as well.

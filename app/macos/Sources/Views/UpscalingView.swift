@@ -166,12 +166,11 @@ struct UpscalingView: View {
     @ViewBuilder
     private func row(_ u: UpscalerSettings, _ o: TuningOption) -> some View {
         let t = u.info.tuning
-        let block = blocker(u, o)
+        let block = TuningPanel.blocker(o, u.info)
         let label = VStack(alignment: .leading, spacing: 2) {
             Text(verbatim: TuningPanel.title(o))
             Text(block ?? (o.type == "choice"
-                           ? TuningPanel.choiceNote(
-                               o.key, t.choices[o.key] ?? "")
+                           ? TuningPanel.choiceNote(o, u.info)
                            : TuningPanel.note(o)))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -190,6 +189,8 @@ struct UpscalingView: View {
                     set: { model.setUpscaleOption(u.id, o.key, $0) })) {
                     ForEach(o.choices, id: \.self) { c in
                         Text(TuningPanel.choiceLabel(o.key, c)).tag(c)
+                            .selectionDisabled(
+                                TuningPanel.isWithheld(o, c, t))
                     }
                 } label: {
                     label
@@ -211,17 +212,5 @@ struct UpscalingView: View {
         .disabled(block != nil)
         .help(TuningPanel.help(o))
         .settingsMark(TuningPanel.title(o), scope: u.id)
-    }
-
-    /// Why `o` cannot be changed now: this Mac cannot have it, or it
-    /// refines a switch that is off.
-    private func blocker(_ u: UpscalerSettings, _ o: TuningOption) -> String? {
-        if !o.available { return TuningPanel.why(o.why) }
-        if let needs = o.needs, u.info.tuning.flags[needs] != true {
-            let name = u.info.options.first { $0.key == needs }
-                .map(TuningPanel.title) ?? TuningPanel.label(needs)
-            return String(localized: "With \(name) on")
-        }
-        return nil
     }
 }

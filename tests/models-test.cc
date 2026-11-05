@@ -332,11 +332,12 @@ TEST(models, auto_order_is_catalog_data)
          std::vector<std::string>{"krea2-turbo", "qwen-image-2.1-turbo",
                                   "qwen-image-2.1", "z-image-turbo",
                                   "flux3-klein", "flux2-klein-9b",
-                                  "moss-image-sft", "moss-image-base"}));
+                                  "moss-image-sft", "moss-image-base",
+                                  "p-h3-image"}));
   CHECK((c->auto_order("image", "edit") ==
          std::vector<std::string>{"qwen-image-2.1", "qwen-image-2.1-turbo",
                                   "flux3-klein", "flux2-klein-9b",
-                                  "fibo2-edit-turbo"}));
+                                  "fibo2-edit-turbo", "p-h3-image"}));
   // A clip from words: FL2VA, the trained route; else Ref2VA from the
   // prompt alone (vpipe's prompt-only request).
   CHECK((c->auto_order("video", "generate") ==
@@ -1283,9 +1284,15 @@ TEST(models, a_refiners_options_sit_in_its_models_custom)
   const Json tier = find(all, "regenerate_i8_gemm_tier");
   REQUIRE(tier.is_object());
   CHECK(tier["type"] == "choice" && tier["needs"] == "regenerate_i8_gemm");
-  CHECK(find(all, "regenerate_ane_ffn")["excludes"] ==
-        Json::array({"regenerate_i8_gemm_tier"}));
+  CHECK(find(all, "regenerate_ane_ffn")["excludes"].is_null());
+  CHECK(tier["withheld"] ==
+        Json::object({{"regenerate_ane_ffn", Json::array({"fast"})}}));
   CHECK(find(all, "regenerate_ane_qkv")["needs"] == "regenerate_ane_ffn");
+  CHECK(find(all, "regenerate_ane_int8")["needs"] == "regenerate_ane_ffn");
+  CHECK(find(all, "regenerate_ane_int8")["follows"] ==
+        "regenerate_i8_gemm_tier");
+  CHECK(find(all, "regenerate_ane_int8_tier")["needs"] ==
+        "regenerate_ane_int8");
   CHECK(find(all, "regenerate_steps").is_null());
   // Sol, Sage and its int8 P·V (vpipe's banded forward takes them),
   // each refining what it refines; off unless asked. Only what the
@@ -1357,13 +1364,22 @@ TEST(models, a_refiners_options_sit_in_its_models_custom)
                                     {"regenerate_sage_pv8", true}});
   CHECK(sage["regenerate_sage_attn"] == true);
   CHECK(sage["regenerate_sage_pv8"] == true);
-  // Custom's settled by the refine's own rules: the ANE's share puts its
-  // tier back to Accurate.
-  const Json v = resolve_tuning(fl2va, t, "speed", false,
-                                {{"regenerate_ane_ffn", true},
-                                 {"regenerate_i8_gemm_tier", "token"}});
+  // Custom's settled by the refine's own rules: beside the ANE's share
+  // a per-token tier stays and the ANE's int8 runs it too; Fast goes
+  // back to Accurate.
+  Json v = resolve_tuning(fl2va, t, "speed", false,
+                          {{"regenerate_ane_ffn", true},
+                           {"regenerate_i8_gemm_tier", "token_plain"}});
   CHECK(v["regenerate_ane_ffn"] == true);
+  CHECK(v["regenerate_i8_gemm_tier"] == "token_plain");
+  CHECK(v["regenerate_ane_int8"] == true);
+  CHECK(v["regenerate_ane_int8_tier"] == "token_plain");
+  CHECK(v["ane_int8"] == false);  // the model's own, apart
+  v = resolve_tuning(fl2va, t, "speed", false,
+                     {{"regenerate_ane_ffn", true},
+                      {"regenerate_i8_gemm_tier", "fast"}});
   CHECK(v["regenerate_i8_gemm_tier"] == "accurate");
+  CHECK(v["regenerate_ane_int8"] == false);
   // The refiner's own list (Settings › Upscaling) has its Fast Decoder
   // as a switch of its own.
   CHECK(find(tuning_options(*refiner, t, "balanced", false),
@@ -1564,19 +1580,17 @@ TEST(models, the_int8_gemms_tier_is_a_choice)
     CHECK(o4["available"] == false && o4["why"] == "needs-matrix-cores");
     v = resolve_tuning(m, m4, "speed", false, {{"i8_gemm_tier", "fast"}});
     CHECK(v["i8_gemm"] == false && v["i8_gemm_tier"] == "accurate");
-    // The Neural Engine's feed-forward on: back to accurate, and said so.
+    // The Neural Engine's feed-forward on: a per-token tier stays (the
+    // ANE's int8 the same: the_anes_int8_follows_a_per_token_tier),
+    // Fast goes back to accurate -- withheld, and said so.
     v = resolve_tuning(m, m5, "balanced", false,
                        {{"i8_gemm_tier", "token"}, {"ane_ffn", true}});
+    CHECK(v["ane_ffn"] == true && v["i8_gemm_tier"] == "token");
+    v = resolve_tuning(m, m5, "balanced", false,
+                       {{"i8_gemm_tier", "fast"}, {"ane_ffn", true}});
     CHECK(v["ane_ffn"] == true && v["i8_gemm_tier"] == "accurate");
-    bool says = false;
-    const Json listed = tuning_options(m, m5, "balanced", false);
-    for (const auto& x : listed["options"]) {
-      if (x["key"] == "ane_ffn") {
-        const Json ex = jget(x, "excludes", Json::array());
-        says = std::ranges::find(ex, Json("i8_gemm_tier")) != ex.end();
-      }
-    }
-    CHECK(says);
+    CHECK(tier_of(tuning_options(m, m5, "balanced", false))["withheld"] ==
+          Json::object({{"ane_ffn", Json::array({"fast"})}}));
   }
   // Families whose DiTs run the accurate tier alone are offered none.
   for (const char* id : {"flux3-klein", "yue2-3b", "flashvsr", "vosr",
@@ -1587,6 +1601,117 @@ TEST(models, the_int8_gemms_tier_is_a_choice)
                           {{"i8_gemm_tier", "token"}})
                .contains("i8_gemm_tier"));
   }
+}
+
+// The Neural Engine's int8 (vpipe's `ane_int8`, `ane_int8_tier`):
+// offered with ANE FFN wherever the catalog names it, off in every
+// preset. Where the GPU's int8 runs a per-token tier beside it, the
+// ANE's is on at the same one -- said in "set_by" -- whatever was asked;
+// Fast is withheld beside the ANE (Accurate). Elsewhere -- the GPU's
+// int8 off or Accurate, a Mac without matrix cores, a DiT with no tier
+// -- it is one's own.
+TEST(models, the_anes_int8_follows_a_per_token_tier)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  TuningContext m5;
+  m5.matrix_cores = true;
+  TuningContext m4;
+  m4.ane_cores = 16;
+  m4.gpu_cores = 10;
+  m4.ram_gb = 24;
+  const auto find = [](const Json& all, const char* key) {
+    for (const auto& o : all["options"]) {
+      if (o["key"] == key) {
+        return o;
+      }
+    }
+    return Json();
+  };
+  for (const char* id :
+       {"minimax-h3-fl2va", "minimax-h3-ref2va", "p-h3-image",
+        "krea2-turbo", "qwen-image-2.1", "qwen-image-2.1-turbo",
+        "flux2-klein-9b", "flux3-klein", "z-image-turbo", "moss-image-sft",
+        "moss-image-base", "fibo2-edit-turbo"}) {
+    const ModelEntry& m = *c->find(id);
+    const Json all = tuning_options(m, m5, "speed", false);
+    const Json i = find(all, "ane_int8");
+    const Json t = find(all, "ane_int8_tier");
+    REQUIRE(i.is_object() && t.is_object());
+    CHECK(i["type"] == "bool" && i["needs"] == "ane_ffn");
+    CHECK(t["type"] == "choice" && t["needs"] == "ane_int8");
+    CHECK((t["choices"] == Json::array({"token", "token_plain"})));
+    for (const char* p : {"speed", "balanced", "quality"}) {
+      CHECK(resolve_tuning(m, m5, p, false)["ane_int8"] == false);
+      CHECK(resolve_tuning(m, m4, p, false)["ane_int8"] == false);
+    }
+  }
+  // Not where vpipe runs none (YuE2's flow-matching).
+  CHECK(find(tuning_options(*c->find("yue2-3b"), m5, "speed", false),
+             "ane_int8").is_null());
+
+  const ModelEntry& h3 = *c->find("minimax-h3-fl2va");
+  // Beside ANE FFN a per-token tier stays, the ANE's int8 the same.
+  Json o = tuning_options(h3, m5, "balanced", false,
+                          {{"i8_gemm", true}, {"i8_gemm_tier", "token_plain"},
+                           {"ane_ffn", true}});
+  CHECK(o["values"]["i8_gemm_tier"] == "token_plain");
+  CHECK(o["values"]["ane_int8"] == true);
+  CHECK(o["values"]["ane_int8_tier"] == "token_plain");
+  CHECK(o["set_by"] == Json::object({{"ane_int8", "i8_gemm_tier"},
+                                     {"ane_int8_tier", "i8_gemm_tier"}}));
+  CHECK(find(o, "ane_int8")["follows"] == "i8_gemm_tier");
+  // ...whatever was asked of it.
+  Json v = resolve_tuning(h3, m5, "balanced", false,
+                          {{"i8_gemm", true}, {"i8_gemm_tier", "token"},
+                           {"ane_ffn", true}, {"ane_int8", false},
+                           {"ane_int8_tier", "token_plain"}});
+  CHECK(v["ane_int8"] == true && v["ane_int8_tier"] == "token");
+  // Fast withheld: Accurate, nothing set, the ANE's int8 one's own.
+  o = tuning_options(h3, m5, "balanced", false,
+                     {{"i8_gemm", true}, {"i8_gemm_tier", "fast"},
+                      {"ane_ffn", true}});
+  CHECK(o["values"]["i8_gemm_tier"] == "accurate");
+  CHECK(o["values"]["ane_int8"] == false);
+  CHECK(o["set_by"].empty());
+  v = resolve_tuning(h3, m5, "balanced", false,
+                     {{"i8_gemm", true}, {"i8_gemm_tier", "accurate"},
+                      {"ane_ffn", true}, {"ane_int8", true},
+                      {"ane_int8_tier", "token_plain"}});
+  CHECK(v["ane_int8"] == true && v["ane_int8_tier"] == "token_plain");
+  // Without the ANE: Fast stays, nothing follows, its int8 off.
+  o = tuning_options(h3, m5, "balanced", false,
+                     {{"i8_gemm", true}, {"i8_gemm_tier", "token"},
+                      {"ane_int8", true}});
+  CHECK(o["values"]["i8_gemm_tier"] == "token");
+  CHECK(o["values"]["ane_int8"] == false);
+  CHECK(o["set_by"].empty());
+  CHECK(resolve_tuning(h3, m5, "balanced", false,
+                       {{"i8_gemm", true}, {"i8_gemm_tier", "fast"}})
+            ["i8_gemm_tier"] == "fast");
+  // The GPU's int8 off: its tier not in force.
+  v = resolve_tuning(h3, m5, "balanced", false,
+                     {{"i8_gemm", false}, {"i8_gemm_tier", "token"},
+                      {"ane_ffn", true}});
+  CHECK(v["ane_int8"] == false);
+  // Before M5 -- no GPU int8, Fast lending the ANE -- one's own; a tier
+  // it does not list not taken.
+  v = resolve_tuning(h3, m4, "speed", false,
+                     {{"ane_int8", true}, {"ane_int8_tier", "token_plain"}});
+  CHECK(v["ane_ffn"] == true && v["ane_int8"] == true);
+  CHECK(v["ane_int8_tier"] == "token_plain");
+  v = resolve_tuning(h3, m4, "speed", false,
+                     {{"ane_int8", true}, {"ane_int8_tier", "fast"}});
+  CHECK(v["ane_int8_tier"] == "token");
+  CHECK(tuning_options(h3, m4, "speed", false, {{"ane_int8", true}})
+            ["set_by"].empty());
+  // FLUX.3, whose DiT has no tier: one's own beside its GPU int8.
+  const ModelEntry& f3 = *c->find("flux3-klein");
+  o = tuning_options(f3, m5, "balanced", false,
+                     {{"i8_gemm", true}, {"ane_ffn", true},
+                      {"ane_int8", true}});
+  CHECK(o["values"]["ane_int8"] == true && o["set_by"].empty());
+  CHECK(!find(o, "ane_int8").contains("follows"));
 }
 
 // SageAttention's int8 P*V (vpipe's `sage_pv8`): MiniMax H3's and the
@@ -1794,6 +1919,73 @@ TEST(models, fibo2_edits_in_four_steps)
   CHECK(found);
 }
 
+// P-H3-Image (PrunaAI, DESIGN §4r): pictures and edits on MiniMax H3
+// FL2VA's DiT under its adapter -- both required, the adapter always in
+// the first slot (seven left for Custom's) -- its own 8 steps at every
+// preference (no steps offered, no shift: vpipe runs its grid), up to
+// eight pictures named as H3 names them; in MiniMax H3's family.
+TEST(models, p_h3_image_is_fl2va_under_its_adapter)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const ModelEntry* m = c->find("p-h3-image");
+  REQUIRE(m);
+  CHECK(m->family == "p-h3-image" && m->role == "image");
+  CHECK(m->has(Capability::TextToImage) && m->has(Capability::ImageEdit));
+  CHECK(m->hf_path == "PrunaAI/P-H3-Image");
+  CHECK(m->fetch_variant == "PrunaAI/P-H3-Image-no-dit");
+  CHECK((m->requires_models ==
+         std::vector<std::string>{"minimax-h3-fl2va", "p-h3-image-lora"}));
+  const Json vp = jget(m->engine, "vpipe", Json::object());
+  CHECK(jget<std::string>(vp, "dit_from", "") == "minimax-h3-fl2va");
+  CHECK(jget<std::string>(vp, "adapter", "") == "p-h3-image-lora");
+  CHECK(jget(jget(vp, "edit", Json::object()), "max_references", 0) == 8);
+  CHECK(jget<std::string>(m->prompting, "reference_tag", "") ==
+        "<Picture {n}>");
+  const ModelEntry* a = c->find("p-h3-image-lora");
+  REQUIRE(a);
+  CHECK(a->role == "lora" && a->family == "p-h3-image");
+  CHECK(a->fetch_variant == "PrunaAI/P-H3-Image-lora");
+  TuningContext m5;
+  m5.matrix_cores = true;
+  for (const char* p : {"speed", "balanced", "quality"}) {
+    for (bool edit : {false, true}) {
+      const Json v = resolve_tuning(*m, m5, p, edit);
+      CHECK(preset_steps(*m, p, edit, false) == 8);
+      CHECK(jget(v, "i8_gemm", false) == (std::string_view(p) != "quality"));
+      CHECK(jget(v, "sage_attn", false) ==
+            (std::string_view(p) != "quality"));
+    }
+  }
+  const Json fast = resolve_tuning(*m, m5, "speed", false);
+  CHECK(jget<std::string>(fast, "i8_gemm_tier", "") == "token");
+  CHECK(jget(fast, "sage_pv8", false));
+  const Json opts = tuning_options(*m, m5, "balanced", false);
+  auto opt = [&](const char* k) {
+    for (const auto& o : opts["options"]) {
+      if (o["key"] == k) {
+        return o;
+      }
+    }
+    return Json();
+  };
+  CHECK(opt("steps").is_null());
+  CHECK(!jget(opt("shift"), "available", true));
+  CHECK(opt("video_shift").is_null());
+  CHECK(jget(opt("loras"), "slots", 0) == kLoraSlots - 1);
+  CHECK(opt("dits").is_object() && opt("vaes").is_object());
+  bool listed = false;
+  for (const auto& f : c->families()) {
+    if (f.id != "minimax-h3") {
+      continue;
+    }
+    for (const auto& mem : f.members) {
+      listed = listed || mem.model == "p-h3-image";
+    }
+  }
+  CHECK(listed);
+}
+
 // The LoRA list: eight on at most, the first in list order (vpipe's
 // slots; seven with HyperFlow); strengths held to 0..2; a file that is
 // gone kept, off. An older "turbo" file goes first, in the catalog's
@@ -1845,6 +2037,26 @@ TEST(models, tuning_loras)
   CHECK(on(l) == kLoraSlots);              // eight slots: the first eight
   CHECK(l[7]["on"] == true && l[8]["on"] == false);
   CHECK(l[9]["missing"] == true && l[9]["on"] == false);
+  // It was on: WANTED, said left out -- and on again once its file is
+  // back, settled values given back as they are.
+  CHECK(jget(l[9], "wanted", false));
+  CHECK(!l[8].contains("wanted"));
+  {
+    const auto gone = left_out(v);
+    REQUIRE(gone.size() == 1);
+    CHECK(gone[0].ends_with("gone.safetensors"));
+  }
+  {
+    Json back = {{"loras", Json::array({l[9]})}};
+    CHECK(jget(resolve_tuning(*h3, ctx, "balanced", false, back)["loras"]
+                   [0], "wanted", false));
+    std::ofstream(dir / "gone.safetensors") << "x";
+    const Json there = resolve_tuning(*h3, ctx, "balanced", false, back);
+    CHECK(there["loras"][0]["on"] == true);
+    CHECK(!there["loras"][0].contains("wanted"));
+    CHECK(left_out(there).empty());
+    std::filesystem::remove(dir / "gone.safetensors");
+  }
   // HyperFlow takes one of the eight.
   over["hyperflow"] = true;
   l = resolve_tuning(*h3, ctx, "balanced", false, over)["loras"];
@@ -1938,6 +2150,15 @@ TEST(models, tuning_checkpoints)
   REQUIRE(v["dits"].size() == 2);
   CHECK(v["dits"][0]["on"] == true && v["dits"][1]["on"] == false);
   CHECK(v["vaes"][0]["missing"] == true && v["vaes"][0]["on"] == false);
+  CHECK(jget(v["vaes"][0], "wanted", false));
+  REQUIRE(left_out(v).size() == 1);
+  CHECK(left_out(v)[0].ends_with("gone"));
+  // One that was off is missing, not wanted: nothing left out.
+  const Json off = resolve_tuning(*krea, TuningContext{}, "balanced", false,
+      {{"vaes", Json::array({{{"path", (dir / "gone").string()},
+                              {"on", false}}})}});
+  CHECK(!off["vaes"][0].contains("wanted"));
+  CHECK(left_out(off).empty());
 }
 
 // Settings > Capabilities: every catalog model in one family, each

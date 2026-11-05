@@ -116,6 +116,12 @@ struct ModelEntry {
   // disk and never cached, the rest.
   double                   experts_gb = 0;
   double                   expert_cache_floor_gb = 0;
+  // A table it reads by row from disk that vpipe may hold in memory
+  // instead (catalog `ngram_gb`; vpipe's ngram_resident): Qwen3.8
+  // Flash-Next's n-gram embedding, 38.4 GB of its oQ5e pack -- taken only
+  // where the model with every expert resident and the table fit. The
+  // Agent's N-gram Table (DESIGN §9b). 0: none.
+  double                   ngram_gb = 0;
   // What it holds beside its routed experts' cache: `resident_gb` is the
   // least it holds, the cache's floor counted in it -- DeepSeek's 26 GB
   // are ~11.6 of weights and two layers' experts.

@@ -186,6 +186,12 @@ make_vpipe_engine(const EngineConfig&)
 {
   return make_null_engine();
 }
+
+std::string
+linked_engine_software()
+{
+  return {};
+}
 #endif
 
 }

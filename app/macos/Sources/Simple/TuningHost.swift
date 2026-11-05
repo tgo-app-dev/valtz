@@ -79,9 +79,11 @@ extension TuningHost {
                     guard !cs.contains(where: { $0.path == path }) else {
                         continue
                     }
-                    // On, when no other is: dropping one is choosing it.
+                    // On, when no other is -- one whose file is gone
+                    // runs nothing: dropping one is choosing it.
                     cs.append(TuningCheckpoint(
-                        path: path, on: !cs.contains { $0.on }))
+                        path: path,
+                        on: !cs.contains { $0.on && !$0.missing }))
                     added = true
                 }
                 t.checkpoints[key] = cs
@@ -124,7 +126,8 @@ extension TuningHost {
         for url in urls {
             let path = url.standardizedFileURL.path
             guard !t.loras.contains(where: { $0.path == path }) else { continue }
-            let on = t.loras.filter(\.on).count < loraSlots(t, info)
+            let on = t.loras.filter { $0.on && !$0.missing }.count
+                < loraSlots(t, info)
             t.loras.append(TuningLoRA(path: path, scale: 1, on: on))
             added = true
         }
@@ -151,7 +154,10 @@ extension TuningHost {
         var t = info.tuning
         if let scale { t.loras[i].scale = scale }
         if let on {
-            let others = t.loras.indices.filter { $0 != i && t.loras[$0].on }
+            // (One whose file is gone takes no slot.)
+            let others = t.loras.indices.filter {
+                $0 != i && t.loras[$0].on && !t.loras[$0].missing
+            }
             if on, others.count >= loraSlots(t, info) {
                 let own = others.last { t.loras[$0].path != info.turboLoRA }
                 if let j = own ?? others.last { t.loras[j].on = false }

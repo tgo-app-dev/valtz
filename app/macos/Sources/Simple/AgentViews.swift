@@ -3,7 +3,7 @@ import SwiftUI
 /// THE AGENT at work (DESIGN §9b), over the prompt: what it is doing, its
 /// words as they come, the step waiting for the person's word (Run, Skip
 /// -- a note told to it -- Run All), and Pause, Stop. The Prompt Editor
-/// shows all of it (AgentPane).
+/// shows all of it, as a chat (AgentChat).
 struct AgentCard: View {
     @Bindable var model: AppModel
     /// The session as the card was made with it: shown only while the
@@ -145,6 +145,20 @@ struct AgentHeader: View {
                 Button("Stop") { model.agentControl("stop") }
                     .help("End the session; what it made stays")
             }
+            if session.transcript != nil {
+                Button {
+                    model.openAgentTranscript()
+                } label: {
+                    Image(systemName: "doc.text")
+                        .frame(width: 20, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help("Its transcript, in Assets: the conversation and each step, to review")
+                .accessibilityLabel(Text("Transcript"))
+            }
+            ContextRing(context: model.agentContext,
+                        compactions: session.compactions ?? 0)
         }
         .controlSize(.small)
     }
@@ -157,15 +171,25 @@ struct AgentHoldNote: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        if model.agentHolds {
+        if model.document.agent {
             HStack(spacing: 8) {
-                Label("Read-only while it works: look around freely; changes wait until it is done, or stopped.",
-                      systemImage: "lock")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                // A chat tab beside the agent at work: what holds it.
+                if model.agentChat, model.agentSkills != "full" {
+                    Label("The tab with Valtz’s tools is working: the project is read-only until it is done. This chat still looks and adds.",
+                          systemImage: "lock")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Label("Read-only while it works: look around freely; changes wait until it is done, or stopped.",
+                          systemImage: "lock")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Spacer(minLength: 8)
-                if !model.agentFollows {
+                // Follow follows the session shown: an editor's.
+                if !model.agentFollows, model.agentSkills == "full" {
                     Button {
                         model.followAgent()
                     } label: {
@@ -267,149 +291,6 @@ struct AgentSpeedText: View {
             .lineLimit(2)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-/// The Prompt Editor's card while the agent works (DESIGN §10c), its
-/// whole width, the box a few lines under it:
-/// the request, then each turn -- its words, its steps, its speed while
-/// that is shown -- as they came, the step waiting with its buttons, the
-/// words being written last.
-struct AgentPane: View {
-    @Bindable var model: AppModel
-    let shown: AgentSession
-
-    /// The model's (AgentCard.session).
-    var session: AgentSession { model.agent ?? shown }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            AgentHeader(model: model, shown: session)
-                .padding(.leading, PromptEditor.inset.width + 5)
-                .padding(.trailing, 12)
-                .frame(height: PaneHeader.height)
-            AgentHoldNote(model: model)
-                .padding(.leading, PromptEditor.inset.width + 5)
-                .padding(.trailing, 12)
-                .padding(.bottom, 6)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ForEach(Array(entries.enumerated()), id: \.offset) {
-                            _, e in entry(e)
-                        }
-                        let words = model.agentWriting.trimmingCharacters(
-                            in: .whitespacesAndNewlines)
-                        if session.state == "thinking", !words.isEmpty {
-                            Text(agentMarkdown(words))
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                        if let step = session.proposed {
-                            AgentReviewButtons(model: model, step: step)
-                        }
-                        if let e = session.errorText,
-                           session.state == "failed" {
-                            Label(e, systemImage: "exclamationmark.triangle")
-                                .font(.callout)
-                                .foregroundStyle(.orange)
-                            Button("Try Again") {
-                                model.agentControl("resume")
-                            }
-                            .controlSize(.small)
-                        }
-                        Color.clear.frame(height: 1).id("end")
-                    }
-                    .padding(.leading, PromptEditor.inset.width + 5)
-                    .padding(.trailing, 16)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .onChange(of: session.steps.count) {
-                    withAnimation { proxy.scrollTo("end", anchor: .bottom) }
-                }
-                .onChange(of: model.agentWriting) {
-                    proxy.scrollTo("end", anchor: .bottom)
-                }
-            }
-        }
-    }
-
-    /// What the pane lists: the person's words, the model's, its steps.
-    private enum Entry {
-        case person(String)
-        case words(String)
-        case note(String)
-        case step(AgentStep)
-        case speed(AgentTurnStats)
-    }
-
-    private var entries: [Entry] {
-        var out: [Entry] = []
-        var next = 0
-        for m in session.messages ?? [] {
-            switch m.role {
-            case "user":
-                if m.content.hasPrefix("[Valtz]") {
-                    out.append(.note(String(m.content.dropFirst(8))))
-                } else {
-                    out.append(.person(m.content))
-                }
-            case "compaction":
-                // Where the conversation was compacted to go on within
-                // its model's context: what is above, summarized.
-                let n = m.compacted ?? 0
-                out.append(.note(String(localized: "Compacted to stay within the model’s context: the \(n) messages before summarized.")))
-            case "assistant":
-                let w = m.content.trimmingCharacters(
-                    in: .whitespacesAndNewlines)
-                if !w.isEmpty { out.append(.words(w)) }
-                for _ in m.calls ?? [] where next < session.steps.count {
-                    out.append(.step(session.steps[next]))
-                    next += 1
-                }
-                if model.agentShowsSpeed, let st = m.stats, !st.isEmpty {
-                    out.append(.speed(st))
-                }
-            default:
-                break
-            }
-        }
-        // Steps not yet in a message the core has written back.
-        while next < session.steps.count {
-            out.append(.step(session.steps[next]))
-            next += 1
-        }
-        return out
-    }
-
-    @ViewBuilder
-    private func entry(_ e: Entry) -> some View {
-        switch e {
-        case .person(let t):
-            Text(t)
-                .font(.callout.weight(.medium))
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(.quaternary.opacity(0.6),
-                            in: RoundedRectangle(cornerRadius: 10))
-                .textSelection(.enabled)
-        case .words(let t):
-            Text(agentMarkdown(t))
-                .font(.callout)
-                .textSelection(.enabled)
-        case .note(let t):
-            Text(t.trimmingCharacters(in: .whitespacesAndNewlines))
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .lineLimit(4)
-        case .step(let s):
-            AgentStepRow(step: s)
-        case .speed(let st):
-            AgentSpeedText(stats: st)
-                .padding(.top, -6)
-        }
     }
 }
 

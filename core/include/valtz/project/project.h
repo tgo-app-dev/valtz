@@ -86,6 +86,17 @@ struct LinkCheck {
   std::filesystem::path path;  // where it is now (empty when missing)
 };
 
+// A file the project uses that is not there (Project::missing_media): a
+// linked original moved or on a drive not connected ("original"), or a
+// blob gone from the package or the working copy ("blob" -- a markup's
+// raster too).
+struct MissingMedia {
+  AssetId               id;
+  std::string           name;
+  std::filesystem::path path;
+  std::string           how;   // "original" | "blob"
+};
+
 enum class StaleReason : std::uint8_t {
   Fresh,
   NeverBuilt,
@@ -224,6 +235,12 @@ public:
 
   // Where a linked source is now, without changing anything.
   Result<LinkCheck> check_link(AssetId) const;
+  // Every asset whose CURRENT file is not there -- its original or its
+  // blob, a markup's raster -- in the list's order: what a project
+  // copied from another Mac, or whose drive is not connected, lacks. A
+  // stat each (an original's bookmark resolved). Earlier versions' files
+  // are not looked for.
+  Result<std::vector<MissingMedia>> missing_media() const;
   // Bring a linked source up to date: record a relocation; if its
   // content changed, re-probe and re-hash it and append a NEW VERSION,
   // so dependents go stale by content exactly as for any other edit.

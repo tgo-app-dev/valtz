@@ -18,9 +18,12 @@ extension AppModel {
             // What the panels still have to write, written before it holds
             // the project again (a session done is the person's).
             if a.listening { flushPanels() }
-            let r = core.agentSay(a.agent, words, stage: agentStage)
+            // The row's media go with these words: attached to them.
+            let r = core.agentSay(a.agent, words, stage: agentStage,
+                                  row: rowAssetIds)
             guard r.ok else { flash(r.message, level: .error); return }
             clearAgentPrompt()
+            reloadAgent()
             return
         }
         // The panels' last change written first: from the request on the
@@ -31,6 +34,9 @@ extension AppModel {
             "prompt": words,
             "row": rowAssetIds,
             "review": agentSettings?.review ?? true,
+            // The tab's tools: one tab with Valtz's (the core refuses a
+            // second while it is there).
+            "skills": agentSkills,
         ]
         if let c = activeComposition { req["composition"] = c.id }
         req["stage"] = agentStage
@@ -44,6 +50,7 @@ extension AppModel {
             agent = AgentSession(agent: id, project: projectId,
                                  state: "starting",
                                  review: agentSettings?.review ?? true,
+                                 skills: agentSkills,
                                  prompt: words, steps: [])
             agentFollows = true
         }
@@ -70,10 +77,12 @@ extension AppModel {
         return s
     }
 
-    /// The box emptied of the words just sent (its media stay: the row is
-    /// the agent's to use) -- the text view too, by the revision: the
-    /// model's words alone emptied left them in the view, under the empty
-    /// box's grey hint.
+    /// The box emptied of what was just sent -- the text view too, by
+    /// the revision: the model's words alone emptied left them in the
+    /// view, under the empty box's grey hint. Its media go too: each was
+    /// ATTACHED to those words, as a chat attaches them (shown in their
+    /// bubble, listed for the agent's tools), and the next words carry
+    /// their own. (The row stayed before, and went with every message.)
     private func clearAgentPrompt() {
         // What it was asked: the agent's box comes back with it after
         // another target's (AppModel.promptHistory).
@@ -84,6 +93,41 @@ extension AppModel {
         promptMarked = ""
         promptMentions = []
         setPrompt("")
+        let sent = Set(promptAttachments.map(\.id))
+        withAnimation(Self.motion) { promptAttachments = [] }
+        for id in sent { referenceThumbs[id] = nil }
+        promptChanged()
+    }
+
+    /// The Prompt Editor in the Agent tab is a CHAT (AgentChat): the
+    /// conversation, its status row, an input at its foot -- unless the
+    /// assistant's suggestion splits the card, or a text asset is being
+    /// looked at in a tab of its own (a transcript opened from it).
+    var agentChat: Bool {
+        promptImmersive && activeModality == .agent && !suggesting
+            && !activeTabDoNotApply
+    }
+
+    /// How full the agent's model's context is: the session's, or --
+    /// nothing said yet -- the context a new one would have.
+    var agentContext: AgentContext? {
+        if let c = agent?.context { return c }
+        guard let s = agentSettings else { return nil }
+        return AgentContext(used: 0, counted: 0, limit: s.contextTokens,
+                            compactAt: s.compact == false ? 0 : 90)
+    }
+
+    /// The session's transcript (a text asset of Assets) opened to read,
+    /// in the Prompt Editor's tab of its own.
+    func openAgentTranscript() {
+        guard let id = agent?.transcript else { return }
+        reloadAssets()
+        guard let a = asset(id: id), a.kind == "text" else {
+            flash(String(localized: "Its transcript is not in Assets any more."),
+                  level: .warning)
+            return
+        }
+        openTextAsset(a)
     }
 
     /// The session as the core says it is now.
@@ -299,9 +343,15 @@ extension AppModel {
     /// Where its model thinks, in words.
     var agentBackendLabel: String {
         guard let b = agent?.backend else {
-            return agentSettings?.backend == "cloud"
-                ? String(localized: "the cloud")
-                : String(localized: "this Mac's helper")
+            // Nothing asked yet: the model a session would think with.
+            if agentSettings?.backend == "cloud" {
+                let m = agentSettings?.cloud.model ?? ""
+                return m.isEmpty ? String(localized: "the cloud") : m
+            }
+            if let name = agentSettings?.plan?.name, !name.isEmpty {
+                return String(localized: "\(name) on this Mac")
+            }
+            return String(localized: "this Mac's helper")
         }
         let model = b.model ?? ""
         switch b.kind {
@@ -342,6 +392,7 @@ extension AppModel {
         case "set_layer_visible": String(localized: "Show or Hide Layer")
         case "adjust_layer": String(localized: "Adjust Layer")
         case "create_prompt": String(localized: "Save Prompt")
+        case "save_text": String(localized: "Keep a Text")
         case "enhance_prompt": String(localized: "Enhance Prompt")
         case "generate_image": String(localized: "Generate Picture")
         case "wait_for_generations":

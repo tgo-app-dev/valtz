@@ -370,6 +370,10 @@ public:
 
   // e.g. "vpipe 0.1 (55b66ae2)", recorded in every version it builds.
   virtual std::string description() const = 0;
+  // Its line in what a file handed out names as its writer, as vpipe's
+  // own provenance writes it -- "Vpipe 0.1 55b66ae2" -- after Valtz's
+  // (base/version.h's software_stamp(), media/stamp.h); empty: none.
+  virtual std::string software() const { return {}; }
   virtual bool available() const = 0;
   virtual bool supports(std::string_view op) const = 0;
 
@@ -509,6 +513,11 @@ std::unique_ptr<Engine> make_null_engine();
 std::unique_ptr<Engine> make_vpipe_engine(const EngineConfig&);
 // The best engine this build has.
 std::unique_ptr<Engine> make_default_engine(const EngineConfig&);
+// The engine this build links, as a file it writes names it ("Vpipe 0.1
+// 29ef2378*0": Engine::software()) -- without a session, for a file
+// written by a Valtz that started none (valtzctl's flatten). Empty
+// without libvpipe.
+std::string linked_engine_software();
 
 }
 
