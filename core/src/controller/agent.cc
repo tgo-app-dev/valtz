@@ -20,6 +20,15 @@ namespace fs = std::filesystem;
 
 namespace {
 
+// The most a turn of the helper writes. Generous: a reply runs to its
+// end (at 2,048 a chat's code was cut mid-file, 2026-11-05, and the
+// session ended "done" on it). vpipe's text-chat books its K/V by the
+// context, not by this, and stops at the context's end itself (a
+// context full, below); this cuts only a runaway reply -- said, not
+// taken as its last word.
+constexpr int kReplyTokens = 32768;
+// A turn's reply as compaction reckons it (most are a call or a few
+// lines): the room it keeps for the next turn's.
 constexpr int kTurnTokens = 2048;
 // Compacted when the next turn, its reply and the notes' question and
 // answer (a turn each) would pass 90% of the model's context -- the
@@ -314,7 +323,7 @@ public:
     spec.params = m ? _c.helper_params_(*m) : Json::object();
     spec.params["disable_thinking"] = true;
     spec.params["conversation"] = agent::conversation_beat(
-        messages, tools, _key, _dir / "context", kTurnTokens);
+        messages, tools, _key, _dir / "context", kReplyTokens);
     for (const auto& msg : messages) {
       for (const auto& p : msg.images) {
         engine::JobInput in;
@@ -468,7 +477,9 @@ public:
                           {{"tokens", std::to_string(cap)}});
       }
     }
-    return agent::reply_from_turn(w->turn, ++_turns);
+    agent::Reply r = agent::reply_from_turn(w->turn, ++_turns);
+    r.limit = kReplyTokens;
+    return r;
   }
 
   void
@@ -734,7 +745,9 @@ Controller::AgentHost::set_settings(const Json& j)
   }
   if (j.contains("cloud")) {
     Json cur = jget(next, "cloud", Json::object());
-    for (const auto& [k, v] : jget(j, "cloud", Json::object()).items()) {
+    // Bound first: items() of the temporary dangles (C++20 range-for).
+    const Json given = jget(j, "cloud", Json::object());
+    for (const auto& [k, v] : given.items()) {
       cur[k] = v;
     }
     const auto c = agent::cloud_config_from_json(cur);
@@ -1239,6 +1252,12 @@ Controller::AgentHost::transcript_text_(const Session& s) const
       if (!words.empty()) {
         t += words;
         t += "\n";
+      }
+      if (const int n = jget(m.stats, "cut_off", -1); n >= 0) {
+        t += n > 0 ? std::format("\n*Cut off here: the reply reached its "
+                                 "limit of {} tokens.*\n", n)
+                   : std::string("\n*Cut off here: the reply reached its "
+                                 "limit.*\n");
       }
       if (!m.calls.empty()) {
         t += "\n";
@@ -1837,6 +1856,14 @@ Controller::AgentHost::run_(Session& s)
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - t_turn).count());
     overflowed = false;
+    // Cut off at its budget (the context's end is a context full, taken
+    // above): kept as written, and said wherever it is shown -- the
+    // chat, the transcript, valtzctl -- the person asking for the rest.
+    if (reply->finish == "length") {
+      stats["cut_off"] = reply->limit;
+      VALTZ_LOG_WARN("agent", "session {}: its reply was cut off at its "
+                     "limit of {} tokens", s.id, reply->limit);
+    }
     {
       std::lock_guard lk(s.mu);
       ++s.turns;

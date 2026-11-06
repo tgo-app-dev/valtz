@@ -281,6 +281,20 @@ Core::check_model(const std::string& request_json) const
 }
 
 std::string
+Core::measure_read_speed(const std::string& request_json) const
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto r = _impl->ctl->measure_read_speed(
+        jget<std::string>(*j, "model", ""), jget(*j, "seconds", 10.0));
+    return r.ok() ? ok({{"speed", *r}}) : err(r.error());
+  });
+}
+
+std::string
 Core::unlink_model(const std::string& request_json)
 {
   return guarded([&] {
@@ -622,6 +636,25 @@ std::string
 Core::wired_limit_json() const
 {
   return guarded([&] { return ok(_impl->ctl->wired_limit()); });
+}
+
+std::string
+Core::reproducibility_json() const
+{
+  return guarded([&] { return ok(_impl->ctl->reproducibility()); });
+}
+
+std::string
+Core::set_reproducibility(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->set_reproducibility(*j);
+    return st.ok() ? ok(_impl->ctl->reproducibility()) : err(st.error());
+  });
 }
 
 std::string

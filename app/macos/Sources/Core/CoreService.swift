@@ -90,6 +90,12 @@ final class CoreService: @unchecked Sendable {
     func checkModel(_ id: String) -> CoreReply {
         send(core.check_model, ["model": id])
     }
+    /// How fast its files come off where it is, past the memory cache
+    /// (Settings › Capabilities' Test Read Speed): reads for up to
+    /// `seconds` -- call it off the main thread.
+    func measureReadSpeed(_ id: String, seconds: Double = 10) -> CoreReply {
+        send(core.measure_read_speed, ["model": id, "seconds": seconds])
+    }
     /// Its download replaced by a copy quantized to `bits` (8, 4) -- or,
     /// `keepOriginal`, the copy in use beside it, to be tried first.
     func compressModel(_ id: String, bits: Int,
@@ -214,6 +220,15 @@ final class CoreService: @unchecked Sendable {
     /// A wired limit set, in bytes -- 0 Automatic (bridge set_wired_limit).
     func setWiredLimit(_ bytes: Int64) -> CoreReply {
         reply(core.set_wired_limit(UInt64(Swift.max(0, bytes))))
+    }
+    /// Settings › General › Reproducibility (bridge
+    /// reproducibility_json): its two switches, this Mac's locked share.
+    func reproducibilityJSON() -> Data {
+        Data(String(core.reproducibility_json()).utf8)
+    }
+    /// Either switch set ("skip_autotune", "lock_ane_split": Bool).
+    func setReproducibility(_ changes: [String: Any]) -> CoreReply {
+        send(core.set_reproducibility, changes)
     }
     /// Whether the GPU is held back: blocks for `windowMs`, so never on
     /// the main thread.

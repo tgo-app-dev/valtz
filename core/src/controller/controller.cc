@@ -16,6 +16,7 @@
 #include "valtz/media/stamp.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/thumbnail.h"
+#include "valtz/models/read-speed.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -1000,6 +1001,7 @@ Controller::memory_held()
             {"name", jget<std::string>(w, "name",
                                        fs::path(dir).filename().string())},
             {"model", model},
+            {"dir", dir},
             {"bytes", bytes},
             {"kv_bytes", jget<std::uint64_t>(w, "kv_bytes", 0)},
             {"seconds", jget<double>(w, "seconds", 0.0)},
@@ -1018,12 +1020,129 @@ Controller::memory_held()
          {"name", jget<std::string>(c, "name",
                                     fs::path(dir).filename().string())},
          {"model", jget<std::string>(c, "model", "")},
+         {"dir", dir},
          {"bytes", jget<std::uint64_t>(c, "bytes", 0)},
          {"holders", jget<std::int64_t>(c, "holders", 0)},
          {"parked", jget<bool>(c, "parked", false)},
          {"warm", false}});
   }
+  // MODELS, what the popover draws: each model once -- its items above
+  // (what it keeps) and what it holds while it runs, from vpipe's
+  // `owned`: every Metal buffer counted for the checkpoint it was made
+  // for, by use -- the weights it keeps, the blocks it streams, its
+  // expert cache, its K/V and its scratch (DESIGN §15 0zzz). Without
+  // it, all of that was "working memory": 100.7 GB of 106.8 while a
+  // MiniMax H3 clip was made (2026-11-05). A model's total is the larger
+  // of what its folders own and what its items say it keeps -- mapped
+  // weights, a table filled on a thread of its own, are no folder's
+  // allocation -- the difference going with its weights. A folder of no
+  // model is one of its own, by its name; what no folder owns (a stage
+  // holding none, a thread nothing owned) stays working memory.
+  struct Held {
+    std::string model, name, role;
+    std::map<std::string, std::uint64_t> uses;
+    std::uint64_t kept = 0;
+    std::vector<std::string> parts;
+    bool warm = false, estimated = false, parked = true, items = false;
+    double seconds = 0;
+  };
+  std::map<std::string, Held> held;
+  auto entry = [&](const std::string& dir, const std::string& model,
+                   const std::string& name, const std::string& role)
+      -> Held& {
+    const std::string key = !model.empty() ? model : "folder:" + dir;
+    Held& h = held[key];
+    if (h.model.empty() && h.name.empty()) {
+      h.model = model;
+      h.name = name;
+      h.role = role;
+    }
+    return h;
+  };
+  auto folder_name = [](const std::string& dir) {
+    const fs::path p = fs::path(dir).lexically_normal();
+    return (p.has_filename() ? p.filename() : p.parent_path().filename())
+        .string();
+  };
+  for (const auto& it : items) {
+    const std::string model = jget<std::string>(it, "model", "");
+    const std::string dir = held_path(jget<std::string>(it, "dir", ""));
+    const auto* e = model.empty() ? nullptr : _catalog.find(model);
+    Held& h = entry(dir, model,
+                    e != nullptr ? e->name
+                                 : jget<std::string>(it, "name", ""),
+                    e != nullptr ? e->role : std::string());
+    h.items = true;
+    h.kept += jget<std::uint64_t>(it, "bytes", 0) +
+              jget<std::uint64_t>(it, "kv_bytes", 0);
+    const std::string part = jget<std::string>(it, "part", "");
+    if (std::find(h.parts.begin(), h.parts.end(), part) == h.parts.end()) {
+      h.parts.push_back(part);
+    }
+    if (jget<bool>(it, "warm", false)) {
+      h.warm = true;
+      h.seconds = std::max(h.seconds, jget<double>(it, "seconds", 0.0));
+    }
+    h.parked = h.parked && jget<bool>(it, "parked", false);
+    h.estimated = h.estimated || jget<bool>(it, "estimated", false);
+  }
+  for (const auto& o : jget(j, "owned", Json::array())) {
+    const std::string raw = jget<std::string>(o, "dir", "");
+    const auto bytes = jget<std::uint64_t>(o, "bytes", 0);
+    if (raw.empty() || bytes == 0) {
+      continue;
+    }
+    const std::string dir = held_path(raw);
+    const auto* e = owner(dir);
+    Held& h = entry(dir, e != nullptr ? e->id : std::string(),
+                    e != nullptr ? e->name : folder_name(dir),
+                    e != nullptr ? e->role : std::string());
+    h.uses[jget<std::string>(o, "use", "scratch")] += bytes;
+  }
+  Json out_models = Json::array();
+  std::uint64_t attributed = 0;
+  for (auto& [key, h] : held) {
+    std::uint64_t owned = 0;
+    for (const auto& [use, n] : h.uses) {
+      owned += n;
+    }
+    if (h.kept > owned) {
+      h.uses["weights"] += h.kept - owned;
+    }
+    const std::uint64_t total = std::max(h.kept, owned);
+    if (total == 0) {
+      continue;
+    }
+    attributed += total;
+    Json uses = Json::object();
+    for (const auto& [use, n] : h.uses) {
+      if (n > 0) {
+        uses[use] = n;
+      }
+    }
+    // Set aside only where all it holds is its parked weight sets.
+    const bool parked = h.items && h.parked && !h.warm && owned == 0;
+    Json m{{"model", h.model}, {"name", h.name}, {"role", h.role},
+           {"bytes", total}, {"uses", std::move(uses)},
+           {"parts", h.parts}, {"warm", h.warm}, {"parked", parked}};
+    if (h.warm) {
+      m["seconds"] = h.seconds;
+    }
+    if (h.estimated) {
+      m["estimated"] = true;
+    }
+    out_models.push_back(std::move(m));
+  }
+  std::sort(out_models.begin(), out_models.end(),
+            [](const Json& a, const Json& b) {
+              return jget<std::uint64_t>(a, "bytes", 0) >
+                     jget<std::uint64_t>(b, "bytes", 0);
+            });
   j["items"] = std::move(items);
+  j["models"] = std::move(out_models);
+  // What the models hold, together: the rest of the Metal allocations is
+  // working memory.
+  j["attributed_bytes"] = attributed;
   return j;
 }
 
@@ -1102,6 +1221,53 @@ Controller::set_wired_limit(std::uint64_t bytes)
   VALTZ_TRY(write_settings(file, all));
   _engine->set_wired_limit_mb(mb);
   return ok_status();
+}
+
+Json
+Controller::reproducibility() const
+{
+  const Json kept = read_settings(_paths.support / "reproducibility.json");
+  const bool i8 = _hw.gpu_matrix_cores;
+  return {{"skip_autotune", jget(kept, "skip_autotune", false)},
+          {"lock_ane_split", jget(kept, "lock_ane_split", false)},
+          {"ane_share", models::ane_share_of(_hw, false, false)},
+          {"ane_share_int8", models::ane_share_of(_hw, i8, false)}};
+}
+
+Status
+Controller::set_reproducibility(const Json& changes)
+{
+  const fs::path file = _paths.support / "reproducibility.json";
+  Json all = read_settings(file);
+  for (const char* k : {"skip_autotune", "lock_ane_split"}) {
+    if (changes.is_object() && changes.contains(k)) {
+      if (!changes[k].is_boolean()) {
+        return make_error(Code::InvalidArgument,
+                          std::format("{} takes true or false", k));
+      }
+      all[k] = changes[k].get<bool>();
+    }
+  }
+  return write_settings(file, all);
+}
+
+void
+Controller::stamp_reproducible_(Json& t) const
+{
+  if (!t.is_object()) {
+    return;
+  }
+  const Json kept = read_settings(_paths.support / "reproducibility.json");
+  if (jget(kept, "skip_autotune", false)) {
+    t["autotune"] = false;
+  }
+  // The share only where the Neural Engine takes a feed-forward: on any
+  // other job a key would say nothing to vpipe and change the recipe.
+  if (jget(kept, "lock_ane_split", false) && jget(t, "ane_ffn", false)) {
+    t["ane_rows"] = models::ane_share_of(
+        _hw, jget(t, "i8_gemm", false) && _hw.gpu_matrix_cores,
+        jget(t, "ane_int8", false));
+  }
 }
 
 Json
@@ -1559,6 +1725,16 @@ Controller::capability_tree() const
         row["compress"] = {{"ready", why.empty()}, {"why", why},
                            {"widths", std::move(widths)}};
       }
+      // Its last read-speed test, while it is still where it was made.
+      if (installed) {
+        std::lock_guard lk(_read_speed_mu);
+        if (auto it = _read_speeds.find(e->id);
+            it != _read_speeds.end() &&
+            jget<std::string>(it->second, "path", "") ==
+                info.path().string()) {
+          row["read_speed"] = it->second;
+        }
+      }
     }
     // A feature is ready where a member makes it here: installed, it
     // fits, and the engine has the graph.
@@ -1847,6 +2023,44 @@ Controller::check_model(const std::string& id, const fs::path& target) const
   }
   Json out = models::check_model(*e, at, &_catalog).to_json();
   out["installed"] = target.empty();
+  return out;
+}
+
+Result<Json>
+Controller::measure_read_speed(const std::string& id, double seconds) const
+{
+  const models::ModelEntry* e = _catalog.find(id);
+  if (!e) {
+    return make_error(Code::NotFound, msg::kUnknownModel, {{"model", id}});
+  }
+  const auto info = _store->info(*e);
+  if (info.state != models::InstallState::Installed) {
+    return make_error(Code::NotFound, msg::kModelNotInstalled,
+                      {{"model", e->name}});
+  }
+  // Work beside it shares the drive (a generation reading its weights, a
+  // download writing): said, so a low figure is read as such.
+  auto busy = [this] {
+    return std::ranges::any_of(_jobs.list(), [](const JobRecord& j) {
+      return j.state == JobState::Running;
+    });
+  };
+  const bool busy_before = busy();
+  models::ReadSpeedOptions opt;
+  opt.max_seconds = std::clamp(seconds, 1.0, 120.0);
+  const models::ReadSpeed r =
+      models::measure_read_speed(models::files_to_load(info), opt);
+  Json out = r.to_json();
+  out["model"] = e->id;
+  out["path"] = info.path().string();
+  out["at"] = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  out["busy"] = busy_before || busy();
+  {
+    std::lock_guard lk(_read_speed_mu);
+    _read_speeds[e->id] = out;
+  }
   return out;
 }
 
@@ -2476,8 +2690,10 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
   for (const auto& f : models::left_out(t)) {
     VALTZ_LOG_WARN("tuning", "{} not found: {} runs without it", f, m.name);
   }
-  // The rest as settled: what the graph builder lays on the stages.
+  // The rest as settled: what the graph builder lays on the stages --
+  // and what Settings' Reproducibility asks of them.
   r.params["tuning"] = t;
+  stamp_reproducible_(r.params["tuning"]);
   // Made by a compressed copy of the model (DESIGN §8b): its width, for
   // whoever compares it with the original's.
   if (const int bits = _store->info(m).compressed_bits; bits > 0) {
@@ -7399,6 +7615,7 @@ Controller::generate_video(GenerateVideoRequest req)
     r.params["regenerate_tuning"] = refine_tuning.empty()
                                         ? upscale_tuning(*refiner)
                                         : refine_tuning;
+    stamp_reproducible_(r.params["regenerate_tuning"]);
   }
   if (req.first || req.last) {
     // The picture it opens on is <Picture 1> to the model (H3's I2VA:
@@ -8492,6 +8709,7 @@ Controller::upscale_(const AssetOpRequest& req, project::Project& p,
   // Its arithmetic, as Settings › Upscaling has it: the stages' int8
   // GEMMs, Sage, Sol (graph-builder's accel_of).
   r.params["tuning"] = upscale_tuning(*m);
+  stamp_reproducible_(r.params["tuning"]);
   r.inputs.push_back({"source", src.id, v.number});
   stamp_origin(r, *m);
   std::vector<OpMade> made;
@@ -8912,6 +9130,7 @@ Controller::generate_speech_(GenerateAudioRequest& req,
   r.params["tuning"] = models::resolve_tuning(m, tuning_context(m),
                                               req.preference, false,
                                               req.tuning);
+  stamp_reproducible_(r.params["tuning"]);
   r.inputs.push_back(prompt);
   if (req.voice) {
     VALTZ_ASSIGN(project::Asset v, p.asset(*req.voice));
@@ -10620,6 +10839,20 @@ Controller::export_asset(ExportRequest req)
   // The PROJECT exported: in its output (DESIGN §6b) -- its colour, its
   // sound's channels and rate. Any other asset as it is.
   std::optional<project::OutputSettings> output;
+  // A movie's frame, as it is written: an H.264 level too small for it
+  // has VideoToolbox refuse every frame (engine::h264_level_problem) --
+  // refused here, before anything is drawn or mixed.
+  auto level_holds = [&](std::int64_t w, std::int64_t h) -> Status {
+    if (!video || req.format != "h264") {
+      return ok_status();
+    }
+    if (auto why = engine::h264_level_problem(req.video.level, w, h);
+        !why.empty()) {
+      return make_error(Code::InvalidArgument, msg::kExportEncodingInvalid,
+                        {{"format", req.format}, {"why", why}});
+    }
+    return ok_status();
+  };
   if (project_composition(req.project) == req.asset) {
     VALTZ_ASSIGN(project::OutputSettings o, p->output());
     output = o;
@@ -10663,6 +10896,8 @@ Controller::export_asset(ExportRequest req)
     // upright on its way: the graph's).
     VALTZ_ASSIGN(fs::path path, p->media_path(req.asset));
     VALTZ_ASSIGN(project::AssetVersion v, p->version(req.asset));
+    // Its upright size (a turned clip's recorded so).
+    VALTZ_TRY(level_holds(v.info.frame.width, v.info.frame.height));
     spec.inputs.push_back({"source", path, v.content, v.info});
     VALTZ_TRY(upright_input_(req.project, spec.inputs.back(), false));
   } else if (a.cls == project::AssetClass::Still && a.pages > 1) {
@@ -10694,6 +10929,7 @@ Controller::export_asset(ExportRequest req)
                  movie_stack(req.project, req.asset, /*for_job=*/true));
     VALTZ_ASSIGN(std::int64_t n, length_of_(req.project, req.asset, 0));
     VALTZ_ASSIGN(media::PixelSize size, shown_size_(*p, req.asset, 0, 0));
+    VALTZ_TRY(level_holds(size.width, size.height));
     stack.frames = n;
     spec.params["stack"] = media::to_json(stack);
     spec.params["composition"] = true;

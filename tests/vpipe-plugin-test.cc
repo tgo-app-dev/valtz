@@ -13,6 +13,7 @@
 #include "valtz/base/version.h"
 #include "valtz/engine/engine.h"
 #include "valtz/media/exif.h"
+#include "valtz/media/model-input.h"
 #include "valtz/media/stamp.h"
 #include "valtz/media/pdf.h"
 #include "valtz/media/probe.h"
@@ -1025,6 +1026,105 @@ TEST(vpipe_plugin, a_pdf_export_is_written_in_the_export_lane)
 // model made it: a photo's export through vpipe's load-image and
 // save-image says Valtz's build and vpipe's in its Software -- not the
 // camera's firmware it was imported with.
+// An export whose WRITER fails mid-file -- H.264 at a level too small
+// for its frame, which the controller refuses (engine::
+// h264_level_problem) but the engine is handed here -- ENDS, failed with
+// the encoder's words, by either feed: a timeline drawn by Valtz frame
+// by frame into a valtz-source, and a clip vpipe reads itself. Both hung
+// for good (2026-11-05): the failed writer's input held its producer
+// (vpipe now lets it go: OportBuffer::leave_cursor), and the feeder
+// waited on a source nothing read, Stop with it (SourceWriter's
+// keep_going).
+TEST(vpipe_plugin, an_export_whose_writer_fails_ends_and_says_why)
+{
+  if (!plugin_present()) {
+    SKIP("valtz-vpipe.so not found");
+  }
+  const auto dir = test::temp_dir("export-writer-fails");
+  EngineConfig cfg;
+  cfg.state_dir = dir / "engine";
+  cfg.temp_dir = dir / "tmp";
+  cfg.log_level = "error";
+  auto e = make_vpipe_engine(cfg);
+  REQUIRE(e && e->available());
+  // A picture, drawn on a 2560 x 1440 timeline of 24 frames.
+  const fs::path png = dir / "grey.png";
+  {
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CGContextRef c = CGBitmapContextCreate(
+        nullptr, 64, 36, 8, 0, cs,
+        static_cast<std::uint32_t>(kCGImageAlphaNoneSkipLast));
+    CGContextSetRGBFillColor(c, 0.5, 0.5, 0.5, 1);
+    CGContextFillRect(c, CGRectMake(0, 0, 64, 36));
+    CGImageRef img = CGBitmapContextCreateImage(c);
+    CGImageDestinationRef d = CGImageDestinationCreateWithURL(
+        cf_url(png), CFSTR("public.png"), 1, nullptr);
+    CGImageDestinationAddImage(d, img, nullptr);
+    REQUIRE(CGImageDestinationFinalize(d));
+    CFRelease(d);
+    CGImageRelease(img);
+    CGContextRelease(c);
+    CGColorSpaceRelease(cs);
+  }
+  media::MovieStack stack;
+  stack.canvas.frame_w = 2560;
+  stack.canvas.frame_h = 1440;
+  stack.frames = 24;
+  media::MovieLayer pic;
+  pic.file = png;
+  stack.layers.push_back(pic);
+  // And the same as a clip of its own.
+  const fs::path clip = dir / "big.mov";
+  REQUIRE_OK(media::encode_movie_stack(stack, {24, 1}, {2560, 1440}, {},
+                                       clip));
+  auto clip_info = media::probe_file(clip);
+  REQUIRE_OK(clip_info);
+  VideoEncoding enc;
+  enc.profile = "main";
+  enc.level = "4.1";
+  REQUIRE(!h264_level_problem(enc.level, 2560, 1440).empty());
+  auto run = [&](JobSpec spec) {
+    spec.id = JobId::make();
+    spec.op = std::string(kOpExportMedia);
+    spec.output_dir = dir / "out";
+    spec.params["format"] = "h264";
+    spec.params["video"] = to_json(enc);
+    std::mutex mu;
+    std::condition_variable cv;
+    JobEvent end;
+    bool ended = false;
+    REQUIRE_OK(e->submit(spec, [&](const JobEvent& ev) {
+      std::lock_guard lk(mu);
+      if (ev.terminal() && !ended) {
+        end = ev;
+        ended = true;
+        cv.notify_all();
+      }
+    }));
+    std::unique_lock lk(mu);
+    cv.wait_for(lk, std::chrono::seconds(60), [&] { return ended; });
+    REQUIRE(ended);
+    CHECK(end.kind == JobEventKind::Failed);
+    CHECK(end.text.find("refused a frame") != std::string::npos);
+    CHECK(end.text.find("level 4.1") != std::string::npos);
+    CHECK(end.text.find("2560x1440") != std::string::npos);
+  };
+  {
+    JobSpec spec;
+    spec.params = {{"stack", media::to_json(stack)},
+                   {"composition", true},
+                   {"frames", 24},
+                   {"width", 2560},
+                   {"height", 1440}};
+    run(std::move(spec));
+  }
+  {
+    JobSpec spec;
+    spec.inputs.push_back({"source", clip, {}, *clip_info});
+    run(std::move(spec));
+  }
+}
+
 TEST(vpipe_plugin, an_export_names_its_writer)
 {
   if (!plugin_present()) {

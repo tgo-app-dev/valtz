@@ -5146,6 +5146,32 @@ TEST(controller, a_still_exports_as_a_pdf)
   CHECK(!ctl.pdf_document(*pid, *clip).ok());
   ex.asset = *clip;
   CHECK(!ctl.export_asset(ex).ok());
+
+  // A movie at an H.264 level too small for its frame: refused before
+  // anything is drawn or mixed, the level that holds it named -- the
+  // encoder would refuse each frame (engine::h264_level_problem).
+  auto wide = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                     {2560, 1440});
+  REQUIRE_OK(wide);
+  ExportRequest hx;
+  hx.project = *pid;
+  hx.asset = *wide;
+  hx.format = "h264";
+  hx.destination = root / "out" / "Wide.mp4";
+  hx.video.profile = "main";
+  hx.video.level = "4.1";
+  const std::size_t jobs_before = ctl.jobs().list().size();
+  auto refused = ctl.export_asset(hx);
+  REQUIRE(!refused.ok());
+  CHECK(refused.error().message.find("choose level 5.0") !=
+        std::string::npos);
+  CHECK(ctl.jobs().list().size() == jobs_before);
+  hx.video.level = "5.0";
+  auto taken = ctl.export_asset(hx);
+  CHECK(taken.ok());
+  if (taken.ok()) {
+    engine->fail(*taken, "not run here");
+  }
 }
 
 // A LONG TEXT read as light Markdown and FLOWED onto pages
@@ -9387,6 +9413,21 @@ TEST(controller, the_agent_thinks_on_a_model_of_its_own_within_its_memory)
         Code::InvalidArgument);
   CHECK(ctl.agent_settings()["model"] == "deepseek-v4.1-flash");
   CHECK(ctl.agent_settings()["memory_gb"] == 0);
+  // The cloud's settings laid over those kept, a key at a time (a
+  // range-for over a temporary's items() dangled: valtzctl crashed
+  // setting a provider or a server, 2026-11-05); another provider no.
+  REQUIRE_OK(ctl.set_agent_settings(
+      {{"cloud", {{"provider", "openai-compatible"},
+                  {"base_url", "http://127.0.0.1:8765/v1"}}}}));
+  REQUIRE_OK(ctl.set_agent_settings({{"cloud", {{"model", "standin"}}}}));
+  const Json cloud = jget(ctl.agent_settings(), "cloud", Json::object());
+  CHECK(cloud["provider"] == "openai-compatible");
+  CHECK(cloud["base_url"] == "http://127.0.0.1:8765/v1");
+  CHECK(cloud["model"] == "standin");
+  CHECK(ctl.set_agent_settings({{"cloud", {{"provider", "nobody"}}}})
+            .code() == Code::InvalidArgument);
+  CHECK(jget(ctl.agent_settings(), "cloud", Json::object())["provider"] ==
+        "openai-compatible");
 
   // The memory goes with the agent's model alone: an Enhance on the
   // helper while the agent thinks on DeepSeek carries none...
@@ -10104,6 +10145,65 @@ TEST(controller, what_the_engine_holds_is_named_and_counted_once)
   CHECK(other["name"] == "elsewhere");
   CHECK(other["parked"] == true);
   CHECK(other["bytes"] == 300);
+
+  // WHOSE what runs is (vpipe's `owned`): each model once, its kept bytes
+  // or what its folders own -- the larger -- by use; what no folder owns
+  // stays working memory.
+  engine->held["owned"] = Json::array({
+      {{"dir", zimage + "/transformer"}, {"kind", "generate-image"},
+       {"use", "scratch"}, {"bytes", 7000}},
+      {{"dir", zimage + "/transformer"}, {"kind", "weights"},
+       {"use", "blocks"}, {"bytes", 3000}},
+      {{"dir", big}, {"kind", "language-model"}, {"use", "weights"},
+       {"bytes", 16000}},
+      {{"dir", big}, {"kind", "language-model"}, {"use", "experts"},
+       {"bytes", 4000}},
+      {{"dir", big + "/"}, {"kind", "text-chat"}, {"use", "kv"},
+       {"bytes", 100}},
+      {{"dir", ""}, {"kind", "avf-save-video"}, {"use", "scratch"},
+       {"bytes", 500}},
+      {{"dir", (root / "elsewhere").string()}, {"kind", "weights"},
+       {"use", "blocks"}, {"bytes", 50}},
+  });
+  engine->held["gpu_allocated"] = 40000;
+  const Json held = ctl.memory_held();
+  const Json held_models = jget(held, "models", Json::array());
+  auto model = [&](std::string_view id, std::string_view name = {}) {
+    for (const auto& m : held_models) {
+      if (m["model"] == id && (name.empty() || m["name"] == name)) {
+        return m;
+      }
+    }
+    return Json();
+  };
+  REQUIRE(held_models.size() == 4);
+  // The 27B: its experts and its K/V beside its weights -- what its
+  // folders own, more than its warm 17,100.
+  const Json big_m = model("qwen3.8-27b-4bit");
+  CHECK(big_m["bytes"] == 20100);
+  CHECK(big_m["uses"]["weights"] == 16000);
+  CHECK(big_m["uses"]["experts"] == 4000);
+  CHECK(big_m["uses"]["kv"] == 100);
+  CHECK(big_m["warm"] == true);
+  // Z-Image running: its DiT and VAE kept, its blocks and scratch.
+  const Json z = model("z-image-turbo");
+  CHECK(z["bytes"] == 10000);
+  CHECK(z["uses"]["scratch"] == 7000);
+  CHECK(z["uses"]["blocks"] == 3000);
+  CHECK(z["parts"].size() == 2);
+  CHECK(z["seconds"] == 300.0);
+  // The 9B as before; the folder of no model, its kept 300 with the 50
+  // it streams -- no longer only set aside.
+  CHECK(model("qwen3.5-9b")["bytes"] == 4);
+  CHECK(model("qwen3.5-9b")["estimated"] == true);
+  const Json else_m = model("", "elsewhere");
+  CHECK(else_m["bytes"] == 300);
+  CHECK(else_m["uses"]["blocks"] == 50);
+  CHECK(else_m["uses"]["weights"] == 250);
+  CHECK(else_m["parked"] == false);
+  // Largest first; the export's 500 is no model's.
+  CHECK(held_models[0]["model"] == "qwen3.8-27b-4bit");
+  CHECK(held["attributed_bytes"] == 20100 + 10000 + 4 + 300);
 }
 
 TEST(controller, a_video_upscaler_is_auto_or_picked)
@@ -15366,6 +15466,95 @@ TEST(controller, ternary_bonsai_helps_at_f16_without_a_drafter)
         0.7);
 }
 
+// A REPLY'S BUDGET (DESIGN §9b): a turn of the helper may write far more
+// than 2,048 tokens -- a chat's code was cut there and the session ended
+// "done" on it (2026-11-05, Ternary-Bonsai 2 27B) -- and one cut off at
+// its budget, well inside its context, is kept and said: the chat, the
+// transcript, the state; not a context full.
+TEST(agent, a_reply_cut_off_at_its_limit_is_said)
+{
+  auto root = test::temp_dir("agent-cut-off");
+  const fs::path dir =
+      root / "models" / "prism-ml" / "Ternary-Bonsai-2-27B-gguf";
+  fs::create_directories(dir);
+  for (const char* f : {"Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+                        "Ternary-Bonsai-2-27B-mmproj-BF16.gguf"}) {
+    std::ofstream(dir / f) << "GGUF";
+  }
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  REQUIRE_OK(ctl.choose_assistant("ternary-bonsai-2-27b"));
+  auto pid = ctl.create_project(root / "C.valtz", "cut off");
+  REQUIRE_OK(pid);
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A red-black tree in C++";
+  req.review = false;
+  req.skills = "none";
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  std::vector<JobId> turns;
+  REQUIRE(eventually([&] {
+    turns = engine->held_of(std::string(engine::kOpAgentTurn));
+    return !turns.empty();
+  }, 15));
+  int budget = 0;
+  {
+    const engine::JobSpec* spec = engine->spec(turns[0]);
+    REQUIRE(spec != nullptr);
+    budget = jget(jget(spec->params, "conversation", Json::object()),
+                  "max_new_tokens", 0);
+    CHECK(budget >= 32768);
+  }
+  // Cut at its budget, its context far from full.
+  engine->turn(turns[0], {{"text", "class RBTree {"},
+                          {"content", "class RBTree {"},
+                          {"finish", "length"},
+                          {"prefilled", 98},
+                          {"decoded", budget - 1},
+                          {"ctx_pos", 120},
+                          {"restored", "new"}});
+  Json st;
+  REQUIRE(eventually([&] {
+    st = ctl.agent_state(*id);
+    return jget<std::string>(st, "state", "") == "done" &&
+           st.contains("transcript");
+  }, 15));
+  CHECK(jget<std::string>(st, "error", "").empty());
+  CHECK(jget(jget(st, "stats", Json::object()), "cut_off", 0) == budget);
+  const Json msgs = jget(st, "messages", Json::array());
+  REQUIRE(!msgs.empty());
+  const Json& last = msgs.back();
+  CHECK(jget<std::string>(last, "role", "") == "assistant");
+  CHECK(jget<std::string>(last, "content", "") == "class RBTree {");
+  CHECK(jget(jget(last, "stats", Json::object()), "cut_off", 0) == budget);
+  // Its transcript says so, under the words.
+  const auto tid = AssetId::parse(jget<std::string>(st, "transcript", ""));
+  REQUIRE(tid.has_value());
+  std::string text;
+  REQUIRE(eventually([&] {
+    auto t = ctl.project(*pid)->read_text(*tid);
+    text = t.ok() ? *t : std::string();
+    return text.find("Cut off here") != std::string::npos;
+  }, 10));
+  CHECK(text.find(std::format("limit of {} tokens", budget)) !=
+        std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
 
 // THE FOLDERS PUT ELSEWHERE (Settings › General › Storage; base/paths.h):
 // the models KEPT where they are -- still found, downloads going to the
@@ -15491,4 +15680,122 @@ TEST(controller, folders_are_moved_kept_or_dropped)
     CHECK(ctl.cache().find(key).has_value());
     CHECK(!fs::exists(c2 / "objects"));
   }
+}
+
+// REPRODUCIBILITY (Settings › General, DESIGN §10a): kept in the support
+// folder, off by default; a clip asked after it carries `autotune` false
+// -- its tuning and its 2K refine's -- and, the Neural Engine taking its
+// feed-forward, `ane_rows` at this Mac's share. Off, neither key: the job
+// as it always was. A switch takes a bool and nothing else.
+TEST(controller, reproducibility_is_kept_and_stamped_on_the_job)
+{
+  RegenBench b("repro", true);
+  REQUIRE(b.ctl && b.engine);
+  const Json r0 = b.ctl->reproducibility();
+  CHECK(!jget(r0, "skip_autotune", true));
+  CHECK(!jget(r0, "lock_ane_split", true));
+  CHECK(jget(r0, "ane_share", 0.0) >= 0.05);
+  CHECK(jget(r0, "ane_share_int8", 0.0) <= jget(r0, "ane_share", 0.0));
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-fl2va";
+  req.prompt = "A lighthouse at dusk, waves below.";
+  req.width = 2560;
+  req.height = 1440;
+  req.frames = 39;
+  req.tuning = {{"ane_ffn", true}};
+  REQUIRE_OK(b.ctl->generate_video(req));
+  const engine::JobSpec* off = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(off != nullptr);
+  CHECK(!off->params["tuning"].contains("autotune"));
+  CHECK(!off->params["tuning"].contains("ane_rows"));
+
+  CHECK(b.ctl->set_reproducibility({{"skip_autotune", "yes"}}).code() ==
+        Code::InvalidArgument);
+  REQUIRE_OK(b.ctl->set_reproducibility({{"skip_autotune", true},
+                                          {"lock_ane_split", true}}));
+  const Json r1 = b.ctl->reproducibility();
+  CHECK(jget(r1, "skip_autotune", false));
+  CHECK(jget(r1, "lock_ane_split", false));
+  REQUIRE_OK(b.ctl->generate_video(req));
+  const engine::JobSpec* on = b.job(engine::kOpGenerateVideo, 2);
+  REQUIRE(on != nullptr);
+  const Json& t = on->params["tuning"];
+  CHECK(t["autotune"] == false);
+  REQUIRE(jget(t, "ane_ffn", false));
+  CHECK(jget(t, "ane_rows", 0.0) ==
+        jget(r1, jget(t, "i8_gemm", false) ? "ane_share_int8" : "ane_share",
+             -1.0));
+  REQUIRE(on->params.contains("regenerate_tuning"));
+  CHECK(on->params["regenerate_tuning"]["autotune"] == false);
+  // One switch changed, the other kept.
+  REQUIRE_OK(b.ctl->set_reproducibility({{"lock_ane_split", false}}));
+  CHECK(jget(b.ctl->reproducibility(), "skip_autotune", false));
+  CHECK(!jget(b.ctl->reproducibility(), "lock_ane_split", true));
+}
+
+
+// Capabilities' Test Read Speed (DESIGN §8b): an installed model's files
+// read where they are, the result kept as its last -- in its row while it
+// is still there, gone once it is linked elsewhere; refused by name for a
+// model not here.
+TEST(controller, a_models_read_speed_is_tested_where_it_is)
+{
+  auto root = test::temp_dir("ctl-read-speed");
+  const fs::path models = root / "models";
+  const fs::path krea = models / "krea" / "Krea-2-Turbo";
+  fake_pipeline(krea, "Krea2Pipeline", "Krea2Transformer2DModel");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto member = [&](const std::string& id) {
+    const Json tree = ctl.capability_tree();
+    for (const auto& f : tree["families"]) {
+      for (const auto& m : f["members"]) {
+        if (m["model"] == id) {
+          return m;
+        }
+      }
+    }
+    return Json();
+  };
+
+  CHECK(ctl.measure_read_speed("no-such-model").error().key ==
+        msg::kUnknownModel.key);
+  CHECK(ctl.measure_read_speed("qwen-image-2.1").error().key ==
+        msg::kModelNotInstalled.key);
+  CHECK(!member("krea2-turbo").contains("read_speed"));
+
+  auto r = ctl.measure_read_speed("krea2-turbo", 2.0);
+  REQUIRE_OK(r);
+  CHECK(jget<std::string>(*r, "model", "") == "krea2-turbo");
+  CHECK(jget<std::string>(*r, "path", "") == krea.string());
+  CHECK(jget(*r, "files", 0) == 4);
+  const auto total = jget<std::uint64_t>(*r, "total", 0);
+  CHECK(total > 16384);
+  // Just written, it is in memory: what is cached is not read.
+  CHECK(jget<std::uint64_t>(*r, "read", 0) +
+            jget<std::uint64_t>(*r, "cached", 0) == total);
+  CHECK(!jget(*r, "busy", true));
+  CHECK(jget<std::uint64_t>(*r, "at", 0) > 0);
+  REQUIRE(jget(*r, "places", Json::array()).size() == 1);
+  CHECK(jget<std::string>((*r)["places"][0]["volume"], "name", "") != "");
+  Json m = member("krea2-turbo");
+  REQUIRE(m.contains("read_speed"));
+  CHECK(m["read_speed"]["total"] == total);
+
+  // Linked elsewhere, the figure was of another place: not shown.
+  const fs::path moved = root / "elsewhere" / "Krea-2-Turbo";
+  fake_pipeline(moved, "Krea2Pipeline", "Krea2Transformer2DModel");
+  auto linked = ctl.link_model("krea2-turbo", moved);
+  REQUIRE_OK(linked);
+  REQUIRE(jget(*linked, "linked", false));
+  m = member("krea2-turbo");
+  CHECK(m["path"] == moved.string());
+  CHECK(!m.contains("read_speed"));
 }

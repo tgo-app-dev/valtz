@@ -659,7 +659,8 @@ struct ShareButton: View {
         let options = choices.isEmpty ? nil
             : SaveOptions(choices: choices, originalExt: ext, kind: kind,
                           panel: panel, picture: model.savedPicture,
-                          seconds: model.exportSeconds)
+                          seconds: model.exportSeconds,
+                          frame: model.exportFrame)
         panel.accessoryView = options?.view
         options?.apply()
         let scripted = script != nil
@@ -740,7 +741,8 @@ final class SaveOptions: NSObject {
     private let box: NSView
 
     init(choices: [ExportChoice], originalExt: String, kind: String,
-         panel: NSSavePanel, picture: CGImage?, seconds: Double? = nil) {
+         panel: NSSavePanel, picture: CGImage?, seconds: Double? = nil,
+         frame: (width: Int, height: Int)? = nil) {
         var seen: Set<ExportChoice> = []
         let formats = choices.map(\.format).filter {
             seen.insert($0).inserted
@@ -787,7 +789,8 @@ final class SaveOptions: NSObject {
         if kind == "image" {
             rows.append([optionLabel, options])
         }
-        video = kind == "video" ? VideoEncodingRows(seconds: seconds) : nil
+        video = kind == "video"
+            ? VideoEncodingRows(seconds: seconds, frame: frame) : nil
         if let video { rows += video.rows }
         let grid = NSGridView(views: rows)
         grid.column(at: 0).xPlacement = .trailing

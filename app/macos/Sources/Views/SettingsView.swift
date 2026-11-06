@@ -672,6 +672,36 @@ private struct GeneralSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // What a scroll does over the stage (AppModel.pointingDevice).
+            Section {
+                Picker(selection: $model.pointingDevice) {
+                    Text("Trackpad")
+                        .tag(AppModel.PointingDevice.trackpad)
+                    Text("Mouse")
+                        .tag(AppModel.PointingDevice.mouse)
+                } label: {
+                    Text("Scroll and zoom for")
+                    Text(model.pointingDevice == .trackpad
+                         ? "Scrolling moves a picture, a zoomed clip or the Atlas in any direction. Pinch, or hold ⌘ and scroll up or down, to zoom."
+                         : "Scrolling zooms in and out where the pointer is. Hold ⌘ and scroll to move a picture, a zoomed clip or the Atlas.")
+                }
+                .settingsMark(String(localized: "Scroll and zoom for"),
+                              String(localized: "Trackpad"),
+                              String(localized: "Mouse"),
+                              String(localized: "Scroll"))
+            } header: {
+                Text("Pointing Device")
+                    .settingsMark(String(localized: "Pointing Device"))
+            } footer: {
+                Text("Valtz cannot tell a trackpad from a mouse by its scrolling -- a Magic Mouse scrolls as a trackpad does -- so choose what you use. A mouse wheel that clicks as it turns zooms either way.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            // What a generation is told so that it repeats
+            // (AppModel.reproducibility, core Controller::reproducibility).
+            if let r = model.reproducibility {
+                ReproducibilitySection(model: model, repro: r)
+            }
             Section {
                 LabeledContent("Version") {
                     Text(verbatim: model.updater.version)
@@ -749,6 +779,7 @@ private struct GeneralSettings: View {
         // What is wired moves as models load and go: read while shown.
         .task {
             while !Task.isCancelled {
+                model.refreshReproducibility()
                 model.refreshWiredLimit()
                 try? await Task.sleep(for: .seconds(2))
             }
@@ -763,6 +794,50 @@ private struct GeneralSettings: View {
 /// (Controller::wired_limit, DESIGN §10a). Automatic is vpipe's own; a
 /// limit set is a whole number of GB up to what the GPU keeps resident,
 /// taken as the slider is let go, and what is wired now is beside it.
+/// Settings › General › Reproducibility: the same request and seed making
+/// the same result again on this Mac. vpipe chooses some kernels by TIMING
+/// candidates as a model loads, and moves the Neural Engine's share of a
+/// feed-forward by timing, block by block; the candidates round
+/// differently, so one run's timings change the next run's output.
+private struct ReproducibilitySection: View {
+    @Bindable var model: AppModel
+    let repro: Reproducibility
+
+    private static func percent(_ v: Double) -> String {
+        v.formatted(.percent.precision(.fractionLength(0)))
+    }
+
+    var body: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { repro.skipAutotune },
+                set: { model.setReproducibility(["skip_autotune": $0]) })) {
+                Text("Skip kernel autotuning")
+                Text("Picture, clip and sound models use the kernels believed fastest on this Mac instead of timing candidates as they load. Models load sooner; a kernel may run a little slower than a tuned one.")
+            }
+            .settingsMark(String(localized: "Skip kernel autotuning"),
+                          String(localized: "Autotuning"))
+            Toggle(isOn: Binding(
+                get: { repro.lockAneSplit },
+                set: { model.setReproducibility(["lock_ane_split": $0]) })) {
+                Text("Lock the GPU and Neural Engine split")
+                Text(repro.aneShareInt8 != repro.aneShare
+                     ? "Where the Neural Engine shares a model's work with the GPU, it always takes \(Self.percent(repro.aneShare)) of the rows on this Mac (\(Self.percent(repro.aneShareInt8)) beside the int8 GEMMs), instead of a share moved by timing."
+                     : "Where the Neural Engine shares a model's work with the GPU, it always takes \(Self.percent(repro.aneShare)) of the rows on this Mac, instead of a share moved by timing.")
+            }
+            .settingsMark(String(localized: "Lock the GPU and Neural Engine split"),
+                          String(localized: "Neural Engine"))
+        } header: {
+            Text("Reproducibility")
+                .settingsMark(String(localized: "Reproducibility"))
+        } footer: {
+            Text("With both on, the same request and seed make the same picture, clip or sound again on this Mac. The Neural Engine shares the work only under Custom's ANE options, and in Fast and Med on Macs before M5.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 private struct WiredLimitSection: View {
     @Bindable var model: AppModel
     let wired: WiredLimit

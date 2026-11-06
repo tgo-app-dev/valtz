@@ -2,14 +2,17 @@ import SwiftUI
 
 /// RAM's popover -- a click on the status bar's meter (DESIGN §10a): what
 /// Valtz holds in memory, drawn as Settings › Storage draws the disk. The
-/// bar is the Mac's memory: each model the engine holds -- KEPT WARM
-/// between jobs (the helper kept loaded; a picture's DiT, text encoder
-/// and VAE kept built, DESIGN §4n), with the time it has left, or a
-/// checkpoint still resident -- then the WORKING memory they run in
-/// (Metal's allocations past them: scratch, caches), the rest of Valtz
-/// (its footprint past Metal's), the other apps, and what is free. Read
-/// from the engine every two seconds while it is open
-/// (MachineMonitor.startMemory; vpipe's memory_report, DESIGN §15 0zz).
+/// bar is the Mac's memory: each model the engine holds, once -- KEPT
+/// WARM between jobs (the helper kept loaded; a picture's DiT, text
+/// encoder and VAE kept built, DESIGN §4n), with the time it has left,
+/// a checkpoint still resident, or RUNNING -- and what it holds by use:
+/// its weights, the blocks it streams, its expert cache, its
+/// conversations' K/V, its scratch (vpipe's `owned`, DESIGN §15 0zzz;
+/// all of that read as working memory before, 2026-11-05); then the
+/// WORKING memory no model claims, the rest of Valtz (its footprint past
+/// Metal's), the other apps, and what is free. Read from the engine
+/// every two seconds while it is open (MachineMonitor.startMemory;
+/// vpipe's memory_report, DESIGN §15 0zz).
 struct MemoryPopover: View {
     @Bindable var model: AppModel
 
@@ -37,7 +40,7 @@ struct MemoryPopover: View {
             if monitor.memory == nil {
                 Text("Reading what the engine holds…")
                     .font(.caption).foregroundStyle(.secondary)
-            } else if monitor.memory?.items.contains(where: \.warm) != true {
+            } else if monitor.memory?.models.contains(where: \.warm) != true {
                 Text("No model is kept loaded now: each job loads what it needs and lets it go when it ends.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -60,6 +63,11 @@ struct MemoryPopover: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if !p.status.isEmpty {
+                    Text(verbatim: p.status)
+                        .font(.caption).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 8)
             Text(verbatim: (p.about ? "~" : "") + Self.bytes(p.bytes))
@@ -72,6 +80,8 @@ struct MemoryPopover: View {
         let id: String
         let title: String
         let detail: String
+        /// How it is held: kept, set aside, let go after.
+        var status = ""
         let bytes: Double
         let color: Color
         /// From its files' size: the engine counts none of it.
@@ -82,26 +92,22 @@ struct MemoryPopover: View {
         .purple, .blue, .teal, .indigo, .pink, .mint, .cyan, .brown,
     ]
 
-    /// The bar's shares: the models held, largest first -- those kept
-    /// warm before a checkpoint merely resident -- then the working
-    /// memory, the rest of Valtz, the other apps.
+    /// The bar's shares: the models held, largest first, then the
+    /// working memory no model claims, the rest of Valtz, the other apps.
     static func parts(load: MachineMonitor.Load,
                       memory: MachineMonitor.Memory?) -> [Part] {
-        let items = (memory?.items ?? []).sorted {
-            ($0.warm ? 1 : 0, $0.bytes + $0.kvBytes)
-                > ($1.warm ? 1 : 0, $1.bytes + $1.kvBytes)
+        let models = (memory?.models ?? []).sorted { $0.bytes > $1.bytes }
+        var out = models.enumerated().map { i, m in
+            Part(id: m.id, title: m.name.isEmpty ? partList(m) : m.name,
+                 detail: uses(m), status: status(m), bytes: m.bytes,
+                 color: palette[i % palette.count], about: m.estimated)
         }
-        var out = items.enumerated().map { i, it in
-            Part(id: it.id, title: it.name.isEmpty ? partName(it) : it.name,
-                 detail: detail(it), bytes: it.bytes + it.kvBytes,
-                 color: palette[i % palette.count], about: it.estimated)
-        }
-        let held = items.reduce(0) { $0 + $1.bytes + $1.kvBytes }
+        let held = models.reduce(0) { $0 + $1.bytes }
         let metal = max(memory?.gpuAllocated ?? 0, held)
         if let g = memory?.gpuAllocated, g > held {
             out.append(Part(
                 id: "working", title: String(localized: "Working memory"),
-                detail: String(localized: "What the models work in: scratch, caches, buffers"),
+                detail: String(localized: "What no model claims: buffers the engine shares, work between models"),
                 bytes: g - held, color: .orange))
         }
         if let f = load.footprint, f > metal {
@@ -119,32 +125,57 @@ struct MemoryPopover: View {
         return out
     }
 
-    static func partName(_ it: MachineMonitor.Memory.Item) -> String {
-        switch it.part {
+    static func partName(_ part: String) -> String {
+        switch part {
         case "helper": return String(localized: "Helper")
         case "dit": return String(localized: "Diffusion model")
         case "text-encoder": return String(localized: "Text encoder")
         case "vae": return String(localized: "VAE")
         case "weights": return String(localized: "Weights loaded")
-        default: return it.part
+        default: return part
         }
     }
 
-    /// What it is, its conversations' share, how long it stays.
-    static func detail(_ it: MachineMonitor.Memory.Item) -> String {
-        var bits = [partName(it)]
-        if it.kvBytes > 0 {
-            bits.append(String(localized: "\(bytes(it.kvBytes)) of conversations"))
+    /// Its kept parts, named: "Diffusion model, VAE".
+    static func partList(_ m: MachineMonitor.Memory.Model) -> String {
+        m.parts.map(partName).joined(separator: ", ")
+    }
+
+    /// What it holds, by use, largest first: "Scratch 40.5 GB · Streamed
+    /// blocks 30.2 GB · Weights 371 MB".
+    static func uses(_ m: MachineMonitor.Memory.Model) -> String {
+        m.uses.filter { $0.value >= 1_048_576 }
+            .sorted { $0.value > $1.value }
+            .map { use, v in
+                let b = bytes(v)
+                switch use {
+                case "weights": return String(localized: "Weights \(b)")
+                case "blocks": return String(localized: "Streamed blocks \(b)")
+                case "experts": return String(localized: "Expert cache \(b)")
+                case "kv": return String(localized: "Conversations \(b)")
+                case "scratch": return String(localized: "Scratch \(b)")
+                default: return "\(use) \(b)"
+                }
+            }
+            .joined(separator: " · ")
+    }
+
+    /// How it is held: its kept parts and how long they stay, set aside,
+    /// or let go when nothing uses it.
+    static func status(_ m: MachineMonitor.Memory.Model) -> String {
+        var bits: [String] = []
+        if !m.parts.isEmpty, !m.name.isEmpty {
+            bits.append(partList(m))
         }
-        if let s = it.seconds {
+        if let s = m.seconds {
             bits.append(s > 86_400
                 ? String(localized: "kept while Valtz runs")
                 : s < 60
                 ? String(localized: "let go within a minute")
                 : String(localized: "kept \(Duration.seconds(s.rounded(.up)).formatted(.units(allowed: [.hours, .minutes], width: .abbreviated))) more"))
-        } else if it.parked {
+        } else if m.parked {
             bits.append(String(localized: "set aside: macOS may take it back"))
-        } else if !it.warm {
+        } else {
             bits.append(String(localized: "not kept: let go when nothing uses it"))
         }
         return bits.joined(separator: " · ")

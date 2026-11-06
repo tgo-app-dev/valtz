@@ -145,6 +145,16 @@
         }
       }
     },
+    "%@ GB/s" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ GB/s"
+          }
+        }
+      }
+    },
     "%@ Queued" : {
       "localizations" : {
         "zh-Hans" : {
@@ -568,11 +578,22 @@
       }
     },
     "%@ of conversations" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "对话占 %@"
+          }
+        }
+      }
+    },
+    "%@ of it already in memory was not read" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "其中 %@ 已在内存中，未读取"
           }
         }
       }
@@ -2966,6 +2987,16 @@
         }
       }
     },
+    "All of it is in memory already, so nothing came off the drive to time. Test again once other work has used the memory." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "它已全部在内存中，没有从磁盘读取任何内容可供计时。请在其他工作占用这部分内存之后再测试。"
+          }
+        }
+      }
+    },
     "All of the picture on the canvas" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3911,6 +3942,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "自动（%@）"
+          }
+        }
+      }
+    },
+    "Autotuning" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "自动调优"
           }
         }
       }
@@ -5798,6 +5839,16 @@
         }
       }
     },
+    "Conversations %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "对话 %@"
+          }
+        }
+      }
+    },
     "Copy" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6136,6 +6187,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "超过 %@ 将被截断"
+          }
+        }
+      }
+    },
+    "Cut off: the reply reached its limit of %lld tokens. Ask it to go on for the rest." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已截断：回复达到了 %lld 个 token 的上限。可让它继续写完其余部分。"
+          }
+        }
+      }
+    },
+    "Cut off: the reply reached its limit. Ask it to go on for the rest." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已截断：回复达到了上限。可让它继续写完其余部分。"
           }
         }
       }
@@ -7999,6 +8070,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "专家缓存"
+          }
+        }
+      }
+    },
+    "Expert cache %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "专家缓存 %@"
           }
         }
       }
@@ -10852,6 +10933,16 @@
         }
       }
     },
+    "Its whole text in a box that scrolls, or its start alone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在可滚动的框中显示全文，或只显示开头"
+          }
+        }
+      }
+    },
     "JPEG" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11902,6 +11993,16 @@
         }
       }
     },
+    "Lock the GPU and Neural Engine split" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "锁定 GPU 与神经网络引擎的分工"
+          }
+        }
+      }
+    },
     "Lock this layer: nothing changes it until it is unlocked" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12834,6 +12935,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "MotionCache"
+          }
+        }
+      }
+    },
+    "Mouse" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "鼠标"
           }
         }
       }
@@ -14871,6 +14982,26 @@
         }
       }
     },
+    "Other work ran during the test and shared the drive: the figure may be low" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "测试期间有其他工作在运行并共用磁盘：结果可能偏低"
+          }
+        }
+      }
+    },
+    "Other work ran during the test and shared the drive: the figure may be low." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "测试期间有其他工作在运行并共用磁盘：结果可能偏低。"
+          }
+        }
+      }
+    },
     "Out: %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15269,6 +15400,16 @@
         }
       }
     },
+    "Picture, clip and sound models use the kernels believed fastest on this Mac instead of timing candidates as they load. Models load sooner; a kernel may run a little slower than a tuned one." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图片、片段和声音模型直接使用被认为在这台 Mac 上最快的内核，而不在加载时逐一计时比较。模型加载更快；个别内核可能比调优后的略慢。"
+          }
+        }
+      }
+    },
     "Pictures" : {
       "localizations" : {
         "zh-Hans" : {
@@ -15615,6 +15756,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "播放头"
+          }
+        }
+      }
+    },
+    "Pointing Device" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "指针设备"
           }
         }
       }
@@ -16249,6 +16400,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "码率："
+          }
+        }
+      }
+    },
+    "Read %@ of its %@ in %@ s, past the memory cache: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Read %1$@ of its %2$@ in %3$@ s, past the memory cache: %4$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "绕过内存缓存，在 %3$@ 秒内读取了其 %2$@ 中的 %1$@：%4$@"
           }
         }
       }
@@ -16984,6 +17151,16 @@
         }
       }
     },
+    "Reproducibility" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "可复现性"
+          }
+        }
+      }
+    },
     "Rescan" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17713,12 +17890,62 @@
         }
       }
     },
+    "Scratch %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "暂存 %@"
+          }
+        }
+      }
+    },
     "Screen & System Audio Recording" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "录屏与系统录音"
+          }
+        }
+      }
+    },
+    "Scroll" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "滚动"
+          }
+        }
+      }
+    },
+    "Scroll and zoom for" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "滚动与缩放方式"
+          }
+        }
+      }
+    },
+    "Scrolling moves a picture, a zoomed clip or the Atlas in any direction. Pinch, or hold ⌘ and scroll up or down, to zoom." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "滚动可向任意方向移动图片、已放大的片段或图谱。双指捏合，或按住 ⌘ 上下滚动，即可缩放。"
+          }
+        }
+      }
+    },
+    "Scrolling zooms in and out where the pointer is. Hold ⌘ and scroll to move a picture, a zoomed clip or the Atlas." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "滚动以指针所在处为中心放大或缩小。按住 ⌘ 滚动可移动图片、已放大的片段或图谱。"
           }
         }
       }
@@ -18174,6 +18401,16 @@
         }
       }
     },
+    "Show All" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示全部"
+          }
+        }
+      }
+    },
     "Show Assets once more than one result has been generated" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18250,6 +18487,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示图层"
+          }
+        }
+      }
+    },
+    "Show Less" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "收起"
           }
         }
       }
@@ -18622,6 +18869,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "跳过"
+          }
+        }
+      }
+    },
+    "Skip kernel autotuning" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跳过内核自动调优"
           }
         }
       }
@@ -19480,6 +19737,16 @@
         }
       }
     },
+    "Streamed blocks %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "流式加载的块 %@"
+          }
+        }
+      }
+    },
     "Strength" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19892,6 +20159,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "温度 %@"
+          }
+        }
+      }
+    },
+    "Test how fast its files load from where they are: up to ten seconds of reads, past the memory cache" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "测试它的文件从所在位置载入的速度：绕过内存缓存，最多读取十秒"
+          }
+        }
+      }
+    },
+    "Testing…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在测试…"
           }
         }
       }
@@ -21473,6 +21760,22 @@
         }
       }
     },
+    "Too small for this movie's %@ × %@ frame" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Too small for this movie's %1$@ × %2$@ frame"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "对这部影片 %1$@ × %2$@ 的画面而言太小"
+          }
+        }
+      }
+    },
     "Tools" : {
       "localizations" : {
         "zh-Hans" : {
@@ -21539,6 +21842,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "轨道视图：前后相接或以转场相接的图层排在同一条轨道上"
+          }
+        }
+      }
+    },
+    "Trackpad" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "触控板"
           }
         }
       }
@@ -22460,6 +22773,16 @@
         }
       }
     },
+    "Valtz cannot tell a trackpad from a mouse by its scrolling -- a Magic Mouse scrolls as a trackpad does -- so choose what you use. A mouse wheel that clicks as it turns zooms either way." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 无法从滚动分辨触控板和鼠标——妙控鼠标的滚动与触控板相同——所以请选择你使用的设备。转动时有段落感的鼠标滚轮，在两种设置下都用于缩放。"
+          }
+        }
+      }
+    },
     "Valtz could not start" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -23020,6 +23343,16 @@
         }
       }
     },
+    "Weights %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "权重 %@"
+          }
+        }
+      }
+    },
     "Weights loaded" : {
       "localizations" : {
         "zh-Hans" : {
@@ -23140,6 +23473,16 @@
         }
       }
     },
+    "What no model claims: buffers the engine shares, work between models" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不属于任何模型的内存：引擎共用的缓冲区、模型之间的工作"
+          }
+        }
+      }
+    },
     "What rectangles and ellipses are filled with" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -23183,6 +23526,7 @@
       }
     },
     "What the models work in: scratch, caches, buffers" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -23268,6 +23612,32 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "新项目的存储位置"
+          }
+        }
+      }
+    },
+    "Where the Neural Engine shares a model's work with the GPU, it always takes %@ of the rows on this Mac (%@ beside the int8 GEMMs), instead of a share moved by timing." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Where the Neural Engine shares a model's work with the GPU, it always takes %1$@ of the rows on this Mac (%2$@ beside the int8 GEMMs), instead of a share moved by timing."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "当神经网络引擎与 GPU 分担模型的计算时，它在这台 Mac 上始终承担 %1$@ 的行（与 int8 GEMM 同用时为 %2$@），而不是按计时不断调整份额。"
+          }
+        }
+      }
+    },
+    "Where the Neural Engine shares a model's work with the GPU, it always takes %@ of the rows on this Mac, instead of a share moved by timing." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "当神经网络引擎与 GPU 分担模型的计算时，它在这台 Mac 上始终承担 %@ 的行，而不是按计时不断调整份额。"
           }
         }
       }
@@ -23520,6 +23890,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "需开启 %@"
+          }
+        }
+      }
+    },
+    "With both on, the same request and seed make the same picture, clip or sound again on this Mac. The Neural Engine shares the work only under Custom's ANE options, and in Fast and Med on Macs before M5." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "两项都打开时，相同的请求和种子会在这台 Mac 上再次生成完全相同的图片、片段或声音。只有在“自定义”的 ANE 选项下，以及 M5 之前的 Mac 上的“快速”和“均衡”时，神经网络引擎才分担计算。"
           }
         }
       }
@@ -27888,6 +28268,16 @@
         }
       }
     },
+    "external" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "外置"
+          }
+        }
+      }
+    },
     "frames" : {
       "localizations" : {
         "zh-Hans" : {
@@ -27988,6 +28378,16 @@
         }
       }
     },
+    "internal" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "内置"
+          }
+        }
+      }
+    },
     "its asset was not found" : {
       "localizations" : {
         "zh-Hans" : {
@@ -28084,6 +28484,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "需要更多内存"
+          }
+        }
+      }
+    },
+    "network share" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "网络共享"
           }
         }
       }
@@ -28467,6 +28877,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "原为 %1$@ × %2$@"
+          }
+        }
+      }
+    },
+    "“%@” (%@) at %@ GB/s" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "“%1$@” (%2$@) at %3$@ GB/s"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“%1$@”（%2$@）%3$@ GB/s"
           }
         }
       }

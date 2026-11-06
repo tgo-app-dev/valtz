@@ -71,10 +71,29 @@ reply_of(const vpipe::CommandHandle& cmd)
 }
 
 // Wait for the stage's answer; an error names the command and the cause.
+// With `keep_going`, asked between waits of a tenth of a second: false,
+// and the command is closed and the wait ends, Cancelled.
 Result<FlexData>
-answer(const vpipe::CommandHandle& cmd, std::string_view what)
+answer(vpipe::CommandHandle& cmd, std::string_view what,
+       const std::function<bool()>& keep_going = {})
 {
-  const vpipe::CommandState st = cmd.wait(-1);
+  vpipe::CommandState st = vpipe::CommandState::Pending;
+  if (!keep_going) {
+    st = cmd.wait(-1);
+  } else {
+    for (;;) {
+      st = cmd.wait(100);
+      if (st != vpipe::CommandState::Pending &&
+          st != vpipe::CommandState::Active) {
+        break;
+      }
+      if (!keep_going()) {
+        cmd.close();
+        return make_error(Code::Cancelled,
+                          std::format("{}: stopped", what));
+      }
+    }
+  }
   if (st != vpipe::CommandState::Replied) {
     return make_error(Code::Engine, std::format(
         "{}: {} ({})", what, cmd.error(),
@@ -353,7 +372,8 @@ SourceWriter::lease(Tensor::DType dt, const std::vector<std::int64_t>& shape,
   add_sideband(args, sideband);
   Lease l;
   l._cmd = _stage.command(ex::kCmdLease, args);
-  VALTZ_ASSIGN(FlexData r, answer(l._cmd, "valtz-source lease"));
+  VALTZ_ASSIGN(FlexData r,
+               answer(l._cmd, "valtz-source lease", _keep_going));
   vpipe::DataBuffer buf;
   if (!l._cmd.buffer(ex::kBufData, &buf)) {
     return make_error(Code::Engine, "valtz-source lease: no buffer");
@@ -388,7 +408,7 @@ SourceWriter::push(const Tensor& t, const Json& sideband)
   add_sideband(args, sideband);
   vpipe::CommandHandle cmd = _stage.command(ex::kCmdPush, args,
                                             {std::move(b)});
-  VALTZ_TRY(answer(cmd, "valtz-source push"));
+  VALTZ_TRY(answer(cmd, "valtz-source push", _keep_going));
   return ok_status();
 }
 
@@ -447,7 +467,7 @@ SourceWriter::push_kept(const Tensor& t, std::string_view sideband_bin,
 {
   vpipe::CommandHandle cmd = _stage.command(
       ex::kCmdPush, kept_args(t, sideband_bin, shared), kept_buffer(t));
-  VALTZ_TRY(answer(cmd, "valtz-source push"));
+  VALTZ_TRY(answer(cmd, "valtz-source push", _keep_going));
   return ok_status();
 }
 
@@ -475,7 +495,7 @@ SourceWriter::push_kept_list(const std::vector<TensorPtr>& items,
   if (items.empty()) {
     vpipe::CommandHandle cmd = _stage.command(
         ex::kCmdPush, as_item(FlexData::make_object(), 0));
-    VALTZ_TRY(answer(cmd, "valtz-source push"));
+    VALTZ_TRY(answer(cmd, "valtz-source push", _keep_going));
     return ok_status();
   }
   for (std::uint64_t i = 0; i < n; ++i) {
@@ -486,7 +506,7 @@ SourceWriter::push_kept_list(const std::vector<TensorPtr>& items,
     const bool sh = i < shared.size() && shared[i];
     vpipe::CommandHandle cmd = _stage.command(
         ex::kCmdPush, as_item(kept_args(t, sb, sh), i), kept_buffer(t));
-    VALTZ_TRY(answer(cmd, "valtz-source push"));
+    VALTZ_TRY(answer(cmd, "valtz-source push", _keep_going));
   }
   return ok_status();
 }
@@ -496,7 +516,7 @@ SourceWriter::emit(const Json& value)
 {
   FlexData args = flex_object({{ex::kData, to_flex(value)}});
   vpipe::CommandHandle cmd = _stage.command(ex::kCmdEmit, args);
-  VALTZ_TRY(answer(cmd, "valtz-source emit"));
+  VALTZ_TRY(answer(cmd, "valtz-source emit", _keep_going));
   return ok_status();
 }
 
@@ -527,7 +547,7 @@ Status
 SourceWriter::finish()
 {
   vpipe::CommandHandle cmd = _stage.command(ex::kCmdFinish, FlexData());
-  VALTZ_TRY(answer(cmd, "valtz-source finish"));
+  VALTZ_TRY(answer(cmd, "valtz-source finish", _keep_going));
   return ok_status();
 }
 

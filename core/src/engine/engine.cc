@@ -158,6 +158,70 @@ video_encoding_problem(const VideoEncoding& e, std::string_view format)
   return {};
 }
 
+namespace {
+
+// H.264's levels (ITU-T H.264 Table A-1): the most 16 x 16 macroblocks a
+// frame holds, and a frame of that size as delivery specs name it.
+struct H264Level {
+  std::string_view name;
+  std::int64_t     max_fs;
+  std::string_view example;
+};
+constexpr H264Level kH264Levels[] = {
+    {"3.0", 1620, "720 x 576"},    {"3.1", 3600, "1280 x 720"},
+    {"3.2", 5120, "1280 x 1024"},  {"4.0", 8192, "2048 x 1024"},
+    {"4.1", 8192, "2048 x 1024"},  {"4.2", 8704, "2048 x 1080"},
+    {"5.0", 22080, "2560 x 1920"}, {"5.1", 36864, "4096 x 2304"},
+    {"5.2", 36864, "4096 x 2304"},
+};
+
+// Whether a frame of `mbs` macroblocks, `w` x `h` of them, fits: its
+// count, and each side within sqrt(8 x MaxFS) (Table A-1's note).
+bool
+h264_level_holds(const H264Level& l, std::int64_t w, std::int64_t h)
+{
+  std::int64_t side = 1;
+  while ((side + 1) * (side + 1) <= 8 * l.max_fs) {
+    ++side;
+  }
+  return w * h <= l.max_fs && w <= side && h <= side;
+}
+
+}  // namespace
+
+std::string
+h264_level_problem(std::string_view level, std::int64_t width,
+                   std::int64_t height)
+{
+  if (level.empty() || level == "auto" || width <= 0 || height <= 0) {
+    return {};
+  }
+  const std::int64_t w = (width + 15) / 16, h = (height + 15) / 16;
+  const H264Level* at = nullptr;
+  for (const H264Level& l : kH264Levels) {
+    if (l.name == level) {
+      at = &l;
+    }
+  }
+  if (at == nullptr || h264_level_holds(*at, w, h)) {
+    return {};
+  }
+  const H264Level* fits = nullptr;
+  for (const H264Level& l : kH264Levels) {
+    if (fits == nullptr && h264_level_holds(l, w, h)) {
+      fits = &l;
+    }
+  }
+  const std::string frame = std::format(
+      "H.264 level {} holds a frame of {} macroblocks at most ({}); this "
+      "movie's {} x {} is {}", at->name, at->max_fs, at->example, width,
+      height, w * h);
+  return fits != nullptr
+      ? std::format("{}: choose level {} or Automatic", frame, fits->name)
+      : std::format("{}: no H.264 level holds it -- choose HEVC or "
+                    "ProRes", frame);
+}
+
 std::string
 video_codec(std::string_view format, const VideoEncoding& e)
 {

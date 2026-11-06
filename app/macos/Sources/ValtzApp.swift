@@ -1271,6 +1271,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             + "flash:\(c.flash),results:\(c.results),assets:\(assets)"
     }
 
+    /// RAM's popover opened (as a click on its meter opens it), read for
+    /// `seconds`, what it shows printed -- each model by use, each share,
+    /// the engine's own figures -- and drawn to `file` (a popover is a
+    /// window of its own: the capture does not hold it). The MEMORY hook,
+    /// and TASKS' `memory:<s>` while a task runs.
+    @MainActor
+    static func snapshotMemory(_ m: AppModel, seconds: Double,
+                               to file: String) async {
+        m.memoryPopoverOpen = true
+        try? await Task.sleep(for: .seconds(seconds))
+        let parts = MemoryPopover.parts(load: m.monitor.load,
+                                        memory: m.monitor.memory)
+        func mb(_ v: Double?) -> String {
+            v.map { "\(Int($0 / 1_048_576))" } ?? "-"
+        }
+        let shares = parts.map {
+            "\($0.title.replacingOccurrences(of: " ", with: "_"))=\(mb($0.bytes))"
+                + ($0.about ? "~" : "")
+        }.joined(separator: ",")
+        let items = (m.monitor.memory?.items ?? []).map {
+            "\($0.part):\($0.model):\(mb($0.bytes))+kv\(mb($0.kvBytes))"
+                + ($0.seconds.map { "@\(Int($0))s" } ?? "")
+        }.joined(separator: ",")
+        // Each model once, by use: "MiniMax_H3=15761[blocks:12495+
+        // weights:1704+scratch:1562]".
+        let held = (m.monitor.memory?.models ?? []).map {
+            "\($0.name.replacingOccurrences(of: " ", with: "_"))=\(mb($0.bytes))["
+                + $0.uses.sorted { $0.value > $1.value }
+                    .map { "\($0.key):\(mb($0.value))" }
+                    .joined(separator: "+") + "]"
+        }.joined(separator: ",")
+        FileHandle.standardError.write(Data(
+            "snapshot: memory open=\(m.memoryPopoverOpen) read=\(m.monitor.memory != nil) models=\(held.isEmpty ? "-" : held) items=\(items.isEmpty ? "-" : items) shares=\(shares) footprint=\(mb(m.monitor.load.footprint)) gpu=\(mb(m.monitor.memory?.gpuAllocated)) total=\(mb(m.monitor.load.total))\n".utf8))
+        let r = ImageRenderer(content: MemoryPopover(model: m)
+            .background(Color(nsColor: .windowBackgroundColor)))
+        r.scale = 2
+        if let img = r.nsImage, let tiff = img.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: file))
+        }
+    }
+
     /// The main window drawn by AppKit (cacheDisplay) to a PNG: a second
     /// picture in one snapshot run.
     @MainActor
@@ -2838,34 +2881,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // and drawn to <snapshot>-memory.png (a popover is a window
             // of its own: the capture does not hold it).
             if let m = model, let spec = env["VALTZ_SNAPSHOT_MEMORY"] {
-                m.memoryPopoverOpen = true
-                try? await Task.sleep(for: .seconds(Double(spec) ?? 3))
-                let parts = MemoryPopover.parts(load: m.monitor.load,
-                                                memory: m.monitor.memory)
-                func mb(_ v: Double?) -> String {
-                    v.map { "\(Int($0 / 1_048_576))" } ?? "-"
-                }
-                let shares = parts.map {
-                    "\($0.title.replacingOccurrences(of: " ", with: "_"))=\(mb($0.bytes))"
-                        + ($0.about ? "~" : "")
-                }.joined(separator: ",")
-                let items = (m.monitor.memory?.items ?? []).map {
-                    "\($0.part):\($0.model):\(mb($0.bytes))+kv\(mb($0.kvBytes))"
-                        + ($0.seconds.map { "@\(Int($0))s" } ?? "")
-                }.joined(separator: ",")
-                FileHandle.standardError.write(Data(
-                    "snapshot: memory open=\(m.memoryPopoverOpen) read=\(m.monitor.memory != nil) items=\(items.isEmpty ? "-" : items) shares=\(shares) footprint=\(mb(m.monitor.load.footprint)) gpu=\(mb(m.monitor.memory?.gpuAllocated)) total=\(mb(m.monitor.load.total))\n".utf8))
-                let r = ImageRenderer(content: MemoryPopover(model: m)
-                    .background(Color(nsColor: .windowBackgroundColor)))
-                r.scale = 2
-                if let img = r.nsImage, let tiff = img.tiffRepresentation,
-                   let rep = NSBitmapImageRep(data: tiff),
-                   let png = rep.representation(using: .png,
-                                                properties: [:]) {
-                    let out = (path as NSString).deletingPathExtension
-                        + "-memory.png"
-                    try? png.write(to: URL(fileURLWithPath: out))
-                }
+                await Self.snapshotMemory(m, seconds: Double(spec) ?? 3,
+                                          to: (path as NSString)
+                                              .deletingPathExtension
+                                              + "-memory.png")
             }
             // The status bar's context menu, opened by a right-click
             // posted on the bar: its items printed (+ checked), then
@@ -4545,6 +4564,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 format: "snapshot: atlas-zoomat before=%.1f,%.1f after=%.1f,%.1f\n",
                                 before.x, before.y, after.x, after.y).utf8))
                         }
+                    // "wheel:<dx>,<dy>@<x>,<y>[+cmd][+line]": a scroll
+                    // posted there (window points from its top left), as
+                    // TASKS' "scroll:" -- as Settings' Pointing Device
+                    // says; "pan:<x0>,<y0>><x1>,<y1>" a drag posted from
+                    // one to the other (on the ground, it moves the
+                    // graph). Each printing `snapshot: atlas-wheel|
+                    // atlas-pan event= at=<the graph's point under the
+                    // pointer, before>after> ns=` before the line.
+                    case "wheel", "pan":
+                        let bits = arg.split(separator: "+")
+                        let pts = (bits.first ?? "")
+                            .split(whereSeparator: { "@>".contains($0) })
+                            .map { $0.split(separator: ",")
+                                .compactMap { Double($0) } }
+                        guard pts.count == 2, pts[0].count == 2,
+                              pts[1].count == 2 else { break }
+                        let under = kv[0] == "wheel" ? pts[1] : pts[0]
+                        let g0 = Self.atlasPointUnder(m, x: under[0],
+                                                      y: under[1])
+                        var event = "-"
+                        if kv[0] == "wheel" {
+                            event = Self.postScroll(
+                                dx: pts[0][0], dy: pts[0][1],
+                                x: pts[1][0], y: pts[1][1],
+                                lines: bits.contains("line"),
+                                command: bits.contains("cmd"))
+                        } else {
+                            event = "chain=\(Self.hitChain(x: pts[0][0], y: pts[0][1]).split(separator: "<").prefix(2).joined(separator: "<"))"
+                            await Self.postDrag(from: (pts[0][0], pts[0][1]),
+                                                to: (pts[1][0], pts[1][1]))
+                        }
+                        try? await Task.sleep(for: .milliseconds(400))
+                        let g1 = Self.atlasPointUnder(
+                            m, x: kv[0] == "wheel" ? under[0] : pts[1][0],
+                            y: kv[0] == "wheel" ? under[1] : pts[1][1])
+                        FileHandle.standardError.write(Data(String(
+                            format: "snapshot: atlas-%@ %@ device=%@ event=%@ at=%.1f,%.1f>%.1f,%.1f\n",
+                            kv[0], arg, StageScroll.device.rawValue, event,
+                            g0.x, g0.y, g1.x, g1.y).utf8))
                     // "scroll:x,y": scrolled there (ScrollPosition's
                     // points: from the top, past the title bar).
                     case "scroll":
@@ -4719,6 +4777,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // field; empty: Auto) -- each printing `snapshot: task
             // <step> tasks= watched= stage= downloads=`.
             if let spec = env["VALTZ_SNAPSHOT_TASKS"] {
+                var memoryShots = 0
                 for step in spec.split(separator: ";").map(String.init) {
                     let kv = step.split(separator: ":", maxSplits: 1)
                         .map(String.init)
@@ -4931,6 +4990,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // while its window is out of sight.
                     case "hide": NSApp.hide(nil)
                     case "unhide": NSApp.unhideWithoutActivation()
+                    // "memory:<s>": RAM's popover opened while the task
+                    // runs, read for s seconds, printed and drawn to
+                    // <snapshot>-memory-<n>.png -- what each model holds
+                    // by use as it works.
+                    case "memory":
+                        memoryShots += 1
+                        await Self.snapshotMemory(
+                            m, seconds: Double(arg) ?? 3,
+                            to: (path as NSString).deletingPathExtension
+                                + "-memory-\(memoryShots).png")
+                        m.memoryPopoverOpen = false
                     // "timeline:open|close": View › Timeline, between
                     // the other steps.
                     case "timeline": m.showTimeline(arg == "open")
@@ -5154,6 +5224,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         } ?? "-"
                         FileHandle.standardError.write(Data(
                             "snapshot: zoom \(arg) zoom=\(v.zoomText) fit=\(v.fitting) canZoom=\(m.canZoom) videoShown=\(r) \(Self.cardSummary(m))\n".utf8))
+                    // "scroll:<dx>,<dy>@<x>,<y>[+cmd][+line]": a scroll
+                    // posted to the window there (points from its top
+                    // left), in points -- a trackpad's, a Magic Mouse's
+                    // -- or, "+line", a wheel's lines, ⌘ held with
+                    // "+cmd": what it does as Settings' Pointing Device
+                    // says (VALTZ_SNAPSHOT_POINTER for the run), printed
+                    // as `snapshot: scroll device= event= zoom= fit=`.
+                    case "scroll":
+                        let bits = arg.split(separator: "+")
+                        let at = (bits.first ?? "").split(separator: "@")
+                            .map { $0.split(separator: ",")
+                                .compactMap { Double($0) } }
+                        var event = "-"
+                        if at.count == 2, at[0].count == 2, at[1].count == 2 {
+                            event = Self.postScroll(
+                                dx: at[0][0], dy: at[0][1],
+                                x: at[1][0], y: at[1][1],
+                                lines: bits.contains("line"),
+                                command: bits.contains("cmd"))
+                        }
+                        try? await Task.sleep(for: .milliseconds(300))
+                        let v = m.currentViewer
+                        FileHandle.standardError.write(Data(
+                            "snapshot: scroll \(arg) device=\(StageScroll.device.rawValue) event=\(event) zoom=\(v.zoomText) fit=\(v.fitting) \(Self.cardSummary(m))\n".utf8))
                     // "export:<format>:<file>": what the stage shows,
                     // saved as Save… would.
                     case "export":
@@ -5191,7 +5285,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // The CHAT (the editor's Agent tab): "paste:<file>" a picture
             // pasted into the box, "drop:<file>" dropped on the chat (each
             // printing `snapshot: agent-paste|drop took= row= assets=`),
-            // "pastetext:<words>" words that stay words, "target" the Agent
+            // "pastetext:<words>" words that stay words, "askfile:<file>" /
+            // "sayfile:<file>" a message's words read from a file (a
+            // document pasted), "chatscroll:top|bottom|<0...1>" its
+            // conversation scrolled as a wheel scrolls it -- each step's
+            // `snapshot: agent-scroll y= of= in= past=` (past > 0: scrolled
+            // past its end, white) -- "target" the Agent
             // tab with nothing asked, "transcript" its
             // transcript opened, "newchat" the session put away, "shot:" /
             // "draw:<file.png>" the window captured / drawn; its TABS:
@@ -5219,6 +5318,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "say":
                         m.setPrompt(arg)
                         m.start()
+                    // The words from a file: a long message, pasted.
+                    case "askfile", "sayfile":
+                        if kv[0] == "askfile" { m.setModality(.agent) }
+                        m.setPrompt((try? String(
+                            contentsOfFile: arg, encoding: .utf8)) ?? "")
+                        m.start()
+                    // The chat's conversation scrolled as a person's
+                    // wheel scrolls it: to its top, its bottom (as laid
+                    // out now), or a share of the way.
+                    case "chatscroll":
+                        if let sv = Self.chatScroller(m),
+                           let doc = sv.documentView {
+                            let room = max(0, doc.frame.height
+                                           - sv.contentView.bounds.height)
+                            let y: CGFloat = arg == "top" ? 0
+                                : arg == "bottom" ? room
+                                : room * CGFloat(Double(arg) ?? 0)
+                            sv.contentView.setBoundsOrigin(
+                                CGPoint(x: 0, y: doc.isFlipped ? y
+                                        : room - y))
+                            sv.reflectScrolledClipView(sv.contentView)
+                        }
                     // The Agent tab, nothing asked yet.
                     case "target": m.setModality(.agent)
                     // Words typed into the box as the keyboard types
@@ -5411,6 +5532,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let said = (a?.messages ?? []).filter {
                         $0.role == "user" && $0.said != nil
                     }.map { "\($0.said?.count ?? 0):\($0.attached?.count ?? 0)\($0.shown.map { "s\($0)" } ?? "")" }
+                    FileHandle.standardError.write(Data(
+                        "snapshot: agent-scroll \(Self.chatScrollSummary(m))\n".utf8))
                     FileHandle.standardError.write(Data(
                         "snapshot: agent-chat chat=\(m.agentChat) chatRect=\(Int(cf.minX)),\(Int(cf.minY)),\(Int(cf.width))x\(Int(cf.height)) ctx=\(ctx?.used ?? -1)/\(ctx?.limit ?? -1)@\(ctx?.compactAt ?? -1) transcript=\(a?.transcript.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") row=\(m.promptAttachments.count) said=\(said.joined(separator: ",")) tab=\(m.activePromptTab) look=\(m.activeTabDoNotApply) tabs=\(m.agentTabs.indices.map { i in let t = m.agentTabSession(i); return "\(i + 1):\(m.agentTabs[i].skills):\(t?.state ?? "-"):\(t?.steps.count ?? 0)\(i == m.agentTabIndex ? "*" : "")" }.joined(separator: ","))\n".utf8))
                     FileHandle.standardError.write(Data(
@@ -5910,7 +6033,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             .joined(separator: ",")
                     } ?? "-"
                     FileHandle.standardError.write(Data(
-                        "snapshot: save video=\(video)\n".utf8))
+                        "snapshot: save video=\(video) levels=\(options.video?.levelChoices ?? "-")\n".utf8))
                     FileHandle.standardError.write(Data(
                         "snapshot: save panel \(type(of: panel)) choice=\(options.choice.rawValue) quality=\(options.jpegQuality.map(String.init) ?? "-") estimate=\(options.estimate.map(String.init) ?? "-") name=\(panel.nameFieldStringValue)\n".utf8))
                     // As Save would: NSSavePanel.ok(_:) throws when
@@ -6170,7 +6293,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Capabilities' models (DESIGN §8b), in turn (";" between):
         // "link:<id>=<path>" (the link menu's file or folder chosen),
-        // "check:<id>" (Check Files), "unlink:<id>", "ask:<id>:<bits>"
+        // "check:<id>" (Check Files), "speed:<id>" (Test Read Speed, waited
+        // for: the line's speed=GB/s@read/total+cachedN:busy=:drives and
+        // speedNote=), "unlink:<id>", "ask:<id>:<bits>"
         // (a width of the compress menu: its alert open),
         // "answer:compress|compress-keep|cancel" (its buttons -- keep: the
         // original kept beside the copy), "compress:<id>:<bits>"
@@ -6221,6 +6346,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 case "check":
                     last = arg
                     m.checkModel(arg)
+                case "speed":
+                    // Test Read Speed, waited for (a minute at most).
+                    last = arg
+                    m.testReadSpeed(arg)
+                    for _ in 0..<600 where m.readSpeedTesting != nil {
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
                 case "unlink":
                     last = arg
                     m.unlinkModel(arg)
@@ -6352,6 +6484,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 line += "cancelAsk=\(cancelAsk) check=\(check) "
                 line += "compress=\(note) job=\(job) "
                 line += "stopping=\(stopping) "
+                // Its last read-speed test: GB/s, bytes read of all, in
+                // memory (not read), work beside it, each drive.
+                if let s = r?.readSpeed {
+                    let drives = s.places.map {
+                        "\($0.volume.name):\($0.volume.isInternal ? "int" : "ext")"
+                            + ":\($0.volume.link):\(String(format: "%.2f", $0.gbps))"
+                    }.joined(separator: ",")
+                    line += "speed=\(String(format: "%.2f", s.gbps))@"
+                        + "\(s.read)/\(s.total)+cached\(s.cached)"
+                        + ":busy=\(s.busy):\(drives) "
+                } else {
+                    line += "speed=- "
+                }
+                line += "speedNote=\(m.readSpeedNotes[last].map { "\($0.level):\($0.text)" } ?? "-") "
                 // Download From, and where the row says it comes from.
                 let from = (r?.sources ?? []).map { s in
                     s.path == r?.hfPath ? s.name : "\(s.name):\(s.path)"
@@ -8049,6 +8195,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The Atlas graph's own point under (x, y), points from the window's
+    /// top left: through its scroll view (the largest's document), as
+    /// AtlasBackdrop reads a scroll's.
+    @MainActor
+    private static func atlasPointUnder(_ m: AppModel, x: Double,
+                                        y: Double) -> CGPoint {
+        guard let w = m.editorWindow, let root = w.contentView
+        else { return .zero }
+        var best: NSScrollView?
+        var area: CGFloat = 0
+        func walk(_ v: NSView) {
+            if let sv = v as? NSScrollView, let d = sv.documentView,
+               d.frame.width * d.frame.height > area {
+                area = d.frame.width * d.frame.height
+                best = sv
+            }
+            v.subviews.forEach(walk)
+        }
+        walk(root)
+        guard let sv = best else { return .zero }
+        let p = sv.convert(NSPoint(x: x, y: w.frame.height - y), from: nil)
+        let top = CGPoint(x: p.x,
+                          y: sv.isFlipped ? p.y : sv.bounds.height - p.y)
+        return m.atlasGraphPoint(at: m.atlasViewportPoint(top))
+    }
+
+    /// A scroll posted to the window at (x, y) points from its top left,
+    /// backed by a CGEvent as the window server's are -- continuous (a
+    /// trackpad's points) or a wheel's lines: how AppKit reads it, the
+    /// window it names ("win" this one), its precision and deltas. Made
+    /// from a mouse move's CGEvent, which names the window (a scroll
+    /// made alone names none, and goes nowhere).
+    @MainActor
+    private static func postScroll(dx: Double, dy: Double, x: Double,
+                                   y: Double, lines: Bool,
+                                   command: Bool) -> String {
+        guard let win = NSApp.windows.first(where: { $0.isVisible }),
+              let move = NSEvent.mouseEvent(
+                  with: .mouseMoved,
+                  location: NSPoint(x: x, y: win.frame.height - y),
+                  modifierFlags: [], timestamp: 0,
+                  windowNumber: win.windowNumber, context: nil,
+                  eventNumber: 0, clickCount: 0, pressure: 0),
+              let cg = move.cgEvent
+        else { return "-" }
+        cg.type = .scrollWheel
+        cg.setIntegerValueField(.scrollWheelEventIsContinuous,
+                                value: lines ? 0 : 1)
+        cg.setIntegerValueField(lines ? .scrollWheelEventDeltaAxis1
+                                      : .scrollWheelEventPointDeltaAxis1,
+                                value: Int64(dy))
+        cg.setIntegerValueField(lines ? .scrollWheelEventDeltaAxis2
+                                      : .scrollWheelEventPointDeltaAxis2,
+                                value: Int64(dx))
+        cg.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: dy)
+        cg.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: dx)
+        cg.flags = command ? .maskCommand : []
+        guard let e = NSEvent(cgEvent: cg) else { return "-" }
+        NSApp.postEvent(e, atStart: false)
+        let p = e.locationInWindow
+        return "\(e.window === win ? "win" : "none")@\(Int(p.x)),\(Int(win.frame.height - p.y)):\(e.hasPreciseScrollingDeltas ? "precise" : "lines"):\(e.scrollingDeltaX),\(e.scrollingDeltaY)\(e.modifierFlags.contains(.command) ? ":cmd" : "")"
+    }
+
     /// The AppKit view a click at (x, y) points from the window's top
     /// left goes to, then its ancestors: "AVPlayerView<AppKitPlatform...".
     @MainActor
@@ -8267,6 +8476,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let r: NSRect = v.convert(v.bounds, to: nil)
         let h: CGFloat = win.contentView?.frame.height ?? 0
         return "\(Int(r.minX)),\(Int(h - r.maxY)),\(Int(r.width))x\(Int(r.height))"
+    }
+
+    /// The agent chat's conversation as AppKit scrolls it: the tallest
+    /// scroll view inside the chat's frame.
+    @MainActor
+    static func chatScroller(_ m: AppModel) -> NSScrollView? {
+        guard let win = m.editorWindow
+                ?? NSApp.windows.first(where: { $0.isVisible }),
+              let content = win.contentView else { return nil }
+        let chat = m.agentChatFrame
+        let h = content.frame.height
+        var best: NSScrollView?
+        var queue: [NSView] = [content]
+        while let v = queue.popLast() {
+            if let sv = v as? NSScrollView, sv.documentView != nil {
+                let r = sv.convert(sv.bounds, to: nil)
+                let top = CGRect(x: r.minX, y: h - r.maxY,
+                                 width: r.width, height: r.height)
+                if chat.insetBy(dx: -2, dy: -2).contains(top),
+                   top.height > (best?.frame.height ?? 0) {
+                    best = sv
+                }
+            }
+            queue += v.subviews
+        }
+        return best
+    }
+
+    /// "y=<scrolled from the top> of=<content height> in=<the visible
+    /// height> past=<how far the visible part runs past the content's
+    /// end>": a chat scrolled past its end shows nothing.
+    @MainActor
+    static func chatScrollSummary(_ m: AppModel) -> String {
+        guard let sv = chatScroller(m), let doc = sv.documentView else {
+            return "-"
+        }
+        let clip = sv.contentView.bounds
+        let of = doc.frame.height
+        let y = doc.isFlipped ? clip.minY : of - clip.maxY
+        return "y=\(Int(y)) of=\(Int(of)) in=\(Int(clip.height)) "
+            + "past=\(Int(y + clip.height - of))"
     }
 
     @MainActor

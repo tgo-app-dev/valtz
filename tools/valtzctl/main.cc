@@ -42,6 +42,7 @@
 #include <chrono>
 #include <thread>
 #include <time.h>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <format>
@@ -49,6 +50,7 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <readpassphrase.h>
 #include <sstream>
 #include <set>
@@ -84,6 +86,9 @@ usage()
       "         where the model is; --drawthings undoes that)\n"
       "  check <model-id> [file|folder]  (its files checked as a link's\n"
       "         are -- that path's, else where it is installed)\n"
+      "  read-speed <model-id> [--seconds S]  (Capabilities' Test Read\n"
+      "         Speed: how fast its files come off where it is, past the\n"
+      "         memory cache -- S seconds of reads at most, 10)\n"
       "  compress <model-id> --bits 8|4 [--keep-original]\n"
       "         (Settings > Capabilities' compress button: the download\n"
       "         replaced by a copy quantized to 8 or 4 bits, its DiT then\n"
@@ -599,7 +604,13 @@ usage()
       "          helper, the agent, picture, clip and sound models\n"
       "          (Settings > General > Memory): Automatic, the limit in\n"
       "          force, what is wired now; GB sets one (8, 12.5), auto\n"
-      "          gives it back to vpipe, the app's too\n",
+      "          gives it back to vpipe, the app's too\n"
+      "  repro [autotune=on|off] [ane_split=auto|locked]  REPRODUCIBILITY\n"
+      "          (Settings > General): picture, clip and sound models'\n"
+      "          kernels chosen by timing as they load (on) or the ones\n"
+      "          believed fastest here, nothing timed (off); the Neural\n"
+      "          Engine's share of a feed-forward balanced by timing (auto)\n"
+      "          or locked at this Mac's share -- the app's too\n",
       stderr);
   return 2;
 }
@@ -2036,6 +2047,14 @@ agent_command(Controller& c, std::vector<std::string> args)
         std::fprintf(stderr, "agent: %s\n",
                      jget<std::string>(st, "error", "").c_str());
       }
+      // Its last reply cut off at its limit: said, so it can be asked
+      // for the rest.
+      if (const int n = jget(jget(st, "stats", Json::object()), "cut_off",
+                             -1);
+          n >= 0 && state == "done") {
+        std::fprintf(stderr, "agent: its reply was cut off at its limit "
+                             "of %d tokens -- ask it to go on\n", n);
+      }
       const double secs = std::chrono::duration<double>(
           std::chrono::steady_clock::now() - t0).count();
       std::fprintf(stderr, "agent: %s after %.0f s, %d turns, %zu steps; "
@@ -2177,6 +2196,23 @@ main(int argc, char** argv)
   // the models kept warm, the checkpoints resident (the status bar's RAM
   // popover, Controller::memory_held).
   const bool show_memory = std::erase(args, std::string("--memory")) > 0;
+  // "--memory-at <s>[,<s>...]": what it holds that far INTO the command
+  // -- each model once by use, the working memory left (the popover's
+  // figures while a job runs).
+  std::vector<double> memory_at;
+  for (std::size_t i = 0; i + 1 < args.size(); ++i) {
+    if (args[i] != "--memory-at") {
+      continue;
+    }
+    std::stringstream ss(args[i + 1]);
+    for (std::string t; std::getline(ss, t, ',');) {
+      memory_at.push_back(std::atof(t.c_str()));
+    }
+    args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
+               args.begin() + static_cast<std::ptrdiff_t>(i) + 2);
+    break;
+  }
+  std::sort(memory_at.begin(), memory_at.end());
   // "--fleet": a member of its fleet for this run (DESIGN §11) -- what
   // this Mac cannot run, or not now, goes to a member that can.
   const bool in_fleet = std::erase(args, std::string("--fleet")) > 0;
@@ -2202,6 +2238,43 @@ main(int argc, char** argv)
       }
     }
   } memory_at_end{c, show_memory};
+  // Read on a thread of its own, joined as main returns -- before the
+  // controller goes.
+  std::mutex memory_at_mu;
+  std::condition_variable_any memory_at_cv;
+  std::jthread memory_at_reader;
+  if (!memory_at.empty()) {
+    memory_at_reader = std::jthread([&](std::stop_token stop) {
+      const auto t0 = std::chrono::steady_clock::now();
+      for (const double at : memory_at) {
+        std::unique_lock lk(memory_at_mu);
+        if (memory_at_cv.wait_until(
+                lk, stop,
+                t0 + std::chrono::milliseconds(
+                         static_cast<std::int64_t>(at * 1000)),
+                [] { return false; })) {
+          return;
+        }
+        if (stop.stop_requested()) {
+          return;
+        }
+        const Json m = c.memory_held();
+        const auto g = jget<std::uint64_t>(m, "gpu_allocated", 0);
+        const auto held = jget<std::uint64_t>(m, "attributed_bytes", 0);
+        std::cout << to_text(Json{{"memory_at", at},
+                                  {"models", jget(m, "models",
+                                                  Json::array())},
+                                  {"working_bytes",
+                                   g > held ? g - held : 0},
+                                  {"unowned_bytes",
+                                   jget<std::uint64_t>(m, "unowned_bytes",
+                                                       0)},
+                                  {"gpu_allocated", g}},
+                             2)
+                  << "\n" << std::flush;
+      }
+    });
+  }
   if (in_fleet) {
     // Its members reached first: a few seconds ($VALTZ_FLEET_WAIT).
     const char* w = std::getenv("VALTZ_FLEET_WAIT");
@@ -2597,6 +2670,52 @@ main(int argc, char** argv)
       return linked ? 0 : 1;
     }
     return jget(*r, "usable", false) ? 0 : 1;
+  }
+  if (cmd == "read-speed") {
+    if (args.empty()) {
+      return usage();
+    }
+    double seconds = 10.0;
+    for (std::size_t i = 1; i + 1 < args.size(); ++i) {
+      if (args[i] == "--seconds") {
+        seconds = std::atof(args[i + 1].c_str());
+      }
+    }
+    auto r = c.measure_read_speed(args[0], seconds);
+    if (!r.ok()) {
+      return fail(r.error());
+    }
+    const Json& s = *r;
+    auto gb = [](const Json& j, const char* k) {
+      return static_cast<double>(jget<std::uint64_t>(j, k, 0)) / 1e9;
+    };
+    std::printf("%s at %s\n", args[0].c_str(),
+                jget<std::string>(s, "path", "").c_str());
+    for (const auto& p : jget(s, "places", Json::array())) {
+      const Json v = jget(p, "volume", Json::object());
+      std::string kind = jget(v, "network", false) ? "network"
+                         : jget(v, "internal", true) ? "internal"
+                                                     : "EXTERNAL";
+      for (const char* k : {"protocol", "device"}) {
+        if (auto t = jget<std::string>(v, k, ""); !t.empty()) {
+          kind += ", " + t;
+        }
+      }
+      std::printf("  %s (%s), %d files: read %.2f GB in %.2f s = %.2f GB/s"
+                  " (of %.2f GB; %.2f GB in memory, not read; %s)\n",
+                  jget<std::string>(v, "name", "?").c_str(), kind.c_str(),
+                  jget(p, "files", 0), gb(p, "read"),
+                  jget(p, "seconds", 0.0), jget(p, "gbps", 0.0),
+                  gb(p, "total"), gb(p, "cached"),
+                  jget(p, "whole", false) ? "whole" : "sampled");
+    }
+    std::printf("read speed %.2f GB/s%s\n", jget(s, "gbps", 0.0),
+                jget(s, "busy", false)
+                    ? " (other work ran beside it: may read low)" : "");
+    if (auto e = jget<std::string>(s, "error", ""); !e.empty()) {
+      std::printf("error: %s\n", e.c_str());
+    }
+    return jget<std::uint64_t>(s, "read", 0) > 0 ? 0 : 1;
   }
   if (cmd == "status") {
     // The ANE's reading is a delta: a first call starts it, a second a
@@ -5737,6 +5856,40 @@ main(int argc, char** argv)
     std::printf("wired     %.1f GB now\n", gb(w, "used"));
     std::printf("range     %.1f-%.1f GB (the most the GPU keeps "
                 "resident)\n", gb(w, "min"), gb(w, "max"));
+    return 0;
+  }
+  if (cmd == "repro") {
+    // Settings › General › Reproducibility: set, then shown.
+    if (!args.empty()) {
+      Json changes = Json::object();
+      for (const std::string& a : args) {
+        const auto eq = a.find('=');
+        const std::string k = a.substr(0, eq);
+        const std::string v = eq == std::string::npos ? "" : a.substr(eq + 1);
+        if (k == "autotune" && (v == "on" || v == "off")) {
+          changes["skip_autotune"] = v == "off";
+        } else if (k == "ane_split" && (v == "auto" || v == "locked")) {
+          changes["lock_ane_split"] = v == "locked";
+        } else {
+          return usage();
+        }
+      }
+      if (Status st = c.set_reproducibility(changes); !st.ok()) {
+        return fail(st.error());
+      }
+    }
+    const Json r = c.reproducibility();
+    std::printf("autotune   %s\n",
+                jget(r, "skip_autotune", false)
+                    ? "off: each kernel the one believed fastest here, "
+                      "nothing timed"
+                    : "on: kernels chosen by timing as a model loads");
+    std::printf("ane split  %s %.2f of the rows (%.2f with the int8 "
+                "GEMMs)\n",
+                jget(r, "lock_ane_split", false)
+                    ? "locked at"
+                    : "auto, balanced by timing; locked it would be",
+                jget(r, "ane_share", 0.0), jget(r, "ane_share_int8", 0.0));
     return 0;
   }
   if (cmd == "download") {

@@ -82,6 +82,10 @@ final class VideoEncodingRows: NSObject, NSTextFieldDelegate {
     private(set) var settings: VideoEncodingSettings
     private var format: ExportChoice = .h264
     private let seconds: Double?
+    /// The movie's frame: an H.264 level too small for it is greyed --
+    /// the encoder refuses every frame past its level's size (the core
+    /// refuses the export: engine::h264_level_problem).
+    private let frame: (width: Int, height: Int)?
     /// Their rows in the panel's grid, shown as the format has them.
     private(set) var rows: [[NSView]] = []
     private var rowViews: [NSView] = []
@@ -126,6 +130,32 @@ final class VideoEncodingRows: NSObject, NSTextFieldDelegate {
     ]
     private static let levels = ["", "3.0", "3.1", "3.2", "4.0", "4.1",
                                  "4.2", "5.0", "5.1", "5.2"]
+    /// H.264's levels (ITU-T H.264 Table A-1): the most 16 x 16
+    /// macroblocks a frame holds -- the core's table, which refuses the
+    /// rest (engine::h264_level_problem).
+    private static let levelMaxFS: [String: Int] = [
+        "3.0": 1620, "3.1": 3600, "3.2": 5120, "4.0": 8192, "4.1": 8192,
+        "4.2": 8704, "5.0": 22080, "5.1": 36864, "5.2": 36864,
+    ]
+
+    /// Whether `level` holds a frame of `width` x `height`: its
+    /// macroblocks, and each side within sqrt(8 x MaxFS) of them.
+    /// Automatic holds any.
+    static func levelHolds(_ level: String, width: Int, height: Int) -> Bool {
+        guard let fs = levelMaxFS[level] else { return true }
+        let w = (width + 15) / 16, h = (height + 15) / 16
+        var side = 1
+        while (side + 1) * (side + 1) <= 8 * fs { side += 1 }
+        return w * h <= fs && w <= side && h <= side
+    }
+
+    /// The level menu's items as a snapshot prints them: "4.1-" greyed.
+    var levelChoices: String {
+        Self.levels.indices.dropFirst().map { i in
+            Self.levels[i] + (levelMenu.item(at: i)?.isEnabled == false
+                                  ? "-" : "")
+        }.joined(separator: ",")
+    }
     private static let keyframeSeconds: [Double] = [0, 0.5, 1, 2, 4, 10]
     private static let prores4444: [(String, String)] = [
         ("4444", "ProRes 4444"), ("4444xq", "ProRes 4444 XQ"),
@@ -135,8 +165,9 @@ final class VideoEncodingRows: NSObject, NSTextFieldDelegate {
         ("422lt", "ProRes 422 LT"), ("422proxy", "ProRes 422 Proxy"),
     ]
 
-    init(seconds: Double?) {
+    init(seconds: Double?, frame: (width: Int, height: Int)? = nil) {
         self.seconds = seconds
+        self.frame = frame
         settings = Self.remembered ?? VideoEncodingSettings()
         func label(_ s: String) -> NSTextField {
             NSTextField(labelWithString: s)
@@ -190,6 +221,18 @@ final class VideoEncodingRows: NSObject, NSTextFieldDelegate {
 
         levelMenu.addItem(withTitle: String(localized: "Automatic"))
         for l in Self.levels.dropFirst() { levelMenu.addItem(withTitle: l) }
+        // Too small for the movie: greyed, and said why.
+        levelMenu.autoenablesItems = false
+        if let frame {
+            let w = String(frame.width), h = String(frame.height)
+            for (i, l) in Self.levels.enumerated() where i > 0 {
+                guard let item = levelMenu.item(at: i),
+                      !Self.levelHolds(l, width: frame.width,
+                                       height: frame.height) else { continue }
+                item.isEnabled = false
+                item.toolTip = String(localized: "Too small for this movie's \(w) × \(h) frame")
+            }
+        }
         entropyMenu.addItems(withTitles: ["CABAC", "CAVLC"])
         rateMenu.addItems(withTitles: [
             String(localized: "Automatic"),
@@ -242,6 +285,12 @@ final class VideoEncodingRows: NSObject, NSTextFieldDelegate {
             $0.0 == (format == .h264 ? settings.profile
                                      : settings.hevcProfile)
         } ?? 0)
+        // A level kept from before that this movie's frame is too large
+        // for: Automatic.
+        if let frame, !Self.levelHolds(settings.level, width: frame.width,
+                                       height: frame.height) {
+            settings.level = ""
+        }
         levelMenu.selectItem(at: Self.levels.firstIndex(of: settings.level)
                                  ?? 0)
         entropyMenu.selectItem(at: settings.entropy == "cavlc" ? 1 : 0)

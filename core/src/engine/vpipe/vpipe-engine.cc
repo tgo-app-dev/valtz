@@ -1110,6 +1110,8 @@ private:
       return;
     }
     vp::BuiltGraph& g = *built;
+    // Settings' Reproducibility: the model stages told not to tune.
+    vp::untune_stages(spec, g.spec);
     if (!spec.output_dir.empty()) {
       fs::create_directories(spec.output_dir, ec);
     }
@@ -1495,12 +1497,52 @@ private:
         }
       }
     }
+    // When feeding stops waiting on the graph: a cancel (Stop) -- or, an
+    // export's, an error its stages logged. Its reader and writer are
+    // the whole of it, so one failing fails it: its writer refused by
+    // the encoder at a level too small for the frame left the feeder
+    // waiting on a source nothing read, and Stop waited with it
+    // (2026-11-05). Other jobs' graphs log errors they go on through (a
+    // preview's), so theirs end as before.
+    const bool errors_end_it = &lane == &_exports;
+    const auto stopped = [&]() -> bool {
+      if (lane.cancel.load()) {
+        return true;
+      }
+      if (!errors_end_it) {
+        return false;
+      }
+      std::lock_guard lk(_err_mu);
+      return !lane.run_error.empty();
+    };
+    // Why the job failed where it stopped: a cancel is no failure; a
+    // stage's error says what it was.
+    const auto end_stopped = [&](Status st) {
+      if (lane.cancel.load()) {
+        JobEvent ev;
+        ev.job = spec.id;
+        ev.kind = JobEventKind::Cancelled;
+        q.sink(ev);
+        return;
+      }
+      std::string why;
+      if (errors_end_it) {
+        std::lock_guard lk(_err_mu);
+        why = lane.run_error;
+      }
+      if (!why.empty()) {
+        fail_(q, Code::Engine, std::move(why));
+      } else {
+        fail_(q, st.code(), st.error().message);
+      }
+    };
+
     // What earlier jobs kept, fed in the encoders' places.
-    if (auto st = feed_kept_(h, g, kept); !st.ok()) {
+    if (auto st = feed_kept_(h, g, kept, stopped); !st.ok()) {
       _session->stop_pipeline(h);
       readers.clear();
       unload_(h, lane);
-      fail_(q, st.code(), st.error().message);
+      end_stopped(std::move(st));
       return;
     }
 
@@ -1514,12 +1556,12 @@ private:
         report(/*force=*/false);
       }
     };
-    if (auto st = feed_references_(h, g, fed, &fed_preview, lane.cancel);
+    if (auto st = feed_references_(h, g, fed, &fed_preview, stopped);
         !st.ok()) {
       _session->stop_pipeline(h);  // ends the readers' waits
       readers.clear();
       unload_(h, lane);
-      fail_(q, st.code(), st.error().message);
+      end_stopped(std::move(st));
       return;
     }
 
@@ -1533,6 +1575,12 @@ private:
       if (lane.cancel.load()) {
         _session->stop_pipeline(h);
         cancelled = true;
+        break;
+      }
+      // An export whose stage failed: over (vpipe lets the failed
+      // writer's reader run on to its end, nobody reading it).
+      if (errors_end_it && stopped()) {
+        _session->stop_pipeline(h);
         break;
       }
       // A helper's turn whole in hand and its graph still not ended: it
@@ -1595,6 +1643,20 @@ private:
       ev.kind = JobEventKind::Cancelled;
       q.sink(ev);
       return;
+    }
+    // An export one of whose stages failed: that is its failure, whatever
+    // it left on disk (a writer refused mid-file).
+    if (errors_end_it) {
+      std::string why;
+      {
+        std::lock_guard lk(_err_mu);
+        why = lane.run_error;
+      }
+      if (!why.empty()) {
+        fs::remove(g.output, ec);
+        fail_(q, Code::Engine, std::move(why));
+        return;
+      }
     }
 
     // A stage that refused for memory: that is the failure, with what
@@ -2120,8 +2182,10 @@ private:
   // of its stream -- a conditioning is one beat for every denoise.
   Status
   feed_kept_(vpipe::PipelineHandle& h, const vp::BuiltGraph& g,
-             const std::map<std::string, vp::Kept>& kept)
+             const std::map<std::string, vp::Kept>& kept,
+             const std::function<bool()>& stopped)
   {
+    const auto keep_going = [&] { return !stopped(); };
     for (const auto& io : g.encodings) {
       if (!io.fed) {
         continue;
@@ -2139,7 +2203,7 @@ private:
           return make_error(Code::Corrupt, std::format(
               "kept encoding {} has no {}", io.key, p.name));
         }
-        vp::SourceWriter src(h.stage(p.stage));
+        vp::SourceWriter src(h.stage(p.stage), keep_going);
         VALTZ_TRY(kp->list
                       ? src.push_kept_list(kp->tensors, kp->sidebands,
                                            kp->shared, kp->list_sideband)
@@ -2206,10 +2270,13 @@ private:
   feed_references_(vpipe::PipelineHandle& h, const vp::BuiltGraph& g,
                    const std::function<void()>& fed,
                    const media::FramePreview* preview,
-                   const std::atomic<bool>& cancel)
+                   const std::function<bool()>& stopped)
   {
+    // Each wait on a source asks it: a Stop -- an export's failed stage
+    // -- ends the feeding even while a source is not answering.
+    const auto keep_going = [&] { return !stopped(); };
     for (const auto& f : g.references) {
-      vp::SourceWriter src(h.stage(f.stage));
+      vp::SourceWriter src(h.stage(f.stage), keep_going);
       // What the samples mean, in vpipe's sideband colour keys
       // (common/beat-keys.h): BT.709 primaries, sRGB-encoded -- or
       // linear, for a file that keeps light. RGB samples, full range.
@@ -2241,7 +2308,7 @@ private:
     // it between frames.
     if (g.movie) {
       const vp::MovieFeed& m = *g.movie;
-      vp::SourceWriter src(h.stage(m.stage));
+      vp::SourceWriter src(h.stage(m.stage), keep_going);
       std::optional<vp::SourceWriter::Lease> lease;
       const bool u8 = m.sample == media::Sample::U8;
       // GATED (an upscaler, MovieFeed::Gate): consecutive groups, each
@@ -2308,7 +2375,7 @@ private:
           const auto want = static_cast<std::uint64_t>(frames);
           VALTZ_ASSIGN(auto n, vp::tap_wait(h.stage(gate.tap), want, [&] {
             fed();
-            return !cancel.load();
+            return !stopped();
           }));
           if (n.passed < want && n.eos) {
             return make_error(Code::Engine, std::format(
@@ -2320,7 +2387,7 @@ private:
       };
       const auto lease_frame =
           [&](std::int64_t) -> Result<media::FrameBuffer> {
-            if (cancel.load()) {
+            if (stopped()) {
               return make_error(Code::Cancelled, "cancelled");
             }
             VALTZ_TRY(next_group());
@@ -2360,11 +2427,11 @@ private:
     // stops it between frames.
     if (g.samples) {
       const vp::SampleFeed& sf = *g.samples;
-      vp::SourceWriter src(h.stage(sf.stage));
+      vp::SourceWriter src(h.stage(sf.stage), keep_going);
       std::optional<vp::SourceWriter::Lease> lease;
       const auto target =
           [&](std::int64_t, double t) -> Result<media::FrameBuffer> {
-            if (cancel.load()) {
+            if (stopped()) {
               return make_error(Code::Cancelled, "cancelled");
             }
             // Its time, as vpipe's own stages tag a frame's.
@@ -2395,7 +2462,7 @@ private:
     // save-image reads one per image, so a base without EXIF still
     // sends an (empty) object.
     if (!g.exif_from.empty()) {
-      vp::SourceWriter src(h.stage(vp::kExifSource));
+      vp::SourceWriter src(h.stage(vp::kExifSource), keep_going);
       Json meta = Json::object();
       const auto block = media::exif_block_for(
           g.exif_from, {g.width, g.height});

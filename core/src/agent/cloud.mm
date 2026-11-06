@@ -268,13 +268,18 @@ public:
         if (r.ok() && on_text && !r->content.empty()) {
           on_text(r->content);
         }
+        if (r.ok()) {
+          r->limit = _cfg.max_tokens;
+        }
         return r;
       }
       if (const std::string e = reader->error(); !e.empty()) {
         return make_error(Code::Engine, msg::kAgentCloudError,
                           {{"provider", _cfg.provider}, {"why", e}});
       }
-      return reader->reply();
+      Reply r = reader->reply();
+      r.limit = _cfg.max_tokens;
+      return r;
     }
   }
 

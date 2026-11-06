@@ -16,6 +16,17 @@ struct WiredLimit: Decodable, Sendable, Equatable {
     var pending: Bool
 }
 
+/// Settings › General › Reproducibility (core Controller::reproducibility):
+/// what a picture, clip or sound job is told so that it repeats -- its
+/// kernels not chosen by timing, the Neural Engine's share of the rows
+/// locked at this Mac's (`aneShare`; `aneShareInt8` with the int8 GEMMs).
+struct Reproducibility: Decodable, Sendable, Equatable {
+    var skipAutotune: Bool
+    var lockAneSplit: Bool
+    var aneShare: Double
+    var aneShareInt8: Double
+}
+
 /// Settings › Capabilities (core Controller::capability_tree): the model
 /// families, what each makes here, and every resource it runs with.
 struct CapabilityTree: Decodable, Sendable {
@@ -107,7 +118,47 @@ struct CapabilityTree: Decodable, Sendable {
         var drawthings: [String]?
         var parts: [String: PartLink]?
         var takesDrawThings: Bool { !(drawthings ?? []).isEmpty }
+        /// Its last READ-SPEED TEST, while it is where it was made.
+        var readSpeed: ReadSpeed?
         var id: String { model }
+    }
+
+    /// How fast a model's files came off where it is (core
+    /// models/read-speed.h): past the memory cache, sampled -- each
+    /// drive's figure, what was in memory already (not read), whether
+    /// other work ran beside it.
+    struct ReadSpeed: Decodable, Sendable {
+        var gbps: Double
+        var read: Int64
+        var total: Int64
+        var cached: Int64
+        var seconds: Double
+        var files: Int
+        var whole: Bool
+        var stopped: Bool
+        var error: String
+        var busy: Bool
+        var places: [Place]
+
+        struct Place: Decodable, Sendable {
+            var path: String
+            var volume: Volume
+            var read: Int64
+            var seconds: Double
+            var gbps: Double
+        }
+        struct Volume: Decodable, Sendable {
+            var name: String
+            var link: String      // "protocol": "USB", "Thunderbolt", ...
+            var device: String
+            var isInternal: Bool
+            var network: Bool
+            enum CodingKeys: String, CodingKey {
+                case name, device, network
+                case link = "protocol"
+                case isInternal = "internal"
+            }
+        }
     }
 
     /// A part of a model linked apart -- a Draw Things checkpoint -- and

@@ -26,6 +26,7 @@
 #include "valtz/base/result.h"
 
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace valtz {
@@ -72,6 +73,20 @@ Status write_locations(const std::filesystem::path& support,
 // On this Mac's internal drive -- not an external one, not a network
 // share. Unknown (not there yet): internal.
 bool volume_is_internal(const std::filesystem::path&);
+// The drive a path is on, as a person names it: the volume's name (the
+// Finder's), whether it is this Mac's own or a network share, and how
+// it is connected -- DiskArbitration's device protocol ("Apple Fabric"
+// an Apple silicon Mac's own SSD, "Thunderbolt", "USB", "PCI-Express",
+// a disk image's "Virtual Interface") and the drive's model. What is not
+// known stays empty.
+struct VolumeInfo {
+  std::string name;
+  std::string protocol;
+  std::string device;
+  bool        internal = true;
+  bool        network = false;
+};
+VolumeInfo volume_info(const std::filesystem::path&);
 // The two on one volume: a move is a rename.
 bool same_volume(const std::filesystem::path&, const std::filesystem::path&);
 // `inner` is `outer` or somewhere in it (lexically, normalized).

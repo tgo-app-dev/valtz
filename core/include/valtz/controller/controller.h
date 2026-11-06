@@ -531,7 +531,10 @@ public:
   // What the engine holds in memory, by what holds it (Engine
   // ::memory_held): each held directory named as the catalog's model
   // ("model", "name", "role"), a language model loaded unwired given its
-  // files' size ("estimated"). The status bar's RAM popover.
+  // files' size ("estimated"); and "models", each model once -- what it
+  // keeps and what it holds running, by use ("uses": weights, blocks,
+  // experts, kv, scratch) -- with "attributed_bytes", their sum: the rest
+  // of "gpu_allocated" is working memory. The status bar's RAM popover.
   Json memory_held();
   // THE WIRED LIMIT (Settings › General › Memory, DESIGN §10a, §15 0zzc):
   // how much memory Valtz's local models -- the helper and the agent's
@@ -550,6 +553,26 @@ public:
   // one once the work under way ends. What is wired already stays until
   // the model holding it is let go.
   Status set_wired_limit(std::uint64_t bytes);
+  // REPRODUCIBILITY (Settings › General › Reproducibility, DESIGN §10a):
+  // what a picture, clip or sound job is told so that the same request
+  // and seed make the same result again on this Mac.
+  //   "skip_autotune": its models' kernels not chosen by timing -- vpipe's
+  //     tuners pick a GEMM route, a tile, a split by racing candidates as
+  //     a model loads, and the candidates round differently, so a timing
+  //     that lands the other way moves the output (two identical MiniMax
+  //     H3 runs 21 dB apart); skipped, each takes the kernel believed
+  //     fastest on this GPU, timing nothing (vpipe's `autotune` false).
+  //   "lock_ane_split": where the Neural Engine shares a feed-forward with
+  //     the GPU (Custom's ANE FFN; Fast and Med before M5), its share of
+  //     the rows fixed at "ane_share" -- this Mac's balance by the two
+  //     engines' rates (models::ane_share_of) -- where vpipe moves it
+  //     block by block by timing (vpipe's `ane_rows`, pinned).
+  //   "ane_share", "ane_share_int8": that share, the int8 GEMMs off and on.
+  // Kept in <support>/reproducibility.json, read by the app and valtzctl
+  // alike; off and unlocked by default. Each job records what it ran.
+  Json reproducibility() const;
+  // `changes`: either key, a bool; the rest kept.
+  Status set_reproducibility(const Json& changes);
   // The Log view's rows (log-book.h): the engine's and Valtz's lines
   // after `seq`, at most `max`; and every row cleared.
   Json log_since(std::uint64_t seq, std::size_t max = 4096) const;
@@ -614,6 +637,16 @@ public:
   // else where it is installed.
   Result<Json> check_model(const std::string& id,
                            const std::filesystem::path& target = {}) const;
+  // TEST READ SPEED (Settings > Capabilities, a model past 10 GB;
+  // models/read-speed.h): how fast an installed model's files come off
+  // where they are now, past the memory cache, sampled for `seconds` at
+  // most -- {"model", "path" (where it is), "at" (ms since 1970), "busy"
+  // (other work ran meanwhile: the drive shared, the figure low), and
+  // ReadSpeed::to_json's fields}. Kept as its last: capability_tree's
+  // "read_speed" while the model is where it was measured. Blocks while
+  // it reads: call it off the main thread.
+  Result<Json> measure_read_speed(const std::string& id,
+                                  double seconds = 10.0) const;
   // Settings > Storage: what Valtz keeps on the volume of its support
   // folder (the internal SSD), by category -- every model in the
   // models folder it manages, every project package (an open one's
@@ -2376,6 +2409,10 @@ private:
   // Settings › Upscaling's values by model (<support>/upscale.json).
   mutable std::mutex                 _upscale_tuning_mu;
   Json                               _upscale_tuning = Json::object();
+  // Each model's last read-speed test (measure_read_speed), by id: for
+  // this run, as a drive's speed is where it is plugged in now.
+  mutable std::mutex                 _read_speed_mu;
+  mutable std::map<std::string, Json> _read_speeds;
   // The recording running (capture_*): its project, composition, the
   // source's name.
   mutable std::mutex                   _camera_mu;
@@ -2555,6 +2592,10 @@ private:
   std::string download_source_() const;
   // The most a wired limit may be: what the GPU keeps resident.
   std::uint64_t wired_limit_max_() const;
+  // A job's settled tuning stamped with the reproducibility settings:
+  // `autotune` false, `ane_rows` this Mac's share where the Neural Engine
+  // splits a feed-forward. Nothing added while both are off.
+  void stamp_reproducible_(Json& tuning) const;
   // A still's page (DESIGN §6a), drawn and cached as its rendering is --
   // its only page without pages; anything else, its rendering.
   Result<std::filesystem::path> rendered_page_(ProjectId, AssetId,

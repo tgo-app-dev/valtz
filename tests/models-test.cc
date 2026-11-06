@@ -7,9 +7,15 @@
 #include "valtz/models/hardware.h"
 #include "valtz/models/model-check.h"
 #include "valtz/models/model-store.h"
+#include "valtz/models/read-speed.h"
 #include "valtz/models/tuning.h"
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <map>
@@ -2980,3 +2986,132 @@ TEST(models, ternary_bonsai_is_a_helper_by_name)
   CHECK(listed);
 }
 
+// A LOCKED Neural Engine split (Settings › General › Reproducibility): the
+// share that balances the two engines' rates on a feed-forward. An M4 Pro
+// lands where vpipe's own figure does (12.6 TOPS against ~7 TFLOP/s:
+// 0.64); a bigger GPU takes more rows, the int8 GEMMs (matrix units only)
+// more still, the ANE's int8 fewer; always inside 0.05-0.95.
+TEST(models, a_locked_ane_share_balances_the_engines_rates)
+{
+  auto mac = [](std::string chip, std::uint32_t gpu, bool matrix) {
+    HardwareInfo hw;
+    hw.chip = std::move(chip);
+    hw.gpu_cores = gpu;
+    hw.gpu_matrix_cores = matrix;
+    return hw;
+  };
+  CHECK(ane_share_of(mac("Apple M4 Pro", 20, false), false, false) == 0.64);
+  const double base = ane_share_of(mac("Apple M4", 10, false), false, false);
+  const double max = ane_share_of(mac("Apple M4 Max", 40, false), false,
+                                  false);
+  CHECK(base > 0.64 && max < 0.64);
+  // The int8 GEMMs run on matrix units alone: before M5 they change nothing.
+  CHECK(ane_share_of(mac("Apple M4 Pro", 20, false), true, false) == 0.64);
+  const double m5 = ane_share_of(mac("Apple M5 Pro", 20, true), false, false);
+  const double m5i8 = ane_share_of(mac("Apple M5 Pro", 20, true), true,
+                                   false);
+  CHECK(m5i8 < m5);
+  CHECK(ane_share_of(mac("Apple M5 Pro", 20, true), false, true) > m5);
+  // An unnamed chip goes by its GPU; every share in bounds.
+  for (const auto& hw : {mac("", 8, false), mac("Apple M1", 7, false),
+                         mac("Apple M5 Ultra", 80, true),
+                         mac("Apple M9", 1, true)}) {
+    for (bool i8 : {false, true}) {
+      const double s = ane_share_of(hw, i8, i8);
+      CHECK(s >= 0.05 && s <= 0.95);
+    }
+  }
+}
+
+
+// A model's files read for speed (DESIGN §8b): past the memory cache, so
+// a file read uncached stays out of memory and is read again the next
+// time, while one already in memory is skipped -- not read, not timed,
+// counted as cached; a budget cuts the reading short, sampled.
+TEST(models, a_models_read_speed_is_measured_past_the_cache)
+{
+  const auto dir = test::temp_dir("read-speed");
+  const std::size_t mb = 1 << 20, size = 64 * mb;
+  // Written uncached, page-aligned: none of it left in memory.
+  auto uncached = [&](const std::filesystem::path& p) {
+    void* buf = nullptr;
+    CHECK(::posix_memalign(&buf, 16384, 8 * mb) == 0);
+    std::memset(buf, 0x5a, 8 * mb);
+    const int fd = ::open(p.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0);
+    (void)::fcntl(fd, F_NOCACHE, 1);
+    for (std::size_t o = 0; o < size; o += 8 * mb) {
+      CHECK(::pwrite(fd, buf, 8 * mb, static_cast<off_t>(o)) ==
+            static_cast<ssize_t>(8 * mb));
+    }
+    ::fsync(fd);
+    ::close(fd);
+    std::free(buf);
+  };
+  const auto big = dir / "model-00001-of-00001.safetensors";
+  uncached(big);
+  std::ofstream(dir / "config.json") << R"({"_class_name": "X"})";
+  const std::vector<std::filesystem::path> files{big, dir / "config.json"};
+  const std::uint64_t total =
+      size + std::filesystem::file_size(dir / "config.json");
+
+  ReadSpeedOptions opt;
+  opt.run = 8 * mb;
+  ReadSpeed r = measure_read_speed(files, opt);
+  CHECK(r.error.empty());
+  CHECK(r.files == 2 && r.places.size() == 1);
+  CHECK(r.total == total);
+  CHECK(r.places[0].path == dir);
+  CHECK(r.read >= size && r.read + r.cached == total);
+  CHECK(r.whole && r.gb_per_s() > 0.0 && r.seconds > 0.0);
+  // Read uncached, it is read again: still not in memory.
+  r = measure_read_speed(files, opt);
+  CHECK(r.read >= size && r.cached < 16384);
+
+  // Read through the cache, it is in memory: skipped, nothing timed.
+  {
+    std::ifstream in(big, std::ios::binary);
+    std::vector<char> b(mb);
+    while (in.read(b.data(), static_cast<std::streamsize>(b.size()))) {
+    }
+  }
+  r = measure_read_speed(files, opt);
+  CHECK(r.cached >= size && r.read < 16384);
+
+  // A budget cuts it short: a sample of whole runs.
+  const auto other = dir / "other.safetensors";
+  uncached(other);
+  opt.max_bytes = 16 * mb;
+  opt.run = 4 * mb;
+  r = measure_read_speed({other}, opt);
+  CHECK(!r.whole);
+  CHECK(r.read == 16 * mb);
+  // A file that is not there is said, the rest read.
+  r = measure_read_speed({dir / "gone.safetensors", other}, opt);
+  CHECK(!r.error.empty() && r.files == 1 && r.read > 0);
+
+  // What a load reads: the folder's files, not what hides, and its parts
+  // linked apart -- once each.
+  std::filesystem::create_directories(dir / ".git/lfs");
+  std::ofstream(dir / ".git/lfs/blob") << "x";
+  std::ofstream(dir / ".DS_Store") << "x";
+  const auto part = test::temp_dir("read-speed-part") / "vae.ckpt";
+  std::ofstream(part) << "x";
+  InstallInfo info;
+  info.dir = dir;
+  info.parts["vae"] = {part, true};
+  info.parts["text"] = {other, true};
+  info.parts["dit"] = {dir / "gone.ckpt", false};
+  const auto load = files_to_load(info);
+  CHECK(std::ranges::count(load, big) == 1);
+  CHECK(std::ranges::count(load, dir / "config.json") == 1);
+  CHECK(std::ranges::count(load, other) == 1);
+  CHECK(std::ranges::count(load, part) == 1);
+  CHECK(std::ranges::none_of(load, [](const std::filesystem::path& p) {
+    return p.string().find("/.") != std::string::npos ||
+           p.filename() == "gone.ckpt";
+  }));
+  info.file = "model-00001-of-00001.safetensors";
+  info.parts.clear();
+  CHECK(files_to_load(info) == std::vector<std::filesystem::path>{big});
+}

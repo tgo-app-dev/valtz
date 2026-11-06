@@ -85,6 +85,26 @@ final class MachineMonitor {
             var id: String { "\(part):\(model):\(name)" }
         }
         var items: [Item] = []
+        /// Each model once: what it keeps and what it holds running, by
+        /// use (the core's `models`, vpipe's `owned`).
+        struct Model: Equatable, Identifiable {
+            var model: String
+            var name: String
+            /// Its kept items' parts: "helper", "dit", "vae", "weights".
+            var parts: [String]
+            var bytes: Double
+            /// "weights", "blocks", "experts", "kv", "scratch".
+            var uses: [String: Double]
+            var seconds: Double?
+            var warm: Bool
+            var estimated: Bool
+            var parked: Bool
+            var id: String { model.isEmpty ? "folder:\(name)" : model }
+        }
+        var models: [Model] = []
+        /// What the models hold, together: the rest of the Metal
+        /// allocations is working memory.
+        var attributed: Double = 0
         /// This process's Metal allocations: the items and the scratch
         /// they work in.
         var gpuAllocated: Double?
@@ -193,7 +213,23 @@ final class MachineMonitor {
                         estimated: i["estimated"] as? Bool ?? false,
                         parked: i["parked"] as? Bool ?? false)
         }
-        let next = Memory(items: items, gpuAllocated: num(j["gpu_allocated"]),
+        let models = (j["models"] as? [[String: Any]] ?? []).map { m in
+            Memory.Model(
+                model: m["model"] as? String ?? "",
+                name: m["name"] as? String ?? "",
+                parts: m["parts"] as? [String] ?? [],
+                bytes: num(m["bytes"]) ?? 0,
+                uses: (m["uses"] as? [String: Any] ?? [:])
+                    .compactMapValues { num($0) },
+                seconds: (m["warm"] as? Bool ?? false)
+                    ? num(m["seconds"]) : nil,
+                warm: m["warm"] as? Bool ?? false,
+                estimated: m["estimated"] as? Bool ?? false,
+                parked: m["parked"] as? Bool ?? false)
+        }
+        let next = Memory(items: items, models: models,
+                          attributed: num(j["attributed_bytes"]) ?? 0,
+                          gpuAllocated: num(j["gpu_allocated"]),
                           pooled: num(j["pooled_bytes"]) ?? 0)
         if next != memory { memory = next }
     }

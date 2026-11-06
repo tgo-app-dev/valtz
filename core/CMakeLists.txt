@@ -49,6 +49,7 @@ set(VALTZ_CORE_SOURCES
   src/models/model-check.cc
   src/models/drawthings.cc
   src/models/model-store.cc
+  src/models/read-speed.cc
   src/models/tuning.cc
   src/assist/assistant.cc
   src/assist/drama3.cc
@@ -201,6 +202,7 @@ target_link_libraries(valtz_core PUBLIC
   "-framework Metal"
   "-framework IOSurface"
   "-framework IOKit"
+  "-framework DiskArbitration"
   "-framework Network"
   "-framework Security"
   "-framework ScreenCaptureKit")

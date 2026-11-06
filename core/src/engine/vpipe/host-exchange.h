@@ -135,7 +135,14 @@ Result<TapCount> tap_wait(vpipe::StageHandle tap, std::uint64_t frames,
 
 class SourceWriter {
 public:
-  explicit SourceWriter(vpipe::StageHandle stage) : _stage(stage) {}
+  // `keep_going`, when given, is asked every tenth of a second while a
+  // command waits for the stage's answer: false, and the wait ends
+  // (Code::Cancelled). Without it a wait was unbounded -- a writer that
+  // failed downstream left the source unanswered, and the job, and its
+  // Stop, waited for good (2026-11-05).
+  explicit SourceWriter(vpipe::StageHandle stage,
+                        std::function<bool()> keep_going = {})
+    : _stage(stage), _keep_going(std::move(keep_going)) {}
 
   // A beat being filled. commit() -- or destruction -- closes the
   // command, which emits the beat; with no copy, because the Lease keeps
@@ -190,7 +197,8 @@ public:
   Status finish();
 
 private:
-  vpipe::StageHandle _stage;
+  vpipe::StageHandle    _stage;
+  std::function<bool()> _keep_going;
 };
 
 }

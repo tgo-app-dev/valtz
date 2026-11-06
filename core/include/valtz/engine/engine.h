@@ -192,6 +192,15 @@ VideoEncoding video_encoding_from_json(const Json& j);
 // profile at a level H.264 has not -- or "" when it can.
 std::string video_encoding_problem(const VideoEncoding& e,
                                    std::string_view format);
+// Why an H.264 movie of `width` x `height` cannot be written at `level`
+// ("" Automatic) -- a frame of more macroblocks than the level holds,
+// the smallest level that would hold it named -- or "" when it can.
+// VideoToolbox refuses every frame past its level's size (ITU-T H.264
+// Table A-1's MaxFS; not its rate): an export of 2560 x 1440 at 4.1 was
+// refused frame after frame, and hung until vpipe let a failed writer's
+// inputs go (2026-11-05).
+std::string h264_level_problem(std::string_view level, std::int64_t width,
+                               std::int64_t height);
 // The codec vpipe's avf-save-video writes `format` with, `e`'s ProRes
 // flavour or HEVC profile taken.
 std::string video_codec(std::string_view format, const VideoEncoding& e);
@@ -423,7 +432,10 @@ public:
   // {"warm": [{"kind" -- "language-model", "krea2-dit",
   // "qwen-text-encoder", "flux2-vae", ... -- "dir", "bytes", "kv_bytes",
   // "seconds" it has left}], "weights": [{"dir", "bytes", "mapped_bytes",
-  // "holders", "parked"}], "kv_bytes", "pooled_bytes", "wired_used",
+  // "holders", "parked"}], "owned": [{"dir", "kind", "use" -- weights,
+  // blocks, experts, kv, scratch -- "bytes"}: every Metal buffer counted
+  // for the checkpoint it was made for, as it is made (DESIGN §15 0zzz)],
+  // "unowned_bytes", "kv_bytes", "pooled_bytes", "wired_used",
   // "wired_limit", "gpu_allocated"}. A language model loaded unwired
   // reads 0 bytes (vpipe counts none). Empty from an engine that cannot
   // say. Thread-safe.

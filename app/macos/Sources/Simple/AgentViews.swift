@@ -89,6 +89,10 @@ extension AgentCard {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+        // The last reply cut off at its limit, once it has rested.
+        if let n = session.stats?.cutOff, !session.busy {
+            AgentCutOffText(limit: n)
+        }
         // The last turn's speed, for debugging.
         if model.agentShowsSpeed, let st = session.stats, !st.isEmpty {
             AgentSpeedText(stats: st)
@@ -291,6 +295,27 @@ struct AgentSpeedText: View {
             .lineLimit(2)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// Under a reply cut off at its limit (the core's stats "cut_off"): it
+/// did not end there, and the person can ask for the rest.
+struct AgentCutOffText: View {
+    let limit: Int
+
+    var body: some View {
+        Label {
+            if limit > 0 {
+                Text("Cut off: the reply reached its limit of \(limit) tokens. Ask it to go on for the rest.")
+            } else {
+                Text("Cut off: the reply reached its limit. Ask it to go on for the rest.")
+            }
+        } icon: {
+            Image(systemName: "scissors")
+        }
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

@@ -70,6 +70,12 @@ public:
   // or an error (kWiredLimitRange).
   std::string wired_limit_json() const;
   std::string set_wired_limit(std::uint64_t bytes);
+  // Settings › General › Reproducibility (Controller::reproducibility):
+  // {"ok": true, "skip_autotune", "lock_ane_split", "ane_share",
+  // "ane_share_int8"}; and either of the two switches set ({"skip_autotune":
+  // bool, "lock_ane_split": bool}) -> the same document, or an error.
+  std::string reproducibility_json() const;
+  std::string set_reproducibility(const std::string& request_json);
   // Settings > Capabilities (Controller::capability_tree): the model
   // families, their features and members, where each member is.
   std::string capability_tree_json() const;
@@ -95,6 +101,11 @@ public:
   // {"model", "path"?} -> {"ok", "check"}: its files checked as a link's
   // are -- `path`'s, else where it is installed (Controller::check_model).
   std::string check_model(const std::string& request_json) const;
+  // {"model", "seconds"?} -> {"ok", "speed"}: how fast its files come
+  // off where it is now, past the memory cache (Controller::
+  // measure_read_speed: "gbps", "read", "seconds", "cached", "places",
+  // "busy", ...). Reads for up to `seconds` (10): off the main thread.
+  std::string measure_read_speed(const std::string& request_json) const;
   // Settings > Agentic Helper (Controller::assistants): the helpers, the
   // one chosen ("" Auto), Auto's pick and the one in use; {"model"} ->
   // {"ok"}: that one chosen ("" Auto), kept for later runs;

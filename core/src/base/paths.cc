@@ -3,6 +3,8 @@
 #include "valtz/base/json.h"
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <DiskArbitration/DiskArbitration.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 
 #include <cstdlib>
@@ -149,6 +151,84 @@ volume_is_internal(const fs::path& p)
   }
   CFRelease(url);
   return internal;
+}
+
+namespace {
+
+std::string
+cf_text(CFTypeRef v)
+{
+  if (!v || CFGetTypeID(v) != CFStringGetTypeID()) {
+    return {};
+  }
+  const auto s = static_cast<CFStringRef>(v);
+  const CFIndex n = CFStringGetMaximumSizeForEncoding(
+      CFStringGetLength(s), kCFStringEncodingUTF8) + 1;
+  std::string out(static_cast<std::size_t>(n), '\0');
+  if (!CFStringGetCString(s, out.data(), n, kCFStringEncodingUTF8)) {
+    return {};
+  }
+  out.resize(std::char_traits<char>::length(out.c_str()));
+  // A drive's model comes padded ("APPLE SSD AP1024Z   ").
+  while (!out.empty() && (out.back() == ' ' || out.back() == '\t')) {
+    out.pop_back();
+  }
+  return out;
+}
+
+}  // namespace
+
+VolumeInfo
+volume_info(const fs::path& p)
+{
+  VolumeInfo v;
+  v.internal = volume_is_internal(p);
+  // The name the Finder shows: "Macintosh HD" for a path on the data
+  // volume, whose own name is "Data".
+  if (CFURLRef url = CFURLCreateFromFileSystemRepresentation(
+          nullptr, reinterpret_cast<const UInt8*>(p.c_str()),
+          static_cast<CFIndex>(p.native().size()), true)) {
+    CFTypeRef name = nullptr;
+    if (CFURLCopyResourcePropertyForKey(url, kCFURLVolumeLocalizedNameKey,
+                                        &name, nullptr) && name) {
+      v.name = cf_text(name);
+      CFRelease(name);
+    }
+    CFRelease(url);
+  }
+  // How the drive is connected: DiskArbitration's word on the volume
+  // mounted where the path lives.
+  struct statfs st;
+  if (statfs(p.c_str(), &st) != 0) {
+    return v;
+  }
+  v.network = (st.f_flags & MNT_LOCAL) == 0;
+  DASessionRef session = DASessionCreate(kCFAllocatorDefault);
+  if (!session) {
+    return v;
+  }
+  CFURLRef mount = CFURLCreateFromFileSystemRepresentation(
+      nullptr, reinterpret_cast<const UInt8*>(st.f_mntonname),
+      static_cast<CFIndex>(std::char_traits<char>::length(st.f_mntonname)),
+      true);
+  DADiskRef disk = mount ? DADiskCreateFromVolumePath(
+                               kCFAllocatorDefault, session, mount)
+                         : nullptr;
+  if (disk) {
+    if (CFDictionaryRef d = DADiskCopyDescription(disk)) {
+      v.protocol = cf_text(
+          CFDictionaryGetValue(d, kDADiskDescriptionDeviceProtocolKey));
+      v.device = cf_text(
+          CFDictionaryGetValue(d, kDADiskDescriptionDeviceModelKey));
+      CFRelease(d);
+    }
+    CFRelease(disk);
+  }
+  if (mount) {
+    CFRelease(mount);
+  }
+  CFRelease(session);
+  return v;
 }
 
 bool

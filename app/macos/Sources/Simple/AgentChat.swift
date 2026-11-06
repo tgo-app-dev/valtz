@@ -155,6 +155,18 @@ private struct AgentToolsChoice: View {
 }
 
 /// The conversation, newest at the foot: kept there as it grows.
+///
+/// Laid out whole, so its height -- the scroll bar, the end scrolled
+/// to -- is what it holds. It was a lazy stack, which sizes the rows out
+/// of sight from those it has laid out: one row of a 97,000-token
+/// message, 178,000 points tall, made every other row's guess huge, the
+/// scroll bar's length wrong and the jump to the end land past it -- the
+/// chat white until scrolled by hand (2026-11-05). So a person's long
+/// message shows its start, Show All the rest in a box of its own that
+/// scrolls; a long reply is cut into PARTS (`TextParts`), a row each, no
+/// one text too tall to draw. Each row's identity is where it is in the
+/// conversation: the words being written are the rows their message
+/// takes when it is written back, not some going and others coming.
 private struct AgentConversation: View {
     @Bindable var model: AppModel
     let shown: AgentSession
@@ -162,12 +174,20 @@ private struct AgentConversation: View {
     /// The model's (AgentCard.session).
     var session: AgentSession { model.agent ?? shown }
 
+    /// The texts cut into parts, kept between draws.
+    @State private var cuts = TextParts()
+    /// The person's long messages opened (their rows' ids).
+    @State private var opened: Set<String> = []
+
+    /// The space between rows; none between a text's parts.
+    static let rowGap: CGFloat = 14
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(Array(entries.enumerated()), id: \.offset) {
-                        _, e in entry(e)
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(rows) { r in
+                        row(r).padding(.top, r.gap)
                     }
                     tail
                     Color.clear.frame(height: 1).id("end")
@@ -176,69 +196,105 @@ private struct AgentConversation: View {
                 .padding(.vertical, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // At once, not animated: an animation begun at each piece
+            // written was overtaken by the next, and one under way as
+            // the reply's rows changed ended where the end had been.
             .onAppear { proxy.scrollTo("end", anchor: .bottom) }
             .onChange(of: scrollKey) {
-                withAnimation(.smooth(duration: 0.2)) {
-                    proxy.scrollTo("end", anchor: .bottom)
-                }
+                proxy.scrollTo("end", anchor: .bottom)
             }
         }
     }
 
-    /// What the chat lists, in order.
-    private enum Entry {
-        case person(String, attached: [String], where: String?)
-        case words(String)
+    /// A row of the chat: what the stack lists, in order.
+    private struct Row: Identifiable {
+        /// Where it is: "m<message>.<what>", "s<step>" for a turn's steps
+        /// (a run from its first), "q<step>" / "a<step>" an ask and its
+        /// answer.
+        let id: String
+        /// Above it: `rowGap`, or a text's parts' (none, a blank line's).
+        var gap: CGFloat
+        let kind: Kind
+    }
+
+    private enum Kind {
+        case person(PersonWords)
+        /// The agent's words -- a part of them -- as written, or being
+        /// written.
+        case words(String, writing: Bool)
         case steps([AgentStep])
         case question(String)
         case note(String)
         case compaction(Int)
+        case cutOff(Int)
         case speed(AgentTurnStats)
     }
 
-    private var entries: [Entry] {
-        var out: [Entry] = []
+    private var rows: [Row] {
+        var out: [Row] = []
+        func add(_ id: String, _ k: Kind, gap: CGFloat = Self.rowGap) {
+            out.append(Row(id: id, gap: out.isEmpty ? 0 : gap, kind: k))
+        }
+        // The person's words: a bubble -- a long one folded to its start.
+        func person(_ id: String, _ text: String, attached: [String],
+                    place: String?) {
+            add(id, .person(PersonWords(
+                id: id, parts: cuts.parts(id, text), attached: attached,
+                place: place)))
+        }
+        // The agent's words: a row a part, as written or being written.
+        func words(_ id: String, _ text: String, writing: Bool) {
+            for (k, p) in cuts.parts(id, text).enumerated() {
+                add("\(id).w\(k)", .words(p.text, writing: writing),
+                    gap: k == 0 ? Self.rowGap
+                        : p.blankBefore ? Self.blankLine : 0)
+            }
+        }
         var next = 0
         let steps = session.steps
         func takeSteps(_ n: Int) {
             var run: [AgentStep] = []
+            var first = next
             for _ in 0..<n where next < steps.count {
                 let s = steps[next]
+                let at = next
                 next += 1
                 // Its question is a bubble of the agent's, the answer the
                 // person's.
                 if s.tool == "ask_user" {
-                    if !run.isEmpty { out.append(.steps(run)); run = [] }
-                    out.append(.question(s.question ?? ""))
+                    if !run.isEmpty { add("s\(first)", .steps(run)) }
+                    run = []
+                    first = next
+                    add("q\(at)", .question(s.question ?? ""))
                     if let a = Self.answer(s) {
-                        out.append(.person(a, attached: [], where: nil))
+                        person("a\(at)", a, attached: [], place: nil)
                     }
                     continue
                 }
                 run.append(s)
             }
-            if !run.isEmpty { out.append(.steps(run)) }
+            if !run.isEmpty { add("s\(first)", .steps(run)) }
         }
-        for m in session.messages ?? [] {
+        let messages = session.messages ?? []
+        for (i, m) in messages.enumerated() {
+            let id = "m\(i)"
             switch m.role {
             case "user":
                 if m.said == nil, m.content.hasPrefix("[Valtz]") {
-                    out.append(.note(String(m.content.dropFirst(8))))
+                    add(id, .note(String(m.content.dropFirst(8))))
                 } else {
-                    out.append(.person(
-                        m.said ?? Self.personWords(m.content),
-                        attached: m.attached ?? [],
-                        where: Self.whereSaid(m.content)))
+                    person(id, m.said ?? Self.personWords(m.content),
+                           attached: m.attached ?? [],
+                           place: Self.whereSaid(m.content))
                 }
             case "compaction":
-                out.append(.compaction(m.compacted ?? 0))
+                add(id, .compaction(m.compacted ?? 0))
             case "assistant":
-                let w = m.content.trimmingCharacters(
-                    in: .whitespacesAndNewlines)
-                if !w.isEmpty { out.append(.words(w)) }
+                words(id, m.content, writing: false)
+                if let n = m.stats?.cutOff { add("\(id).cut", .cutOff(n)) }
                 takeSteps(m.calls?.count ?? 0)
                 if model.agentShowsSpeed, let st = m.stats, !st.isEmpty {
-                    out.append(.speed(st))
+                    add("\(id).speed", .speed(st), gap: 6)
                 }
             default:
                 break
@@ -246,30 +302,33 @@ private struct AgentConversation: View {
         }
         // Steps not yet in a message the core has written back.
         takeSteps(steps.count - next)
+        // What is being written now: the rows its message takes.
+        if session.state == "thinking" || session.state == "starting" {
+            words("m\(messages.count)", model.agentWriting, writing: true)
+        }
         return out
     }
 
-    /// What is being written now, the step waiting, an error: last.
+    /// A blank line of the body's font: between parts of a text cut at
+    /// one.
+    static let blankLine: CGFloat = NSLayoutManager()
+        .defaultLineHeight(for: .preferredFont(forTextStyle: .body))
+
+    /// Its words on their way, the step waiting, an error: last.
     @ViewBuilder
     private var tail: some View {
-        let words = model.agentWriting.trimmingCharacters(
-            in: .whitespacesAndNewlines)
-        if session.state == "thinking" || session.state == "starting" {
-            if words.isEmpty {
-                ThinkingDots()
-            } else {
-                Text(agentMarkdown(words))
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+        if session.state == "thinking" || session.state == "starting",
+           model.agentWriting.trimmingCharacters(
+               in: .whitespacesAndNewlines).isEmpty {
+            ThinkingDots()
+                .padding(.top, Self.rowGap)
         }
         if let step = session.proposed {
             AgentReviewButtons(model: model, step: step)
                 .padding(10)
                 .background(Color.accentColor.opacity(0.08),
                             in: RoundedRectangle(cornerRadius: 10))
+                .padding(.top, Self.rowGap)
         }
         if let e = session.errorText, session.state == "failed" {
             VStack(alignment: .leading, spacing: 6) {
@@ -280,11 +339,13 @@ private struct AgentConversation: View {
                 Button("Try Again") { model.agentControl("resume") }
                     .controlSize(.small)
             }
+            .padding(.top, Self.rowGap)
         }
         if session.state == "asking" {
             Text("Answer in the box below.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .padding(.top, Self.rowGap)
         }
     }
 
@@ -295,14 +356,23 @@ private struct AgentConversation: View {
     }
 
     @ViewBuilder
-    private func entry(_ e: Entry) -> some View {
-        switch e {
-        case .person(let t, let attached, let place):
-            PersonBubble(model: model, words: t, attached: attached,
-                         place: place)
-        case .words(let t):
+    private func row(_ r: Row) -> some View {
+        switch r.kind {
+        case .person(let p):
+            PersonBubble(model: model, words: p,
+                         open: opened.contains(p.id)) {
+                withAnimation(AppModel.motion) {
+                    if opened.contains(p.id) {
+                        opened.remove(p.id)
+                    } else {
+                        opened.insert(p.id)
+                    }
+                }
+            }
+        case .words(let t, let writing):
             Text(agentMarkdown(t))
                 .font(.body)
+                .foregroundStyle(writing ? .secondary : .primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .steps(let steps):
@@ -334,9 +404,10 @@ private struct AgentConversation: View {
                     .layoutPriority(1)
                 VStack { Divider() }
             }
+        case .cutOff(let n):
+            AgentCutOffText(limit: n)
         case .speed(let st):
             AgentSpeedText(stats: st)
-                .padding(.top, -8)
         }
     }
 
@@ -374,33 +445,192 @@ private struct AgentConversation: View {
     }
 }
 
-/// The person's words: a bubble on the right, the pictures they attached
-/// over it, where they were under it.
-private struct PersonBubble: View {
-    @Bindable var model: AppModel
-    let words: String
+/// A text's PARTS, each of a bounded height -- no one Text too tall to
+/// lay out quickly or draw whole -- its blank ends trimmed, cut at a paragraph's end once a part holds
+/// half its size, else at a line's, a long line at a sentence's or a
+/// word's. Kept by row while its text is the same: a message is not
+/// changed once written.
+@MainActor
+final class TextParts {
+    struct Part {
+        let text: String
+        /// Cut at a blank line: one stands between it and the part before.
+        let blankBefore: Bool
+    }
+
+    /// The most UTF-8 bytes a part holds: some 20 lines of the chat.
+    static let size = 2000
+
+    private var kept: [String: (text: String, parts: [Part])] = [:]
+
+    /// Its parts; none for blank words.
+    func parts(_ key: String, _ text: String) -> [Part] {
+        if let k = kept[key], k.text == text { return k.parts }
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let p = t.isEmpty ? [] : Self.cut(t, size: Self.size)
+        kept[key] = (text, p)
+        return p
+    }
+
+    static func cut(_ text: String, size: Int) -> [Part] {
+        guard text.utf8.count > size else {
+            return [Part(text: text, blankBefore: false)]
+        }
+        var out: [Part] = []
+        var lines: [Substring] = []
+        var held = 0
+        // Whether the part being gathered follows a blank line.
+        var blank = false
+        func close() {
+            while lines.last?.isEmpty == true { lines.removeLast() }
+            if !lines.isEmpty {
+                out.append(Part(text: lines.joined(separator: "\n"),
+                                blankBefore: blank && !out.isEmpty))
+            }
+            lines = []
+            held = 0
+            blank = false
+        }
+        for line in text.split(separator: "\n",
+                               omittingEmptySubsequences: false) {
+            if line.isEmpty {
+                // A paragraph's end: a part holding half its size ends.
+                if held >= size / 2 { close() }
+                if lines.isEmpty {
+                    blank = true
+                } else {
+                    lines.append(line)
+                    held += 1
+                }
+                continue
+            }
+            var rest = line
+            while held + rest.utf8.count > size {
+                if held >= size / 2 {
+                    close()
+                    continue
+                }
+                // A line longer than the room: cut at a sentence's end,
+                // else a word's, in the room's latter half.
+                let at = cutPoint(rest, room: size - held)
+                lines.append(rest[..<at])
+                close()
+                rest = rest[at...].drop { $0 == " " }
+            }
+            if !rest.isEmpty {
+                lines.append(rest)
+                held += rest.utf8.count + 1
+            }
+        }
+        close()
+        return out
+    }
+
+    /// Where a line is cut to fit `room` bytes.
+    private static func cutPoint(_ s: Substring, room: Int) -> Substring.Index {
+        let u = s.utf8
+        let end = u.index(u.startIndex, offsetBy: max(1, room),
+                          limitedBy: u.endIndex) ?? u.endIndex
+        let mid = u.index(u.startIndex, offsetBy: max(1, room) / 2,
+                          limitedBy: u.endIndex) ?? u.endIndex
+        let span = s[mid..<end]
+        if let r = span.range(of: ". ", options: .backwards) {
+            return r.upperBound
+        }
+        if let r = span.lastIndex(of: " ") { return s.index(after: r) }
+        // No space: as many whole characters as fit.
+        var i = s.startIndex
+        var bytes = 0
+        while i < s.endIndex {
+            let c = s[i].utf8.count
+            if bytes + c > room, i > s.startIndex { break }
+            bytes += c
+            i = s.index(after: i)
+        }
+        return i
+    }
+}
+
+/// A message of the person's, as its row shows it.
+private struct PersonWords {
+    /// Its row's id: what Show All opens.
+    let id: String
+    /// Its words cut into parts: none, words alone being none.
+    let parts: [TextParts.Part]
     let attached: [String]
     let place: String?
+}
+
+/// The person's words: a bubble on the right, the pictures they attached
+/// over it, where they were under it. A long one -- a document pasted --
+/// shows its start; Show All opens it in a box of its own height that
+/// scrolls, the conversation never as tall as the document.
+private struct PersonBubble: View {
+    @Bindable var model: AppModel
+    let words: PersonWords
+    let open: Bool
+    let toggle: () -> Void
+
+    /// The opened box's height.
+    static let boxHeight: CGFloat = 420
 
     var body: some View {
+        let parts = words.parts
+        let long = parts.count > 1
         VStack(alignment: .trailing, spacing: 6) {
-            if !attached.isEmpty {
+            if !words.attached.isEmpty {
                 HStack(spacing: 6) {
-                    ForEach(attached, id: \.self) { id in
+                    ForEach(words.attached, id: \.self) { id in
                         AttachedThumb(model: model, asset: id)
                     }
                 }
             }
-            Text(words.trimmingCharacters(in: .whitespacesAndNewlines))
+            if let first = parts.first {
+                Group {
+                    if long && open {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(parts.indices, id: \.self) { k in
+                                    Text(parts[k].text)
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity,
+                                               alignment: .leading)
+                                        .padding(.top, parts[k].blankBefore
+                                                 ? AgentConversation.blankLine
+                                                 : 0)
+                                }
+                            }
+                            .padding(.vertical, 8)
+                        }
+                        .frame(height: Self.boxHeight)
+                    } else {
+                        Text(first.text)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: long ? .infinity : nil,
+                                   alignment: .leading)
+                            .padding(.vertical, 8)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 .font(.body)
-                .textSelection(.enabled)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
                 .background(Color.accentColor.opacity(0.16),
                             in: RoundedRectangle(cornerRadius: 16,
                                                  style: .continuous))
-                .fixedSize(horizontal: false, vertical: true)
-            if let place {
+            }
+            if long {
+                Button(action: toggle) {
+                    if open {
+                        Label("Show Less", systemImage: "chevron.up")
+                    } else {
+                        Label("Show All", systemImage: "chevron.down")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .help("Its whole text in a box that scrolls, or its start alone")
+            }
+            if let place = words.place {
                 Label(place, systemImage: "location")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)

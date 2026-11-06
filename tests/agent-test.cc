@@ -466,6 +466,8 @@ TEST(agent, the_cloud_backend_speaks_to_a_server)
     REQUIRE_OK(r);
     CHECK(r->calls.size() == 1);
     CHECK(words == "Adding the title.");
+    // Its max_tokens: what a "length" reply was cut off at.
+    CHECK(r->limit == 1000);
     const std::string req = server.request();
     CHECK(req.find("POST /v1/messages") != std::string::npos);
     CHECK(req.find("sk-test-key") != std::string::npos);

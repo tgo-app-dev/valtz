@@ -1837,6 +1837,9 @@ struct AgentTurnStats: Decodable, Sendable, Equatable {
     var acceptedPct: Double?
     var firstMs: Double?
     var turnMs: Double?
+    /// Its reply cut off at its limit (the tokens it was given; 0 not
+    /// known): shown whether or not the speed is.
+    var cutOff: Int?
 
     var isEmpty: Bool { turnMs == nil }
 

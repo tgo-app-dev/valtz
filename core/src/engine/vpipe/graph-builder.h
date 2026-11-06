@@ -448,6 +448,13 @@ Result<BuiltGraph> build_speech(const JobSpec&,
 // into the output: vpipe's prepare-*-4bit recipes.
 Result<BuiltGraph> build_quantize_model(const JobSpec&);
 Result<BuiltGraph> build_chat(const JobSpec&);
+// REPRODUCIBILITY (Settings › General › Reproducibility, DESIGN §10a): a
+// job whose tuning says `autotune` false has every stage of `graph` that
+// builds a model with kernel tuners told so -- vpipe's `autotune` key
+// (accel-keys.h kAutotune), the stages' config: the generating stages and
+// the VAE, conditioning, reference and upscaling stages beside them. A
+// job without it is left as it was, so its graph is the one it always had.
+void untune_stages(const JobSpec& job, Json& graph);
 // agent-turn (DESIGN §9b): the conversation so far into vpipe's text-chat
 // as its conversation beat (text-prompt's `value`), the helper loaded and
 // decoding as a chat's; the turn record out of result-sink, the reply as

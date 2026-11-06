@@ -18,6 +18,50 @@ struct StageGrowth: Equatable {
     }
 }
 
+/// What a SCROLL over the stage does -- a picture's (CompareCanvas), a
+/// clip's (ClipZoomView) -- as Settings › General › Pointing Device says
+/// (AppModel.PointingDevice). Trackpad: a scroll in points pans, both
+/// ways; with ⌘, or from a wheel turning by lines, it zooms. Mouse: a
+/// scroll zooms; with ⌘ it pans, a wheel's line `linePoints` points. A
+/// zoom goes by the vertical scroll alone.
+enum StageScroll: Equatable {
+    /// Moved by so many points, y up (AppKit's).
+    case pan(dx: CGFloat, dy: CGFloat)
+    /// Zoomed by this factor about the pointer.
+    case zoom(CGFloat)
+
+    /// The device chosen, for the views' event handlers (every window's
+    /// model sets it as Settings change it).
+    @MainActor static var device = AppModel.storedPointingDevice
+
+    /// A wheel's line, panned.
+    static let linePoints: CGFloat = 16
+
+    /// What this scroll does; nil, nothing (no movement the way it goes).
+    static func of(_ e: NSEvent,
+                   device: AppModel.PointingDevice) -> StageScroll? {
+        of(dx: e.scrollingDeltaX, dy: e.scrollingDeltaY,
+           precise: e.hasPreciseScrollingDeltas,
+           command: e.modifierFlags.contains(.command), device: device)
+    }
+
+    static func of(dx: CGFloat, dy: CGFloat, precise: Bool, command: Bool,
+                   device: AppModel.PointingDevice) -> StageScroll? {
+        let pans = switch device {
+        case .trackpad: precise && !command
+        case .mouse: command
+        }
+        if pans {
+            guard dx != 0 || dy != 0 else { return nil }
+            let k = precise ? 1 : linePoints
+            return .pan(dx: dx * k, dy: -dy * k)
+        }
+        let steps = precise ? dy / 100 : dy / 10
+        guard steps != 0 else { return nil }
+        return .zoom(pow(1.25, steps))
+    }
+}
+
 /// A pixel-accurate image viewer with A/B comparison, built on Core
 /// Animation layers so the images are color-managed by the system and
 /// HDR content keeps its headroom (`preferredDynamicRange = .high`).
@@ -969,14 +1013,14 @@ final class CompareCanvas: NSView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        if event.hasPreciseScrollingDeltas
-            && !event.modifierFlags.contains(.command) {
-            pan(dx: event.scrollingDeltaX, dy: -event.scrollingDeltaY)
-        } else {
-            let dy = event.hasPreciseScrollingDeltas
-                ? event.scrollingDeltaY / 100 : event.scrollingDeltaY / 10
-            setZoom(zoom * pow(1.25, dy), around: p)
+        switch StageScroll.of(event, device: StageScroll.device) {
+        case .pan(let dx, let dy):
+            pan(dx: dx, dy: dy)
+        case .zoom(let f):
+            setZoom(zoom * f,
+                    around: convert(event.locationInWindow, from: nil))
+        case nil:
+            break
         }
     }
 

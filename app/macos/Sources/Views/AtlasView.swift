@@ -504,6 +504,46 @@ extension AppModel {
         }
     }
 
+    /// The graph DRAGGED by its ground (AtlasBackdrop), whatever Settings
+    /// › General › Pointing Device says: scrolled so the point pressed
+    /// stays under the pointer. nil begins it (where the scroll view is
+    /// now); then `moved`, the pointer's way from the press (points, y
+    /// down), within `room`, the content's size.
+    func atlasDrag(moved: CGSize?, room: CGSize) {
+        guard let moved else {
+            atlasGlideTask?.cancel()
+            let pad = atlasInsets
+            atlasDragFrom = CGPoint(x: atlasVisible.minX + pad.width,
+                                    y: atlasVisible.minY + pad.height)
+            return
+        }
+        guard let from = atlasDragFrom else { return }
+        let v = atlasViewport
+        atlasPosition.scrollTo(point: CGPoint(
+            x: min(max(0, from.x - moved.width),
+                   max(0, room.width - v.width)),
+            y: min(max(0, from.y - moved.height),
+                   max(0, room.height - v.height))))
+    }
+
+    /// Scrolled by a scroll's pan (StageScroll's: the graph moved by dx,
+    /// dy points, y up) within `room` -- a mouse's ⌘-scroll, not left to
+    /// the scroll view, whatever it makes of ⌘.
+    func atlasPan(dx: CGFloat, dy: CGFloat, room: CGSize) {
+        atlasGlideTask?.cancel()
+        let pad = atlasInsets
+        let v = atlasViewport
+        let o = CGPoint(
+            x: min(max(0, atlasVisible.minX + pad.width - dx),
+                   max(0, room.width - v.width)),
+            y: min(max(0, atlasVisible.minY + pad.height + dy),
+                   max(0, room.height - v.height)))
+        atlasPosition.scrollTo(point: o)
+        // The next scroll goes on from here, before the scroll view says.
+        atlasVisible.origin = CGPoint(x: o.x - pad.width,
+                                      y: o.y - pad.height)
+    }
+
     /// Zoomed by `f` about the viewport's middle: the zoom buttons'.
     func atlasZoom(by f: CGFloat) {
         setAtlasZoom(atlasZoom * f)
@@ -693,7 +733,8 @@ struct AtlasView: View {
             AtlasStage(model: model, layout: g, motion: model.atlasMotion,
                        phase: model.atlasPhase, zoom: z,
                        visible: model.atlasVisible,
-                       viewport: model.atlasViewport, content: content)
+                       viewport: model.atlasViewport, content: content,
+                       room: room)
                 .frame(width: room.width, height: room.height,
                        alignment: .topLeading)
         }
@@ -847,6 +888,9 @@ private struct AtlasStage: View, @preconcurrency Animatable {
     let visible: CGRect
     let viewport: CGSize
     let content: CGSize
+    /// What the scroll view holds: the content, or more (a node opened
+    /// out past it) -- how far a drag on the ground may scroll.
+    let room: CGSize
     @State private var panel = PanelPlace()
 
     var animatableData: Double {
@@ -893,13 +937,24 @@ private struct AtlasStage: View, @preconcurrency Animatable {
         // lines and its picture drawn at the size they are seen (a scale
         // effect zoomed their bitmaps).
         ZStack(alignment: .topLeading) {
-            Color.clear
-                .frame(width: content.width, height: content.height)
-                .contentShape(Rectangle())
-                .onTapGesture {
+            // The ground, all the scroll view holds: a click lets go, a
+            // drag moves the graph; a scroll over the graph as Settings
+            // say.
+            AtlasBackdrop(
+                onClick: {
                     model.atlasSelected = nil
                     model.atlasNodeOpen = nil
-                }
+                },
+                onDrag: { [room] in model.atlasDrag(moved: $0, room: room) },
+                onPan: { [room] dx, dy in
+                    model.atlasPan(dx: dx, dy: dy, room: room)
+                },
+                onZoom: { f, p in
+                    model.setAtlasZoom(model.atlasZoom * f,
+                                       at: model.atlasViewportPoint(p))
+                })
+                .frame(minWidth: content.width, maxWidth: .infinity,
+                       minHeight: content.height, maxHeight: .infinity)
             if !seen.isNull {
                 AtlasEdges(layout: g, frames: frames, rect: seen, zoom: z,
                            lit: lit, labels: z >= 0.6, places: places(g),
@@ -1987,6 +2042,135 @@ struct AtlasTextView: NSViewRepresentable {
         // No caret: every marker hidden.
         PromptEditor.paintMarkdown(
             tv, on: markdown, caret: NSRange(location: NSNotFound, length: 0))
+    }
+}
+
+/// The graph's GROUND (DESIGN §10a Atlas): behind the cards, as large as
+/// what the scroll view holds. A click on it lets the selection and an
+/// opened node go; a DRAG on it moves the graph -- the point pressed kept
+/// under the pointer, the closed hand meanwhile -- whatever Settings ›
+/// General › Pointing Device says. And a SCROLL anywhere over the graph
+/// -- a card too, not a scroll view inside one -- goes as that setting
+/// says (StageScroll): a zoom about the pointer here (`onZoom`, a point of
+/// the scroll view from its top left); a pan the scroll view's own under
+/// Trackpad, as it always was, and a mouse's ⌘-scroll here (`onPan`).
+/// AppKit's: posted events reach it, and the scroll is seen before the
+/// scroll view has it.
+struct AtlasBackdrop: NSViewRepresentable {
+    var onClick: () -> Void
+    /// nil: a drag begins; then the pointer's way from the press.
+    var onDrag: (CGSize?) -> Void
+    /// StageScroll's pan: the graph moved by dx, dy points, y up.
+    var onPan: (CGFloat, CGFloat) -> Void
+    var onZoom: (CGFloat, CGPoint) -> Void
+
+    func makeNSView(context: Context) -> Ground { Ground() }
+
+    func updateNSView(_ v: Ground, context: Context) {
+        v.onClick = onClick
+        v.onDrag = onDrag
+        v.onPan = onPan
+        v.onZoom = onZoom
+    }
+
+    final class Ground: NSView {
+        var onClick: () -> Void = {}
+        var onDrag: (CGSize?) -> Void = { _ in }
+        var onPan: (CGFloat, CGFloat) -> Void = { _, _ in }
+        var onZoom: (CGFloat, CGPoint) -> Void = { _, _ in }
+        private var monitor: Any?
+        private var pressedAt: NSPoint?
+        private var dragging = false
+
+        /// The window need not be in front: the first press drags too.
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+        override func mouseDown(with e: NSEvent) {
+            pressedAt = e.locationInWindow
+            dragging = false
+        }
+
+        override func mouseDragged(with e: NSEvent) {
+            guard let a = pressedAt else { return }
+            let p = e.locationInWindow
+            let moved = CGSize(width: p.x - a.x, height: a.y - p.y)
+            if !dragging {
+                // A hand's click wavers: a drag from 3 points.
+                guard hypot(moved.width, moved.height) >= 3 else { return }
+                dragging = true
+                onDrag(nil)
+            }
+            NSCursor.closedHand.set()
+            onDrag(moved)
+        }
+
+        override func mouseUp(with e: NSEvent) {
+            defer {
+                pressedAt = nil
+                dragging = false
+            }
+            if dragging {
+                NSCursor.arrow.set()
+            } else if pressedAt != nil {
+                onClick()
+            }
+        }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil {
+                watchScrolls()
+            } else if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func watchScrolls() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(
+                matching: .scrollWheel, handler: { [weak self] e in
+                    let taken = MainActor.assumeIsolated {
+                        self?.take(e) ?? false
+                    }
+                    return taken ? nil : e
+                })
+        }
+
+        /// A scroll over the graph -- the scroll view nearest what is
+        /// under the pointer the graph's -- that zooms, or a mouse's that
+        /// pans: done here, taken. A trackpad's pan is the scroll view's.
+        private func take(_ e: NSEvent) -> Bool {
+            guard let w = window, e.window === w,
+                  !isHiddenOrHasHiddenAncestor,
+                  let sv = enclosingScrollView,
+                  let hit = w.contentView?.superview?
+                      .hitTest(e.locationInWindow),
+                  Self.scrollView(of: hit) === sv
+            else { return false }
+            let device = StageScroll.device
+            switch StageScroll.of(e, device: device) {
+            case .zoom(let f):
+                let p = sv.convert(e.locationInWindow, from: nil)
+                onZoom(f, CGPoint(
+                    x: p.x, y: sv.isFlipped ? p.y : sv.bounds.height - p.y))
+                return true
+            case .pan(let dx, let dy) where device == .mouse:
+                onPan(dx, dy)
+                return true
+            default:
+                return false
+            }
+        }
+
+        private static func scrollView(of v: NSView) -> NSScrollView? {
+            var v: NSView? = v
+            while let x = v {
+                if let s = x as? NSScrollView { return s }
+                v = x.superview
+            }
+            return nil
+        }
     }
 }
 

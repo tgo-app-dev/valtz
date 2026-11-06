@@ -985,6 +985,9 @@ final class AppModel: TuningHost {
     @ObservationIgnored var atlasShownPhase: Double = 0
     /// A glide of its scroll view under way (atlasGlide).
     @ObservationIgnored var atlasGlideTask: Task<Void, Never>?
+    /// Where its scroll view was as a drag on the graph's ground began
+    /// (atlasDrag).
+    @ObservationIgnored var atlasDragFrom: CGPoint?
     /// VIEW ONLY (DESIGN §10a): the editor as a viewer -- the ☰ column's
     /// eye, or Tab where nothing in the window takes keys. The stage
     /// alone: the prompt or the timeline, the cards over them, the panels
@@ -1280,6 +1283,9 @@ final class AppModel: TuningHost {
     /// How much wired memory the local models may hold (Settings ›
     /// General › Memory; refreshWiredLimit).
     var wiredLimit: WiredLimit?
+    /// Settings › General › Reproducibility, as the core keeps it
+    /// (refreshReproducibility): read by every job the core makes.
+    var reproducibility: Reproducibility?
     /// A folder's change refused or failed: said in Settings, where it was
     /// asked.
     var locationError: String?
@@ -1663,6 +1669,32 @@ final class AppModel: TuningHost {
         }
         return PromptHistory(rawValue: UserDefaults.standard
             .string(forKey: "prompt.history") ?? "") ?? .perTarget
+    }
+    /// What a SCROLL does over the stage (Settings › General › Pointing
+    /// Device, DESIGN §10a): macOS does not say which device a scroll
+    /// came from -- a Magic Mouse scrolls in points, with phases, as a
+    /// trackpad does, and a MacBook's trackpad is there whatever is used
+    /// -- so the person says. TRACKPAD (the default, as before): a scroll
+    /// pans the picture, or a zoomed clip, either way; a pinch, or ⌘ and
+    /// a scroll up or down, zooms. MOUSE: a scroll zooms about the
+    /// pointer; ⌘ and a scroll pans. A wheel that turns by lines --
+    /// never a trackpad -- zooms under Trackpad too, as it always has
+    /// (`StageScroll`). Kept between launches -- a snapshot run takes
+    /// VALTZ_SNAPSHOT_POINTER's, saving nothing.
+    enum PointingDevice: String, CaseIterable, Sendable {
+        case trackpad, mouse
+    }
+    var pointingDevice = AppModel.storedPointingDevice {
+        didSet {
+            Self.keep(pointingDevice.rawValue, as: "pointer.device")
+            StageScroll.device = pointingDevice
+        }
+    }
+    static var storedPointingDevice: PointingDevice {
+        let key = keepsViewState
+            ? UserDefaults.standard.string(forKey: "pointer.device")
+            : ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT_POINTER"]
+        return key.flatMap(PointingDevice.init(rawValue:)) ?? .trackpad
     }
     /// The words each box group was left with; the agent's last sent,
     /// for when its box was emptied by Start.
@@ -3540,6 +3572,11 @@ final class AppModel: TuningHost {
     /// How a model's last compress went, by model id: shown under its row
     /// -- what it freed, or why it did not.
     var compressNotes: [String: ModelCheck.Note] = [:]
+    /// The model whose files' READ SPEED is being tested (Capabilities'
+    /// Test Read Speed), one at a time; and a test that failed, its why
+    /// under the row.
+    var readSpeedTesting: String?
+    var readSpeedNotes: [String: ModelCheck.Note] = [:]
     /// A model whose compress is being confirmed: its alert open
     /// (Capabilities), at that width.
     var compressAsk: (member: CapabilityTree.Member, bits: Int)?
@@ -5065,6 +5102,23 @@ final class AppModel: TuningHost {
         refreshWiredLimit()
     }
 
+    /// Settings › General › Reproducibility as the core has it -- set
+    /// only when it changed (another window's Settings may have set it).
+    func refreshReproducibility() {
+        guard let core else { return }
+        let r = DTO.decode(Reproducibility.self, core.reproducibilityJSON())
+        if r != reproducibility { reproducibility = r }
+    }
+
+    /// A switch of it set ("skip_autotune", "lock_ane_split"): kept by the
+    /// core for every job after -- the next picture, clip or sound.
+    func setReproducibility(_ changes: [String: Any]) {
+        guard let core else { return }
+        let r = core.setReproducibility(changes)
+        if !r.ok { flash(r.message, level: .error) }
+        refreshReproducibility()
+    }
+
     /// A row's download: from `source` -- Hugging Face asking for a gated
     /// model's license and token first (its sheet); another source's gate,
     /// if it has one, is its own and answers in the row.
@@ -5161,6 +5215,46 @@ final class AppModel: TuningHost {
         } else if !r.ok {
             flash(r.message, level: .error)
         }
+    }
+
+    /// How fast its files come off where it is now (Settings ›
+    /// Capabilities, a model past 10 GB): up to ten seconds of reads off
+    /// the main thread; the result kept by the core, in its row.
+    func testReadSpeed(_ id: String) {
+        guard let core, readSpeedTesting == nil else { return }
+        readSpeedTesting = id
+        readSpeedNotes[id] = nil
+        Task {
+            let r = await Task.detached(priority: .userInitiated) {
+                core.measureReadSpeed(id)
+            }.value
+            if !r.ok {
+                readSpeedNotes[id] = .init(level: "error", text: r.message)
+            } else if let s = DTO.decode(CapabilityTree.ReadSpeed.self,
+                                         r["speed"]) {
+                readSpeedNotes[id] = Self.readSpeedNote(s)
+            }
+            capabilityTree = DTO.decode(CapabilityTree.self,
+                                        core.capabilityTreeJSON())
+            readSpeedTesting = nil
+        }
+    }
+
+    /// What a read-speed test leaves to say under its row: nothing read
+    /// (all in memory already, or a file that would not read), or other
+    /// work beside it.
+    static func readSpeedNote(_ s: CapabilityTree.ReadSpeed)
+        -> ModelCheck.Note? {
+        if s.read == 0 && !s.error.isEmpty {
+            return .init(level: "error", text: s.error)
+        }
+        if s.read == 0 && s.cached > 0 {
+            return .init(level: "info", text: String(localized: "All of it is in memory already, so nothing came off the drive to time. Test again once other work has used the memory."))
+        }
+        if s.busy {
+            return .init(level: "warning", text: String(localized: "Other work ran during the test and shared the drive: the figure may be low."))
+        }
+        return nil
     }
 
     /// Its download replaced by a copy quantized to `bits` (Settings ›
@@ -10776,6 +10870,7 @@ final class AppModel: TuningHost {
              \.autoplaysNewClips)
         take(Self.storedLanding("muted", default: false), \.mutesNewClips)
         take(Self.storedPlacement, \.clipPlacement)
+        take(Self.storedPointingDevice, \.pointingDevice)
         if Self.storedAgentEnabled != agentEnabled {
             setAgentEnabled(Self.storedAgentEnabled)
         }
@@ -11333,6 +11428,14 @@ final class AppModel: TuningHost {
 
     /// How long the clip or sound on the stage runs, as exported -- a
     /// timeline's length, else the file's (for a bitrate's file size).
+    /// The movie's frame as Save… writes it: what an H.264 level must
+    /// hold (VideoEncodingRows greys the levels too small for it).
+    var exportFrame: (width: Int, height: Int)? {
+        guard let a = currentAsset, a.kind == "video" else { return nil }
+        let s = canvasSize(of: a)
+        return s.width > 0 && s.height > 0 ? s : nil
+    }
+
     var exportSeconds: Double? {
         guard let a = currentAsset else { return nil }
         if a.isTimeline, let n = a.timeline ?? a.length,

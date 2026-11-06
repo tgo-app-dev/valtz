@@ -124,6 +124,13 @@ accel_from(const Json& t)
   // feed-forward on (alone it means nothing to vpipe); its tier only when
   // it is not the one vpipe runs anyway, token. (A vpipe from before them
   // ignores both keys -- and builds the modules fp16.)
+  // Its share of the rows LOCKED (Settings › General › Reproducibility,
+  // Controller::stamp_reproducible_): vpipe pins it, no balancer moving it
+  // by timing. Only with the feed-forward on, where it means something.
+  if (jget(t, "ane_ffn", false) && t.contains("ane_rows") &&
+      t["ane_rows"].is_number()) {
+    out["ane_rows"] = t["ane_rows"].get<double>();
+  }
   if (jget(t, "ane_ffn", false) && jget(t, "ane_int8", false)) {
     out["ane_int8"] = true;
     const auto ane_tier = jget<std::string>(t, "ane_int8_tier", "token");
@@ -504,6 +511,11 @@ encoding_doc(const EncodingCache& c, const JobSpec& job,
   }
   made_from["family"] = job.model.family;
   made_from["what"] = std::string(what);
+  // Made by untuned kernels (Settings' Reproducibility): another
+  // encoding, which a run that must repeat is fed and no other.
+  if (!jget(jget(job.params, "tuning", Json::object()), "autotune", true)) {
+    made_from["autotune"] = false;
+  }
   return made_from;
 }
 
@@ -3819,6 +3831,40 @@ build_fetch_model(const JobSpec& job)
             {"stages", stages},
             {"subpipelines", Json::array()}};
   return g;
+}
+
+void
+untune_stages(const JobSpec& job, Json& graph)
+{
+  if (jget(jget(job.params, "tuning", Json::object()), "autotune", true)) {
+    return;
+  }
+  // vpipe's stages that build a model whose kernels are tuned by timing.
+  static constexpr std::string_view kTuned[] = {
+      "generate-image",  "generate-video",        "generate-audio",
+      "text-to-speech",  "vae-decode",            "vae-encode",
+      "latent-upscale",  "diffusion-conditioner", "video-ref-encoder",
+  };
+  // A graph's stages, and those of the subpipelines it holds.
+  auto walk = [&](auto& self, Json& g) -> void {
+    if (!g.is_object()) {
+      return;
+    }
+    if (g.contains("stages") && g["stages"].is_array()) {
+      for (Json& st : g["stages"]) {
+        const auto type = jget<std::string>(st, "type", "");
+        if (std::ranges::find(kTuned, type) != std::ranges::end(kTuned)) {
+          st["config"]["autotune"] = false;
+        }
+      }
+    }
+    if (g.contains("subpipelines") && g["subpipelines"].is_array()) {
+      for (Json& sub : g["subpipelines"]) {
+        self(self, sub);
+      }
+    }
+  };
+  walk(walk, graph);
 }
 
 }

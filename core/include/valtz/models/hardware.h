@@ -59,6 +59,23 @@ std::uint32_t ane_cores_of_chip(std::string_view chip);
 double memory_bandwidth_of_chip(std::string_view chip,
                                 std::uint32_t gpu_cores);
 
+// The Neural Engine's share of a feed-forward's ROWS, the GPU taking the
+// rest concurrently, believed to balance the two on this Mac -- what a
+// LOCKED split runs (Settings › General › Reproducibility, DESIGN §10a;
+// vpipe's `ane_rows`, pinned), where vpipe's own balancer would move it
+// block by block by timing (and the ANE's fp16 rows with it, so the
+// output). The two engines' rates on a feed-forward, the ANE's over the
+// sum: on an M4 Pro the ANE ran ~12.6 TOPS against the GPU's ~7 TFLOP/s
+// (20 cores) -- 0.64, vpipe's own figure -- a GPU core rated by its
+// generation (M1 0.27 ... M4 0.35 TFLOP/s; with matrix units 0.78, the
+// int8 GEMMs twice that), one die's ANE by its (M1 5 ... M4 12.6, M5 14
+// TOPS; int8 1.5x, as measured on an M4 Pro). `gpu_int8`: the int8 GEMMs
+// on (they run on matrix units only); `ane_int8`: the ANE's modules int8.
+// Between 0.05 and 0.95, two decimals. vpipe rounds it DOWN to whole
+// 2048-row chunks: a forward shorter than a chunk's worth runs on the GPU
+// alone.
+double ane_share_of(const HardwareInfo& hw, bool gpu_int8, bool ane_int8);
+
 HardwareInfo probe_hardware();
 
 std::uint64_t free_disk_bytes(const std::filesystem::path&);

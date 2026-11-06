@@ -85,6 +85,9 @@ struct Reply {
   std::vector<ToolCall> calls;
   // stop | tool_calls | length | interrupted | stopped | error
   std::string           finish;
+  // The most tokens its reply was given: the helper's turn budget, a
+  // cloud's max_tokens -- a "length" reply was cut off there. 0: unknown.
+  int                   limit = 0;
   // What it cost, as the backend says: the helper's {"prefilled",
   // "reused", "restored", "ctx_bytes", "ctx_pos", "prefill_ms",
   // "decode_ms", "decoded"; its drafter's "drafter", "rounds",

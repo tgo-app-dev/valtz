@@ -429,6 +429,11 @@ private struct MemberRow: View {
                     model.compressNotes[member.model] = nil
                 }
             }
+            if let note = model.readSpeedNotes[member.model] {
+                NotesView(notes: [note]) {
+                    model.readSpeedNotes[member.model] = nil
+                }
+            }
         }
     }
 
@@ -449,6 +454,7 @@ private struct MemberRow: View {
             Text(verbatim: size)
                 .font(.callout.monospacedDigit())
                 .foregroundStyle(.secondary)
+            readSpeedTag
             if !m.source.isEmpty {
                 Text(verbatim: where_)
                     .font(.caption)
@@ -708,6 +714,9 @@ private struct MemberRow: View {
                     .help("Delete what has come down of it")
                 }
             }
+            if testsReadSpeed && fetching == nil {
+                readSpeedButton
+            }
             if m.state == "installed", let c = m.compress, fetching == nil {
                 compressMenu(c)
             }
@@ -755,6 +764,85 @@ private struct MemberRow: View {
             }
         }
         .controlSize(.small)
+    }
+
+    /// READ SPEED (DESIGN §8b): a model past 10 GB is tested for how fast
+    /// its files come off where it is -- what a load of it waits for.
+    private var testsReadSpeed: Bool {
+        member.state == "installed" && member.bytes > 10_000_000_000
+    }
+
+    @ViewBuilder
+    private var readSpeedButton: some View {
+        if model.readSpeedTesting == member.model {
+            ProgressView()
+                .controlSize(.mini)
+            Text("Testing…")
+                .font(.caption)
+                .fixedSize()
+        } else {
+            Button {
+                model.testReadSpeed(member.model)
+            } label: {
+                Image(systemName: "gauge.with.dots.needle.67percent")
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.readSpeedTesting != nil)
+            .help("Test how fast its files load from where they are: up to ten seconds of reads, past the memory cache")
+        }
+    }
+
+    /// Its last test's figure, "2.8 GB/s" -- orange when other work
+    /// shared the drive meanwhile.
+    @ViewBuilder
+    private var readSpeedTag: some View {
+        if testsReadSpeed, let s = member.readSpeed, s.read > 0 {
+            let rate = Self.rate(s.gbps)
+            let tint = s.busy ? Color.orange : Color.secondary
+            Text("\(rate) GB/s")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(tint)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(tint.opacity(0.12), in: Capsule())
+                .fixedSize()
+                .help(Self.readSpeedHelp(s))
+        }
+    }
+
+    /// Two significant digits: 6.5, 0.45, 12.
+    static func rate(_ gbps: Double) -> String {
+        gbps.formatted(.number.precision(.significantDigits(2)))
+    }
+
+    /// What was read, from where, and what was left out.
+    static func readSpeedHelp(_ s: CapabilityTree.ReadSpeed) -> String {
+        let style = ByteCountFormatStyle(style: .file)
+        let read = s.read.formatted(style)
+        let total = s.total.formatted(style)
+        let secs = s.seconds.formatted(.number.precision(.fractionLength(1)))
+        let drives = s.places.map { p in
+            let r = rate(p.gbps)
+            return String(localized: "“\(p.volume.name)” (\(driveKind(p.volume))) at \(r) GB/s")
+        }.joined(separator: "; ")
+        var lines = [String(localized: "Read \(read) of its \(total) in \(secs) s, past the memory cache: \(drives)")]
+        if s.cached > 0 {
+            let held = s.cached.formatted(style)
+            lines.append(String(localized: "\(held) of it already in memory was not read"))
+        }
+        if s.busy {
+            lines.append(String(localized: "Other work ran during the test and shared the drive: the figure may be low"))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// "internal", "external, USB, Samsung PSSD T7", "network share".
+    static func driveKind(_ v: CapabilityTree.ReadSpeed.Volume) -> String {
+        if v.network { return String(localized: "network share") }
+        if v.isInternal { return String(localized: "internal") }
+        let how = [v.link, v.device].filter { !$0.isEmpty }
+        return ([String(localized: "external")] + how)
+            .joined(separator: ", ")
     }
 
     /// What the row's percentage is of: a download's the WHOLE model --

@@ -9,6 +9,7 @@
 #include <sys/sysctl.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <string_view>
 
@@ -171,6 +172,32 @@ memory_bandwidth_of_chip(std::string_view chip, std::uint32_t gpu_cores)
     return gpu_cores >= r.full_gpu ? r.max_full : r.max_cut;
   }
   return has("Pro") ? r.pro : r.base;
+}
+
+double
+ane_share_of(const HardwareInfo& hw, bool gpu_int8, bool ane_int8)
+{
+  std::uint32_t gen = 0;
+  if (const auto m = hw.chip.find(" M"); m != std::string::npos) {
+    for (auto i = m + 2;
+         i < hw.chip.size() && hw.chip[i] >= '0' && hw.chip[i] <= '9'; ++i) {
+      gen = gen * 10 + static_cast<std::uint32_t>(hw.chip[i] - '0');
+    }
+  }
+  // A chip not named: the generation its GPU says.
+  if (gen == 0) {
+    gen = hw.gpu_matrix_cores ? 5 : 4;
+  }
+  static constexpr double kGpuCore[] = {0.27, 0.29, 0.31, 0.35};  // M1-M4
+  static constexpr double kAne[] = {5.0, 8.0, 9.0, 12.6, 14.0};   // M1-M5
+  double gpu_core = hw.gpu_matrix_cores
+      ? (gpu_int8 ? 1.55 : 0.78)
+      : kGpuCore[std::min<std::uint32_t>(gen, 4) - 1];
+  const double gpu = gpu_core * std::max<std::uint32_t>(hw.gpu_cores, 1);
+  const double ane = kAne[std::min<std::uint32_t>(gen, 5) - 1] *
+                     (ane_int8 ? 1.5 : 1.0);
+  const double share = std::clamp(ane / (ane + gpu), 0.05, 0.95);
+  return std::round(share * 100.0) / 100.0;
 }
 
 HardwareInfo

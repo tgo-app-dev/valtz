@@ -335,17 +335,15 @@ final class ClipZoomView: NSView {
         case .magnify:
             setZoom(zoom * (1 + e.magnification), around: p)
         case .scrollWheel:
-            if e.hasPreciseScrollingDeltas
-                && !e.modifierFlags.contains(.command) {
-                // A trackpad's: a zoomed clip pans; a fitted one is
-                // AVKit's to scroll.
+            switch StageScroll.of(e, device: StageScroll.device) {
+            case .pan(let dx, let dy):
+                // A zoomed clip pans; a fitted one is AVKit's to scroll.
                 guard zoomed else { return false }
-                pan(dx: e.scrollingDeltaX, dy: -e.scrollingDeltaY)
-            } else {
-                let dy = e.hasPreciseScrollingDeltas
-                    ? e.scrollingDeltaY / 100 : e.scrollingDeltaY / 10
-                guard dy != 0 else { return false }
-                setZoom(zoom * pow(1.25, dy), around: p)
+                pan(dx: dx, dy: dy)
+            case .zoom(let f):
+                setZoom(zoom * f, around: p)
+            case nil:
+                return false
             }
         default:
             return false

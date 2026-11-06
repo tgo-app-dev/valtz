@@ -917,6 +917,26 @@ TEST(graph_builder, export_graphs)
   const VideoEncoding back = video_encoding_from_json(to_json(enc));
   CHECK(back.bitrate == enc.bitrate && back.b_frames == 0 &&
         back.level == "4.1" && back.keyframe_seconds == 2);
+
+  // A level holds frames of so many macroblocks (Table A-1's MaxFS):
+  // past it VideoToolbox refuses every frame -- said, the smallest level
+  // that holds it named; Automatic holds any.
+  CHECK(h264_level_problem("4.1", 1920, 1080).empty());
+  CHECK(h264_level_problem("4.1", 2048, 1024).empty());
+  const std::string big = h264_level_problem("4.1", 2560, 1440);
+  CHECK(big.find("8192 macroblocks") != std::string::npos);
+  CHECK(big.find("2560 x 1440 is 14400") != std::string::npos);
+  CHECK(big.find("choose level 5.0") != std::string::npos);
+  CHECK(!h264_level_problem("3.1", 1920, 1080).empty());
+  CHECK(h264_level_problem("3.0", 720, 576).empty());
+  CHECK(h264_level_problem("", 8192, 8192).empty());
+  CHECK(h264_level_problem("auto", 8192, 8192).empty());
+  CHECK(h264_level_problem("5.1", 3840, 2160).empty());
+  // Past every level: another codec.
+  CHECK(h264_level_problem("5.2", 8192, 4320).find("HEVC") !=
+        std::string::npos);
+  // A side past sqrt(8 x MaxFS) macroblocks, few as they are: refused.
+  CHECK(!h264_level_problem("3.0", 2048, 16).empty());
 }
 
 // A plain reference keeps its pixels: no resample to the output size,
@@ -4067,3 +4087,49 @@ TEST(graph_builder, moss_image_runs_its_cfg_against_the_conditioners_negative)
   CHECK(fio->fed);
   CHECK(fio->ports.size() == 2);
 }
+
+// REPRODUCIBILITY (Settings › General, DESIGN §10a): a job whose tuning
+// says `autotune` false has every stage that builds a model told so --
+// the conditioner, the generating stage, the VAE -- and nothing else; its
+// locked share reaches the generating stage with the feed-forward on. A
+// job without them has the graph it always had.
+TEST(graph_builder, an_untuned_job_tells_every_model_stage)
+{
+  auto job = job_for("qwen-image-2.1", kOpGenerateImage);
+  auto plain = vp::build_text_to_image(job);
+  REQUIRE_OK(plain);
+  vp::untune_stages(job, plain->spec);
+  for (const auto& st : plain->spec["stages"]) {
+    CHECK(!jget(st, "config", Json::object()).contains("autotune"));
+    CHECK(!jget(st, "config", Json::object()).contains("ane_rows"));
+  }
+  job.params["tuning"] = {{"autotune", false}, {"ane_ffn", true},
+                          {"ane_rows", 0.47}};
+  auto g = vp::build_text_to_image(job);
+  REQUIRE_OK(g);
+  vp::untune_stages(job, g->spec);
+  int told = 0;
+  for (const auto& st : g->spec["stages"]) {
+    const auto type = jget<std::string>(st, "type", "");
+    const bool model = type == "generate-image" || type == "vae-decode" ||
+                       type == "diffusion-conditioner";
+    const Json cfg = jget(st, "config", Json::object());
+    CHECK(cfg.contains("autotune") == model);
+    if (model) {
+      CHECK(cfg["autotune"] == false);
+      ++told;
+    }
+  }
+  CHECK(told == 3);
+  const Json* gen = find_stage(g->spec, "generate-image");
+  REQUIRE(gen);
+  CHECK(jget(config_of(gen), "ane_rows", 0.0) == 0.47);
+  // A share without the feed-forward says nothing to vpipe: not sent.
+  job.params["tuning"] = {{"ane_rows", 0.47}};
+  auto no_ane = vp::build_text_to_image(job);
+  REQUIRE_OK(no_ane);
+  const Json* gen2 = find_stage(no_ane->spec, "generate-image");
+  REQUIRE(gen2);
+  CHECK(!config_of(gen2).contains("ane_rows"));
+}
+
