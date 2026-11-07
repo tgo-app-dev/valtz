@@ -261,6 +261,13 @@ struct GenerateVideoRequest {
   // its makers' code cuts every reference. Cut when the graph is built,
   // so it is the length the clip is made at.
   std::vector<AssetId> whole;
+  // RefMods of `references` given to the video model ALONE (DESIGN §4s),
+  // as ComfyUI's "Apply H3 RefMod" gives one: their latents the DiT's
+  // rows, the prompt encoder never reading them -- nothing decoded, no
+  // tag for the words to name, a member a reference port. The others are
+  // shown to it too, their pictures and clips decoded for its vision
+  // tower ("H3 RefMod Text Encode").
+  std::vector<AssetId> latents_only;
   // A clip CONTINUED: its tail -- up to its mark-out -- picture and
   // sound, the clip the new one carries on from.
   std::optional<AssetId> continue_from;
@@ -1827,10 +1834,12 @@ public:
   // What a clip's references are called, as generate_video would name
   // them ({asset: "<Picture 1>"}, the order the model reads them), for
   // `model` ("" / "auto": Auto's video edit pick) -- the prompt row's
-  // badges. Refused as generate_video would refuse them.
-  Result<Json> video_reference_tags(ProjectId, const std::string& model,
-                                    const std::vector<AssetId>& refs,
-                                    std::optional<AssetId> continue_from);
+  // badges. Refused as generate_video would refuse them. A RefMod of
+  // `latents_only` is called "": the model is never told it.
+  Result<Json> video_reference_tags(
+      ProjectId, const std::string& model, const std::vector<AssetId>& refs,
+      std::optional<AssetId> continue_from,
+      const std::vector<AssetId>& latents_only = {});
   // A clip's GUIDE for a continuation (DESIGN §4e): its last `seconds`
   // (0: the catalog's `tail_frames`) -- rounded UP to a length `model`
   // takes (catalog `frame_grid`: 17n + 5 for H3, so 2 s is 56 frames at
@@ -1895,6 +1904,10 @@ public:
   // Write an asset out (ExportRequest). `job.finished` carries the
   // `path` written.
   Result<JobId> export_asset(ExportRequest);
+  // A RefMod asset saved as it is (DESIGN §4s): its .safetensors copied
+  // to `to` -- for ComfyUI-MiniMaxH3Mod, or another Valtz. InvalidArgument
+  // for anything else.
+  Status save_refmod(ProjectId, AssetId, const std::filesystem::path& to);
   // A picture as a PDF draws it (media/pdf.h): a still composition's
   // pages, each its layers -- a markup's objects as vectors, a still
   // composition a layer shows as its own layers, pictures and a clip's
@@ -2309,10 +2322,23 @@ private:
   // -- each {"asset", "role", "kind", "route": list | port, "audio" (a
   // clip's own sound), "trim", "tail_frames", "number"}: {"list",
   // "tags": {asset: "<Picture 1>"}, "sound": the first sound's asset}.
-  // Held to the catalog's limits.
+  // A RefMod's entry (DESIGN §4s) is kind "refmod", "members" its
+  // members' kinds, "numbers" theirs, "ports" the ports they take; it is
+  // tagged by its first picture or clip. Held to the catalog's limits.
   Result<Json> video_references_(project::Project&,
                                  const GenerateVideoRequest&,
                                  const models::ModelEntry&, double fps);
+  // A RefMod MADE of the request's row (the RefMod maker chosen: catalog
+  // shape "refmod", DESIGN §4s): a RefMod asset, its job.
+  Result<JobId> make_refmod_(const GenerateVideoRequest&, project::Project&,
+                             const models::ModelEntry&);
+  // A RefMod asset's members' kinds, in its order (its probe's).
+  static std::vector<std::string> refmod_kinds_(project::Project&,
+                                                AssetId);
+  // A RefMod in words: its first member's description, else its own
+  // name, else its file's stem -- what a prompt says of one the model is
+  // never told of (latents only).
+  static std::string refmod_words_(project::Project&, AssetId);
   // The model a clip's references are for: `model`, or ("" / "auto")
   // Auto's video edit pick; none when neither is there.
   const models::ModelEntry* reference_model_(const std::string& model);

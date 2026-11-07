@@ -1641,6 +1641,12 @@ Core::generate_video(const std::string& request_json)
         req.whole.push_back(*a);
       }
     }
+    for (const auto& id : jget(*j, "latents_only",
+                               std::vector<std::string>{})) {
+      if (auto a = AssetId::parse(id)) {
+        req.latents_only.push_back(*a);
+      }
+    }
     if (auto c = AssetId::parse(jget<std::string>(*j, "continue", ""))) {
       req.continue_from = *c;
     }
@@ -1825,8 +1831,15 @@ Core::video_reference_tags(const std::string& request_json) const
     if (auto c = AssetId::parse(jget<std::string>(*j, "continue", ""))) {
       cont = *c;
     }
+    std::vector<AssetId> alone;
+    for (const auto& id : jget(*j, "latents_only",
+                               std::vector<std::string>{})) {
+      if (auto a = AssetId::parse(id)) {
+        alone.push_back(*a);
+      }
+    }
     auto t = _impl->ctl->video_reference_tags(
-        *pid, jget<std::string>(*j, "model", ""), refs, cont);
+        *pid, jget<std::string>(*j, "model", ""), refs, cont, alone);
     return t.ok() ? ok({{"tags", *t}}) : err(t.error());
   });
 }

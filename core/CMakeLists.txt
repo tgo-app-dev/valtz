@@ -29,6 +29,7 @@ set(VALTZ_CORE_SOURCES
   src/media/movie.mm
   src/media/pdf.mm
   src/media/probe.mm
+  src/media/refmod.cc
   src/media/sound.mm
   src/media/stamp.mm
   src/media/text-flow.cc
@@ -85,6 +86,7 @@ set(VALTZ_CORE_SOURCES
 if(VALTZ_HAVE_VPIPE)
   list(APPEND VALTZ_CORE_SOURCES
     src/engine/vpipe/vpipe-engine.cc
+    src/engine/vpipe/checkpoint-reader.cc
     src/engine/vpipe/encoding-cache.cc
     src/engine/vpipe/graph-builder.cc
     src/engine/vpipe/host-exchange.cc

@@ -1691,7 +1691,8 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
                       {"list", r.list}, {"audio", r.audio},
                       {"first", r.first}, {"count", r.count},
                       {"fps", r.fps}, {"start_s", r.start_s},
-                      {"duration_s", r.duration_s}, {"whole", r.whole}});
+                      {"duration_s", r.duration_s}, {"whole", r.whole},
+                      {"alone", r.alone}});
       // Carried latents are part of what it reads: by their bytes and
       // the window taken.
       for (const auto& [k, w] : {std::pair{"latent", &r.latent},
@@ -1702,6 +1703,48 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
           made.back()[k] = {{"hash", w->hash.hex()}, {"start", w->start},
                             {"count", w->count}};
         }
+      }
+      if (r.refmod) {
+        // A RefMod's member (DESIGN §4s), its latent carried whole.
+        const auto latent = [&](const std::string& lid, Json sb) {
+          sb["latent"] = true;
+          Json ls = Json::array();
+          ls.push_back(stage(lid, "load-tensor", Json::array(),
+                             {{"path", r.latent.path.string()},
+                              {"sideband", std::move(sb)}}));
+          port_stages.emplace_back(lid, std::move(ls));
+          enc_in.push_back(port(lid));
+        };
+        // The video model's ALONE (ComfyUI's RefMod Apply): the latent
+        // on one port, not presented -- a picture's a still on the clock.
+        if (r.alone) {
+          Json sb = {{"present", false}};
+          if (r.kind == "image") {
+            sb["image"] = true;
+          }
+          latent(std::format("ref{}", ++ref), std::move(sb));
+          continue;
+        }
+        if (r.kind == "audio") {
+          latent(std::format("ref{}", ++ref), {{"attach", false}});
+          continue;
+        }
+        // Its pixels for the vision tower: the latent decoded -- a clip
+        // as one beat (vae-decode's `clip`), a picture its one frame.
+        const std::string id = std::format("ref{}", ++ref);
+        Json ps = Json::array();
+        ps.push_back(stage(id + "-latent", "load-tensor", Json::array(),
+                           {{"path", r.latent.path.string()}}));
+        ps.push_back(stage(id, "vae-decode",
+                           Json::array({port(id + "-latent"),
+                                        port(vae_source(job, stages))}),
+                           with_vae({{"unload_when_idle", "destroy"},
+                                     {"fps", 24.0}}, job)));
+        port_stages.emplace_back(id, std::move(ps));
+        enc_in.push_back(port(id, r.kind == "video" ? 1 : 0));
+        // Its rows: the RefMod's own, folded onto those pixels.
+        latent(std::format("ref{}", ++ref), {{"attach", true}});
+        continue;
       }
       if (r.list) {
         files.push_back(r.path.string());
@@ -3689,6 +3732,118 @@ build_separate(const JobSpec& job, const fs::path& wav)
                          Json::array({port("pcm")}), std::move(cfg)));
   stages.push_back(sink(g.stem_sink, port("separate", 0), false));
   stages.push_back(sink(g.residual_sink, port("separate", 1), false));
+  g.spec = {{"id", "valtz-" + job.id.str()},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+Result<BuiltGraph>
+build_make_refmod(const JobSpec& job)
+{
+  if (job.model.dir.empty() || job.inputs.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "a RefMod needs MiniMax H3's VAEs and a source");
+  }
+  const Json srcs = jget(job.params, "sources", Json::array());
+  BuiltGraph g;
+  g.output = job.output_dir / (job.id.str() + ".safetensors");
+  Json stages = Json::array();
+  stages.push_back(stage("model-select", "model-select", Json::array(),
+                         {{"hf_dir", job.model.dir.string()}}));
+  const Json vae = {{"unload_when_idle", "destroy"}};
+  for (std::size_t k = 0; k < job.inputs.size(); ++k) {
+    const auto& in = job.inputs[k];
+    const Json s = k < srcs.size() ? srcs[k] : Json::object();
+    const std::string id = std::format("src{}", k);
+    const fs::path file =
+        job.output_dir / std::format("{}-refmod{}.vpt", job.id.str(), k);
+    RefModPart part{file, true, false};
+    if (in.role == "sound") {
+      // At the audio VAE's 32 kHz, stereo, its span.
+      Json read = {{"input_url", in.path.string()}};
+      const double start = jget(s, "start_s", 0.0);
+      const double secs = jget(s, "duration_s", 0.0);
+      if (start > 0) {
+        read["start_s"] = start;
+      }
+      if (secs > 0) {
+        read["duration_s"] = secs;
+      }
+      stages.push_back(stage(id + "-read", "load-audio", Json::array(),
+                             std::move(read)));
+      stages.push_back(stage(id + "-pcm", "audio-to-pcm",
+                             Json::array({port(id + "-read")}),
+                             {{"output_sample_rate", 32000},
+                              {"channels", 2},
+                              {"chunk_duration_s", 10.0},
+                              {"flush_on_eos", true}}));
+      Json enc = vae;
+      enc["max_seconds"] = std::max(1.0, secs > 0 ? secs + 1.0 : 600.0);
+      stages.push_back(stage(id, "audio-vae-encode",
+                             Json::array({port(id + "-pcm"),
+                                          port("model-select")}),
+                             std::move(enc)));
+      part.visual = false;
+    } else {
+      // The pixels as the pack resizes them: Lanczos, stretched onto
+      // its 32-pixel grid, or -- one canvas for several -- covered and
+      // centre-cropped.
+      const Json fit = {{"width", jget(s, "width", 0)},
+                        {"height", jget(s, "height", 0)},
+                        {"fit", jget<std::string>(s, "fit", "stretch")},
+                        {"algorithm", "lanczos"}};
+      std::string last;
+      if (in.role == "picture") {
+        stages.push_back(stage(id + "-read", "load-image", Json::array(),
+                               {{"url", in.path.string()},
+                                {"dtype", "u8"}}));
+        last = id + "-read";
+      } else {
+        // A clip's frames: every `step`th from `first`, `count` of them
+        // -- one alone a picture.
+        const std::int64_t first = jget<std::int64_t>(s, "first", 0);
+        const std::int64_t step =
+            std::max<std::int64_t>(1, jget<std::int64_t>(s, "step", 1));
+        const std::int64_t count =
+            std::max<std::int64_t>(1, jget<std::int64_t>(s, "count", 1));
+        stages.push_back(stage(id + "-read", "load-video", Json::array(),
+                               {{"input_url", in.path.string()},
+                                {"enable_audio", false}}));
+        stages.push_back(stage(id + "-rgb", "video-to-rgb",
+                               Json::array({port(id + "-read")}),
+                               {{"output_dtype", "u8"}}));
+        stages.push_back(stage(id + "-span", "temporal-slice",
+                               Json::array({port(id + "-rgb")}),
+                               {{"start", first},
+                                {"step", step},
+                                {"end", first + step * (count - 1) + 1}}));
+        last = id + "-span";
+        part.video = count > 1;
+      }
+      stages.push_back(stage(id + "-fit", "image-resample",
+                             Json::array({port(last)}), fit));
+      last = id + "-fit";
+      if (part.video) {
+        const double mb = 3.0 * jget(s, "width", 1) * jget(s, "height", 1) *
+                          static_cast<double>(jget(s, "count", 1)) /
+                          (1024.0 * 1024.0);
+        stages.push_back(stage(id + "-clip", "temporal-stack",
+                               Json::array({port(last)}),
+                               {{"mode", "video"}, {"group_size", 0},
+                                {"max_mb", static_cast<int>(mb) + 64}}));
+        last = id + "-clip";
+      }
+      stages.push_back(stage(id, "vae-encode",
+                             Json::array({port(last),
+                                          port("model-select")}),
+                             with_vae(vae, job)));
+    }
+    stages.push_back(stage(id + "-save", "save-tensor",
+                           Json::array({port(id)}),
+                           {{"path", file.string()}}));
+    g.refmod_parts.push_back(std::move(part));
+  }
   g.spec = {{"id", "valtz-" + job.id.str()},
             {"stages", stages},
             {"subpipelines", Json::array()}};

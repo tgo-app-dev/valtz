@@ -1,4 +1,5 @@
 #include "valtz/media/probe.h"
+#include "valtz/media/refmod.h"
 #include "valtz/media/exif.h"
 
 #import <AVFoundation/AVFoundation.h>
@@ -574,6 +575,11 @@ media_type_for_path(const std::filesystem::path& path)
     if (ext.length > 0) {
       ext = [ext substringFromIndex:1];
     }
+    // A RefMod (refmod.h) is told by its header, not its extension: a
+    // .safetensors is weights as often.
+    if ([ext caseInsensitiveCompare:@"safetensors"] == NSOrderedSame) {
+      return is_refmod(path) ? MediaType::RefMod : MediaType::Unknown;
+    }
     UTType* t = [UTType typeWithFilenameExtension:ext];
     if (!t) {
       return MediaType::Unknown;
@@ -623,6 +629,25 @@ probe_file(const std::filesystem::path& path)
       MediaInfo mi;
       mi.type = MediaType::Text;
       mi.uti = "public.plain-text";
+      return mi;
+    }
+    case MediaType::RefMod: {
+      VALTZ_ASSIGN(const RefMod rm, read_refmod(path));
+      MediaInfo mi;
+      mi.type = MediaType::RefMod;
+      mi.uti = "public.data";
+      mi.codec = "safetensors";
+      mi.codec_name = std::format("MiniMax H3 RefMod v{}", rm.version);
+      // Its first picture or clip as pixels: the latent's grid, 16 a
+      // cell.
+      for (const auto& m : rm.members) {
+        if (m.visual()) {
+          mi.frame.width = m.width() * 16;
+          mi.frame.height = m.height() * 16;
+          break;
+        }
+      }
+      mi.refmod = rm.to_json();
       return mi;
     }
     case MediaType::Unknown:

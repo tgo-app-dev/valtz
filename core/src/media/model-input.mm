@@ -2300,6 +2300,14 @@ decode_movie_stack(const MovieStack& stack, Rational rate_in,
     for (std::int64_t f = std::max<std::int64_t>(0, first); f < end; ++f) {
       @autoreleasepool {
         VALTZ_ASSIGN(CIImage* framed, reader->frame(f));
+        // On black, as it plays and as encode_movie_stack writes it: a
+        // video has no transparency. Read off as planar RGB, a layer half
+        // faded (its opacity keyed: a fade from black) came out whole --
+        // its colour un-premultiplied -- and only a clear one black.
+        framed = [framed
+            imageByCompositingOverImage:
+                [[CIImage imageWithColor:[CIColor blackColor]]
+                    imageByCroppingToRect:framed.extent]];
         VALTZ_ASSIGN(FrameBuffer buf, target(f));
         if (buf.size < static_cast<std::size_t>(size.width) * size.height *
                            3 * 2) {

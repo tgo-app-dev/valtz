@@ -1590,6 +1590,8 @@ Controller::engine_runs_(models::Capability c) const
     return _engine->supports(engine::kOpSummarizeVideo);
   case Capability::AudioSeparate:
     return _engine->supports(engine::kOpSeparateAudio);
+  case Capability::MakeRefMod:
+    return _engine->supports(engine::kOpMakeRefMod);
   case Capability::UpscaleVideo:
     return _engine->supports(engine::kOpUpscaleVideo);
   case Capability::UpscaleImage:
@@ -2048,6 +2050,12 @@ Controller::measure_read_speed(const std::string& id, double seconds) const
   const bool busy_before = busy();
   models::ReadSpeedOptions opt;
   opt.max_seconds = std::clamp(seconds, 1.0, 120.0);
+  // Read as the engine reads it as it loads the model.
+  if (_engine) {
+    opt.reader = [engine = _engine.get()](const std::filesystem::path& f) {
+      return engine->checkpoint_reader(f);
+    };
+  }
   const models::ReadSpeed r =
       models::measure_read_speed(models::files_to_load(info), opt);
   Json out = r.to_json();
@@ -2440,6 +2448,11 @@ Controller::runs_here_(const models::ModelEntry& m, std::string_view modality,
            jget(jget(m.engine, "vpipe", Json::object()), "references",
                 Json()).is_object() &&
            _engine->supports(engine::kOpGenerateVideo);
+  }
+  // A RefMod made of the row (DESIGN §4s): H3's VAEs, its folder's.
+  if (modality == "video" && op == "refmod") {
+    return m.has(models::Capability::MakeRefMod) &&
+           _engine->supports(engine::kOpMakeRefMod);
   }
   return false;
 }
@@ -6616,7 +6629,25 @@ Controller::clip_request_(
         names.emplace_back(tag, t);
       }
       std::string line;
-      if (kind == "image") {
+      if (kind == "refmod") {
+        // Latents alone: nothing of it can be shown here. What it says
+        // it is, its makers' words.
+        guided = true;
+        line = std::format("{}: a stored reference (RefMod), \"{}\"", tag,
+                           a->name);
+        if (auto v = p->version(*id); v.ok()) {
+          for (const auto& mm : jget(v->info.refmod, "members",
+                                     Json::array())) {
+            const auto d = jget<std::string>(mm, "description", "");
+            if (!d.empty()) {
+              line += std::format(" -- {}", d);
+              break;
+            }
+          }
+        }
+        line += " -- its subjects to follow, each used defined as a "
+                "<Subject N> in it";
+      } else if (kind == "image") {
         guided = true;
         line = std::format("{}: a picture, \"{}\"", tag, a->name);
         if (show(*id)) {
@@ -6842,6 +6873,52 @@ Controller::is_prompt(const project::Asset& a)
          std::ranges::find(a.tags, std::string("prompt")) != a.tags.end();
 }
 
+// A RefMod asset's references (media/refmod.h, DESIGN §4s): its members'
+// kinds -- "image", "video", "audio" -- in its order, from its probe.
+std::vector<std::string>
+Controller::refmod_kinds_(project::Project& p, AssetId id)
+{
+  std::vector<std::string> out;
+  if (auto v = p.version(id); v.ok()) {
+    for (const auto& m : jget(v->info.refmod, "members", Json::array())) {
+      out.push_back(jget<std::string>(m, "kind", ""));
+    }
+  }
+  return out;
+}
+
+std::string
+Controller::refmod_words_(project::Project& p, AssetId id)
+{
+  auto v = p.version(id);
+  if (v.ok()) {
+    const Json& rm = v->info.refmod;
+    for (const auto& m : jget(rm, "members", Json::array())) {
+      if (auto d = one_line(jget<std::string>(m, "description", ""));
+          !d.empty()) {
+        return d;
+      }
+    }
+    if (auto n = one_line(jget<std::string>(rm, "name", "")); !n.empty()) {
+      return n;
+    }
+  }
+  auto a = p.asset(id);
+  return a.ok() ? fs::path(a->name).stem().string() : std::string();
+}
+
+// What a RefMod is named by in the prompt: its first picture's or clip's
+// label, else its first sound's.
+static assist::RefKind
+refmod_ref_kind(const std::vector<std::string>& kinds)
+{
+  for (const auto& k : kinds) {
+    if (k == "image") { return assist::RefKind::Image; }
+    if (k == "video") { return assist::RefKind::Video; }
+  }
+  return kinds.empty() ? assist::RefKind::Other : assist::RefKind::Audio;
+}
+
 Result<Controller::PromptForm>
 Controller::prompt_form_(project::Project& p, const std::string& prompt,
                          const std::vector<std::optional<AssetId>>&
@@ -6857,7 +6934,9 @@ Controller::prompt_form_(project::Project& p, const std::string& prompt,
                     : a->kind == K::Image ? assist::RefKind::Image
                     : a->kind == K::Video ? assist::RefKind::Video
                     : a->kind == K::Audio ? assist::RefKind::Audio
-                                          : assist::RefKind::Other);
+                    : a->kind == K::RefMod
+                        ? refmod_ref_kind(refmod_kinds_(p, id))
+                        : assist::RefKind::Other);
   }
   // Each mention where its medium sits now (its first place).
   std::vector<int> mentions;
@@ -7360,6 +7439,13 @@ Controller::generate_video(GenerateVideoRequest req)
   if (!p) {
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
+  // The RefMod maker (DESIGN §4s): the row made a RefMod, not a clip.
+  if (const auto* mk = req.model.empty() ? nullptr
+                                         : _catalog.find(req.model);
+      mk && jget<std::string>(jget(mk->engine, "vpipe", Json::object()),
+                              "shape", "") == "refmod") {
+    return make_refmod_(req, *p, *mk);
+  }
   // A clip reads the words: inline media are dropped (or, with
   // references, named as the model names them -- below). Its row: the
   // clip continued, then the references -- or the picture it opens on.
@@ -7672,11 +7758,19 @@ Controller::generate_video(GenerateVideoRequest req)
     if (req.reference_sound && media["sound"].is_string()) {
       r.params["reference_sound"] = true;
     }
-    // Each mention and tag named as the model names its medium.
+    // Each mention and tag named as the model names its medium -- a
+    // RefMod the model is never told of (latents only) by its name, in
+    // words.
     std::vector<std::string> tags;
     for (const auto& id : pf.inline_media) {
       const std::string key = id ? id->str() : std::string();
-      tags.push_back(jget<std::string>(media["tags"], key.c_str(), ""));
+      std::string t = jget<std::string>(media["tags"], key.c_str(), "");
+      if (t.empty() && id &&
+          std::ranges::find(req.latents_only, *id) !=
+              req.latents_only.end()) {
+        t = refmod_words_(*p, *id);
+      }
+      tags.push_back(std::move(t));
     }
     r.params["prompt"] = templated(*m, assist::tag_inline(pf.text, tags));
   }
@@ -7768,6 +7862,9 @@ Controller::generate_video(GenerateVideoRequest req)
     }
     if (!req.whole.empty()) {
       x["whole"] = id_list(req.whole);
+    }
+    if (!req.latents_only.empty()) {
+      x["latents_only"] = id_list(req.latents_only);
     }
     if (req.regenerate) {
       x["regenerate"] = *req.regenerate;
@@ -7913,10 +8010,158 @@ Controller::prompt_outline(const std::string& model,
                                 row, frames);
 }
 
+// A RefMod MADE (DESIGN §4s) as ComfyUI-MiniMaxH3Mod's creators make one:
+// the row's pictures, clips and sounds -- in its order -- each fitted as
+// the pack fits it (its short edge brought down to `refmod_resolution`,
+// its sides onto 32's, 320 at least; several in Full Reference covered
+// and centre-cropped onto the first's canvas), a clip's frames sampled
+// onto H3's 17k + 5 grid, a sound's first seconds; encoded by H3's VAEs
+// and made one file by the engine. The words, if any, are its
+// description and its name.
+Result<JobId>
+Controller::make_refmod_(const GenerateVideoRequest& req, project::Project& p,
+                         const models::ModelEntry& m)
+{
+  std::vector<AssetId> row = req.row;
+  if (row.empty()) {
+    row = req.references;
+    for (const auto& k : {req.first, req.last}) {
+      if (k) {
+        row.push_back(*k);
+      }
+    }
+  }
+  if (row.empty()) {
+    return make_error(Code::InvalidArgument, msg::kRefModNeedsMedia);
+  }
+  if (!runs_soon(m, "video", "refmod")) {
+    return make_error(Code::NotFound, msg::kNoReferenceModel);
+  }
+  project::Recipe r;
+  r.op = std::string(engine::kOpMakeRefMod);
+  r.model = m.id;
+  r.deterministic = true;
+  apply_tuning_(r, m,
+                models::resolve_tuning(m, tuning_context(m), req.preference,
+                                       false,
+                                       req.tuning.is_object()
+                                           ? req.tuning
+                                           : Json::object()),
+                0);
+  const Json t = jget(r.params, "tuning", Json::object());
+  const bool full = jget(t, "refmod_full", false);
+  const int res = jget(t, "refmod_resolution", 1024);
+  const int frames = jget(t, "refmod_frames", 16);
+  const double seconds = jget(t, "refmod_seconds", 30.0);
+  // The pack's rounding: Python's, half to even.
+  const auto grid32 = [](double v) {
+    return std::max(32, static_cast<int>(std::nearbyint(v / 32)) * 32);
+  };
+  const auto fitted = [&](int w, int h) {
+    const double s = std::min(1.0, res / static_cast<double>(std::min(w,
+                                                                    h)));
+    int tw = grid32(w * s), th = grid32(h * s);
+    // At least 320 a side (the pack's ensure_min_size: H3's VAE tiles).
+    if (std::min(tw, th) < 320) {
+      const double u = 320.0 / std::min(tw, th);
+      tw = std::max(320, static_cast<int>(std::nearbyint(tw * u / 32)) * 32);
+      th = std::max(320, static_cast<int>(std::nearbyint(th * u / 32)) * 32);
+    }
+    return std::pair{tw, th};
+  };
+  // H3's reference-video grid: 5, 22, 39 ... frames; under 5, a still.
+  const auto snap = [](std::int64_t n) -> std::int64_t {
+    return n < 5 ? 1 : (n - 5) / 17 * 17 + 5;
+  };
+  int visual = 0;
+  std::optional<std::pair<int, int>> canvas;
+  Json sources = Json::array();
+  std::vector<std::string> names;
+  for (const auto& id : row) {
+    VALTZ_ASSIGN(project::Asset a, p.asset(id));
+    VALTZ_ASSIGN(project::AssetVersion v, p.version(id));
+    const auto& info = v.info;
+    Json s = Json::object();
+    std::string role;
+    if (a.kind == project::AssetKind::Audio ||
+        (a.kind == project::AssetKind::Video && info.frame.width == 0)) {
+      role = "sound";
+      const double have = info.duration.seconds();
+      s["duration_s"] = have > 0 ? std::min(seconds, have) : seconds;
+    } else if (a.kind == project::AssetKind::Image ||
+               a.kind == project::AssetKind::Video) {
+      const int w = info.frame.width, h = info.frame.height;
+      if (w <= 0 || h <= 0) {
+        return make_error(Code::InvalidArgument, msg::kRefModSource,
+                          {{"name", a.name}});
+      }
+      // Several in Full Reference share the first one's canvas, each
+      // covered and centre-cropped onto it.
+      if (full && !canvas && visual == 0 && row.size() > 1) {
+        canvas = fitted(w, h);
+      }
+      const auto [tw, th] = canvas ? *canvas : fitted(w, h);
+      s["width"] = tw;
+      s["height"] = th;
+      s["fit"] = canvas ? "crop" : "stretch";
+      role = "picture";
+      if (a.kind == project::AssetKind::Video) {
+        std::int64_t have = info.frame_count;
+        if (have <= 0 && info.frame_rate.num > 0) {
+          have = std::llround(info.duration.seconds() *
+                              info.frame_rate.to_double());
+        }
+        // Full Reference: the frames asked for; Compressed: the clip,
+        // 240 frames at most, pooled after.
+        const std::int64_t count =
+            snap(std::max<std::int64_t>(1, std::min<std::int64_t>(
+                                               have, full ? frames : 240)));
+        s["first"] = 0;
+        s["count"] = count;
+        s["step"] = count > 1 ? std::max<std::int64_t>(
+                                    1, (have - 1) / (count - 1))
+                              : 1;
+        role = "clip";
+      }
+      ++visual;
+    } else {
+      return make_error(Code::InvalidArgument, msg::kRefModSource,
+                        {{"name", a.name}});
+    }
+    names.push_back(a.name);
+    sources.push_back(std::move(s));
+    r.inputs.push_back({role, id, 0});
+  }
+  const std::string words = one_line(assist::without_markdown(
+      assist::prompt_words(req.prompt)));
+  std::string name = !req.name.empty() ? req.name
+                     : !words.empty()  ? words
+                                       : names.front() + " RefMod";
+  name = std::string(utf8_prefix(name, 60));
+  r.params["sources"] = std::move(sources);
+  r.params["refmod"] = {
+      {"name", name},
+      {"compressed", !full},
+      {"pool", jget(t, "refmod_grid", 16)},
+      {"frames", frames},
+      {"refine", jget(t, "refmod_refine", 500)},
+      {"max_tokens", jget(t, "refmod_tokens", 5120)},
+      {"resolution", res},
+      {"description", words},
+      {"concept_type", "generic"}};
+  VALTZ_ASSIGN(project::Asset a,
+               p.define_derived(name, project::AssetKind::RefMod, r, 48));
+  post_("assets.changed", JobId{}, {{"project", req.project},
+                                    {"asset", a.id},
+                                    {"reason", "defined"}});
+  return submit_build_(req.project, a.id, a.name);
+}
+
 Result<Json>
 Controller::video_reference_tags(ProjectId pid, const std::string& model,
                                  const std::vector<AssetId>& refs,
-                                 std::optional<AssetId> continue_from)
+                                 std::optional<AssetId> continue_from,
+                                 const std::vector<AssetId>& latents_only)
 {
   project::Project* p = project(pid);
   if (!p) {
@@ -7929,6 +8174,7 @@ Controller::video_reference_tags(ProjectId pid, const std::string& model,
   GenerateVideoRequest req;
   req.references = refs;
   req.continue_from = continue_from;
+  req.latents_only = latents_only;
   VALTZ_ASSIGN(Json media, video_references_(*p, req, *m, 24.0));
   return media["tags"];
 }
@@ -8000,6 +8246,36 @@ Controller::video_references_(project::Project& p,
       ++sounds;
       listed.push_back(std::move(e));
       return ok_status();
+    case project::AssetKind::RefMod: {
+      // A RefMod (DESIGN §4s): each member a reference of its own, on
+      // ports -- a picture's or a clip's two (its latent decoded for the
+      // vision tower, then the latent itself attached), a sound's one --
+      // read whole, as they were made. Given to the video model ALONE,
+      // a port each: the latent, nothing decoded, nothing named.
+      const auto kinds = refmod_kinds_(p, id);
+      if (kinds.empty() || role != "reference") {
+        return make_error(Code::InvalidArgument, msg::kVideoReferenceKind,
+                          {{"name", a.name}});
+      }
+      const bool alone =
+          std::ranges::find(req.latents_only, id) != req.latents_only.end();
+      int used = 0;
+      for (const auto& k : kinds) {
+        (k == "image" ? pictures : k == "video" ? clips : sounds) += 1;
+        used += k == "audio" || alone ? 1 : 2;
+      }
+      e["kind"] = "refmod";
+      e["route"] = "port";
+      e["members"] = kinds;
+      e["ports"] = used;
+      e["whole"] = true;
+      if (alone) {
+        e["latents_only"] = true;
+      }
+      ports += used;
+      ported.push_back(std::move(e));
+      return ok_status();
+    }
     default:
       return make_error(Code::InvalidArgument, msg::kVideoReferenceKind,
                         {{"name", a.name}});
@@ -8080,6 +8356,41 @@ Controller::video_references_(project::Project& p,
   for (Json* group : {&listed, &ported}) {
     for (auto& e : *group) {
       const auto kind = jget<std::string>(e, "kind", "");
+      // A RefMod's members each numbered in their kind; it is named by
+      // its first picture or clip, else its first sound. Given to the
+      // video model alone it is in no presentation: not numbered, not
+      // named, the ones after it numbered without it.
+      if (kind == "refmod" && jget(e, "latents_only", false)) {
+        const auto id = jget<std::string>(e, "asset", "");
+        if (!out["tags"].contains(id)) {
+          out["tags"][id] = "";
+        }
+        out["list"].push_back(e);
+        continue;
+      }
+      if (kind == "refmod") {
+        Json numbers = Json::array();
+        std::string named, sound_tag;
+        for (const auto& k : jget(e, "members", Json::array())) {
+          const auto mk = k.get<std::string>();
+          const int n = mk == "image"   ? ++n_image
+                        : mk == "video" ? ++n_video
+                                        : ++n_audio;
+          numbers.push_back(n);
+          if (mk != "audio" && named.empty()) {
+            named = tag(mk, n);
+          } else if (mk == "audio" && sound_tag.empty()) {
+            sound_tag = tag(mk, n);
+          }
+        }
+        e["numbers"] = std::move(numbers);
+        const auto id = jget<std::string>(e, "asset", "");
+        if (!out["tags"].contains(id)) {
+          out["tags"][id] = named.empty() ? sound_tag : named;
+        }
+        out["list"].push_back(e);
+        continue;
+      }
       const int n = kind == "image"   ? ++n_image
                     : kind == "video" ? ++n_video
                                       : ++n_audio;
@@ -9666,7 +9977,7 @@ Controller::latent_carry_(ProjectId pid, project::Project& p,
     int ports = 0;
     for (const auto& e : jget(r.params, "reference_media", Json::array())) {
       if (jget<std::string>(e, "route", "") == "port") {
-        ports += jget(e, "audio", false) ? 2 : 1;
+        ports += jget(e, "ports", jget(e, "audio", false) ? 2 : 1);
       }
     }
     if (ports + 1 > jget(jget(vp, "references", Json::object()), "ports",
@@ -10775,6 +11086,28 @@ page_path(const fs::path& destination, std::int64_t page,
                      destination.extension().string());
 }
 
+Status
+Controller::save_refmod(ProjectId pid, AssetId id, const fs::path& to)
+{
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(id));
+  if (a.kind != project::AssetKind::RefMod) {
+    return make_error(Code::InvalidArgument,
+                      std::format("{} is not a RefMod", a.name));
+  }
+  VALTZ_ASSIGN(fs::path from, p->media_path(id));
+  std::error_code ec;
+  fs::copy_file(from, to, fs::copy_options::overwrite_existing, ec);
+  if (ec) {
+    return make_error(Code::Io, std::format("{}: {}", to.string(),
+                                            ec.message()));
+  }
+  return ok_status();
+}
+
 Result<JobId>
 Controller::export_asset(ExportRequest req)
 {
@@ -11346,6 +11679,7 @@ Controller::fleet_self_() const
     case Capability::TextToSpeech: return engine::kOpGenerateSpeech;
     case Capability::Transcribe: return engine::kOpTranscribeAudio;
     case Capability::VideoSummary: return engine::kOpSummarizeVideo;
+    case Capability::MakeRefMod: return engine::kOpMakeRefMod;
     default: return {};
     }
   };

@@ -51,6 +51,9 @@ struct MarkView: View {
                                  sweepTaken: { sweepPending = false },
                                  showing: { liveShowing = true },
                                  settled: { live = false; liveShowing = false })
+                        // Only drawn: a click goes to what holds the mark
+                        // (the editor's replays its sweep).
+                        .allowsHitTesting(false)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -76,6 +79,11 @@ struct MarkView: View {
     }
 }
 
+/// An MTKView no click finds: the mark is drawn in it, never pressed.
+private final class PassiveMTKView: MTKView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 /// The live half: an MTKView that runs its display link only while the
 /// mark is moving or lit.
 private struct LiveMarkView: NSViewRepresentable {
@@ -93,7 +101,7 @@ private struct LiveMarkView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> MTKView {
         let c = context.coordinator
-        let view = MTKView(frame: .zero, device: c.renderer?.device)
+        let view = PassiveMTKView(frame: .zero, device: c.renderer?.device)
         view.colorPixelFormat = .bgra8Unorm
         view.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
         view.layer?.isOpaque = false

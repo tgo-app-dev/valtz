@@ -1,5 +1,6 @@
 #include "valtz/models/tuning.h"
 
+#include "valtz/media/refmod.h"
 #include "valtz/models/drawthings.h"
 
 #include <algorithm>
@@ -393,6 +394,12 @@ offers(const ModelEntry& m, const TuningContext& ctx,
   // model's place, no schedule.
   const bool upscale = m.role == "upscale";
   std::vector<Offer> out;
+  // A RefMod maker (shape "refmod", DESIGN §4s) runs no model of its own:
+  // its knobs -- how a RefMod is made -- are all it offers.
+  if (jget<std::string>(vp, "shape", "") == "refmod") {
+    declared_offers(vp, ctx, preference, out);
+    return out;
+  }
 
   // Speech (MOSS-TTS) samples a token a frame: no steps to take; nor
   // does a checkpoint whose schedule is its own (`steps_fixed`).
@@ -1479,6 +1486,12 @@ read_header(const std::filesystem::path& file, Json& out)
 std::string
 kind_of_file(const std::filesystem::path& file)
 {
+  // A RefMod (media/refmod.h) is reference latents, not weights: told by
+  // its tensors and its metadata before the heuristics below call its
+  // one `latent` a DiT.
+  if (media::is_refmod(file)) {
+    return "refmod";
+  }
   Json h;
   if (!read_header(file, h)) {
     return "";

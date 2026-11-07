@@ -525,10 +525,11 @@ extension AppModel {
                 out.append(list[i].id)
                 continue
             }
-            let kind = ["image", "video", "audio"].contains(a.kind)
+            let kind = ["image", "video", "audio", "refmod"].contains(a.kind)
                 ? a.kind : "file"
-            let item = PromptAttachment(id: UUID(), url: url, kind: kind,
+            var item = PromptAttachment(id: UUID(), url: url, kind: kind,
                                         asset: id)
+            if kind == "refmod" { item.refmodKind = a.namedAs }
             list.append(item)
             fresh.append(item)
             out.append(item.id)
@@ -1307,6 +1308,11 @@ private struct AssetRow: View {
                     Button("Show on Stage") { model.showMadeOnStage(a) }
                 }
                 Button("Add to Prompt") { model.addAssetReferences([a.id]) }
+                // A RefMod's own file, for ComfyUI-MiniMaxH3Mod or another
+                // Valtz (DESIGN §4s).
+                if a.kind == "refmod" {
+                    Button("Save RefMod…") { model.saveRefMod(a) }
+                }
                 // The ASSET OPERATIONS it takes (DESIGN §4j), as the core
                 // lists them -- a sound's or a clip's speech transcribed,
                 // a clip summarized, a song's vocals and accompaniment
@@ -1372,8 +1378,9 @@ private struct AssetRow: View {
                 image = await AudioWaveform.image(url, width: 192, height: 96)
                 return
             }
-            // A prompt is words: its symbol is its picture.
-            if a.kind == "text" { return }
+            // A prompt is words, a RefMod latents: its symbol is its
+            // picture.
+            if a.kind == "text" || a.kind == "refmod" { return }
             let id = a.id
             image = await Task.detached(priority: .utility) {
                 core.thumbnail(project: project, asset: id, maxPixels: 96)
@@ -1421,6 +1428,7 @@ private struct AssetRow: View {
         case "audio": "waveform"
         case "image": "photo"
         case "text": "text.quote"
+        case "refmod": "cube.transparent"
         default: "doc"
         }
     }
@@ -1549,15 +1557,20 @@ private struct AssetRow: View {
         case "transcribe-audio": String(localized: "Transcribed \(made)")
         case "summarize-video": String(localized: "Summarized \(made)")
         case "separate-audio": String(localized: "Separated \(made)")
+        case "make-refmod": String(localized: "RefMod made \(made)")
         case "upscale-image", "upscale-video":
             String(localized: "Upscaled \(made)")
         default:
             a.isPrompt ? promptSubtitle
                 : a.kind == "audio" ? String(localized: "Sound")
+                : a.kind == "refmod" ? String(localized: "RefMod")
                 : String(localized: "Imported")
         }
         var parts = [what]
-        if a.isComposition, a.kind != "audio", let f = a.ownFrame {
+        // A RefMod: what it costs the DiT, not a size.
+        if let r = a.info?.refmod {
+            parts.append(String(localized: "\(r.tokens) tokens"))
+        } else if a.isComposition, a.kind != "audio", let f = a.ownFrame {
             parts.append("\(f.w) × \(f.h)")
         } else if !a.isComposition, let f = a.info?.frame, f.w > 0 {
             parts.append("\(f.w) × \(f.h)")

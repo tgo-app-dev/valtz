@@ -60,11 +60,14 @@ extension TuningHost {
         guard let core = tuningCore else { return false }
         var loras: [URL] = []
         var parts: [String: [URL]] = [:]
+        var refmods = 0
         for url in urls {
             switch core.checkpointKind(url) {
             case "lora": loras.append(url)
             case "dit": parts["dits", default: []].append(url)
             case "vae": parts["vaes", default: []].append(url)
+            // Reference latents, not weights: the prompt row's.
+            case "refmod": refmods += 1
             default: break
             }
         }
@@ -90,7 +93,9 @@ extension TuningHost {
             }
             settleTuning(t, stepsFollow: false)
         }
-        if !added && !urls.isEmpty {
+        if !added && refmods > 0 {
+            tuningWarn(String(localized: "A RefMod is a reference: drop it in the prompt's row"))
+        } else if !added && !urls.isEmpty {
             tuningWarn(String(localized: "Not weights Valtz can use here"))
         }
         return added

@@ -2185,8 +2185,11 @@ TEST(models, families_and_links)
       CHECK(!m.label.empty());
     }
   }
+  // Every model has its row -- but one that runs on another's files
+  // (`files_of`: the RefMod maker, Ref2VA's), which has nothing of its
+  // own to download or link.
   for (const auto& m : c->models()) {
-    CHECK(placed.count(m.id) == 1);
+    CHECK(placed.count(m.id) == (m.files_of.empty() ? 1u : 0u));
   }
   const ModelEntry* lora = c->find("minimax-h3-turbo-8step");
   const ModelEntry* folder = c->find("minimax-h3-vdn");
@@ -3114,4 +3117,103 @@ TEST(models, a_models_read_speed_is_measured_past_the_cache)
   info.file = "model-00001-of-00001.safetensors";
   info.parts.clear();
   CHECK(files_to_load(info) == std::vector<std::filesystem::path>{big});
+}
+
+// A checkpoint the engine reads with a reader of its own is read through
+// it -- its tensors, in the file's order -- and the measure follows it:
+// warm tensors skipped, the budget a sample of whole tensors spread
+// through them, the rest of the folder not read.
+TEST(models, a_models_read_speed_follows_the_engines_reader)
+{
+  const auto dir = test::temp_dir("read-speed-engine");
+  const std::size_t mb = 1 << 20, size = 64 * mb;
+  const auto ckpt = dir / "model.safetensors";
+  {
+    void* buf = nullptr;
+    CHECK(::posix_memalign(&buf, 16384, size) == 0);
+    std::memset(buf, 0x3c, size);
+    const int fd = ::open(ckpt.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+    CHECK(fd >= 0);
+    (void)::fcntl(fd, F_NOCACHE, 1);
+    CHECK(::pwrite(fd, buf, size, 0) == static_cast<ssize_t>(size));
+    ::fsync(fd);
+    ::close(fd);
+    std::free(buf);
+  }
+  std::ofstream(dir / "config.json") << R"({"_class_name": "X"})";
+  // Eight tensors of 4 MB from 1 MB in, as the engine would list them;
+  // its reads with F_NOCACHE, the order kept.
+  struct Reader final : CheckpointReader {
+    std::vector<Tensor> ts;
+    int fd = -1;
+    std::vector<std::size_t>* order = nullptr;
+    bool fail = false;
+    const std::vector<Tensor>& tensors() const override { return ts; }
+    bool read(std::size_t i, void* dst, std::size_t cap) override
+    {
+      order->push_back(i);
+      return !fail && cap >= ts[i].bytes &&
+             ::pread(fd, dst, ts[i].bytes,
+                     static_cast<off_t>(ts[i].offset)) ==
+                 static_cast<ssize_t>(ts[i].bytes);
+    }
+    ~Reader() override { ::close(fd); }
+  };
+  std::vector<std::size_t> order;
+  bool fail = false;
+  ReadSpeedOptions opt;
+  opt.reader = [&](const std::filesystem::path& f)
+      -> std::unique_ptr<CheckpointReader> {
+    if (f.extension() != ".safetensors") {
+      return nullptr;
+    }
+    auto r = std::make_unique<Reader>();
+    for (std::uint64_t k = 0; k < 8; ++k) {
+      r->ts.push_back({mb + k * 4 * mb, 4 * mb});
+    }
+    r->fd = ::open(f.c_str(), O_RDONLY);
+    (void)::fcntl(r->fd, F_NOCACHE, 1);
+    r->order = &order;
+    r->fail = fail;
+    return r;
+  };
+  const std::vector<std::filesystem::path> files{ckpt, dir / "config.json"};
+  ReadSpeed r = measure_read_speed(files, opt);
+  CHECK(r.error.empty());
+  CHECK(r.read == 32 * mb && r.engine == r.read);
+  CHECK(r.places.size() == 1 && r.places[0].engine == 32 * mb);
+  CHECK(r.whole && r.gb_per_s() > 0.0);
+  CHECK((order == std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6, 7}));
+
+  // A budget: whole tensors, spread through them.
+  order.clear();
+  opt.max_bytes = 16 * mb;
+  r = measure_read_speed(files, opt);
+  CHECK(r.read == 16 * mb && !r.whole);
+  CHECK(order.size() == 4 && order.front() < 2 && order.back() > 5);
+  opt.max_bytes = 16'000'000'000ull;
+
+  // A tensor in memory is left out, whole; the rest read (a read-ahead
+  // may have warmed the next one too).
+  {
+    const int fd = ::open(ckpt.c_str(), O_RDONLY);
+    std::vector<char> b(4 * mb);
+    CHECK(::pread(fd, b.data(), b.size(), static_cast<off_t>(9 * mb)) ==
+          static_cast<ssize_t>(b.size()));
+    ::close(fd);
+  }
+  order.clear();
+  r = measure_read_speed(files, opt);
+  CHECK(r.read >= 24 * mb && r.read <= 28 * mb && r.cached >= 4 * mb);
+  CHECK(std::ranges::find(order, std::size_t{2}) == order.end());
+
+  // A read the engine could not make is said.
+  fail = true;
+  r = measure_read_speed(files, opt);
+  CHECK(!r.error.empty() && r.read == 0);
+
+  // No reader for the drive's files: read raw, as before (this one in
+  // memory, as written).
+  r = measure_read_speed({dir / "config.json"}, opt);
+  CHECK(r.engine == 0 && r.total > 0 && r.read + r.cached == r.total);
 }

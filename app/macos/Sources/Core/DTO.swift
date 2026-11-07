@@ -263,6 +263,31 @@ struct FrameDTO: Decodable, Sendable, Hashable {
     var color: ColorDTO
 }
 
+/// A RefMod's summary (DESIGN §4s): MiniMax H3 reference latents, each
+/// member a picture, a clip or a sound.
+struct RefModDTO: Decodable, Sendable, Hashable {
+    struct Member: Decodable, Sendable, Hashable {
+        var name: String
+        var kind: String       // image | video | audio
+        var frames: Int
+        var height: Int
+        var width: Int
+        var tokens: Int
+        var seconds: Double
+        var description: String?
+    }
+    var version: Int
+    var tokens: Int
+    var members: [Member]
+
+    /// What it is named as in the prompt: its first picture's or clip's
+    /// kind, else "audio".
+    var namedAs: String {
+        members.first { $0.kind != "audio" }?.kind
+            ?? (members.isEmpty ? "video" : "audio")
+    }
+}
+
 struct MediaInfoDTO: Decodable, Sendable, Hashable {
     var type: String
     var codec: String
@@ -275,6 +300,8 @@ struct MediaInfoDTO: Decodable, Sendable, Hashable {
     var duration: [Int]?
     /// A clip's sound track: whether it has one.
     var audio: SoundTrackDTO?
+    /// A RefMod's members (DESIGN §4s; core media::RefMod::to_json).
+    var refmod: RefModDTO?
 
     var seconds: Double? {
         guard let d = duration, d.count == 2, d[1] > 0 else { return nil }
@@ -839,6 +866,11 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
     var id: String
     var name: String
     var kind: String
+    /// What a tag of the prompt names it as: its kind, a RefMod's first
+    /// picture's or clip's (else its sound's).
+    var namedAs: String {
+        kind == "refmod" ? (info?.refmod?.namedAs ?? "video") : kind
+    }
     var origin: String
     var head: Int
     var created: Int64

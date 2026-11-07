@@ -335,8 +335,10 @@ compressed_in(const fs::path& root, const std::string& id, int bits)
 InstallInfo
 ModelStore::scan_(const ModelEntry& e) const
 {
-  // Linked: there, and nowhere else.
-  if (const fs::path l = link_of(e.id); !l.empty()) {
+  // Linked: there, and nowhere else -- or where the model whose files
+  // these are is linked.
+  if (const fs::path l = link_of(e.files_of.empty() ? e.id : e.files_of);
+      !l.empty()) {
     return scan_link_(e, l);
   }
   // Compressed: the copy that replaced its download, whole (marked last,

@@ -622,6 +622,8 @@ final class PromptTextView: NSTextView {
     }
 
     static func kind(of url: URL) -> String {
+        // A RefMod (DESIGN §4s), told by its header.
+        if RefModFile.namedAs(url) != nil { return "refmod" }
         guard let t = UTType(filenameExtension: url.pathExtension) else {
             return "file"
         }

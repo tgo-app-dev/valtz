@@ -184,6 +184,19 @@ private struct ReferenceThumb: View {
                     scissors(cut)
                 }
             }
+            // A RefMod given to the video model alone: the prompt never
+            // reads it.
+            .overlay(alignment: .topTrailing) {
+                if model.readsLatentsOnly(item) == true {
+                    Image(systemName: "eye.slash")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 16, height: 16)
+                        .background(Circle().fill(Color.accentColor))
+                        .padding(3)
+                        .help("Latents only: the video model draws on it, and the prompt never reads or names it")
+                }
+            }
             // The clip carried on from: its tail is what the new one
             // continues.
             .overlay(alignment: .topTrailing) {
@@ -251,6 +264,14 @@ private struct ReferenceThumb: View {
                         model.toggleWhole(item.id)
                     }
                 }
+                // As ComfyUI's Apply H3 RefMod gives one, or its Text
+                // Encode (the default).
+                if let alone = model.readsLatentsOnly(item) {
+                    Toggle("Latents Only", isOn: Binding(
+                        get: { alone },
+                        set: { _ in model.toggleLatentsOnly(item.id) }))
+                        .help("The video model draws on its latents alone; the prompt never reads or names it")
+                }
                 Button("Remove from Prompt") {
                     model.removeReference(item.id)
                 }
@@ -273,7 +294,9 @@ private struct ReferenceThumb: View {
                 Color.primary.opacity(0.06)
                 Image(systemName: item.kind == "video" ? "film"
                                   : item.kind == "audio" ? "waveform"
-                                  : item.kind == "image" ? "photo" : "doc")
+                                  : item.kind == "image" ? "photo"
+                                  : item.kind == "refmod" ? "cube.transparent"
+                                  : "doc")
                     .foregroundStyle(.secondary)
             }
         }

@@ -126,7 +126,7 @@ extension AppModel {
         }
         var count: [String: Int] = [:]
         for id in n.refs {
-            if let k = asset(id: id).flatMap({ Self.refKind($0.kind) }) {
+            if let k = asset(id: id).flatMap({ Self.refKind($0.namedAs) }) {
                 count[k, default: 0] += 1
             }
         }
@@ -821,7 +821,7 @@ struct AtlasGenerateExpanded: View {
     private func chips(_ words: String) -> [AtlasPromptPreview.Chip] {
         let row = gen.refs.compactMap { model.asset(id: $0) }
         return AppModel.refTags(in: words).map { t in
-            let of = row.filter { AppModel.refKind($0.kind) == t.kind }
+            let of = row.filter { AppModel.refKind($0.namedAs) == t.kind }
             let item = of.indices.contains(t.index) ? of[t.index] : nil
             return .init(range: t.range,
                          image: PromptTextView.refTagChip(
@@ -870,9 +870,9 @@ struct AtlasGenerateExpanded: View {
 
     private func rowItem(_ i: Int, _ id: String) -> some View {
         let a = model.asset(id: id)
-        let kind = a.flatMap { AppModel.refKind($0.kind) } ?? ""
+        let kind = a.flatMap { AppModel.refKind($0.namedAs) } ?? ""
         let number = gen.refs.prefix(i).filter {
-            model.asset(id: $0).flatMap { AppModel.refKind($0.kind) } == kind
+            model.asset(id: $0).flatMap { AppModel.refKind($0.namedAs) } == kind
         }.count + 1
         return VStack(spacing: 3) {
             ZStack {

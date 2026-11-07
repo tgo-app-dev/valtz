@@ -1083,9 +1083,9 @@ private struct AtlasStage: View, @preconcurrency Animatable {
                   let gen = g.graph.nodes[g.ends[k].1].generate,
                   let a = g.graph.nodes[g.ends[k].0].asset
                       .flatMap(model.asset(id:)),
-                  let kind = AppModel.refKind(a.kind) else { continue }
+                  let kind = AppModel.refKind(a.namedAs) else { continue }
             let n = gen.refs.prefix(i).filter {
-                model.asset(id: $0).flatMap { AppModel.refKind($0.kind) }
+                model.asset(id: $0).flatMap { AppModel.refKind($0.namedAs) }
                     == kind
             }.count + 1
             out[k] = "\(RefTagAttachment.kindName(kind)) \(n)"

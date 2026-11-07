@@ -283,9 +283,11 @@ Json resolve_tuning(const ModelEntry& m, const TuningContext& ctx,
 // What a dropped weight file (or folder) is, read from it: "lora" (its
 // tensors are low-rank pairs), "vae" (encoder / decoder tensors, a VAE
 // config, or a Comfy-Org VAE component), "dit" (another model -- or a
-// Draw Things checkpoint of a DiT vpipe reads, models/drawthings.h), or
-// "" (not weights this can read). A guess the panel files it by; vpipe
-// decides whether it can run it.
+// Draw Things checkpoint of a DiT vpipe reads, models/drawthings.h),
+// "refmod" (not weights at all: MiniMax H3 reference latents, told by its
+// tensors and metadata -- media/refmod.h; a reference for the prompt's
+// row), or "" (not weights this can read). A guess the panel files it by;
+// vpipe decides whether it can run it.
 std::string checkpoint_kind(const std::filesystem::path& path);
 
 // What a dropped weight file is, by the catalog's recognition rules

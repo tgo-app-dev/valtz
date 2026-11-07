@@ -826,6 +826,16 @@ private struct MemberRow: View {
             return String(localized: "“\(p.volume.name)” (\(driveKind(p.volume))) at \(r) GB/s")
         }.joined(separator: "; ")
         var lines = [String(localized: "Read \(read) of its \(total) in \(secs) s, past the memory cache: \(drives)")]
+        // How it was read: as the engine reads a model's tensors when it
+        // loads it, or as plain files (none it reads so).
+        let engine = s.engine ?? 0
+        if s.read > 0 {
+            lines.append(engine >= s.read
+                ? String(localized: "Its tensors read as the engine reads them when it loads the model")
+                : engine > 0
+                ? String(localized: "Partly read as the engine loads the model, partly as plain files")
+                : String(localized: "Read as plain files, not as the engine loads the model"))
+        }
         if s.cached > 0 {
             let held = s.cached.formatted(style)
             lines.append(String(localized: "\(held) of it already in memory was not read"))

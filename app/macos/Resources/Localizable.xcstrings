@@ -1468,6 +1468,16 @@
         }
       }
     },
+    "%lld sources" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%lld 个来源"
+          }
+        }
+      }
+    },
     "%lld steps" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1766,6 +1776,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 位副本与原模型并存：选择使用哪一个，以及保留哪一个"
+          }
+        }
+      }
+    },
+    "A RefMod is a reference: drop it in the prompt's row" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RefMod 是参考素材：请把它拖到提示词的素材行里"
           }
         }
       }
@@ -2529,6 +2549,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "添加垂直参考线"
+          }
+        }
+      }
+    },
+    "Add a Mask" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "添加蒙版"
           }
         }
       }
@@ -4638,6 +4668,26 @@
         }
       }
     },
+    "Change What a Layer Shows" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "更换图层内容"
+          }
+        }
+      }
+    },
+    "Change a Composition" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "修改合成"
+          }
+        }
+      }
+    },
     "Change the Secret" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5596,6 +5646,26 @@
         }
       }
     },
+    "Compressed · 500 refinement steps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "压缩 · 精修 500 步"
+          }
+        }
+      }
+    },
+    "Compressed, pooled alone" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "压缩，仅池化"
+          }
+        }
+      }
+    },
     "Compressing, part %@ of %@" : {
       "localizations" : {
         "en" : {
@@ -6419,6 +6489,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "分解"
+          }
+        }
+      }
+    },
+    "Decompose Layer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "拆分图层"
           }
         }
       }
@@ -8305,6 +8385,16 @@
         }
       }
     },
+    "File Assets" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "归档素材"
+          }
+        }
+      }
+    },
     "File missing" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8381,6 +8471,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "查找"
+          }
+        }
+      }
+    },
+    "Find Texts and Shapes" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "查找文字和形状"
           }
         }
       }
@@ -8522,6 +8622,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "先拼合"
+          }
+        }
+      }
+    },
+    "Flatten Layer" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "拼合图层"
           }
         }
       }
@@ -8974,6 +9084,16 @@
         }
       }
     },
+    "Full reference" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "完整参考"
+          }
+        }
+      }
+    },
     "GPU" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9366,6 +9486,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "抓取帧"
+          }
+        }
+      }
+    },
+    "Grab a Frame" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "截取一帧"
           }
         }
       }
@@ -10893,6 +11023,16 @@
         }
       }
     },
+    "Its tensors read as the engine reads them when it loads the model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按引擎加载模型时读取张量的方式读取"
+          }
+        }
+      }
+    },
     "Its transcript is not in Assets any more." : {
       "localizations" : {
         "zh-Hans" : {
@@ -11197,6 +11337,16 @@
         }
       }
     },
+    "Key Layer over Time" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "为图层设置关键帧"
+          }
+        }
+      }
+    },
     "Keyboard Shortcuts" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11380,6 +11530,26 @@
         }
       }
     },
+    "Latents Only" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仅潜变量"
+          }
+        }
+      }
+    },
+    "Latents only: the video model draws on it, and the prompt never reads or names it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仅潜变量：视频模型会参考它，提示词既不读取也不指名它"
+          }
+        }
+      }
+    },
     "Lay Out Text" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11451,7 +11621,18 @@
         }
       }
     },
+    "Layer Sound" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图层声音"
+          }
+        }
+      }
+    },
     "Layer Volume" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
@@ -12063,12 +12244,32 @@
         }
       }
     },
+    "Look at What Made It" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "查看生成方式"
+          }
+        }
+      }
+    },
     "Look at a Composition" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "查看合成"
+          }
+        }
+      }
+    },
+    "Look at a Model's Options" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "查看模型选项"
           }
         }
       }
@@ -12371,6 +12572,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "新建合成"
+          }
+        }
+      }
+    },
+    "Make a RefMod" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "制作 RefMod"
+          }
+        }
+      }
+    },
+    "Make a RefMod · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "制作 RefMod · %@"
           }
         }
       }
@@ -15134,6 +15355,16 @@
         }
       }
     },
+    "Partly read as the engine loads the model, partly as plain files" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "部分按引擎加载模型的方式读取，部分作为普通文件读取"
+          }
+        }
+      }
+    },
     "Past %@ on its short side the clip is made at this size directly. Open-H3-Regenerate-2K drafts it at %@ and regenerates it: get it in Settings › Capabilities › MiniMax H3." : {
       "localizations" : {
         "en" : {
@@ -16420,12 +16651,32 @@
         }
       }
     },
+    "Read a Photo's EXIF" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "读取照片 EXIF"
+          }
+        }
+      }
+    },
     "Read and edit the suggestion beside the prompt, in the Prompt Editor (⇧⌘E)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在提示词编辑器中，于提示词旁阅读并编辑建议（⇧⌘E）"
+          }
+        }
+      }
+    },
+    "Read as plain files, not as the engine loads the model" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "作为普通文件读取，而非按引擎加载模型的方式"
           }
         }
       }
@@ -16636,6 +16887,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "重做%@"
+          }
+        }
+      }
+    },
+    "RefMod" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RefMod"
+          }
+        }
+      }
+    },
+    "RefMod made %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RefMod 制作于 %@"
+          }
+        }
+      }
+    },
+    "RefMod “%@” made, in Assets: drag it into the prompt's row to use it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RefMod“%@”已制作好，在“素材”中：把它拖到提示词的素材行即可使用。"
           }
         }
       }
@@ -17804,6 +18085,16 @@
         }
       }
     },
+    "Save RefMod…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "存储 RefMod…"
+          }
+        }
+      }
+    },
     "Save Video" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17846,6 +18137,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "已存储 %1$@ 个页面，从 %2$@ 起"
+          }
+        }
+      }
+    },
+    "Saved “%@”" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已存储“%@”"
           }
         }
       }
@@ -18628,6 +18929,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示助手的速度"
+          }
+        }
+      }
+    },
+    "Show the cards after" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示后面的卡片"
+          }
+        }
+      }
+    },
+    "Show the cards before" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示前面的卡片"
           }
         }
       }
@@ -21290,6 +21611,16 @@
         }
       }
     },
+    "The video model draws on its latents alone; the prompt never reads or names it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "视频模型只使用它的潜变量；提示词既不读取也不指名它"
+          }
+        }
+      }
+    },
     "The whole timeline" : {
       "localizations" : {
         "zh-Hans" : {
@@ -22485,6 +22816,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "放大"
+          }
+        }
+      }
+    },
+    "Use Layer as a Mask" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将图层用作蒙版"
           }
         }
       }
@@ -27481,6 +27822,40 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "{name} 不能放进它自己，也不能放进它所显示的任何内容中。"
+          }
+        }
+      }
+    },
+    "core.refmod_needs_media" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A RefMod is made of pictures, clips and sounds: put some in the prompt's row."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RefMod 由图片、视频片段和声音制作：请先把它们放进提示词的素材行。"
+          }
+        }
+      }
+    },
+    "core.refmod_source" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“{name}” cannot go into a RefMod: only pictures, clips and sounds can."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“{name}”不能放进 RefMod：只有图片、视频片段和声音可以。"
           }
         }
       }

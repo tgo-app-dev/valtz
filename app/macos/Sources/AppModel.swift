@@ -694,7 +694,14 @@ struct PromptTab: Identifiable, Sendable {
 struct PromptAttachment: Identifiable, Hashable, Sendable {
     let id: UUID
     let url: URL
-    let kind: String  // "image" | "video" | "audio" | "file"
+    let kind: String  // "image" | "video" | "audio" | "refmod" | "file"
+    /// A RefMod's (DESIGN §4s): what it is named as in the prompt -- its
+    /// first picture's or clip's kind, else "audio" (RefModFile).
+    var refmodKind: String?
+    /// What a tag of the prompt names it as: its kind, a RefMod's member's.
+    var namedAs: String { kind == "refmod" ? (refmodKind ?? "video") : kind }
+    /// A reference a clip draws on: a picture, a clip, a sound, a RefMod.
+    var isMedia: Bool { ["image", "video", "audio", "refmod"].contains(kind) }
     /// The BASE: the picture being edited -- the result dragged from the
     /// stage, or a picture dropped on the stage. At most one; the other
     /// pictures are REFERENCES, drawn from as they are.
@@ -717,6 +724,11 @@ struct PromptAttachment: Identifiable, Hashable, Sendable {
     /// A clip or a sound referenced WHOLE (Ref2VA): not cut to the clip's
     /// length, as every other one is -- its scissors badge off.
     var whole = false
+    /// A RefMod given to the video model ALONE (DESIGN §4s), as ComfyUI's
+    /// "Apply H3 RefMod" gives one: its latents the DiT's, the prompt
+    /// encoder never reading it -- no name for the words, nothing
+    /// decoded. Off, it is shown to the prompt encoder too.
+    var latentsOnly = false
     /// What the person said this picture is to a clip that opens and ends
     /// on pictures (FL2VA, chosen): the frame it ENDS on, or no keyframe
     /// at all. The one it opens on is the base (`isBase`); nil, as the
@@ -1803,6 +1815,10 @@ final class AppModel: TuningHost {
     @ObservationIgnored var composerWidth: CGFloat = 0
     @ObservationIgnored var composerColumn: CGFloat = 0
     @ObservationIgnored var drawerWidths: [String: CGFloat] = [:]
+    /// The tray's cards' headers as their scroll view last said (the
+    /// summary's `headers=`), and its ‹ › in the window (`headerScroll=`).
+    @ObservationIgnored var trayHeaders = "-"
+    @ObservationIgnored var trayScrollFrame: CGRect = .null
     @ObservationIgnored var stageRoom: CGFloat = 0
     @ObservationIgnored var markRoom: [Int: CGFloat] = [:]
     var pictureRoom: CGFloat {
@@ -2390,9 +2406,7 @@ final class AppModel: TuningHost {
     var suggestsFewerReferences: Bool {
         guard let f = memoryFailure, let n = f.references, n > 0
         else { return false }
-        return promptAttachments.filter {
-            ["image", "video", "audio"].contains($0.kind)
-        }.count >= n
+        return promptAttachments.filter(\.isMedia).count >= n
     }
 
     /// A row of the generation card the memory card points at.
@@ -2543,7 +2557,7 @@ final class AppModel: TuningHost {
         let caps = switch m {
         case .image: ["text-to-image", "image-edit"]
         case .video: ["text-to-video", "image-to-video",
-                      "reference-to-video"]
+                      "reference-to-video", "make-refmod"]
         case .audio: ["text-to-audio", "text-to-speech"]
         case .agent: [String]()
         }
@@ -2693,6 +2707,15 @@ final class AppModel: TuningHost {
     /// The model a clip from references runs: the chosen one, if it reads
     /// references, else Auto's video edit pick (MiniMax H3 Ref2VA); ""
     /// when none can.
+    /// The RefMod maker chosen under Video (catalog `make-refmod`, DESIGN
+    /// §4s): Start makes a RefMod of the row's pictures, clips and sounds,
+    /// not a clip -- the words, if any, its description.
+    var makesRefMod: Bool {
+        activeModality == .video && !modelChoice.isEmpty
+            && catalog.first(where: { $0.id == modelChoice })?.capabilities
+                .contains("make-refmod") == true
+    }
+
     var videoReferenceModel: String {
         if !modelChoice.isEmpty,
            catalog.first(where: { $0.id == modelChoice })?.capabilities
@@ -2707,7 +2730,7 @@ final class AppModel: TuningHost {
     /// its place. Its pictures are the clip's keyframes (`keyframes`);
     /// the rest of the row it does not read.
     var videoChoicePinned: Bool {
-        activeModality == .video && !modelChoice.isEmpty
+        activeModality == .video && !modelChoice.isEmpty && !makesRefMod
             && catalog.first(where: { $0.id == modelChoice })?.capabilities
                 .contains("reference-to-video") == false
     }
@@ -2803,7 +2826,7 @@ final class AppModel: TuningHost {
         let k = keyframes
         let g = guidedContinuation
         return promptAttachments.filter {
-            ["image", "video", "audio"].contains($0.kind)
+            $0.isMedia
                 && $0.id != k?.first?.id && $0.id != k?.last?.id
                 && $0.id != g?.id
         }
@@ -2825,12 +2848,10 @@ final class AppModel: TuningHost {
     /// marked as the one to open on, which stays FL2VA's first frame. A
     /// model chosen that reads none never does.
     var usesReferences: Bool {
-        guard activeModality == .video, !videoChoicePinned,
+        guard activeModality == .video, !videoChoicePinned, !makesRefMod,
               !promptAttachments.isEmpty,
               !videoReferenceModel.isEmpty else { return false }
-        let media = promptAttachments.filter {
-            ["image", "video", "audio"].contains($0.kind)
-        }
+        let media = promptAttachments.filter(\.isMedia)
         // (The generate model's own ability, not opensOnPicture: that
         // asks the running model, which is this.)
         if media.count == 1, media[0].kind == "image", media[0].isBase,
@@ -2870,7 +2891,7 @@ final class AppModel: TuningHost {
     var rowKindCounts: [String: Int] {
         var n: [String: Int] = [:]
         for att in promptAttachments {
-            if let k = Self.refKind(att.kind) { n[k, default: 0] += 1 }
+            if let k = Self.refKind(att.namedAs) { n[k, default: 0] += 1 }
         }
         return n
     }
@@ -2878,7 +2899,7 @@ final class AppModel: TuningHost {
     /// What the row has at a tag's place: its `index`-th medium of the
     /// kind ("img", "vid", "aud"), in the row's order.
     func rowItem(kind: String, index: Int) -> PromptAttachment? {
-        let of = promptAttachments.filter { Self.refKind($0.kind) == kind }
+        let of = promptAttachments.filter { Self.refKind($0.namedAs) == kind }
         return of.indices.contains(index) ? of[index] : nil
     }
 
@@ -2897,7 +2918,7 @@ final class AppModel: TuningHost {
 
     /// The row's media, in order, as the core counts the tags' places.
     var rowAssetIds: [String] {
-        promptAttachments.filter { Self.refKind($0.kind) != nil }
+        promptAttachments.filter { Self.refKind($0.namedAs) != nil }
             .compactMap { assetId(of: $0) }
     }
 
@@ -2926,8 +2947,7 @@ final class AppModel: TuningHost {
     private var referenceRequest: (refs: [String?], cont: String?) {
         var refs: [String?] = []
         var cont: String?
-        for att in promptAttachments where
-            ["image", "video", "audio"].contains(att.kind) {
+        for att in promptAttachments where att.isMedia {
             if att.continues { cont = assetId(of: att) } else {
                 refs.append(assetId(of: att))
             }
@@ -2942,7 +2962,31 @@ final class AppModel: TuningHost {
         let r = referenceRequest
         return core.videoReferenceTags(
             project: projectId, model: videoReferenceModel,
-            references: r.refs.compactMap { $0 }, continueFrom: r.cont)
+            references: r.refs.compactMap { $0 }, continueFrom: r.cont,
+            latentsOnly: latentsOnlyIds)
+    }
+
+    /// The RefMods given to the video model alone, by asset.
+    var latentsOnlyIds: [String] {
+        promptAttachments.filter { readsLatentsOnly($0) == true }
+            .compactMap { assetId(of: $0) }
+    }
+
+    /// A RefMod the clip draws on: given to the video model alone (true)
+    /// or shown to the prompt encoder too (false); nil for any other row
+    /// item, or no references read.
+    func readsLatentsOnly(_ item: PromptAttachment) -> Bool? {
+        guard usesReferences, item.kind == "refmod" else { return nil }
+        return item.latentsOnly
+    }
+
+    /// Its menu's Latents Only.
+    func toggleLatentsOnly(_ id: UUID) {
+        guard let i = promptAttachments.firstIndex(where: { $0.id == id })
+        else { return }
+        withAnimation(Self.motion) {
+            promptAttachments[i].latentsOnly.toggle()
+        }
     }
 
     /// The row's badge for a staged item: what the model calls it -- a
@@ -2953,7 +2997,7 @@ final class AppModel: TuningHost {
     /// reads references: its badge, said out.
     func referenceName(_ item: PromptAttachment) -> String? {
         guard usesReferences, let id = assetId(of: item),
-              let tag = referenceTags[id] else { return nil }
+              let tag = referenceTags[id], !tag.isEmpty else { return nil }
         return tag.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
     }
 
@@ -2985,7 +3029,7 @@ final class AppModel: TuningHost {
     func referenceBadge(_ item: PromptAttachment) -> String? {
         if usesReferences {
             guard let id = assetId(of: item),
-                  let tag = referenceTags[id] else { return nil }
+                  let tag = referenceTags[id], !tag.isEmpty else { return nil }
             // "<Picture 1>" -> "P1": an identifier, the model's, as text.
             let name = tag.trimmingCharacters(in: CharacterSet(
                 charactersIn: "<>"))
@@ -3505,6 +3549,15 @@ final class AppModel: TuningHost {
     /// picture.
     var preferenceHint: String {
         if preference == .custom { return customSummary }
+        // A RefMod (DESIGN §4s): how its latents are kept -- the catalog's
+        // presets for the maker.
+        if makesRefMod {
+            switch preference {
+            case .speed: return String(localized: "Compressed, pooled alone")
+            case .balanced: return String(localized: "Compressed · 500 refinement steps")
+            default: return String(localized: "Full reference")
+            }
+        }
         guard let p = runningModelInfo?.presets?[preference.rawValue] else {
             return preference.hint
         }
@@ -6284,6 +6337,12 @@ final class AppModel: TuningHost {
 
     var isGenerating: Bool { generationJob != nil }
 
+    /// The mark clicked -- in the editor or view only: its light sweep, the
+    /// launch's, once more.
+    func replaySweep() {
+        markSweep += 1
+    }
+
     /// The mark's light sweep, once per launch, a moment after the window
     /// has appeared.
     func startupSweep() {
@@ -6302,6 +6361,12 @@ final class AppModel: TuningHost {
             !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         if activeModality == .agent {
             return words && projectId != nil
+        }
+        // A RefMod is made of the row's media; its words are optional.
+        if makesRefMod {
+            return projectId != nil && promptAttachments.contains {
+                ["image", "video", "audio"].contains($0.kind)
+            }
         }
         // What Start runs: a clip from references its reference model
         // (usesReferences has one), not the one that makes clips from
@@ -6441,6 +6506,10 @@ final class AppModel: TuningHost {
     private func startVideo() {
         guard let core, let projectId else { return }
         persistAdjustments()
+        if makesRefMod {
+            startRefMod(core, projectId)
+            return
+        }
         let d = dimensions
         var req: [String: Any] = [
             "project": projectId,
@@ -6470,7 +6539,7 @@ final class AppModel: TuningHost {
             // its look or its trim); the clip continued, its tail; the
             // mentions named as the model names them.
             for att in promptAttachments where assetId(of: att) == nil
-                && ["image", "video", "audio"].contains(att.kind) {
+                && att.isMedia {
                 flash(String(localized: "Still importing \(att.url.lastPathComponent)…"), level: .warning)
                 return
             }
@@ -6480,6 +6549,7 @@ final class AppModel: TuningHost {
             req["whole"] = promptAttachments
                 .filter { cutsToLength($0) == false }
                 .compactMap { assetId(of: $0) }
+            req["latents_only"] = latentsOnlyIds
             if let c = r.cont {
                 req["continue"] = c
                 // From the latents it kept, as Continue's menu said.
@@ -6531,6 +6601,55 @@ final class AppModel: TuningHost {
         }
         began(job: job, kind: .video,
               continues: req["continue"] as? String)
+    }
+
+    /// A RefMod asset saved as it is (DESIGN §4s): its .safetensors, named
+    /// for the asset, where the panel says.
+    func saveRefMod(_ a: AssetDTO) {
+        guard let from = a.url else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = a.name + ".safetensors"
+        if let t = UTType(filenameExtension: "safetensors") {
+            panel.allowedContentTypes = [t]
+        }
+        guard panel.runModal() == .OK, let to = panel.url else { return }
+        do {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: to.path) {
+                try fm.removeItem(at: to)
+            }
+            try fm.copyItem(at: from, to: to)
+            flash(String(localized: "Saved “\(to.lastPathComponent)”"))
+        } catch {
+            flash(error.localizedDescription, level: .error)
+        }
+    }
+
+    /// Start with the RefMod maker chosen (DESIGN §4s): the row's pictures,
+    /// clips and sounds, in its order, made one RefMod -- a task as any,
+    /// its result in Assets.
+    private func startRefMod(_ core: CoreService, _ projectId: String) {
+        let media = promptAttachments.filter {
+            ["image", "video", "audio"].contains($0.kind)
+        }
+        for att in media where assetId(of: att) == nil {
+            flash(String(localized: "Still importing \(att.url.lastPathComponent)…"), level: .warning)
+            return
+        }
+        var req: [String: Any] = [
+            "project": projectId,
+            "model": modelChoice,
+            "references": media.compactMap { assetId(of: $0) },
+            "prompt": prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+            "preference": sentPreference.rawValue,
+        ]
+        if let t = sentTuning { req["tuning"] = t }
+        let r = core.generateVideo(req)
+        guard r.ok, let job = r.job else {
+            flash(r.message, level: .error)
+            return
+        }
+        began(job: job, kind: .video)
     }
 
     /// Start, for a song. The prompt is its words -- the style, then the
@@ -7084,6 +7203,9 @@ final class AppModel: TuningHost {
                 }
             } else {
                 item = PromptAttachment(id: UUID(), url: url, kind: kind)
+                if kind == "refmod" {
+                    item.refmodKind = RefModFile.namedAs(url)
+                }
                 fresh.append(item)
             }
             if base {
@@ -7374,6 +7496,8 @@ final class AppModel: TuningHost {
     /// -- not QuickLook, whose cache would keep a copy on disk, which the
     /// anonymous session must not leave behind.
     private func loadReferenceThumb(_ item: PromptAttachment) {
+        // A RefMod is latents: its symbol is its picture.
+        if item.kind == "refmod" { return }
         let url = item.url
         let kind = item.kind
         let id = item.id
@@ -7728,7 +7852,7 @@ final class AppModel: TuningHost {
     /// nothing to enhance yet.
     func insertOutline() {
         guard let core, prompt.isEmpty, let m = outlineModel else { return }
-        let items = promptAttachments.filter { Self.refKind($0.kind) != nil }
+        let items = promptAttachments.filter { Self.refKind($0.namedAs) != nil }
         // A clip's keyframes by their places in the row; none, none.
         let k = keyframes
         let place = { (a: PromptAttachment?) -> Int in
@@ -11971,7 +12095,10 @@ final class AppModel: TuningHost {
         var placed: (doc: AssetDTO, layer: String)?
         // An agent at work holds the project: the result stays in Assets,
         // laid nowhere (Use it once the agent is done).
-        if state == "finished", let asset, agentHolds {
+        if state == "finished", let asset, asset.kind == "refmod" {
+            // A RefMod is a reference, not a picture to lay anywhere.
+            flash(String(localized: "RefMod “\(asset.name)” made, in Assets: drag it into the prompt's row to use it."))
+        } else if state == "finished", let asset, agentHolds {
             flash(String(localized: "“\(asset.name)” is in Assets: the agent is working on this project, so it was not laid on the stage."))
         } else if state == "finished", let asset, let core, let projectId,
            asset.kind == "image" || asset.kind == "video"

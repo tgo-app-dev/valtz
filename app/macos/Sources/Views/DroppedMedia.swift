@@ -662,3 +662,51 @@ enum DragBoard {
         }
     }
 }
+
+/// A RefMod (DESIGN §4s): MiniMax H3 reference latents in a .safetensors
+/// -- told by its header, `refmod_meta` (or `audio_refmod_meta`) in its
+/// metadata beside its `latent` or `ref_<i>` tensors, as the core tells it
+/// (media/refmod.h): a .safetensors is weights as often.
+enum RefModFile {
+    /// What a RefMod is named as in the prompt -- its first picture's or
+    /// clip's kind, else "audio"; nil when the file is no RefMod.
+    nonisolated static func namedAs(_ url: URL) -> String? {
+        guard url.isFileURL,
+              url.pathExtension.lowercased() == "safetensors",
+              let h = header(url),
+              let meta = h["__metadata__"] as? [String: Any],
+              let text = (meta["refmod_meta"] ?? meta["audio_refmod_meta"])
+                  as? String,
+              let m = try? JSONSerialization.jsonObject(
+                  with: Data(text.utf8)) as? [String: Any]
+        else { return nil }
+        if m["kind"] as? String == "bundle" {
+            guard h["ref_0"] != nil,
+                  let members = m["members"] as? [[String: Any]],
+                  !members.isEmpty else { return nil }
+            let kinds = members.compactMap { $0["kind"] as? String }
+            return kinds.first { $0 != "audio" }
+                ?? (kinds.contains("audio") ? "audio" : nil)
+        }
+        guard h["latent"] != nil,
+              let kind = m["kind"] as? String,
+              ["image", "video", "audio"].contains(kind) else { return nil }
+        return kind
+    }
+
+    /// The safetensors header: its tensors and its metadata.
+    nonisolated private static func header(_ url: URL) -> [String: Any]? {
+        guard let f = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? f.close() }
+        guard let head = try? f.read(upToCount: 8), head.count == 8
+        else { return nil }
+        let n = head.withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
+        // A RefMod's header is small; a checkpoint's may be megabytes.
+        guard n > 0, n < 16 << 20,
+              let text = try? f.read(upToCount: Int(n)),
+              text.count == Int(n) else { return nil }
+        return try? JSONSerialization.jsonObject(with: text)
+            as? [String: Any]
+    }
+}
+

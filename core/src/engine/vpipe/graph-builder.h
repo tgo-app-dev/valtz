@@ -94,6 +94,18 @@ struct RefMedia {
   // sound (no PCM port then). The VAE round trip skipped either way.
   LatentWindow          latent;
   LatentWindow          audio_latent;
+  // A RefMod's MEMBER (DESIGN §4s): `latent` is the whole of its latent,
+  // written out for load-tensor (a visual one [24, T, h, w], a sound
+  // [2, 32, T]); `kind` the member's. A visual one is DECODED for the
+  // vision tower -- the encoder names a picture or a clip by what the
+  // tower reads -- on a port of its own, its latent attached after it,
+  // so the DiT reads the RefMod's rows and the VAE is skipped; a sound is
+  // an audio reference of its own. Kept whole.
+  bool                  refmod = false;
+  // Given to the video model ALONE (ComfyUI's RefMod "Apply"): its latent
+  // on a port of its own, not presented to the prompt encoder (vpipe's
+  // `present: false`) -- nothing decoded, no tag, the rows the DiT's.
+  bool                  alone = false;
 };
 
 // A clip continued THROUGH its tail (FL2VA's GUIDE, DESIGN §4e): the
@@ -271,6 +283,14 @@ struct EncodingIo {
   std::vector<Port> ports;
 };
 
+// A RefMod's source encoded (DESIGN §4s): the latent the graph saves for
+// the engine to make the RefMod of, and what it was made from.
+struct RefModPart {
+  std::filesystem::path file;
+  bool                  visual = true;   // a picture or a clip; else a sound
+  bool                  video = false;   // a clip of several frames
+};
+
 // Sink stage ids; empty when the graph has no such output.
 struct BuiltGraph {
   Json                  spec;
@@ -333,7 +353,19 @@ struct BuiltGraph {
   // carry (DESIGN §4e). Empty: none written.
   std::filesystem::path latent;
   std::filesystem::path audio_latent;
+  // A RefMod made (DESIGN §4s): each source's latent as H3's VAE made it,
+  // saved for the engine to pool (or keep), stack and write into
+  // `output` -- media::make_refmod.
+  std::vector<RefModPart> refmod_parts;
 };
+
+// A RefMod MADE (DESIGN §4s), as ComfyUI-MiniMaxH3Mod's creators make one:
+// each input -- role "picture", "clip" or "sound", in the row's order --
+// fitted as its `params.sources` entry says ({"width", "height", "fit":
+// stretch | crop}; a clip's frames {"first", "step", "count"}; a sound's
+// {"start_s", "duration_s"}) and encoded by MiniMax H3's video or audio
+// VAE (the job's model folder's), each latent saved for the engine.
+Result<BuiltGraph> build_make_refmod(const JobSpec& job);
 
 // Given an EncodingCache, a generation KEEPS what its encoders make: each
 // encoder whose output is kept already is left out -- its inputs too,

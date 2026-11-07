@@ -529,9 +529,11 @@ final class CoreService: @unchecked Sendable {
     /// when they cannot be read (too many, a kind it does not take).
     func videoReferenceTags(project: String, model: String,
                             references: [String],
-                            continueFrom: String?) -> [String: String] {
+                            continueFrom: String?,
+                            latentsOnly: [String] = []) -> [String: String] {
         var req: [String: Any] = ["project": project, "model": model,
-                                  "references": references]
+                                  "references": references,
+                                  "latents_only": latentsOnly]
         if let c = continueFrom { req["continue"] = c }
         let r = send(core.video_reference_tags, req)
         return r["tags"] as? [String: String] ?? [:]

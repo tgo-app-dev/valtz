@@ -122,7 +122,8 @@ struct SimpleView: View {
                     // tall prompt (or open drawer) needs the height.
                     // The mark takes no drops: media go into the prompt,
                     // or onto a stage's layers.
-                    HeroMark(sweep: model.markSweep)
+                    HeroMark(sweep: model.markSweep,
+                             replay: model.replaySweep)
                         // A fleet job's overlay shows the mark, in blue.
                         .opacity(model.fleetServing == nil ? 1 : 0)
                         .layoutPriority(1)
@@ -538,19 +539,24 @@ private struct CompactStatus: View {
 
 /// The Valtz mark in glass with a soft shadow, rendered with Metal
 /// (Mark/MarkView), about twice the size the painted mark was shown at.
-/// A light sweeps across it at startup and when a generation is
-/// requested; otherwise it is still. (The frame is larger than the mark:
-/// it leaves room for the shadow; the mark itself is ~245 x 192 pt.)
+/// A light sweeps across it at startup, when a generation is requested
+/// and when it is clicked (`replay`); otherwise it is still. (The frame
+/// is larger than the mark: it leaves room for the shadow; the mark
+/// itself is ~245 x 192 pt.)
 private struct HeroMark: View {
     let sweep: Int
+    var replay: () -> Void = {}
 
     var body: some View {
-        MarkView(animating: false, material: .glass, sweep: sweep,
-                 shadow: true)
-            .aspectRatio(294.0 / 253.0, contentMode: .fit)
-            .frame(maxWidth: 294, maxHeight: 253)
-            .accessibilityElement()
-            .accessibilityLabel("Valtz")
+        Button(action: replay) {
+            MarkView(animating: false, material: .glass, sweep: sweep,
+                     shadow: true)
+                .aspectRatio(294.0 / 253.0, contentMode: .fit)
+                .frame(maxWidth: 294, maxHeight: 253)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Valtz")
     }
 }
 

@@ -362,6 +362,36 @@ private:
                                    std::vector<std::filesystem::path>&);
   Result<Json> t_adjust_layer(Session&, Step&, const Json&,
                               std::vector<std::filesystem::path>&);
+  Result<Json> t_key_layer(Session&, Step&, const Json&,
+                           std::vector<std::filesystem::path>&);
+  Result<Json> t_group_layers(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
+  Result<Json> t_ungroup_layers(Session&, Step&, const Json&,
+                                std::vector<std::filesystem::path>&);
+  Result<Json> t_duplicate_layer(Session&, Step&, const Json&,
+                                 std::vector<std::filesystem::path>&);
+  Result<Json> t_merge_layers(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
+  Result<Json> t_set_layer_source(Session&, Step&, const Json&,
+                                  std::vector<std::filesystem::path>&);
+  Result<Json> t_lock_layer(Session&, Step&, const Json&,
+                            std::vector<std::filesystem::path>&);
+  Result<Json> t_flatten_layer(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  Result<Json> t_decompose_layer(Session&, Step&, const Json&,
+                                 std::vector<std::filesystem::path>&);
+  Result<Json> t_rename_asset(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
+  Result<Json> t_file_assets(Session&, Step&, const Json&,
+                             std::vector<std::filesystem::path>&);
+  Result<Json> t_remove_asset(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
+  Result<Json> t_grab_frame(Session&, Step&, const Json&,
+                            std::vector<std::filesystem::path>&);
+  Result<Json> t_get_recipe(Session&, Step&, const Json&,
+                            std::vector<std::filesystem::path>&);
+  Result<Json> t_make_refmod(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
   Result<Json> t_create_prompt(Session&, Step&, const Json&,
                                std::vector<std::filesystem::path>&);
   Result<Json> t_generate_image(Session&, Step&, const Json&,
@@ -378,6 +408,11 @@ private:
   // may choose from by name (each tool's `model`).
   Result<Json> t_list_models(Session&, Step&, const Json&,
                              std::vector<std::filesystem::path>&);
+  // A model's FAVOR and CUSTOM OPTIONS (Pika H3 Flex, HyperFlow,
+  // TaoMate, Sage, steps, its few-step LoRAs ...): what each generating
+  // tool's `favor` and `options` may ask of it, and what is not here.
+  Result<Json> t_model_options(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
   // The PROMPT ENHANCER (Controller::enhance_prompt) on the agent's words:
   // the fields of the tool that makes it, and what to look at in them.
   Result<Json> t_enhance_prompt(Session&, Step&, const Json&,
@@ -436,7 +471,34 @@ private:
       const;
   // The speech model a voice-over speaks with by default: the best-ranked
   // that runs here.
+  const models::ModelEntry* script_model_() const;
   const models::ModelEntry* voice_model_() const;
+  // FAVOR AND ITS OPTIONS as the agent names them (each generating tool's
+  // `favor` and `options`, DESIGN §9b): the request's preference and
+  // Custom values for `m`, each name read loosely against what `m`
+  // offers here -- "the Pika LoRA" is the Pika H3 Flex switch, which
+  // runs its adapter WITH its own schedule; "the 4-step LoRA" a few-step
+  // LoRA of the model's -- and what each was read as, for the agent to
+  // say. Refused, naming what it offers or why: a name it has nothing
+  // for, two that do not go together, an adapter not downloaded.
+  struct Tuned {
+    std::string preference = "balanced";
+    Json tuning = Json::object();
+    bool given = false;           // a favor or options asked for
+    Json read = Json::array();    // [{"asked", "as", "value"}]
+    std::vector<std::string> notes;
+    Json runs;                    // what it settles to, told back
+  };
+  Result<Tuned> tuned_(const models::ModelEntry& m, const Json& args,
+                       bool edit, bool continuation, bool opens_on_picture)
+      const;
+  // The settled values said shortly: the favor, the steps, the adapters
+  // and switches on.
+  Json runs_with_(const Json& values, std::string_view preference,
+                  const Json& lora_names) const;
+  // What `t` was read as, told in a tool's result: "runs_with", and the
+  // names as read ("options_read") and what came of them.
+  static void told_(Json& result, const Tuned& t);
   Result<AssetId> composition_(const Session& s, const Json& args);
   Result<std::string> layer_(const Json& args);
   // A page argument (from 1) as the composition's (from 0), checked.
@@ -524,6 +586,11 @@ private:
   Status shape_sound_(ProjectId, AssetId comp, const std::string& layer,
                       double volume, double fade_in, double fade_out,
                       double seconds);
+  // Its sound's shape (level, fades, pitch, equalizer, dips) laid again
+  // over its new length -- where its keys are a shape's, not keyed by
+  // hand; `was` its length before.
+  Status reshape_sound_(ProjectId, AssetId comp, const std::string& layer,
+                        double was, double seconds);
   // Where a timeline's last clip or picture ends, seconds (0: none).
   double shown_end_(ProjectId, AssetId comp);
   // A clip's or sound's layer cut to end at `end` (timeline seconds), its
@@ -544,9 +611,14 @@ private:
   // A SHOT asked for: its prompt put together (assist::shot_prompt) with
   // the names the model reads its references by, the request sent, its
   // landing booked -- one command, the step's.
+  // `how`, when given: how a shot that continues carries on -- latent-
+  // guided from its kept latents or its encoded tail, its latents
+  // carried, or read as a reference -- for the agent to say. Latents
+  // asked for that the clip did not keep, or that do not cover its end,
+  // are done without, said.
   Result<JobId> submit_shot_(Session& s, const std::string& title,
                              GenerateVideoRequest req, assist::ShotText text,
-                             const Landing& l);
+                             const Landing& l, std::string* how = nullptr);
   // A shot that LANDED, laid as its Landing says: from its start, filling
   // the frame, over the clips and under the titles.
   Json lay_shot_(const Landing& l, AssetId comp, const std::string& layer,

@@ -87,7 +87,8 @@ usage()
       "  check <model-id> [file|folder]  (its files checked as a link's\n"
       "         are -- that path's, else where it is installed)\n"
       "  read-speed <model-id> [--seconds S]  (Capabilities' Test Read\n"
-      "         Speed: how fast its files come off where it is, past the\n"
+      "         Speed: how fast its files come off where it is, read as\n"
+      "         the engine loads them (vpipe's pread_into), past the\n"
       "         memory cache -- S seconds of reads at most, 10)\n"
       "  compress <model-id> --bits 8|4 [--keep-original]\n"
       "         (Settings > Capabilities' compress button: the download\n"
@@ -272,7 +273,8 @@ usage()
       "        [--speed|--quality] [--seed n] [--no-turbo]\n"
       "        [--first <file|asset-id>] [--last <file|asset-id>]\n"
       "        [--tune k=v,...]\n"
-      "        [--ref <file|asset-id> [--whole]]... [--continue <clip>]\n"
+      "        [--ref <file|asset-id> [--whole|--latents-only]]...\n"
+      "        [--continue <clip>]\n"
       "        [--tail-seconds s] [--latents] [--song-sound]\n"
       "        [--keep-latents] [--regenerate | --no-regenerate]\n"
       "        [--no-preview]\n"
@@ -285,7 +287,10 @@ usage()
       "        picture, clip or sound to draw on (Ref2VA: a subject, a\n"
       "        motion, a voice, a song; name them <Picture 1>, <Video 1>,\n"
       "        <Audio 1> in the prompt, numbered as the job lists them --\n"
-      "        a clip or a sound cut to the clip's length, or --whole);\n"
+      "        a clip or a sound cut to the clip's length, or --whole;\n"
+      "        a RefMod shown to the prompt encoder too, its pictures and\n"
+      "        clips decoded, or --latents-only: the video model's alone,\n"
+      "        as ComfyUI's Apply H3 RefMod -- no tag, its name in words);\n"
       "        --continue: a clip carried on from its tail (3.75 s, or\n"
       "        --tail-seconds) -- read as a reference, or --latents: from\n"
       "        the latents it kept (Ref2VA carries them; FL2VA, chosen, is\n"
@@ -2183,6 +2188,8 @@ main(int argc, char** argv)
                     cmd == "enhance" ||
                     cmd == "intent" || cmd == "download" || cmd == "caps" ||
                     cmd == "sources" || cmd == "wired" ||
+                    // Read as the engine reads a checkpoint.
+                    cmd == "read-speed" ||
                     cmd == "auto" || cmd == "agent" ||
                     (cmd == "micro" && !args.empty() && args[0] == "ask") ||
                     // A generate node run.
@@ -2701,13 +2708,17 @@ main(int argc, char** argv)
           kind += ", " + t;
         }
       }
+      // Through the engine's reader (its tensors), or raw (no file of
+      // the drive's is one it reads so).
+      const bool engine = jget<std::uint64_t>(p, "engine", 0) > 0;
       std::printf("  %s (%s), %d files: read %.2f GB in %.2f s = %.2f GB/s"
-                  " (of %.2f GB; %.2f GB in memory, not read; %s)\n",
+                  " (of %.2f GB; %.2f GB in memory, not read; %s; %s)\n",
                   jget<std::string>(v, "name", "?").c_str(), kind.c_str(),
                   jget(p, "files", 0), gb(p, "read"),
                   jget(p, "seconds", 0.0), jget(p, "gbps", 0.0),
                   gb(p, "total"), gb(p, "cached"),
-                  jget(p, "whole", false) ? "whole" : "sampled");
+                  jget(p, "whole", false) ? "whole" : "sampled",
+                  engine ? "as the engine reads its tensors" : "read raw");
     }
     std::printf("read speed %.2f GB/s%s\n", jget(s, "gbps", 0.0),
                 jget(s, "busy", false)
@@ -5183,6 +5194,12 @@ main(int argc, char** argv)
           return usage();
         }
         req.whole.push_back(req.references.back());
+      } else if (a == "--latents-only") {
+        // The --ref before it, a RefMod, given to the video model alone.
+        if (req.references.empty()) {
+          return usage();
+        }
+        req.latents_only.push_back(req.references.back());
       } else if (a == "--tail-seconds") {
         req.tail_seconds = std::atof(next().c_str());
       } else if (a == "--latents") {
@@ -5315,6 +5332,18 @@ main(int argc, char** argv)
     auto pid = open_or_fail(c, args[0]);
     if (!pid.ok()) {
       return fail(pid.error());
+    }
+    // A RefMod (DESIGN §4s): its .safetensors, as it is.
+    if (const auto rid = AssetId::parse(args[1])) {
+      for (std::size_t i = 2; i + 1 < args.size(); ++i) {
+        if (args[i] == "-o" || args[i] == "--output") {
+          if (auto st = c.save_refmod(*pid, *rid, fs::absolute(args[i + 1]));
+              st.ok()) {
+            std::printf("saved %s\n", args[i + 1].c_str());
+            return 0;
+          }
+        }
+      }
     }
     ExportRequest req;
     req.project = *pid;

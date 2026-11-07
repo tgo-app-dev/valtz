@@ -4133,3 +4133,145 @@ TEST(graph_builder, an_untuned_job_tells_every_model_stage)
   CHECK(!config_of(gen2).contains("ane_rows"));
 }
 
+// A RefMod's members as Ref2VA references (DESIGN §4s): a picture's or a
+// clip's latent DECODED on a port for the vision tower -- vae-decode's
+// clip for a clip, its frame for a picture -- then the latent itself on
+// the next port, attached (the VAE skipped); a sound's latent a port of
+// its own, unattached. All kept whole; a file read by its list as ever.
+TEST(graph_builder, a_refmods_members_are_decoded_and_carried)
+{
+  JobSpec j = job_for("minimax-h3-ref2va", kOpGenerateVideo);
+  j.params = {{"prompt", "<Picture 1> waves at <Video 1>"},
+              {"width", 640}, {"height", 352}, {"frames", 39},
+              {"fps", 24.0}, {"steps", 4}, {"seed", 7}};
+  std::vector<vp::RefMedia> refs(4);
+  refs[0].path = "/p/cat.png";
+  refs[0].kind = "image";
+  const auto member = [](vp::RefMedia& r, const char* kind, int i) {
+    r.path = "/p/hero.safetensors";
+    r.kind = kind;
+    r.list = false;
+    r.refmod = true;
+    r.whole = true;
+    r.latent.path = std::format("/t/refmod1-{}.vpt", i);
+    r.latent.hash = ContentHash::of(std::format("hero:{}", i));
+  };
+  member(refs[1], "video", 0);
+  member(refs[2], "image", 1);
+  member(refs[3], "audio", 2);
+  auto g = vp::build_video(j, std::nullopt, refs);
+  REQUIRE_OK(g);
+  const Json* enc = find_stage(g->spec, "video-ref-encoder");
+  REQUIRE(enc);
+  const Json ec = config_of(enc);
+  CHECK((ec["references"] == Json::array({"/p/cat.png"})));
+  // The clip member: decoded, its clip on port 2; its latent on 3.
+  CHECK(src_of(enc, 2) == "ref1" && oport_of(enc, 2) == 1);
+  const Json* dec = find_stage(g->spec, "ref1");
+  REQUIRE(dec);
+  CHECK(jget<std::string>(*dec, "type", "") == "vae-decode");
+  CHECK(src_of(dec, 0) == "ref1-latent" && src_of(dec, 1) == "model-select");
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "ref1-latent")),
+                          "path", "") == "/t/refmod1-0.vpt");
+  CHECK(src_of(enc, 3) == "ref2");
+  const Json lat = config_of(find_stage(g->spec, "ref2"));
+  CHECK(jget<std::string>(lat, "path", "") == "/t/refmod1-0.vpt");
+  CHECK(jget(lat["sideband"], "latent", false) &&
+        jget(lat["sideband"], "attach", false));
+  // The picture member: its one frame (oport 0); its latent attached.
+  CHECK(src_of(enc, 4) == "ref3" && oport_of(enc, 4) == 0);
+  CHECK(src_of(enc, 5) == "ref4");
+  // The sound member: its latent alone, not attached.
+  CHECK(src_of(enc, 6) == "ref5");
+  const Json snd = config_of(find_stage(g->spec, "ref5"));
+  CHECK(jget<std::string>(snd, "path", "") == "/t/refmod1-2.vpt");
+  CHECK(jget(snd["sideband"], "latent", false) &&
+        !jget(snd["sideband"], "attach", true));
+  // Each member a reference read whole: 2, 3 and 4 after the picture.
+  CHECK((ec["whole_references"] == Json::array({2, 3, 4})));
+  // Too many ports: refused by name.
+  std::vector<vp::RefMedia> many(4);
+  for (int i = 0; i < 4; ++i) {
+    member(many[static_cast<std::size_t>(i)], "video", i);
+  }
+  CHECK(!vp::build_video(j, std::nullopt, many).ok());
+
+  // Given to the video model ALONE (ComfyUI's Apply): each member its
+  // latent on one port, not presented -- nothing decoded, a picture's a
+  // still -- so four fit where four decoded did not.
+  for (auto& r : refs) {
+    r.alone = r.refmod;
+  }
+  auto a = vp::build_video(j, std::nullopt, refs);
+  REQUIRE_OK(a);
+  const Json* aenc = find_stage(a->spec, "video-ref-encoder");
+  REQUIRE(aenc);
+  CHECK(!find_stage(a->spec, "ref1-latent"));
+  for (int i = 0; i < 3; ++i) {
+    const std::string id = std::format("ref{}", i + 1);
+    CHECK(src_of(aenc, 2 + i) == id);
+    const Json* st = find_stage(a->spec, id);
+    REQUIRE(st);
+    CHECK(jget<std::string>(*st, "type", "") == "load-tensor");
+    const Json sb = config_of(st)["sideband"];
+    CHECK(jget(sb, "latent", false) && !jget(sb, "present", true));
+    CHECK(!sb.contains("attach"));
+    CHECK(jget(sb, "image", false) == (i == 1));
+  }
+  CHECK((config_of(aenc)["whole_references"] == Json::array({2, 3, 4})));
+  for (auto& r : many) {
+    r.alone = true;
+  }
+  CHECK(vp::build_video(j, std::nullopt, many).ok());
+}
+
+// A RefMod MADE (DESIGN §4s): each source fitted as the job says and
+// through H3's VAEs -- a picture stretched, a clip's frames every `step`th
+// from `first` and stacked, a sound at 32 kHz stereo -- each latent saved
+// for the engine, in the row's order.
+TEST(graph_builder, a_refmod_is_made_of_its_sources)
+{
+  JobSpec j = job_for("minimax-h3-ref2va", "make-refmod");
+  j.output_dir = "/t";
+  j.inputs = {{"picture", "/p/cat.png", {}, {}},
+              {"clip", "/p/clip.mp4", {}, {}},
+              {"sound", "/p/voice.wav", {}, {}}};
+  j.params = {{"sources",
+               Json::array({{{"width", 1024}, {"height", 768},
+                             {"fit", "crop"}},
+                            {{"width", 1024}, {"height", 768},
+                             {"fit", "crop"}, {"first", 0}, {"step", 3},
+                             {"count", 22}},
+                            {{"duration_s", 12.5}}})}};
+  auto g = vp::build_make_refmod(j);
+  REQUIRE_OK(g);
+  CHECK(g->output == "/t/" + j.id.str() + ".safetensors");
+  REQUIRE(g->refmod_parts.size() == 3);
+  CHECK(g->refmod_parts[0].visual && !g->refmod_parts[0].video);
+  CHECK(g->refmod_parts[1].visual && g->refmod_parts[1].video);
+  CHECK(!g->refmod_parts[2].visual);
+  // The picture: covered and cropped onto the canvas, encoded, saved.
+  const Json fit = config_of(find_stage(g->spec, "src0-fit"));
+  CHECK(jget(fit, "width", 0) == 1024 && jget(fit, "height", 0) == 768);
+  CHECK(jget<std::string>(fit, "fit", "") == "crop");
+  const Json* enc = find_stage(g->spec, "src0");
+  REQUIRE(enc);
+  CHECK(jget<std::string>(*enc, "type", "") == "vae-encode");
+  CHECK(src_of(enc, 0) == "src0-fit" && src_of(enc, 1) == "model-select");
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "src0-save")),
+                          "path", "") ==
+        "/t/" + j.id.str() + "-refmod0.vpt");
+  // The clip: 22 frames every third from 0, stacked into one clip.
+  const Json span = config_of(find_stage(g->spec, "src1-span"));
+  CHECK(jget(span, "start", -1) == 0 && jget(span, "step", 0) == 3 &&
+        jget(span, "end", 0) == 64);
+  CHECK(src_of(find_stage(g->spec, "src1"), 0) == "src1-clip");
+  // The sound: its 12.5 s through the audio VAE.
+  CHECK(std::abs(jget(config_of(find_stage(g->spec, "src2-read")),
+                      "duration_s", 0.0) - 12.5) < 1e-9);
+  CHECK(jget(config_of(find_stage(g->spec, "src2-pcm")),
+             "output_sample_rate", 0) == 32000);
+  CHECK(jget<std::string>(*find_stage(g->spec, "src2"), "type", "") ==
+        "audio-vae-encode");
+}
+

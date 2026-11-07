@@ -42,7 +42,7 @@ all_messages()
     kNoEngineForDownload, kDownloadNeedsToken, kDownloadNotGranted,
     kAwaitedDownloadFailed, kAwaitedDownloadStopped, kNoDownloadRunning,
     kUnknownDownloadSource, kNotOnDownloadSource, kWiredLimitRange,
-    kMediaMissing, kProjectMissingMedia,
+    kMediaMissing, kProjectMissingMedia, kRefModNeedsMedia, kRefModSource,
     kAgentEmptyRequest, kAgentNoSession, kAgentStopped, kAgentAtWork,
     kAgentOneEditor, kAgentStepNotWaiting, kAgentTooManyTurns, kAgentNoKey,
     kGenerateOneText, kGeneratePictureRow, kGenerateSoundRow,

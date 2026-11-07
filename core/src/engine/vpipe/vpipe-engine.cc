@@ -51,8 +51,10 @@
 #include "valtz/media/movie.h"
 #include "valtz/media/pdf.h"
 #include "valtz/media/probe.h"
+#include "valtz/media/refmod.h"
 #include "valtz/media/sound.h"
 #include "valtz/media/stamp.h"
+#include "engine/vpipe/checkpoint-reader.h"
 #include "engine/vpipe/encoding-cache.h"
 #include "engine/vpipe/flex-json.h"
 #include "engine/vpipe/graph-builder.h"
@@ -331,6 +333,13 @@ public:
             {"pending", _wired_pending}};
   }
 
+  // vpipe's own reader (pread_into), on the file alone: no session.
+  std::unique_ptr<models::CheckpointReader>
+  checkpoint_reader(const fs::path& file) const override
+  {
+    return vp::open_checkpoint(file);
+  }
+
   // vpipe's own tables (stages/model-source.h, model-sources/1): no
   // session asked. Weak imports: a libvpipe without them offers none, and
   // its fetch reads from Hugging Face.
@@ -443,7 +452,7 @@ public:
            op == kOpExportMedia ||
            op == kOpUpscaleVideo || op == kOpUpscaleImage ||
            op == kOpTranscribeAudio || op == kOpSummarizeVideo ||
-           op == kOpSeparateAudio ||
+           op == kOpSeparateAudio || op == kOpMakeRefMod ||
            (op == kOpRegenerateVideo && _regenerates);
   }
 
@@ -934,6 +943,16 @@ private:
     // at its model's rate (media::stereo_sound). How far into it a job's
     // results reach is its progress.
     fs::path heard;
+    // A RefMod's latents written out for its graph (DESIGN §4s): gone
+    // with the job, however it ends.
+    struct Scratch {
+      fs::path path;
+      ~Scratch()
+      {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+      }
+    } refmod_scratch{spec.output_dir / (spec.id.str() + "-refmods")};
     double heard_seconds = 0;
     const int separate_rate = jget(
         jget(jget(spec.model.engine, "vpipe", Json::object()), "separate",
@@ -1053,7 +1072,7 @@ private:
     } else if (spec.op == kOpGenerateVideo) {
       auto first = keyframe_(spec, "first");
       auto last = keyframe_(spec, "last");
-      auto refs = reference_media_(spec);
+      auto refs = reference_media_(spec, refmod_scratch.path);
       auto guide = guide_media_(spec);
       built = !first.ok() ? Result<vp::BuiltGraph>(first.error())
               : !last.ok() ? Result<vp::BuiltGraph>(last.error())
@@ -1062,6 +1081,8 @@ private:
                             : vp::build_video(spec, *first, *refs, *last,
                                               enc,
                                               *guide ? &**guide : nullptr);
+    } else if (spec.op == kOpMakeRefMod) {
+      built = vp::build_make_refmod(spec);
     } else if (spec.op == kOpGenerateAudio) {
       built = vp::build_audio(spec);
     } else if (spec.op == kOpGenerateSpeech) {
@@ -1567,6 +1588,10 @@ private:
 
     // vpipe's own renderers repaint at 10 Hz; so does this.
     bool cancelled = false;
+    // Since when a clip's movie has been whole on disk (and when that
+    // was last looked for).
+    std::optional<std::chrono::steady_clock::time_point> written_at;
+    std::chrono::steady_clock::time_point looked{};
     for (;;) {
       auto w = _session->wait_pipeline(h, 100);
       if (w.code == 0) {
@@ -1610,6 +1635,41 @@ private:
       }
       if (reports) {
         report(/*force=*/false);
+      }
+      // A CLIP written whole and its graph still not ended: stopped a
+      // minute after its movie was whole on disk, the clip kept, what held
+      // it said. (Reported: a vpipe before 06005deb kept a failed stage's
+      // reader -- a guide's sound that would not decode -- and the task
+      // sat at "Finishing" for eight hours, nothing running.) Whole is
+      // the FILE's word: a short clip's writer is done between two polls,
+      // its report never seen, and AVFoundation's movie reads only once
+      // it is finished.
+      if (spec.op == kOpGenerateVideo && phase &&
+          phase->phase == kPhaseFinish && !phase->counting() &&
+          !g.video_part.empty()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (!written_at && now - looked >= std::chrono::seconds(1)) {
+          looked = now;
+          if (fs::exists(g.video_part, ec) &&
+              media::last_picture_frame(g.video_part) >= 0) {
+            written_at = now;
+          }
+        } else if (written_at && now - *written_at >
+                                     std::chrono::seconds(60)) {
+          std::string open;
+          for (const auto& r : readers) {
+            if (!r->ended()) {
+              open += (open.empty() ? "" : ", ") + r->stage_id();
+            }
+          }
+          VALTZ_LOG_WARN("engine", "{}: its clip was written a minute ago "
+                                   "and the graph has not ended (sinks "
+                                   "still open: {}); stopped, the clip "
+                                   "kept",
+                         spec.id.str(), open.empty() ? "none" : open);
+          _session->stop_pipeline(h);
+          break;
+        }
       }
       // A clip vpipe reads itself: its frame at the writer's count.
       if (!g.preview_from.empty() && phase &&
@@ -1775,6 +1835,69 @@ private:
       if (!lat.empty()) {
         out.data["latents"] = std::move(lat);
       }
+      q.sink(out);
+    } else if (spec.op == kOpMakeRefMod) {
+      // Each source's latent as the VAE made it, pooled (or kept) and
+      // stacked into the RefMod (media/refmod.h).
+      std::vector<media::RefModSource> visual;
+      std::vector<media::Latent> sounds;
+      for (const auto& part : g.refmod_parts) {
+        auto z = media::read_vptensor(part.file);
+        fs::remove(part.file, ec);
+        if (!z.ok()) {
+          fail_(q, Code::Engine, std::format(
+              "a source was not encoded (see the log): {}",
+              z.error().message));
+          return;
+        }
+        if (part.visual) {
+          visual.push_back({std::move(*z), part.video});
+        } else {
+          sounds.push_back(std::move(*z));
+        }
+      }
+      const Json t = jget(spec.params, "refmod", Json::object());
+      media::RefModRecipe r;
+      r.name = jget<std::string>(t, "name", "");
+      r.compressed = jget(t, "compressed", true);
+      r.pool_h = r.pool_w = jget(t, "pool", 16);
+      r.latent_frames = jget(t, "frames", 16);
+      r.refine_steps = jget(t, "refine", 500);
+      r.max_tokens = jget<std::int64_t>(t, "max_tokens", 5120);
+      r.resolution = jget(t, "resolution", 1024);
+      r.concept_type = jget<std::string>(t, "concept_type", "generic");
+      r.description = jget<std::string>(t, "description", "");
+      auto made = media::make_refmod(
+          r, visual, sounds, g.output, [&] { return lane.cancel.load(); },
+          [&](int done, int total) {
+            JobEvent ev;
+            ev.job = spec.id;
+            ev.kind = JobEventKind::Progress;
+            ev.progress = total > 0 ? static_cast<float>(done) / total
+                                    : -1.0f;
+            ev.data = {{"phase", "refmod"}, {"done", done},
+                       {"total", total}};
+            q.sink(ev);
+          });
+      if (!made.ok()) {
+        if (made.code() == Code::Cancelled) {
+          JobEvent ev;
+          ev.job = spec.id;
+          ev.kind = JobEventKind::Cancelled;
+          q.sink(ev);
+          return;
+        }
+        fail_(q, made.code(), made.error().message);
+        return;
+      }
+      JobEvent out;
+      out.job = spec.id;
+      out.kind = JobEventKind::Output;
+      out.output = g.output;
+      if (auto info = media::probe_file(g.output); info.ok()) {
+        out.output_info = *info;
+      }
+      out.data = {{"refmod", made->to_json()}};
       q.sink(out);
     } else if (spec.op == kOpTranscribeAudio) {
       // Its summary, as text: the lines in order, the windows as events.
@@ -2062,8 +2185,45 @@ private:
     return std::optional<vp::GuideMedia>(std::move(m));
   }
 
+  // A RefMod's members (DESIGN §4s) as references of their own, in its
+  // order -- those `components` names ("all", "visual", "audio") -- each
+  // latent written out for load-tensor into `scratch`.
+  static Status
+  refmod_members_(const JobInput& in, const Json& e, const fs::path& scratch,
+                  std::size_t k, std::vector<vp::RefMedia>& out)
+  {
+    VALTZ_ASSIGN(const media::RefMod rm, media::read_refmod(in.path));
+    const auto which = jget<std::string>(e, "components", "all");
+    std::error_code ec;
+    fs::create_directories(scratch, ec);
+    for (std::size_t i = 0; i < rm.members.size(); ++i) {
+      const auto& m = rm.members[i];
+      if ((which == "visual" && !m.visual()) ||
+          (which == "audio" && m.visual())) {
+        continue;
+      }
+      VALTZ_ASSIGN(const media::Latent z, media::read_member(in.path, m));
+      vp::RefMedia r;
+      r.path = in.path;
+      r.hash = in.hash;
+      r.kind = m.kind;
+      r.list = false;
+      r.refmod = true;
+      r.whole = true;
+      r.alone = jget(e, "latents_only", false);
+      r.latent.path = scratch / std::format("refmod{}-{}.vpt", k, i);
+      r.latent.count = m.frames();
+      // Named by the file's bytes and the member taken from it.
+      r.latent.hash = ContentHash::of(std::format("{}:{}", in.hash.hex(),
+                                                  i));
+      VALTZ_TRY(media::write_vptensor(r.latent.path, z));
+      out.push_back(std::move(r));
+    }
+    return ok_status();
+  }
+
   static Result<std::vector<vp::RefMedia>>
-  reference_media_(const JobSpec& spec)
+  reference_media_(const JobSpec& spec, const fs::path& scratch)
   {
     const Json list = jget(spec.params, "reference_media", Json::array());
     // An FL2VA guide's clip is no reference.
@@ -2078,6 +2238,10 @@ private:
       }
       const Json e = k < list.size() ? list[k] : Json::object();
       ++k;
+      if (jget<std::string>(e, "kind", "") == "refmod") {
+        VALTZ_TRY(refmod_members_(in, e, scratch, k, out));
+        continue;
+      }
       vp::RefMedia r;
       r.path = in.path;
       r.hash = in.hash;

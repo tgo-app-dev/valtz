@@ -252,6 +252,7 @@ Controller::generate_node_op(ProjectId pid, const Json& req)
       r.keep_latents = jget(x, "keep_latents", false);
       r.reference_sound = jget(x, "reference_sound", false);
       r.whole = ids(jget(x, "whole", Json::array()));
+      r.latents_only = ids(jget(x, "latents_only", Json::array()));
       if (x.contains("regenerate") && x["regenerate"].is_boolean()) {
         r.regenerate = x["regenerate"].get<bool>();
       }

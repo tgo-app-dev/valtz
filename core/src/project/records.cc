@@ -9,9 +9,9 @@ namespace valtz::project {
 
 namespace {
 
-constexpr std::array<const char*, 8> kKindNames = {
+constexpr std::array<const char*, 9> kKindNames = {
   "text", "image", "video", "audio", "contact-sheet", "mask", "latent",
-  "other",
+  "other", "refmod",
 };
 
 constexpr std::array<const char*, 5> kClassNames = {
@@ -133,6 +133,7 @@ asset_kind_for(media::MediaType t)
   case media::MediaType::Video: return AssetKind::Video;
   case media::MediaType::Audio: return AssetKind::Audio;
   case media::MediaType::Text:  return AssetKind::Text;
+  case media::MediaType::RefMod: return AssetKind::RefMod;
   case media::MediaType::Unknown: break;
   }
   return AssetKind::Other;
@@ -833,6 +834,9 @@ to_json(Json& j, const MediaInfo& m)
   if (m.exif.is_object() && !m.exif.empty()) {
     j["exif"] = m.exif;
   }
+  if (m.refmod.is_object()) {
+    j["refmod"] = m.refmod;
+  }
 }
 
 void
@@ -844,6 +848,7 @@ from_json(const Json& j, MediaInfo& m)
            : t == "video" ? MediaType::Video
            : t == "audio" ? MediaType::Audio
            : t == "text"  ? MediaType::Text
+           : t == "refmod" ? MediaType::RefMod
                           : MediaType::Unknown;
   m.uti = jget<std::string>(j, "uti", "");
   m.codec = jget<std::string>(j, "codec", "");
@@ -869,6 +874,7 @@ from_json(const Json& j, MediaInfo& m)
   if (!m.exif.is_object()) {
     m.exif = Json::object();
   }
+  m.refmod = jget(j, "refmod", Json());
 }
 
 }

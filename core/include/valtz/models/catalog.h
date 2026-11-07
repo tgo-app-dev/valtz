@@ -42,6 +42,7 @@ enum class Capability : std::uint8_t {
   VideoSummary,    // a clip told scene by scene (a VLM: Qwen3.5)
   AudioSeparate,   // a song split into its sources (BS-RoFormer)
   MicroAgent,      // short text tasks of Valtz's own (LFM3-VL 2B)
+  MakeRefMod,      // MiniMax H3 reference latents made (DESIGN §4s)
 };
 
 inline constexpr Capability kAllCapabilities[] = {
@@ -54,7 +55,7 @@ inline constexpr Capability kAllCapabilities[] = {
   Capability::AudioOutput,   Capability::TextToAudio,
   Capability::TextToSpeech,  Capability::Transcribe,
   Capability::VideoSummary,  Capability::AudioSeparate,
-  Capability::MicroAgent,
+  Capability::MicroAgent,    Capability::MakeRefMod,
 };
 
 const char* to_str(Capability);
@@ -140,6 +141,10 @@ struct ModelEntry {
   std::vector<std::pair<Capability, int>> rank_for;
   std::string              preview_with;  // id of a TAE entry
   std::vector<std::string> requires_models;
+  // Another entry whose files these are (catalog `files_of`): a link of
+  // that one's is this one's. The RefMod maker runs on Ref2VA's folder
+  // (DESIGN §4s).
+  std::string              files_of;
   std::string              license;
   bool                     gated = false;
   std::string              notes;

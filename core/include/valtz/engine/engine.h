@@ -23,6 +23,7 @@
 #include "valtz/base/result.h"
 #include "valtz/engine/tensor.h"
 #include "valtz/media/format.h"
+#include "valtz/models/checkpoint-reader.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -141,6 +142,15 @@ inline constexpr std::string_view kOpSummarizeVideo = "summarize-video";
 // An Output event each, data {"output": the catalog's name for it --
 // separate's `stem`, then `residual`}.
 inline constexpr std::string_view kOpSeparateAudio = "separate-audio";
+// A RefMod MADE (DESIGN §4s): inputs "picture", "clip", "sound" -- the
+// row's, in order -- each fitted as params "sources" says and encoded by
+// MiniMax H3's video or audio VAE (ModelRef::dir, a partition's folder),
+// then pooled or kept and stacked as params "refmod" says
+// (media::RefModRecipe: "compressed", "pool", "frames", "refine",
+// "max_tokens", "resolution", "name", "description", "concept_type") into
+// one .safetensors, ComfyUI-MiniMaxH3Mod's version 5. Its refinement is
+// counted as phase "refmod".
+inline constexpr std::string_view kOpMakeRefMod = "make-refmod";
 inline constexpr std::string_view kOpFetchModel = "fetch-model";
 // One input (role "source") written again in another format: a still as
 // a 16-bit PNG / TIFF, OpenEXR, or 8-bit; a movie as ProRes 4444 (with
@@ -468,6 +478,18 @@ public:
   {
     (void)source;
     return std::string(repo);
+  }
+
+  // A checkpoint FILE as this engine reads it as it loads a model
+  // (models/checkpoint-reader.h): a model's read speed is measured
+  // through it (DESIGN §8b). Null where it reads the file no such way --
+  // or reads none -- and the measure reads it raw. No session asked;
+  // thread-safe.
+  virtual std::unique_ptr<models::CheckpointReader>
+  checkpoint_reader(const std::filesystem::path& file) const
+  {
+    (void)file;
+    return nullptr;
   }
 
   // The EXTENSIONS' backends (EngineConfig::backends), as this engine

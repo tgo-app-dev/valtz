@@ -1690,7 +1690,8 @@ shot_prompt(const ShotText& t)
 {
   const std::string music =
       trimmed(t.music).empty() ? "N/A" : std::string(trimmed(t.music));
-  const bool full = !t.continued.empty() || !t.pictures.empty();
+  const bool full = !t.continued.empty() || !t.pictures.empty() ||
+                    !t.clips.empty() || !t.sounds.empty();
   const std::string described = shots_from_one(t.description);
   std::map<std::string, std::string> s;
   if (!full) {
@@ -1747,15 +1748,50 @@ shot_prompt(const ShotText& t)
   };
   if (defs.empty()) {
     int n = 0;
-    for (const auto& pic : t.pictures) {
-      add(defs, std::format("<Subject {}> is who or what {} shows.", ++n,
-                            pic));
+    for (const auto* kind : {&t.pictures, &t.clips}) {
+      for (const auto& ref : *kind) {
+        add(defs, std::format("<Subject {}> is who or what {} shows.", ++n,
+                              ref));
+      }
     }
     if (!t.continued.empty()) {
       add(defs, std::format("<Subject {}> is everyone and everything seen "
                             "in {}, as they look there.",
                             ++n, t.continued));
     }
+  }
+  // A picture or clip the definitions never name -- "Fox Character is the
+  // fox" -- defined all the same: who or what it shows, a subject after
+  // theirs.
+  {
+    int top = 0;
+    for (std::size_t at = defs.find("<Subject "); at != std::string::npos;
+         at = defs.find("<Subject ", at + 1)) {
+      top = std::max(top, std::atoi(defs.c_str() + at + 9));
+    }
+    for (const auto* kind : {&t.pictures, &t.clips}) {
+      for (const auto& ref : *kind) {
+        if (!ref.empty() && defs.find(ref) == std::string::npos) {
+          add(defs, std::format("<Subject {}> is who or what {} shows.",
+                                ++top, ref));
+        }
+      }
+    }
+  }
+  // Each sound's role, unless the definitions give it: the soundtrack as
+  // it is, or a voice or music followed.
+  for (std::size_t i = 0; i < t.sounds.size(); ++i) {
+    if (defs.find(t.sounds[i]) != std::string::npos) {
+      continue;
+    }
+    add(defs, i == 0 && t.sound_reused
+                  ? std::format("{} is reused 1:1 as the target video's "
+                                "complete final audio track.",
+                                t.sounds[i])
+                  : std::format("{} is the voice, music or sound the "
+                                "target video follows -- its timbre, "
+                                "melody and rhythm.",
+                                t.sounds[i]));
   }
   if (!t.continued.empty()) {
     add(defs, std::format("{} is the source video whose final moment the "
@@ -1776,8 +1812,11 @@ shot_prompt(const ShotText& t)
     }
   };
   task(!t.continued.empty(), "video continuation");
-  task(!t.pictures.empty(), "reference generation");
-  task(!t.continued_sound.empty(), "audio reference");
+  task(!t.pictures.empty() || !t.clips.empty(), "reference generation");
+  task(!t.sounds.empty() && t.sound_reused, "audio reuse");
+  task(!t.continued_sound.empty() ||
+           (!t.sounds.empty() && (!t.sound_reused || t.sounds.size() > 1)),
+       "audio reference");
   // None given: what its description says happens.
   std::string summary(trimmed(t.summary));
   if (summary.empty()) {
@@ -1822,6 +1861,17 @@ shot_prompt(const ShotText& t)
                           "in the same timbre and tempo without copying "
                           "the original signal.",
                           t.continued_sound));
+  }
+  for (std::size_t i = 0; i < t.sounds.size(); ++i) {
+    add(keep, i == 0 && t.sound_reused
+                  ? std::format("{}: fully_copy - {} is reused 1:1 as the "
+                                "target video's complete final audio "
+                                "track.",
+                                t.sounds[i], t.sounds[i])
+                  : std::format("{}: reference - its timbre, melody and "
+                                "rhythm are followed without copying the "
+                                "original signal.",
+                                t.sounds[i]));
   }
   // A continuation's first shot says where it picks up.
   std::string detail = described;

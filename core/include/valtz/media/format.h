@@ -90,6 +90,8 @@ enum class MediaType : std::uint8_t {
   Video,
   Audio,
   Text,
+  // MiniMax H3 reference latents in a .safetensors (media/refmod.h).
+  RefMod,
 };
 
 const char* to_str(MediaType);
@@ -122,6 +124,9 @@ struct MediaInfo {
   // What the camera or editor recorded (media/exif.h: exif_fields): an
   // object, empty when there is nothing.
   Json         exif = Json::object();
+  // A RefMod's summary (media/refmod.h, RefMod::to_json): its members,
+  // their kinds, latent sizes and tokens. Null for anything else.
+  Json         refmod;
 };
 
 }

@@ -367,6 +367,16 @@ inline constexpr Message kGenerateNoReferenceModel{
 // A file a project uses that is not where it should be: a linked
 // original moved or on a drive not connected, a blob missing from its
 // package (Project::media_path).
+// A RefMod made with nothing in the row; one of something not media
+// (DESIGN §4s).
+inline constexpr Message kRefModNeedsMedia{
+    "core.refmod_needs_media",
+    "A RefMod is made of pictures, clips and sounds: put some in the "
+    "prompt's row."};
+inline constexpr Message kRefModSource{
+    "core.refmod_source",
+    "“{name}” cannot go into a RefMod: only pictures, clips and sounds "
+    "can."};
 inline constexpr Message kMediaMissing{
     "core.media_missing",
     "The file of “{name}” is missing: {path}"};

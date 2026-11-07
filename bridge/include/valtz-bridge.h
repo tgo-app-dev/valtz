@@ -265,7 +265,9 @@ public:
   //  "first" -- FL2VA -- or alone, L2VA), "references"?: [asset ids:
   //  pictures, clips, sounds,
   //  in order], "whole"?: [those clips and sounds kept whole, not cut
-  //  to the clip's length], "continue"?: a clip to carry on from (its tail),
+  //  to the clip's length], "latents_only"?: [those RefMods given to the
+  //  video model alone, unseen by the prompt encoder],
+  //  "continue"?: a clip to carry on from (its tail),
   //  "tail_seconds"?, "continue_latents"?: bool (from the latents it
   //  kept), "keep_latents"?: bool (this clip's kept with it),
   //  "reference_sound"?: bool (the first sound's own as
@@ -302,9 +304,10 @@ public:
   //  assets_json lists a prompt's "text" and "uses".
   std::string capture_prompt(const std::string& request_json);
   std::string set_prompt_text(const std::string& request_json);
-  // {"project", "model"?, "references": [ids], "continue"?} -> {"ok",
-  //  "tags": {asset: "<Picture 1>"}}: what a clip's references are
-  //  called (Controller::video_reference_tags).
+  // {"project", "model"?, "references": [ids], "continue"?,
+  //  "latents_only"?: [ids]} -> {"ok", "tags": {asset: "<Picture 1>"}}:
+  //  what a clip's references are called -- "" a RefMod of latents only
+  //  (Controller::video_reference_tags).
   std::string video_reference_tags(const std::string& request_json) const;
   // {"model", "row": ["image" | "video" | "audio", ...], "first"?,
   //  "last"?: a clip's keyframes, by their places in the row (-1 or

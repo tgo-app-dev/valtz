@@ -13,6 +13,7 @@
 #include <cstring>
 #include <format>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -44,33 +45,43 @@ round_up(std::uint64_t n, std::uint64_t page)
   return (n + page - 1) / page * page;
 }
 
-// The stretches of `f` not in memory, by its pages, and their bytes.
-// mincore on a mapping of the file says which of its pages the buffer
-// cache holds; a file it cannot say for is read whole.
+// Which of `f`'s pages the buffer cache holds (MINCORE_INCORE), by
+// mincore on a mapping of the file; empty where it cannot say.
+std::vector<char>
+residency(const Opened& f, std::uint64_t page)
+{
+  if (f.size == 0) {
+    return {};
+  }
+  void* map = ::mmap(nullptr, f.size, PROT_READ, MAP_SHARED, f.fd, 0);
+  if (map == MAP_FAILED) {
+    return {};
+  }
+  std::vector<char> in((f.size + page - 1) / page);
+  const bool known = ::mincore(map, f.size, in.data()) == 0;
+  ::munmap(map, f.size);
+  if (!known) {
+    in.clear();
+  }
+  return in;
+}
+
+// The stretches of `f` not in memory, by its pages, and their bytes; a
+// file `in` says nothing for is read whole.
 std::vector<Span>
-absent_spans(int index, const Opened& f, std::uint64_t page,
-             std::uint64_t* absent)
+absent_spans(int index, const Opened& f, const std::vector<char>& in,
+             std::uint64_t page, std::uint64_t* absent)
 {
   std::vector<Span> out;
   if (f.size == 0) {
     return out;
   }
-  auto whole = [&] {
+  if (in.empty()) {
     out.assign(1, Span{index, 0, round_up(f.size, page)});
     *absent += f.size;
     return out;
-  };
-  void* map = ::mmap(nullptr, f.size, PROT_READ, MAP_SHARED, f.fd, 0);
-  if (map == MAP_FAILED) {
-    return whole();
   }
-  const std::uint64_t pages = (f.size + page - 1) / page;
-  std::vector<char> in(pages);
-  const bool known = ::mincore(map, f.size, in.data()) == 0;
-  ::munmap(map, f.size);
-  if (!known) {
-    return whole();
-  }
+  const std::uint64_t pages = in.size();
   for (std::uint64_t p = 0; p < pages;) {
     if (in[p] & MINCORE_INCORE) {
       ++p;
@@ -82,6 +93,54 @@ absent_spans(int index, const Opened& f, std::uint64_t page,
     }
     out.push_back({index, from * page, (p - from) * page});
     *absent += std::min(f.size, p * page) - from * page;
+  }
+  return out;
+}
+
+// A tensor with more than 1% of its pages in memory: vpipe's benchmark's
+// rule -- such pages come from memory, F_NOCACHE or not.
+bool
+warm(const std::vector<char>& in, std::uint64_t page, std::uint64_t off,
+     std::uint64_t len)
+{
+  if (in.empty() || len == 0) {
+    return false;
+  }
+  const std::uint64_t p0 = off / page;
+  const std::uint64_t p1 = std::min<std::uint64_t>(
+      in.size(), (off + len + page - 1) / page);
+  std::uint64_t res = 0;
+  for (std::uint64_t p = p0; p < p1; ++p) {
+    res += (in[p] & MINCORE_INCORE) ? 1 : 0;
+  }
+  return res * 100 > (p1 - p0);
+}
+
+// One tensor to read through the engine's reader.
+struct Cold {
+  std::size_t   file = 0;
+  std::size_t   index = 0;
+  std::uint64_t bytes = 0;
+};
+
+// Of `cold` -- `total` bytes, in the files' order -- about `want` bytes
+// spread evenly, whole tensors; all of them when they hold no more.
+std::vector<Cold>
+pick_tensors(const std::vector<Cold>& cold, std::uint64_t total,
+             std::uint64_t want)
+{
+  if (total <= want) {
+    return cold;
+  }
+  std::vector<Cold> out;
+  const double share = static_cast<double>(want) / static_cast<double>(total);
+  double owed = 0;
+  for (const Cold& c : cold) {
+    owed += static_cast<double>(c.bytes) * share;
+    if (owed >= static_cast<double>(c.bytes) / 2) {
+      out.push_back(c);
+      owed -= static_cast<double>(c.bytes);
+    }
   }
   return out;
 }
@@ -200,6 +259,60 @@ read_runs(const std::vector<Opened>& files,
   std::free(buf);
 }
 
+// `picked` read through the engine's readers, one tensor after another
+// as a load reads them (the reader has its pieces in flight itself),
+// into one page-aligned buffer. Its seconds, from the first read.
+double
+read_tensors(const std::vector<std::unique_ptr<CheckpointReader>>& readers,
+             const std::vector<Opened>& files,
+             const std::vector<Cold>& picked, Shared& sh,
+             const ReadSpeedOptions& opt, double seconds, std::uint64_t page)
+{
+  std::uint64_t biggest = 0;
+  for (const Cold& c : picked) {
+    biggest = std::max(biggest, c.bytes);
+  }
+  if (biggest == 0) {
+    return 0;
+  }
+  const auto cap = static_cast<std::size_t>(round_up(biggest, page));
+  void* buf = nullptr;
+  if (::posix_memalign(&buf, page, cap) != 0) {
+    sh.error = "no memory for a read buffer";
+    sh.halt = true;
+    return 0;
+  }
+  // Touched first, as vpipe's own benchmark does: the faults are the
+  // buffer's, not the drive's.
+  std::memset(buf, 0, cap);
+  const auto t0 = Clock::now();
+  const auto deadline =
+      t0 + std::chrono::duration_cast<Clock::duration>(
+               std::chrono::duration<double>(seconds));
+  for (const Cold& c : picked) {
+    if (Clock::now() >= deadline) {
+      sh.halt = true;
+      break;
+    }
+    if (opt.stop && opt.stop()) {
+      sh.stopped = true;
+      sh.halt = true;
+      break;
+    }
+    if (!readers[c.file]->read(c.index, buf, cap)) {
+      sh.error = std::format("{}: the engine could not read a tensor",
+                             files[c.file].path.string());
+      sh.halt = true;
+      break;
+    }
+    sh.bytes += c.bytes;
+  }
+  const double took =
+      std::chrono::duration<double>(Clock::now() - t0).count();
+  std::free(buf);
+  return took;
+}
+
 fs::path
 common_folder(const std::vector<Opened>& files)
 {
@@ -252,12 +365,13 @@ ReadSpeed::to_json() const
                   {"internal", p.volume.internal},
                   {"network", p.volume.network}}},
       {"total", p.total}, {"cached", p.cached}, {"read", p.read},
-      {"seconds", p.seconds}, {"gbps", p.gb_per_s()}, {"files", p.files},
-      {"whole", p.whole},
+      {"engine", p.engine}, {"seconds", p.seconds}, {"gbps", p.gb_per_s()},
+      {"files", p.files}, {"whole", p.whole},
     });
   }
   return {{"total", total}, {"cached", cached}, {"read", read},
-          {"seconds", seconds}, {"gbps", gb_per_s()}, {"files", files},
+          {"engine", engine}, {"seconds", seconds}, {"gbps", gb_per_s()},
+          {"files", files},
           {"whole", whole}, {"stopped", stopped}, {"error", error},
           {"places", ps}};
 }
@@ -305,13 +419,39 @@ measure_read_speed(const std::vector<fs::path>& paths,
     place.files = static_cast<int>(files.size());
     place.path = common_folder(files);
     place.volume = volume_info(place.path);
+    // The engine's reader of each file. A drive with any is read through
+    // them alone: the rest of a checkpoint's folder -- its configs, its
+    // tokenizer -- a load reads another way, and it is little.
+    std::vector<std::unique_ptr<CheckpointReader>> readers(files.size());
+    bool engine = false;
+    for (std::size_t i = 0; opt.reader && i < files.size(); ++i) {
+      readers[i] = opt.reader(files[i].path);
+      if (readers[i] && readers[i]->tensors().empty()) {
+        readers[i].reset();
+      }
+      engine = engine || readers[i] != nullptr;
+    }
     std::vector<Span> spans;
-    std::uint64_t absent = 0;
+    std::vector<Cold> cold;
+    std::uint64_t absent = 0, cold_bytes = 0;
     for (std::size_t i = 0; i < files.size(); ++i) {
       place.total += files[i].size;
+      const std::vector<char> in = residency(files[i], page);
       for (const Span& s :
-           absent_spans(static_cast<int>(i), files[i], page, &absent)) {
+           absent_spans(static_cast<int>(i), files[i], in, page, &absent)) {
         spans.push_back(s);
+      }
+      if (!readers[i]) {
+        continue;
+      }
+      const auto& ts = readers[i]->tensors();
+      for (std::size_t k = 0; k < ts.size(); ++k) {
+        if (ts[k].bytes == 0 || ts[k].bytes > opt.max_tensor ||
+            warm(in, page, ts[k].offset, ts[k].bytes)) {
+          continue;
+        }
+        cold.push_back({i, k, ts[k].bytes});
+        cold_bytes += ts[k].bytes;
       }
     }
     place.cached = place.total - absent;
@@ -331,28 +471,37 @@ measure_read_speed(const std::vector<fs::path>& paths,
               1'000'000'000ull,
               static_cast<std::uint64_t>(
                   static_cast<double>(opt.max_bytes) * share));
-    const auto runs = plan_runs(spans, planned, bytes, opt.run, page);
     Shared sh;
-    const int streams = std::max(
-        1, std::min(opt.streams, static_cast<int>(runs.size())));
-    const auto t0 = Clock::now();
-    const auto deadline =
-        t0 + std::chrono::duration_cast<Clock::duration>(
-                 std::chrono::duration<double>(seconds));
-    if (!runs.empty()) {
-      std::vector<std::thread> workers;
-      for (int w = 0; w < streams; ++w) {
-        workers.emplace_back(read_runs, std::cref(files), std::cref(runs),
-                             std::ref(sh), std::cref(opt), deadline, page);
+    if (engine) {
+      const auto picked = pick_tensors(cold, cold_bytes, bytes);
+      place.seconds =
+          read_tensors(readers, files, picked, sh, opt, seconds, page);
+      place.whole = picked.size() == cold.size() && !sh.halt;
+      place.engine = sh.bytes;
+    } else {
+      const auto runs = plan_runs(spans, planned, bytes, opt.run, page);
+      const int streams = std::max(
+          1, std::min(opt.streams, static_cast<int>(runs.size())));
+      const auto t0 = Clock::now();
+      const auto deadline =
+          t0 + std::chrono::duration_cast<Clock::duration>(
+                   std::chrono::duration<double>(seconds));
+      if (!runs.empty()) {
+        std::vector<std::thread> workers;
+        for (int w = 0; w < streams; ++w) {
+          workers.emplace_back(read_runs, std::cref(files), std::cref(runs),
+                               std::ref(sh), std::cref(opt), deadline,
+                               page);
+        }
+        for (auto& t : workers) {
+          t.join();
+        }
       }
-      for (auto& t : workers) {
-        t.join();
-      }
+      place.seconds = runs.empty()
+          ? 0.0 : std::chrono::duration<double>(Clock::now() - t0).count();
+      place.whole = planned <= bytes && !sh.halt;
     }
-    place.seconds = runs.empty()
-        ? 0.0 : std::chrono::duration<double>(Clock::now() - t0).count();
     place.read = sh.bytes;
-    place.whole = planned <= bytes && !sh.halt;
     if (!sh.error.empty() && out.error.empty()) {
       out.error = sh.error;
     }
@@ -360,6 +509,7 @@ measure_read_speed(const std::vector<fs::path>& paths,
     out.total += place.total;
     out.cached += place.cached;
     out.read += place.read;
+    out.engine += place.engine;
     out.seconds += place.seconds;
     out.files += place.files;
     out.whole = out.whole && place.whole;

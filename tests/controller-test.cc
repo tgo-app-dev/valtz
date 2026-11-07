@@ -8,6 +8,7 @@
 #include "valtz/assist/transcript.h"
 #include "valtz/base/tree-copy.h"
 #include "valtz/controller/controller.h"
+#include "valtz/media/refmod.h"
 #include "valtz/media/camera.h"
 #include "valtz/media/exif.h"
 #include "valtz/media/markup.h"
@@ -14048,6 +14049,156 @@ TEST(agent, a_shot_runs_on_the_model_named)
   REQUIRE_OK(ctl.agent_stop(*id));
 }
 
+// FAVOR AND ITS OPTIONS BY NAME (DESIGN §9b): a person's "use the Pika
+// LoRA" is the Pika H3 Flex switch -- its adapter with its own six steps
+// and shifts, not a LoRA laid on -- "HyperFlow LoRA" HyperFlow's, "the
+// 4-step lora" the model's few-step LoRA at its steps; a size asked is
+// the timeline's. model_options says what a model offers and what is not
+// downloaded; an option not here, two that do not go together and a name
+// it has nothing for are refused saying so; a value an adapter sets is
+// said, not taken.
+TEST(agent, favor_and_options_are_read_as_the_person_names_them)
+{
+  auto root = test::temp_dir("agent-options");
+  for (const char* f :
+       {"MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors",
+        "Pika-Labs/Pika-H3-Flex/fl2va/adapter.safetensors",
+        "Pika-Labs/Pika-H3-Flex/fl2va/manifest.json",
+        "videorebirth/hyperflow/minimax_h3_hyperflow_8step_v1.0.safetensors"}) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  }
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "O.valtz", "options");
+  REQUIRE_OK(pid);
+  const Json words = "[Shot 1] A sailing boat heels in a stiff breeze.";
+  auto shot = [&](double seconds, Json more) {
+    Json a = {{"description", words}, {"seconds", seconds}};
+    a.update(more);
+    return call("generate_video", a);
+  };
+  script->replies = {
+      {call("model_options", {{"model", "FL2VA"}})},
+      {call("create_composition", {{"kind", "timeline"},
+                                   {"width", 832},
+                                   {"height", 480}})},
+      {shot(5, {{"options", Json::array({"pika lora"})}})},
+      {shot(2, {{"favor", "fine"}, {"options", {{"HyperFlow LoRA", true}}}})},
+      {shot(2, {{"options", {{"the 4-step lora", true}}}})},
+      {shot(2, {{"options", "taomate"}})},
+      {shot(2, {{"options", Json::array({"pika", "hyperflow"})}})},
+      {shot(2, {{"options", Json::array({"warp drive"})}})},
+      {shot(2, {{"options", {{"Pika", true}, {"steps", 12}}}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "please use pika lora to generate a 832x480 sailing boat "
+               "video, 5 seconds";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "waiting");
+  REQUIRE(jget<std::string>(st, "state", "") == "waiting");
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 9);
+  auto result = [&](int i) { return jget(steps[i], "result", Json()); };
+  auto error = [&](int i) {
+    return jget<std::string>(steps[i], "error", "");
+  };
+  // What FL2VA offers here: Pika H3 Flex and HyperFlow, TaoMate not
+  // downloaded; its few-step LoRAs; what each Favor runs.
+  CHECK(error(0).empty());
+  auto option = [&](const std::string& name) {
+    for (const auto& o : jget(result(0), "options", Json::array())) {
+      if (jget<std::string>(o, "name", "") == name) {
+        return o;
+      }
+    }
+    return Json();
+  };
+  REQUIRE(option("Pika H3 Flex").is_object());
+  CHECK(!option("Pika H3 Flex").contains("not_here"));
+  CHECK(!option("HyperFlow").contains("not_here"));
+  CHECK(jget<std::string>(option("TaoMate"), "not_here", "") ==
+        "not downloaded");
+  int few = 0;
+  for (const auto& f : jget(result(0), "few_step_loras", Json::array())) {
+    few += jget(f, "downloaded", false) ? 1 : 0;
+  }
+  CHECK(few == 2);
+  CHECK(jget(jget(jget(result(0), "favor", Json()), "fast", Json()),
+             "steps", 0) == 4);
+  // "pika lora": the switch, its six steps, its adapter -- at the
+  // timeline's size.
+  CHECK(error(2).empty());
+  const Json read = jget(result(2), "options_read", Json::array());
+  REQUIRE(read.size() == 1);
+  CHECK(read[0]["as"] == "Pika H3 Flex");
+  CHECK(jget(jget(result(2), "runs_with", Json()), "steps", 0) == 6);
+  CHECK(jget(result(2), "size", Json()) == Json::array({832, 480}));
+  const auto clips = engine->held_of(engine::kOpGenerateVideo);
+  REQUIRE(clips.size() == 4);
+  const auto* pika = engine->spec(clips[0]);
+  REQUIRE(pika != nullptr);
+  CHECK(jget(pika->params["tuning"], "pika_flex", false));
+  CHECK(jget(pika->params, "steps", 0) == 6);
+  CHECK(jget<std::string>(pika->params, "lora", "") ==
+        "minimax-h3-pika-flex");
+  CHECK(jget(pika->params, "width", 0) == 832);
+  // "HyperFlow LoRA" at Fine: HyperFlow, its eight.
+  CHECK(error(3).empty());
+  CHECK(jget<std::string>(jget(result(3), "runs_with", Json()), "favor",
+                          "") == "Fine");
+  const auto* hyper = engine->spec(clips[1]);
+  REQUIRE(hyper != nullptr);
+  CHECK(jget(hyper->params["tuning"], "hyperflow", false));
+  CHECK(jget(hyper->params, "steps", 0) == 8);
+  // "the 4-step lora": that LoRA at its four steps, at Med.
+  CHECK(error(4).empty());
+  const auto* four = engine->spec(clips[2]);
+  REQUIRE(four != nullptr);
+  CHECK(four->model.lora.filename().string().find("4step") !=
+        std::string::npos);
+  CHECK(jget(four->params, "steps", 0) == 4);
+  CHECK(!jget(four->params["tuning"], "pika_flex", false));
+  // Refused: TaoMate not downloaded, two adapters, a name for nothing.
+  CHECK(error(5).find("not downloaded") != std::string::npos);
+  CHECK(error(6).find("do not go together") != std::string::npos);
+  CHECK(error(7).find("has no option \"warp drive\"") != std::string::npos);
+  CHECK(error(7).find("Pika H3 Flex") != std::string::npos);
+  // Steps beside Pika H3 Flex: its own six, said.
+  CHECK(error(8).empty());
+  CHECK(jget<std::string>(result(8), "options_note", "")
+            .find("runs at 6") != std::string::npos);
+  const auto* own = engine->spec(clips[3]);
+  REQUIRE(own != nullptr);
+  CHECK(jget(own->params, "steps", 0) == 6);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
 // A LONG TEXT laid on pages (flow_text, DESIGN §9b): a cover made, a
 // background and a header on every page, the person's passage -- named
 // by its first and last words, loosely -- flowed from page 2 onto pages
@@ -14810,6 +14961,7 @@ TEST(agent, a_long_scene_is_shot_after_shot)
              {"seconds", 2}}),
        call("generate_video",
             {{"continues", true},
+             {"continue_by", "reference"},
              {"subjects", "<Subject 1> is the lighthouse keeper, grey "
                           "beard, yellow oilskin, in <Video 1>."},
              {"summary", "<Subject 1> reaches the lamp room."},
@@ -14820,6 +14972,7 @@ TEST(agent, a_long_scene_is_shot_after_shot)
        // shot before all the same).
        call("generate_video",
             {{"continues", true},
+             {"continue_by", "reference"},
              {"summary", "<Subject 1> lights the lamp."},
              {"description", "[Shot 1] He strikes a match."},
              {"music", "Low strings swell."},
@@ -14963,6 +15116,7 @@ TEST(agent, a_long_scene_is_shot_after_shot)
       {call("generate_video", {{"description", "[Shot 1] Dawn."},
                                {"seconds", 2}}),
        call("generate_video", {{"continues", true},
+                               {"continue_by", "reference"},
                                {"subjects", "<Subject 1> is the sea in "
                                             "<Video 1>."},
                                {"summary", "The sun rises."},
@@ -14987,6 +15141,1123 @@ TEST(agent, a_long_scene_is_shot_after_shot)
         std::string::npos);
   CHECK(engine->held_of(engine::kOpGenerateVideo).empty());
   REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// A shot that carries on is LATENT-GUIDED by default (DESIGN §9b, §4e):
+// each shot on a timeline keeps its latents; the next continues THROUGH
+// its end on FL2VA -- its last 22 frames redone from them, the length
+// asked after them (51 + 22 = 73, on the grid), its subjects' words put
+// in for their tags, landing marked from frame 22 where the shot before
+// ends. A clip that kept none is guided by its encoded tail, said; and
+// asked for, the old way: its last seconds read as a reference on Ref2VA.
+TEST(agent, a_shot_carries_on_latent_guided)
+{
+  auto root = test::temp_dir("agent-guided");
+  for (const char* f :
+       {"MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors",
+        "MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors"}) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  }
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "G.valtz", "guided");
+  REQUIRE_OK(pid);
+  // A made shot's file: 56 frames at 64 x 32, with sound.
+  REQUIRE(write_png(root / "keeper.png", 64, 32, {0x30, 0x60, 0x90, 0xff}));
+  REQUIRE(write_tone(root / "tone.wav", 2, 330, 0.5));
+  auto keeper = import_and_wait(ctl, *pid, root / "keeper.png");
+  auto tone = import_and_wait(ctl, *pid, root / "tone.wav");
+  REQUIRE(keeper && tone);
+  fs::path shot_file;
+  {
+    auto c = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                    {64, 32}, {24, 1}, "made");
+    REQUIRE_OK(c);
+    auto in = ctl.instantiate(*pid, *keeper, *c);
+    REQUIRE_OK(in);
+    project::LayerTime t;
+    t.duration = 56;
+    REQUIRE_OK(ctl.set_layer_time(*pid, *c, in->second, t));
+    REQUIRE_OK(ctl.instantiate(*pid, *tone, *c));
+    auto file = ctl.rendered(*pid, *c);
+    REQUIRE_OK(file);
+    shot_file = root / "shot.mov";
+    fs::copy_file(*file, shot_file);
+  }
+  const fs::path lat = root / "latent.vpt";
+  const std::string subjects =
+      "<Subject 1> is the lighthouse keeper, grey beard, yellow oilskin, "
+      "in <Video 1>.";
+  script->replies = {
+      {call("create_composition", {{"kind", "timeline"},
+                                   {"width", 64},
+                                   {"height", 32},
+                                   {"fps", 24}})},
+      {call("generate_video",
+            {{"description", "[Shot 1] A lighthouse keeper climbs a spiral "
+                             "stair."},
+             {"seconds", 2}}),
+       call("generate_video",
+            {{"continues", true},
+             {"subjects", subjects},
+             {"summary", "<Subject 1> reaches the lamp room."},
+             {"description", "[Shot 1] <Subject 1> opens the hatch at the "
+                             "top of the stair from <Video 1>."},
+             {"seconds", 2}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A lighthouse keeper climbs to the lamp, in two shots";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "waiting");
+  REQUIRE(jget<std::string>(st, "state", "") == "waiting");
+  auto clips = engine->held_of(engine::kOpGenerateVideo);
+  REQUIRE(clips.size() == 1);
+  const engine::JobSpec* s1 = engine->spec(clips[0]);
+  REQUIRE(s1 != nullptr);
+  CHECK(s1->model.id == "minimax-h3-fl2va");
+  CHECK(jget(s1->params, "keep_latents", false));
+  CHECK(jget(s1->params, "frames", 0) == 56);
+  CHECK(jget(jget(jget(st, "steps", Json())[2], "result", Json()),
+             "after_step", 0) == 2);
+  // The first lands with its latents kept: the second goes on THROUGH
+  // its end, from them.
+  write_tensor(lat, {24, 17, 2, 4});
+  engine->start(clips[0]);
+  engine->finish(clips[0], shot_file,
+                 {{"latents", {{"video", lat.string()}}}});
+  std::vector<JobId> next;
+  for (int i = 0; i < 200 && next.empty(); ++i) {
+    next = engine->held_of(engine::kOpGenerateVideo);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(next.size() == 1);
+  st = ctl.agent_state(*id);
+  const auto shot1 = AssetId::parse(jget<std::string>(
+      jget(jget(st, "steps", Json())[1], "result", Json()), "asset", ""));
+  REQUIRE(shot1);
+  const engine::JobSpec* s2 = engine->spec(next[0]);
+  REQUIRE(s2 != nullptr);
+  CHECK(s2->model.id == "minimax-h3-fl2va");
+  CHECK(jget(jget(s2->params, "continue_guide", Json()), "frames", 0) == 22);
+  CHECK(jget(s2->params, "continue_latents", false));
+  CHECK(jget(s2->params, "frames", 0) == 73);
+  CHECK(jget(s2->params, "keep_latents", false));
+  const auto p2 = jget<std::string>(s2->params, "prompt", "");
+  CHECK(p2.find("the lighthouse keeper, grey beard, yellow oilskin opens "
+                "the hatch at the top of the stair from the shot before") !=
+        std::string::npos);
+  CHECK(p2.find("<Subject") == std::string::npos);
+  CHECK(p2.find("<Video") == std::string::npos);
+  CHECK(jget<std::string>(
+            jget(jget(st, "steps", Json())[2], "result", Json()),
+            "continued_by", "")
+            .find("redone from the latents it kept") != std::string::npos);
+  // Landed where the first ends, its redone head marked out.
+  engine->start(next[0]);
+  engine->finish(next[0], shot_file);
+  st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  const auto shot2 = AssetId::parse(jget<std::string>(
+      jget(jget(st, "steps", Json())[2], "result", Json()), "asset", ""));
+  REQUIRE(shot2);
+  const AssetId tl =
+      *AssetId::parse(jget<std::string>(st, "composition", ""));
+  {
+    auto comp = ctl.project(*pid)->asset(tl);
+    REQUIRE_OK(comp);
+    bool marked = false;
+    for (const auto& l : comp->layers) {
+      marked = marked || (l.source == *shot2 && l.time.in == 22);
+    }
+    CHECK(marked);
+    auto plan = ctl.sound_plan(*pid, tl);
+    REQUIRE_OK(plan);
+    std::vector<double> starts;
+    for (const auto& l : plan->layers) {
+      starts.push_back(l.timing.start);
+    }
+    std::ranges::sort(starts);
+    REQUIRE(starts.size() == 2);
+    CHECK(std::abs(starts[1] - 56.0 / 24.0) < 0.05);
+  }
+
+  // More: from the second, which kept none -- guided by its encoded
+  // tail, said -- and from the first the old way, asked for.
+  script->replies.push_back(
+      {call("generate_video", {{"continues", true},
+                               {"description", "[Shot 1] He climbs on."},
+                               {"seconds", 2}}),
+       call("generate_video", {{"continue_from", shot1->str()},
+                               {"continue_by", "reference"},
+                               {"subjects", subjects},
+                               {"description", "[Shot 1] Again."},
+                               {"seconds", 2}})});
+  REQUIRE_OK(ctl.agent_say(*id, "Two more."));
+  next.clear();
+  for (int i = 0; i < 200 && next.size() < 2; ++i) {
+    next = engine->held_of(engine::kOpGenerateVideo);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(next.size() == 2);
+  st = agent_wait(ctl, *id, "waiting");
+  const engine::JobSpec* s3 = nullptr;
+  const engine::JobSpec* s4 = nullptr;
+  for (const auto& j : next) {
+    const auto* x = engine->spec(j);
+    REQUIRE(x != nullptr);
+    (x->model.id == "minimax-h3-fl2va" ? s3 : s4) = x;
+  }
+  REQUIRE(s3 && s4);
+  CHECK(jget(jget(s3->params, "continue_guide", Json()), "frames", 0) == 22);
+  CHECK(!jget(s3->params, "continue_latents", false));
+  CHECK(s4->model.id == "minimax-h3-ref2va");
+  CHECK(!s4->params.contains("continue_guide"));
+  bool continues = false;
+  for (const auto& e : jget(s4->params, "reference_media", Json())) {
+    continues = continues ||
+                (jget<std::string>(e, "role", "") == "continue" &&
+                 jget<std::string>(e, "asset", "") == shot1->str());
+  }
+  CHECK(continues);
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 5);
+  CHECK(jget<std::string>(jget(steps[3], "result", Json()), "continued_by",
+                          "")
+            .find("encoded") != std::string::npos);
+  CHECK(jget<std::string>(jget(steps[4], "result", Json()), "continued_by",
+                          "") == "its last seconds read as a reference");
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// A layer CHANGES over its time (key_layer): a photo turned and mirrored
+// by its box, zoomed in slowly -- eased into its end -- and faded in; a
+// speed refused on a picture; its look changed on every key, only what
+// is given (adjust_layer), the colour mixer's one hue and a grade's
+// tint; music pitched, equalized and DUCKED under a voice-over, kept as
+// it is trimmed; a page alone refuses keys.
+TEST(agent, a_layer_changes_over_time_and_its_sound_is_shaped)
+{
+  auto root = test::temp_dir("agent-keys");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "K.valtz", "keys");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 160, 90, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_tone(root / "music.wav", 6, 220, 0.3));
+  REQUIRE(write_tone(root / "voice.wav", 2, 440, 0.3));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  auto music = import_and_wait(ctl, *pid, root / "music.wav");
+  auto voice = import_and_wait(ctl, *pid, root / "voice.wav");
+  REQUIRE(red && music && voice);
+  auto film = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                     {320, 180}, {24, 1}, "Film");
+  REQUIRE_OK(film);
+  auto pic = ctl.instantiate(*pid, *red, *film);
+  REQUIRE_OK(pic);
+  {
+    auto a = ctl.project(*pid)->asset(*film);
+    REQUIRE_OK(a);
+    const auto it = std::ranges::find(a->layers, pic->second,
+                                      &project::Layer::id);
+    REQUIRE(it != a->layers.end());
+    project::LayerTime t = it->time;
+    t.offset = 0;
+    t.duration = 96;
+    REQUIRE_OK(ctl.set_layer_time(*pid, *film, pic->second, t));
+  }
+  auto mus = ctl.instantiate(*pid, *music, *film);
+  auto vo = ctl.instantiate(*pid, *voice, *film);
+  REQUIRE_OK(mus);
+  REQUIRE_OK(vo);
+  REQUIRE_OK(ctl.slide_layer(*pid, *film, mus->second, 0));
+  REQUIRE_OK(ctl.slide_layer(*pid, *film, vo->second, 48));
+  auto id_of = [](const std::string& l) { return l.empty() ? "0" : l; };
+  const std::string comp = film->str();
+  const std::string P = id_of(pic->second);
+  const std::string M = id_of(mus->second);
+  const std::string V = id_of(vo->second);
+  using J = Json;
+  script->replies = {
+      {call("set_layer_box", {{"composition", comp}, {"layer", P},
+                              {"x", 0}, {"y", 0}, {"width", 320},
+                              {"height", 180}, {"rotate", 10},
+                              {"flip_x", true}})},
+      {call("key_layer",
+            {{"composition", comp}, {"layer", P},
+             {"keys", J::array({J{{"at", 0}, {"zoom", 1}},
+                                J{{"at", "end"}, {"zoom", 1.5},
+                                  {"ease", "smooth"}}})}})},
+      {call("key_layer",
+            {{"composition", comp}, {"layer", P},
+             {"keys", J::array({J{{"at", 0}, {"opacity", 0}},
+                                J{{"at", 0.5}, {"opacity", 1}}})}})},
+      {call("key_layer", {{"composition", comp}, {"layer", P},
+                          {"keys", J::array({J{{"at", 0}, {"speed", 2}}})}})},
+      {call("adjust_layer", {{"composition", comp}, {"layer", P},
+                             {"temperature", 0.3}})},
+      {call("adjust_layer",
+            {{"composition", comp}, {"layer", P},
+             {"mix", {{"saturation", {{"green", -0.5}}}}},
+             {"grade", {{"shadows", {{"hue", "aqua"},
+                                     {"saturation", 0.3}}}}}})},
+      {call("set_layer_sound", {{"composition", comp}, {"layer", M},
+                                {"pitch", 2}, {"eq", {{"bass", 3}}},
+                                {"duck_under", J::array({V})},
+                                {"duck_volume", 0.2}, {"fade_out", 0.5}})},
+      {call("set_layer_time", {{"composition", comp}, {"layer", M},
+                               {"out", 5}})},
+      {call("set_layer_sound", {{"composition", comp}, {"layer", M},
+                                {"duck_under", J::array({voice->str()})},
+                                {"duck_volume", 0.3}})},
+      {call("set_layer_sound", {{"composition", comp}, {"layer", M},
+                                {"duck_under", J::array({red->str()})}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A slow zoom into the photo, the music under the voice";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "done");
+  Json steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 10);
+  auto result = [&](int i) { return jget(steps[i], "result", J()); };
+  for (int i : {0, 1, 2, 4, 5, 6, 7, 8}) {
+    CHECK(jget<std::string>(steps[i], "state", "") == "done");
+  }
+  auto a = ctl.project(*pid)->asset(*film);
+  REQUIRE_OK(a);
+  const std::string p = pic->second;
+  // Turned and mirrored, then zoomed from that box: two keys, the span
+  // eased INTO the end (its ease on the key it goes on from).
+  const media::KeyedCrop kc = Controller::crop_keys_of(*a, p);
+  REQUIRE(kc.place.keys.size() == 2);
+  CHECK(kc.place.keys[1].frame == 96);
+  CHECK(kc.place.keys[0].interp == media::Interp::Spline);
+  CHECK(kc.place.keys[0].value.scale_x < 0);
+  CHECK(std::abs(kc.place.keys[1].value.scale_x /
+                 kc.place.keys[0].value.scale_x - 1.5) < 1e-6);
+  CHECK(std::abs(kc.turn.at(48).degrees - 10) < 1e-9);
+  const J boxes = jget(jget(result(1), "keyed", J()), "box", J());
+  REQUIRE(boxes.size() == 2);
+  CHECK(jget(jget(boxes[0], "box", J()), "width", 0) == 320);
+  CHECK(jget(jget(boxes[1], "box", J()), "width", 0) == 480);
+  CHECK(jget(boxes[1], "at", 0.0) == 4.0);
+  // Faded in over half a second; a picture has no speed.
+  CHECK(jget<std::string>(steps[3], "state", "") == "failed");
+  // Warmer on both keys of the fade, the fade kept; one hue's colour
+  // muted alone, the shadows tinted.
+  const media::KeyedAdjustments look = Controller::adjustment_keys_of(*a, p);
+  REQUIRE(look.keys.size() == 2);
+  CHECK(look.keys[1].frame == 12);
+  CHECK(look.keys[0].value.alpha == 0);
+  CHECK(look.keys[1].value.alpha == 1);
+  for (const auto& k : look.keys) {
+    CHECK(std::abs(k.value.temperature - 0.3) < 1e-9);
+    CHECK(std::abs(k.value.mix.saturation.at(120) + 0.5) < 1e-6);
+    CHECK(std::abs(k.value.mix.saturation.at(240)) < 1e-6);
+    CHECK(std::abs(k.value.grade.shadows.hue - 180) < 1e-9);
+  }
+  // The music: up two semitones, its bass raised, down to 0.2 while the
+  // voice sounds (2-4 s), faded out -- and so still once trimmed to 5 s,
+  // and ducked again (to 0.3) by the voice-over's asset.
+  const J ducked = jget(result(6), "ducked", J());
+  REQUIRE(ducked.size() == 1);
+  CHECK(jget(ducked[0], "from", 0.0) == 2.0);
+  CHECK(jget(ducked[0], "to", 0.0) == 4.0);
+  CHECK(jget(ducked[0], "volume", 0.0) == 0.2);
+  const media::KeyedSound sk = Controller::sound_keys_of(*a, mus->second);
+  REQUIRE(!sk.keys.empty());
+  for (const auto& k : sk.keys) {
+    CHECK(k.value.pitch == 2);
+    CHECK(k.value.eq[0] == 3);
+  }
+  CHECK(std::abs(sk.at(72).volume - 0.3) < 1e-6);
+  CHECK(std::abs(sk.at(24).volume - 1) < 1e-6);
+  CHECK(sk.keys.back().frame == 120);
+  CHECK(sk.keys.back().value.volume == 0);
+  // Ducked under the voice-over named by its ASSET (as it landed): the
+  // layer showing it; a picture's names the layers that sound.
+  const J again = jget(result(8), "ducked", J());
+  REQUIRE(again.size() == 1);
+  CHECK(jget(again[0], "volume", 0.0) == 0.3);
+  CHECK(jget<std::string>(steps[9], "state", "") == "failed");
+  CHECK(to_text(steps[9]).find("the layers that sound") !=
+        std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+
+  // A page alone has one look: keys are refused.
+  auto page = ctl.create_composition(*pid, project::AssetClass::Still,
+                                     {200, 100}, {24, 1}, "Card");
+  REQUIRE_OK(page);
+  auto on = ctl.instantiate(*pid, *red, *page);
+  REQUIRE_OK(on);
+  script->replies = {{call(
+      "key_layer", {{"composition", page->str()},
+                    {"layer", id_of(on->second)},
+                    {"keys", J::array({J{{"at", 0}, {"zoom", 2}}})}})}};
+  auto still = ctl.agent_start(req);
+  REQUIRE_OK(still);
+  st = agent_wait(ctl, *still, "done");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 1);
+  CHECK(jget<std::string>(steps[0], "state", "") == "failed");
+  CHECK(to_text(steps[0]).find("over TIME") != std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*still));
+
+  // A sound's `duration`: its part from its `in`, not refused.
+  script->replies = {{call("set_layer_time", {{"composition", comp},
+                                              {"layer", M},
+                                              {"duration", 4}})}};
+  auto cut = ctl.agent_start(req);
+  REQUIRE_OK(cut);
+  st = agent_wait(ctl, *cut, "done");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 1);
+  CHECK(jget<std::string>(steps[0], "state", "") == "done");
+  CHECK(jget(jget(steps[0], "result", J()), "end", 0.0) == 4.0);
+  REQUIRE_OK(ctl.agent_stop(*cut));
+}
+
+// Layers and assets ORGANISED by the agent: two photos in a folder --
+// hidden and renamed by its id, then let go -- one duplicated and the copy
+// shown another picture in its box, one locked (its look refused), two
+// merged; a composition on a layer flattened, another decomposed; assets
+// renamed, filed into a folder made for them, one used kept and one
+// unused removed; words kept as a text.
+TEST(agent, layers_and_assets_are_organised)
+{
+  auto root = test::temp_dir("agent-organise");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "O.valtz", "organise");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 160, 90, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_png(root / "blue.png", 160, 90, {0, 0, 0xff, 0xff}));
+  REQUIRE(write_png(root / "green.png", 80, 80, {0, 0xc0, 0, 0xff}));
+  REQUIRE(write_png(root / "spare.png", 40, 40, {0x80, 0x80, 0x80, 0xff}));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  auto blue = import_and_wait(ctl, *pid, root / "blue.png");
+  auto green = import_and_wait(ctl, *pid, root / "green.png");
+  auto spare = import_and_wait(ctl, *pid, root / "spare.png");
+  REQUIRE(red && blue && green && spare);
+  auto page = ctl.create_composition(*pid, project::AssetClass::Still,
+                                     {320, 180}, {}, "Page");
+  auto inner = ctl.create_composition(*pid, project::AssetClass::Still,
+                                      {160, 90}, {}, "Inner");
+  REQUIRE_OK(page);
+  REQUIRE_OK(inner);
+  REQUIRE_OK(ctl.instantiate(*pid, *green, *inner));
+  auto r = ctl.instantiate(*pid, *red, *page);
+  auto b = ctl.instantiate(*pid, *blue, *page);
+  auto i1 = ctl.instantiate(*pid, *inner, *page);
+  auto i2 = ctl.instantiate(*pid, *inner, *page);
+  REQUIRE_OK(r);
+  REQUIRE_OK(b);
+  REQUIRE_OK(i1);
+  REQUIRE_OK(i2);
+  auto id_of = [](const std::string& l) { return l.empty() ? "0" : l; };
+  const std::string comp = page->str();
+  const std::string R = id_of(r->second), B = id_of(b->second);
+  using J = Json;
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "Tidy the page";
+  req.review = false;
+  auto run = [&](std::deque<std::vector<agent::ToolCall>> replies) -> J {
+    script->replies = std::move(replies);
+    auto id = ctl.agent_start(req);
+    if (!id.ok()) {
+      return J::array();
+    }
+    Json st = agent_wait(ctl, *id, "done");
+    (void)ctl.agent_stop(*id);
+    return jget(st, "steps", J::array());
+  };
+  auto layer_named = [&](const std::string& id) -> project::Layer {
+    auto a = ctl.project(*pid)->asset(*page);
+    if (!a.ok()) {
+      return {};
+    }
+    const auto it = std::ranges::find(a->layers, id == "0" ? "" : id,
+                                      &project::Layer::id);
+    return it != a->layers.end() ? *it : project::Layer{};
+  };
+
+  // A folder: its layers hidden at once, it renamed, then let go.
+  J steps = run({{call("group_layers", {{"composition", comp},
+                                        {"layers", J::array({R, B})},
+                                        {"name", "Photos"}})},
+                 {call("set_layer_visible", {{"composition", comp},
+                                             {"layer", "$folder"},
+                                             {"visible", false}})}});
+  REQUIRE(steps.size() == 2);
+  const std::string folder =
+      jget<std::string>(jget(steps[0], "result", J()), "folder", "");
+  REQUIRE(!folder.empty());
+  CHECK(layer_named(R).folder == folder);
+  CHECK(!layer_named(R).visible);
+  CHECK(!layer_named(B).visible);
+  steps = run({{call("rename_layer", {{"composition", comp},
+                                      {"layer", folder},
+                                      {"name", "Pictures"}})},
+               {call("set_layer_visible", {{"composition", comp},
+                                           {"layer", folder},
+                                           {"visible", true}})},
+               {call("ungroup_layers", {{"composition", comp},
+                                        {"folder", folder}})}});
+  REQUIRE(steps.size() == 3);
+  for (const auto& st : steps) {
+    CHECK(jget<std::string>(st, "state", "") == "done");
+  }
+  CHECK(layer_named(R).visible);
+  CHECK(layer_named(R).folder.empty());
+
+  // Duplicated; the copy shows another picture in the same box.
+  steps = run({{call("duplicate_layer", {{"composition", comp},
+                                         {"layer", R}})},
+               {call("set_layer_source", {{"composition", comp},
+                                          {"layer", "$layer"},
+                                          {"asset", green->str()}})}});
+  REQUIRE(steps.size() == 2);
+  const std::string copy =
+      jget<std::string>(jget(steps[0], "result", J()), "layer", "");
+  REQUIRE(!copy.empty());
+  CHECK(copy != R);
+  CHECK(layer_named(copy).source == *green);
+  CHECK(jget<std::string>(steps[1], "state", "") == "done");
+
+  // Locked: its look refused; two merged into one.
+  steps = run({{call("lock_layer", {{"composition", comp}, {"layer", B}})},
+               {call("adjust_layer", {{"composition", comp}, {"layer", B},
+                                      {"exposure", 1}})},
+               {call("merge_layers", {{"composition", comp},
+                                      {"layers", J::array({R, copy})}})}});
+  REQUIRE(steps.size() == 3);
+  CHECK(layer_named(B).locked);
+  CHECK(jget<std::string>(steps[1], "state", "") == "failed");
+  CHECK(jget<std::string>(steps[2], "state", "") == "done");
+  {
+    auto a = ctl.project(*pid)->asset(*page);
+    REQUIRE_OK(a);
+    CHECK(std::ranges::find(a->layers, copy, &project::Layer::id) ==
+          a->layers.end());
+  }
+
+  // A composition on a layer flattened; the other decomposed into it.
+  steps = run({{call("flatten_layer", {{"composition", comp},
+                                       {"layer", id_of(i1->second)}})},
+               {call("decompose_layer", {{"composition", comp},
+                                         {"layer", id_of(i2->second)}})}});
+  REQUIRE(steps.size() == 2);
+  CHECK(jget<std::string>(steps[0], "state", "") == "done");
+  CHECK(jget<std::string>(steps[1], "state", "") == "done");
+  {
+    auto a = ctl.project(*pid)->asset(*page);
+    REQUIRE_OK(a);
+    const auto f = AssetId::parse(jget<std::string>(
+        jget(steps[0], "result", J()), "shows", ""));
+    REQUIRE(f.has_value());
+    CHECK(layer_named(id_of(i1->second)).source == *f);
+    CHECK(std::ranges::find(a->layers, i2->second, &project::Layer::id) ==
+          a->layers.end());
+    CHECK(std::ranges::count_if(a->layers, [&](const project::Layer& l) {
+            return l.source == *green;
+          }) >= 1);
+  }
+
+  // Assets: renamed, filed in a folder made for them; one in use kept,
+  // one unused removed; words kept.
+  steps = run({{call("rename_asset", {{"asset", red->str()},
+                                      {"name", "Red square"}})},
+               {call("file_assets",
+                     {{"assets", J::array({blue->str(), green->str()})},
+                      {"folder", "Refs"}})},
+               {call("remove_asset", {{"asset", blue->str()}})},
+               {call("remove_asset", {{"asset", spare->str()}})},
+               {call("save_text", {{"text", "Shot list: dawn, noon."},
+                                   {"name", "Shots"}})}});
+  REQUIRE(steps.size() == 5);
+  auto* p = ctl.project(*pid);
+  CHECK(p->asset(*red)->name == "Red square");
+  CHECK(jget(jget(steps[1], "result", J()), "made", false));
+  const std::string refs = p->asset(*blue)->folder;
+  CHECK(!refs.empty());
+  CHECK(p->asset(*green)->folder == refs);
+  CHECK(jget<std::string>(steps[2], "state", "") == "failed");
+  CHECK(p->asset(*blue).ok());
+  CHECK(jget<std::string>(steps[3], "state", "") == "done");
+  CHECK(!p->asset(*spare).ok());
+  CHECK(jget<std::string>(steps[4], "state", "") == "done");
+}
+
+// Shots draw on more than pictures: a song as a music video's own sound
+// (reused 1:1), a clip kept whole beside a picture, a sound alone refused;
+// a shot at the timeline's own 1080p size, drafted and regenerated; one
+// of 20 s; a frame grabbed from a clip and opened on. Voice-overs in a
+// voice cloned from a sound, and a scene of two speakers each in theirs,
+// in the order the lines name them. What made a shot read back.
+TEST(agent, shots_draw_on_clips_and_sounds_and_voices_are_cloned)
+{
+  auto root = test::temp_dir("agent-refs");
+  for (const char* f :
+       {"MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors",
+        "MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "Efficient-Large-Model/Open-H3-Regenerate-2K/lora/"
+        "open_h3_regenerate_2k_lora.safetensors",
+        "Efficient-Large-Model/Open-H3-Regenerate-2K/latent_upsampler/"
+        "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+        "OpenMOSS-Team/MOSS-TTS-v1.5/model.safetensors",
+        "OpenMOSS-Team/MOSS-Audio-Tokenizer/model.safetensors",
+        "fishaudio/drama-3-int4/model.safetensors",
+        "krea/Krea-2-Turbo/model.safetensors"}) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  }
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "R.valtz", "refs");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "cat.png", 64, 32, {0xd0, 0x90, 0x40, 0xff}));
+  REQUIRE(write_tone(root / "song.wav", 4, 330, 0.4));
+  REQUIRE(write_tone(root / "anna.wav", 3, 220, 0.3));
+  REQUIRE(write_tone(root / "ben.wav", 3, 260, 0.3));
+  auto cat = import_and_wait(ctl, *pid, root / "cat.png");
+  auto song = import_and_wait(ctl, *pid, root / "song.wav");
+  auto anna = import_and_wait(ctl, *pid, root / "anna.wav");
+  auto ben = import_and_wait(ctl, *pid, root / "ben.wav");
+  REQUIRE(cat && song && anna && ben);
+  // A clip: 48 frames of the cat, with the song under it.
+  std::optional<AssetId> clip;
+  {
+    auto c = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                    {64, 32}, {24, 1}, "made");
+    REQUIRE_OK(c);
+    auto in = ctl.instantiate(*pid, *cat, *c);
+    REQUIRE_OK(in);
+    project::LayerTime t;
+    t.duration = 48;
+    REQUIRE_OK(ctl.set_layer_time(*pid, *c, in->second, t));
+    auto file = ctl.rendered(*pid, *c);
+    REQUIRE_OK(file);
+    fs::copy_file(*file, root / "walk.mov");
+    clip = import_and_wait(ctl, *pid, root / "walk.mov");
+    REQUIRE(clip.has_value());
+  }
+  using J = Json;
+  script->replies = {
+      {call("create_composition", {{"kind", "timeline"},
+                                   {"width", 1920},
+                                   {"height", 1080},
+                                   {"fps", 24}})},
+      {call("generate_video",
+            {{"description", "[Shot 1] <Picture 1> sings <Audio 1> into a "
+                             "vintage microphone."},
+             {"references", J::array({cat->str(), song->str()})},
+             {"soundtrack", song->str()},
+             {"seconds", 2}})},
+      {call("generate_video",
+            {{"description", "[Shot 1] <Picture 1> walks as <Video 1>."},
+             {"references", J::array({cat->str(), clip->str()})},
+             {"whole", J::array({clip->str()})},
+             {"seconds", 2}})},
+      {call("generate_video",
+            {{"description", "[Shot 1] A song alone."},
+             {"references", J::array({song->str()})}})},
+      {call("generate_video", {{"description", "[Shot 1] A harbour at dawn."},
+                               {"high_res", true},
+                               {"seconds", 2}})},
+      {call("generate_video", {{"description", "[Shot 1] A long take."},
+                               {"seconds", 20}})},
+      {call("grab_frame", {{"asset", clip->str()}, {"at", 1}})},
+      {call("generate_video", {{"description", "[Shot 1] It wakes up."},
+                               {"first", "$asset"},
+                               {"seconds", 2}})},
+      {call("generate_voiceover", {{"text", "Good evening."},
+                                   {"voice_from", anna->str()},
+                                   {"model", "moss-tts-v1.5"}})},
+      {call("generate_voiceover",
+            {{"text", "Anna: [warm] Good morning.\nBen: [sleepy] Is it?"},
+             {"speakers",
+              J::array({J{{"name", "Ben"}, {"voice_from", ben->str()},
+                          {"words", "Is it morning?"}},
+                        J{{"name", "Anna"}, {"voice_from", anna->str()},
+                          {"words", "A fine morning."}}})}})},
+      {call("generate_video",
+            {{"description", "[Shot 1] The cat sings on a stage."},
+             {"first", cat->str()},
+             {"soundtrack", song->str()},
+             {"seconds", 2}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A music video of the cat, and two voices";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st;
+  for (int i = 0; i < 400; ++i) {
+    st = ctl.agent_state(*id);
+    const J steps = jget(st, "steps", J::array());
+    if (steps.size() == 11 &&
+        jget<std::string>(steps[10], "state", "") != "running" &&
+        jget<std::string>(steps[10], "state", "") != "proposed") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  const J steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 11);
+  auto result = [&](int i) { return jget(steps[i], "result", J()); };
+  auto spec_of = [&](int i) -> const engine::JobSpec* {
+    const auto job = JobId::parse(jget<std::string>(result(i), "job", ""));
+    return job ? engine->spec(*job) : nullptr;
+  };
+  for (int i : {1, 2, 4, 5, 6, 7, 8, 9, 10}) {
+    // Made, or -- a generation -- waiting for it to land.
+    const auto state = jget<std::string>(steps[i], "state", "");
+    const bool done = state == "done" || state == "waiting";
+    if (!done) {
+      std::fprintf(stderr, "step %d: %s\n", i, to_text(steps[i]).c_str());
+    }
+    CHECK(done);
+  }
+  // The song as the shot's own sound: Ref2VA, told so in its guide's
+  // words.
+  const engine::JobSpec* s1 = spec_of(1);
+  REQUIRE(s1 != nullptr);
+  CHECK(s1->model.id == "minimax-h3-ref2va");
+  const auto p1 = jget<std::string>(s1->params, "prompt", "");
+  CHECK(p1.find("<Audio 1> is reused 1:1 as the target video's complete "
+                "final audio track.") != std::string::npos);
+  CHECK(p1.find("[reference generation + audio reuse]") !=
+        std::string::npos);
+  CHECK(jget<std::string>(result(1), "soundtrack", "") == song->str());
+  // A clip kept whole beside the picture.
+  const engine::JobSpec* s2 = spec_of(2);
+  REQUIRE(s2 != nullptr);
+  bool whole = false;
+  for (const auto& e : jget(s2->params, "reference_media", J())) {
+    if (jget<std::string>(e, "asset", "") == clip->str()) {
+      whole = jget(e, "whole", false);
+    }
+  }
+  CHECK(whole);
+  CHECK(jget<std::string>(s2->params, "prompt", "").find("<Video 1>") !=
+        std::string::npos);
+  // A sound alone: refused, saying what goes with it.
+  CHECK(jget<std::string>(steps[3], "state", "") == "failed");
+  CHECK(to_text(steps[3]).find("beside a picture or a clip") !=
+        std::string::npos);
+  // At the timeline's own size, drafted at 768 and regenerated.
+  const engine::JobSpec* s4 = spec_of(4);
+  REQUIRE(s4 != nullptr);
+  CHECK(jget(s4->params, "width", 0) == 1920);
+  CHECK(jget(s4->params, "height", 0) >= 1080);
+  CHECK(s4->params.contains("draft"));
+  CHECK(result(4).contains("high_res"));
+  // Twenty seconds, on the model's grid.
+  CHECK(jget(result(5), "seconds", 0.0) >= 20);
+  // A frame grabbed, then opened on.
+  const auto grabbed =
+      AssetId::parse(jget<std::string>(result(6), "asset", ""));
+  REQUIRE(grabbed.has_value());
+  const engine::JobSpec* s7 = spec_of(7);
+  REQUIRE(s7 != nullptr);
+  CHECK(s7->model.id == "minimax-h3-fl2va");
+  // A voice cloned from a sound; a scene of two, each in theirs, by the
+  // order the lines name them.
+  const auto j8 = JobId::parse(jget<std::string>(result(8), "job", ""));
+  const auto j9 = JobId::parse(jget<std::string>(result(9), "job", ""));
+  REQUIRE(j8 && j9);
+  auto r8 = ctl.jobs().get(*j8);
+  auto r9 = ctl.jobs().get(*j9);
+  REQUIRE(r8);
+  REQUIRE(r9);
+  CHECK(r8->recipe.model.starts_with("moss-tts"));
+  bool cloned = false;
+  for (const auto& in : r8->recipe.inputs) {
+    cloned = cloned || (in.asset == *anna && in.role.find("voice") !=
+                                                 std::string::npos);
+  }
+  CHECK(cloned);
+  CHECK(r9->recipe.model == "drama-3-int4");
+  CHECK(r9->recipe.params["speakers"] == J::array({"Anna", "Ben"}));
+  std::vector<AssetId> voices;
+  for (const auto& in : r9->recipe.inputs) {
+    if (in.role.find("voice") != std::string::npos) {
+      voices.push_back(in.asset);
+    }
+  }
+  CHECK(voices == std::vector<AssetId>({*anna, *ben}));
+  // A picture to open on beside a song alone: the one who sings it,
+  // drawn on (Ref2VA opens on none), said.
+  CHECK(result(10).contains("first_drawn_on"));
+  const engine::JobSpec* s10 = spec_of(10);
+  REQUIRE(s10 != nullptr);
+  CHECK(s10->model.id == "minimax-h3-ref2va");
+  REQUIRE_OK(ctl.agent_stop(*id));
+
+  // What made the music video's shot: its model, prompt and seed.
+  const std::string shot =
+      jget<std::string>(result(1), "asset", "");
+  REQUIRE(!shot.empty());
+  // A picture given its seed: that seed, Auto's model pinned.
+  script->replies = {{call("get_recipe", {{"asset", shot}})},
+                     {call("generate_image", {{"prompt", "a cat on a "
+                                                         "stool"},
+                                              {"seed", 42}})}};
+  auto again = ctl.agent_start(req);
+  REQUIRE_OK(again);
+  for (int i = 0; i < 200; ++i) {
+    st = ctl.agent_state(*again);
+    if (jget(st, "steps", J::array()).size() == 2 &&
+        jget<std::string>(jget(st, "steps", J::array())[1], "state", "") !=
+            "running") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  const J later = jget(st, "steps", J::array());
+  REQUIRE(later.size() == 2);
+  const J got = jget(later[0], "result", J());
+  CHECK(jget<std::string>(jget(got, "model", J()), "id", "") ==
+        "minimax-h3-ref2va");
+  CHECK(got.contains("seed"));
+  CHECK(jget<std::string>(got, "prompt", "").find("<Audio 1>") !=
+        std::string::npos);
+  const J pic = jget(later[1], "result", J());
+  CHECK(jget(pic, "seed", 0) == 42);
+  const auto pj = JobId::parse(jget<std::string>(pic, "job", ""));
+  REQUIRE(pj.has_value());
+  const engine::JobSpec* ps = engine->spec(*pj);
+  REQUIRE(ps != nullptr);
+  CHECK(ps->model.id == "krea2-turbo");
+  CHECK(jget(ps->params, "seed", 0) == 42);
+  REQUIRE_OK(ctl.agent_stop(*again));
+}
+
+// A CHARACTER made once as a RefMod (make_refmod) from its picture and
+// voice, or a clip and a voice of it -- Full Reference asked by its name
+// -- refused as a shot's reference while it is made, then drawn on, the
+// shot told how the model names it; a RefMod of a picture alone drawn on
+// as <Picture 1> (its one-frame latent decoded for the vision tower as
+// ComfyUI's H3 VAE decodes a still).
+TEST(agent, a_character_is_made_once_as_a_refmod_and_drawn_on)
+{
+  auto root = test::temp_dir("agent-refmod");
+  for (const char* f :
+       {"MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors"}) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  }
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "C.valtz", "character");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "cat.png", 64, 32, {0x80, 0x80, 0x80, 0xff}));
+  REQUIRE(write_tone(root / "meow.wav", 2, 500, 0.3));
+  auto cat = import_and_wait(ctl, *pid, root / "cat.png");
+  auto meow = import_and_wait(ctl, *pid, root / "meow.wav");
+  REQUIRE(cat && meow);
+  std::optional<AssetId> walk;
+  {
+    auto c = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                    {64, 32}, {24, 1}, "made");
+    REQUIRE_OK(c);
+    auto in = ctl.instantiate(*pid, *cat, *c);
+    REQUIRE_OK(in);
+    project::LayerTime t;
+    t.duration = 24;
+    REQUIRE_OK(ctl.set_layer_time(*pid, *c, in->second, t));
+    auto file = ctl.rendered(*pid, *c);
+    REQUIRE_OK(file);
+    fs::copy_file(*file, root / "walk.mov");
+    walk = import_and_wait(ctl, *pid, root / "walk.mov");
+    REQUIRE(walk.has_value());
+  }
+  // A RefMod of a picture alone, imported.
+  std::optional<AssetId> pic_only;
+  {
+    media::Latent still;
+    still.shape = {24, 1, 8, 8};
+    still.data.assign(still.count(), 0.25f);
+    media::RefModRecipe pr;
+    pr.name = "a still cat";
+    pr.compressed = false;
+    pr.max_tokens = 0;
+    const fs::path pm = root / "still.safetensors";
+    REQUIRE_OK(media::make_refmod(pr, {{still, false}}, {}, pm));
+    pic_only = import_and_wait(ctl, *pid, pm);
+    REQUIRE(pic_only.has_value());
+    auto pa = ctl.project(*pid)->asset(*pic_only);
+    REQUIRE_OK(pa);
+    REQUIRE(pa->kind == project::AssetKind::RefMod);
+  }
+  using J = Json;
+  script->replies = {
+      {call("make_refmod", {{"from", J::array({cat->str(), meow->str()})},
+                            {"description", "a grey cat"}})},
+      {call("make_refmod",
+            {{"from", J::array({walk->str(), meow->str()})},
+             {"description", "a grey cat"},
+             {"options", {{"Full reference", true}}}})},
+      {call("generate_video",
+            {{"description", "[Shot 1] The cat walks."},
+             {"references", "$asset"}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "Make the cat a character, then a shot of it";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "waiting");
+  J steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 3);
+  // Of its picture and voice: named by the picture.
+  const J rp = jget(steps[0], "result", J());
+  CHECK((jget(rp, "holds", J()) == J::array({"picture", "voice"})));
+  CHECK(jget<std::string>(rp, "named", "").starts_with("<Picture 1>"));
+  const auto mk = engine->held_of(engine::kOpMakeRefMod);
+  REQUIRE(mk.size() == 2);
+  {
+    const engine::JobSpec* ps = engine->spec(mk[0]);
+    REQUIRE(ps != nullptr);
+    REQUIRE(ps->inputs.size() == 2);
+    CHECK(ps->inputs[0].role == "picture");
+    CHECK(ps->inputs[1].role == "sound");
+  }
+  steps.erase(steps.begin());
+  const J r0 = jget(steps[0], "result", J());
+  CHECK((jget(r0, "holds", J()) == J::array({"clip", "voice"})));
+  CHECK(jget<std::string>(r0, "named", "").starts_with("<Video 1>"));
+  const auto refmod = AssetId::parse(jget<std::string>(r0, "asset", ""));
+  REQUIRE(refmod.has_value());
+  // Full Reference by its name; the sources in order.
+  const engine::JobSpec* ms = engine->spec(mk[1]);
+  REQUIRE(ms != nullptr);
+  CHECK(ms->model.id == "minimax-h3-refmod");
+  CHECK(!jget(jget(ms->params, "refmod", J()), "compressed", true));
+  CHECK(jget<std::string>(jget(ms->params, "refmod", J()), "description",
+                          "") == "a grey cat");
+  REQUIRE(ms->inputs.size() == 2);
+  CHECK(ms->inputs[0].role == "clip");
+  CHECK(ms->inputs[1].role == "sound");
+  // While it is made, no shot draws on it.
+  CHECK(jget<std::string>(steps[1], "state", "") == "failed");
+  CHECK(to_text(steps[1]).find("still being made") != std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+
+  // Made -- a RefMod of a clip and a voice -- then a shot drawing on it
+  // and the picture: named as the model reads them.
+  media::Latent clip;
+  clip.shape = {24, 3, 8, 8};
+  clip.data.assign(clip.count(), 0.5f);
+  media::Latent voice;
+  voice.shape = {2, 32, 40};
+  voice.data.assign(voice.count(), -0.25f);
+  media::RefModRecipe rr;
+  rr.name = "a grey cat";
+  rr.compressed = false;
+  rr.max_tokens = 0;
+  const fs::path rm = root / "cat.safetensors";
+  REQUIRE_OK(media::make_refmod(rr, {{clip, true}}, {voice}, rm));
+  engine->start(mk[1]);
+  engine->finish(mk[1], rm);
+  REQUIRE(eventually([&] {
+    auto a = ctl.project(*pid)->asset(*refmod);
+    return a.ok() && a->head > 0;
+  }, 10));
+  script->replies = {
+      {call("create_composition", {{"kind", "timeline"},
+                                   {"width", 64},
+                                   {"height", 32},
+                                   {"fps", 24}})},
+      {call("generate_video",
+            {{"description", "[Shot 1] <Video 1> walks past <Picture 1>."},
+             {"references", J::array({refmod->str(), cat->str()})},
+             {"seconds", 2}})}};
+  auto shot = ctl.agent_start(req);
+  REQUIRE_OK(shot);
+  st = agent_wait(ctl, *shot, "waiting");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 2);
+  const J r1 = jget(steps[1], "result", J());
+  CHECK(jget<std::string>(jget(r1, "named", J()), refmod->str().c_str(),
+                          "") == "<Video 1>");
+  CHECK(jget<std::string>(jget(r1, "named", J()), cat->str().c_str(), "") ==
+        "<Picture 1>");
+  const auto job = JobId::parse(jget<std::string>(r1, "job", ""));
+  REQUIRE(job.has_value());
+  const engine::JobSpec* vs = engine->spec(*job);
+  REQUIRE(vs != nullptr);
+  CHECK(vs->model.id == "minimax-h3-ref2va");
+  bool drawn = false;
+  for (const auto& e : jget(vs->params, "reference_media", J())) {
+    drawn = drawn || jget<std::string>(e, "kind", "") == "refmod";
+  }
+  CHECK(drawn);
+  REQUIRE_OK(ctl.agent_stop(*shot));
+
+  // Given as `first` (as a picture to open on): drawn on all the same.
+  script->replies = {
+      {call("generate_video",
+            {{"description", "[Shot 1] <Video 1> waves."},
+             {"first", refmod->str()},
+             {"seconds", 2}})}};
+  auto opened = ctl.agent_start(req);
+  REQUIRE_OK(opened);
+  st = agent_wait(ctl, *opened, "waiting");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 1);
+  CHECK(jget<std::string>(steps[0], "state", "") == "waiting");
+  CHECK(jget(steps[0], "result", J()).contains("first_drawn_on"));
+  CHECK(jget<std::string>(
+            jget(jget(steps[0], "result", J()), "named", J()),
+            refmod->str().c_str(), "") == "<Video 1>");
+  REQUIRE_OK(ctl.agent_stop(*opened));
+
+  // A RefMod of a picture alone (as one is imported): drawn on, its
+  // picture <Picture 1>.
+  script->replies = {
+      {call("generate_video",
+            {{"description", "[Shot 1] <Picture 1> sits."},
+             {"references", J::array({pic_only->str()})},
+             {"seconds", 2}})}};
+  auto still = ctl.agent_start(req);
+  REQUIRE_OK(still);
+  st = agent_wait(ctl, *still, "waiting");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 1);
+  CHECK(jget<std::string>(steps[0], "state", "") == "waiting");
+  CHECK(jget<std::string>(
+            jget(jget(steps[0], "result", J()), "named", J()),
+            pic_only->str().c_str(), "") == "<Picture 1>");
+  REQUIRE_OK(ctl.agent_stop(*still));
+
+  // The video model's ALONE (ComfyUI's Apply): unnamed, said so; the
+  // shot's job carries it as latents only. A picture is no RefMod.
+  script->replies = {
+      {call("generate_video",
+            {{"description", "[Shot 1] The cat sits."},
+             {"references", J::array({pic_only->str()})},
+             {"latents_only", J::array({cat->str()})},
+             {"seconds", 2}})},
+      {call("generate_video",
+            {{"description", "[Shot 1] The grey cat sits."},
+             {"references", J::array({pic_only->str()})},
+             {"latents_only", J::array({pic_only->str()})},
+             {"seconds", 2}})}};
+  auto alone = ctl.agent_start(req);
+  REQUIRE_OK(alone);
+  st = agent_wait(ctl, *alone, "waiting");
+  steps = jget(st, "steps", J::array());
+  REQUIRE(steps.size() == 2);
+  CHECK(jget<std::string>(steps[0], "state", "") == "failed");
+  CHECK(to_text(steps[0]).find("not one of the shot") != std::string::npos);
+  const J ra = jget(steps[1], "result", J());
+  CHECK(jget<std::string>(jget(ra, "named", J()), pic_only->str().c_str(),
+                          "").starts_with("(not named"));
+  const auto aj = JobId::parse(jget<std::string>(ra, "job", ""));
+  REQUIRE(aj.has_value());
+  const engine::JobSpec* as = engine->spec(*aj);
+  REQUIRE(as != nullptr);
+  bool alone_drawn = false;
+  for (const auto& e : jget(as->params, "reference_media", J())) {
+    alone_drawn = alone_drawn || jget(e, "latents_only", false);
+  }
+  CHECK(alone_drawn);
+  REQUIRE_OK(ctl.agent_stop(*alone));
 }
 
 // A FLEET member runs the agent's turns (DESIGN §9b): a Mac with the
@@ -15799,3 +17070,149 @@ TEST(controller, a_models_read_speed_is_tested_where_it_is)
   CHECK(m["path"] == moved.string());
   CHECK(!m.contains("read_speed"));
 }
+
+// A RefMod (DESIGN §4s): a .safetensors of H3 reference latents IMPORTED
+// as an asset of its own kind, told by its tensors; a reference of a
+// Ref2VA clip -- each member one, on ports, read whole, the asset named
+// by its first picture or clip -- and MADE of a row by the RefMod maker:
+// its sources fitted as the pack fits them, a RefMod asset its result.
+TEST(controller, a_refmod_is_imported_referenced_and_made)
+{
+  auto root = test::temp_dir("refmod-ctl");
+  auto install = [&](const char* f) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  };
+  install("MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors");
+  install("lightx2v/Minimax-h3-Turbo/"
+          "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors");
+  // A RefMod of a clip and a sound, as the pack writes one.
+  media::Latent clip;
+  clip.shape = {24, 3, 8, 8};
+  clip.data.assign(clip.count(), 0.5f);
+  media::Latent voice;
+  voice.shape = {2, 32, 40};
+  voice.data.assign(voice.count(), -0.25f);
+  media::RefModRecipe r;
+  r.name = "hero";
+  r.compressed = false;
+  r.max_tokens = 0;
+  const fs::path rm = root / "hero.safetensors";
+  REQUIRE_OK(media::make_refmod(r, {{clip, true}}, {voice}, rm));
+  const fs::path png = root / "cat.png";
+  REQUIRE(write_png(png, 64, 48));
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "R.valtz", "refmod");
+  REQUIRE_OK(pid);
+  auto hero = import_and_wait(ctl, *pid, rm);
+  REQUIRE(hero.has_value());
+  auto cat = import_and_wait(ctl, *pid, png);
+  REQUIRE(cat.has_value());
+  {
+    auto p = ctl.project(*pid);
+    REQUIRE(p != nullptr);
+    auto a = p->asset(*hero);
+    REQUIRE_OK(a);
+    CHECK(a->kind == project::AssetKind::RefMod);
+  }
+  // Named by its clip, after the picture listed before the ports.
+  GenerateVideoRequest req;
+  req.project = *pid;
+  req.references = {*hero, *cat};
+  auto tags = ctl.video_reference_tags(*pid, "", req.references,
+                                       std::nullopt);
+  REQUIRE_OK(tags);
+  CHECK(jget<std::string>(*tags, hero->str().c_str(), "") == "<Video 1>");
+  CHECK(jget<std::string>(*tags, cat->str().c_str(), "") == "<Picture 1>");
+  req.prompt = "<Video 1> waves; <Picture 1> watches";
+  req.width = 640;
+  req.height = 352;
+  req.frames = 39;
+  REQUIRE_OK(ctl.generate_video(req));
+  REQUIRE(eventually([&] {
+    return engine->held_of(engine::kOpGenerateVideo).size() == 1;
+  }, 10));
+  const auto* spec =
+      engine->spec(engine->held_of(engine::kOpGenerateVideo).front());
+  REQUIRE(spec != nullptr);
+  const Json list = jget(spec->params, "reference_media", Json::array());
+  REQUIRE(list.size() == 2);
+  CHECK(jget<std::string>(list[0], "kind", "") == "image");
+  CHECK(jget<std::string>(list[1], "kind", "") == "refmod");
+  CHECK((list[1]["members"] == Json::array({"video", "audio"})));
+  CHECK(jget(list[1], "ports", 0) == 3 && jget(list[1], "whole", false));
+  CHECK((list[1]["numbers"] == Json::array({1, 1})));
+  // Given to the video model ALONE (ComfyUI's Apply): a port a member,
+  // unnumbered, untagged -- a mention of it in the words read as its
+  // name -- the picture after it numbered without it.
+  {
+    GenerateVideoRequest alone = req;
+    alone.latents_only = {*hero};
+    auto at = ctl.video_reference_tags(*pid, "", alone.references,
+                                       std::nullopt, alone.latents_only);
+    REQUIRE_OK(at);
+    CHECK(jget<std::string>(*at, hero->str().c_str(), "x").empty());
+    CHECK(jget<std::string>(*at, cat->str().c_str(), "") == "<Picture 1>");
+    alone.prompt = std::string(assist::kInlinePicture) +
+                   " waves; <Picture 1> watches";
+    alone.inline_media = {*hero};
+    REQUIRE_OK(ctl.generate_video(alone));
+    REQUIRE(eventually([&] {
+      return engine->held_of(engine::kOpGenerateVideo).size() == 2;
+    }, 10));
+    const auto* as =
+        engine->spec(engine->held_of(engine::kOpGenerateVideo).back());
+    REQUIRE(as != nullptr);
+    const Json al = jget(as->params, "reference_media", Json::array());
+    REQUIRE(al.size() == 2);
+    CHECK(jget(al[1], "latents_only", false));
+    CHECK(jget(al[1], "ports", 0) == 2);
+    CHECK(!al[1].contains("numbers"));
+    const auto words = jget<std::string>(as->params, "prompt", "");
+    CHECK(words.find("hero waves") != std::string::npos);
+    CHECK(words.find("<Video 1>") == std::string::npos);
+  }
+  // MADE of the row: the picture fitted as the pack fits it -- 64 x 48
+  // onto 32's, Python's rounding (48 / 32 = 1.5 -> 2): 64 x 64, then up
+  // to the 320 floor -- the RefMod its result.
+  GenerateVideoRequest mk;
+  mk.project = *pid;
+  mk.model = "minimax-h3-refmod";
+  mk.references = {*cat};
+  mk.prompt = "a grey cat";
+  REQUIRE_OK(ctl.generate_video(mk));
+  REQUIRE(eventually([&] {
+    return engine->held_of(engine::kOpMakeRefMod).size() == 1;
+  }, 10));
+  const auto* ms = engine->spec(engine->held_of(engine::kOpMakeRefMod)
+                                    .front());
+  REQUIRE(ms != nullptr);
+  REQUIRE(ms->inputs.size() == 1);
+  CHECK(ms->inputs[0].role == "picture");
+  const Json src = jget(ms->params, "sources", Json::array());
+  REQUIRE(src.size() == 1);
+  CHECK(jget(src[0], "width", 0) == 320 && jget(src[0], "height", 0) == 320);
+  CHECK(jget<std::string>(src[0], "fit", "") == "stretch");
+  const Json rp = jget(ms->params, "refmod", Json::object());
+  CHECK(jget(rp, "compressed", false) && jget(rp, "refine", 0) == 500);
+  CHECK(jget<std::string>(rp, "description", "") == "a grey cat");
+  // Something that is not media is refused by name.
+  GenerateVideoRequest bad = mk;
+  bad.references = {*hero};
+  CHECK(!ctl.generate_video(bad).ok());
+}
+

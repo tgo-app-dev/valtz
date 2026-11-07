@@ -65,6 +65,10 @@ enum class AssetKind : std::uint8_t {
   Mask,
   Latent,        // cached model latents (derived only)
   Other,
+  // MiniMax H3 reference latents, a .safetensors (media/refmod.h, DESIGN
+  // §4s): imported, or made from the prompt's row. Last, so the kinds
+  // before it keep their numbers.
+  RefMod,
 };
 
 enum class Origin : std::uint8_t {

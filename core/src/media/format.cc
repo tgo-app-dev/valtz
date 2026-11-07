@@ -79,6 +79,7 @@ to_str(MediaType t)
   case MediaType::Video:   return "video";
   case MediaType::Audio:   return "audio";
   case MediaType::Text:    return "text";
+  case MediaType::RefMod:  return "refmod";
   }
   return "?";
 }

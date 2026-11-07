@@ -130,6 +130,9 @@ struct CapabilityTree: Decodable, Sendable {
     struct ReadSpeed: Decodable, Sendable {
         var gbps: Double
         var read: Int64
+        /// Of it, read by the engine's own reader (its tensors, as a load
+        /// reads them); absent from a core before it.
+        var engine: Int64?
         var total: Int64
         var cached: Int64
         var seconds: Double

@@ -8,6 +8,7 @@
 #include "valtz/media/model-input.h"
 #include "valtz/media/movie.h"
 #include "valtz/media/probe.h"
+#include "valtz/media/refmod.h"
 #include "valtz/media/sound.h"
 #include "valtz/project/records.h"
 
@@ -913,6 +914,54 @@ TEST(media, a_clip_decodes_with_its_look)
   CHECK(means[3] > means[0]);
 }
 
+// A layer faded by its opacity -- its alpha keyed 0 to 1: a fade in from
+// black -- is read for an export on black: half way, between black and
+// the picture. It was read as planar RGB off a clear frame, its colour
+// un-premultiplied: whole at any opacity above 0, black only at 0.
+TEST(media, a_faded_layer_is_read_on_black)
+{
+  auto dir = test::temp_dir("media-fade");
+  REQUIRE(write_png_grey(dir / "grey.png", 200));
+  media::MovieStack stack;
+  stack.rate = {10, 1};
+  stack.frames = 11;
+  stack.canvas.frame_w = 64;
+  stack.canvas.frame_h = 36;
+  media::MovieLayer l;
+  l.file = dir / "grey.png";
+  l.timing.start = 0;
+  l.timing.length = 1.1;
+  l.timing.rate = {10, 1};
+  l.adjust.rate = {10, 1};
+  media::Adjustments clear;
+  clear.alpha = 0;
+  l.adjust.keys = {{0, clear}, {10, media::Adjustments{}}};
+  stack.layers.push_back(l);
+  const media::PixelSize size{64, 36};
+  std::vector<_Float16> buf(3 * 64 * 36);
+  std::vector<double> means;
+  REQUIRE_OK(media::decode_movie_stack(
+      stack, {10, 1}, 0, 11, size,
+      [&](std::int64_t) -> Result<media::FrameBuffer> {
+        return media::FrameBuffer{buf.data(), buf.size() * 2, {}};
+      },
+      [&](std::int64_t) -> Status {
+        double sum = 0;
+        for (auto v : buf) {
+          sum += static_cast<double>(v);
+        }
+        means.push_back(sum / static_cast<double>(buf.size()));
+        return ok_status();
+      }));
+  REQUIRE(means.size() == 11);
+  CHECK(means[0] < 0.01);
+  CHECK(means[10] > 0.4);
+  CHECK(means[2] < means[5]);
+  CHECK(means[5] < means[8]);
+  CHECK(means[5] < 0.9 * means[10]);
+  CHECK(means[5] > 0.2 * means[10]);
+}
+
 // A project exported in BT.709 writes a 709 clip as it was read: its
 // frames drawn into the space Core Video reads 709 video in. The named
 // BT.709 space's curve is another, and lifted every mid-grey of a
@@ -1329,3 +1378,174 @@ TEST(media, a_low_rate_sound_is_encoded_as_aac_allows)
     }
   }
 }
+
+// A RefMod (DESIGN §4s): made as the pack makes one -- written as version
+// 5, its visual sources stacked, each sound a member -- read back by its
+// tensors, a member converted to vpipe's tensor file as it lays latents
+// out; told apart from weights; the pack's pooling, grid and budget.
+TEST(media, a_refmod_is_made_read_and_told_from_weights)
+{
+  using namespace valtz::media;
+  const auto dir = test::temp_dir("refmod");
+  auto latent = [](std::vector<std::int64_t> shape, float k) {
+    Latent z;
+    z.shape = std::move(shape);
+    z.data.resize(z.count());
+    for (std::size_t i = 0; i < z.data.size(); ++i) {
+      z.data[i] = std::sin(k * static_cast<float>(i)) * 1.5f;
+    }
+    return z;
+  };
+  // Full Reference: two pictures on one 8 x 12 canvas, a sound.
+  RefModRecipe r;
+  r.name = "hero";
+  r.compressed = false;
+  r.max_tokens = 0;
+  r.description = "a red fox";
+  const std::vector<RefModSource> pics = {
+      {latent({24, 1, 8, 12}, 0.01f), false},
+      {latent({24, 1, 8, 12}, 0.02f), false}};
+  const Latent sound = latent({2, 32, 40}, 0.03f);
+  const auto file = dir / "hero.safetensors";
+  auto made = make_refmod(r, pics, {sound}, file);
+  REQUIRE_OK(made);
+  CHECK(made->version == 5 && made->name == "hero");
+  REQUIRE(made->members.size() == 2);
+  const auto& v = made->members[0];
+  CHECK(v.kind == "video" && v.tensor == "ref_0" && v.dtype == "F16");
+  CHECK(v.frames() == 2 && v.height() == 8 && v.width() == 12);
+  CHECK(v.tokens() == 2 * 4 * 6);
+  CHECK(jget<std::string>(v.meta, "mode", "") == "encode");
+  CHECK(jget<std::string>(v.meta, "source", "") == "stack");
+  const auto& a = made->members[1];
+  CHECK(a.kind == "audio" && a.tensor == "ref_1" && a.frames() == 40);
+  CHECK(std::abs(a.seconds() - 1.0) < 1e-9 && a.tokens() == 80);
+  CHECK(is_refmod(file));
+
+  // The stacked latent, half-rounded, frame by frame.
+  auto back = read_member(file, v);
+  REQUIRE_OK(back);
+  CHECK((back->shape == std::vector<std::int64_t>{24, 2, 8, 12}));
+  CHECK(back->data[0] == refmod::half(pics[0].z.data[0]));
+  CHECK(back->data[96] == refmod::half(pics[1].z.data[0]));   // frame 1
+  CHECK(back->data[2 * 96] == refmod::half(pics[0].z.data[96]));  // ch 1
+  // A sound comes back as vpipe lays it: [2, 32, T], the pair outer.
+  auto sb = read_member(file, a);
+  REQUIRE_OK(sb);
+  CHECK((sb->shape == std::vector<std::int64_t>{2, 32, 40}));
+  CHECK(sb->data[32 * 40 + 5] == refmod::half(sound.data[32 * 40 + 5]));
+
+  // vpipe's tensor file, there and back.
+  const auto vpt = dir / "ref0.vpt";
+  REQUIRE_OK(write_vptensor(vpt, *back, Json{{"latent", true}}));
+  auto vb = read_vptensor(vpt);
+  REQUIRE_OK(vb);
+  CHECK(vb->shape == back->shape && vb->data == back->data);
+
+  // Weights are not one, whatever their name: a LoRA's tensors.
+  const auto lora = dir / "refmod-lookalike.safetensors";
+  {
+    const std::string head = R"({"lora_unet_a.lora_down.weight":)"
+        R"({"dtype":"F16","shape":[2,2],"data_offsets":[0,8]}})";
+    std::ofstream f(lora, std::ios::binary);
+    const std::uint64_t n = head.size();
+    f.write(reinterpret_cast<const char*>(&n), 8);
+    f << head << std::string(8, '\0');
+  }
+  CHECK(!is_refmod(lora));
+  CHECK(read_refmod(lora).error().code == Code::InvalidArgument);
+
+  // Compressed Reference: pooled to the first source's aspect, no
+  // refinement asked; a clip's frames pooled to `latent_frames`.
+  r.compressed = true;
+  r.refine_steps = 0;
+  r.pool_h = r.pool_w = 4;
+  r.latent_frames = 2;
+  const auto small = dir / "small.safetensors";
+  auto c = make_refmod(r, {{latent({24, 5, 8, 12}, 0.04f), true}}, {},
+                       small);
+  REQUIRE_OK(c);
+  REQUIRE(c->members.size() == 1);
+  CHECK(c->members[0].kind == "video");
+  CHECK(c->members[0].frames() == 2 && c->members[0].height() == 2 &&
+        c->members[0].width() == 4);   // 4 x (4 / 1.5 = 2.7 -> 2)
+  CHECK(jget<std::string>(c->members[0].meta, "mode", "") == "training");
+
+  // The pack's grid, pooling and budget.
+  CHECK((refmod::aspect_grid(16, 16, 1.5) == std::pair{16, 10}));
+  CHECK((refmod::aspect_grid(16, 16, 0.75) == std::pair{12, 16}));
+  CHECK((refmod::aspect_grid(16, 16, 1.0) == std::pair{16, 16}));
+  Latent ramp;
+  ramp.shape = {1, 1, 2, 4};
+  ramp.data = {1, 2, 3, 4, 5, 6, 7, 8};
+  const Latent p = refmod::pool(ramp, 1, 1, 2);
+  CHECK((p.data == std::vector<float>{3.5f, 5.5f}));
+  // An enlargement of what is already the size is itself.
+  CHECK(refmod::enlarge(ramp, 1, 2, 4).data == ramp.data);
+  // Ten identical frames and one other: the budget keeps the two.
+  Latent same;
+  same.shape = {24, 11, 4, 4};
+  same.data.assign(same.count(), 1.0f);
+  for (int ch = 0; ch < 24; ++ch) {
+    for (int i = 0; i < 16; ++i) {
+      same.data[(static_cast<std::size_t>(ch) * 11 + 10) * 16 + i] = -1.0f;
+    }
+  }
+  CHECK((refmod::distinct_frames(same) == std::vector<int>{0, 10}));
+  auto fit = refmod::fit_tokens(same, 8);   // 4 a frame: 2 fit
+  REQUIRE_OK(fit);
+  CHECK(fit->shape[1] == 2);
+  CHECK(refmod::fit_tokens(same, 3).error().code == Code::Unsupported);
+  // Refinement brings a pooled latent's enlargement nearer the full one.
+  const Latent full = latent({2, 3, 8, 8}, 0.37f);
+  const Latent coarse = refmod::pool(full, 2, 2, 2);
+  auto err = [&](const Latent& s) {
+    const Latent up = refmod::enlarge(s, 3, 8, 8);
+    double e = 0;
+    for (std::size_t i = 0; i < up.data.size(); ++i) {
+      e += (up.data[i] - full.data[i]) * (up.data[i] - full.data[i]);
+    }
+    return e;
+  };
+  CHECK(err(refmod::refine(coarse, full, 100)) < err(coarse));
+}
+
+// The pack's arithmetic against PyTorch's own (VALTZ_TEST_REFMOD_GOLDEN:
+// a folder of full / pooled / up / small / refined .vpt files, made by
+// adaptive_avg_pool3d, trilinear interpolate and 50 steps of Adam at 0.02
+// on the half-rounded pool -- the pack's optimize_latent).
+TEST(media, a_refmods_arithmetic_is_pytorchs)
+{
+  using namespace valtz::media;
+  const char* dir = std::getenv("VALTZ_TEST_REFMOD_GOLDEN");
+  if (!dir || !*dir) {
+    SKIP("VALTZ_TEST_REFMOD_GOLDEN not set");
+  }
+  auto load = [&](const char* n) -> Latent {
+    auto t = read_vptensor(std::filesystem::path(dir) / (std::string(n) +
+                                                         ".vpt"));
+    CHECK(t.ok());
+    return t.ok() ? *t : Latent{};
+  };
+  const Latent full = load("full"), pooled = load("pooled"), up = load("up"),
+               small = load("small"), refined = load("refined");
+  auto worst = [](const Latent& a, const Latent& b) {
+    double w = 0;
+    for (std::size_t i = 0; i < a.data.size(); ++i) {
+      w = std::max(w, static_cast<double>(std::fabs(a.data[i] -
+                                                    b.data[i])));
+    }
+    return a.shape == b.shape ? w : 1e9;
+  };
+  const Latent p = refmod::pool(full, 2, 6, 10);
+  CHECK(worst(p, pooled) < 1e-5);
+  CHECK(worst(refmod::enlarge(pooled, 5, 16, 24), up) < 1e-5);
+  Latent h = pooled;
+  for (auto& v : h.data) { v = refmod::half(v); }
+  CHECK(worst(h, small) == 0.0);
+  const Latent r = refmod::refine(small, full, 50);
+  std::fprintf(stderr, "refine against PyTorch: worst %.3g\n",
+               worst(r, refined));
+  CHECK(worst(r, refined) < 1e-4);
+}
+

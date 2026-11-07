@@ -398,6 +398,13 @@ struct ShotText {
   std::string subjects;
   std::string summary;
   std::vector<std::string> pictures;  // "<Picture 1>", ...
+  // Clips and sounds it draws on -- a motion, a voice, a song -- by the
+  // same names ("<Video 2>", "<Audio 1>"); `sound_reused`: the first
+  // sound IS its soundtrack, as it is (a music video's song), not one
+  // whose voice or music it follows.
+  std::vector<std::string> clips;
+  std::vector<std::string> sounds;
+  bool sound_reused = false;
   std::string continued;              // "<Video 1>"; "": none
   std::string continued_sound;        // "<Audio 1>"; "": none
   // I2VA: the picture it opens on, "<Picture 1>". FL2VA: and the one it

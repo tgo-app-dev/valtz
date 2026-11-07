@@ -64,6 +64,14 @@ struct ComposerStack: View {
     @State private var lastPanel: ComposerPanel = .generate
     /// The card closing: kept built while its drawer shuts.
     @State private var closingPanel: ComposerPanel?
+    /// The cards' headers' scroll view (`headerStrip`): where it is
+    /// scrolled to, as it says, and a glide to a header under way.
+    @State private var headerScroll = ScrollPosition()
+    @State private var headerScrolled = HeaderScroll()
+    @State private var headerGlide: Task<Void, Never>?
+    /// One header's width, each the same (`iconTab`): what the row
+    /// counts whole headers by.
+    @State private var headerWidth: CGFloat = 0
 
     private let radius: CGFloat = 20
     private let tabRadius: CGFloat = 18
@@ -139,6 +147,8 @@ struct ComposerStack: View {
             // Custom's panel belongs to the generation card.
             if p != .generate { model.showsTuning = false }
             if let p { lastPanel = p }
+            // Its header in the row, should it be scrolled out.
+            if let p, p != .generate { revealHeader(p) }
             // The Crop card shows the whole canvas.
             if p == .crop { model.stage.fitRequest += 1 }
             // What the composer gains: the card opened, less the one it
@@ -751,46 +761,15 @@ struct ComposerStack: View {
     /// The content only -- the open card's body, then the header row;
     /// the cards themselves are drawn behind it (`cards`).
     private var tray: some View {
-        VStack(spacing: 0) {
+        let panels = headerPanels
+        return VStack(spacing: 0) {
             drawer
-            HStack(spacing: tabGap) {
-                // The row keeps room on its left; the brief gives way
-                // first when the window is narrow.
-                Spacer(minLength: 72)
-                // Only once the stage has a picture of its own to adjust
-                // -- and not while an agent at work holds the project.
-                if model.showsAdjust && !model.agentHolds {
-                    adjustTab
-                        .fixedSize()
-                        .transition(.opacity)
-                }
-                // The color mixer: a picture's or a clip's, as Adjust is.
-                if model.showsAdjust && !model.agentHolds
-                    && !model.stageIsAudio {
-                    colorTab
-                        .fixedSize()
-                        .transition(.opacity)
-                    // The color grade: the same.
-                    gradeTab
-                        .fixedSize()
-                        .transition(.opacity)
-                }
-                if model.showsCrop && !model.agentHolds {
-                    cropTab
-                        .fixedSize()
-                        .transition(.opacity)
-                }
-                if model.showsTrim && !model.agentHolds {
-                    trimTab
-                        .fixedSize()
-                        .transition(.opacity)
-                }
-                // The sound of the selected layer, when it has one.
-                if model.showsAudio && !model.agentHolds {
-                    audioTab
-                        .fixedSize()
-                        .transition(.opacity)
-                }
+            // The row keeps room on its left; short of room the brief
+            // gives way first, then the cards' headers scroll.
+            TrayHeaderRow(room: 72, gap: tabGap, header: headerWidth,
+                          count: panels.count, brief: 120) {
+                headerScrollControl
+                headerStrip(panels)
                 if !timeline {
                     generateTab
                         .transition(.opacity)
@@ -802,6 +781,165 @@ struct ComposerStack: View {
                                    value: .bounds) { $0[.tray] = $1 }
         .backgroundPreferenceValue(TabFrameKey.self) { frames in
             GeometryReader { proxy in cards(frames, proxy) }
+        }
+    }
+
+    /// The cards whose headers share the row with the generation card's,
+    /// in order: Adjust only once the stage has a picture of its own to
+    /// adjust, and none while an agent at work holds the project.
+    private var headerPanels: [ComposerPanel] {
+        guard !model.agentHolds else { return [] }
+        var panels: [ComposerPanel] = []
+        if model.showsAdjust {
+            panels.append(.adjust)
+            // The color mixer and grade: a picture's or a clip's, as
+            // Adjust is.
+            if !model.stageIsAudio { panels += [.color, .grade] }
+        }
+        if model.showsCrop { panels.append(.crop) }
+        if model.showsTrim { panels.append(.trim) }
+        // The sound of the selected layer, when it has one.
+        if model.showsAudio { panels.append(.audio) }
+        return panels
+    }
+
+    @ViewBuilder
+    private func header(_ p: ComposerPanel) -> some View {
+        switch p {
+        case .adjust: adjustTab
+        case .color: colorTab
+        case .grade: gradeTab
+        case .crop: cropTab
+        case .trim: trimTab
+        case .audio: audioTab
+        case .generate: EmptyView()
+        }
+    }
+
+    /// The cards' headers in a scroll view, as wide as the row leaves
+    /// them (TrayHeaderRow): whole headers, each as wide as the others, so
+    /// a scroll that comes to rest on a header's edge shows whole ones
+    /// alone. Their silhouettes are cut where the scroll view ends
+    /// (`cards`).
+    private func headerStrip(_ panels: [ComposerPanel]) -> some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: tabGap) {
+                ForEach(panels, id: \.self) { p in
+                    header(p)
+                        .fixedSize()
+                        .transition(.opacity)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollIndicators(.never)
+        .scrollTargetBehavior(.viewAligned)
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+        .scrollPosition($headerScroll)
+        .onScrollGeometryChange(for: HeaderScroll.self) {
+            HeaderScroll(offset: $0.contentOffset.x,
+                         content: $0.contentSize.width,
+                         shown: $0.containerSize.width)
+        } action: { was, s in
+            headerScrolled = s
+            model.trayHeaders = s.summary(header: headerWidth, gap: tabGap,
+                                          count: panels.count)
+            // The row narrowed (a window, the inspector, a header come):
+            // the open card's header kept in it.
+            if abs(was.shown - s.shown) > 0.5, let p = model.openPanel,
+               p != .generate {
+                revealHeader(p)
+            }
+        }
+        .frame(height: tabHeight)
+        .transformAnchorPreference(key: TabFrameKey.self,
+                                   value: .bounds) { $0[.strip] = $1 }
+    }
+
+    /// ‹ › at the headers' left while some are scrolled out of the row:
+    /// it says that they scroll -- outside every header, on the window's
+    /// ground -- and steps them a header at a time (a trackpad scrolls
+    /// them too).
+    private var headerScrollControl: some View {
+        let s = headerScrolled
+        return HStack(spacing: 1) {
+            headerStep(-1, on: s.before, symbol: "chevron.left",
+                       help: "Show the cards before")
+            headerStep(1, on: s.after, symbol: "chevron.right",
+                       help: "Show the cards after")
+        }
+        .font(.caption.weight(.semibold))
+        .opacity(s.scrolls ? 1 : 0)
+        .allowsHitTesting(s.scrolls)
+        .accessibilityHidden(!s.scrolls)
+        .onGeometryChange(for: CGRect.self) {
+            $0.frame(in: .global)
+        } action: {
+            model.trayScrollFrame = $0
+        }
+    }
+
+    private func headerStep(_ by: Int, on: Bool, symbol: String,
+                            help: LocalizedStringKey) -> some View {
+        Button {
+            stepHeaders(by)
+        } label: {
+            Image(systemName: symbol)
+                .foregroundStyle(on ? .secondary : .quaternary)
+                .frame(width: 15, height: tabHeight)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!on)
+        .help(help)
+    }
+
+    /// The headers scrolled by `by` headers, gliding: a frame at a time,
+    /// as `AppModel.atlasGlide` does -- set inside an animation a scroll
+    /// position does not move SwiftUI's scroll view (macOS 27).
+    private func stepHeaders(_ by: Int) {
+        let stride = headerWidth + tabGap
+        guard stride > tabGap else { return }
+        let s = headerScrolled
+        let first = (s.offset / stride).rounded()
+        glideHeaders(to: (first + CGFloat(by)) * stride)
+    }
+
+    /// The open card's header brought into the row where it is scrolled
+    /// out: a card opened by other means than its header (a hook, a
+    /// key, the model).
+    private func revealHeader(_ p: ComposerPanel) {
+        let stride = headerWidth + tabGap
+        guard stride > tabGap, let i = headerPanels.firstIndex(of: p)
+        else { return }
+        let s = headerScrolled
+        let x = CGFloat(i) * stride
+        if x < s.offset - 0.5 {
+            glideHeaders(to: x)
+        } else if x + headerWidth > s.offset + s.shown + 0.5 {
+            // Its right edge at the row's: the header before the first
+            // shown whole, at a header's edge.
+            let shown = ((s.shown + tabGap) / stride).rounded(.down)
+            glideHeaders(to: (CGFloat(i) - max(0, shown - 1)) * stride)
+        }
+    }
+
+    private func glideHeaders(to x: CGFloat) {
+        headerGlide?.cancel()
+        let s = headerScrolled
+        let to = min(max(0, x), max(0, s.content - s.shown))
+        let from = s.offset
+        guard abs(to - from) > 0.5 else { return }
+        let span = 0.3 * AppModel.animationScale
+        let start = Date()
+        headerGlide = Task { @MainActor in
+            while !Task.isCancelled {
+                let u = min(1, Date().timeIntervalSince(start) / span)
+                let e = u * u * (3 - 2 * u)
+                headerScroll.scrollTo(x: from + (to - from) * e)
+                if u >= 1 { return }
+                try? await Task.sleep(for: .milliseconds(16))
+            }
         }
     }
 
@@ -874,10 +1012,22 @@ struct ComposerStack: View {
         // A header where it shows on the tray: against the tray's anchor,
         // not the layer's origin (see the type's comment).
         let origin = frames[.tray].map { proxy[$0].origin } ?? .zero
-        let tab = { (p: ComposerPanel) -> CGRect? in
-            frames[.tab(p)].map {
+        let place = { (part: TrayPart) -> CGRect? in
+            frames[part].map {
                 proxy[$0].offsetBy(dx: -origin.x, dy: -origin.y)
             }
+        }
+        let strip = place(.strip)
+        // A header in the scroll view shows within it alone: its card is
+        // cut where the scroll view ends -- none where it is scrolled out
+        // but an open card's body.
+        let tab = { (p: ComposerPanel) -> CGRect? in
+            guard let r = place(.tab(p)) else { return nil }
+            guard p != .generate, let s = strip else { return r }
+            let x0 = min(max(r.minX, s.minX), s.maxX)
+            let x1 = max(min(r.maxX, s.maxX), x0)
+            return CGRect(x: x0, y: r.minY, width: x1 - x0,
+                          height: r.height)
         }
         ZStack(alignment: .topLeading) {
             ForEach(ComposerPanel.allCases, id: \.self) { p in
@@ -912,37 +1062,15 @@ struct ComposerStack: View {
     }
 
     private var adjustTab: some View {
-        let open = model.openPanel == .adjust
-        return Button {
-            toggle(.adjust)
-        } label: {
-            HStack(spacing: 8) {
-                chevron(open: open)
-                    .padding(.trailing, 2)
-                Image(systemName: "slider.horizontal.3")
-                    .accessibilityLabel(Text("Adjust"))
-                    // Its own sliders (the mixer and the grade have tabs
-                    // of their own).
-                    .overlay(alignment: .bottom) {
-                        TabDot(model: model, changed: Self.adjustChanged,
-                               help: "Adjustments are applied")
-                    }
-            }
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .padding(.leading, 16)
-            .padding(.trailing, 18)
-            .frame(height: tabHeight)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(open ? "Hide adjustments"
-              : model.adjustsBase ? "Adjust the picture to edit"
-              : model.clipOnStage ? "Adjust the clip"
-              : "Adjust the result")
-        .anchorPreference(key: TabFrameKey.self, value: .bounds) {
-            [.tab(.adjust): $0]
-        }
+        // Its dot its own sliders' (the mixer and the grade have tabs of
+        // their own).
+        iconTab(.adjust, symbol: "slider.horizontal.3", name: "Adjust",
+                changed: Self.adjustChanged,
+                dot: "Adjustments are applied",
+                show: model.adjustsBase ? "Adjust the picture to edit"
+                    : model.clipOnStage ? "Adjust the clip"
+                    : "Adjust the result",
+                hide: "Hide adjustments")
     }
 
     /// Crop and rotate (a picture, or a clip -- keyed). A dot while it
@@ -1051,6 +1179,10 @@ struct ComposerStack: View {
                     .overlay(alignment: .bottom) {
                         TabDot(model: model, changed: changed, help: dot)
                     }
+                    // One width for every icon, so every header is as
+                    // wide as the others: the row scrolls by whole ones.
+                    // (Trim's, 24 points, overhangs by two each side.)
+                    .frame(width: Self.iconSlot)
             }
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -1061,10 +1193,17 @@ struct ComposerStack: View {
         }
         .buttonStyle(.plain)
         .help(open ? hide : show)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+            headerWidth = $0
+        }
         .anchorPreference(key: TabFrameKey.self, value: .bounds) {
             [.tab(p): $0]
         }
     }
+
+    /// A header's icon's width: the symbols' at the callout size are 15
+    /// to 18 points, Trim's 24.
+    private static let iconSlot: CGFloat = 20
 
     private var generateTab: some View {
         let open = model.openPanel == .generate
@@ -1140,6 +1279,10 @@ struct ComposerStack: View {
                 ? String(localized: "Audio · not available yet")
                 : String(localized: "Video · not available yet")
         }
+        // A RefMod made of the row (DESIGN §4s), not a clip.
+        if model.makesRefMod {
+            return String(localized: "Make a RefMod · \(model.modelName(model.modelChoice))")
+        }
         // A clip from references (Ref2VA): continuing one, or drawing on
         // pictures, clips and sounds.
         if model.usesReferences {
@@ -1184,6 +1327,14 @@ struct ComposerStack: View {
     /// locale separator gets into it. "mp" is a unit symbol, the same in
     /// every language, so it is not in the String Catalog.
     private var summaryTail: String {
+        // A RefMod: how many sources it is made of, as Favor makes it.
+        if model.makesRefMod {
+            let n = model.promptAttachments.filter {
+                ["image", "video", "audio"].contains($0.kind)
+            }.count
+            return " · " + String(localized: "\(n) sources") + " · "
+                + model.preference.label
+        }
         // The agent: whether it asks first.
         if model.activeModality == .agent {
             return " · " + ((model.agentSettings?.review ?? true)
@@ -1448,6 +1599,8 @@ private struct ModalityTabShape: Shape {
 private enum TrayPart: Hashable {
     case tray
     case tab(ComposerPanel)
+    /// The headers' scroll view, where they show.
+    case strip
 }
 
 private struct TabFrameKey: PreferenceKey {
@@ -1455,6 +1608,128 @@ private struct TabFrameKey: PreferenceKey {
     static func reduce(value: inout [TrayPart: Anchor<CGRect>],
                        nextValue: () -> [TrayPart: Anchor<CGRect>]) {
         value.merge(nextValue()) { $1 }
+    }
+}
+
+/// The headers' scroll view as it says (`onScrollGeometryChange`).
+private struct HeaderScroll: Equatable {
+    var offset: CGFloat = 0
+    var content: CGFloat = 0
+    var shown: CGFloat = 0
+    /// Some are scrolled out of the row: the ‹ › shows.
+    var scrolls: Bool { content > shown + 0.5 }
+    var before: Bool { scrolls && offset > 0.5 }
+    var after: Bool { scrolls && offset < content - shown - 0.5 }
+
+    /// The snapshot summary's `headers=`: "<whole ones in sight>/<all>@<the
+    /// first in sight, in headers from 0>" -- "2/6@1.00".
+    func summary(header: CGFloat, gap: CGFloat, count: Int) -> String {
+        guard header > 0, count > 0 else { return "\(count)/\(count)@0" }
+        let stride = header + gap
+        let whole = scrolls
+            ? Int(((shown + gap) / stride + 0.01).rounded(.down)) : count
+        return "\(whole)/\(count)@"
+            + String(format: "%.2f", max(0, offset) / stride)
+            + (scrolls ? "" : ":all")
+    }
+}
+
+/// The tray's header row: room on its left, then -- docked right -- the
+/// cards' headers and the generation card's. Its subviews: the ‹ ›, the
+/// headers' scroll view, the generation header (none under the
+/// timeline).
+///
+/// Short of room the brief gives way first, as it did, but keeps `brief`
+/// points of its model's name; then the headers SCROLL -- as many whole
+/// ones shown as fit, two at least, the ‹ › before them -- and past that
+/// the brief gives way to its least. So the row's least width, which is
+/// the composer's, holds two headers: it held them all, and beside an
+/// open inspector on a small screen the prompt card ran past the window.
+private struct TrayHeaderRow: Layout {
+    var room: CGFloat
+    var gap: CGFloat
+    /// One header's width, each the same; 0 until it is measured.
+    var header: CGFloat
+    var count: Int
+    var brief: CGFloat
+
+    /// The widths laid out: the ‹ › (0, not shown), the headers' scroll
+    /// view, the generation header; and the row's own.
+    private struct Plan {
+        var control: CGFloat
+        var strip: CGFloat
+        var brief: CGFloat
+        var width: CGFloat
+    }
+
+    private func plan(_ width: CGFloat?, _ subviews: Subviews) -> Plan {
+        let control = subviews[0].sizeThatFits(.unspecified).width
+        // Every header whole: the scroll view's content.
+        let full = count > 0
+            ? subviews[1].sizeThatFits(.unspecified).width : 0
+        let briefs = subviews.count > 2
+        let ideal = briefs ? subviews[2].sizeThatFits(.unspecified).width : 0
+        let least = briefs
+            ? subviews[2].sizeThatFits(ProposedViewSize(width: 0,
+                                                        height: nil)).width
+            : 0
+        let kept = min(ideal, least + brief)
+        let need = { (strip: CGFloat, scrolls: Bool, b: CGFloat) in
+            room + (scrolls ? control + gap / 2 : 0) + strip
+                + (strip > 0 && briefs ? gap : 0) + b
+        }
+        let made = { (strip: CGFloat, scrolls: Bool, w: CGFloat) in
+            let b = max(least, min(ideal, w - need(strip, scrolls, 0)))
+            return Plan(control: scrolls ? control : 0, strip: strip,
+                        brief: b, width: max(w, need(strip, scrolls, b)))
+        }
+        guard let w = width, w.isFinite else {
+            return made(full, false, need(full, false, ideal))
+        }
+        // Every header, the brief whole or giving way as far as `kept`.
+        if header <= 0 || count <= 2 || need(full, false, kept) <= w {
+            return made(full, false, w)
+        }
+        // As many whole headers as fit beside the kept brief, two at least.
+        let whole = { (k: Int) in
+            CGFloat(k) * header + CGFloat(k - 1) * gap
+        }
+        var k = count - 1
+        while k > 2 && need(whole(k), true, kept) > w { k -= 1 }
+        return made(whole(k), true, w)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews,
+                      cache: inout ()) -> CGSize {
+        let height = subviews.map {
+            $0.sizeThatFits(.unspecified).height
+        }.max() ?? 0
+        return CGSize(width: plan(proposal.width, subviews).width,
+                      height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize,
+                       subviews: Subviews, cache: inout ()) {
+        let p = plan(bounds.width, subviews)
+        let h = bounds.height
+        var x = bounds.maxX
+        if subviews.count > 2 {
+            x -= p.brief
+            subviews[2].place(at: CGPoint(x: x, y: bounds.minY),
+                              proposal: ProposedViewSize(width: p.brief,
+                                                         height: h))
+            if p.strip > 0 { x -= gap }
+        }
+        x -= p.strip
+        subviews[1].place(at: CGPoint(x: x, y: bounds.minY),
+                          proposal: ProposedViewSize(width: p.strip,
+                                                     height: h))
+        // The ‹ › before them, shown by the scroll view's word: placed
+        // either way.
+        let c = subviews[0].sizeThatFits(.unspecified)
+        subviews[0].place(at: CGPoint(x: x - gap / 2 - c.width,
+                                      y: bounds.minY),
+                          proposal: ProposedViewSize(c))
     }
 }
 
@@ -1490,7 +1765,14 @@ private struct TrayCard: Shape {
         // Clockwise from the top-right; the top is hidden behind the
         // prompt card, so its corners stay square.
         var c: [(CGPoint, CGFloat)]
-        if out < 0.5 {
+        if tabMaxX - tabMinX < 0.5 {
+            // Its header scrolled out of the row: the body alone, if out.
+            guard out >= 0.5 else { return Path() }
+            c = [(CGPoint(x: rect.maxX, y: 0), 0),
+                 (CGPoint(x: rect.maxX, y: rowTop), radius),
+                 (CGPoint(x: rect.minX, y: rowTop), radius),
+                 (CGPoint(x: rect.minX, y: 0), 0)]
+        } else if out < 0.5 {
             c = [(CGPoint(x: tabMaxX, y: 0), 0),
                  (CGPoint(x: tabMaxX, y: bottom), radius),
                  (CGPoint(x: tabMinX, y: bottom), radius),
@@ -2027,7 +2309,8 @@ private struct DrawerSettings: View {
                 speechRows
             } else if model.activeModality == .audio {
                 audioRows
-            } else {
+            } else if !model.makesRefMod {
+                // A RefMod has no size, no length: its sources' own.
                 pictureRows
             }
             // A script of voices (Drama 3) has nothing to favor: no steps,
@@ -2085,6 +2368,8 @@ private struct DrawerSettings: View {
             TuningPanel(model: model, embedded: true)
             Divider()
         }
+        // A RefMod is made the same each time: no seed to draw.
+        if !model.makesRefMod {
         Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 12) {
             GridRow {
                 label("Seed", row: SettingsRow.seed)
@@ -2102,6 +2387,7 @@ private struct DrawerSettings: View {
             }
         }
         .controlSize(.regular)
+        }
         }
         // Custom follows the model Start runs: its family's options.
         .onChange(of: model.runningModel) { _, _ in model.refreshTuning() }

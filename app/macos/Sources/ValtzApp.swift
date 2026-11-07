@@ -1670,7 +1670,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // (a click on it), "mention=0" (dragged into the text, at
             // its end), "move=2:0" (along the row), "remove=1",
             // "base=1" (its pencil badge), "whole=1" (a clip's or a
-            // sound's scissors badge), "key=1:last" (its menu's First
+            // sound's scissors badge), "alone=1" (a RefMod's Latents
+            // Only), "key=1:last" (its menu's First
             // Frame, Last Frame, Not a Keyframe: first | last | none --
             // printing `snapshot: refs key=... keyframes=a>b roles=`)
             if let spec = env["VALTZ_SNAPSHOT_REFS"] {
@@ -1736,6 +1737,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "remove": m.removeReference(id)
                     case "base": m.toggleBase(id)
                     case "whole": m.toggleWhole(id)
+                    case "alone": m.toggleLatentsOnly(id)
                     case "move" where args.count > 1:
                         m.moveReference(id, to: args[1])
                     case "mention":
@@ -2922,7 +2924,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let fr = NSApp.windows.first { $0.isVisible }?
                         .firstResponder
                     FileHandle.standardError.write(Data(
-                        "snapshot: click \(Int(xy[0])),\(Int(xy[1])) focus=\(fr.map { String(describing: type(of: $0)) } ?? "-") undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_")) frame=\(m.videoFrame) rate=\(m.videoRate)\n".utf8))
+                        "snapshot: click \(Int(xy[0])),\(Int(xy[1])) focus=\(fr.map { String(describing: type(of: $0)) } ?? "-") undo=\(m.undoMenuTitle.replacingOccurrences(of: " ", with: "_")) frame=\(m.videoFrame) rate=\(m.videoRate) headers=\(m.trayHeaders) panel=\(m.openPanel.map { "\($0)" } ?? "-") sweep=\(m.markSweep)\n".utf8))
                 }
             }
             // Drags posted to the window ("x,y>x2,y2" in points from
@@ -3097,9 +3099,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if let panel = env["VALTZ_SNAPSHOT_PANEL"] {
                 withAnimation(AppModel.motion) {
-                    m.openPanel = panel == "adjust" ? .adjust
-                        : panel == "crop" ? .crop
-                        : panel == "trim" ? .trim : .generate
+                    m.openPanel = ComposerPanel.allCases.first {
+                        "\($0)" == panel
+                    } ?? .generate
                 }
             }
             if env["VALTZ_SNAPSHOT_NAV"] != nil { m.toggleNav() }
@@ -4858,6 +4860,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // from its top left (a card's button, say);
                     // "click:x,y@150" held 150 ms, as a hand's is --
                     // what the press starts has run by the release.
+                    // "panel:<card>" a tray card opened as its header
+                    // opens it (adjust, color, grade, crop, trim, audio,
+                    // generate; none: shut) -- the headers scrolled to it.
+                    case "panel":
+                        withAnimation(AppModel.motion) {
+                            m.openPanel = ComposerPanel.allCases.first {
+                                "\($0)" == arg
+                            }
+                        }
                     case "click":
                         let held = arg.split(separator: "@")
                         let xy = (held.first ?? "").split(separator: ",")
@@ -5266,7 +5277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     try? await Task.sleep(for: .milliseconds(400))
                     FileHandle.standardError.write(Data(
-                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.asset(id: id)?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary()) \(Self.stageShowSummary(m)) notice=\(m.notice.map { "\($0.level):" + $0.text.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
+                        "snapshot: task \(step.replacingOccurrences(of: " ", with: "_")) tasks=\(Self.taskSummary(m)) compareOn=\(m.compareOn) canCompare=\(m.canToggleCompare) activeComp=\(m.activeComposition.map { "\($0.name.replacingOccurrences(of: " ", with: "_")):\($0.layerStack.count)layers" } ?? "-") watched=\(m.tasks.first { $0.job == m.generationJob }?.badge ?? (m.generationJob == nil ? "-" : "done")) live=\(m.generationJob == nil ? "-" : "\(m.liveStep)/\(m.liveSteps)") stage=\(m.stageAssetId.flatMap { id in m.asset(id: id)?.name }?.replacingOccurrences(of: " ", with: "_") ?? "-") caption=\(m.generationCaption.replacingOccurrences(of: " ", with: "_")) downloads=\(Self.downloadSummary(m)) generating=\(m.isGenerating) memoryFailure=\(m.memoryFailure != nil) landing=\(Self.landingSummary(m)) \(Self.closingSummary(m)) frame=\(m.videoFrame) rate=\(m.videoRate) muted=\(m.videoMuted) \(Self.keyboardSummary(m)) bar=\(Self.rectText(m.stageBarFrame)) \(Self.scrubberSummary()) \(Self.stageShowSummary(m)) notice=\(m.notice.map { "\($0.level):" + $0.text.replacingOccurrences(of: " ", with: "_") } ?? "-") headers=\(m.trayHeaders) panel=\(m.openPanel.map { "\($0)" } ?? "-") sweep=\(m.markSweep)\n".utf8))
                 }
             }
             // THE AGENT (DESIGN §9b), driven as its card drives it:
@@ -7306,13 +7317,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "leftOut=\(m.leftOutWeights(m.tuningInfo).joined(separator: "+").isEmpty ? "-" : m.leftOutWeights(m.tuningInfo).joined(separator: "+")) "
                 + "composer=\(Int(m.composerWidth))/\(Int(m.composerColumn)) "
                 + "drawers=\(m.drawerWidths.sorted { $0.key < $1.key }.map { "\($0.key):\(Int($0.value))" }.joined(separator: ",")) "
+                + "headers=\(m.trayHeaders) headerScroll=\(m.trayScrollFrame.isNull ? "-" : "\(Int(m.trayScrollFrame.minX)),\(Int(m.trayScrollFrame.minY)),\(Int(m.trayScrollFrame.width))x\(Int(m.trayScrollFrame.height))") "
                 + "sizeShown=\(m.sizeChoice.map { "\($0)" } ?? "custom") "
                 + "custom=\(m.customSize != nil) orientation=\(m.shownOrientation.rawValue) "
                 + "ratioShown=\(m.showsAspectRatio) "
                 + "marked=\(m.promptMarked.replacingOccurrences(of: "\u{FFFC}", with: "[*]").replacingOccurrences(of: " ", with: "_")) "
                 + "languages=\(L10n.available.joined(separator: ",")) "
                 + "baseHint=\(m.baseHint.flatMap { h in m.promptAttachments.first { $0.id == h }?.url.lastPathComponent } ?? "-") "
-                + "refs=\(m.promptAttachments.map { a in (a.isBase ? "*" : "") + (a.ownCopy ? "+" : "") + (m.cutsToLength(a) == false ? "~" : "") + a.url.lastPathComponent + (m.referenceNumber(a).map { "#\($0)" } ?? "") }.joined(separator: ",")) cutTo=\(String(format: "%.3f", m.referenceCutSeconds)) "
+                + "refs=\(m.promptAttachments.map { a in (a.isBase ? "*" : "") + (a.ownCopy ? "+" : "") + (m.cutsToLength(a) == false ? "~" : "") + (m.readsLatentsOnly(a) == true ? "^" : "") + a.url.lastPathComponent + (m.referenceNumber(a).map { "#\($0)" } ?? "") }.joined(separator: ",")) cutTo=\(String(format: "%.3f", m.referenceCutSeconds)) "
                 + "active=\((m.stageAssetId.flatMap { m.asset(id: $0) }?.name ?? "-").replacingOccurrences(of: " ", with: "_")) "
                 + "assets=\(m.assets.count) ops=\(Dictionary(grouping: m.assets, by: { $0.op ?? "import" }).map { "\($0.key):\($0.value.count)" }.sorted().joined(separator: ",")) stale=\(m.staleCount) folders=\(m.assetFolders.map { f in "\(f.name)\(m.closedFolders.contains(f.id) ? "-folded" : ""):\(m.assets.filter { $0.folder == f.id }.count)" }.joined(separator: "|").replacingOccurrences(of: " ", with: "_")) renaming=\(m.renamingAsset ?? "-") "
                 + "mentions=\(m.promptMentions.count) focus=\(m.promptAttachments.firstIndex { $0.id == m.focusedReference }.map(String.init) ?? "-") "

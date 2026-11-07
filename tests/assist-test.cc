@@ -1419,6 +1419,30 @@ TEST(assist, a_video_summary_is_written)
   CHECK(assist::language_name("tlh") == "English");
 }
 
+// A reference the subjects never name by its label -- "Fox Character is
+// the fox" -- is defined all the same, after the subjects given; a sound
+// reused is the soundtrack, in its guide's words.
+TEST(assist, a_reference_the_subjects_leave_out_is_defined)
+{
+  assist::ShotText t;
+  t.description = "[Shot 1] The fox says hello in a forest clearing.";
+  t.subjects = "Fox Character is the fox character.";
+  t.clips = {"<Video 1>"};
+  t.sounds = {"<Audio 1>"};
+  t.sound_reused = true;
+  const std::string p = assist::shot_prompt(t);
+  CHECK(p.find("Fox Character is the fox character.\n<Subject 1> is who "
+               "or what <Video 1> shows.") != std::string::npos);
+  CHECK(p.find("<Audio 1> is reused 1:1 as the target video's complete "
+               "final audio track.") != std::string::npos);
+  CHECK(p.find("[reference generation + audio reuse]") !=
+        std::string::npos);
+  // Named in them: nothing added.
+  t.subjects = "<Subject 1> is the fox in <Video 1>.";
+  const std::string q = assist::shot_prompt(t);
+  CHECK(q.find("who or what <Video 1> shows") == std::string::npos);
+}
+
 // A SHOT's prompt (the agent's generate_video): the description's shots
 // are its own clip's -- a model writing a scene numbers them through it --
 // and a continuation given no subjects names what its clip shows.

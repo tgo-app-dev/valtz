@@ -21,7 +21,7 @@ struct CapName {
   const char* label;
 };
 
-constexpr std::array<CapName, 19> kCapNames = {{
+constexpr std::array<CapName, 20> kCapNames = {{
   {Capability::TextToImage, "text-to-image", "Text to image"},
   {Capability::ImageEdit, "image-edit", "Image edit"},
   {Capability::TextToVideo, "text-to-video", "Text to video"},
@@ -41,6 +41,7 @@ constexpr std::array<CapName, 19> kCapNames = {{
   {Capability::VideoSummary, "video-summary", "Video summary"},
   {Capability::AudioSeparate, "audio-separate", "Separate audio"},
   {Capability::MicroAgent, "micro-agent", "Micro agent"},
+  {Capability::MakeRefMod, "make-refmod", "Make a RefMod"},
 }};
 
 }
@@ -195,6 +196,7 @@ read_entry(const Json& m, const Contributor& who, ModelEntry& e,
   }
   e.preview_with = jget<std::string>(m, "preview_with", "");
   e.requires_models = jget(m, "requires", std::vector<std::string>{});
+  e.files_of = jget<std::string>(m, "files_of", "");
   e.license = jget<std::string>(m, "license", "");
   e.gated = jget(m, "gated", false);
   e.notes = m.contains("notes") ? text_in(m["notes"], lang) : "";

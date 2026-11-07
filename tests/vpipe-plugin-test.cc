@@ -7,6 +7,7 @@
 
 #include "testing.h"
 
+#include "engine/vpipe/checkpoint-reader.h"
 #include "engine/vpipe/flex-json.h"
 #include "engine/vpipe/host-exchange.h"
 #include "engine/vpipe/job-progress.h"
@@ -18,6 +19,7 @@
 #include "valtz/media/pdf.h"
 #include "valtz/media/probe.h"
 #include "valtz/models/catalog.h"
+#include "valtz/models/read-speed.h"
 #include "valtz-vpipe/exchange.h"
 #include "scene-cut.h"
 
@@ -26,6 +28,9 @@
 #include "stages/model-catalog.h"
 
 #include <CoreGraphics/CoreGraphics.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 #include <ImageIO/ImageIO.h>
 
 #include <array>
@@ -34,6 +39,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <format>
 #include <fstream>
 #include <mutex>
 #include <optional>
@@ -1734,4 +1740,89 @@ TEST(vpipe_plugin, every_download_names_one_vpipe_entry)
     CHECK(e != nullptr);
   }
   CHECK(known > 10);
+}
+
+// A checkpoint as vpipe's loader reads it (DESIGN §8b): its tensors of
+// 1 MB and up in the file's order, each read by pread_into -- byte for
+// byte, at the header's own misalignment (staged), none of it left in
+// memory -- and a model's read speed measured through it.
+TEST(vpipe_plugin, a_checkpoint_is_read_as_vpipe_loads_it)
+{
+  const auto dir = test::temp_dir("checkpoint-reader");
+  const auto file = dir / "model.safetensors";
+  const std::size_t a = 3 << 20, small = 1024, b = 2 << 20;
+  const std::size_t data = a + small + b;
+  // The data's start 15360 bytes in: off the 4 KB grid, the file whole
+  // pages of 16 KB, so it can be written past the cache.
+  std::string head = std::format(
+      R"({{"a":{{"dtype":"U8","shape":[{}],"data_offsets":[0,{}]}},)"
+      R"("small":{{"dtype":"U8","shape":[{}],"data_offsets":[{},{}]}},)"
+      R"("b":{{"dtype":"U8","shape":[{}],"data_offsets":[{},{}]}}}})",
+      a, a, small, a, a + small, b, a + small, data);
+  const std::size_t start = 15360;
+  head.resize(start - 8, ' ');
+  const std::size_t size = start + data;
+  CHECK(size % 16384 == 0 && start % 4096 != 0);
+  void* buf = nullptr;
+  REQUIRE(::posix_memalign(&buf, 16384, size) == 0);
+  auto* bytes = static_cast<std::uint8_t*>(buf);
+  const std::uint64_t hlen = head.size();
+  std::memcpy(bytes, &hlen, 8);
+  std::memcpy(bytes + 8, head.data(), head.size());
+  for (std::size_t i = 0; i < data; ++i) {
+    bytes[start + i] = static_cast<std::uint8_t>(i * 31 + 7);
+  }
+  {
+    const int fd = ::open(file.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0644);
+    REQUIRE(fd >= 0);
+    (void)::fcntl(fd, F_NOCACHE, 1);
+    CHECK(::pwrite(fd, buf, size, 0) == static_cast<ssize_t>(size));
+    ::fsync(fd);
+    ::close(fd);
+  }
+  // Pages in memory past the first -- the header's, which the parse
+  // reads through the cache.
+  auto resident = [&] {
+    const int fd = ::open(file.c_str(), O_RDONLY);
+    void* m = ::mmap(nullptr, size, PROT_READ, MAP_SHARED, fd, 0);
+    std::vector<char> in(size / 16384 + 1);
+    std::size_t n = 0;
+    if (m != MAP_FAILED && ::mincore(m, size, in.data()) == 0) {
+      for (std::size_t p = 1; p < in.size(); ++p) {
+        n += (in[p] & MINCORE_INCORE) ? 1 : 0;
+      }
+    }
+    if (m != MAP_FAILED) { ::munmap(m, size); }
+    ::close(fd);
+    return n;
+  };
+  CHECK(resident() == 0);
+
+  auto r = vp::open_checkpoint(file);
+  REQUIRE(r != nullptr);
+  const auto& ts = r->tensors();
+  REQUIRE(ts.size() == 2);   // the small one is taken from the map
+  CHECK(ts[0].offset == start && ts[0].bytes == a);
+  CHECK(ts[1].offset == start + a + small && ts[1].bytes == b);
+  void* dst = nullptr;
+  REQUIRE(::posix_memalign(&dst, 16384, a) == 0);
+  for (std::size_t k = 0; k < ts.size(); ++k) {
+    std::memset(dst, 0, a);
+    CHECK(r->read(k, dst, a));
+    CHECK(std::memcmp(dst, bytes + ts[k].offset, ts[k].bytes) == 0);
+  }
+  CHECK(!r->read(0, dst, b));   // too small a buffer: nothing read
+  CHECK(resident() == 0);
+  std::free(dst);
+  std::free(buf);
+  CHECK(vp::open_checkpoint(dir / "config.json") == nullptr);
+
+  models::ReadSpeedOptions opt;
+  opt.reader = [](const std::filesystem::path& f) {
+    return vp::open_checkpoint(f);
+  };
+  const models::ReadSpeed rs = models::measure_read_speed({file}, opt);
+  CHECK(rs.error.empty());
+  CHECK(rs.read == a + b && rs.engine == rs.read && rs.whole);
+  CHECK(resident() == 0);
 }
