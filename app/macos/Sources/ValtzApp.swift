@@ -2598,11 +2598,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             break
                         }
                     // A single click on a row: the asset VIEWED on
-                    // the stage ("view:<id>"); "unview" the list
+                    // the stage ("view:<id>") -- what is viewed, the
+                    // notice it raised (a RefMod's); "unview" the list
                     // losing focus -- the active one back.
                     case "view":
                         if let a = m.asset(id: arg) {
                             m.viewAsset(a)
+                            let n = m.notice.map {
+                                "\($0.level):\($0.text)" } ?? "-"
+                            print("snapshot: assets view \(a.kind) viewed=\(m.viewedAsset ?? "-") notice=\(n)")
                         }
                     case "unview": m.endViewing()
                     // A blank asset of the New menu ("new:timeline",
@@ -4880,6 +4884,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         } else if xy.count == 2 {
                             Self.postClick(x: xy[0], y: xy[1])
                         }
+                    // "replan:<n>@<ms>": the stage's stack plan made
+                    // again n times, ms apart, as an agent's steps made
+                    // it -- the player playing, or not -- printed as
+                    // `snapshot: replan plans= drawn= skipped= at=<the
+                    // newest frame drawn, before>after, s> frame=<the
+                    // player's, before>after> rate=`: whether the picture
+                    // moved on with the sound.
+                    case "replan":
+                        let nm = arg.split(separator: "@")
+                        let n = Int(nm.first ?? "") ?? 10
+                        let ms = nm.count > 1 ? Int(nm[1]) ?? 500 : 500
+                        let box = StackBox.shown
+                        let c0 = box?.counts ?? (drawn: 0, skipped: 0)
+                        let at0 = box?.lastDrawnAt ?? -1
+                        let f0 = m.videoFrame
+                        let made0 = m.stackPlanStats.made
+                        for _ in 0..<n {
+                            m.refreshStackPlan()
+                            try? await Task.sleep(for: .milliseconds(ms))
+                        }
+                        let c1 = box?.counts ?? (drawn: 0, skipped: 0)
+                        let at1 = box?.lastDrawnAt ?? -1
+                        FileHandle.standardError.write(Data(String(
+                            format: "snapshot: replan plans=%d drawn=%d skipped=%d at=%.2f>%.2f frame=%d>%d rate=%.1f\n",
+                            m.stackPlanStats.made - made0,
+                            c1.drawn - c0.drawn, c1.skipped - c0.skipped,
+                            at0, at1, f0, m.videoFrame,
+                            VideoPlayerView.shownPlayer?.rate ?? -1)
+                            .utf8))
                     // "hintclick:<key>": a click held 150 ms on the
                     // button whose ⌘? label is <key> ("Space", "⌘←"),
                     // wherever it lies -- printed as `snapshot:
@@ -5438,6 +5471,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         default: break
                         }
                     case "follow": m.followAgent()
+                    // Its Following button pressed: the stage stays.
+                    case "unfollow": m.unfollowAgent()
+                    // "play": Space, the stage's play / pause; then
+                    // "measure:<s>" what the stack player drew meanwhile,
+                    // as TASKS' replan prints it -- does the picture move
+                    // on with the sound while the agent works.
+                    case "play": Self.postSpace(m)
+                    case "measure":
+                        let box = StackBox.shown
+                        let c0 = box?.counts ?? (drawn: 0, skipped: 0)
+                        let at0 = box?.lastDrawnAt ?? -1
+                        let f0 = m.videoFrame
+                        try? await Task.sleep(
+                            for: .seconds(Double(arg) ?? 5))
+                        let c1 = box?.counts ?? (drawn: 0, skipped: 0)
+                        FileHandle.standardError.write(Data(String(
+                            format: "snapshot: agent-measure drawn=%d skipped=%d at=%.2f>%.2f frame=%d>%d rate=%.1f state=%@\n",
+                            c1.drawn - c0.drawn, c1.skipped - c0.skipped,
+                            at0, box?.lastDrawnAt ?? -1, f0, m.videoFrame,
+                            VideoPlayerView.shownPlayer?.rate ?? -1,
+                            m.agent?.state ?? "-").utf8))
                     // A picture PASTED into the box, as ⌘V pastes one --
                     // its bytes on a pasteboard of the run's own (the
                     // person's clipboard left alone) -- or DROPPED on the
@@ -5548,7 +5602,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     FileHandle.standardError.write(Data(
                         "snapshot: agent-chat chat=\(m.agentChat) chatRect=\(Int(cf.minX)),\(Int(cf.minY)),\(Int(cf.width))x\(Int(cf.height)) ctx=\(ctx?.used ?? -1)/\(ctx?.limit ?? -1)@\(ctx?.compactAt ?? -1) transcript=\(a?.transcript.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") row=\(m.promptAttachments.count) said=\(said.joined(separator: ",")) tab=\(m.activePromptTab) look=\(m.activeTabDoNotApply) tabs=\(m.agentTabs.indices.map { i in let t = m.agentTabSession(i); return "\(i + 1):\(m.agentTabs[i].skills):\(t?.state ?? "-"):\(t?.steps.count ?? 0)\(i == m.agentTabIndex ? "*" : "")" }.joined(separator: ","))\n".utf8))
                     FileHandle.standardError.write(Data(
-                        "snapshot: agent \(step.replacingOccurrences(of: " ", with: "_").prefix(40)) state=\(a?.state ?? "-") steps=\(a?.steps.count ?? 0) proposed=\(a?.proposed?.tool ?? "-") last=\(a?.steps.last.map { "\($0.tool):\($0.state)" } ?? "-") review=\(a?.review ?? false) backend=\(a?.backend?.kind ?? "-") composition=\(m.activeComposition?.name.replacingOccurrences(of: " ", with: "_") ?? "-") pages=\(m.activeComposition?.pages ?? 0) writing=\(m.agentWriting.count) holds=\(m.agentHolds) follows=\(m.agentFollows) viewed=\(m.viewedAsset.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") page=\(m.stagePage + 1) error=\(a?.errorText?.replacingOccurrences(of: " ", with: "_").prefix(60) ?? "-") speed=\(a?.stats.flatMap { $0.isEmpty ? nil : $0.line.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
+                        "snapshot: agent \(step.replacingOccurrences(of: " ", with: "_").prefix(40)) state=\(a?.state ?? "-") steps=\(a?.steps.count ?? 0) proposed=\(a?.proposed?.tool ?? "-") last=\(a?.steps.last.map { "\($0.tool):\($0.state)" } ?? "-") review=\(a?.review ?? false) backend=\(a?.backend?.kind ?? "-") composition=\(m.activeComposition?.name.replacingOccurrences(of: " ", with: "_") ?? "-") pages=\(m.activeComposition?.pages ?? 0) writing=\(m.agentWriting.count) holds=\(m.agentHolds) follows=\(m.agentFollows) watching=\(m.watchingAgentShot ? "shot" : m.isGenerating ? "task" : "-") preview=\(m.stage.clip.map { "\($0.frames.count)f@\($0.step)" } ?? "-") viewed=\(m.viewedAsset.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-") page=\(m.stagePage + 1) error=\(a?.errorText?.replacingOccurrences(of: " ", with: "_").prefix(60) ?? "-") speed=\(a?.stats.flatMap { $0.isEmpty ? nil : $0.line.replacingOccurrences(of: " ", with: "_") } ?? "-")\n".utf8))
                 }
             }
             // Stop the generation after some seconds, as the Stop
@@ -5933,7 +5987,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 m.putOnStage(last)
             }
             try? FileManager.default.removeItem(at: dest)
-            m.save(to: dest, as: choice)
+            m.save(to: dest, as: choice,
+                   promptAndSeed: env["VALTZ_SNAPSHOT_SAVE_PROMPT"] == "on")
             // VALTZ_SNAPSHOT_EXPORT_WAIT=<s>: the snapshot that long
             // after it starts, while it runs (a clip's export on the
             // stage), not once it is saved.
@@ -5991,6 +6046,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if let q = Double(saveSpec[1]), f == .jpeg {
                     options.setQuality(q)
                 }
+                // VALTZ_SNAPSHOT_SAVE_PROMPT=on|off: its Prompt and Seed.
+                if let on = env["VALTZ_SNAPSHOT_SAVE_PROMPT"] {
+                    options.setPromptAndSeed(on == "on")
+                }
                 // A movie's encoding, as its rows set it:
                 // "rate=bitrate,bitrate=8,peak=12,keyframes=2,bframes=0,
                 // profile=main,level=4.1,entropy=cavlc,prores=422lt,
@@ -6046,7 +6105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     FileHandle.standardError.write(Data(
                         "snapshot: save video=\(video) levels=\(options.video?.levelChoices ?? "-")\n".utf8))
                     FileHandle.standardError.write(Data(
-                        "snapshot: save panel \(type(of: panel)) choice=\(options.choice.rawValue) quality=\(options.jpegQuality.map(String.init) ?? "-") estimate=\(options.estimate.map(String.init) ?? "-") name=\(panel.nameFieldStringValue)\n".utf8))
+                        "snapshot: save panel \(type(of: panel)) choice=\(options.choice.rawValue) quality=\(options.jpegQuality.map(String.init) ?? "-") estimate=\(options.estimate.map(String.init) ?? "-") name=\(panel.nameFieldStringValue) promptSeed=\(options.writesPromptAndSeed ? "on" : options.promptAndSeed ? "greyed" : "off") seed=\(options.madeFrom.map { $0.seed.map(String.init) ?? "none" } ?? "-") promptNote=\(options.promptNoteText.replacingOccurrences(of: " ", with: "_"))\n".utf8))
                     // As Save would: NSSavePanel.ok(_:) throws when
                     // not sent by its button.
                     if let parent = panel.sheetParent {

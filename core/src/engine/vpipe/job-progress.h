@@ -127,6 +127,16 @@ bool names_a_file(std::string_view desc);
 // A download's report: a file's, or the whole's.
 bool a_download_report(std::string_view desc);
 
+// WHY A JOB WROTE NOTHING. A vpipe stage refuses a beat it cannot take
+// with a WARNING ending "; skipping" and drops it: nothing after it
+// runs, and the graph ends as if done, its file never written. A
+// refusal is such a line (an error line says itself).
+bool is_refusal(std::string_view line);
+// The failure of a job that wrote no `what` ("the clip", "its file"):
+// the line its stage gave up in, its "; skipping" left off -- or, none
+// heard, the log to read.
+std::string no_file_reason(std::string_view what, std::string_view refusal);
+
 class JobProgress {
 public:
   // `after`: the newest report id when the job started (last_id()).

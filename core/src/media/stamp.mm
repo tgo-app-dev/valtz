@@ -129,6 +129,149 @@ byte_order(const Bytes& t)
   return std::nullopt;
 }
 
+// An IFD entry as stored: 12 bytes in the block's byte order.
+using Raw = std::array<std::uint8_t, 12>;
+
+std::uint32_t
+raw_tag(const Raw& x, bool le)
+{
+  return le ? std::uint32_t(x[0]) | (std::uint32_t(x[1]) << 8)
+            : (std::uint32_t(x[0]) << 8) | std::uint32_t(x[1]);
+}
+
+// An entry to write: its value (in the block's byte order) after its IFD
+// where it is past the entry's 4 bytes.
+struct Added {
+  std::uint32_t tag = 0, type = 0, count = 0;
+  Bytes         value;
+};
+
+// An ASCII entry: `s` and its NUL.
+Added
+ascii_entry(std::uint32_t tag, std::string_view s)
+{
+  Added a{tag, 2, static_cast<std::uint32_t>(s.size() + 1), {}};
+  a.value.assign(s.begin(), s.end());
+  a.value.push_back(0);
+  return a;
+}
+
+// The entries of the IFD at `at` but those of `drop`'s tags, as they
+// are; nullopt where it does not lie in the block.
+std::optional<std::vector<Raw>>
+ifd_entries(const Tiff& r, std::size_t at,
+            std::initializer_list<std::uint32_t> drop)
+{
+  if (at + 2 > r.t.size()) {
+    return std::nullopt;
+  }
+  const std::uint32_t n = r.rd(at, 2);
+  if (at + 2 + 12 * std::size_t(n) + 4 > r.t.size()) {
+    return std::nullopt;
+  }
+  std::vector<Raw> out;
+  for (std::uint32_t k = 0; k < n; ++k) {
+    const std::size_t e = at + 2 + 12 * std::size_t(k);
+    if (std::ranges::find(drop, r.rd(e, 2)) != drop.end()) {
+      continue;
+    }
+    Raw x{};
+    std::copy_n(r.t.begin() + static_cast<std::ptrdiff_t>(e), 12,
+                x.begin());
+    out.push_back(x);
+  }
+  return out;
+}
+
+// An IFD appended to `t` -- `kept` as they are (an offset in one still
+// points where it did: the block only grows at its end) and `added`, in
+// tag order, as TIFF wants an IFD -- the values that do not fit an entry
+// after it. Returns where it starts.
+std::size_t
+append_ifd(Bytes& t, bool le, std::vector<Raw> kept,
+           const std::vector<Added>& added, std::uint32_t next)
+{
+  if (t.size() % 2) {
+    t.push_back(0);  // an IFD starts on a word
+  }
+  const std::size_t at = t.size();
+  const std::size_t count = kept.size() + added.size();
+  const std::size_t values_at = at + 2 + 12 * count + 4;
+  Bytes values;
+  for (const auto& a : added) {
+    Bytes e(12, 0);
+    put(e, le, 0, 2, a.tag);
+    put(e, le, 2, 2, a.type);
+    put(e, le, 4, 4, a.count);
+    if (a.value.size() <= 4) {
+      std::ranges::copy(a.value, e.begin() + 8);  // left in its field
+    } else {
+      put(e, le, 8, 4,
+          static_cast<std::uint32_t>(values_at + values.size()));
+      values.insert(values.end(), a.value.begin(), a.value.end());
+      if (values.size() % 2) {
+        values.push_back(0);
+      }
+    }
+    Raw x{};
+    std::ranges::copy(e, x.begin());
+    kept.push_back(x);
+  }
+  std::ranges::stable_sort(kept, {}, [&](const Raw& x) {
+    return raw_tag(x, le);
+  });
+  t.resize(values_at, 0);
+  put(t, le, at, 2, static_cast<std::uint32_t>(count));
+  for (std::size_t k = 0; k < kept.size(); ++k) {
+    std::ranges::copy(kept[k], t.begin() + static_cast<std::ptrdiff_t>(
+                                               at + 2 + 12 * k));
+  }
+  put(t, le, at + 2 + 12 * count, 4, next);
+  t.insert(t.end(), values.begin(), values.end());
+  return at;
+}
+
+// The value of tag `tag` in the IFD at `at` as bytes -- an ASCII one
+// without its NULs -- or nullopt: none, or out of the block.
+std::optional<std::string>
+ifd_value(const Tiff& r, std::size_t at, std::uint32_t tag)
+{
+  const Bytes& t = r.t;
+  if (at + 2 > t.size()) {
+    return std::nullopt;
+  }
+  const std::uint32_t n = r.rd(at, 2);
+  if (at + 2 + 12 * std::size_t(n) + 4 > t.size()) {
+    return std::nullopt;
+  }
+  for (std::uint32_t k = 0; k < n; ++k) {
+    const std::size_t e = at + 2 + 12 * std::size_t(k);
+    if (r.rd(e, 2) != tag) {
+      continue;
+    }
+    const std::uint32_t type = r.rd(e + 2, 2);
+    const std::size_t size = r.rd(e + 4, 4) *
+        (type == 3 ? 2u : type == 4 || type == 13 ? 4u : 1u);
+    const std::size_t v = size <= 4 ? e + 8 : r.rd(e + 8, 4);
+    if (v + size > t.size()) {
+      return std::nullopt;
+    }
+    std::string s(t.begin() + static_cast<std::ptrdiff_t>(v),
+                  t.begin() + static_cast<std::ptrdiff_t>(v + size));
+    if (type == 2) {
+      while (!s.empty() && s.back() == 0) {
+        s.pop_back();
+      }
+    }
+    return s;
+  }
+  return std::nullopt;
+}
+
+// EXIF's UserComment's 8 bytes of character code: ASCII's.
+constexpr std::array<std::uint8_t, 8> kAsciiCode = {'A', 'S', 'C', 'I',
+                                                    'I', 0, 0, 0};
+
 // ---- PNG ---------------------------------------------------------------
 
 constexpr std::array<std::uint8_t, 8> kPngSig = {0x89, 'P', 'N', 'G',
@@ -176,16 +319,66 @@ append_chunk(Bytes& out, const Chunk& c)
   }
 }
 
-// A tEXt / iTXt / zTXt chunk whose keyword is Software.
+// A tEXt / iTXt / zTXt chunk whose keyword is `key`.
 bool
-software_text(const Chunk& c)
+text_of(const Chunk& c, std::string_view key)
 {
   if (c.type != "tEXt" && c.type != "iTXt" && c.type != "zTXt") {
     return false;
   }
-  static constexpr std::string_view kKey = "Software";
-  return c.data.size() > kKey.size() && c.data[kKey.size()] == 0 &&
-         std::equal(kKey.begin(), kKey.end(), c.data.begin());
+  return c.data.size() > key.size() && c.data[key.size()] == 0 &&
+         std::equal(key.begin(), key.end(), c.data.begin());
+}
+
+bool
+software_text(const Chunk& c)
+{
+  return text_of(c, "Software");
+}
+
+// A text chunk of `key`: tEXt, which holds Latin-1, for ASCII words; iTXt
+// (UTF-8, uncompressed, no language) for any other.
+Chunk
+text_chunk(std::string_view key, std::string_view words)
+{
+  const bool ascii = std::ranges::all_of(words, [](char ch) {
+    return static_cast<unsigned char>(ch) < 0x80;
+  });
+  Chunk c{ascii ? "tEXt" : "iTXt", {}};
+  c.data.assign(key.begin(), key.end());
+  c.data.push_back(0);
+  if (!ascii) {
+    c.data.insert(c.data.end(), {0, 0, 0, 0});  // flag, method, "", ""
+  }
+  c.data.insert(c.data.end(), words.begin(), words.end());
+  return c;
+}
+
+NSString*
+ns(std::string_view s)
+{
+  return [[NSString alloc] initWithBytes:s.data() length:s.size()
+                                encoding:NSUTF8StringEncoding];
+}
+
+// `made` in ImageIO's metadata `m`: the prompt as TIFF's ImageDescription
+// (XMP's dc:description, the IPTC caption ImageIO reads from it), the
+// comment as EXIF's UserComment.
+void
+set_made(CGMutableImageMetadataRef m, const MadeFrom& made)
+{
+  if (!made.prompt.empty()) {
+    if (NSString* v = ns(made.prompt)) {
+      CGImageMetadataSetValueMatchingImageProperty(
+          m, kCGImagePropertyTIFFDictionary,
+          kCGImagePropertyTIFFImageDescription, (__bridge CFStringRef)v);
+    }
+  }
+  if (const std::string c = made.comment(); !c.empty()) {
+    CGImageMetadataSetValueMatchingImageProperty(
+        m, kCGImagePropertyExifDictionary, kCGImagePropertyExifUserComment,
+        (__bridge CFStringRef)ns(c));
+  }
 }
 
 // An iTXt chunk of XMP ("XML:com.adobe.xmp", uncompressed: ImageIO
@@ -193,7 +386,8 @@ software_text(const Chunk& c)
 // CreatorTool and TIFF's Software, as ImageIO reads them -- through
 // ImageIO's own XMP. nullopt: no such chunk, or one it does not read.
 std::optional<Bytes>
-xmp_with_software(const Chunk& c, std::string_view software)
+xmp_with_software(const Chunk& c, std::string_view software,
+                  const MadeFrom& made)
 {
   static constexpr std::string_view kKey = "XML:com.adobe.xmp";
   if (c.type != "iTXt" || c.data.size() < kKey.size() + 3 ||
@@ -229,6 +423,7 @@ xmp_with_software(const Chunk& c, std::string_view software)
                                     (__bridge CFStringRef)v);
     CGImageMetadataSetValueWithPath(mm, nullptr, CFSTR("tiff:Software"),
                                     (__bridge CFStringRef)v);
+    set_made(mm, made);
     NSData* out = (__bridge_transfer NSData*)CGImageMetadataCreateXMPData(
         mm, nullptr);
     CFRelease(mm);
@@ -251,7 +446,8 @@ empty_tiff()
 }
 
 Status
-stamp_png(const fs::path& file, std::string_view software, bool keep_model)
+stamp_png(const fs::path& file, std::string_view software, bool keep_model,
+          const MadeFrom& made)
 {
   VALTZ_ASSIGN(Bytes b, read_all(file));
   if (b.size() < 8 || !std::equal(kPngSig.begin(), kPngSig.end(),
@@ -307,37 +503,41 @@ stamp_png(const fs::path& file, std::string_view software, bool keep_model)
     // An eXIf ImageIO wrote but no TIFF block we read: a fresh one.
     block = tiff_with_software(empty_tiff(), sw);
   }
-  // tEXt holds Latin-1: an ASCII name goes there, any other in iTXt
-  // (UTF-8, uncompressed, no language).
-  const bool ascii = std::ranges::all_of(sw, [](char ch) {
-    return static_cast<unsigned char>(ch) < 0x80;
-  });
-  Chunk text{ascii ? "tEXt" : "iTXt", {}};
-  static constexpr std::string_view kKey = "Software";
-  text.data.assign(kKey.begin(), kKey.end());
-  text.data.push_back(0);
-  if (!ascii) {
-    text.data.insert(text.data.end(), {0, 0, 0, 0});  // flag, method, "", ""
+  // Its text: who wrote it, and what made it -- the PNG tab's
+  // Description and Comment, as ImageIO reads a PNG's text.
+  std::vector<Chunk> texts = {text_chunk("Software", sw)};
+  const std::string comment = made.comment();
+  if (!made.prompt.empty()) {
+    texts.push_back(text_chunk("Description", made.prompt));
   }
-  text.data.insert(text.data.end(), sw.begin(), sw.end());
+  if (!comment.empty()) {
+    texts.push_back(text_chunk("Comment", comment));
+  }
+  auto replaced = [&](const Chunk& c) {
+    return software_text(c) ||
+           (!made.prompt.empty() && text_of(c, "Description")) ||
+           (!comment.empty() && text_of(c, "Comment"));
+  };
 
   Bytes out(kPngSig.begin(), kPngSig.end());
   bool placed = false;
   for (const auto& c : chunks) {
-    if (software_text(c)) {
+    if (replaced(c)) {
       continue;
     }
-    // Both before the picture: where a reader looks for them.
+    // Before the picture: where a reader looks for them.
     if (!placed && (c.type == "IDAT" || c.type == "IEND")) {
       if (!exif) {
         append_chunk(out, {"eXIf", *block});
       }
-      append_chunk(out, text);
+      for (const auto& t : texts) {
+        append_chunk(out, t);
+      }
       placed = true;
     }
     if (c.type == "eXIf") {
       append_chunk(out, {"eXIf", *block});
-    } else if (auto x = xmp_with_software(c, sw)) {
+    } else if (auto x = xmp_with_software(c, sw, made)) {
       append_chunk(out, {"iTXt", std::move(*x)});
     } else {
       append_chunk(out, c);
@@ -410,7 +610,7 @@ jpeg_exif(const Bytes& b)
 // alone then).
 Result<std::optional<std::string>>
 stamp_jpeg_exif(const fs::path& file, std::string_view software,
-                bool keep_model)
+                bool keep_model, const MadeFrom& made)
 {
   VALTZ_ASSIGN(Bytes b, read_all(file));
   const auto seg = jpeg_exif(b);
@@ -426,7 +626,7 @@ stamp_jpeg_exif(const fs::path& file, std::string_view software,
       seg->size ? tiff_software(block).value_or("") : std::string();
   const std::string sw = keep_model ? stamped_software(was, software)
                                     : std::string(software);
-  const std::optional<Bytes> tiff = tiff_with_software(block, sw);
+  const std::optional<Bytes> tiff = tiff_with_software(block, sw, made);
   if (!tiff || tiff->size() + head - 2 > 0xFFFF) {
     return std::optional<std::string>();
   }
@@ -443,9 +643,31 @@ stamp_jpeg_exif(const fs::path& file, std::string_view software,
   return std::optional<std::string>(sw);
 }
 
+// A TIFF file is a TIFF block: what made it set in its own IFDs -- IFD 0's
+// ImageDescription and Software, the Exif IFD's UserComment -- the strips
+// where they were (it only grows). ImageIO's copy (below) keeps a TIFF's
+// Exif IFD as it is: a UserComment there already was never replaced.
+// Returns the name written; nullopt when it is no TIFF this reads (a
+// BigTIFF: ImageIO's copy alone then).
+Result<std::optional<std::string>>
+stamp_tiff_ifds(const fs::path& file, std::string_view software,
+                bool keep_model, const MadeFrom& made)
+{
+  VALTZ_ASSIGN(Bytes b, read_all(file));
+  const std::string was = tiff_software(b).value_or("");
+  const std::string sw = keep_model ? stamped_software(was, software)
+                                    : std::string(software);
+  const std::optional<Bytes> t = tiff_with_software(b, sw, made);
+  if (!t || t->size() > 0xFFFFFFFFu) {
+    return std::optional<std::string>();
+  }
+  VALTZ_TRY(replace_with(file, *t));
+  return std::optional<std::string>(sw);
+}
+
 Status
 stamp_imageio(const fs::path& file, std::string_view software,
-              bool keep_model)
+              bool keep_model, const MadeFrom& made = {})
 {
   @autoreleasepool {
     NSURL* url = [NSURL fileURLWithPath:@(file.c_str())];
@@ -477,6 +699,7 @@ stamp_imageio(const fs::path& file, std::string_view software,
         (__bridge CFStringRef)value);
     CGImageMetadataSetValueWithPath(md, nullptr, CFSTR("xmp:CreatorTool"),
                                     (__bridge CFStringRef)value);
+    set_made(md, made);
     const fs::path tmp = file.parent_path() /
         ("." + file.filename().string() + ".stamp");
     NSURL* turl = [NSURL fileURLWithPath:@(tmp.c_str())];
@@ -519,6 +742,14 @@ stamp_imageio(const fs::path& file, std::string_view software,
 
 // ---- OpenEXR -----------------------------------------------------------
 
+void
+add_le32(Bytes& b, std::uint32_t v)
+{
+  for (int k = 0; k < 4; ++k) {
+    b.push_back(static_cast<std::uint8_t>(v >> (8 * k)));
+  }
+}
+
 std::uint32_t
 le32(const Bytes& b, std::size_t at)
 {
@@ -540,7 +771,8 @@ lines_per_chunk(int compression)
 }
 
 Status
-stamp_exr(const fs::path& file, std::string_view software)
+stamp_exr(const fs::path& file, std::string_view software,
+          const MadeFrom& made)
 {
   VALTZ_ASSIGN(Bytes b, read_all(file));
   if (b.size() < 8 || le32(b, 0) != 20000630u) {
@@ -617,24 +849,38 @@ stamp_exr(const fs::path& file, std::string_view software)
     return make_error(Code::Corrupt, std::format("{}: cut short",
                                                  file.string()));
   }
-  // The header again, a "software" string attribute in place of any.
+  // The header again, a "software" string attribute in place of any --
+  // and what made it: the standard "comments", an int "seed".
+  std::vector<std::pair<std::string, std::pair<std::string, Bytes>>> put_in;
+  put_in.push_back({"software", {"string", Bytes(software.begin(),
+                                                 software.end())}});
+  if (!made.prompt.empty()) {
+    put_in.push_back({"comments", {"string", Bytes(made.prompt.begin(),
+                                                   made.prompt.end())}});
+  }
+  if (made.seed) {
+    Bytes v(4, 0);
+    put(v, true, 0, 4, static_cast<std::uint32_t>(*made.seed));
+    put_in.push_back({"seed", {"int", std::move(v)}});
+  }
   Bytes head(b.begin(), b.begin() + 8);
   for (const auto& a : attrs) {
-    if (a.name != "software") {
+    if (std::ranges::none_of(put_in, [&](const auto& p) {
+          return p.first == a.name;
+        })) {
       head.insert(head.end(), b.begin() + static_cast<std::ptrdiff_t>(a.from),
                   b.begin() + static_cast<std::ptrdiff_t>(a.to));
     }
   }
-  static constexpr std::string_view kName = "software", kType = "string";
-  head.insert(head.end(), kName.begin(), kName.end());
-  head.push_back(0);
-  head.insert(head.end(), kType.begin(), kType.end());
-  head.push_back(0);
-  const auto len = static_cast<std::uint32_t>(software.size());
-  for (int k = 0; k < 4; ++k) {
-    head.push_back(static_cast<std::uint8_t>(len >> (8 * k)));
+  for (const auto& [name, typed] : put_in) {
+    const auto& [type, value] = typed;
+    head.insert(head.end(), name.begin(), name.end());
+    head.push_back(0);
+    head.insert(head.end(), type.begin(), type.end());
+    head.push_back(0);
+    add_le32(head, static_cast<std::uint32_t>(value.size()));
+    head.insert(head.end(), value.begin(), value.end());
   }
-  head.insert(head.end(), software.begin(), software.end());
   head.push_back(0);
   // Every chunk moves by what the header grew (or shrank) by.
   const std::int64_t delta = static_cast<std::int64_t>(head.size()) -
@@ -661,14 +907,6 @@ stamp_exr(const fs::path& file, std::string_view software)
 }
 
 // ---- WAV ---------------------------------------------------------------
-
-void
-add_le32(Bytes& b, std::uint32_t v)
-{
-  for (int k = 0; k < 4; ++k) {
-    b.push_back(static_cast<std::uint8_t>(v >> (8 * k)));
-  }
-}
 
 // A LIST/INFO chunk of `items` (id, data) and ISFT.
 Bytes
@@ -759,11 +997,12 @@ stamp_wav(const fs::path& file, std::string_view software)
 // ---- movies and AAC ----------------------------------------------------
 
 Status
-stamp_movie(const fs::path& file, std::string_view software)
+stamp_movie(const fs::path& file, std::string_view software,
+            const MadeFrom& made)
 {
   const fs::path tmp = file.parent_path() /
       ("." + file.stem().string() + ".stamp" + file.extension().string());
-  VALTZ_TRY(remux_with_software(file, tmp, software));
+  VALTZ_TRY(remux_with_software(file, tmp, software, made));
   std::error_code ec;
   fs::rename(tmp, file, ec);
   if (ec) {
@@ -813,6 +1052,12 @@ stamped_software(std::string_view was, std::string_view software)
   return with_model(software, stamped_model(was));
 }
 
+std::string
+MadeFrom::comment() const
+{
+  return seed ? std::format("Seed: {}", *seed) : std::string();
+}
+
 std::optional<std::string>
 tiff_software(const Bytes& t)
 {
@@ -825,28 +1070,41 @@ tiff_software(const Bytes& t)
   if (!ifd) {
     return std::nullopt;
   }
-  for (std::uint32_t k = 0; k < ifd->second; ++k) {
-    const std::size_t e = ifd->first + 2 + 12 * std::size_t(k);
-    if (r.rd(e, 2) != 0x0131 || r.rd(e + 2, 2) != 2) {
-      continue;
-    }
-    const std::size_t n = r.rd(e + 4, 4);
-    const std::size_t at = n <= 4 ? e + 8 : r.rd(e + 8, 4);
-    if (at + n > t.size()) {
-      return std::nullopt;
-    }
-    std::string s(t.begin() + static_cast<std::ptrdiff_t>(at),
-                  t.begin() + static_cast<std::ptrdiff_t>(at + n));
-    while (!s.empty() && s.back() == 0) {
-      s.pop_back();
-    }
-    return s;
+  return ifd_value(r, ifd->first, 0x0131).value_or("");
+}
+
+MadeFrom
+tiff_made_from(const Bytes& t)
+{
+  MadeFrom m;
+  const auto le = byte_order(t);
+  if (!le) {
+    return m;
   }
-  return std::string();
+  const Tiff r{t, *le};
+  const auto ifd = ifd0(r);
+  if (!ifd) {
+    return m;
+  }
+  m.prompt = ifd_value(r, ifd->first, 0x010E).value_or("");
+  const auto exif = ifd_value(r, ifd->first, 0x8769);
+  if (!exif || exif->size() != 4) {
+    return m;
+  }
+  const Bytes ptr(exif->begin(), exif->end());
+  const auto uc = ifd_value(r, Tiff{ptr, *le}.rd(0, 4), 0x9286);
+  static constexpr std::string_view kSeed = "Seed: ";
+  if (uc && uc->size() > 8 &&
+      std::equal(kAsciiCode.begin(), kAsciiCode.end(), uc->begin()) &&
+      uc->compare(8, kSeed.size(), kSeed) == 0) {
+    m.seed = std::atoll(uc->c_str() + 8 + kSeed.size());
+  }
+  return m;
 }
 
 std::optional<Bytes>
-tiff_with_software(const Bytes& block, std::string_view software)
+tiff_with_software(const Bytes& block, std::string_view software,
+                   const MadeFrom& made)
 {
   const auto le = byte_order(block);
   if (!le) {
@@ -858,110 +1116,112 @@ tiff_with_software(const Bytes& block, std::string_view software)
     return std::nullopt;
   }
   const auto [at, n] = *ifd;
-  // IFD 0's entries but Software's, as they are: an offset in one still
-  // points where it did, since the block only grows at its end.
-  std::vector<std::array<std::uint8_t, 12>> entries;
+  const bool described = !made.prompt.empty();
+  const std::string comment = made.comment();
+  // IFD 0's entries but those written here, as they are; the Exif IFD's
+  // place, when its UserComment is.
+  std::vector<Raw> entries;
+  std::optional<std::size_t> exif_at;
   for (std::uint32_t k = 0; k < n; ++k) {
     const std::size_t e = at + 2 + 12 * std::size_t(k);
-    if (r.rd(e, 2) == 0x0131) {
+    const std::uint32_t tag = r.rd(e, 2);
+    if (tag == 0x0131 || (described && tag == 0x010E)) {
       continue;
     }
-    std::array<std::uint8_t, 12> x{};
+    if (!comment.empty() && tag == 0x8769) {
+      exif_at = r.rd(e + 8, 4);
+      continue;
+    }
+    Raw x{};
     std::copy_n(block.begin() + static_cast<std::ptrdiff_t>(e), 12,
                 x.begin());
     entries.push_back(x);
   }
+  std::vector<Added> added = {ascii_entry(0x0131, software)};
+  if (described) {
+    added.push_back(ascii_entry(0x010E, made.prompt));
+  }
   // Software with no other TIFF field in IFD 0 -- alone, or beside only
-  // the pointers to other IFDs (Exif's, GPS's, interoperability's) --
-  // ImageIO does not read (nor so Preview, nor Spotlight): Orientation 1,
-  // the pixels as stored, beside it.
-  auto tag_of = [&](const std::array<std::uint8_t, 12>& x) {
-    return *le ? std::uint32_t(x[0]) | (std::uint32_t(x[1]) << 8)
-               : (std::uint32_t(x[0]) << 8) | std::uint32_t(x[1]);
-  };
-  if (std::ranges::all_of(entries, [&](const auto& x) {
-        const std::uint32_t tag = tag_of(x);
-        return tag == 0x8769 || tag == 0x8825 || tag == 0xA005;
+  // the pointers to other IFDs (Exif's, GPS's, interoperability's) and an
+  // ImageDescription, which does not count either -- ImageIO does not read
+  // (nor so Preview, nor Spotlight): Orientation 1, the pixels as stored,
+  // beside it.
+  if (std::ranges::all_of(entries, [&](const Raw& x) {
+        const std::uint32_t tag = raw_tag(x, *le);
+        return tag == 0x8769 || tag == 0x8825 || tag == 0xA005 ||
+               tag == 0x010E;
       })) {
-    Bytes e(12, 0);
-    put(e, *le, 0, 2, 0x0112);
-    put(e, *le, 2, 2, 3);  // SHORT
-    put(e, *le, 4, 4, 1);
-    put(e, *le, 8, 2, 1);  // left in its field, either order
-    std::array<std::uint8_t, 12> x{};
-    std::copy(e.begin(), e.end(), x.begin());
-    entries.push_back(x);
+    Added o{0x0112, 3, 1, Bytes(2, 0)};  // SHORT
+    put(o.value, *le, 0, 2, 1);
+    added.push_back(std::move(o));
   }
   const std::uint32_t next = r.rd(at + 2 + 12 * std::size_t(n), 4);
   Bytes t = block;
-  if (t.size() % 2) {
-    t.push_back(0);  // an IFD starts on a word
-  }
-  const std::size_t ifd_at = t.size();
-  const std::size_t count = entries.size() + 1;
-  const std::size_t str_at = ifd_at + 2 + 12 * count + 4;
-  const auto len = static_cast<std::uint32_t>(software.size() + 1);
-  std::array<std::uint8_t, 12> sw{};
-  {
-    Bytes e(12, 0);
-    put(e, *le, 0, 2, 0x0131);
-    put(e, *le, 2, 2, 2);  // ASCII
-    put(e, *le, 4, 4, len);
-    if (len <= 4) {
-      std::copy(software.begin(), software.end(), e.begin() + 8);
-    } else {
-      put(e, *le, 8, 4, static_cast<std::uint32_t>(str_at));
+  if (!comment.empty()) {
+    // The Exif IFD again with its UserComment -- its other entries as
+    // they are -- or one made (its version said, as EXIF wants).
+    std::vector<Raw> kept;
+    if (exif_at) {
+      kept = ifd_entries(r, *exif_at, {0x9286}).value_or(kept);
     }
-    std::copy(e.begin(), e.end(), sw.begin());
+    std::vector<Added> exif;
+    if (std::ranges::none_of(kept, [&](const Raw& x) {
+          return raw_tag(x, *le) == 0x9000;
+        })) {
+      exif.push_back({0x9000, 7, 4, {'0', '2', '3', '2'}});  // UNDEFINED
+    }
+    Added uc{0x9286, 7, 0, Bytes(kAsciiCode.begin(), kAsciiCode.end())};
+    uc.value.insert(uc.value.end(), comment.begin(), comment.end());
+    uc.count = static_cast<std::uint32_t>(uc.value.size());
+    exif.push_back(std::move(uc));
+    const std::size_t exif_ifd = append_ifd(t, *le, std::move(kept), exif,
+                                            0);
+    Added ptr{0x8769, 4, 1, Bytes(4, 0)};  // LONG
+    put(ptr.value, *le, 0, 4, static_cast<std::uint32_t>(exif_ifd));
+    added.push_back(std::move(ptr));
   }
-  // In tag order, as TIFF wants an IFD.
-  entries.push_back(sw);
-  std::ranges::stable_sort(entries, {}, tag_of);
-  t.resize(str_at, 0);
-  put(t, *le, ifd_at, 2, static_cast<std::uint32_t>(count));
-  for (std::size_t k = 0; k < entries.size(); ++k) {
-    std::copy(entries[k].begin(), entries[k].end(),
-              t.begin() + static_cast<std::ptrdiff_t>(ifd_at + 2 + 12 * k));
-  }
-  put(t, *le, ifd_at + 2 + 12 * count, 4, next);
-  if (len > 4) {
-    t.insert(t.end(), software.begin(), software.end());
-    t.push_back(0);
-  }
+  const std::size_t ifd_at = append_ifd(t, *le, std::move(entries), added,
+                                        next);
   put(t, *le, 4, 4, static_cast<std::uint32_t>(ifd_at));
   return t;
 }
 
 Status
 stamp_software(const fs::path& file, std::string_view software,
-               bool keep_model)
+               bool keep_model, const MadeFrom& made)
 {
   if (software.empty()) {
     return ok_status();
   }
   const std::string ext = lower_ext(file);
   if (ext == ".png") {
-    return stamp_png(file, software, keep_model);
+    return stamp_png(file, software, keep_model, made);
   }
   if (ext == ".jpg" || ext == ".jpeg") {
     // Its EXIF block first, then ImageIO's copy for the XMP -- the same
     // name, the model already settled from the block.
     VALTZ_ASSIGN(std::optional<std::string> sw,
-                 stamp_jpeg_exif(file, software, keep_model));
-    return sw ? stamp_imageio(file, *sw, false)
-              : stamp_imageio(file, software, keep_model);
+                 stamp_jpeg_exif(file, software, keep_model, made));
+    return sw ? stamp_imageio(file, *sw, false, made)
+              : stamp_imageio(file, software, keep_model, made);
   }
   if (ext == ".tif" || ext == ".tiff") {
-    return stamp_imageio(file, software, keep_model);
+    if (made.empty()) {
+      return stamp_imageio(file, software, keep_model);
+    }
+    VALTZ_ASSIGN(std::optional<std::string> sw,
+                 stamp_tiff_ifds(file, software, keep_model, made));
+    return sw ? stamp_imageio(file, *sw, false, made)
+              : stamp_imageio(file, software, keep_model, made);
   }
   if (ext == ".exr") {
-    return stamp_exr(file, software);
+    return stamp_exr(file, software, made);
   }
   if (ext == ".wav") {
     return stamp_wav(file, software);
   }
   if (ext == ".mov" || ext == ".mp4" || ext == ".m4v" || ext == ".m4a") {
-    return stamp_movie(file, software);
+    return stamp_movie(file, software, made);
   }
   return make_error(Code::Unsupported, std::format(
       "{} files are not stamped", ext.empty() ? "extensionless" : ext));

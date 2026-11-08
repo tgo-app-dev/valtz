@@ -706,23 +706,30 @@ Controller::stamp_file(const fs::path& file) const
 
 Status
 Controller::stamp_file(const fs::path& file, ProjectId pid, AssetId asset,
-                       const std::string& only) const
+                       const std::string& only, bool prompt_and_seed) const
 {
-  std::string model;
-  if (only.empty()) {
-    model = made_with(pid, asset);
-  } else if (const project::Project* p = project(pid)) {
-    // One layer alone: what it shows.
-    if (auto a = p->asset(asset); a.ok()) {
-      for (const auto& l : a->layers) {
-        if (l.id == only && l.source) {
-          model = made_with(pid, *l.source);
+  // One layer alone: what it shows.
+  AssetId shown = asset;
+  if (!only.empty()) {
+    shown = AssetId();
+    if (const project::Project* p = project(pid)) {
+      if (auto a = p->asset(asset); a.ok()) {
+        for (const auto& l : a->layers) {
+          if (l.id == only && l.source) {
+            shown = *l.source;
+          }
         }
       }
     }
   }
+  const std::string model =
+      shown.is_nil() ? std::string() : made_with(pid, shown);
+  media::MadeFrom made;
+  if (prompt_and_seed && !shown.is_nil()) {
+    made = made_from(pid, shown).value_or(made);
+  }
   return media::stamp_software(file, media::with_model(software(), model),
-                               false);
+                               false, made);
 }
 
 namespace {
@@ -780,6 +787,93 @@ Controller::made_with(ProjectId pid, AssetId asset) const
   std::set<std::string> models;
   models_of(*p, asset, models, 0);
   return models.size() == 1 ? *models.begin() : std::string();
+}
+
+namespace {
+
+// The generations whose pictures `id` shows, into `out` by asset id --
+// "" for a picture no generation made (a photo, a broken link). A sound
+// and a markup add nothing. `depth` bounds nesting.
+void
+generations_of(const project::Project& p, const AssetId& id,
+               std::set<std::string>& out, int depth)
+{
+  auto a = p.asset(id);
+  if (!a.ok() || depth > 16) {
+    out.insert("");
+    return;
+  }
+  if (a->kind == project::AssetKind::Audio ||
+      a->cls == project::AssetClass::Markup) {
+    return;
+  }
+  if (a->cls == project::AssetClass::Still ||
+      a->cls == project::AssetClass::Composition) {
+    for (const auto& l : a->layers) {
+      if (l.visible && !l.mask && l.source) {
+        generations_of(p, *l.source, out, depth + 1);
+      }
+    }
+    return;
+  }
+  if (auto r = p.recipe(a->recipe); r.ok()) {
+    // An upscale shows its source's picture, larger.
+    if (r->op == engine::kOpUpscaleVideo ||
+        r->op == engine::kOpUpscaleImage) {
+      const auto in = std::ranges::find(r->inputs, std::string("source"),
+                                        &project::RecipeInput::role);
+      if (in != r->inputs.end()) {
+        generations_of(p, in->asset, out, depth + 1);
+        return;
+      }
+    } else if ((r->op == engine::kOpGenerateImage ||
+                r->op == engine::kOpEditImage ||
+                r->op == engine::kOpGenerateVideo) &&
+               r->params.contains("seed")) {
+      out.insert(id.str());
+      return;
+    }
+  }
+  // A flat copy: of what it was flattened from.
+  if (const auto from = AssetId::parse(
+          jget<std::string>(a->from, "asset", ""))) {
+    generations_of(p, *from, out, depth + 1);
+    return;
+  }
+  out.insert("");
+}
+
+}
+
+std::optional<media::MadeFrom>
+Controller::made_from(ProjectId pid, AssetId asset) const
+{
+  const project::Project* p = project(pid);
+  if (!p) {
+    return std::nullopt;
+  }
+  std::set<std::string> made;
+  generations_of(*p, asset, made, 0);
+  if (made.size() != 1 || made.begin()->empty()) {
+    return std::nullopt;
+  }
+  const auto id = AssetId::parse(*made.begin());
+  auto a = p->asset(*id);
+  auto r = a.ok() ? p->recipe(a->recipe)
+                  : Result<project::Recipe>(a.error());
+  if (!r.ok()) {
+    return std::nullopt;
+  }
+  media::MadeFrom m;
+  m.prompt = jget<std::string>(r->params, "prompt", "");
+  if (auto s = r->params.find("seed");
+      s != r->params.end() && s->is_number_integer()) {
+    m.seed = s->get<std::int64_t>();
+  }
+  if (m.empty()) {
+    return std::nullopt;
+  }
+  return m;
 }
 
 Json
@@ -5655,6 +5749,87 @@ Controller::set_micro(const Json& changes)
   return ok_status();
 }
 
+Json
+Controller::asset_naming() const
+{
+  const std::string who = summarizer_();
+  const models::ModelEntry* m = who == "micro"    ? micro_model()
+                                : who == "helper" ? assistant_model()
+                                                  : nullptr;
+  return {{"generated", names_by_type_() ? "type" : "summary"},
+          {"summarizer", who},
+          {"model", m ? m->name : std::string()}};
+}
+
+Status
+Controller::set_asset_naming(const Json& changes)
+{
+  const fs::path file = _paths.support / "naming.json";
+  Json all = read_settings(file);
+  if (changes.is_object() && changes.contains("generated")) {
+    const auto g = jget<std::string>(changes, "generated", "");
+    if (g != "type" && g != "summary") {
+      return make_error(Code::InvalidArgument,
+                        "generated: \"type\" or \"summary\"");
+    }
+    all["generated"] = g;
+  }
+  VALTZ_TRY(write_settings(file, all));
+  post_("naming.changed", JobId{}, asset_naming());
+  return ok_status();
+}
+
+bool
+Controller::names_by_type_() const
+{
+  return jget<std::string>(read_settings(_paths.support / "naming.json"),
+                           "generated", "summary") == "type";
+}
+
+std::string
+Controller::summarizer_() const
+{
+  // The micro agent where it names (Agentic Helper › Micro Agent), else
+  // the Agentic Helper -- each only where it runs here: installed, and
+  // run by the engine (with none started -- valtzctl's settings -- by the
+  // models alone: nothing is named without one anyway).
+  const bool engine = _engine && _engine->available();
+  if (_micro_names && micro_model() &&
+      (!engine || engine_runs_(models::Capability::MicroAgent))) {
+    return "micro";
+  }
+  const auto* h = assistant_model();
+  if (h && _store->info(*h).state == models::InstallState::Installed &&
+      (!engine || _engine->supports(engine::kOpChat))) {
+    return "helper";
+  }
+  return {};
+}
+
+namespace {
+
+// A kind's word for a result named by its type, in the UI's language.
+std::string
+kind_word(project::AssetKind k, const std::string& language)
+{
+  const bool zh = language.starts_with("zh");
+  switch (k) {
+  case project::AssetKind::Image: return zh ? "图片" : "Image";
+  case project::AssetKind::Video: return zh ? "视频" : "Video";
+  case project::AssetKind::Audio: return zh ? "音频" : "Audio";
+  case project::AssetKind::RefMod: return "RefMod";
+  default: return zh ? "素材" : "Asset";
+  }
+}
+
+}
+
+std::string
+Controller::result_name_(project::AssetKind k, std::string words) const
+{
+  return names_by_type_() ? kind_word(k, _cfg.language) : std::move(words);
+}
+
 void
 Controller::name_from_prompt_(ProjectId pid, project::Project& p,
                               AssetId made)
@@ -5673,18 +5848,24 @@ Controller::name_from_prompt_(ProjectId pid, project::Project& p,
       is_named(*pa)) {
     return;
   }
+  // Named by its kind (Settings › General): as it is.
+  if (names_by_type_()) {
+    return;
+  }
   const AssetId prompt = pa->id;
-  // Named by the micro agent before: by that name now, as a new asset is
-  // named -- made unique (" (2)").
+  // Summed up before: by that summary now, numbered as a new asset is.
   if (is_short_named(*pa)) {
-    if (a->name != pa->name && p.rename_unique(made, pa->name, 48).ok()) {
+    if (auto got = p.rename_unique(made, pa->name, 48, true);
+        got.ok() && *got != a->name) {
       post_("assets.changed", JobId{}, {{"project", pid},
                                         {"asset", made},
                                         {"reason", "renamed"}});
     }
     return;
   }
-  if (!_micro_names || !micro_model()) {
+  // Who sums it up: the micro agent where it names, else the helper.
+  const std::string who = summarizer_();
+  if (who.empty()) {
     return;
   }
   {
@@ -5708,7 +5889,8 @@ Controller::name_from_prompt_(ProjectId pid, project::Project& p,
   auto text = p.read_text(prompt);
   auto job = text.ok()
       ? submit_micro_(
-            id, "Name the prompt", assist::micro_name_request(*text), {}, 32,
+            id, "Name the prompt", assist::micro_name_request(*text), {},
+            32,
             [this, id, prompt](std::optional<std::string> reply) {
               Naming n;
               {
@@ -5747,7 +5929,8 @@ Controller::name_from_prompt_(ProjectId pid, project::Project& p,
               for (const auto& m : results) {
                 const auto was = std::ranges::find(
                     n.made, m, &std::pair<AssetId, std::string>::first);
-                if (auto got = p->rename_unique(m, name, 48); got.ok()) {
+                if (auto got = p->rename_unique(m, name, 48, true);
+                    got.ok()) {
                   named[m] = {was->second, *got};
                   post_("assets.changed", JobId{}, {{"project", n.project},
                                                     {"asset", m},
@@ -5795,7 +5978,8 @@ Controller::name_from_prompt_(ProjectId pid, project::Project& p,
                                                   {"asset", prompt},
                                                   {"reason", "renamed"}});
               }
-            })
+            },
+            who == "helper")
       : Result<JobId>(text.error());
   if (!job.ok()) {
     VALTZ_LOG_INFO("micro", "the prompt is not named: {}",
@@ -5850,33 +6034,44 @@ Controller::wait_micro(int timeout_ms)
 Result<JobId>
 Controller::submit_micro_(JobId id, std::string title, std::string text,
                           std::vector<engine::JobInput> images,
-                          int max_new_tokens, MicroReply reply)
+                          int max_new_tokens, MicroReply reply,
+                          bool on_helper)
 {
-  const auto* m = micro_model();
-  if (!m || !engine_runs_(models::Capability::MicroAgent)) {
-    return make_error(Code::Unsupported, msg::kNoMicroAgent);
-  }
-  VALTZ_ASSIGN(engine::ModelRef ref, resolve_model_(*m, false));
   engine::JobSpec spec;
-  spec.id = id;
-  spec.op = std::string(engine::kOpChat);
-  spec.model = ref;
-  // Its own sampler (catalog engine.vpipe.sampling: Liquid AI's), kept
-  // loaded as the helper is, no drafter, a context its tasks fill a
-  // fraction of; without thinking -- a line or three sections.
-  const Json vp = jget(m->engine, "vpipe", Json::object());
-  spec.params = {{"mtp", false},
-                 {"sampling", jget(vp, "sampling", Json::object())},
-                 {"keep_loaded", _assistant_keep},
-                 {"context_tokens", 16384},
-                 {"text", std::move(text)},
-                 {"disable_thinking", true},
-                 {"max_new_tokens", max_new_tokens}};
-  if (const auto d = jget<std::string>(vp, "compute_dtype", "");
-      !d.empty()) {
-    spec.params["compute_dtype"] = d;
+  if (on_helper) {
+    // The Agentic Helper, decoded as it is set to (chat_spec_).
+    if (!_engine || !_engine->supports(engine::kOpChat)) {
+      return make_error(Code::Unsupported, msg::kEngineCannotRun,
+                        {{"operation", std::string(engine::kOpChat)}});
+    }
+    VALTZ_ASSIGN(spec, chat_spec_(id, std::move(text), std::move(images),
+                                  max_new_tokens, nullptr));
+  } else {
+    const auto* m = micro_model();
+    if (!m || !engine_runs_(models::Capability::MicroAgent)) {
+      return make_error(Code::Unsupported, msg::kNoMicroAgent);
+    }
+    VALTZ_ASSIGN(engine::ModelRef ref, resolve_model_(*m, false));
+    spec.id = id;
+    spec.op = std::string(engine::kOpChat);
+    spec.model = ref;
+    // Its own sampler (catalog engine.vpipe.sampling: Liquid AI's), kept
+    // loaded as the helper is, no drafter, a context its tasks fill a
+    // fraction of; without thinking -- a line or three sections.
+    const Json vp = jget(m->engine, "vpipe", Json::object());
+    spec.params = {{"mtp", false},
+                   {"sampling", jget(vp, "sampling", Json::object())},
+                   {"keep_loaded", _assistant_keep},
+                   {"context_tokens", 16384},
+                   {"text", std::move(text)},
+                   {"disable_thinking", true},
+                   {"max_new_tokens", max_new_tokens}};
+    if (const auto d = jget<std::string>(vp, "compute_dtype", "");
+        !d.empty()) {
+      spec.params["compute_dtype"] = d;
+    }
+    spec.inputs = std::move(images);
   }
-  spec.inputs = std::move(images);
   JobRecord rec;
   rec.id = id;
   rec.op = std::string(engine::kOpChat);
@@ -7369,14 +7564,18 @@ Controller::generate_image(GenerateImageRequest req)
   // The prompt on one line, cut to 48 bytes and made unique by the
   // project ("…", " (2)") -- a MOSS-Image layout by its description,
   // not its JSON.
+  // Settings › General's names: by its kind instead, numbered either way
+  // (a name asked for, as it is).
   const std::string laid = assist::moss_layout_caption(words);
   std::string name = !req.name.empty() ? req.name
-                     : !laid.empty()   ? one_line(laid)
-                                       : one_line(
-                                             assist::without_markdown(words));
+                     : result_name_(project::AssetKind::Image,
+                                    !laid.empty()
+                                        ? one_line(laid)
+                                        : one_line(assist::without_markdown(
+                                              words)));
   VALTZ_ASSIGN(project::Asset a,
                p->define_derived(std::move(name), project::AssetKind::Image,
-                                 r, 48));
+                                 r, 48, req.name.empty()));
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
@@ -7814,11 +8013,13 @@ Controller::generate_video(GenerateVideoRequest req)
                                req.prompt_asset, req.prompt_name));
   r.inputs.push_back(pin);
   std::string name = req.name.empty()
-                         ? one_line(assist::without_markdown(words))
+                         ? result_name_(project::AssetKind::Video,
+                                        one_line(assist::without_markdown(
+                                            words)))
                          : req.name;
   VALTZ_ASSIGN(project::Asset a,
                p->define_derived(std::move(name), project::AssetKind::Video,
-                                 r, 48));
+                                 r, 48, req.name.empty()));
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
@@ -8135,8 +8336,10 @@ Controller::make_refmod_(const GenerateVideoRequest& req, project::Project& p,
   const std::string words = one_line(assist::without_markdown(
       assist::prompt_words(req.prompt)));
   std::string name = !req.name.empty() ? req.name
-                     : !words.empty()  ? words
-                                       : names.front() + " RefMod";
+                     : result_name_(project::AssetKind::RefMod,
+                                    !words.empty()
+                                        ? words
+                                        : names.front() + " RefMod");
   name = std::string(utf8_prefix(name, 60));
   r.params["sources"] = std::move(sources);
   r.params["refmod"] = {
@@ -8150,7 +8353,8 @@ Controller::make_refmod_(const GenerateVideoRequest& req, project::Project& p,
       {"description", words},
       {"concept_type", "generic"}};
   VALTZ_ASSIGN(project::Asset a,
-               p.define_derived(name, project::AssetKind::RefMod, r, 48));
+               p.define_derived(name, project::AssetKind::RefMod, r, 48,
+                                req.name.empty()));
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
@@ -9353,11 +9557,12 @@ Controller::generate_audio(GenerateAudioRequest req)
         }
       }
     }
-    name = one_line(assist::without_markdown(name));
+    name = result_name_(project::AssetKind::Audio,
+                        one_line(assist::without_markdown(name)));
   }
   VALTZ_ASSIGN(project::Asset a,
                p->define_derived(std::move(name), project::AssetKind::Audio,
-                                 r, 48));
+                                 r, 48, req.name.empty()));
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
@@ -9451,15 +9656,16 @@ Controller::generate_speech_(GenerateAudioRequest& req,
     }
     r.inputs.push_back({"voice", *req.voice, 0});
   }
-  // Named after its words.
+  // Named after its words (or its kind: Settings › General).
   std::string name = req.name;
   if (name.empty()) {
     name = one_line(assist::without_markdown(sp.text));
-    name = std::string(utf8_prefix(name, 80));
+    name = result_name_(project::AssetKind::Audio,
+                        std::string(utf8_prefix(name, 80)));
   }
   VALTZ_ASSIGN(project::Asset a,
                p.define_derived(std::move(name), project::AssetKind::Audio,
-                                r, 48));
+                                r, 48, req.name.empty()));
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
@@ -9559,15 +9765,16 @@ Controller::drama_speech_(GenerateAudioRequest& req,
     vs.push_back({{"transcript", t->str()}});
   }
   r.params["voices"] = std::move(vs);
-  // Named after its words.
+  // Named after its words (or its kind: Settings › General).
   std::string name = req.name;
   if (name.empty()) {
     name = one_line(assist::without_markdown(sp.text));
-    name = std::string(utf8_prefix(name, 80));
+    name = result_name_(project::AssetKind::Audio,
+                        std::string(utf8_prefix(name, 80)));
   }
   VALTZ_ASSIGN(project::Asset a,
                p.define_derived(std::move(name), project::AssetKind::Audio,
-                                r, 48));
+                                r, 48, req.name.empty()));
   post_("assets.changed", JobId{}, {{"project", req.project},
                                     {"asset", a.id},
                                     {"reason", "defined"}});
@@ -11291,8 +11498,18 @@ Controller::export_asset(ExportRequest req)
   }
 
   // Who made it, for the writer's name it is stamped with: the one model
-  // its pixels were made with, else none (made_with).
+  // its pixels were made with, else none (made_with) -- and, asked, what
+  // the one generation it shows was made from (made_from).
   spec.params["made_with"] = made_with(req.project, req.asset);
+  if (req.prompt_and_seed) {
+    if (auto m = made_from(req.project, req.asset)) {
+      Json j = {{"prompt", m->prompt}};
+      if (m->seed) {
+        j["seed"] = *m->seed;
+      }
+      spec.params["made_from"] = std::move(j);
+    }
+  }
 
   JobRecord rec;
   rec.id = spec.id;

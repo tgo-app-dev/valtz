@@ -2525,6 +2525,17 @@ favor_prop()
                 "slowest); left out, med");
 }
 
+// A shot's FAVOR or OPTIONS: left out on a timeline that holds clips,
+// the clip before's (t_generate_video's made_as_before).
+Json
+shot_prop(Json p)
+{
+  p["description"] = jget<std::string>(p, "description", "") +
+                     ". Left out on a timeline that holds clips: the clip "
+                     "before's, to keep its look";
+  return p;
+}
+
 Json
 options_prop()
 {
@@ -3835,8 +3846,8 @@ Controller::AgentHost::tools()
                                   "same shot")},
                  {"composition", str(kCompDoc)},
                  {"model", str(kModelDoc)},
-                 {"favor", favor_prop()},
-                 {"options", options_prop()},
+                 {"favor", shot_prop(favor_prop())},
+                 {"options", shot_prop(options_prop())},
                  {"name", str("the asset's name; omitted: \"Shot N\"")}},
                 {"description"}),
          &H::t_generate_video});
@@ -10892,6 +10903,111 @@ Controller::AgentHost::t_generate_voiceover(Session& s, Step& step,
 
 // ---- scenes: shots ----------------------------------------------------------
 
+std::optional<Controller::AgentHost::MadeAs>
+Controller::AgentHost::made_before_(Session& s, std::optional<AssetId> comp,
+                                    std::optional<AssetId> from)
+{
+  static constexpr std::array<const char*, 5> kMethod = {
+      "pika_flex", "hyperflow", "taomate", "taomate_lora", "vdn"};
+  auto* p = _c.project(s.project);
+  if (!p || (!comp && !from)) {
+    return std::nullopt;
+  }
+  // The session's own shot before it on the timeline: its clip -- made
+  // or being made -- or, held behind another, its request as it will go.
+  if (!from) {
+    int last = 0;
+    std::string made;
+    {
+      std::lock_guard lk(s.mu);
+      if (const auto it = s.shots.find(*comp); it != s.shots.end()) {
+        last = it->second.last;
+      }
+      if (last >= 1 && last <= static_cast<int>(s.steps.size())) {
+        made = jget<std::string>(
+            s.steps[static_cast<std::size_t>(last - 1)].result, "asset", "");
+      }
+    }
+    if (!made.empty()) {
+      from = AssetId::parse(made);
+    } else if (last > 0) {
+      std::lock_guard lk(_mu);
+      for (const auto& h : _held) {
+        if (h.session == s.id && h.step == last) {
+          MadeAs out;
+          out.clip = h.req.name;
+          out.favor = favor_label(h.req.preference);
+          for (const char* k : kMethod) {
+            if (jget(h.req.tuning, k, false)) {
+              out.options[k] = true;
+            }
+          }
+          return out;
+        }
+      }
+    }
+  }
+  // Else the clip that ends the timeline.
+  if (!from) {
+    auto tl = p->asset(*comp);
+    auto times = timings_(s.project, *comp);
+    if (!tl.ok() || !times.ok()) {
+      return std::nullopt;
+    }
+    double end = -1;
+    for (const auto& x : tl->layers) {
+      const auto it = times->find(x.id);
+      if (layer_kind_(s.project, x) == "clip" && it != times->end() &&
+          std::isfinite(it->second.length) && it->second.end() > end) {
+        end = it->second.end();
+        from = x.source;
+      }
+    }
+  }
+  // What it shows, made: through a part the scissors cut and an edited
+  // copy (each a composition of the clip alone), to the generation.
+  std::string name;
+  for (int hop = 0; from && hop < 4; ++hop) {
+    auto a = p->asset(*from);
+    if (!a.ok()) {
+      return std::nullopt;
+    }
+    if (name.empty()) {
+      name = a->name;
+    }
+    auto r = a->recipe.is_nil()
+                 ? Result<project::Recipe>(make_error(Code::NotFound, "none"))
+                 : p->recipe(a->recipe);
+    if (r.ok() && r->op == engine::kOpGenerateVideo) {
+      MadeAs out;
+      out.clip = name;
+      const Json t = jget(r->params, "tuning", Json::object());
+      for (const char* k : kMethod) {
+        if (jget(t, k, false)) {
+          out.options[k] = true;
+        }
+      }
+      // Its Favor as asked: its generation's, as it was recorded.
+      if (auto nodes = p->generate_nodes();
+          nodes.ok() && nodes->is_array()) {
+        for (const auto& n : *nodes) {
+          if (jget<std::string>(jget(n, "started", Json::object()), "asset",
+                                "") == from->str()) {
+            out.favor = favor_label(
+                jget<std::string>(n, "preference", "balanced"));
+          }
+        }
+      }
+      return out;
+    }
+    if (a->cls != AssetClass::Composition || a->layers.size() != 1) {
+      return std::nullopt;
+    }
+    from = a->layers.front().source;
+  }
+  return std::nullopt;
+}
+
 Result<Json>
 Controller::AgentHost::t_generate_video(Session& s, Step& step,
                                         const Json& args,
@@ -11141,10 +11257,74 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
     return make_error(Code::Unsupported, std::format(
         "{} does not end a shot on a picture", m->name));
   }
-  // Favor and its options, as asked: "the Pika LoRA" its switch.
-  VALTZ_ASSIGN(const Tuned tuned,
-               tuned_(*m, args, false, continues || !from_text.empty(),
-                      first.has_value()));
+  // MADE AS THE CLIP BEFORE IT: on a timeline that holds clips -- or
+  // carrying on from one -- a shot saying no Favor or options of its own
+  // is made as the clip it comes after was, its Favor and its method
+  // (Pika H3 Flex, HyperFlow, TaoMate, VDN): what keeps a style from
+  // shot to shot. Asked otherwise -- the person's word -- the call says
+  // its own.
+  Json targs = args;
+  Json carried;
+  std::string favor_as;
+  Json options_as = Json::array();
+  if (!args.contains("favor") || !args.contains("options")) {
+    std::optional<AssetId> named_from;
+    if (!from_text.empty()) {
+      named_from = AssetId::parse(from_text);
+    }
+    if (auto before = made_before_(s, comp, named_from)) {
+      if (!args.contains("favor") && !before->favor.empty()) {
+        targs["favor"] = before->favor;
+        favor_as = "Favor " + before->favor;
+      }
+      if (!args.contains("options") && !before->options.empty()) {
+        targs["options"] = before->options;
+        for (const auto& [k, v] : before->options.items()) {
+          if (const auto* w = option_words(k)) {
+            options_as.push_back(w->label);
+          }
+        }
+      }
+      if (!favor_as.empty() || !options_as.empty()) {
+        carried = {{"clip", before->clip}};
+      }
+    }
+  }
+  // Favor and its options, as asked: "the Pika LoRA" its switch. The
+  // clip before's way not to be had here (an adapter not downloaded for
+  // this model, a method not for this shot): its Favor alone, then the
+  // call as it is -- said.
+  const bool cont = continues || !from_text.empty();
+  auto tr = tuned_(*m, targs, false, cont, first.has_value());
+  if (!tr.ok() && !carried.is_null()) {
+    const std::string why = tr.error().message;
+    Json less = targs;
+    less.erase("options");
+    if (args.contains("options")) {
+      less["options"] = args["options"];
+    }
+    if (!options_as.empty()) {
+      carried["not_carried"] = {{"options", options_as}, {"why", why}};
+      options_as = Json::array();
+      tr = tuned_(*m, less, false, cont, first.has_value());
+    }
+    if (!tr.ok()) {
+      carried["not_carried"] = {{"favor", favor_as}, {"why", why}};
+      favor_as.clear();
+      tr = tuned_(*m, args, false, cont, first.has_value());
+    }
+  }
+  if (!carried.is_null()) {
+    Json as = Json::array();
+    if (!favor_as.empty()) {
+      as.push_back(favor_as);
+    }
+    for (const auto& o : options_as) {
+      as.push_back(o);
+    }
+    carried["as"] = std::move(as);
+  }
+  VALTZ_ASSIGN(const Tuned tuned, std::move(tr));
   // Its length, as the model makes lengths -- guided, what comes after
   // the tail it redoes (that marked out where it lands).
   auto [frames, fps] = shot_frames(*m, number(args, "seconds", 5));
@@ -11293,6 +11473,12 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
         moved_first);
   }
   told_(r, tuned);
+  if (!carried.is_null()) {
+    carried["note"] = "Made as the clip before it was made, to keep its "
+                      "look: give favor or options to make it otherwise "
+                      "(the person asked so).";
+    r["made_as_before"] = std::move(carried);
+  }
   double start = 0;
   std::optional<AssetId> from;
   // Where it goes and what it carries on from are decided, and a shot

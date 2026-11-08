@@ -192,15 +192,29 @@ struct AgentHoldNote: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
-                // Follow follows the session shown: an editor's.
-                if !model.agentFollows, model.agentSkills == "full" {
-                    Button {
-                        model.followAgent()
-                    } label: {
-                        Label("Follow", systemImage: "eye")
+                // Follow follows the session shown: an editor's. Always
+                // there while it works, lit while the stage follows: a
+                // click that stopped it -- on the button, or anywhere else
+                // the stage was moved -- is undone by the same button.
+                if model.agentSkills == "full" {
+                    if model.agentFollows {
+                        Button {
+                            model.unfollowAgent()
+                        } label: {
+                            Label("Following", systemImage: "eye.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .help("The stage follows the agent: what it works on, and a clip it makes playing its preview as it is made. Click to stay where you are; click again to follow it")
+                    } else {
+                        Button {
+                            model.followAgent()
+                        } label: {
+                            Label("Follow", systemImage: "eye")
+                        }
+                        .controlSize(.small)
+                        .help("Show what the agent is working on, and follow it again")
                     }
-                    .controlSize(.small)
-                    .help("Show what the agent is working on, and follow it again")
                 }
             }
             .transition(.opacity)

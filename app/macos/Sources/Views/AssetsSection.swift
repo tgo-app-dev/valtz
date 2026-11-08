@@ -205,7 +205,7 @@ extension AppModel {
     /// the active one back, editable. A double-click (or the pencil)
     /// makes it the active one instead.
     func viewAsset(_ a: AssetDTO) {
-        guard viewedAsset != a.id else { return }
+        guard viewedAsset != a.id, !refusedForRefMod(a) else { return }
         guard !refusedForColorTarget(), !refusedForCompare(a) else { return }
         noteNavigation()
         // A snapshot run: how long a posted click took to get here, and
@@ -232,6 +232,16 @@ extension AppModel {
                       + "\(Int((CACurrentMediaTime() - clickedAt) * 1000))ms")
             }
         }
+    }
+
+    /// A RefMod is not viewed: it is latents, with no picture or clip of
+    /// its own for the stage (putting it there failed, "cannot find
+    /// asset"). Said as a notice -- not supported yet, not an error --
+    /// with how it is used. True: refused.
+    func refusedForRefMod(_ a: AssetDTO) -> Bool {
+        guard a.kind == "refmod" else { return false }
+        flash(String(localized: "Previewing a RefMod isn't supported yet. To use “\(a.name)”, drag it into the prompt's row."), level: .info)
+        return true
     }
 
     /// The COMPARE on: an asset clicked in the list is not viewed -- it
@@ -1481,6 +1491,9 @@ private struct AssetRow: View {
         }
         // The compare on: the stage stays the two sides' (said).
         guard !model.refusedForCompare(a) else { return }
+        // A RefMod, made: nothing to view (said), the editor left as it
+        // is. One being made shows its task, as any.
+        if task == nil, model.refusedForRefMod(a) { return }
         if !(model.promptImmersive && model.editorEdited) {
             model.retreatFromEditor()
         }
@@ -1497,6 +1510,8 @@ private struct AssetRow: View {
     /// something is being written in it.
     private func doubleClicked() {
         let a = asset
+        // A RefMod, made: its first click said there is nothing to view.
+        if task == nil, a.kind == "refmod" { return }
         // Another kind than text: the Prompt Editor goes.
         if a.kind != "text" { model.retreatFromEditor() }
         if let t = task {

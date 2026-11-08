@@ -508,10 +508,14 @@ usage()
       "         [--keyframes <seconds>] [--b-frames on|off]\n"
       "         [--profile baseline|main|high|main10] [--level 4.1]\n"
       "         [--entropy cabac|cavlc] [--prores 4444xq|422|422lt|...]\n"
+      "         [--prompt-and-seed]\n"
       "          (a file is imported first -- a video linked in place;\n"
       "          --quality is a JPEG's, 90 by default; the rest a movie's\n"
       "          encoding: H.264's / HEVC's rate, keyframes, B-frames,\n"
-      "          profile, level, entropy; ProRes's flavour)\n"
+      "          profile, level, entropy; ProRes's flavour;\n"
+      "          --prompt-and-seed: the one generation it shows -- its\n"
+      "          words in the file's description, its seed in its\n"
+      "          comment, as Preview shows them -- none for several)\n"
       "  export --formats\n"
       "  enhance <prompt> [--video|--audio] [--model id] [--mode m]\n"
       "          [--size WxH] [--seconds s] [--frames n] [--partial]\n"
@@ -615,7 +619,12 @@ usage()
       "          kernels chosen by timing as they load (on) or the ones\n"
       "          believed fastest here, nothing timed (off); the Neural\n"
       "          Engine's share of a feed-forward balanced by timing (auto)\n"
-      "          or locked at this Mac's share -- the app's too\n",
+      "          or locked at this Mac's share -- the app's too\n"
+      "  names [type|summary]  NAMES OF GENERATED ASSETS (Settings >\n"
+      "          General > Generations): by their kind and a number\n"
+      "          (\"Image 3\") or by their prompt summed up and a number\n"
+      "          (\"Fox in Snow 2\", the default) -- by the micro agent\n"
+      "          where it names, else the Agentic Helper; the app's too\n",
       stderr);
   return 2;
 }
@@ -5380,6 +5389,8 @@ main(int argc, char** argv)
         req.video.entropy = next();
       } else if (a == "--prores") {
         req.video.prores = next();
+      } else if (a == "--prompt-and-seed") {
+        req.prompt_and_seed = true;
       }
     }
     if (req.format.empty() || req.destination.empty()) {
@@ -5390,6 +5401,16 @@ main(int argc, char** argv)
       return fail(asset.error());
     }
     req.asset = *asset;
+    if (req.prompt_and_seed) {
+      // Said before the export runs: what it writes, or that it is none.
+      if (auto m = c.made_from(*pid, req.asset)) {
+        std::printf("prompt and seed: %s\n",
+                    m->seed ? std::format("seed {}", *m->seed).c_str()
+                            : "no seed");
+      } else {
+        std::printf("prompt and seed: none -- not one generation shown\n");
+      }
+    }
     auto j = c.export_asset(req);
     if (!j.ok()) {
       return fail(j.error());
@@ -5885,6 +5906,34 @@ main(int argc, char** argv)
     std::printf("wired     %.1f GB now\n", gb(w, "used"));
     std::printf("range     %.1f-%.1f GB (the most the GPU keeps "
                 "resident)\n", gb(w, "min"), gb(w, "max"));
+    return 0;
+  }
+  if (cmd == "names") {
+    // Settings › General › Generations' names: set, then shown.
+    if (!args.empty()) {
+      if (args.size() != 1 || (args[0] != "type" && args[0] != "summary")) {
+        return usage();
+      }
+      if (Status st = c.set_asset_naming({{"generated", args[0]}});
+          !st.ok()) {
+        return fail(st.error());
+      }
+    }
+    const Json n = c.asset_naming();
+    const std::string who = jget<std::string>(n, "summarizer", "");
+    if (jget<std::string>(n, "generated", "") == "type") {
+      std::printf("names  by type and number (\"Image 3\")\n");
+    } else {
+      const std::string by =
+          who.empty() ? std::string("no micro agent or helper here -- "
+                                    "the prompt's words")
+                      : std::format("summed up by the {} ({})",
+                                    who == "micro" ? "micro agent"
+                                                   : "Agentic Helper",
+                                    jget<std::string>(n, "model", ""));
+      std::printf("names  by summary and number (\"Fox in Snow 2\"): %s\n",
+                  by.c_str());
+    }
     return 0;
   }
   if (cmd == "repro") {

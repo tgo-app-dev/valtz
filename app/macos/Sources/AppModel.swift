@@ -768,6 +768,9 @@ struct JobInfo {
     var phase: JobPhase?
     /// The project it works on ("": none -- a download, a chat).
     var project = ""
+    /// When it left the queue: an agent's shot watched only later is
+    /// timed from there (AppModel.watchAgentShot).
+    var started: Date?
 
     /// Work on this Mac's models -- a download, a compress, a quantize --
     /// or a job served for a fleet member: in no project, so it runs on
@@ -1272,10 +1275,15 @@ final class AppModel: TuningHost {
     /// asked about, the person looks where they like, and Follow on its
     /// card brings the stage back to it (followAgent). The agent never
     /// follows the stage: what it works on was taken as it was asked.
+    /// Following, a clip it makes plays its preview on the stage as it is
+    /// made (followAgentShots).
     var agentFollows = true
     /// The stage moved by following the agent, not by the person: it does
     /// not stop the following.
     @ObservationIgnored var agentSteering = false
+    /// The project's revision as the agent's steps last had it read again
+    /// (reloadAgent): a step that wrote nothing reads nothing again.
+    @ObservationIgnored var agentSeenRevision: String?
     /// Where the agent's chat lies in the window (SwiftUI's global space):
     /// a dev hook's drop is aimed at it.
     @ObservationIgnored var agentChatFrame: CGRect = .zero
@@ -1298,6 +1306,9 @@ final class AppModel: TuningHost {
     /// Settings › General › Reproducibility, as the core keeps it
     /// (refreshReproducibility): read by every job the core makes.
     var reproducibility: Reproducibility?
+    /// Settings › General › Generations' names of generated assets, as
+    /// the core keeps them (refreshAssetNaming).
+    var assetNaming: AssetNaming?
     /// A folder's change refused or failed: said in Settings, where it was
     /// asked.
     var locationError: String?
@@ -5163,6 +5174,21 @@ final class AppModel: TuningHost {
         if r != reproducibility { reproducibility = r }
     }
 
+    func refreshAssetNaming() {
+        guard let core else { return }
+        let n = DTO.decode(AssetNaming.self, core.assetNamingJSON())
+        if n != assetNaming { assetNaming = n }
+    }
+
+    /// How generated assets are named from now on ("type", "summary"):
+    /// kept by the core for every result after.
+    func setAssetNaming(_ generated: String) {
+        guard let core else { return }
+        let r = core.setAssetNaming(["generated": generated])
+        if !r.ok { flash(r.message, level: .error) }
+        refreshAssetNaming()
+    }
+
     /// A switch of it set ("skip_autotune", "lock_ane_split"): kept by the
     /// core for every job after -- the next picture, clip or sound.
     func setReproducibility(_ changes: [String: Any]) {
@@ -6751,7 +6777,7 @@ final class AppModel: TuningHost {
     /// The generation Start began that is running now.
     private var runningGeneration: String? {
         tasks.first {
-            taskContexts[$0.job] != nil
+            taskContexts[$0.job].map { !$0.agents } == true
                 && (jobs[$0.job]?.state ?? $0.state) == "running"
         }?.job
     }
@@ -6760,7 +6786,7 @@ final class AppModel: TuningHost {
     /// generation running, and the queue after it; one queued, it alone.
     func showTask(_ job: String) {
         guard !refusedForColorTarget() else { return }
-        followsQueue = taskContexts[job] != nil
+        followsQueue = taskContexts[job].map { !$0.agents } == true
             && jobs[job]?.state == "running"
         watchTask(job)
     }
@@ -6904,6 +6930,53 @@ final class AppModel: TuningHost {
         generationJob = nil
         generationStarted = nil
         generationEnds = nil
+    }
+
+    /// One of the AGENT's shots (DESIGN §9b) kept as a task the stage can
+    /// watch: its previews kept as they come, for when it is.
+    func keepAgentShot(_ job: String) {
+        guard taskContexts[job] == nil, jobs[job]?.live ?? true else { return }
+        var ctx = TaskContext(kind: .video, base: nil)
+        ctx.agents = true
+        ctx.started = jobs[job]?.started
+        taskContexts[job] = ctx
+    }
+
+    /// The stage watches the agent's shot: its TAE preview on the stage --
+    /// the Prompt Editor's small one -- its phase and time under it, as a
+    /// clip Start made shows it. The agent's timeline waits behind it.
+    func watchAgentShot(_ job: String) {
+        keepAgentShot(job)
+        guard taskContexts[job]?.agents == true, generationJob != job
+        else { return }
+        if !tasks.contains(where: { $0.job == job }) { reloadTasks() }
+        watchTask(job)
+    }
+
+    /// The stage watches one of the agent's shots.
+    var watchingAgentShot: Bool {
+        generationJob.flatMap { taskContexts[$0]?.agents } ?? false
+    }
+
+    /// The agent's shot the stage watched let go -- landed, or the
+    /// following stopped: the stage on the composition it waited on, the
+    /// agent's (the shot is drawn there once the core has laid it).
+    func leaveAgentShot() {
+        guard watchingAgentShot else { return }
+        let back = watchReturn.flatMap { asset(id: $0) }
+        unwatchTask()
+        if let back {
+            putOnStage(back)
+        } else {
+            clearStage()
+        }
+    }
+
+    /// The agent moved on to another composition while the stage watched
+    /// its shot: the stage goes there once it is let go.
+    func agentShotReturns(to id: String) {
+        guard watchingAgentShot else { return }
+        watchReturn = id
     }
 
     /// A new estimate of the time left, `left` seconds from now. A small
@@ -7573,6 +7646,10 @@ final class AppModel: TuningHost {
         var steps = 0
         var preview: CGImage?
         var clip: PreviewClip?
+        /// The AGENT's shot (DESIGN §9b), not a Start's: watched while the
+        /// stage follows the agent, laid on its timeline by the core --
+        /// nothing here lands it, refuses it for memory or stops it.
+        var agents = false
     }
 
     private struct StageAtStart {
@@ -7753,6 +7830,8 @@ final class AppModel: TuningHost {
     }
 
     func stop() {
+        // The agent's shot is stopped with the agent (its card's Stop).
+        guard !watchingAgentShot else { return }
         if let job = generationJob { cancel(job: job) }
     }
 
@@ -11602,14 +11681,26 @@ final class AppModel: TuningHost {
         }
     }
 
+    /// What the save panel's Prompt and Seed would write for what is on
+    /// the stage: the one generation it shows (the core's made_from), nil
+    /// for none or several -- a picture's or a clip's only.
+    var exportMadeFrom: MadeFrom? {
+        guard let core, let projectId, let a = currentAsset,
+              ["image", "video"].contains(a.kind) else { return nil }
+        return core.madeFrom(project: projectId, asset: a.id)
+    }
+
     /// Save the image or video on screen to `dest`: its own file (or what
     /// is shown, adjusted), or exported as `choice` -- a job; the banner
     /// says when it is saved. `quality`: a JPEG's, 1...100.
+    /// `promptAndSeed`: the one generation it shows written in the file's
+    /// description and comment (made_from) -- an export's, or a picture's
+    /// own file stamped after its copy.
     func save(to dest: URL, as choice: ExportChoice, quality: Int? = nil,
-              video: [String: Any]? = nil) {
+              video: [String: Any]? = nil, promptAndSeed: Bool = false) {
         guard choice != .original, let core, let projectId,
               let asset = currentAsset else {
-            saveCurrent(to: dest)
+            saveCurrent(to: dest, promptAndSeed: promptAndSeed)
             return
         }
         // The export reads the modifiers from the project: the panels'
@@ -11622,6 +11713,7 @@ final class AppModel: TuningHost {
         ]
         if choice == .jpeg, let quality { request["quality"] = quality }
         if choice.video, let video { request["video"] = video }
+        if promptAndSeed { request["prompt_and_seed"] = true }
         let r = core.exportAsset(request)
         guard r.ok, let job = r.job else {
             flash(r.message, level: .error)
@@ -11643,13 +11735,21 @@ final class AppModel: TuningHost {
         }
     }
 
-    func saveCurrent(to dest: URL) {
-        guard let src = currentAsset?.url else { return }
+    func saveCurrent(to dest: URL, promptAndSeed: Bool = false) {
+        guard let a = currentAsset, let src = a.url else { return }
         let fm = FileManager.default
         try? fm.removeItem(at: dest)
         let ok = (try? fm.copyItem(at: src, to: dest)) != nil
         if !ok {
             flash(String(localized: "Could not save \(dest.lastPathComponent)"), level: .error)
+            return
+        }
+        // A picture's own file with its prompt and seed: its metadata
+        // rewritten beside the pixels' bytes (a clip's is not offered --
+        // its whole file would be written again here).
+        if promptAndSeed, a.kind == "image", let projectId {
+            core?.stampFile(dest.path, project: projectId, asset: a.id,
+                            promptAndSeed: true)
         }
     }
 
@@ -11821,6 +11921,7 @@ final class AppModel: TuningHost {
         case "job.started":
             if let job = ev.job {
                 jobs[job]?.state = "running"
+                jobs[job]?.started = .now
                 // A task's clock starts as it leaves the queue.
                 if taskContexts[job] != nil {
                     taskContexts[job]?.started = .now
@@ -11829,12 +11930,14 @@ final class AppModel: TuningHost {
                 if !tasks.isEmpty { reloadTasks() }
                 // Following the queue: the next generation as it begins,
                 // the one before it done.
-                if followsQueue, taskContexts[job] != nil,
-                   job != generationJob,
+                if followsQueue, job != generationJob,
+                   taskContexts[job].map({ !$0.agents }) == true,
                    generationJob.map({ jobs[$0]?.state != "running" })
                        ?? true {
                     watchTask(job)
                 }
+                // Following the agent: its shot as it begins.
+                if agent != nil { followAgentShots() }
             }
         case "job.progress":
             guard let job = ev.job else { break }
@@ -12022,7 +12125,9 @@ final class AppModel: TuningHost {
             // Refused for memory: its numbers and what to change stay over
             // the prompt, rather than a line that goes in six seconds.
             let task = taskContexts[job] != nil
-            if job == generationJob || job == upscaleJob,
+            if taskContexts[job]?.agents == true {
+                // The agent's shot: the agent's to tell, its step says it.
+            } else if job == generationJob || job == upscaleJob,
                let f = MemoryFailure(ev.payload, message: msg) {
                 withAnimation(Self.motion) { memoryFailure = f }
             } else if task && job != generationJob {
@@ -12078,6 +12183,15 @@ final class AppModel: TuningHost {
             }
         }
         // A task Start began: its result placed, watched or not.
+        // The agent's shot: laid on its timeline by the core, the stage
+        // back there -- or on its next shot, running.
+        if taskContexts[job]?.agents == true {
+            if job == generationJob { leaveAgentShot() }
+            taskContexts[job] = nil
+            if let a = ev.payload["asset"] as? String { taskThumbs[a] = nil }
+            followAgentShots()
+            return
+        }
         guard let ctx = taskContexts.removeValue(forKey: job) else { return }
         if let a = ev.payload["asset"] as? String { taskThumbs[a] = nil }
         let watched = job == generationJob

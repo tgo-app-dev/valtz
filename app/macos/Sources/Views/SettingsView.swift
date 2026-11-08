@@ -559,6 +559,23 @@ private struct GeneralSettings: View {
         language.isEmpty ? L10n.systemDefault : language
     }
 
+    /// What Name generated assets does, and -- by summary -- who sums the
+    /// prompt up here: the micro agent while its Names task is on, else
+    /// the Agentic Helper.
+    static func namingNote(_ n: AssetNaming) -> String {
+        if n.generated == "type" {
+            return String(localized: "“Image 3”, “Video 1”, “Audio 2”: what it is, then the next number.")
+        }
+        switch n.summarizer {
+        case "micro":
+            return String(localized: "“Fox in Snow 2”: its prompt summed up in a few words by the micro agent (\(n.model)), then the next number — the prompt's own words until the summary comes. With the micro agent's “Name prompts and what is made from them” off (Agentic Helper › Micro Agent), the Agentic Helper sums it up.")
+        case "helper":
+            return String(localized: "“Fox in Snow 2”: its prompt summed up in a few words by the Agentic Helper (\(n.model)), then the next number — the prompt's own words until the summary comes. The micro agent does it instead while it is here with “Name prompts and what is made from them” on.")
+        default:
+            return String(localized: "“Fox in Snow 2”: its prompt summed up, then the next number. No micro agent or Agentic Helper is here to sum it up, so the prompt's own words are used.")
+        }
+    }
+
     var body: some View {
         Form {
             Section { SettingsHeader(page: .general) }
@@ -622,6 +639,20 @@ private struct GeneralSettings: View {
                 }
                 .settingsMark(String(localized: "Playhead"),
                               String(localized: "Place a generated clip on the timeline"))
+                // How a result is named (core Controller::asset_naming).
+                if let naming = model.assetNaming {
+                    Picker(selection: Binding(
+                        get: { naming.generated },
+                        set: { model.setAssetNaming($0) })) {
+                        Text("Type and Number").tag("type")
+                        Text("Summary and Number").tag("summary")
+                    } label: {
+                        Text("Name generated assets")
+                        Text(Self.namingNote(naming))
+                    }
+                    .settingsMark(String(localized: "Name generated assets"),
+                                  String(localized: "Names"))
+                }
                 Group {
                     Toggle("Highlight the timeline and prompt switch when it switches by itself",
                            isOn: $model.landingFlashesSwitch)
@@ -776,10 +807,12 @@ private struct GeneralSettings: View {
             }
         }
         .formStyle(.grouped)
-        // What is wired moves as models load and go: read while shown.
+        // What is wired moves as models load and go: read while shown --
+        // and who sums names up, as models come and Settings change.
         .task {
             while !Task.isCancelled {
                 model.refreshReproducibility()
+                model.refreshAssetNaming()
                 model.refreshWiredLimit()
                 try? await Task.sleep(for: .seconds(2))
             }

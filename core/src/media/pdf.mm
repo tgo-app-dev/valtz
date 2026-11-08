@@ -656,7 +656,7 @@ files_of(const PdfDocument& doc)
 Status
 write_pdf(const PdfDocument& doc, const fs::path& out,
           const std::function<bool(int, int)>& page_done,
-          std::string_view software)
+          std::string_view software, const MadeFrom& made)
 {
   if (doc.pages.empty()) {
     return make_error(Code::InvalidArgument, "a PDF needs a page");
@@ -686,6 +686,15 @@ write_pdf(const PdfDocument& doc, const fs::path& out,
           [[NSString alloc] initWithBytes:doc.title.data()
                                    length:doc.title.size()
                                  encoding:NSUTF8StringEncoding] ?: @"";
+    }
+    if (!made.prompt.empty()) {
+      info[(__bridge NSString*)kCGPDFContextSubject] =
+          [[NSString alloc] initWithBytes:made.prompt.data()
+                                   length:made.prompt.size()
+                                 encoding:NSUTF8StringEncoding] ?: @"";
+    }
+    if (const std::string c = made.comment(); !c.empty()) {
+      info[(__bridge NSString*)kCGPDFContextKeywords] = @(c.c_str());
     }
     NSURL* url = [NSURL fileURLWithPath:@(out.c_str())];
     CGContextRef ctx = CGPDFContextCreateWithURL(

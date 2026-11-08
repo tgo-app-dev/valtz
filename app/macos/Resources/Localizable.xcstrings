@@ -8776,6 +8776,16 @@
         }
       }
     },
+    "Following" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跟随中"
+          }
+        }
+      }
+    },
     "Follows %@: %@" : {
       "localizations" : {
         "en" : {
@@ -12929,6 +12939,16 @@
         }
       }
     },
+    "Metadata:" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "元数据："
+          }
+        }
+      }
+    },
     "Metering" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13430,12 +13450,32 @@
         }
       }
     },
+    "Name generated assets" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成素材的名称"
+          }
+        }
+      }
+    },
     "Name prompts and what is made from them" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "为提示词及其生成内容命名"
+          }
+        }
+      }
+    },
+    "Names" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "名称"
           }
         }
       }
@@ -14254,6 +14294,16 @@
         }
       }
     },
+    "Not in a clip's own file: choose a format" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "视频原文件不写入：请选择一种格式"
+          }
+        }
+      }
+    },
     "Not installed" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14909,6 +14959,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "仅在设定时间"
+          }
+        }
+      }
+    },
+    "Only for a clip of one generation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仅限由一次生成得到的视频"
+          }
+        }
+      }
+    },
+    "Only for a picture of one generation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "仅限由一次生成得到的图片"
           }
         }
       }
@@ -16071,6 +16141,16 @@
         }
       }
     },
+    "Previewing a RefMod isn't supported yet. To use “%@”, drag it into the prompt's row." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "暂不支持预览 RefMod。要使用“%@”，请把它拖到提示词的素材行中。"
+          }
+        }
+      }
+    },
     "Previous" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16258,6 +16338,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "提示词与参考"
+          }
+        }
+      }
+    },
+    "Prompt and seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "提示词和种子"
           }
         }
       }
@@ -18291,6 +18381,16 @@
         }
       }
     },
+    "Seed %@, in the description and comment" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "种子 %@，写入描述和注释"
+          }
+        }
+      }
+    },
     "Select" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20158,6 +20258,16 @@
         }
       }
     },
+    "Summary and Number" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "摘要和编号"
+          }
+        }
+      }
+    },
     "Swap A and B" : {
       "localizations" : {
         "zh-Hans" : {
@@ -21431,6 +21541,16 @@
         }
       }
     },
+    "The prompt, in the description" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "提示词写入描述"
+          }
+        }
+      }
+    },
     "The prompt, the result and the settings are cleared, and this session's images are deleted from disk. Save anything you want to keep first." : {
       "localizations" : {
         "zh-Hans" : {
@@ -21551,6 +21671,16 @@
         }
       }
     },
+    "The stage follows the agent: what it works on, and a clip it makes playing its preview as it is made. Click to stay where you are; click again to follow it" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "舞台跟随智能体：显示它正在处理的内容，它制作的视频在生成时播放预览。点击后舞台停在当前位置；再次点击即重新跟随"
+          }
+        }
+      }
+    },
     "The stage is showing a task: paste once it shows a picture or a clip." : {
       "localizations" : {
         "zh-Hans" : {
@@ -21637,6 +21767,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "停止后窗口将关闭。"
+          }
+        }
+      }
+    },
+    "The words and the seed it was generated with, written in the file's description and comment. Preview shows them in Tools › Show Inspector › More Info." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成它所用的提示词和种子，写入文件的描述和注释。“预览”在“工具” › “显示检查器” › “更多信息”中显示它们。"
           }
         }
       }
@@ -22495,6 +22635,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "输入时间：1:23.456，或秒数"
+          }
+        }
+      }
+    },
+    "Type and Number" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "类型和编号"
           }
         }
       }
@@ -29328,6 +29478,46 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "“%@”。运行期间，这台 Mac 的窗口将交由该任务使用。"
+          }
+        }
+      }
+    },
+    "“Fox in Snow 2”: its prompt summed up in a few words by the Agentic Helper (%@), then the next number — the prompt's own words until the summary comes. The micro agent does it instead while it is here with “Name prompts and what is made from them” on." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“雪中狐狸 2”：由智能助手（%@）用几个词概括它的提示词，再加上下一个编号；摘要生成之前先用提示词本身的文字。微型代理在本机且开启了“为提示词及其生成内容命名”时，由它来概括。"
+          }
+        }
+      }
+    },
+    "“Fox in Snow 2”: its prompt summed up in a few words by the micro agent (%@), then the next number — the prompt's own words until the summary comes. With the micro agent's “Name prompts and what is made from them” off (Agentic Helper › Micro Agent), the Agentic Helper sums it up." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“雪中狐狸 2”：由微型代理（%@）用几个词概括它的提示词，再加上下一个编号；摘要生成之前先用提示词本身的文字。关闭微型代理的“为提示词及其生成内容命名”（智能助手 › 微型代理）后，由智能助手来概括。"
+          }
+        }
+      }
+    },
+    "“Fox in Snow 2”: its prompt summed up, then the next number. No micro agent or Agentic Helper is here to sum it up, so the prompt's own words are used." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“雪中狐狸 2”：概括它的提示词，再加上下一个编号。本机没有可用来概括的微型代理或智能助手，因此使用提示词本身的文字。"
+          }
+        }
+      }
+    },
+    "“Image 3”, “Video 1”, “Audio 2”: what it is, then the next number." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“图片 3”“视频 1”“音频 2”：素材的类型，再加上下一个编号。"
           }
         }
       }

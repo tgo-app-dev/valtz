@@ -16,6 +16,16 @@ struct WiredLimit: Decodable, Sendable, Equatable {
     var pending: Bool
 }
 
+/// Settings › General › Generations' names of generated assets (core
+/// Controller::asset_naming): "type" ("Image 3") or "summary" ("Fox in
+/// Snow 2"), and who sums a prompt up -- "micro", "helper" or "" (none
+/// here) -- by that model's name.
+struct AssetNaming: Decodable, Sendable, Equatable {
+    var generated: String
+    var summarizer: String
+    var model: String
+}
+
 /// Settings › General › Reproducibility (core Controller::reproducibility):
 /// what a picture, clip or sound job is told so that it repeats -- its
 /// kernels not chosen by timing, the Neural Engine's share of the rows

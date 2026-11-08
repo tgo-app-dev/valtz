@@ -5175,6 +5175,177 @@ TEST(controller, a_still_exports_as_a_pdf)
   }
 }
 
+// An export's PROMPT AND SEED (DESIGN §7 Export, Controller::made_from):
+// the one generation a picture or a composition shows -- its recipe's
+// words and seed -- through layers, nested stills, an upscale; markup and
+// sound no picture; none for two generations, a photo beside one, an
+// empty still. Asked, the export's job carries them and a file stamped as
+// a picture of it says them; not asked, nothing.
+TEST(composition, an_export_says_what_its_one_generation_was_made_from)
+{
+  const fs::path root = test::temp_dir("made-from");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "M.valtz", "made");
+  REQUIRE_OK(pid);
+  project::Project& p = *ctl.project(*pid);
+  int n = 0;
+  // A result as a build commits one, of `op` and `params`.
+  auto built = [&](std::string op, Json params, project::AssetKind kind,
+                   std::vector<project::RecipeInput> inputs = {})
+      -> std::optional<AssetId> {
+    project::Recipe r;
+    r.op = std::move(op);
+    r.model = "krea2-turbo";
+    r.params = std::move(params);
+    r.inputs = std::move(inputs);
+    auto d = p.define_derived("Made", kind, r, 48);
+    const fs::path png = root / std::format("made-{}.png", n);
+    const fs::path out = p.blobs().tmp_dir() / std::format("out-{}.png", n);
+    ++n;
+    if (!d.ok() || !write_png(png, 8, 8, {0xff, 0x80, 0, 0xff})) {
+      return std::nullopt;
+    }
+    std::error_code ec;
+    fs::copy_file(png, out, ec);
+    project::Project::BuildRecord b;
+    b.recipe = r;
+    b.output = out;
+    auto info = media::probe_file(out);
+    if (!info.ok()) {
+      return std::nullopt;
+    }
+    b.info = *info;
+    return p.commit_build(d->id, std::move(b)).ok()
+               ? std::optional<AssetId>(d->id) : std::nullopt;
+  };
+  auto fox = built("generate-image", {{"prompt", "a fox, 狐狸"},
+                                      {"seed", 7}},
+                   project::AssetKind::Image);
+  auto boat = built("edit-image", {{"prompt", "a boat"}, {"seed", 9}},
+                    project::AssetKind::Image);
+  REQUIRE(fox && boat);
+  REQUIRE(write_png(root / "photo.png", 8, 8, {0x80, 0x80, 0x80, 0xff}));
+  auto photo = import_and_wait(ctl, *pid, root / "photo.png");
+  REQUIRE(photo);
+  auto from = [&](AssetId a) {
+    auto m = ctl.made_from(*pid, a);
+    return m ? std::format("{}|{}", m->prompt, m->seed.value_or(-1))
+             : std::string("-");
+  };
+  CHECK(from(*fox) == "a fox, 狐狸|7");
+  CHECK(from(*boat) == "a boat|9");
+  CHECK(from(*photo) == "-");
+
+  std::vector<std::string> layer_ids;
+  auto still = [&](const std::vector<AssetId>& sources) {
+    auto c = ctl.create_composition(*pid, project::AssetClass::Still,
+                                    {8, 8});
+    CHECK(c.ok());
+    layer_ids.clear();
+    if (!c.ok()) {
+      return AssetId();
+    }
+    std::string below;
+    for (const auto& src : sources) {
+      auto l = below.empty() ? ctl.add_layer(*pid, *c)
+                             : ctl.add_layer(*pid, *c, below);
+      CHECK(l.ok());
+      if (!l.ok()) {
+        break;
+      }
+      CHECK(ctl.set_layer_source(*pid, *c, *l, src).ok());
+      layer_ids.push_back(*l);
+      below = *l;
+    }
+    return *c;
+  };
+  CHECK(from(still({*fox})) == "a fox, 狐狸|7");
+  CHECK(from(still({*fox, *fox})) == "a fox, 狐狸|7");  // one, twice
+  CHECK(from(still({*fox, *boat})) == "-");
+  CHECK(from(still({*fox, *photo})) == "-");
+  CHECK(from(still({})) == "-");
+  CHECK(from(still({still({*fox})})) == "a fox, 狐狸|7");  // nested
+  // The boat out of sight: the fox alone.
+  const AssetId two = still({*fox, *boat});
+  REQUIRE_OK(ctl.set_layer_visible(*pid, two, layer_ids.back(), false));
+  CHECK(from(two) == "a fox, 狐狸|7");
+  // A markup over it -- a title -- is no picture.
+  const AssetId titled = still({*fox});
+  REQUIRE_OK(ctl.markup_layer(*pid, titled, {}));
+  CHECK(from(titled) == "a fox, 狐狸|7");
+  // An upscale shows its source's picture; one with no seed made none.
+  auto up = built("upscale-image", {{"seed", 0}}, project::AssetKind::Image,
+                  {{"source", *fox, 0}});
+  REQUIRE(up);
+  CHECK(from(*up) == "a fox, 狐狸|7");
+  CHECK(from(still({*up, *fox})) == "a fox, 狐狸|7");
+  auto unseeded = built("generate-image", {{"prompt", "x"}},
+                        project::AssetKind::Image);
+  REQUIRE(unseeded);
+  CHECK(from(*unseeded) == "-");
+
+  // A file stamped as a picture of it, asked: the PNG's text says them.
+  const fs::path f = root / "flat.png";
+  REQUIRE(write_png(f, 8, 8, {0, 0, 0, 0xff}));
+  REQUIRE_OK(ctl.stamp_file(f, *pid, titled, {}, true));
+  std::string bytes;
+  {
+    std::ifstream in(f, std::ios::binary);
+    bytes.assign(std::istreambuf_iterator<char>(in), {});
+  }
+  CHECK(bytes.find("Comment" + std::string(1, '\0') + "Seed: 7") !=
+        std::string::npos);
+  CHECK(bytes.find(std::string("Description\0", 12)) != std::string::npos);
+  CHECK(bytes.find("a fox, 狐狸") != std::string::npos);
+  REQUIRE(write_png(f, 8, 8, {0, 0, 0, 0xff}));
+  REQUIRE_OK(ctl.stamp_file(f, *pid, titled));
+  {
+    std::ifstream in(f, std::ios::binary);
+    bytes.assign(std::istreambuf_iterator<char>(in), {});
+  }
+  CHECK(bytes.find("Seed:") == std::string::npos);
+
+  // The export's job: asked, its "made_from"; not, none; asked of two
+  // generations, none either.
+  auto ask = [&](AssetId a, bool asked) -> Json {
+    ExportRequest ex;
+    ex.project = *pid;
+    ex.asset = a;
+    ex.format = "png";
+    ex.destination = root / "out.png";
+    ex.prompt_and_seed = asked;
+    auto j = ctl.export_asset(ex);
+    CHECK(j.ok());
+    if (!j.ok()) {
+      return Json();
+    }
+    const auto* spec = engine->spec(*j);
+    CHECK(spec != nullptr);
+    Json m = spec ? jget(spec->params, "made_from", Json()) : Json();
+    engine->fail(*j, "not run here");
+    return m;
+  };
+  const Json asked = ask(*fox, true);
+  CHECK(jget<std::string>(asked, "prompt", "") == "a fox, 狐狸");
+  CHECK(jget(asked, "seed", 0) == 7);
+  CHECK(ask(*fox, false).is_null());
+  CHECK(ask(still({*fox, *boat}), true).is_null());
+}
+
 // A LONG TEXT read as light Markdown and FLOWED onto pages
 // (media/text-flow.h): every word placed once, in order; each box in the
 // area; a paragraph cut at a line with two lines at least either side;
@@ -11349,7 +11520,7 @@ TEST(controller, the_micro_agent_names_prompts_and_writes_2k_words)
     const auto l = std::ranges::find(t->layers, on_tl->second,
                                      &project::Layer::id);
     REQUIRE(l != t->layers.end());
-    CHECK(l->name == "Fox at Dawn");
+    CHECK(l->name == "Fox at Dawn 1");
   }
   const auto prompt_of = [&](AssetId a) {
     auto r = p->recipe(p->asset(a)->recipe);
@@ -11357,13 +11528,15 @@ TEST(controller, the_micro_agent_names_prompts_and_writes_2k_words)
                              &project::RecipeInput::role)
         ->asset;
   };
+  // The prompt by the summary, its results by it and a number (Settings ›
+  // General's names of generated assets: "summary", the default).
   CHECK(p->asset(prompt_of(c1))->name == "Fox at Dawn");
-  CHECK(p->asset(c1)->name == "Fox at Dawn");
-  CHECK(p->asset(c2)->name == "Fox at Dawn (2)");
+  CHECK(p->asset(c1)->name == "Fox at Dawn 1");
+  CHECK(p->asset(c2)->name == "Fox at Dawn 2");
   // Asked again: named at once, nothing asked.
   auto j3 = b.ctl->generate_video(req);
   REQUIRE_OK(j3);
-  CHECK(p->asset(b.ctl->jobs().get(*j3)->asset)->name == "Fox at Dawn (3)");
+  CHECK(p->asset(b.ctl->jobs().get(*j3)->asset)->name == "Fox at Dawn 3");
   CHECK(b.engine->held_of(engine::kOpChat).empty());
   // A name of the request's own: kept.
   req.prompt = "A lighthouse at dusk, waves below.";
@@ -11433,6 +11606,104 @@ TEST(controller, the_micro_agent_names_prompts_and_writes_2k_words)
   REQUIRE_OK(b.ctl->generate_video(ref));
   CHECK(b.engine->held_of(engine::kOpChat).empty());
   CHECK(b.engine->held_of(engine::kOpGenerateVideo).size() == before + 1);
+}
+
+// NAMES OF GENERATED ASSETS (Settings › General, Controller::
+// asset_naming): numbered always -- by the prompt's summary (the default),
+// the words until it comes, or by their kind in the UI's language. The
+// summary is the micro agent's where it names (its Names task), else the
+// Agentic Helper's; none where neither is here (the words stay). Kept in
+// naming.json; a name asked for, as it is.
+TEST(controller, generated_assets_are_named_by_type_or_summary)
+{
+  RegenBench b("naming", false);
+  REQUIRE(b.ctl && b.engine);
+  Controller& ctl = *b.ctl;
+  project::Project* p = ctl.project(b.pid);
+  Json n = ctl.asset_naming();
+  CHECK(jget<std::string>(n, "generated", "") == "summary");
+  CHECK(jget<std::string>(n, "summarizer", "-").empty());  // none here
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-fl2va";
+  req.width = 832;
+  req.height = 480;
+  req.frames = 39;
+  auto made = [&](const std::string& words) {
+    req.prompt = words;
+    auto j = ctl.generate_video(req);
+    CHECK(j.ok());
+    return j.ok() ? p->asset(ctl.jobs().get(*j)->asset)->name
+                  : std::string("!");
+  };
+  // No one to sum it up: its words, numbered; nothing asked.
+  CHECK(made("A fox in snow") == "A fox in snow 1");
+  CHECK(made("A fox in snow") == "A fox in snow 2");
+  CHECK(b.engine->held_of(engine::kOpChat).empty());
+
+  // By TYPE: its kind's word, numbered; nothing asked, a name asked for
+  // kept as it is. Kept for later runs; another value refused.
+  REQUIRE_OK(ctl.set_asset_naming({{"generated", "type"}}));
+  CHECK(made("A boat at sea") == "Video 1");
+  CHECK(made("A boat at sea") == "Video 2");
+  req.name = "Mine";
+  CHECK(made("A boat at sea") == "Mine");
+  req.name.clear();
+  CHECK(b.engine->held_of(engine::kOpChat).empty());
+  CHECK(!ctl.set_asset_naming({{"generated", "words"}}).ok());
+  {
+    std::ifstream in(b.root / "support" / "naming.json");
+    CHECK(jget<std::string>(Json::parse(in, nullptr, false), "generated",
+                            "") == "type");
+  }
+
+  // SUMMARY by the AGENTIC HELPER, the micro agent not here.
+  const fs::path helper =
+      b.root / "models" / "mlx-community" / "Qwen3.5-9B-OptiQ-4bit";
+  fs::create_directories(helper);
+  std::ofstream(helper / "config.json") << R"({"model_type": "qwen3_5"})";
+  std::ofstream(helper / "model.safetensors") << "w";
+  ctl.rescan_models();
+  REQUIRE_OK(ctl.set_asset_naming({{"generated", "summary"}}));
+  n = ctl.asset_naming();
+  CHECK(jget<std::string>(n, "summarizer", "") == "helper");
+  CHECK(!jget<std::string>(n, "model", "").empty());
+  const std::string words = "A lighthouse at dusk";
+  CHECK(made(words) == words + " 1");
+  const engine::JobSpec* chat = b.job(engine::kOpChat, 1);
+  REQUIRE(chat != nullptr);
+  CHECK(chat->model.id == "qwen3.5-9b");
+  CHECK(jget(chat->params, "disable_thinking", false));
+  CHECK(jget<std::string>(chat->params, "text", "").find(words) !=
+        std::string::npos);
+  b.engine->turn(chat->id, {{"text", "Lighthouse at Dusk"}});
+  CHECK(eventually([&] {
+    auto all = p->assets();
+    return all.ok() && std::ranges::any_of(*all, [](const auto& a) {
+             return a.name == "Lighthouse at Dusk 1";
+           });
+  }, 5));
+  // Again: by the summary at once.
+  CHECK(made(words) == "Lighthouse at Dusk 2");
+  CHECK(b.engine->held_of(engine::kOpChat).empty());
+
+  // The MICRO AGENT here, naming: it sums up; its Names off: the helper.
+  const fs::path lfm = b.root / "models" / "LiquidAI" / "LFM3-VL-2B";
+  fs::create_directories(lfm);
+  std::ofstream(lfm / "config.json") << R"({"model_type": "lfm3_vl"})";
+  std::ofstream(lfm / "model.safetensors") << "w";
+  std::ofstream(lfm / "tokenizer.json") << "{}";
+  ctl.rescan_models();
+  CHECK(jget<std::string>(ctl.asset_naming(), "summarizer", "") ==
+        "micro");
+  CHECK(made("A tram in the rain") == "A tram in the rain 1");
+  const engine::JobSpec* micro = b.job(engine::kOpChat, 1);
+  REQUIRE(micro != nullptr);
+  CHECK(micro->model.id == "lfm3-vl-2b");
+  b.engine->turn(micro->id, {{"text", "Rainy Tram"}});
+  REQUIRE_OK(ctl.set_micro({{"names", false}}));
+  CHECK(jget<std::string>(ctl.asset_naming(), "summarizer", "") ==
+        "helper");
 }
 
 TEST(controller, a_ref2va_clip_is_regenerated_on_fl2va)
@@ -15150,6 +15421,169 @@ TEST(agent, a_long_scene_is_shot_after_shot)
 // in for their tags, landing marked from frame 22 where the shot before
 // ends. A clip that kept none is guided by its encoded tail, said; and
 // asked for, the old way: its last seconds read as a reference on Ref2VA.
+// A shot is MADE AS THE CLIP BEFORE IT (DESIGN §9b): on a timeline whose
+// last clip the person made with Pika H3 Flex at Fast, the agent's shot
+// that names no Favor or options is made so too -- and said; one naming
+// its options keeps them, taking the Favor alone; one naming both is as
+// asked; one drawing on a picture after a Pika shot (Ref2VA, whose Pika
+// adapter is not here) takes the Favor and is made without Pika, said.
+TEST(agent, a_shot_is_made_as_the_clip_before_it)
+{
+  auto root = test::temp_dir("agent-made-as");
+  for (const char* f :
+       {"MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors",
+        "MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_fl2v_turbo_4step_v1.2_768p_bf16.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+        "Pika-Labs/Pika-H3-Flex/fl2va/adapter.safetensors",
+        "Pika-Labs/Pika-H3-Flex/fl2va/manifest.json",
+        "videorebirth/hyperflow/minimax_h3_hyperflow_8step_v1.0.safetensors"}) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  }
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "M.valtz", "made as");
+  REQUIRE_OK(pid);
+  // A made clip's file: 56 frames at 64 x 32, with sound.
+  REQUIRE(write_png(root / "boat.png", 64, 32, {0x30, 0x60, 0x90, 0xff}));
+  REQUIRE(write_tone(root / "tone.wav", 2, 330, 0.5));
+  auto boat = import_and_wait(ctl, *pid, root / "boat.png");
+  auto tone = import_and_wait(ctl, *pid, root / "tone.wav");
+  REQUIRE(boat && tone);
+  fs::path clip_file;
+  {
+    auto c = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                    {64, 32}, {24, 1}, "made");
+    REQUIRE_OK(c);
+    auto in = ctl.instantiate(*pid, *boat, *c);
+    REQUIRE_OK(in);
+    project::LayerTime t;
+    t.duration = 56;
+    REQUIRE_OK(ctl.set_layer_time(*pid, *c, in->second, t));
+    REQUIRE_OK(ctl.instantiate(*pid, *tone, *c));
+    auto file = ctl.rendered(*pid, *c);
+    REQUIRE_OK(file);
+    clip_file = root / "clip.mov";
+    fs::copy_file(*file, clip_file);
+  }
+  // The person's clip: Pika H3 Flex at Fast, on their timeline.
+  GenerateVideoRequest vr;
+  vr.project = *pid;
+  vr.prompt = "a sailing boat heels in a stiff breeze";
+  vr.model = "minimax-h3-fl2va";
+  vr.width = 64;
+  vr.height = 32;
+  vr.frames = 56;
+  vr.preference = "speed";
+  vr.tuning = {{"pika_flex", true}};
+  auto job = ctl.generate_video(vr);
+  REQUIRE_OK(job);
+  const auto rec = ctl.jobs().get(*job);
+  REQUIRE(rec);
+  const AssetId clip = rec->asset;
+  engine->start(*job);
+  engine->finish(*job, clip_file);
+  REQUIRE(ctl.project(*pid)->version(clip).ok());
+  REQUIRE_OK(ctl.rename_asset(*pid, clip, "Pika boat"));
+  auto tl = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                   {64, 32}, {24, 1}, "Regatta");
+  REQUIRE_OK(tl);
+  REQUIRE_OK(ctl.instantiate(*pid, clip, *tl));
+
+  const Json words = "[Shot 1] The boat rounds the mark.";
+  auto shot = [&](Json more) {
+    Json a = {{"description", words}, {"seconds", 2},
+              {"composition", tl->str()}};
+    a.update(more);
+    return call("generate_video", a);
+  };
+  script->replies = {
+      {shot(Json::object())},
+      {shot({{"options", {{"Pika H3 Flex", false}}}})},
+      {shot({{"favor", "fine"}, {"options", "Pika"}})},
+      {shot({{"references", Json::array({boat->str()})}})}};
+  AgentRequest req;
+  req.project = *pid;
+  req.composition = *tl;
+  req.prompt = "Continue the regatta on this timeline";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "waiting");
+  REQUIRE(jget<std::string>(st, "state", "") == "waiting");
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 4);
+  auto result = [&](int i) { return jget(steps[i], "result", Json()); };
+  for (int i = 0; i < 4; ++i) {
+    CHECK(jget<std::string>(steps[i], "error", "").empty());
+  }
+  auto as = [&](int i) {
+    return jget(jget(result(i), "made_as_before", Json()), "as",
+                Json::array());
+  };
+  // Nothing asked: made as the person's clip -- Pika at Fast -- said.
+  CHECK(jget<std::string>(jget(result(0), "made_as_before", Json()), "clip",
+                          "") == "Pika boat");
+  CHECK(as(0) == Json::array({"Favor Fast", "Pika H3 Flex"}));
+  CHECK(jget(jget(result(0), "runs_with", Json()), "steps", 0) == 6);
+  const auto held = engine->held_of(engine::kOpGenerateVideo);
+  REQUIRE(held.size() == 4);
+  const auto* s0 = engine->spec(held[0]);
+  REQUIRE(s0 != nullptr);
+  CHECK(jget(s0->params["tuning"], "pika_flex", false));
+  // Its options its own: the Favor alone carried, from the shot before.
+  CHECK(as(1) == Json::array({"Favor Fast"}));
+  const auto* s1 = engine->spec(held[1]);
+  REQUIRE(s1 != nullptr);
+  CHECK(!jget(s1->params["tuning"], "pika_flex", false));
+  // Both its own: as asked, nothing carried.
+  CHECK(!result(2).contains("made_as_before"));
+  const auto* s2 = engine->spec(held[2]);
+  REQUIRE(s2 != nullptr);
+  CHECK(jget(s2->params["tuning"], "pika_flex", false));
+  // Drawing on a picture -- Ref2VA, its Pika adapter not here: the shot
+  // before's Fine, without Pika, said why.
+  const Json m3 = jget(result(3), "made_as_before", Json());
+  CHECK(jget<std::string>(m3, "clip", "") == "Shot 3");
+  CHECK(as(3) == Json::array({"Favor Fine"}));
+  const Json left = jget(m3, "not_carried", Json());
+  CHECK(jget(left, "options", Json()) == Json::array({"Pika H3 Flex"}));
+  CHECK(!jget<std::string>(left, "why", "").empty());
+  CHECK(jget<std::string>(jget(result(3), "runs_with", Json()), "favor",
+                          "") == "Fine");
+  const auto* s3 = engine->spec(held[3]);
+  REQUIRE(s3 != nullptr);
+  CHECK(s3->model.id == "minimax-h3-ref2va");
+  CHECK(!jget(s3->params["tuning"], "pika_flex", false));
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
 TEST(agent, a_shot_carries_on_latent_guided)
 {
   auto root = test::temp_dir("agent-guided");
@@ -16672,11 +17106,12 @@ TEST(controller, minimax_music3_sings_a_description_to_lyrics)
   er.prompt = "a warm acoustic song\n\n[Verse]\nmy own words here";
   auto ej = ctl.enhance_prompt(er);
   REQUIRE_OK(ej);
+  // (Beside it, the song's name asked of the helper: names by summary.)
   const auto chats = engine->held_of(engine::kOpChat);
-  REQUIRE(chats.size() == 1);
-  CHECK(jget<std::string>(engine->spec(chats[0])->params, "text", "")
+  REQUIRE(std::ranges::find(chats, *ej) != chats.end());
+  CHECK(jget<std::string>(engine->spec(*ej)->params, "text", "")
             .find("Global Emotional Progression") != std::string::npos);
-  engine->turn(chats[0],
+  engine->turn(*ej,
                {{"text", R"({"style": "Global Metadata\nBasic Attributes: )"
                          R"(bpm is 90.\nArrangement\nPrimary: guitar.", )"
                          R"("lyrics": "[Verse]\nnot my words"})"}});

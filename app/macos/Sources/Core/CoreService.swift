@@ -14,6 +14,13 @@ struct CoreEvent: @unchecked Sendable {
 }
 
 /// A request's immediate answer: `{"ok": true, ...}` or an error.
+/// What a generation was made from, as an export writes it (the core's
+/// media::MadeFrom): its prompt as the model read it, its seed.
+struct MadeFrom: Equatable, Sendable {
+    let prompt: String
+    let seed: Int64?
+}
+
 struct CoreReply: @unchecked Sendable {
     let ok: Bool
     let payload: [String: Any]
@@ -229,6 +236,16 @@ final class CoreService: @unchecked Sendable {
     /// Either switch set ("skip_autotune", "lock_ane_split": Bool).
     func setReproducibility(_ changes: [String: Any]) -> CoreReply {
         send(core.set_reproducibility, changes)
+    }
+
+    /// Settings › General › Generations' names of generated assets
+    /// (bridge asset_naming_json): by type or by summary, and who sums up.
+    func assetNamingJSON() -> Data {
+        Data(String(core.asset_naming_json()).utf8)
+    }
+
+    func setAssetNaming(_ changes: [String: Any]) -> CoreReply {
+        send(core.set_asset_naming, changes)
     }
     /// Whether the GPU is held back: blocks for `windowMs`, so never on
     /// the main thread.
@@ -673,15 +690,31 @@ final class CoreService: @unchecked Sendable {
     /// named as written by this Valtz and vpipe (bridge stamp_file): as a
     /// picture of `asset`, with the one model it was made with, or none.
     /// A failure is no reason to withhold the file: the log says why.
+    /// `promptAndSeed`: the asset's one generation's prompt and seed
+    /// written beside it (an export's Prompt and Seed, on a file as it is).
     @discardableResult
     func stampFile(_ path: String, project: String? = nil,
-                   asset: String? = nil) -> CoreReply {
+                   asset: String? = nil,
+                   promptAndSeed: Bool = false) -> CoreReply {
         var req: [String: Any] = ["path": path]
         if let project, let asset {
             req["project"] = project
             req["asset"] = asset
+            if promptAndSeed { req["prompt_and_seed"] = true }
         }
         return send(core.stamp_file, req)
+    }
+
+    /// The words and the seed of the ONE generation an asset shows (bridge
+    /// made_from) -- what an export's Prompt and Seed writes -- or nil: it
+    /// shows none, or several.
+    func madeFrom(project: String, asset: String) -> MadeFrom? {
+        let r = send(core.made_from, ["project": project, "asset": asset])
+        guard r.ok else { return nil }
+        let prompt = r["prompt"] as? String
+        let seed = (r["seed"] as? NSNumber)?.int64Value
+        guard prompt != nil || seed != nil else { return nil }
+        return MadeFrom(prompt: prompt ?? "", seed: seed)
     }
 
     /// The stack drawn for the screen, by the GPU into a surface a layer

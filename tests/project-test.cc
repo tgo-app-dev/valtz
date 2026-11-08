@@ -101,6 +101,55 @@ TEST(project, a_revision_changes_with_each_write)
   CHECK((*p)->revision() != before);
 }
 
+// A derived asset NUMBERED (Settings › General's names of generated
+// assets): a number always, one past the highest the project's names give
+// its stem -- not filling a gap, not counting another stem's or a name
+// with words after its number; cut to its budget with room for the
+// number; renamed to its own stem, kept.
+TEST(project, a_numbered_name_takes_the_next_number)
+{
+  auto pkg = test::temp_dir("numbered") / "N.valtz";
+  auto p = Project::create(pkg, "Numbered");
+  REQUIRE_OK(p);
+  Project& pr = **p;
+  auto define = [&](std::string name, std::size_t budget = 48) {
+    Recipe r;
+    r.op = "generate-image";
+    auto a = pr.define_derived(std::move(name), AssetKind::Image, r, budget,
+                               true);
+    return a.ok() ? a->name : std::string("!");
+  };
+  CHECK(define("Image") == "Image 1");
+  CHECK(define("Image") == "Image 2");
+  CHECK(define("Video") == "Video 1");
+  REQUIRE_OK(pr.add_text("Image 7", "a note"));
+  REQUIRE_OK(pr.add_text("Image 9 of 10", "words after it"));
+  REQUIRE_OK(pr.add_text("Image", "no number"));
+  CHECK(define("Image") == "Image 8");
+  CHECK(define("Fox in Snow") == "Fox in Snow 1");
+  // Cut with room for its number, as the budget says ("…" marks the cut).
+  const std::string longer(60, 'x');
+  const std::string cut = define(longer, 20);
+  CHECK(cut.size() <= 20);
+  CHECK(cut.ends_with(" 1"));
+  CHECK(define(longer, 20) == cut.substr(0, cut.size() - 1) + "2");
+  // Renamed numbered: to another stem, its next; to its own, as it is.
+  Recipe r;
+  r.op = "generate-image";
+  auto a = pr.define_derived("Fox in Snow", AssetKind::Image, r, 48, true);
+  REQUIRE_OK(a);
+  CHECK(a->name == "Fox in Snow 2");
+  auto same = pr.rename_unique(a->id, "Fox in Snow", 48, true);
+  REQUIRE_OK(same);
+  CHECK(*same == "Fox in Snow 2");
+  auto other = pr.rename_unique(a->id, "Image", 48, true);
+  REQUIRE_OK(other);
+  CHECK(*other == "Image 9");
+  // Not numbered: as before.
+  CHECK(pr.define_derived("Image 1", AssetKind::Image, r, 48)->name ==
+        "Image 1 (2)");
+}
+
 TEST(project, identical_content_is_stored_once)
 {
   auto pkg = test::temp_dir("proj") / "D.valtz";

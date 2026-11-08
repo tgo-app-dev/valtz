@@ -119,6 +119,21 @@ Project::open_dbs_()
 
 namespace {
 
+// "Image 3" -> "Image"; a name with no number after a space -> "\x01"
+// (no stem: it matches none).
+std::string
+numbered_stem(std::string_view name)
+{
+  const auto sp = name.rfind(' ');
+  if (sp == std::string_view::npos || sp + 1 == name.size() ||
+      name.size() - sp - 1 > 9 ||
+      !std::ranges::all_of(name.substr(sp + 1),
+                           [](char c) { return c >= '0' && c <= '9'; })) {
+    return "\x01";
+  }
+  return std::string(name.substr(0, sp));
+}
+
 constexpr std::array<const char*, 9> kRecordTables = {
     "meta", "assets", "versions", "recipes", "dependents", "subjects",
     "subject_refs", "history", "x_tables"};
@@ -633,7 +648,7 @@ Project::rename_asset(AssetId id, std::string name)
 
 Result<std::string>
 Project::rename_unique(AssetId id, std::string_view name,
-                       std::size_t max_bytes)
+                       std::size_t max_bytes, bool numbered)
 {
   std::string got;
   VALTZ_TRY(_env->write([&](db::Txn& txn) -> Status {
@@ -641,13 +656,16 @@ Project::rename_unique(AssetId id, std::string_view name,
     if (!a) {
       return make_error(Code::NotFound, "no such asset");
     }
-    const std::string whole = max_bytes ? utf8_truncate(name, max_bytes)
-                                        : std::string(name);
-    if (a->name == whole) {
-      got = whole;
+    // A numbered one's stem keeps room for its number (unique_name_).
+    const std::size_t room =
+        numbered && max_bytes > 8 ? max_bytes - 8 : max_bytes;
+    const std::string whole =
+        room ? utf8_truncate(name, room) : std::string(name);
+    if (numbered ? numbered_stem(a->name) == whole : a->name == whole) {
+      got = a->name;
       return ok_status();
     }
-    VALTZ_ASSIGN(got, unique_name_(txn, name, max_bytes));
+    VALTZ_ASSIGN(got, unique_name_(txn, name, max_bytes, numbered));
     a->name = got;
     a->modified_ms = now_ms();
     return put_asset_(txn, *a);
@@ -938,7 +956,7 @@ Project::read_text(const Asset& a, const AssetVersion& v) const
 
 Result<std::string>
 Project::unique_name_(const db::Txn& txn, std::string_view name,
-                      std::size_t max_bytes) const
+                      std::size_t max_bytes, bool numbered) const
 {
   std::unordered_set<std::string> taken;
   Status st;
@@ -953,6 +971,20 @@ Project::unique_name_(const db::Txn& txn, std::string_view name,
         return true;
       }));
   VALTZ_TRY(st);
+  if (numbered) {
+    // One past the highest number the names give this stem (its room
+    // for " 1234567" kept within the budget).
+    const std::string stem =
+        max_bytes > 8 ? utf8_truncate(name, max_bytes - 8)
+                      : std::string(name);
+    long long most = 0;
+    for (const auto& t : taken) {
+      if (numbered_stem(t) == stem) {
+        most = std::max(most, std::atoll(t.c_str() + stem.size() + 1));
+      }
+    }
+    return std::format("{} {}", stem, most + 1);
+  }
   // No budget (0): the name whole.
   if (std::string whole = max_bytes ? utf8_truncate(name, max_bytes)
                                     : std::string(name);
@@ -983,7 +1015,7 @@ Project::unique_name_(const db::Txn& txn, std::string_view name,
 
 Result<Asset>
 Project::define_derived(std::string name, AssetKind kind, Recipe r,
-                        std::size_t max_name_bytes)
+                        std::size_t max_name_bytes, bool numbered)
 {
   r.id = RecipeId::make();
   r.created_ms = now_ms();
@@ -997,7 +1029,8 @@ Project::define_derived(std::string name, AssetKind kind, Recipe r,
   a.modified_ms = r.created_ms;
 
   VALTZ_TRY(_env->write([&](db::Txn& txn) -> Status {
-    VALTZ_ASSIGN(a.name, unique_name_(txn, name, max_name_bytes));
+    VALTZ_ASSIGN(a.name, unique_name_(txn, name, max_name_bytes,
+                                      numbered));
     for (const auto& in : r.inputs) {
       VALTZ_ASSIGN(auto ia, get_asset_(txn, in.asset));
       if (!ia) {

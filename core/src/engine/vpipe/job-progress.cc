@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <format>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -110,6 +112,42 @@ bool
 a_download_report(std::string_view desc)
 {
   return desc.starts_with(kWholeDownloadPrefix) || names_a_file(desc);
+}
+
+namespace {
+
+constexpr std::string_view kSkipping = "; skipping";
+
+std::string_view
+trimmed(std::string_view s)
+{
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\r' ||
+                        s.back() == '\n' || s.back() == '.')) {
+    s.remove_suffix(1);
+  }
+  return s;
+}
+
+}  // namespace
+
+bool
+is_refusal(std::string_view line)
+{
+  return trimmed(line).ends_with(kSkipping);
+}
+
+std::string
+no_file_reason(std::string_view what, std::string_view refusal)
+{
+  std::string_view why = trimmed(refusal);
+  if (why.ends_with(kSkipping)) {
+    why.remove_suffix(kSkipping.size());
+  }
+  if (why.empty()) {
+    return std::format("vpipe finished without writing {} (see the log)",
+                       what);
+  }
+  return std::format("vpipe finished without writing {}: {}", what, why);
 }
 
 float

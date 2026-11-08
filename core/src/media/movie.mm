@@ -117,33 +117,68 @@ why(NSError* e)
 // Who wrote a movie or a sound, as its container keeps it (stamp.h):
 // QuickTime's software keys in a .mov, iTunes' encoding tool (ffprobe's
 // "encoder") in an .mp4, .m4v or .m4a -- the two an AVAssetWriter writes
-// for each. `kept` -- the source's own items -- go with it but the ones
-// these replace.
+// for each -- and, given, what made it: the prompt as the description,
+// the seed as the comment (QuickTime's metadata and user data in a .mov,
+// iTunes' "desc" and "©cmt" in the rest). `kept` -- the source's own
+// items -- go with them but the ones these replace.
 NSArray<AVMetadataItem*>*
 software_items(AVFileType type, std::string_view software,
-               NSArray<AVMetadataItem*>* kept = nil)
+               NSArray<AVMetadataItem*>* kept = nil,
+               const MadeFrom& made = {})
 {
   NSMutableArray<AVMetadataItem*>* out = [NSMutableArray array];
   if (software.empty()) {
     return kept ?: out;
   }
   const bool qt = [type isEqualToString:AVFileTypeQuickTimeMovie];
-  NSArray<AVMetadataIdentifier>* ids =
-      qt ? @[ AVMetadataIdentifierQuickTimeMetadataSoftware,
+  auto text = [](std::string_view s) {
+    return [[NSString alloc] initWithBytes:s.data() length:s.size()
+                                  encoding:NSUTF8StringEncoding];
+  };
+  NSMutableArray<NSArray*>* items = [NSMutableArray array];  // id, value
+  auto add = [&](NSArray<AVMetadataIdentifier>* ids, NSString* value) {
+    for (AVMetadataIdentifier ident in ids) {
+      [items addObject:@[ ident, value ]];
+    }
+  };
+  add(qt ? @[ AVMetadataIdentifierQuickTimeMetadataSoftware,
               AVMetadataIdentifierQuickTimeUserDataSoftware ]
-         : @[ AVMetadataIdentifieriTunesMetadataEncodingTool ];
-  NSString* value = [[NSString alloc] initWithBytes:software.data()
-                                             length:software.size()
-                                           encoding:NSUTF8StringEncoding];
+         : @[ AVMetadataIdentifieriTunesMetadataEncodingTool ],
+      text(software) ?: @"Valtz");
+  if (NSString* p = made.prompt.empty() ? nil : text(made.prompt)) {
+    // QuickTime's user data holds a Mac Roman string: words past ASCII
+    // are cut there, so only its metadata says them. An .mp4's "desc"
+    // beside iTunes' ©des is what ffprobe reads as its description.
+    const bool ascii = std::ranges::all_of(made.prompt, [](char c) {
+      return static_cast<unsigned char>(c) < 0x80;
+    });
+    add(qt ? (ascii ? @[ AVMetadataIdentifierQuickTimeMetadataDescription,
+                         AVMetadataIdentifierQuickTimeUserDataDescription ]
+                    : @[ AVMetadataIdentifierQuickTimeMetadataDescription ])
+           : @[ AVMetadataIdentifieriTunesMetadataDescription,
+                [AVMetadataItem identifierForKey:@"desc"
+                                        keySpace:AVMetadataKeySpaceiTunes] ],
+        p);
+  }
+  if (const std::string c = made.comment(); !c.empty()) {
+    add(qt ? @[ AVMetadataIdentifierQuickTimeMetadataComment,
+                AVMetadataIdentifierQuickTimeUserDataComment ]
+           : @[ AVMetadataIdentifieriTunesMetadataUserComment ],
+        text(c));
+  }
+  NSMutableSet<AVMetadataIdentifier>* written = [NSMutableSet set];
+  for (NSArray* i in items) {
+    [written addObject:i[0]];
+  }
   for (AVMetadataItem* m in kept) {
-    if (![ids containsObject:m.identifier]) {
+    if (![written containsObject:m.identifier]) {
       [out addObject:m];
     }
   }
-  for (AVMetadataIdentifier ident in ids) {
+  for (NSArray* i in items) {
     AVMutableMetadataItem* m = [AVMutableMetadataItem metadataItem];
-    m.identifier = ident;
-    m.value = value ?: @"Valtz";
+    m.identifier = i[0];
+    m.value = i[1];
     m.dataType = (__bridge NSString*)kCMMetadataBaseDataType_UTF8;
     [out addObject:m];
   }
@@ -299,7 +334,8 @@ is_prores(std::string_view f)
 Status
 add_soundtrack(const fs::path& video, const fs::path& audio,
                const fs::path& out, double start, double duration,
-               SoundCodec sound, std::string_view software)
+               SoundCodec sound, std::string_view software,
+               const MadeFrom& made)
 {
   @autoreleasepool {
     AVURLAsset* va = [AVURLAsset URLAssetWithURL:file_url(video) options:nil];
@@ -371,7 +407,7 @@ add_soundtrack(const fs::path& video, const fs::path& audio,
     if (!w) {
       return make_error(Code::Io, "cannot write the movie: " + why(err));
     }
-    w.metadata = software_items(type, software);
+    w.metadata = software_items(type, software, nil, made);
     auto vfmt = (__bridge CMFormatDescriptionRef)vt.formatDescriptions
                     .firstObject;
     AVAssetWriterInput* vin =
@@ -602,7 +638,7 @@ write_sound(const fs::path& src, const fs::path& out,
 
 Status
 remux_with_software(const fs::path& in, const fs::path& out,
-                    std::string_view software)
+                    std::string_view software, const MadeFrom& made)
 {
   @autoreleasepool {
     AVURLAsset* a = [AVURLAsset URLAssetWithURL:file_url(in) options:nil];
@@ -621,7 +657,7 @@ remux_with_software(const fs::path& in, const fs::path& out,
     if (!w) {
       return make_error(Code::Io, "cannot write the movie: " + why(err));
     }
-    w.metadata = software_items(type, software, a.metadata);
+    w.metadata = software_items(type, software, a.metadata, made);
     // Every picture and sound as it is stored (nil settings: no decode).
     std::vector<std::pair<AVAssetReaderTrackOutput*, AVAssetWriterInput*>>
         pairs;

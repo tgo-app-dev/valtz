@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreVideo
+import os
 import QuartzCore
 
 /// What a stack's frames are drawn with -- the core and the plan -- as the
@@ -35,9 +36,14 @@ final class StackBox: @unchecked Sendable {
     private var drawn = 0
     private var skipped = 0
 
-    func count(skipped skip: Bool) {
+    /// The composition time of the newest frame drawn, seconds (the
+    /// snapshot hook's `replan`: does the picture move on).
+    private var drawnAt = -1.0
+
+    func count(skipped skip: Bool, at: Double = -1) {
         lock.withLock {
             if skip { skipped += 1 } else { drawn += 1 }
+            if !skip, at >= 0 { drawnAt = at }
         }
     }
 
@@ -45,8 +51,10 @@ final class StackBox: @unchecked Sendable {
         lock.withLock { (drawn, skipped) }
     }
 
+    var lastDrawnAt: Double { lock.withLock { drawnAt } }
+
     func resetCounts() {
-        lock.withLock { drawn = 0; skipped = 0 }
+        lock.withLock { drawn = 0; skipped = 0; drawnAt = -1 }
     }
 
     /// The box of the stack on the stage (a dev and snapshot aid).
@@ -135,6 +143,43 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
     private let lock = NSLock()
     private var generation = 0
 
+    /// A picture that stands still under its sound, said in the system log
+    /// (category stack-player): each two seconds of playing in which a
+    /// frame could not be drawn -- its plan let go, the core refusing it
+    /// -- or more were skipped than drawn, with what they took. Reported
+    /// (2026-11-07) while an agent worked and not reproduced: the next
+    /// one says which (`/usr/bin/log show --predicate 'subsystem ==
+    /// "com.tgous.valtz" && category == "stack-player"'`).
+    private static let log = Logger(subsystem: "com.tgous.valtz",
+                                    category: "stack-player")
+    /// This window's counts (on `queue`).
+    private var window = (start: 0.0, drawn: 0, skipped: 0, failed: 0,
+                          slowest: 0.0)
+
+    /// A frame counted, and the window said once it is two seconds old
+    /// and anything in it was amiss.
+    private func tally(drawn: Bool = false, skipped: Bool = false,
+                       failed: Bool = false, took: Double = 0, plan: UInt64,
+                       clock: Double) {
+        let now = CACurrentMediaTime()
+        if window.start == 0 { window.start = now }
+        if drawn { window.drawn += 1 }
+        if skipped { window.skipped += 1 }
+        if failed { window.failed += 1 }
+        window.slowest = max(window.slowest, took)
+        guard now - window.start >= 2 else { return }
+        let w = window
+        window = (now, 0, 0, 0, 0)
+        guard w.failed > 0 || w.skipped > w.drawn else { return }
+        Self.log.notice("""
+            stack frames in \(now - w.start, format: .fixed(precision: 1)) s: \
+            drawn \(w.drawn), skipped \(w.skipped), failed \(w.failed) \
+            (plan \(plan)); slowest draw \(Int(w.slowest * 1000)) ms, \
+            lately \(Int(self.drawTime * 1000)) ms; clock \
+            \(clock, format: .fixed(precision: 2)) s
+            """)
+    }
+
     func startRequest(_ request: AVAsynchronousVideoCompositionRequest) {
         let gen = lock.withLock { generation }
         queue.async { [self] in
@@ -168,11 +213,14 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
             let ends = at.seconds + 1 / max(1, rate.fps)
             if now + drawTime > ends, wall - lastDrawn < 0.25 {
                 ins.box.count(skipped: true)
+                tally(skipped: true, plan: plan, clock: now)
                 request.finish(withComposedVideoFrame: last)
                 return
             }
         }
+        let clockAt = clock.map { CMTimebaseGetTime($0).seconds } ?? -1
         guard let out = request.renderContext.newPixelBuffer() else {
+            tally(failed: true, plan: plan, clock: clockAt)
             request.finish(with: Self.failure)
             return
         }
@@ -180,6 +228,8 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
         let n = rate.frame(at: at.seconds)
         guard let core, core.renderStack(plan: plan, frame: n, clips: frames,
                                          into: out) else {
+            tally(failed: true, took: CACurrentMediaTime() - wall,
+                  plan: plan, clock: clockAt)
             request.finish(with: Self.failure)
             return
         }
@@ -191,7 +241,8 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
         drawTime = drawTime == 0 ? took : drawTime * 0.7 + took * 0.3
         lastDrawn = CACurrentMediaTime()
         last = out
-        ins.box.count(skipped: false)
+        ins.box.count(skipped: false, at: at.seconds)
+        tally(drawn: true, took: took, plan: plan, clock: clockAt)
         request.finish(withComposedVideoFrame: out)
     }
 

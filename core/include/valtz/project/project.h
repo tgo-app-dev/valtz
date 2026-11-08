@@ -159,9 +159,11 @@ public:
   Status rename_asset(AssetId, std::string name);
   // Renamed to `name` made unique among the project's assets as a new
   // one's is ("Fox at Dawn (2)"), cut to `max_bytes` (0: whole): the
-  // name it got.
+  // name it got. `numbered`: as define_derived's -- one already named
+  // `name` and a number keeps it.
   Result<std::string> rename_unique(AssetId, std::string_view name,
-                                    std::size_t max_bytes);
+                                    std::size_t max_bytes,
+                                    bool numbered = false);
   // Replace the asset's modifiers (Modifier): no new version -- the bytes
   // are unchanged -- and nothing downstream goes stale (a recipe records
   // what it used).
@@ -268,9 +270,13 @@ public:
   // `max_name_bytes`, it is also cut to fit, suffix included, at a full
   // character and marked with "…" (base/text.h). The returned Asset
   // carries the name as stored. Chosen inside the write transaction, so
-  // two definitions at once cannot take the same name.
+  // two definitions at once cannot take the same name. `numbered`
+  // (Settings › General's names of generated assets): a number always,
+  // one past the highest the project's names give `name` -- "Image 3"
+  // after "Image 1" and "Image 2", "Image 1" first.
   Result<Asset> define_derived(std::string name, AssetKind, Recipe,
-                               std::size_t max_name_bytes = 0);
+                               std::size_t max_name_bytes = 0,
+                               bool numbered = false);
   // Point a derived asset at a new (immutable) recipe.
   Status set_recipe(AssetId, Recipe);
   Result<Recipe> recipe(RecipeId) const;
@@ -358,7 +364,8 @@ private:
   // Its record written, a markup's objects moved in and back, not copied.
   Status put_asset_(db::Txn&, Asset&) const;
   Result<std::string> unique_name_(const db::Txn&, std::string_view name,
-                                   std::size_t max_bytes) const;
+                                   std::size_t max_bytes,
+                                   bool numbered = false) const;
   Result<std::optional<AssetVersion>>
   get_version_(const db::Txn&, AssetId, std::uint32_t) const;
   Result<std::optional<Recipe>> get_recipe_(const db::Txn&, RecipeId) const;

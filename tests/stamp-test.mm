@@ -5,6 +5,7 @@
 #include "testing.h"
 
 #include "valtz/media/movie.h"
+#include "valtz/media/pdf.h"
 #include "valtz/media/stamp.h"
 
 #import <AVFoundation/AVFoundation.h>
@@ -539,4 +540,292 @@ TEST(media, a_file_handed_out_names_its_writer)
   std::ofstream(txt) << "words";
   CHECK(media::stamp_software(txt, sw).code() == Code::Unsupported);
   CHECK(bytes_of(txt) == "words");
+}
+
+namespace {
+
+// What made a picture as ImageIO reads it -- Preview's Inspector: the
+// TIFF tab's Image Description, the Exif tab's User Comment, the IPTC
+// tab's caption, the PNG tab's Description and Comment.
+struct Described {
+  std::string tiff, exif, iptc, png, png_comment;
+};
+
+Described
+described_of(const fs::path& p)
+{
+  Described r;
+  CGImageSourceRef s =
+      CGImageSourceCreateWithURL((__bridge CFURLRef)url_of(p), nullptr);
+  if (!s) {
+    return r;
+  }
+  NSDictionary* d = (__bridge_transfer NSDictionary*)
+      CGImageSourceCopyPropertiesAtIndex(s, 0, nullptr);
+  CFRelease(s);
+  auto str = [](id v) {
+    return [v isKindOfClass:[NSString class]]
+               ? std::string([(NSString*)v UTF8String]) : std::string();
+  };
+  r.tiff = str(d[(id)kCGImagePropertyTIFFDictionary]
+                [(id)kCGImagePropertyTIFFImageDescription]);
+  r.exif = str(d[(id)kCGImagePropertyExifDictionary]
+                [(id)kCGImagePropertyExifUserComment]);
+  r.iptc = str(d[(id)kCGImagePropertyIPTCDictionary]
+                [(id)kCGImagePropertyIPTCCaptionAbstract]);
+  r.png = str(d[(id)kCGImagePropertyPNGDictionary]
+               [(id)kCGImagePropertyPNGDescription]);
+  r.png_comment = str(d[(id)kCGImagePropertyPNGDictionary]
+                       [(id)kCGImagePropertyPNGComment]);
+  return r;
+}
+
+}  // namespace
+
+// An export's Prompt and Seed (media/stamp.h, DESIGN §7 Export): the one
+// generation's words in each format's description, its seed in its
+// comment -- where Preview's Inspector (ImageIO) and QuickTime's readers
+// find them -- the pixels as they were, a second stamp replacing them, one
+// without them keeping them.
+TEST(media, a_file_handed_out_says_what_made_it)
+{
+  const auto dir = test::temp_dir("stamp-made");
+  const std::string sw(kSw);
+  media::MadeFrom made;
+  made.prompt = "A red fox trotting through snow at dawn, 狐狸, <Picture 1>";
+  made.seed = 1234567;
+  const std::string seed = "Seed: 1234567";
+  CHECK(made.comment() == seed);
+  CHECK(media::MadeFrom{}.empty());
+  const media::MadeFrom zero{.prompt = "", .seed = 0};
+  CHECK(zero.comment() == "Seed: 0");
+
+  // A TIFF block of either order, read back: ImageDescription in IFD 0, a
+  // UserComment in an Exif IFD made for it; one that has an Exif IFD
+  // keeps its other entries.
+  for (const auto& empty : {std::vector<std::uint8_t>{'M', 'M', 0, 42, 0, 0,
+                                                      0, 8, 0, 0, 0, 0, 0,
+                                                      0},
+                            std::vector<std::uint8_t>{'I', 'I', 42, 0, 8, 0,
+                                                      0, 0, 0, 0, 0, 0, 0,
+                                                      0}}) {
+    auto t = media::tiff_with_software(empty, sw, made);
+    REQUIRE(t);
+    CHECK(media::tiff_software(*t) == sw);
+    const media::MadeFrom back = media::tiff_made_from(*t);
+    CHECK(back.prompt == made.prompt);
+    CHECK(back.seed == made.seed);
+    // Again with others, and with none: replaced, then kept.
+    media::MadeFrom other{.prompt = "a boat", .seed = 7};
+    auto again = media::tiff_with_software(*t, "short", other);
+    REQUIRE(again);
+    CHECK(media::tiff_made_from(*again).prompt == "a boat");
+    CHECK(media::tiff_made_from(*again).seed == 7);
+    auto kept = media::tiff_with_software(*again, sw);
+    REQUIRE(kept);
+    CHECK(media::tiff_software(*kept) == sw);
+    CHECK(media::tiff_made_from(*kept).prompt == "a boat");
+    CHECK(media::tiff_made_from(*kept).seed == 7);
+  }
+
+  // PICTURES: a PNG as vpipe writes a generated one, and one ImageIO
+  // wrote with XMP; a JPEG with no EXIF (vpipe's), a camera's with its
+  // own UserComment; a 16-bit TIFF.
+  const NSDictionary* generated = @{
+    (id)kCGImagePropertyTIFFDictionary : @{
+      (id)kCGImagePropertyTIFFSoftware :
+          @"Valtz 0.1.0 (Vpipe 0.1 d93*0 with Krea 2)",
+    },
+  };
+  const NSDictionary* camera = @{
+    (id)kCGImagePropertyTIFFDictionary : @{
+      (id)kCGImagePropertyTIFFMake : @"Canon",
+      (id)kCGImagePropertyTIFFSoftware : @"Firmware 1.3",
+    },
+    (id)kCGImagePropertyExifDictionary : @{
+      (id)kCGImagePropertyExifUserComment : @"kept",
+      (id)kCGImagePropertyExifFNumber : @2.8,
+    },
+  };
+  struct Pic {
+    const char* name;
+    CFStringRef uti;
+    bool deep;
+    const NSDictionary* props;
+  };
+  const Pic pics[] = {
+      {"made.png", CFSTR("public.png"), true, generated},
+      {"plain.png", CFSTR("public.png"), false, nil},
+      {"plain.jpg", CFSTR("public.jpeg"), false, nil},
+      {"camera.jpg", CFSTR("public.jpeg"), false, camera},
+      {"deep.tif", CFSTR("public.tiff"), true, camera},
+  };
+  for (const auto& p : pics) {
+    const fs::path f = dir / p.name;
+    REQUIRE(write_picture(f, p.uti, p.deep, (NSDictionary*)p.props));
+    if (std::string_view(p.name) == "plain.jpg") {
+      REQUIRE(strip_jpeg_exif(f));
+    }
+    NSData* before = pixels(f);
+    REQUIRE(before != nil);
+    REQUIRE_OK(media::stamp_software(f, sw, false, made));
+    CHECK([pixels(f) isEqualToData:before]);
+    CHECK(software_of(f).tiff == sw);
+    const bool png = fs::path(p.name).extension() == ".png";
+    Described d = described_of(f);
+    if (png) {
+      // The PNG tab: Description and Comment.
+      CHECK(d.png == made.prompt);
+      CHECK(d.png_comment == seed);
+    } else {
+      // The TIFF tab's Image Description, the Exif tab's User Comment --
+      // a camera's own replaced -- the IPTC tab's caption (XMP's).
+      CHECK(d.tiff == made.prompt);
+      CHECK(d.exif == seed);
+      CHECK(d.iptc == made.prompt);
+    }
+    // Stamped again with another generation's: replaced, said once.
+    const media::MadeFrom other{.prompt = "a small boat", .seed = 42};
+    REQUIRE_OK(media::stamp_software(f, sw, false, other));
+    d = described_of(f);
+    CHECK((png ? d.png : d.tiff) == "a small boat");
+    CHECK((png ? d.png_comment : d.exif) == "Seed: 42");
+    if (png) {
+      const std::string b = bytes_of(f);
+      CHECK(count(b, std::string("Description\0", 12)) == 1);
+      CHECK(count(b, std::string("Comment\0", 8)) == 1);
+    } else {
+      CHECK(d.iptc == "a small boat");
+    }
+    // Stamped with no words: they stay.
+    REQUIRE_OK(media::stamp_software(f, "Valtz 0.2.0 build 200"));
+    d = described_of(f);
+    CHECK((png ? d.png : d.tiff) == "a small boat");
+    CHECK((png ? d.png_comment : d.exif) == "Seed: 42");
+    CHECK([pixels(f) isEqualToData:before]);
+  }
+  // The camera's other fields stay.
+  {
+    CGImageSourceRef s = CGImageSourceCreateWithURL(
+        (__bridge CFURLRef)url_of(dir / "camera.jpg"), nullptr);
+    NSDictionary* d = (__bridge_transfer NSDictionary*)
+        CGImageSourceCopyPropertiesAtIndex(s, 0, nullptr);
+    CHECK([d[(id)kCGImagePropertyTIFFDictionary]
+              [(id)kCGImagePropertyTIFFMake] isEqual:@"Canon"]);
+    CHECK([d[(id)kCGImagePropertyExifDictionary]
+              [(id)kCGImagePropertyExifFNumber] doubleValue] == 2.8);
+    CFRelease(s);
+  }
+  // OpenEXR: "comments" and an int "seed" in its header, the pixels as
+  // they were.
+  {
+    const fs::path f = dir / "linear.exr";
+    REQUIRE(write_picture(f, (__bridge CFStringRef)@"com.ilm.openexr-image",
+                          true, nil));
+    NSData* before = pixels(f);
+    REQUIRE_OK(media::stamp_software(f, sw, false, made));
+    CHECK([pixels(f) isEqualToData:before]);
+    const std::string b = bytes_of(f);
+    const std::string comments = std::string("comments\0string\0", 16);
+    const auto at = b.find(comments);
+    REQUIRE(at != std::string::npos);
+    CHECK(b.compare(at + comments.size() + 4, made.prompt.size(),
+                    made.prompt) == 0);
+    const std::string seed_attr("seed\0int\0\x04\0\0\0", 13);
+    const auto s = b.find(seed_attr);
+    REQUIRE(s != std::string::npos);
+    std::int32_t v = 0;
+    std::memcpy(&v, b.data() + s + seed_attr.size(), 4);
+    CHECK(v == 1234567);
+    REQUIRE_OK(media::stamp_software(f, sw, false, made));
+    CHECK(count(bytes_of(f), comments) == 1);
+    CHECK([pixels(f) isEqualToData:before]);
+  }
+
+  // MOVIES: the description and comment QuickTime keeps -- both kinds in
+  // a .mov -- iTunes' in an .mp4; every frame passed through. A clip
+  // joined with its sound says them too.
+  const fs::path tone = dir / "tone.wav";
+  write_tone(tone);
+  struct Mov {
+    const char* name;
+    AVFileType type;
+    std::vector<AVMetadataIdentifier> desc, comment;
+  };
+  const Mov movs[] = {
+      // (QuickTime's user data holds Mac Roman: words past ASCII are its
+      // metadata's alone.)
+      {"clip.mov", AVFileTypeQuickTimeMovie,
+       {AVMetadataIdentifierQuickTimeMetadataDescription},
+       {AVMetadataIdentifierQuickTimeMetadataComment,
+        AVMetadataIdentifierQuickTimeUserDataComment}},
+      // iTunes' ©des, and the "desc" ffprobe reads as the description.
+      {"clip.mp4", AVFileTypeMPEG4,
+       {AVMetadataIdentifieriTunesMetadataDescription,
+        [AVMetadataItem identifierForKey:@"desc"
+                                keySpace:AVMetadataKeySpaceiTunes]},
+       {AVMetadataIdentifieriTunesMetadataUserComment}},
+  };
+  for (const auto& m : movs) {
+    const fs::path f = dir / m.name;
+    REQUIRE(write_movie(f, m.type));
+    REQUIRE_OK(media::stamp_software(f, sw, false, made));
+    CHECK(frames_of(f) == 6);
+    for (auto ident : m.desc) {
+      CHECK(movie_software(f, ident) == made.prompt);
+    }
+    for (auto ident : m.comment) {
+      CHECK(movie_software(f, ident) == seed);
+    }
+    // Again, another's: replaced; with none: kept.
+    const media::MadeFrom boat{.prompt = "a boat", .seed = 9};
+    REQUIRE_OK(media::stamp_software(f, sw, false, boat));
+    CHECK(movie_software(f, m.desc[0]) == "a boat");
+    if (m.type == AVFileTypeQuickTimeMovie) {
+      CHECK(movie_software(f, AVMetadataIdentifierQuickTimeUserDataDescription)
+            == "a boat");
+    }
+    REQUIRE_OK(media::stamp_software(f, "Valtz 0.2.0 build 200"));
+    CHECK(movie_software(f, m.desc[0]) == "a boat");
+    CHECK(movie_software(f, m.comment[0]) == "Seed: 9");
+    CHECK(frames_of(f) == 6);
+
+    const fs::path joined = dir / (std::string("joined-") + m.name);
+    REQUIRE_OK(media::add_soundtrack(f, tone, joined, 0, 0,
+                                     media::SoundCodec::Aac, sw, made));
+    CHECK(movie_software(joined, m.desc[0]) == made.prompt);
+    CHECK(movie_software(joined, m.comment[0]) == seed);
+  }
+
+  // A PDF: its Subject and Keywords, as Preview's Inspector shows them.
+  {
+    const fs::path png = dir / "page.png";
+    REQUIRE(write_picture(png, CFSTR("public.png"), false, nil));
+    media::PdfDocument doc;
+    media::PdfLayer page{.kind = media::PdfLayer::Kind::Stack};
+    page.layers.push_back({.kind = media::PdfLayer::Kind::Picture,
+                           .file = png});
+    doc.pages.push_back(std::move(page));
+    const fs::path f = dir / "page.pdf";
+    REQUIRE_OK(media::write_pdf(doc, f, {}, sw, made));
+    CGPDFDocumentRef pdf =
+        CGPDFDocumentCreateWithURL((__bridge CFURLRef)url_of(f));
+    REQUIRE(pdf);
+    CGPDFDictionaryRef info = CGPDFDocumentGetInfo(pdf);
+    auto text = [&](const char* key) {
+      CGPDFStringRef v = nullptr;
+      std::string out;
+      if (CGPDFDictionaryGetString(info, key, &v)) {
+        if (CFStringRef t = CGPDFStringCopyTextString(v)) {
+          out = [(__bridge NSString*)t UTF8String];
+          CFRelease(t);
+        }
+      }
+      return out;
+    };
+    CHECK(text("Subject") == made.prompt);
+    CHECK(text("Keywords") == seed);
+    CHECK(text("Creator") == sw);
+    CGPDFDocumentRelease(pdf);
+  }
 }

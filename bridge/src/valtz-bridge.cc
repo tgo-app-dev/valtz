@@ -658,6 +658,25 @@ Core::set_reproducibility(const std::string& request_json)
 }
 
 std::string
+Core::asset_naming_json() const
+{
+  return guarded([&] { return ok(_impl->ctl->asset_naming()); });
+}
+
+std::string
+Core::set_asset_naming(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->set_asset_naming(*j);
+    return st.ok() ? ok(_impl->ctl->asset_naming()) : err(st.error());
+  });
+}
+
+std::string
 Core::set_wired_limit(std::uint64_t bytes)
 {
   return guarded([&] {
@@ -2667,9 +2686,38 @@ Core::stamp_file(const std::string& request_json)
     auto pid = parse_id<ProjectId>(jget<std::string>(*j, "project", ""));
     auto aid = parse_id<AssetId>(jget<std::string>(*j, "asset", ""));
     auto st = pid.ok() && aid.ok()
-                  ? _impl->ctl->stamp_file(path, *pid, *aid)
+                  ? _impl->ctl->stamp_file(
+                        path, *pid, *aid, {},
+                        jget(*j, "prompt_and_seed", false))
                   : _impl->ctl->stamp_file(path);
     return st.ok() ? ok() : err(st.error());
+  });
+}
+
+std::string
+Core::made_from(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto pid = parse_id<ProjectId>(jget<std::string>(*j, "project", ""));
+    auto aid = parse_id<AssetId>(jget<std::string>(*j, "asset", ""));
+    if (!pid.ok()) {
+      return err(pid.error());
+    }
+    if (!aid.ok()) {
+      return err(aid.error());
+    }
+    Json out = Json::object();
+    if (auto m = _impl->ctl->made_from(*pid, *aid)) {
+      out["prompt"] = m->prompt;
+      if (m->seed) {
+        out["seed"] = *m->seed;
+      }
+    }
+    return ok(out);
   });
 }
 
@@ -2876,6 +2924,7 @@ Core::export_asset(const std::string& request_json)
     req.quality = jget(*j, "quality", 0);
     req.video = engine::video_encoding_from_json(
         jget(*j, "video", Json::object()));
+    req.prompt_and_seed = jget(*j, "prompt_and_seed", false);
     auto r = _impl->ctl->export_asset(std::move(req));
     return r.ok() ? ok({{"job", r->str()}}) : err(r.error());
   });

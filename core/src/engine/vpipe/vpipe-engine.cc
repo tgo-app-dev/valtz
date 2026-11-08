@@ -117,6 +117,12 @@ struct Lane {
   // The first error vpipe logged while its graph ran (under _err_mu):
   // the log listener writes it, on whichever thread reports.
   std::string         run_error;
+  // The first line in which a stage GAVE UP -- an error, or a warning
+  // ending "; skipping": vpipe's stages drop the beat they refuse with
+  // a warning, and nothing after them runs. A job that wrote no file
+  // names it (a Ref2VA reference too short to read ended a clip's graph
+  // in 4.5 s as "see the log", 2026-11-07).
+  std::string         run_refusal;
 };
 
 class VpipeEngine final : public Engine {
@@ -203,15 +209,19 @@ public:
       return;
     }
     // vpipe's log, to the host as well as to stdout (the Log view); its
-    // first error in a graph kept, for the job it fails (Lane::run_error).
+    // first error in a graph kept, for the job it fails (Lane::run_error),
+    // and the first line a stage gave up in (Lane::run_refusal).
     _session->set_log_listener(
         [this, on_log = cfg.on_log](int level, std::string_view text) {
-          if (level == 0) {
+          const std::string_view line = text.substr(0, text.find('\n'));
+          if (level == 0 || (level == 1 && vp::is_refusal(line))) {
             std::lock_guard lk(_err_mu);
             Lane& l = error_lane_(text);
-            if (l.run_error.empty()) {
-              l.run_error = utf8_prefix(text.substr(0, text.find('\n')),
-                                        400);
+            if (level == 0 && l.run_error.empty()) {
+              l.run_error = utf8_prefix(line, 400);
+            }
+            if (l.run_refusal.empty()) {
+              l.run_refusal = utf8_prefix(line, 400);
             }
           }
           if (on_log) {
@@ -592,6 +602,19 @@ private:
                                   : _work;
   }
 
+  // Why the job on `lane` wrote no `what`: the line a stage gave up in
+  // (Lane::run_refusal), else the log to read.
+  std::string
+  no_file_(Lane& lane, std::string_view what)
+  {
+    std::string why;
+    {
+      std::lock_guard lk(_err_mu);
+      why = lane.run_refusal;
+    }
+    return vp::no_file_reason(what, why);
+  }
+
   // Whose an error in vpipe's log is: a fetch's names its stage, an
   // export's its stage's id; any other is the work lane's -- or, while
   // the work lane is idle, the one other lane running's (whatever its
@@ -862,6 +885,20 @@ private:
                                                ""));
   }
 
+  // ...and, asked, what the one generation it shows was made from (its
+  // "made_from", Controller::made_from): written beside it.
+  static media::MadeFrom
+  export_made_(const JobSpec& spec)
+  {
+    const Json j = jget(spec.params, "made_from", Json::object());
+    media::MadeFrom m;
+    m.prompt = jget<std::string>(j, "prompt", "");
+    if (auto s = j.find("seed"); s != j.end() && s->is_number_integer()) {
+      m.seed = s->get<std::int64_t>();
+    }
+    return m;
+  }
+
   // A still written as a PDF (export-media's "pdf"): no graph -- Core
   // Graphics' PDF context draws its pages (media::write_pdf), vectors
   // kept. Files in (the document's), a file out, as any export; a page
@@ -895,7 +932,7 @@ private:
       return !lane.cancel.load();
     };
     if (auto st = media::write_pdf(doc, out, page_done,
-                                   export_stamp_(spec));
+                                   export_stamp_(spec), export_made_(spec));
         !st.ok()) {
       if (st.code() == Code::Cancelled) {
         JobEvent ev;
@@ -1456,6 +1493,7 @@ private:
     {
       std::lock_guard lk(_err_mu);
       lane.run_error.clear();
+      lane.run_refusal.clear();
     }
     // The graph goes in as a document, converted node by node: its number
     // kinds intact, no JSON text written or parsed.
@@ -1756,11 +1794,15 @@ private:
     const std::string stamp = spec.op == kOpExportMedia
                                   ? export_stamp_(spec)
                                   : std::string();
+    const media::MadeFrom made = spec.op == kOpExportMedia
+                                     ? export_made_(spec)
+                                     : media::MadeFrom();
     if (!g.video_part.empty()) {
       if (reports) {
         report(/*force=*/true);  // the reports are closed: finishing
       }
-      if (auto st = join_clip_(g, stamp); !st.ok()) {
+      if (auto st = join_clip_(g, no_file_(lane, "the clip"), stamp, made);
+          !st.ok()) {
         fail_(q, st.code(), st.error().message);
         return;
       }
@@ -1775,7 +1817,8 @@ private:
         if (!fs::is_regular_file(f, ec)) {
           continue;  // said below
         }
-        if (auto st = media::stamp_software(f, stamp, false); !st.ok()) {
+        if (auto st = media::stamp_software(f, stamp, false, made);
+            !st.ok()) {
           VALTZ_LOG_WARN("engine", "{} not stamped: {}",
                          f.filename().string(), st.error().message);
         }
@@ -1785,9 +1828,8 @@ private:
       // A still's pages: a file each, in order, each said by its number.
       for (std::size_t i = 0; i < g.pages.size(); ++i) {
         if (!fs::is_regular_file(g.pages[i], ec)) {
-          fail_(q, Code::Engine, std::format(
-              "vpipe finished without writing page {} (see the log)",
-              i + 1));
+          fail_(q, Code::Engine,
+                no_file_(lane, std::format("page {}", i + 1)));
           return;
         }
       }
@@ -1808,8 +1850,7 @@ private:
         spec.op == kOpExportMedia || spec.op == kOpUpscaleVideo ||
         spec.op == kOpUpscaleImage) {
       if (!fs::is_regular_file(g.output, ec)) {
-        fail_(q, Code::Engine,
-              "vpipe finished without writing its file (see the log)");
+        fail_(q, Code::Engine, no_file_(lane, "its file"));
         return;
       }
       JobEvent out;
@@ -2308,26 +2349,27 @@ private:
   // picture alone. The scratch halves go either way; an export's sound
   // is its source, which stays.
   static Status
-  join_clip_(const vp::BuiltGraph& g, std::string_view software = {})
+  join_clip_(const vp::BuiltGraph& g, std::string_view no_file,
+             std::string_view software = {},
+             const media::MadeFrom& made = {})
   {
     std::error_code ec;
     if (!fs::is_regular_file(g.video_part, ec)) {
-      return make_error(Code::Engine,
-                        "vpipe finished without writing the clip (see the "
-                        "log)");
+      return make_error(Code::Engine, std::string(no_file));
     }
     Status st = ok_status();
     if (fs::is_regular_file(g.audio_part, ec)) {
       st = media::add_soundtrack(g.video_part, g.audio_part, g.output,
                                  g.audio_start, g.audio_duration, g.sound,
-                                 software);
+                                 software, made);
     } else {
       VALTZ_LOG_WARN("engine", "the clip has no soundtrack");
       fs::rename(g.video_part, g.output, ec);
       if (ec) {
         st = make_error(Code::Io, ec.message());
       } else if (!software.empty()) {
-        if (auto s = media::stamp_software(g.output, software, false);
+        if (auto s = media::stamp_software(g.output, software, false,
+                                           made);
             !s.ok()) {
           VALTZ_LOG_WARN("engine", "{} not stamped: {}",
                          g.output.filename().string(), s.error().message);

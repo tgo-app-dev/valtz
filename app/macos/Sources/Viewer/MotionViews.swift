@@ -97,6 +97,11 @@ struct VideoPlayerView: NSViewRepresentable {
     var muted = false
     /// The player last attached (the snapshot summary's `videoMuted=`).
     @MainActor static weak var shownPlayer: AVPlayer?
+    /// VALTZ_SNAPSHOT_REDRAW_PLAYING=1: a stack's plan swapped while it
+    /// plays sets its composition again, as before 2026-11-07 -- the A of
+    /// an A/B of the picture that stood still under its sound.
+    static let redrawPlaying = ProcessInfo.processInfo
+        .environment["VALTZ_SNAPSHOT_REDRAW_PLAYING"] == "1"
     var rate = FrameRate.fallback
     var command: VideoCommand? = nil
     /// Drawn on every frame; a change draws the frame on screen again.
@@ -548,7 +553,16 @@ struct VideoPlayerView: NSViewRepresentable {
                     c.stackPlan = stack.plan
                     c.stackBox.set(core: core, plan: stack.plan,
                                    rate: stack.rate)
-                    c.redrawStack()
+                    // Paused, the frame shown is drawn again with it.
+                    // Playing, the frames drawn from now on take it: a
+                    // composition set on a playing item restarts its
+                    // video -- every step of an agent at work made a
+                    // plan, and the picture stood still while the sound
+                    // played on.
+                    if (c.player?.rate ?? 0) == 0
+                        || Self.redrawPlaying {
+                        c.redrawStack()
+                    }
                 }
                 return
             }

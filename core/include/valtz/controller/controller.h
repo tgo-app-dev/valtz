@@ -59,6 +59,7 @@
 #include "valtz/media/model-input.h"
 #include "valtz/media/pdf.h"
 #include "valtz/media/sound.h"
+#include "valtz/media/stamp.h"
 #include "valtz/models/capabilities.h"
 #include "valtz/models/model-check.h"
 #include "valtz/models/tuning.h"
@@ -373,6 +374,10 @@ struct ExportRequest {
   // A movie's encoding: H.264's / HEVC's rate, keyframes, B-frames,
   // profile, level, entropy; ProRes's flavour (engine::VideoEncoding).
   engine::VideoEncoding video;
+  // The save panel's Prompt and Seed: the one generation the asset shows
+  // (Controller::made_from) written in the file's description and comment
+  // (media/stamp.h) -- nothing written where it shows none, or several.
+  bool                  prompt_and_seed = false;
 };
 
 // Page `page` (from 0) of `pages`, beside `destination` with its number:
@@ -486,9 +491,11 @@ public:
   Status stamp_file(const std::filesystem::path& file) const;
   // ...as a picture of `asset` (`only` that layer of it, a layer dragged
   // out alone): named with the model made_with finds, never what the file
-  // itself carries over.
+  // itself carries over -- with `prompt_and_seed`, what made_from finds
+  // written beside it (an export's Prompt and Seed on a file as it is).
   Status stamp_file(const std::filesystem::path& file, ProjectId,
-                    AssetId asset, const std::string& only = {}) const;
+                    AssetId asset, const std::string& only = {},
+                    bool prompt_and_seed = false) const;
   // The ONE model `asset`'s pixels were made with, as its writer's name
   // names it (media::stamped_model: "Krea 2", "PrunaAI/P-H3-Image"): a
   // flat or generated asset's, from its file's recorded Software; a
@@ -498,6 +505,14 @@ public:
   // were made by several, or by a model and something else: an export
   // then names Valtz and vpipe alone (DESIGN §7 Export).
   std::string made_with(ProjectId, AssetId asset) const;
+  // The words and the seed of the ONE generation `asset`'s picture shows
+  // (a picture, an edit, a clip, from its recipe: the prompt as the model
+  // read it): a generated asset's own; a composition's when the pictures
+  // its visible layers show -- through edited copies, parts, nested
+  // compositions, an upscale of it, a flat copy -- are that generation
+  // alone. Markup and sound are no picture: a title or a song over it
+  // keeps it one. nullopt for none (a photo, an empty still) or several.
+  std::optional<media::MadeFrom> made_from(ProjectId, AssetId asset) const;
 
   // ---- where things are kept (base/paths.h) ---------------------------
 
@@ -1533,6 +1548,22 @@ public:
   Json micro_settings() const;
   // Any of {"model", "names", "refine", "enhance"}, kept.
   Status set_micro(const Json& changes);
+
+  // Settings › General › Generations' NAMES OF GENERATED ASSETS: how a
+  // picture, clip, sound or RefMod made from a prompt is named, numbered
+  // always (Project::define_derived's `numbered`) -- "type", its kind's
+  // word in the UI's language ("Image 3", "Video 1", "Audio 2", "RefMod
+  // 1"), or "summary" (the default): its prompt summed up in a few words
+  // ("Sleeping Fox in Snow 2"), the prompt's own words until the summary
+  // comes -- by the MICRO AGENT where it is here and its Names task is on
+  // (Agentic Helper › Micro Agent), else by the AGENTIC HELPER -- none
+  // (the words stay) where neither runs here. Kept in
+  // <support>/naming.json, read by the app and valtzctl (`names`).
+  // {"generated", "summarizer": "micro" | "helper" | "", "model": that
+  // model's name}.
+  Json asset_naming() const;
+  // {"generated": "type" | "summary"}, kept.
+  Status set_asset_naming(const Json& changes);
   // `text` asked of the micro agent as its tasks are, the pictures at
   // `images` shown ahead of it, its reply waited for: valtzctl `micro
   // ask`, to try a task's words.
@@ -2504,16 +2535,30 @@ private:
   // tasks queued, unannounced; `reply` handed its reply -- or nothing,
   // failed or stopped -- before the job ends (and what waited for it
   // goes on).
+  // `on_helper`: the same short task asked of the Agentic Helper
+  // (chat_spec_: its own decoding, kept loaded), not the micro agent --
+  // a summary for a generated asset's name where the micro agent does
+  // not name (asset_naming).
   using MicroReply = std::function<void(std::optional<std::string>)>;
   Result<JobId> submit_micro_(JobId, std::string title, std::string text,
                               std::vector<engine::JobInput> images,
-                              int max_new_tokens, MicroReply reply);
-  // A request's result named after its PROMPT (DESIGN §9c): a prompt the
-  // micro agent named, by that name now; one new and named by its words,
-  // by the name the micro agent gives it -- asked in the background,
-  // after the request's build, the prompt and what was made from it
-  // since renamed when it lands (in the request's command), each unless
-  // renamed meanwhile. A prompt the person named: as before.
+                              int max_new_tokens, MicroReply reply,
+                              bool on_helper = false);
+  // Settings › General's names of generated assets (asset_naming): by
+  // kind ("type") or not; and who sums a prompt up -- "micro", "helper"
+  // or "" (none runs here).
+  bool names_by_type_() const;
+  std::string summarizer_() const;
+  // A result's first name: its kind's word ("type"), else `words`.
+  std::string result_name_(project::AssetKind, std::string words) const;
+  // A request's result named after its PROMPT (DESIGN §9c): a prompt
+  // summed up before, by that summary now; one new and named by its
+  // words, by the summary the micro agent -- or the Agentic Helper --
+  // gives it (asset_naming) -- asked in the background, after the
+  // request's build, the prompt and what was made from it since renamed
+  // when it lands (in the request's command; the results numbered), each
+  // unless renamed meanwhile. A prompt the person named, or names by
+  // type: as they are.
   void name_from_prompt_(ProjectId, project::Project&, AssetId made);
   // `stats`: an Output's cost and speed (agent::turn_stats), carried on
   // assist.enhanced as "stats" for the person debugging the helper.

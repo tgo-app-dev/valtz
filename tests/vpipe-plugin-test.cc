@@ -630,6 +630,29 @@ TEST(engine_progress, a_download_is_counted_whole)
   CHECK(f.label == "model-00001-of-00002.safetensors" && f.done == 3);
 }
 
+// A stage that drops its beat says so in a WARNING ending "; skipping",
+// and the graph ends with no file: the job's failure is that line, not
+// "see the log" (a Ref2VA reference too short to read, 2026-11-07).
+TEST(engine_progress, a_job_that_wrote_nothing_names_its_stages_refusal)
+{
+  const std::string_view line =
+      "VideoRefEncoderStage('video-ref-encoder'): reference 1: a reference "
+      "video is read at 2.000000 fps and its sampled frames are merged in "
+      "groups of 2, so it must run at least 13 frames, got 9; skipping";
+  CHECK(vp::is_refusal(line));
+  CHECK(vp::is_refusal("LoadTensorStage('x'): no file; skipping.\n"));
+  CHECK(!vp::is_refusal("VideoRefEncoderStage('e'): whole_references "
+                        "names reference 3 but the request has 2; ignored"));
+  CHECK(!vp::is_refusal("model ready (48 layers)"));
+  const std::string why = vp::no_file_reason("the clip", line);
+  CHECK(why.starts_with("vpipe finished without writing the clip: "
+                        "VideoRefEncoderStage('video-ref-encoder'): "
+                        "reference 1: "));
+  CHECK(why.ends_with("got 9"));
+  CHECK(vp::no_file_reason("its file", "") ==
+        "vpipe finished without writing its file (see the log)");
+}
+
 // A clip's writer counts its frames: an export's (its report named
 // kExportReport) its phase, counted; in a generation ("save video"), the
 // frames written after the decode -- finishing.

@@ -76,6 +76,12 @@ public:
   // bool, "lock_ane_split": bool}) -> the same document, or an error.
   std::string reproducibility_json() const;
   std::string set_reproducibility(const std::string& request_json);
+  // Settings › General › Generations' names of generated assets
+  // (Controller::asset_naming): {"ok": true, "generated": "type" |
+  // "summary", "summarizer": "micro" | "helper" | "", "model"}; and it
+  // set ({"generated": ...}) -> the same document, or an error.
+  std::string asset_naming_json() const;
+  std::string set_asset_naming(const std::string& request_json);
   // Settings > Capabilities (Controller::capability_tree): the model
   // families, their features and members, where each member is.
   std::string capability_tree_json() const;
@@ -483,8 +489,14 @@ public:
   // picture shared or dragged out -- stamped with Valtz's and vpipe's
   // versions (media/stamp.h): as a picture of that asset, with the one
   // model it was made with or none (Controller::made_with); else with
-  // the model the file names.
+  // the model the file names. "prompt_and_seed": true -- the asset's
+  // one generation's prompt and seed written beside it (made_from).
   std::string stamp_file(const std::string& request_json);
+  // {"project", "asset"} -> {"ok", "prompt"?, "seed"?}: the words and seed
+  // of the ONE generation the asset shows (Controller::made_from) -- what
+  // an export's Prompt and Seed writes; neither when it shows none, or
+  // several.
+  std::string made_from(const std::string& request_json);
   // {"prompt", "target"?: "image"|"video", "style"?, "base"?, "last"?:
   //  a picture a clip ends on, "base" the one it opens on (FL2VA), ...}
   std::string enhance_prompt(const std::string& request_json);

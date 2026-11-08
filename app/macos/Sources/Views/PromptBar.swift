@@ -141,7 +141,7 @@ struct PromptBar: View {
     /// beside it while the stage watches a task.
     @ViewBuilder
     private var startButton: some View {
-        if model.isGenerating {
+        if model.isGenerating && !model.watchingAgentShot {
             Button(action: model.stop) {
                 HStack(spacing: 6) {
                     PhaseBar(fraction: model.generationPhase?.fraction)

@@ -492,6 +492,21 @@ private:
   Result<Tuned> tuned_(const models::ModelEntry& m, const Json& args,
                        bool edit, bool continuation, bool opens_on_picture)
       const;
+  // How the clip a shot comes after was made -- the timeline's last, the
+  // session's shot before it on that timeline (made, being made or
+  // held), the clip it continues from: its Favor, where its request was
+  // recorded, and its METHOD's switches on (Pika H3 Flex, HyperFlow,
+  // TaoMate, VDN). A shot after it is made the same unless it says its
+  // own (t_generate_video): a style kept shot to shot. Nothing for an
+  // imported clip, or none.
+  struct MadeAs {
+    std::string clip;                     // its name
+    std::string favor;                    // Fast | Med | Fine; "": unknown
+    Json        options = Json::object(); // switch key: true
+  };
+  std::optional<MadeAs> made_before_(Session& s,
+                                     std::optional<AssetId> comp,
+                                     std::optional<AssetId> from);
   // The settled values said shortly: the favor, the steps, the adapters
   // and switches on.
   Json runs_with_(const Json& values, std::string_view preference,

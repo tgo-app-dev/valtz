@@ -80,6 +80,8 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "Timeline"), String(localized: "Assets"),
              String(localized: "Play"), String(localized: "Muted"),
              String(localized: "Playhead"),
+             String(localized: "Names"),
+             String(localized: "Name generated assets"),
              String(localized: "Prompt Box"),
              String(localized: "Prompt history"),
              String(localized: "Pointing Device"),

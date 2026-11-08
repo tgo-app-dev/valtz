@@ -524,6 +524,15 @@ value. Give them only for what the person asks.
    option, or with another one, unasked.
 5. An option the person asked for once holds for the rest of their
    request -- every shot of the scene, every picture of the deck.
+6. A SHOT ON A TIMELINE THAT HOLDS CLIPS -- continuing the person's
+   timeline, the next shot of a scene -- is made as the clip before it
+   was: its Favor and its method (Pika H3 Flex, HyperFlow, TaoMate,
+   VDN), which keep its look. Leave `favor` and `options` out and the
+   tool does it: its result's `made_as_before` says what it carried and
+   from which clip (`not_carried`: what could not run for this shot, and
+   why) -- say it in your answer. Give `favor` or `options` only when
+   the person asks for another way; to know how a clip was made first,
+   `get_recipe`.
 
 ## Prompts for pictures
 

@@ -660,7 +660,8 @@ struct ShareButton: View {
             : SaveOptions(choices: choices, originalExt: ext, kind: kind,
                           panel: panel, picture: model.savedPicture,
                           seconds: model.exportSeconds,
-                          frame: model.exportFrame)
+                          frame: model.exportFrame,
+                          madeFrom: model.exportMadeFrom)
         panel.accessoryView = options?.view
         options?.apply()
         let scripted = script != nil
@@ -671,7 +672,8 @@ struct ShareButton: View {
             model.rememberPanel(.export, chose: url)
             model.save(to: url, as: options?.choice ?? .original,
                        quality: options?.jpegQuality,
-                       video: options?.videoEncoding)
+                       video: options?.videoEncoding,
+                       promptAndSeed: options?.writesPromptAndSeed ?? false)
             options?.remember()
         }
         if let script, let options {
@@ -695,8 +697,10 @@ struct ShareButton: View {
 
 /// What the save panel's options say: the format, and its quality -- a
 /// PNG's or a TIFF's depth, a JPEG's quality, with about the file size
-/// it makes; a movie's encoding (VideoEncodingRows). The last ones
-/// chosen come back the next time (not in a scripted snapshot run).
+/// it makes; a movie's encoding (VideoEncodingRows); for a picture or a
+/// clip of one generation, its Prompt and Seed written in the file. The
+/// last ones chosen come back the next time (not in a scripted snapshot
+/// run).
 ///
 /// Its controls are AppKit's: a pop-up, a segmented control, a slider. A
 /// SwiftUI picker in a save panel's accessory view never opened its menu
@@ -737,12 +741,22 @@ final class SaveOptions: NSObject {
     private let options: NSStackView
     /// A movie's encoding, under its format.
     let video: VideoEncodingRows?
+    /// The one generation shown (AppModel.exportMadeFrom): what Prompt
+    /// and Seed writes; nil -- none, or several -- greys it.
+    let madeFrom: MadeFrom?
+    /// Prompt and Seed, as checked (kept while it cannot be written).
+    private(set) var promptAndSeed: Bool
+    private let promptCheck = NSButton(
+        checkboxWithTitle: String(localized: "Prompt and seed"),
+        target: nil, action: nil)
+    private let promptNote = NSTextField(labelWithString: "")
     private let grid: NSGridView
     private let box: NSView
 
     init(choices: [ExportChoice], originalExt: String, kind: String,
          panel: NSSavePanel, picture: CGImage?, seconds: Double? = nil,
-         frame: (width: Int, height: Int)? = nil) {
+         frame: (width: Int, height: Int)? = nil,
+         madeFrom: MadeFrom? = nil) {
         var seen: Set<ExportChoice> = []
         let formats = choices.map(\.format).filter {
             seen.insert($0).inserted
@@ -760,6 +774,8 @@ final class SaveOptions: NSObject {
         deep = d?.object(forKey: Self.deepKey) as? Bool ?? true
         let q = d?.double(forKey: Self.qualityKey) ?? 0
         quality = q >= 1 ? min(100, q) : 90
+        self.madeFrom = madeFrom
+        promptAndSeed = d?.bool(forKey: Self.promptKey) ?? false
 
         let small = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         let least = NSTextField(labelWithString: String(localized: "Least"))
@@ -792,6 +808,16 @@ final class SaveOptions: NSObject {
         video = kind == "video"
             ? VideoEncodingRows(seconds: seconds, frame: frame) : nil
         if let video { rows += video.rows }
+        if kind == "image" || kind == "video" {
+            promptNote.font = small
+            promptNote.textColor = .secondaryLabelColor
+            promptCheck.toolTip = String(localized: "The words and the seed it was generated with, written in the file's description and comment. Preview shows them in Tools › Show Inspector › More Info.")
+            let row = NSStackView(views: [promptCheck, promptNote])
+            row.spacing = 8
+            row.alignment = .firstBaseline
+            rows.append([NSTextField(labelWithString:
+                             String(localized: "Metadata:")), row])
+        }
         let grid = NSGridView(views: rows)
         grid.column(at: 0).xPlacement = .trailing
         grid.rowAlignment = .firstBaseline
@@ -834,6 +860,8 @@ final class SaveOptions: NSObject {
         slider.isContinuous = true
         slider.target = self
         slider.action = #selector(qualityChanged)
+        promptCheck.target = self
+        promptCheck.action = #selector(promptChanged)
         video?.onChange = { [weak self] in self?.fit() }
         box.frame.size = box.fittingSize
     }
@@ -851,6 +879,31 @@ final class SaveOptions: NSObject {
 
     /// What is written: the format at its depth.
     var choice: ExportChoice { format.deep(deep) }
+
+    /// Prompt and Seed can be written: one generation shown, and not a
+    /// clip's own file (saved as it is -- its whole file would be written
+    /// again).
+    var offersPromptAndSeed: Bool {
+        madeFrom != nil && !(kind == "video" && format == .original)
+    }
+
+    /// The request's "prompt_and_seed".
+    var writesPromptAndSeed: Bool { promptAndSeed && offersPromptAndSeed }
+
+    /// What the row says beside its box.
+    var promptNoteText: String {
+        if let madeFrom, offersPromptAndSeed {
+            return madeFrom.seed.map {
+                String(localized: "Seed \(String($0)), in the description and comment")
+            } ?? String(localized: "The prompt, in the description")
+        }
+        if madeFrom != nil {
+            return String(localized: "Not in a clip's own file: choose a format")
+        }
+        return kind == "video"
+            ? String(localized: "Only for a clip of one generation")
+            : String(localized: "Only for a picture of one generation")
+    }
     var jpegQuality: Int? {
         choice == .jpeg ? Int(quality.rounded()) : nil
     }
@@ -870,6 +923,15 @@ final class SaveOptions: NSObject {
     func setQuality(_ q: Double) {
         slider.doubleValue = q
         qualityChanged()
+    }
+
+    func setPromptAndSeed(_ on: Bool) {
+        promptCheck.state = on ? .on : .off
+        promptChanged()
+    }
+
+    @objc private func promptChanged() {
+        promptAndSeed = promptCheck.state == .on
     }
 
     @objc private func formatChanged() {
@@ -918,6 +980,9 @@ final class SaveOptions: NSObject {
             String(localized: "Every value the picture holds, highlights included")
         }
         qualityValue.stringValue = "\(Int(quality))"
+        promptCheck.state = promptAndSeed ? .on : .off
+        promptCheck.isEnabled = offersPromptAndSeed
+        promptNote.stringValue = promptNoteText
         video?.show(format)
         fit()
         estimateSoon()
@@ -977,6 +1042,7 @@ final class SaveOptions: NSObject {
         d.set(format.rawValue, forKey: Self.key(kind))
         d.set(deep, forKey: Self.deepKey)
         d.set(quality.rounded(), forKey: Self.qualityKey)
+        d.set(promptAndSeed, forKey: Self.promptKey)
         video?.remember()
     }
 
@@ -990,6 +1056,7 @@ final class SaveOptions: NSObject {
     }
     private static let deepKey = "save.deep"
     private static let qualityKey = "save.jpegQuality"
+    private static let promptKey = "save.promptAndSeed"
     private static var keeps: Bool {
         ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] == nil
     }

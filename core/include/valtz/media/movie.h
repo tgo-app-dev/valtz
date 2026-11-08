@@ -14,6 +14,7 @@
 #define VALTZ_MEDIA_MOVIE_H
 
 #include "valtz/base/result.h"
+#include "valtz/media/stamp.h"
 
 #include <filesystem>
 #include <span>
@@ -42,21 +43,25 @@ enum class SoundCodec { Aac, Pcm };
 // (seconds), only the sound from `start` for that long, moved to the
 // start -- a trimmed clip's: decoded and encoded again, so it is cut to
 // the sample. `software` (base/version.h's software_stamp()), when given,
-// names who wrote the file in its metadata (stamp.h). Blocking.
+// names who wrote the file in its metadata (stamp.h), `made` what made it
+// beside it. Blocking.
 Status add_soundtrack(const std::filesystem::path& video,
                       const std::filesystem::path& audio,
                       const std::filesystem::path& out, double start = 0,
                       double duration = 0,
                       SoundCodec sound = SoundCodec::Aac,
-                      std::string_view software = {});
+                      std::string_view software = {},
+                      const MadeFrom& made = {});
 
 // `in` written again as `out` (.mov, .mp4, .m4v, .m4a; replaced if
 // there), every video and audio track passed through as stored, its
 // metadata kept and `software` named in it -- QuickTime's software keys in
-// a .mov, iTunes' encoding tool in the rest (stamp.h). Blocking.
+// a .mov, iTunes' encoding tool in the rest -- and `made` with it: the
+// description and comment of each (stamp.h). Blocking.
 Status remux_with_software(const std::filesystem::path& in,
                            const std::filesystem::path& out,
-                           std::string_view software);
+                           std::string_view software,
+                           const MadeFrom& made = {});
 
 // A SOUND written out (a song saved, trimmed): `src`'s first audio track
 // as `format` -- "wav" (PCM, as deep as the sound: its own integer

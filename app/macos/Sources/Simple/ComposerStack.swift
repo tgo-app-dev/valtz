@@ -2028,7 +2028,8 @@ private struct StartButton: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            stop(shown: model.isGenerating)
+            // Not the agent's shot: it stops with the agent.
+            stop(shown: model.isGenerating && !model.watchingAgentShot)
             Button(action: model.startPressed) {
                 Text("Start")
                     .frame(minWidth: 70)

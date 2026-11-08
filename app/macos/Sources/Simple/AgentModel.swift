@@ -147,27 +147,64 @@ extension AppModel {
         withAnimation(Self.motion) { agent = next }
         // Following it: the composition it works on is the one the stage
         // shows. The person looking elsewhere is left there (agentFollows).
+        // While the stage plays its shot's preview, it goes there after.
         if agentFollows, let c = next.composition, !c.isEmpty,
            activeComposition?.id != c, viewedAsset == nil {
-            stageAgentComposition(c)
+            if watchingAgentShot {
+                agentShotReturns(to: c)
+            } else {
+                stageAgentComposition(c)
+            }
         }
         // What it changed: the list and what the stage shows are read
-        // again, as after an undo -- wherever the person is looking.
+        // again, as after an undo -- wherever the person is looking. Only
+        // when it wrote something: a step that looked (get_composition,
+        // a wait for its pictures) changed nothing to read again.
         if next.steps.count != was?.steps.count
             || next.steps.last?.state != was?.steps.last?.state {
-            syncAfterHistory()
+            let rev = projectId.flatMap { core.assetsRevision(project: $0) }
+            if rev == nil || rev != agentSeenRevision {
+                agentSeenRevision = rev
+                syncAfterHistory()
+            }
             // Following it: the page or the time its step worked on.
             if agentFollows, let step = next.steps.last {
                 showAgentStep(step)
             }
         }
+        followAgentShots()
+    }
+
+    /// The agent's SHOTS under way (generate_video's steps waiting for
+    /// their clip, its job given): each kept as a task the stage can
+    /// watch, its previews kept as they come -- and, while the stage
+    /// follows the agent and watches nothing of the person's, the one
+    /// running watched: its TAE preview on the stage (the Prompt Editor's
+    /// small one) as a clip Start made plays it, until it lands on the
+    /// agent's timeline. A shot still queued is not: the timeline stays.
+    func followAgentShots() {
+        guard let a = agent, a.project == projectId,
+              (a.skills ?? "full") == "full" else { return }
+        let shots = a.steps.compactMap { s -> String? in
+            guard s.tool == "generate_video", s.state == "waiting",
+                  let job = s.job, !job.isEmpty else { return nil }
+            return job
+        }
+        for job in shots { keepAgentShot(job) }
+        guard agentFollows, agentAtWork, viewedAsset == nil,
+              exportShow == nil, generationJob == nil,
+              let run = shots.first(where: { jobs[$0]?.state == "running" })
+        else { return }
+        watchAgentShot(run)
     }
 
     /// The stage on the page -- or, on a timeline, at the time -- the
     /// step worked on, if it named one and the stage shows its
     /// composition.
     private func showAgentStep(_ step: AgentStep) {
-        guard activeComposition?.id == agent?.composition else { return }
+        // Its shot's preview holds the stage: the step is shown after.
+        guard activeComposition?.id == agent?.composition,
+              !watchingAgentShot else { return }
         steerForAgent {
             if step.state == "done" || step.state == "waiting",
                let page = Self.agentStepPage(step),
@@ -213,6 +250,16 @@ extension AppModel {
             $0.state == "done" || $0.state == "waiting" }) {
             showAgentStep(step)
         }
+        // A shot of its running: its preview on the stage again.
+        followAgentShots()
+    }
+
+    /// Following, its button pressed (the agent's card): the stage stays
+    /// where it is -- off a shot's preview, on the agent's composition --
+    /// and the same button follows it again.
+    func unfollowAgent() {
+        withAnimation(Self.motion) { agentFollows = false }
+        leaveAgentShot()
     }
 
     /// Where on a timeline a step put something (its result's "start",

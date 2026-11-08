@@ -38,6 +38,7 @@
 #include "valtz/media/adjust.h"
 #include "valtz/media/crop.h"
 #include "valtz/media/format.h"
+#include "valtz/media/stamp.h"
 
 #include <filesystem>
 #include <functional>
@@ -84,10 +85,13 @@ std::vector<std::filesystem::path> files_of(const PdfDocument&);
 // `doc` written to `out`, a page at a time. `page_done` (pages from 1,
 // of all) after each stops it by answering false: nothing is left at
 // `out`, and Code::Cancelled. Its Creator is `software` (base/version.h's
-// software_stamp(), stamp.h), else Valtz's own line.
+// software_stamp(), stamp.h), else Valtz's own line; `made`, given, its
+// Subject (the prompt) and Keywords (the seed: "Seed: 12345") -- what
+// Preview's Inspector shows of a PDF.
 Status write_pdf(const PdfDocument& doc, const std::filesystem::path& out,
                  const std::function<bool(int, int)>& page_done = {},
-                 std::string_view software = {});
+                 std::string_view software = {},
+                 const MadeFrom& made = {});
 
 }
 
