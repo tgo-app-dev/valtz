@@ -63,8 +63,9 @@ extension AgentCard {
     /// The card's output, whole.
     @ViewBuilder
     private var output: some View {
-        let words = model.agentWriting.trimmingCharacters(
-            in: .whitespacesAndNewlines)
+        let words = Self.shownWords(
+            model.agentWriting.trimmingCharacters(in: .whitespacesAndNewlines),
+            programs: session.skills == "procedural")
         if !words.isEmpty {
             Text(agentMarkdown(words))
                 .font(.callout)
@@ -99,6 +100,23 @@ extension AgentCard {
         }
     }
 
+    /// The words as the card shows them: a program session's code -- its
+    /// tool call as the model writes it, a fenced block -- said in a line,
+    /// not printed (it filled the card with escaped JavaScript).
+    static func shownWords(_ words: String, programs: Bool) -> String {
+        guard programs else { return words }
+        let marks = ["<function=", "<tool_call>", "```", "{\"code\"",
+                     "{\"name\""]
+        guard let cut = marks.compactMap({ words.range(of: $0)?.lowerBound })
+                .min()
+        else { return words }
+        let before = words[..<cut]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = words[cut...].split(separator: "\n").count
+        let note = String(localized: "Writing a program · \(String(lines)) lines")
+        return before.isEmpty ? note : before + "\n\n" + note
+    }
+
     /// What changes the output: the newest is brought into view.
     private var scrollKey: String {
         "\(model.agentWriting.count)|\(session.steps.count)|"
@@ -117,7 +135,9 @@ struct AgentHeader: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Label(model.agentStateLabel, systemImage: "wand.and.stars")
+            Label(model.agentStateLabel,
+                  systemImage: AppModel.agentSkillsSymbol(
+                      session.skills ?? "full"))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -130,12 +150,15 @@ struct AgentHeader: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
-            Toggle("Ask First", isOn: Binding(
-                get: { session.review },
-                set: { model.agentControl($0 ? "review" : "auto") }))
-                .toggleStyle(.checkbox)
-                .help("Each step that changes the document waits for your word")
-                .disabled(session.ended)
+            // Procedural's programs are drawn as they come.
+            if session.skills != "procedural" {
+                Toggle("Ask First", isOn: Binding(
+                    get: { session.review },
+                    set: { model.agentControl($0 ? "review" : "auto") }))
+                    .toggleStyle(.checkbox)
+                    .help("Each step that changes the document waits for your word")
+                    .disabled(session.ended)
+            }
             if session.state == "paused" {
                 Button("Resume") { model.agentControl("resume") }
             } else if !session.ended && !session.listening {
@@ -268,6 +291,14 @@ struct AgentStepRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(limited ? (compact ? 2 : 6) : nil)
                         .textSelection(.enabled)
+                }
+                // A program's code: the chat shows it; here its size.
+                if let code = step.code, !code.isEmpty {
+                    let n = CodeBlockCache.lineCount(code)
+                    Text(n == 1 ? String(localized: "JavaScript, 1 line")
+                                : String(localized: "JavaScript, \(n) lines"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if let e = step.error, !e.isEmpty {
                     Text(e)

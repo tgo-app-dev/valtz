@@ -1274,6 +1274,9 @@ struct ComposerStack: View {
         if model.activeModality == .agent {
             return String(localized: "Agent · \(model.agentBackendLabel)")
         }
+        if model.activeModality == .procedural {
+            return String(localized: "Procedural · \(model.agentBackendLabel)")
+        }
         guard model.modalityRuns else {
             return model.activeModality == .audio
                 ? String(localized: "Audio · not available yet")
@@ -1295,8 +1298,10 @@ struct ComposerStack: View {
                 : String(localized: "References · \(name)")
         }
         // A clip continued through its tail (FL2VA's guide).
-        if model.guidedContinuation != nil {
-            return String(localized: "Continue through its end · \(model.imageModelName)")
+        if let g = model.guidedContinuation {
+            return g.cleaned
+                ? String(localized: "Continue through its end, cleaned · \(model.imageModelName)")
+                : String(localized: "Continue through its end · \(model.imageModelName)")
         }
         // Sound: a song, or speech -- in the row's voice.
         if model.activeModality == .audio {
@@ -1336,6 +1341,9 @@ struct ComposerStack: View {
                 + model.preference.label
         }
         // The agent: whether it asks first.
+        if model.activeModality == .procedural {
+            return model.proceduralSummary
+        }
         if model.activeModality == .agent {
             return " · " + ((model.agentSettings?.review ?? true)
                 ? String(localized: "Ask First")
@@ -1438,7 +1446,7 @@ struct AttachMenu: View {
         // adds: the hold lets it through; while held the box is the
         // agent's).
         .disabled(model.attachCapture != nil
-                  || (model.agentHolds && model.activeModality != .agent))
+                  || (model.agentHolds && !model.activeModality.isAgentic))
         .help("Attach: a file, a sound recorded, a photo or a video from the camera")
     }
 }
@@ -1559,7 +1567,7 @@ private struct ModalityTab: View {
         .help(help(m))
         // An agent at work holds the project: its box alone, the others'
         // making waits.
-        .disabled(model.agentHolds && m != .agent)
+        .disabled(model.agentHolds && !m.isAgentic)
     }
 
     private func help(_ m: Modality) -> LocalizedStringKey {
@@ -1567,7 +1575,8 @@ private struct ModalityTab: View {
         case .video: "Create a video (⌘1)"
         case .image: "Create an image (⌘2)"
         case .audio: "Create a song (⌘3)"
-        case .agent: "Ask the agent to work on the document (⌘4, ⇧⌘P)"
+        case .procedural: "Write a program that draws a picture or a clip (⌘4)"
+        case .agent: "Ask the agent to work on the document (⌘5, ⇧⌘P)"
         }
     }
 }
@@ -2270,6 +2279,12 @@ private struct DrawerSettings: View {
         if model.activeModality == .agent {
             VStack(alignment: .leading, spacing: 12) {
                 AgentSettingsRows(model: model)
+            }
+            .controlSize(.regular)
+        } else if model.activeModality == .procedural {
+            // Procedural's: the size and length it draws at (DESIGN §4t).
+            VStack(alignment: .leading, spacing: 12) {
+                ProceduralSettingsRows(model: model)
             }
             .controlSize(.regular)
         } else {

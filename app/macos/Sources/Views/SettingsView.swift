@@ -76,6 +76,7 @@ struct SettingsView: View {
                 case .page(.capabilities): CapabilitiesView(model: model)
                 case .page(.helper): HelperView(model: model)
                 case .page(.upscaling): UpscalingView(model: model)
+                case .page(.resampling): TemporalResamplingView(model: model)
                 case .page(.fleet): FleetView(model: model) { go($0) }
                 case .page(.storage): StorageView(model: model)
                 case .page(.permissions): PermissionsView(model: model)
@@ -203,8 +204,8 @@ struct SettingsView: View {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
-    case general, capabilities, helper, upscaling, fleet, storage,
-         permissions, experimental
+    case general, capabilities, helper, upscaling, resampling, fleet,
+         storage, permissions, experimental
     var id: String { rawValue }
 
     var title: String {
@@ -213,6 +214,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .capabilities: String(localized: "Capabilities")
         case .helper: String(localized: "Agentic Helper")
         case .upscaling: String(localized: "Upscaling")
+        case .resampling: String(localized: "Temporal Resampling")
         case .fleet: String(localized: "Fleet")
         case .storage: String(localized: "Storage")
         case .permissions: String(localized: "Permissions")
@@ -226,6 +228,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .capabilities: "sparkles"
         case .helper: "brain"
         case .upscaling: "arrow.up.left.and.arrow.down.right"
+        case .resampling: "film.stack.fill"
         case .fleet: "point.3.connected.trianglepath.dotted"
         case .storage: "internaldrive.fill"
         case .permissions: "hand.raised.fill"
@@ -239,6 +242,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
         case .capabilities: .purple
         case .helper: .pink
         case .upscaling: .green
+        case .resampling: .mint
         case .fleet: .teal
         case .storage: .blue
         case .permissions: .indigo
@@ -257,6 +261,8 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
             String(localized: "The model that writes prompts with you, reads what you ask for and watches your clips: which one, and how it runs.")
         case .upscaling:
             String(localized: "How Render Upscaled restores a layer at the size it is shown — FlashVSR+ or FlashVSR 1.1 for clips, or Open-H3-Regenerate-2K to regenerate one; VOSR for pictures: which one, and the arithmetic each runs with.")
+        case .resampling:
+            String(localized: "How Render Interpolated makes a clip at the rate its timeline shows it — slowed down, or on a timeline of more frames a second — the frames in between made by RIFE: which release, and how it reads the motion.")
         case .fleet:
             String(localized: "The Valtz Macs of this network as one: a job this Mac cannot run, or not now, goes to a member that can, and this Mac takes theirs when it is free.")
         case .storage:

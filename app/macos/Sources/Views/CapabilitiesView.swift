@@ -361,6 +361,7 @@ private struct FeatureBadge: View {
         case "video-summary": "text.below.photo"
         case "audio-separate": "music.mic"
         case "micro-agent": "bolt"
+        case "frame-interpolation": "film.stack.fill"
         default: "questionmark"
         }
     }
@@ -380,6 +381,7 @@ private struct FeatureBadge: View {
         case "video-summary": String(localized: "Video summary")
         case "audio-separate": String(localized: "Vocals and accompaniment")
         case "micro-agent": String(localized: "Micro agent: names, a 2K pass's words")
+        case "frame-interpolation": String(localized: "Frame interpolation, slow motion")
         default: f
         }
     }
@@ -601,7 +603,14 @@ private struct MemberRow: View {
             : sources.count > 1
             ? String(localized: "Download from \(sourceTitle(from)) into the models folder Valtz manages")
             : String(localized: "Download into the models folder Valtz manages")
-        if sources.count > 1 {
+        if let host = m.host, !host.isEmpty {
+            // Its makers' own file, not a hub's: no source to choose.
+            Button(resume ? "Resume" : "Download") {
+                model.startDownload(m, from: from)
+            }
+            .disabled(!m.fits)
+            .help(String(localized: "Download from \(host), where its makers publish it -- not a model hub: Valtz fetches their file, checks it is the one it knows and keeps the weights in the models folder it manages"))
+        } else if sources.count > 1 {
             Menu {
                 ForEach(sources) { s in
                     if let there = m.path(on: s.name) {

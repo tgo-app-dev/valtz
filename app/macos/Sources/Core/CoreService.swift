@@ -147,12 +147,22 @@ final class CoreService: @unchecked Sendable {
     func agentStart(_ request: [String: Any]) -> CoreReply {
         send(core.agent_start, request)
     }
-    /// The person's next words, and the assets attached to them.
+    /// A program drawn (DESIGN §4t): {"project", "program"?, "code"?,
+    /// "drawing"?, "width", "height", "seconds", "seed"?, "assets"?} ->
+    /// {"job", "program", "asset"}.
+    func renderProcedural(_ request: [String: Any]) -> CoreReply {
+        send(core.render_procedural, request)
+    }
+    /// The person's next words, and the assets attached to them -- a
+    /// procedural session's card as it is now with them.
     func agentSay(_ agent: String, _ text: String,
                   stage: [String: Any] = [:],
-                  row: [String] = []) -> CoreReply {
-        send(core.agent_say, ["agent": agent, "text": text, "stage": stage,
-                              "row": row])
+                  row: [String] = [],
+                  render: [String: Any]? = nil) -> CoreReply {
+        var req: [String: Any] = ["agent": agent, "text": text,
+                                  "stage": stage, "row": row]
+        if let render { req["render"] = render }
+        return send(core.agent_say, req)
     }
     func agentReview(_ agent: String, step: Int, decision: String,
                      note: String = "") -> CoreReply {
@@ -844,6 +854,28 @@ final class CoreService: @unchecked Sendable {
     func setUpscaleTuning(_ model: String, _ values: [String: Any],
                           reset: Bool = false) -> CoreReply {
         send(core.set_upscale_tuning,
+             ["model": model, "values": values, "reset": reset])
+    }
+
+    /// Settings › Temporal Resampling: the frame interpolators and their
+    /// options, and which one Render Interpolated runs.
+    func interpolateSettings() -> (interpolators: [UpscalerSettings],
+                                   pick: InterpolatorPick) {
+        let r = reply(core.interpolate_settings())
+        return ((r["interpolators"] as? [[String: Any]] ?? [])
+                    .compactMap(UpscalerSettings.init),
+                InterpolatorPick(r.payload))
+    }
+
+    /// The interpolator Render Interpolated runs ("" Auto).
+    func useInterpolator(_ model: String) -> CoreReply {
+        send(core.use_interpolator, ["model": model])
+    }
+
+    /// `values` laid on what an interpolator keeps ("reset": defaults).
+    func setInterpolateTuning(_ model: String, _ values: [String: Any],
+                              reset: Bool = false) -> CoreReply {
+        send(core.set_interpolate_tuning,
              ["model": model, "values": values, "reset": reset])
     }
 

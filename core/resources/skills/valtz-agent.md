@@ -177,6 +177,21 @@ shapes that hold their words and lines JOINED to them:
 - Lay the shapes out first -- even gaps, one row or column per level --
   then the lines between them.
 
+## Drawing with a program
+
+Some pictures and clips are best WRITTEN: generative art, a pattern, a
+chart or diagram drawn exactly, motion graphics, an animated title, a
+3D scene, a shader -- and anything the person asks to be made "with
+code", "procedurally", in three.js or Babylon.js. `render_program`
+draws a PROGRAM (JavaScript in a sandboxed page) as a picture, or a
+clip with `seconds`; `program_guide` says how to write one -- read it
+once, before your first. Give `width` and `height` (the active
+composition's frame when left out) and, for a clip, `seconds`. The
+program and its drawing are kept in Assets, not placed: put the
+drawing on a page with `place_asset` (a box) or on a timeline with
+`add_clip`. To change it, `render_program` with `program` its id and
+the new `code` -- its next version (`read_program` shows the code).
+
 ## Masks: a picture cut to a shape
 
 A MASK is a markup layer right above another layer; it is not seen
@@ -370,12 +385,17 @@ scene longer than a few seconds -- rather than cut from their clips
    the plan in a sentence a shot. A 30-second scene is about six shots.
    Each takes minutes to make: say how many there are.
 2. `create_composition` kind "timeline", 960 x 544 at 24 fps (portrait
-   544 x 960): the size the video model makes. A size the person asks
-   for ("832 x 480") is the timeline's: each shot is made at it, up to
-   960 x 544's area. A LARGE size asked for -- "1080p", "2K", 1920 x
-   1080 -- (when `can_make_high_res_shots`): the timeline at that size
+   544 x 960): the size the video model makes by default. A size the
+   person asks for ("832 x 480", "768 x 1152", "short side 768") is the
+   timeline's: each shot is made AT it, up to 768 on its short side --
+   what the model makes in one pass (768 x 1152 portrait, 1376 x 768
+   wide) -- never smaller and scaled up. Past 768 -- "1080p", "2K", 1920
+   x 1080 -- (when `can_make_high_res_shots`): the timeline at that size
    and `high_res: true` on every shot -- drafted at 768 and regenerated
-   at the size, several times as long: say so. A shot is 2-30 seconds
+   at the size, several times as long: say so (without it a shot is made
+   at 768 on its short side and scaled up to fill). A continuation is
+   made at the size of the shot it continues: to change a scene's size,
+   make its first shot again at the new size. A shot is 2-30 seconds
    (5 by default); past 15 it is past what the model was trained on --
    a longer scene is better as shots.
 3. The first shot: `generate_video` with `description`, `soundscape`,
@@ -401,7 +421,16 @@ scene longer than a few seconds -- rather than cut from their clips
    - `summary`: what happens in this shot, naming the subjects.
    Ask for them all, one after another: each is made as the one before
    it lands, and laid after it. The result's `continued_by` says how it
-   carried on. `continue_by: "reference"` -- the shot before's last
+   carried on. Shot after shot so, a scene slowly grows noise --
+   blotches and streaks on its flat walls and boards, worse with every
+   continuation. `continue_by: "cleaned"` carries on the same way with
+   the redone end CLEANED: each of its frames restored by an image edit
+   (its tones kept), the noise fading out over them -- shown over the
+   shot before's last frames -- the voice carried on as ever. It takes
+   a few minutes more a shot: use it when the person asks for it, or
+   says the shots got noisy or blotchy (then every few shots, or each
+   one if they ask). Never with `references`.
+   `continue_by: "reference"` -- the shot before's last
    seconds read again as a picture and sound -- only when the person
    asks for that; with `references` (pictures to keep someone the
    same), the latents are carried beside them.

@@ -1225,10 +1225,9 @@ struct AtlasGenerateExpanded: View {
                                              width: gen.width,
                                              height: gen.height) {
             let a = "\(String(draft.width)) × \(String(draft.height))"
-            if m.capabilities.contains("reference-to-video") {
-                return String(localized: "Drafted at \(a) from the references, then regenerated at \(b) by Open-H3-Regenerate-2K on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line.")
-            }
-            return String(localized: "Drafted at \(a), then regenerated at \(b) by Open-H3-Regenerate-2K: several times the draft's time.")
+            return model.regenerateWords(
+                a, b, references: m.capabilities.contains(
+                    "reference-to-video"))
         }
         if min(gen.width, gen.height) > r.above {
             return String(localized: "Past \(String(r.above)) on its short side the clip is made at this size directly. Open-H3-Regenerate-2K drafts it at \(String(r.draft)) and regenerates it: get it in Settings › Capabilities › MiniMax H3.")

@@ -1026,7 +1026,7 @@ struct ValtzApp: App {
                         .keyboardShortcut(m.key)
                         .disabled(model.closingTasks != nil
                                   || model.fleetServing != nil
-                                  || (model.agentHolds && m != .agent))
+                                  || (model.agentHolds && !m.isAgentic))
                 }
                 Divider()
                 // The timeline in the prompt's place, while the stage
@@ -1090,6 +1090,7 @@ struct ValtzApp: App {
         case .video: "Video Prompt"
         case .image: "Image Prompt"
         case .audio: "Audio Prompt"
+        case .procedural: "Procedural Prompt"
         case .agent: "Agent Prompt"
         }
     }
@@ -1101,6 +1102,37 @@ struct ValtzApp: App {
     /// it.
     private func closeProjectOrWindow() {
         windows.closeWindowOrProject()
+    }
+
+    /// RENDER AGAIN (DESIGN §4t) as its sheet sends it -- ["renderagain",
+    /// "<id|newest>", "WxH", "<seconds>", "new"?] -- waited for, said.
+    @MainActor
+    static func snapshotRenderAgain(_ m: AppModel, _ p: [String]) async {
+        let arg = p.count > 1 ? p[1] : "newest"
+        let a = arg == "newest"
+            ? m.assets.filter(\.isProgramDrawing)
+                .max(by: { $0.created < $1.created })
+            : m.asset(id: arg)
+        guard let a else {
+            print("snapshot: render-again none")
+            return
+        }
+        m.openRenderAgain(a)
+        guard var f = m.renderAgain else { return }
+        let wh = (p.count > 2 ? p[2] : "").split(separator: "x")
+            .compactMap { Int($0) }
+        if wh.count == 2 { f.width = wh[0]; f.height = wh[1] }
+        if p.count > 3 { f.seconds = Double(p[3]) ?? 0 }
+        f.sameSeed = !(p.count > 4 && p[4] == "new")
+        m.renderAgain(f)
+        let job = m.generationJob ?? "-"
+        for _ in 0..<240 {
+            try? await Task.sleep(for: .milliseconds(250))
+            if m.jobs[job]?.live != true { break }
+        }
+        try? await Task.sleep(for: .milliseconds(600))
+        let again = m.asset(id: a.id)
+        print("snapshot: render-again \(a.name.replacingOccurrences(of: " ", with: "_")) job=\(job) state=\(m.jobs[job]?.state ?? "-") head=\(again?.head ?? 0) size=\(again?.recipe?.params?.width ?? 0)x\(again?.recipe?.params?.height ?? 0) frames=\(again?.recipe?.params?.frames ?? 0) viewed=\(m.viewedAsset.flatMap { m.asset(id: $0)?.name.replacingOccurrences(of: " ", with: "_") } ?? "-")")
     }
 
     /// Dev aid: a mouse click, sent to `window`, on the first control in
@@ -1412,10 +1444,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 m.usePrompt(a)
             }
             // Settings › Experimental's switches, for the run:
-            // "agent" (the Agent tab; VALTZ_SNAPSHOT_AGENT too).
-            if env["VALTZ_SNAPSHOT_EXPERIMENTAL"] == "agent"
+            // "agent" (the Agent tab; VALTZ_SNAPSHOT_AGENT too),
+            // "procedural" -- a comma's list.
+            let experimental = (env["VALTZ_SNAPSHOT_EXPERIMENTAL"] ?? "")
+                .split(separator: ",").map(String.init)
+            if experimental.contains("agent")
                 || env["VALTZ_SNAPSHOT_AGENT"] != nil {
                 m.setAgentEnabled(true)
+            }
+            if experimental.contains("procedural") {
+                m.setProceduralEnabled(true)
             }
             // Settings › Agentic Helper › Show Speed, for the run.
             if env["VALTZ_SNAPSHOT_AGENT_SPEED"] == "1" {
@@ -1425,6 +1463,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // (a model id; unset is Auto).
             if let v = env["VALTZ_SNAPSHOT_MODALITY"],
                let v = Modality(rawValue: v) { m.setModality(v) }
+            // Procedural's card: "1280x720" a still, "960x540:4" a clip
+            // of 4 s (DESIGN §4t).
+            if let v = env["VALTZ_SNAPSHOT_PROCEDURAL"] {
+                let parts = v.split(separator: ":").map(String.init)
+                let wh = (parts.first ?? "").split(separator: "x")
+                    .compactMap { Int($0) }
+                if wh.count == 2 { m.setProceduralSize(wh[0], wh[1]) }
+                m.proceduralSeconds = parts.count > 1
+                    ? Double(parts[1]) ?? 0 : 0
+            }
             if let id = env["VALTZ_SNAPSHOT_MODEL"] { m.modelChoice = id }
             // The card's Latents row: a clip's kept with it ("1").
             if let v = env["VALTZ_SNAPSHOT_KEEP_LATENTS"] {
@@ -2405,11 +2453,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // The clip carried on: its Continue under the stage --
                 // from its last N seconds (a guide), or "1" as it is;
                 // "latent:N" from its kept latents, "through" through
-                // its end (FL2VA).
+                // its end (FL2VA), "cleaned" so, its guide cleaned.
                 if let c = env["VALTZ_SNAPSHOT_CONTINUE"] {
                     Self.continueScripted(m, c)
                     try? await Task.sleep(for: .milliseconds(400))
-                    print("snapshot: continue \(c) refs=\(m.promptAttachments.map { $0.kind + ($0.continues ? ($0.fromLatents ? ">L" : ">") : "") }.joined(separator: ",")) model=\(m.modelChoice.isEmpty ? "auto" : m.modelChoice) running=\(m.runningModel) guided=\(m.guidedContinuation != nil)")
+                    print("snapshot: continue \(c) refs=\(m.promptAttachments.map { $0.kind + ($0.continues ? ($0.fromLatents ? ($0.cleaned ? ">LC" : ">L") : ">") : "") }.joined(separator: ",")) model=\(m.modelChoice.isEmpty ? "auto" : m.modelChoice) running=\(m.runningModel) guided=\(m.guidedContinuation != nil)")
                 }
                 // ...and dragged from the stage into the prompt, as the
                 // picture to edit.
@@ -2538,6 +2586,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     }
                     switch p[0] {
                     case "prompt": m.addAssetReferences([arg])
+                    // RENDER AGAIN (DESIGN §4t), as its sheet sends it:
+                    // "renderagain:<id|newest>:WxH:seconds[:new]" -- the
+                    // newest program's drawing at that size and length
+                    // (":new" another seed), waited for.
+                    case "renderagain":
+                        await ValtzApp.snapshotRenderAgain(m, p)
                     // An enhanced prompt's (the newest's) words before
                     // it, put back in the box: Use Original in Prompt.
                     case "original":
@@ -5355,8 +5409,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     let arg = kv.count > 1 ? kv[1] : ""
                     let proposed = m.agent?.proposed
                     switch kv[0] {
+                    // To the Agent -- or to Procedural, its target
+                    // chosen first ("target:procedural").
                     case "ask":
-                        m.setModality(.agent)
+                        if !m.modality.isAgentic { m.setModality(.agent) }
                         m.setPrompt(arg)
                         m.start()
                     case "say":
@@ -5364,7 +5420,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         m.start()
                     // The words from a file: a long message, pasted.
                     case "askfile", "sayfile":
-                        if kv[0] == "askfile" { m.setModality(.agent) }
+                        if kv[0] == "askfile", !m.modality.isAgentic {
+                            m.setModality(.agent)
+                        }
                         m.setPrompt((try? String(
                             contentsOfFile: arg, encoding: .utf8)) ?? "")
                         m.start()
@@ -5384,8 +5442,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         : room - y))
                             sv.reflectScrolledClipView(sv.contentView)
                         }
-                    // The Agent tab, nothing asked yet.
-                    case "target": m.setModality(.agent)
+                    // The Agent tab, nothing asked yet -- or
+                    // "target:procedural", Procedural's.
+                    case "target":
+                        m.setModality(arg == "procedural" ? .procedural
+                                                          : .agent)
                     // Words typed into the box as the keyboard types
                     // them, then Start pressed: the text view holds
                     // them, as a person's do.
@@ -5402,6 +5463,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             }
                         }
                     case "start": m.start()
+                    // Render Again, as ASSETS' (DESIGN §4t).
+                    case "renderagain":
+                        await ValtzApp.snapshotRenderAgain(
+                            m, step.split(separator: ":").map(String.init))
                     case "wait":
                         let w = arg.split(separator: "@").map(String.init)
                         let want = w.first ?? "done"
@@ -7438,7 +7503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "promptText=\(m.prompt.replacingOccurrences(of: " ", with: "_").replacingOccurrences(of: "\n", with: "|")) "
                 + "immersive=\(m.promptImmersive) editorEdited=\(m.editorEdited) tabs=\(m.promptTabs.count) activeTab=\(m.activePromptTab) tabTitles=\(m.promptTabs.indices.map { m.promptTabTitle($0).replacingOccurrences(of: " ", with: "_") }.joined(separator: "|")) markdown=\(m.promptMarkdown) "
                 + "promptAsset=\(m.promptAssetId ?? "-") unbound=\(m.unboundRefTags.joined(separator: ",")) refTags=\(AppModel.refTags(in: m.prompt).count) prompts=\(m.assets.filter(\.isPrompt).count) "
-                + "references=\(m.usesReferences) badges=\(m.promptAttachments.map { (m.referenceBadge($0) ?? "-") + ($0.continues ? ($0.fromLatents ? ">L" : ">") : "") }.joined(separator: ",")) canContinue=\(m.canContinueClip) latentRow=\(m.offersKeepLatents ? (m.keepLatents ? "on" : "off") : "-") guides=\(m.guideLengths.map { "\($0.asked):\($0.frames)" }.joined(separator: ",")) running=\(m.runningModel) clipRows=\(m.activeModality == .video && m.modalityRuns) canStart=\(m.canStart) "
+                + "references=\(m.usesReferences) badges=\(m.promptAttachments.map { (m.referenceBadge($0) ?? "-") + ($0.continues ? ($0.fromLatents ? ($0.cleaned ? ">LC" : ">L") : ">") : "") }.joined(separator: ",")) canContinue=\(m.canContinueClip) latentRow=\(m.offersKeepLatents ? (m.keepLatents ? "on" : "off") : "-") guides=\(m.guideLengths.map { "\($0.asked):\($0.frames)" }.joined(separator: ",")) running=\(m.runningModel) clipRows=\(m.activeModality == .video && m.modalityRuns) canStart=\(m.canStart) "
                 + "trayLead=\(trayLead) keyframes=\(keyframes) preset=\(preset) "
                 + "songPlan=\(m.songPlan.rawValue) songLength=\(m.songSeconds.map(String.init) ?? "auto") "
                 + "lyrics=\(m.songWords.sections)s/\(m.songWords.lines)l style=\(m.songWords.style.replacingOccurrences(of: " ", with: "_")) "
@@ -7976,11 +8041,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A scripted Continue: "N" (2 and up) its last N seconds as a
     /// reference, "latent:N" from the latents it kept, "through" through
-    /// its end (FL2VA, by them), anything else the clip as it is.
+    /// its end (FL2VA, by them), "cleaned" so with its guide cleaned,
+    /// anything else the clip as it is.
     @MainActor
     static func continueScripted(_ m: AppModel, _ how: String) {
         if how == "through" {
             m.continueClip(method: .through)
+        } else if how == "cleaned" {
+            m.continueClip(method: .cleaned)
         } else if how.hasPrefix("latent:"), let s = Int(how.dropFirst(7)) {
             m.continueClip(seconds: s, method: .latents)
         } else if let s = Int(how), s >= 2 {

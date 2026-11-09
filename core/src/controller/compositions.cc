@@ -3797,6 +3797,74 @@ Controller::mark_guided_head_(project::Project& p, const project::Asset& s,
       v->info.frame_rate.num > 0 ? v->info.frame_rate : Rational{24, 1};
 }
 
+std::int64_t
+Controller::overlay_cleaned_head_(ProjectId pid, project::Project& p,
+                                  const project::Asset& t,
+                                  const project::Asset& s,
+                                  project::Layer& l)
+{
+  if (!is_timeline(t) || s.kind != AssetKind::Video ||
+      s.origin != project::Origin::Derived) {
+    return 0;
+  }
+  auto r = p.recipe(s.recipe);
+  if (!r.ok()) {
+    return 0;
+  }
+  const Json cg = jget(r->params, "clean_guide", Json());
+  const auto g = jget<std::int64_t>(
+      jget(r->params, "continue_guide", Json()), "frames", 0);
+  if (!cg.is_object() || !jget(cg, "ramp", true) || g <= 0 ||
+      l.time.in != g) {
+    return 0;
+  }
+  // The clip it continues: as its version recorded it, else its input.
+  std::optional<AssetId> clip;
+  if (auto v = p.version(s.id); v.ok()) {
+    clip = AssetId::parse(jget<std::string>(
+        jget(v->outputs, "continued", Json()), "clip", ""));
+  }
+  for (const auto& in : r->inputs) {
+    if (!clip && in.role == "continue") {
+      clip = in.asset;
+    }
+  }
+  if (!clip) {
+    return 0;
+  }
+  // Its layer on the timeline ending where this one starts.
+  auto m = movie_stack_(pid, t.id, true, std::nullopt, 0);
+  if (!m.ok()) {
+    return 0;
+  }
+  const Rational tr = rate_of_(p, t);
+  const double fps = tr.to_double() > 0 ? tr.to_double() : 24.0;
+  bool under = false;
+  for (const auto& x : t.layers) {
+    if (x.source != *clip) {
+      continue;
+    }
+    for (const auto& ml : m->layers) {
+      if (ml.id == x.id &&
+          std::llround(ml.timing.end() * fps) == l.time.offset) {
+        under = true;
+      }
+    }
+  }
+  if (!under) {
+    return 0;
+  }
+  const double cr = l.time.rate.num > 0 ? l.time.rate.to_double() : 24.0;
+  const std::int64_t shift =
+      std::llround(static_cast<double>(g) * fps / cr);
+  if (shift <= 0 || shift > l.time.offset) {
+    return 0;
+  }
+  l.time.offset -= shift;
+  l.time.in = -1;
+  return shift;
+}
+
 Result<std::pair<AssetId, std::string>>
 Controller::place_result(ProjectId pid, AssetId asset,
                          std::optional<AssetId> onto,
@@ -3942,6 +4010,10 @@ Controller::instantiate(ProjectId pid, AssetId asset,
     n.time.offset = std::clamp<std::int64_t>(offset, 0, t.pages - 1);
     n.time.duration = 1;
   }
+  // A continuation whose guide was cleaned, landing where its clip ends:
+  // its redone frames over that clip's last ones (DESIGN §4e).
+  const std::int64_t over =
+      append ? 0 : overlay_cleaned_head_(pid, *p, t, s, n);
   // A new layer right above another is in its folder; a blank one filled
   // keeps its own.
   if (fill) {
@@ -3960,6 +4032,16 @@ Controller::instantiate(ProjectId pid, AssetId asset,
     ls.insert(ls.begin() + static_cast<std::ptrdiff_t>(pos), n);
   }
   VALTZ_TRY(p->set_layers(t.id, std::move(ls)));
+  // Laid over its clip's last frames: silent along them -- the clip
+  // under it plays its own sound to its end, as it was made -- then
+  // heard (DESIGN §4e).
+  if (over > 0) {
+    const Json keys = {
+        {"keys", Json::array({{{"frame", 0}, {"volume", 0.0}},
+                              {{"frame", over - 1}, {"volume", 0.0}},
+                              {{"frame", over}, {"volume", 1.0}}})}};
+    VALTZ_TRY(set_modifier_(pid, t.id, "audio", n.id, keys));
+  }
   // A set length grown to hold it, as a slide grows it: a clip put past
   // the end -- a continuation landing after what it carries on -- would
   // not be seen.
@@ -4601,6 +4683,27 @@ Controller::continuation_guide(ProjectId pid, AssetId clip, double seconds,
   return out;
 }
 
+namespace {
+
+// A track that changes nothing from frame `a` to `b` (from its layer's
+// start): the identity at both and at every key between. Between two
+// keys a value goes no further than they do -- linearly, held, or by
+// Fritsch and Butland's spline, which never overshoots.
+template <class K>
+bool
+still_along(const K& k, double a, double b)
+{
+  if (!k.at(a).identity() || !k.at(b).identity()) {
+    return false;
+  }
+  return std::ranges::all_of(k.keys, [&](const auto& key) {
+    const double f = static_cast<double>(key.frame);
+    return f <= a || f >= b || key.value.identity();
+  });
+}
+
+}  // namespace
+
 Result<std::optional<Controller::ContinuedTail>>
 Controller::continued_tail_(ProjectId pid, project::Project& p,
                             const project::Asset& tl, std::int64_t frames,
@@ -4635,11 +4738,32 @@ Controller::continued_tail_(ProjectId pid, project::Project& p,
   if (l == tl.layers.end() || !l->source || l->mask) {
     return Tail{};
   }
-  // Plain: no look of its own (a crop, an adjustment, its sound's).
-  if (std::ranges::any_of(tl.modifiers, [&](const project::Modifier& md) {
-        return md.layer == l->id;
-      })) {
-    return Tail{};
+  // Plain ALONG THE TAIL: no look of its own there -- a crop, an
+  // adjustment, its sound's -- a track that changes nothing along it
+  // let be. A cleaned continuation lands silent over the clip it lies on,
+  // then heard (overlay_cleaned_head_), and a timeline ending on it was
+  // refused its kept latents: Continue offered the references alone.
+  const Rational kr = rate_of_(p, tl);
+  const double a = from - only->timing.start;
+  const double b = end - only->timing.start;
+  const auto along = [&](const auto& k) {
+    const double r = k.rate.num > 0 ? k.rate.to_double() : kr.to_double();
+    return still_along(k, a * r, b * r);
+  };
+  for (const auto& md : tl.modifiers) {
+    if (md.layer != l->id) {
+      continue;
+    }
+    const auto crop = crop_keys_of(tl, l->id);
+    const bool plain =
+        md.kind == "adjust"  ? along(adjustment_keys_of(tl, l->id))
+        : md.kind == "crop"  ? along(crop.place) && along(crop.turn)
+        : md.kind == "audio" ? along(sound_keys_of(tl, l->id))
+        : md.kind == "speed" ? along(speed_keys_of(tl, l->id))
+                             : false;
+    if (!plain) {
+      return Tail{};
+    }
   }
   VALTZ_ASSIGN(project::Asset s, p.asset(*l->source));
   if (s.kind != AssetKind::Video ||

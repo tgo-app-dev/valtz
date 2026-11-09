@@ -105,6 +105,85 @@ video_encoding_from_json(const Json& j)
   return e;
 }
 
+Json
+to_json(const ModelRef& m)
+{
+  Json j = {{"id", m.id}, {"family", m.family}, {"engine", m.engine}};
+  const std::pair<const char*, const std::filesystem::path*> files[] = {
+      {"dir", &m.dir},
+      {"preview", &m.preview},
+      {"lora", &m.lora},
+      {"dit", &m.dit},
+      {"vae", &m.vae},
+      {"encoder_weights", &m.encoder_weights},
+      {"vae_weights", &m.vae_weights},
+      {"branch", &m.branch},
+      {"encoder", &m.encoder},
+      {"regenerate_lora", &m.regenerate_lora},
+      {"latent_upscaler", &m.latent_upscaler},
+      {"fast_decoder", &m.fast_decoder},
+      {"regenerate_branch", &m.regenerate_branch},
+      {"regenerate_base", &m.regenerate_base},
+      {"regenerate_base_dit", &m.regenerate_base_dit},
+      {"regenerate_base_encoder", &m.regenerate_base_encoder}};
+  for (const auto& [k, f] : files) {
+    if (!f->empty()) {
+      j[k] = f->string();
+    }
+  }
+  if (!m.more_loras.empty()) {
+    Json more = Json::array();
+    for (const auto& f : m.more_loras) {
+      more.push_back(f.string());
+    }
+    j["more_loras"] = std::move(more);
+  }
+  if (!m.regenerate_base_engine.empty()) {
+    j["regenerate_base_engine"] = m.regenerate_base_engine;
+  }
+  return j;
+}
+
+ModelRef
+model_ref_from_json(const Json& j)
+{
+  ModelRef m;
+  if (!j.is_object()) {
+    return m;
+  }
+  m.id = jget<std::string>(j, "id", "");
+  m.family = jget<std::string>(j, "family", "");
+  m.engine = jget(j, "engine", Json::object());
+  m.regenerate_base_engine = jget(j, "regenerate_base_engine",
+                                  Json::object());
+  const std::pair<const char*, std::filesystem::path*> files[] = {
+      {"dir", &m.dir},
+      {"preview", &m.preview},
+      {"lora", &m.lora},
+      {"dit", &m.dit},
+      {"vae", &m.vae},
+      {"encoder_weights", &m.encoder_weights},
+      {"vae_weights", &m.vae_weights},
+      {"branch", &m.branch},
+      {"encoder", &m.encoder},
+      {"regenerate_lora", &m.regenerate_lora},
+      {"latent_upscaler", &m.latent_upscaler},
+      {"fast_decoder", &m.fast_decoder},
+      {"regenerate_branch", &m.regenerate_branch},
+      {"regenerate_base", &m.regenerate_base},
+      {"regenerate_base_dit", &m.regenerate_base_dit},
+      {"regenerate_base_encoder", &m.regenerate_base_encoder}};
+  for (const auto& [k, f] : files) {
+    *f = jget<std::string>(j, k, "");
+  }
+  for (const auto& f : jget(j, "more_loras", Json::array())) {
+    if (f.is_string()) {
+      m.more_loras.emplace_back(f.get<std::string>());
+    }
+  }
+  return m;
+}
+
 std::string
 video_encoding_problem(const VideoEncoding& e, std::string_view format)
 {

@@ -283,6 +283,14 @@ private:
   std::unique_ptr<Impl> _impl;
 };
 
+// A picture's planes [3, h, w] -- sRGB-encoded samples, 0..1, as
+// decode_planar gives them and a video VAE decodes them -- written as a
+// 16-bit sRGB PNG: what a model's own frame is handed to an image edit
+// as (a continuation's guide cleaned, DESIGN §4e), its samples as they
+// are.
+Status write_planar_png16(const float* planes, PixelSize size,
+                          const std::filesystem::path& out);
+
 // decode_planar, u8, unadjusted.
 Status decode_planar_srgb(const std::filesystem::path& src, PixelSize size,
                           int channels, Fit fit, std::uint8_t* dst,

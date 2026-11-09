@@ -14,3 +14,7 @@ build*/
 compile_commands.json
 *.valtz/
 .DS_Store
+
+# three.js's own build/ (r186, vendored for the programs Valtz draws:
+# DESIGN §4t) -- no build tree; the two rules above left it out of git
+!3rd-party/three/build/

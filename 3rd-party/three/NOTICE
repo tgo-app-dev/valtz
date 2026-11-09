@@ -1,0 +1,19 @@
+three.js -- the JavaScript 3D library by the three.js authors
+(https://threejs.org, source https://github.com/mrdoob/three.js) --
+release r186, as published on npm (package "three", version 0.186.1,
+sha512-blFeqb49wRCSGUGj7gtpfnSGHy2lwDk94RhUmS1c/hTby70kvChbWpkJ4Pm1390LqzzvTmzgXKHPEafJwCb8jA==),
+under the MIT License (LICENSE, beside this file, as published in that
+package).
+
+Valtz includes, unmodified:
+
+  build/three.module.js, build/three.core.js
+  addons/ -- the package's examples/jsm folders animation, csm, curves,
+  effects, environments, geometries, helpers, lights, lines, math, misc,
+  modifiers, objects, postprocessing, renderers, shaders, textures and
+  utils, with libs/potpack.module.js, loaders/FontLoader.js,
+  loaders/SVGLoader.js and gpgpu/CountingSort.js
+
+and serves them -- from the Mac, never the network -- to the programs it
+draws (DESIGN §4t): `import * as THREE from 'three'`, the addons from
+'three/addons/'.

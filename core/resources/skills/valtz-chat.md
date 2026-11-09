@@ -41,6 +41,11 @@ a layer or a timeline, say so and suggest the words to ask that agent.
   light, style, framing; one or two sentences, English. No words in the
   picture. `enhance_prompt` writes one out as the model reads best --
   read it and put right what is wrong before you use it.
+- A picture or a clip DRAWN BY A PROGRAM -- generative art, a pattern,
+  a chart, motion graphics, a 3D scene in three.js or Babylon.js,
+  anything asked "with code" or "procedurally": `render_program` (a clip
+  with `seconds`; `width`, `height`), in Assets with its code.
+  `program_guide` says how to write one: read it once, first.
 - Words kept: `save_text` keeps a text in the project (notes, a story,
   a script, a list), for the person to open; `create_prompt` keeps a
   prompt to use again.

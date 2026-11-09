@@ -38,7 +38,8 @@ public:
   Result<std::string> start(AgentRequest);
   Status say(const std::string& id, const std::string& text,
              const Json& stage = Json::object(),
-             const std::vector<AssetId>& attached = {});
+             const std::vector<AssetId>& attached = {},
+             const Json& render = Json());
   Status review(const std::string& id, int step, const std::string& what,
                 const Json& args, const std::string& note);
   Status set_review(const std::string& id, bool review);
@@ -136,6 +137,30 @@ public:
     // Its Valtz tools (AgentRequest::skills): "full" alone edits and
     // holds the project.
     std::string                         skills = "full";
+    // A procedural session's size and length to draw at, unless the
+    // person asks for another (AgentRequest::render) -- the card's as it
+    // was when they last spoke. With "card" it is what the person SET:
+    // the model's own size or length is taken only where their words
+    // since it was set name it (a helper drew a 10 s clip with the card
+    // at Still, 2026-11-08).
+    Json                                render = Json::object();
+    // The person's words, each time they spoke (the request first), and
+    // the first of them said since the card last changed.
+    std::vector<std::string>            person_words;
+    std::size_t                         render_words = 0;
+    // Its PROGRAMS (render_program): the one a procedural session draws
+    // again unless asked for a new one, and each one's drawing -- drawn
+    // again as its next version, not as another asset.
+    std::optional<AssetId>              program;
+    std::map<AssetId, AssetId>          drawn;
+    // Tries in a row that drew nothing, since the person last spoke: at
+    // five, it is told to stop and say what went wrong.
+    int                                 program_failures = 0;
+    // A session of the editor's tools or a chat has the drawing guide
+    // (program_guide): asked for, or handed over with its first program
+    // that drew nothing.
+    bool                                program_guided = false;
+    bool                                program_guide_due = false;
     std::vector<agent::Message>         messages;
     std::vector<Step>                   steps;
     std::unique_ptr<agent::Backend>     backend;
@@ -222,7 +247,13 @@ public:
   // (a picture made as an asset alone, a text kept, a prompt saved);
   // none that changes what is there.
   static const std::vector<Tool>& chat_tools();
-  // The tools of a session's skills: "full", "chat", "none" (none).
+  // A PROCEDURAL session's ("procedural", DESIGN §4t): programs drawn
+  // and read, and the full table's that look.
+  static const std::vector<Tool>& procedural_tools();
+  // The two that draw and read a program, in every table but "none".
+  static std::vector<Tool> program_tools();
+  // The tools of a session's skills: "full", "chat", "procedural",
+  // "none" (none).
   static const std::vector<Tool>& tools_for(std::string_view skills);
   static std::vector<agent::ToolSpec>
   tool_specs(std::string_view skills = "full");
@@ -403,6 +434,24 @@ private:
                               std::vector<std::filesystem::path>&);
   Result<Json> t_save_text(Session&, Step&, const Json&,
                            std::vector<std::filesystem::path>&);
+  // ---- PROGRAMS drawn (DESIGN §4t): JavaScript in a sandboxed page, a
+  // picture or a clip kept with its program; a program's code read.
+  Result<Json> t_render_program(Session&, Step&, const Json&,
+                                std::vector<std::filesystem::path>&);
+  Result<Json> render_program_(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  // A procedural session's size and length (Session::render) in words:
+  // "at 1280 x 720 pixels, a still"; "" where it has none.
+  static std::string card_text_(const Json& render);
+  Result<Json> t_read_program(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
+  // The guide to drawing programs -- a procedural session's own -- for a
+  // session of the editor's tools or a chat, asked for before its first
+  // program (its system message does not carry it: some 2,400 tokens).
+  Result<Json> t_program_guide(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  // That tool, as the editor's table and the chat's take it.
+  static Tool program_guide_tool();
   // The MODELS of a task -- pictures, shots, music, ... -- that run here,
   // Auto's pick among them, and those not downloaded: what the person
   // may choose from by name (each tool's `model`).

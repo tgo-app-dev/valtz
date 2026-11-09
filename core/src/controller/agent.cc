@@ -89,6 +89,46 @@ constexpr const char* kUnreadDsmlCall =
     " parameter name=\"NAME\" string=\"true\">value</" VALTZ_DSML_
     " parameter>\n</" VALTZ_DSML_ " invoke>\n</" VALTZ_DSML_ " calls>";
 
+// A PROGRAM written in a reply's words, a procedural session's (DESIGN
+// §4t): its longest fenced block that reads as one -- a small helper
+// (Qwen3.5 9B, 2026-11-08) wrote a whole three.js program into its
+// answer and called nothing. "" when there is none.
+std::string
+program_in_reply(const std::string& content)
+{
+  std::string best;
+  std::size_t at = 0;
+  for (;;) {
+    const std::size_t open = content.find("```", at);
+    if (open == std::string::npos) {
+      break;
+    }
+    const std::size_t body = content.find('\n', open);
+    if (body == std::string::npos) {
+      break;
+    }
+    const std::size_t close = content.find("```", body);
+    if (close == std::string::npos) {
+      break;
+    }
+    const std::string lang = content.substr(open + 3, body - open - 3);
+    std::string code = content.substr(body + 1, close - body - 1);
+    at = close + 3;
+    const bool js = lang.find("js") != std::string::npos ||
+                    lang.find("javascript") != std::string::npos ||
+                    lang.find_first_not_of(" \t\r") == std::string::npos;
+    const bool draws = code.find("valtz") != std::string::npos ||
+                       code.find("getContext") != std::string::npos ||
+                       code.find("THREE") != std::string::npos ||
+                       code.find("BABYLON") != std::string::npos ||
+                       code.find("document.") != std::string::npos;
+    if (js && draws && code.size() >= 120 && code.size() > best.size()) {
+      best = std::move(code);
+    }
+  }
+  return best;
+}
+
 // The form a reply's unread call was written in -- what to ask again
 // with -- or null when it wrote none.
 const char*
@@ -194,6 +234,33 @@ code_span(std::string_view t, std::size_t bytes)
   std::string s = cut(one_line(std::string(t)), bytes);
   std::ranges::replace(s, '`', '\'');
   return "`" + s + "`";
+}
+
+// A program's code as a fenced block of a transcript: whole (to 200,000
+// bytes), its fence longer than any run of backticks inside it -- a
+// template literal's -- and on lines of its own, the step's list ended
+// (in a list item a block's lines must be indented as it is).
+std::string
+code_block(std::string_view code, std::string_view language)
+{
+  constexpr std::size_t kMost = 200000;
+  std::string body(utf8_prefix(code, kMost));
+  std::size_t run = 0;
+  std::size_t longest = 0;
+  for (const char c : body) {
+    run = c == '`' ? run + 1 : 0;
+    longest = std::max(longest, run);
+  }
+  const std::string fence(std::max<std::size_t>(3, longest + 1), '`');
+  while (!body.empty() && (body.back() == '\n' || body.back() == '\r')) {
+    body.pop_back();
+  }
+  std::string t = "\n" + fence + std::string(language) + "\n" + body +
+                  "\n" + fence + "\n";
+  if (code.size() > kMost) {
+    t += "*Cut at 200,000 bytes.*\n";
+  }
+  return t + "\n";
 }
 
 // A time a person reads, local: "2026-11-03 14:02".
@@ -809,9 +876,28 @@ Controller::AgentHost::system_text_(const Session& s)
         today);
   }
   std::string t = _c.skill_text(s.skills == "chat" ? "valtz-chat"
-                                                   : "valtz-agent");
+                                : s.skills == "procedural"
+                                    ? "valtz-procedural"
+                                    : "valtz-agent");
   t += "\n## This session\n\n";
   t += std::format("Today is {}.\n", today);
+  // A procedural session draws at the person's size and length: the
+  // card they set -- what they asked for in words alone overriding it --
+  // or defaults.
+  if (s.skills == "procedural") {
+    if (const std::string card = card_text_(s.render); !card.empty()) {
+      if (jget(s.render, "card", false)) {
+        t += "The person's card says: draw " + card +
+             ". render_program draws at it: a `width`, `height`, "
+             "`seconds` or `fps` of yours is taken only where the "
+             "person's own words name it (\"a 10 s loop\", \"1920 x "
+             "1080\"), so leave them out unless they do.\n";
+      } else {
+        t += "Draw " + card + " -- render_program's defaults -- unless "
+             "the person asks for another size or length.\n";
+      }
+    }
+  }
   if (auto* p = _c.project(s.project)) {
     if (s.target) {
       if (auto a = p->asset(*s.target); a.ok()) {
@@ -852,6 +938,22 @@ Controller::AgentHost::system_text_(const Session& s)
           continue;
         }
         std::string what = project::to_str(a->kind);
+        if (Controller::is_program(*a)) {
+          what = "a program: read_program shows its code";
+        } else if (s.skills == "procedural") {
+          // What a program reads it as (DESIGN §4t).
+          what += a->kind == project::AssetKind::Video
+                      ? std::format(" -- await valtz.frame(\"{}\", t)",
+                                    a->name)
+                  : a->kind == project::AssetKind::Image
+                      ? std::format(" -- await valtz.image(\"{}\")",
+                                    a->name)
+                  : a->kind == project::AssetKind::Text
+                      ? std::format(" -- await valtz.text(\"{}\")",
+                                    a->name)
+                      : std::format(" -- await valtz.bytes(\"{}\")",
+                                    a->name);
+        }
         // A clip's or a sound's length, a clip's size and rate.
         if (auto v = p->version(id);
             v.ok() && (a->kind == project::AssetKind::Video ||
@@ -1068,9 +1170,12 @@ Controller::AgentHost::context_estimate_(const Session& s) const
   static const std::int64_t full = agent::estimate_tokens(tool_specs());
   static const std::int64_t chat =
       agent::estimate_tokens(tool_specs("chat"));
-  const std::int64_t specs = s.skills == "full"   ? full
-                             : s.skills == "chat" ? chat
-                                                  : 0;
+  static const std::int64_t procedural =
+      agent::estimate_tokens(tool_specs("procedural"));
+  const std::int64_t specs = s.skills == "full"         ? full
+                             : s.skills == "chat"       ? chat
+                             : s.skills == "procedural" ? procedural
+                                                        : 0;
   if (s.ctx_used > 0 && s.ctx_counted <= s.messages.size()) {
     return s.ctx_used +
            agent::estimate_tokens(s.messages, s.ctx_counted) * 5 / 4;
@@ -1129,6 +1234,8 @@ Controller::AgentHost::transcript_text_(const Session& s) const
   // A chat's tools, or none: the editor's go unsaid.
   if (s.skills == "chat") {
     t += " · **Tools** the chat's: it looks and adds";
+  } else if (s.skills == "procedural") {
+    t += " · **Tools** procedural: it writes programs and draws them";
   } else if (s.skills == "none") {
     t += " · **Tools** none";
   }
@@ -1196,14 +1303,26 @@ Controller::AgentHost::transcript_text_(const Session& s) const
       }
       return line;
     }
-    if (!st.args.empty()) {
-      line += "   " + code_span(to_text(st.args), kTranscriptArgs) + "\n";
+    // A program's code (render_program's): a fenced block of its own,
+    // whole and as written, not cut in a line of JSON escapes.
+    Json args = st.args;
+    std::string code;
+    if (args.is_object() && args.contains("code") &&
+        args["code"].is_string()) {
+      code = args["code"].get<std::string>();
+      args.erase("code");
+    }
+    if (!args.empty()) {
+      line += "   " + code_span(to_text(args), kTranscriptArgs) + "\n";
     }
     if (st.state == "done" || st.state == "waiting") {
       if (!st.result.is_null() && !st.result.empty()) {
         line += "   → " +
                 code_span(to_text(st.result), kTranscriptResult) + "\n";
       }
+    }
+    if (!one_line(code).empty()) {
+      line += code_block(code, "javascript");
     }
     return line;
   };
@@ -1385,10 +1504,10 @@ Controller::AgentHost::start(AgentRequest req)
     req.skills = "full";
   }
   if (req.skills != "full" && req.skills != "chat" &&
-      req.skills != "none") {
+      req.skills != "procedural" && req.skills != "none") {
     return make_error(Code::InvalidArgument,
-                      std::format("no agent skills '{}': full, chat or "
-                                  "none", req.skills));
+                      std::format("no agent skills '{}': full, chat, "
+                                  "procedural or none", req.skills));
   }
   auto* ws = _c.workspace_(req.project);
   if (ws == nullptr) {
@@ -1427,6 +1546,8 @@ Controller::AgentHost::start(AgentRequest req)
   s->prompt = req.prompt;
   s->row = req.row;
   s->skills = req.skills;
+  s->render = req.render.is_object() ? req.render : Json::object();
+  s->person_words.push_back(req.prompt);
   s->review = req.review;
   s->created_ms = now_ms();
   // In the project's working copy: an anonymous session's goes with it.
@@ -1749,6 +1870,8 @@ Controller::AgentHost::run_(Session& s)
   bool overflowed = false;
   // Turns running that wrote a call nothing could read.
   int unread = 0;
+  // Programs a procedural session wrote in its words and Valtz drew.
+  int drawn_unasked = 0;
   // The pictures the request came with, shown with it.
   {
     agent::Message first;
@@ -1894,6 +2017,58 @@ Controller::AgentHost::run_(Session& s)
     }
     if (!calls.empty()) {
       unread = 0;
+    }
+    // A procedural session's program written in its words, no tool
+    // called: drawn by Valtz as render_program would, a step of its own,
+    // and the session told what it drew -- then asked to go on with the
+    // tool. Twice at most.
+    if (calls.empty() && s.skills == "procedural" && drawn_unasked < 2) {
+      if (const std::string code = program_in_reply(reply->content);
+          !code.empty()) {
+        ++drawn_unasked;
+        VALTZ_LOG_INFO("agent", "session {}: a program in its words, "
+                       "drawn for it", s.id);
+        Step step;
+        {
+          std::lock_guard lk(s.mu);
+          step.n = static_cast<int>(s.steps.size()) + 1;
+          step.tool = "render_program";
+          step.title = "Draw a program";
+          step.args = {{"code", code}};
+          step.state = "running";
+          s.steps.push_back(step);
+        }
+        set_state_(s, "acting");
+        post_(s, step.n);
+        std::vector<fs::path> shown;
+        auto r = t_render_program(s, step, step.args, shown);
+        Json result = r.ok() ? *r : Json{{"error", r.error().message}};
+        {
+          std::lock_guard lk(s.mu);
+          Step& x = s.steps[static_cast<std::size_t>(step.n - 1)];
+          x.state = r.ok() ? "done" : "failed";
+          if (r.ok()) {
+            x.result = result;
+          } else {
+            x.error = r.error().message;
+          }
+          agent::Message m{
+              .role = "user",
+              .content =
+                  "[Valtz] Your reply held a program but called no tool, "
+                  "so Valtz drew it with render_program: " +
+                  to_text(result) +
+                  "\nDraw programs with render_program, never in your "
+                  "words. If what it drew is not right, call "
+                  "render_program with it put right; if it is, say so in "
+                  "a sentence."};
+          m.images = shown;
+          s.messages.push_back(std::move(m));
+        }
+        post_(s, step.n);
+        save_(s);
+        continue;
+      }
     }
     if (calls.empty()) {
       // Its pictures still out: waited for, and it is told how they
@@ -2082,6 +2257,16 @@ Controller::AgentHost::run_(Session& s)
                                        "see, as it is drawn now."};
         look.images = shown;
         s.messages.push_back(std::move(look));
+      }
+      // A program that drew nothing, its guide unread: the guide now.
+      if (s.program_guide_due) {
+        s.program_guide_due = false;
+        s.messages.push_back(
+            {.role = "user",
+             .content = "[Valtz] Your program drew nothing. How a program "
+                        "is written here -- read it before the next "
+                        "try:\n\n" +
+                        _c.skill_text("valtz-procedural")});
       }
     }
     save_(s);
@@ -2299,7 +2484,8 @@ Controller::AgentHost::compact_(Session& s,
 Status
 Controller::AgentHost::say(const std::string& id, const std::string& words,
                            const Json& stage,
-                           const std::vector<AssetId>& attached)
+                           const std::vector<AssetId>& attached,
+                           const Json& render)
 {
   auto s = find_(id);
   if (!s) {
@@ -2326,6 +2512,18 @@ Controller::AgentHost::say(const std::string& id, const std::string& words,
     if (s->state == "stopped") {
       return make_error(Code::InvalidArgument, msg::kAgentStopped);
     }
+    // The card changed since they last spoke (Procedural's Size, Length):
+    // its programs drawn at the new one, and the words said before it
+    // naming no size or length of it -- it was sent at the request alone,
+    // and a session kept drawing clips after the card was set to Still.
+    if (render.is_object() && s->skills == "procedural" &&
+        card_text_(render) != card_text_(s->render)) {
+      s->render = render;
+      s->render_words = s->person_words.size();
+      m.content += "\n[Valtz] The person's card now says: draw " +
+                   card_text_(render) + ". render_program draws at it.";
+    }
+    s->person_words.push_back(words);
     // An answer to its question: the ask's result (what it attached
     // listed in it, for its tools).
     if (s->answer.has_value() || s->state == "asking") {
@@ -2334,6 +2532,8 @@ Controller::AgentHost::say(const std::string& id, const std::string& words,
       s->said.push_back(std::move(m));
     }
     s->pause_asked = false;
+    // The person spoke: its programs may be tried again.
+    s->program_failures = 0;
   }
   s->cv.notify_all();
   return ok_status();
@@ -2781,9 +2981,10 @@ Controller::agent_start(AgentRequest req)
 Status
 Controller::agent_say(const std::string& agent, const std::string& text,
                       const Json& stage,
-                      const std::vector<AssetId>& attached)
+                      const std::vector<AssetId>& attached,
+                      const Json& render)
 {
-  return _agent->say(agent, text, stage, attached);
+  return _agent->say(agent, text, stage, attached, render);
 }
 
 Status

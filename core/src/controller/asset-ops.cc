@@ -32,6 +32,13 @@ constexpr std::array<AssetOpTake, 2> kUpscale = {{
 }};
 constexpr std::array<std::string_view, 1> kUpscaled = {"upscaled"};
 
+// A layer's clip at the rate its timeline shows it (§4u): RIFE.
+constexpr std::array<AssetOpTake, 1> kInterpolate = {{
+  {AssetKind::Video, engine::kOpInterpolateVideo,
+   Capability::InterpolateVideo},
+}};
+constexpr std::array<std::string_view, 1> kInterpolated = {"interpolated"};
+
 // A sound -- a song -- split into its voice and the rest (§4j).
 constexpr std::array<AssetOpTake, 1> kSeparate = {{
   {AssetKind::Audio, engine::kOpSeparateAudio, Capability::AudioSeparate},
@@ -39,12 +46,14 @@ constexpr std::array<AssetOpTake, 1> kSeparate = {{
 constexpr std::array<std::string_view, 2> kStems = {"vocals",
                                                     "accompaniment"};
 
-constexpr std::array<AssetOperation, 4> kOperations = {{
+constexpr std::array<AssetOperation, 5> kOperations = {{
   {"transcribe", "Transcribe", kTranscribe, false, kTranscript},
   {"summarize", "Summarize Video", kSummarize, false, kSummary},
   {"separate", "Separate Vocals and Accompaniment", kSeparate, false,
    kStems},
   {"upscale", "Render Upscaled", kUpscale, true, kUpscaled},
+  {"interpolate", "Render Interpolated", kInterpolate, true,
+   kInterpolated},
 }};
 
 }

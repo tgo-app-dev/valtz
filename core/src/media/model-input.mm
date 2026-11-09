@@ -2490,6 +2490,37 @@ write_stack_frame(const MovieStack& stack, Rational rate,
 }
 
 Status
+write_planar_png16(const float* planes, PixelSize size, const fs::path& out)
+{
+  if (!planes || size.width <= 0 || size.height <= 0) {
+    return make_error(Code::InvalidArgument, "an empty picture");
+  }
+  @autoreleasepool {
+    const std::size_t plane = static_cast<std::size_t>(size.width) *
+                              static_cast<std::size_t>(size.height);
+    NSMutableData* rgba = [NSMutableData dataWithLength:plane * 4 *
+                                                        sizeof(float)];
+    auto* px = static_cast<float*>(rgba.mutableBytes);
+    for (std::size_t i = 0; i < plane; ++i) {
+      for (std::size_t c = 0; c < 3; ++c) {
+        px[i * 4 + c] = std::clamp(planes[c * plane + i], 0.0f, 1.0f);
+      }
+      px[i * 4 + 3] = 1.0f;
+    }
+    CGColorSpaceRef srgb = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+    CIImage* img = [CIImage
+        imageWithBitmapData:rgba
+                bytesPerRow:static_cast<size_t>(size.width) * 4 *
+                            sizeof(float)
+                       size:CGSizeMake(size.width, size.height)
+                     format:kCIFormatRGBAf
+                 colorSpace:srgb];
+    CGColorSpaceRelease(srgb);
+    return write_png16(img, out);
+  }
+}
+
+Status
 write_movie_frame(const fs::path& src, double seconds, const fs::path& out)
 {
   @autoreleasepool {

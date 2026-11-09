@@ -144,8 +144,18 @@ enum SettingsPlace: Hashable, Sendable {
              String(localized: "Clips"), String(localized: "Pictures")]
                 + model.upscalers.map(\.name)
                 + model.upscalers.flatMap { $0.options.map(TuningPanel.title) }
+        case .page(.resampling):
+            [String(localized: "Frame Interpolation"),
+             String(localized: "Render Interpolated"),
+             String(localized: "Interpolate With"),
+             String(localized: "Slow Motion"), String(localized: "Frame Rate"),
+             String(localized: "RIFE")]
+                + model.interpolators.map(\.name)
+                + model.interpolators.flatMap {
+                    $0.options.map(TuningPanel.title)
+                }
         case .page(.experimental):
-            [String(localized: "Agent")]
+            [String(localized: "Agent"), String(localized: "Procedural")]
         case .page(.fleet):
             [String(localized: "This Mac"), String(localized: "Name"),
              String(localized: "Discoverable"), String(localized: "Fleet"),

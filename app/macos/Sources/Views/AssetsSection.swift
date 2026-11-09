@@ -1318,6 +1318,15 @@ private struct AssetRow: View {
                     Button("Show on Stage") { model.showMadeOnStage(a) }
                 }
                 Button("Add to Prompt") { model.addAssetReferences([a.id]) }
+                // A program's drawing, drawn again -- another size, length,
+                // seed -- or a program drawn (DESIGN §4t).
+                if a.isProgramDrawing || a.isProgram {
+                    Button(a.isProgram ? "Render…" : "Render Again…") {
+                        model.openRenderAgain(a)
+                    }
+                    .disabled(model.agentHolds)
+                    .help("Draw its program again, at a size and length you choose")
+                }
                 // A RefMod's own file, for ComfyUI-MiniMaxH3Mod or another
                 // Valtz (DESIGN §4s).
                 if a.kind == "refmod" {

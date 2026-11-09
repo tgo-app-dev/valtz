@@ -15,12 +15,15 @@
 #include "valtz/media/exif.h"
 #include "valtz/media/markup.h"
 #include "valtz/media/text-flow.h"
+#include "valtz/media/model-input.h"
+#include "valtz/media/procedural.h"
 #include "valtz/media/thumbnail.h"
 #include "valtz/media/timing.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <optional>
 #include <set>
@@ -824,18 +827,30 @@ picture_size(double w, double h)
           static_cast<int>(std::clamp(ph, 256.0, 2048.0))};
 }
 
-// The size a SHOT for a frame is made at: the frame's own when it is no
-// bigger than the model's default size (H3's 960 x 544: what it makes
-// best, and what fits the memory), else the frame's shape at that area,
-// on the model's grid -- laid filling the frame.
+// The size a SHOT for a frame is made at, laid filling the frame. Where
+// the model names the short side it makes in ONE pass (`native`: H3's
+// 768P, past which a shot is drafted and regenerated), the frame's own
+// size up to it -- a 768 x 1152 timeline's shots at 768 x 1152, not
+// shrunk to the default's area and zoomed up (reported) -- and past it
+// the frame's shape at that short side, within its 16:9 area. Else the
+// frame's own when it is no bigger than the model's default size, else
+// the frame's shape at that area. On the model's grid.
 std::pair<int, int>
-shot_size(media::PixelSize frame, int w, int h, int grid)
+shot_size(media::PixelSize frame, int w, int h, int grid, int native = 0)
 {
-  const double area = static_cast<double>(w) * h;
   if (frame.width <= 0 || frame.height <= 0) {
     return {w, h};
   }
-  if (static_cast<double>(frame.width) * frame.height <= area * 1.05) {
+  const double fw = frame.width, fh = frame.height;
+  if (native > 0) {
+    const double most = native * (native * 16.0 / 9.0);
+    double k = std::min(1.0, native / std::min(fw, fh));
+    k = std::min(k, std::sqrt(most * 1.05 / (fw * fh)));
+    return {static_cast<int>(round_to(fw * k, grid)),
+            static_cast<int>(round_to(fh * k, grid))};
+  }
+  const double area = static_cast<double>(w) * h;
+  if (fw * fh <= area * 1.05) {
     return {frame.width, frame.height};
   }
   const double aspect = std::clamp(
@@ -3817,14 +3832,20 @@ Controller::AgentHost::tools()
                  {"continue_from", str("a clip's id to carry on from "
                                        "instead")},
                  {"continue_by",
-                  one_of({"latents", "reference"},
+                  one_of({"latents", "cleaned", "reference"},
                          "how it carries on: latents (the default) -- "
                          "LATENT-GUIDED, the clip's end redone from its "
                          "kept latents (else its encoded tail) and gone "
                          "on from: the seam seamless, the scene carried "
                          "by your words alone (describe who is there); "
                          "with `references`, its latents carried beside "
-                         "them -- or reference: its last 3.75 s read "
+                         "them -- or cleaned: latent-guided with the "
+                         "redone end CLEANED, each of its frames restored "
+                         "by an image edit, the noise and blotches a "
+                         "chain of continuations grows fading out over "
+                         "them (no references; a few minutes more), when "
+                         "the person asks for it or says the shots got "
+                         "noisy -- or reference: its last 3.75 s read "
                          "again as a picture and sound (<Video 1>, "
                          "`subjects`), only when the person asks for it")},
                  {"keep_latents", boolean("keep its latents with it, for "
@@ -3873,6 +3894,10 @@ Controller::AgentHost::tools()
                  {"options", options_prop()}},
                 {"from"}),
          &H::t_make_refmod});
+    t.push_back(program_guide_tool());
+    for (auto& x : program_tools()) {
+      t.push_back(std::move(x));
+    }
     t.push_back({"ask_user", "read", "Ask the person",
                  "A question for the person, waiting for their answer. "
                  "Only when you cannot go on without it.",
@@ -3942,6 +3967,11 @@ Controller::AgentHost::chat_tools()
                                       "words")}},
                         {"text"}),
                  &H::t_save_text});
+    // A program drawn adds to the assets too.
+    t.push_back(program_guide_tool());
+    for (auto& x : program_tools()) {
+      t.push_back(std::move(x));
+    }
     return t;
   }();
   return table;
@@ -3951,8 +3981,10 @@ const std::vector<Controller::AgentHost::Tool>&
 Controller::AgentHost::tools_for(std::string_view skills)
 {
   static const std::vector<Tool> none;
-  return skills == "chat" ? chat_tools() : skills == "none" ? none
-                                                            : tools();
+  return skills == "chat"         ? chat_tools()
+         : skills == "procedural" ? procedural_tools()
+         : skills == "none"       ? none
+                                  : tools();
 }
 
 std::vector<agent::ToolSpec>
@@ -3981,7 +4013,10 @@ Controller::AgentHost::tools_json() const
           {"skill", _c.skill_text("valtz-agent")},
           // A chat's (AgentRequest::skills "chat").
           {"chat", {{"tools", listed(chat_tools())},
-                    {"skill", _c.skill_text("valtz-chat")}}}};
+                    {"skill", _c.skill_text("valtz-chat")}}},
+          // A procedural session's (skills "procedural", DESIGN §4t).
+          {"procedural", {{"tools", listed(procedural_tools())},
+                          {"skill", _c.skill_text("valtz-procedural")}}}};
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -11175,10 +11210,18 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
   // its latents carried on Ref2VA -- unless the person asks for the old
   // way, its last seconds read again as a reference.
   const std::string by = option_norm(text_arg(args, "continue_by"));
+  const bool cleaned = by == "cleaned" || by == "clean" ||
+                       by == "cleaning";
   if (!by.empty() && by != "latents" && by != "latent" && by != "guide" &&
-      by != "guided" && by != "reference") {
+      by != "guided" && by != "reference" && !cleaned) {
     return make_error(Code::InvalidArgument,
-                      "continue_by is latents or reference");
+                      "continue_by is latents, cleaned or reference");
+  }
+  if (cleaned && (!continuing || !pictures.empty())) {
+    return make_error(Code::InvalidArgument,
+                      "continue_by cleaned carries on through a clip's "
+                      "end: with continues or continue_from, and no "
+                      "references");
   }
   const bool by_reference = by == "reference";
   const std::string want = text_arg(args, "model");
@@ -11332,10 +11375,10 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
     frames = guided_frames(*m, frames);
   }
   const double length = frames / fps;
-  // Its size: the frame's, at the model's default area at most -- or,
-  // HIGH-RES, the frame's own (2560 on its long side at most): past the
-  // size the model was trained at, drafted there and regenerated by its
-  // refiner (DESIGN §4q), which must be here.
+  // Its size: the frame's, up to the short side the model makes in one
+  // pass (H3's 768P) -- or, HIGH-RES, the frame's own (2560 on its long
+  // side at most): past the size the model was trained at, drafted there
+  // and regenerated by its refiner (DESIGN §4q), which must be here.
   const int align = std::max(16, jget(vp, "align", 16));
   std::pair<int, int> size{jget(defaults, "width", 960),
                            jget(defaults, "height", 544)};
@@ -11346,12 +11389,15 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
                       "the timeline (or work on one)");
   }
   bool regenerated = false;
+  std::optional<media::PixelSize> shot_frame;
   if (comp) {
     VALTZ_ASSIGN(media::PixelSize frame, _c.own_frame(s.project, *comp));
-    const auto plain = shot_size(frame, size.first, size.second, align);
-    size = high ? frame_on_grid(frame, align, 2560) : plain;
+    shot_frame = frame;
     const Json rg = jget(vp, "regenerate", Json());
     const int above = jget(rg, "above", 768);
+    const auto plain = shot_size(frame, size.first, size.second, align,
+                                 rg.is_object() ? above : 0);
+    size = high ? frame_on_grid(frame, align, 2560) : plain;
     if (high && std::min(size.first, size.second) > above) {
       if (!rg.is_object() || !_c.refiner_of_(*m)) {
         return make_error(Code::Unsupported, std::format(
@@ -11435,11 +11481,29 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
   // From the latents the clip kept (none, or not covering its end: made
   // without, submit_shot_); its own kept, for the shot after it.
   req.continue_latents = continuing && !by_reference;
+  if (cleaned && !guided) {
+    return make_error(Code::InvalidArgument,
+                      std::format("continue_by cleaned needs a model "
+                                  "guided through the clip's end (MiniMax "
+                                  "H3 FL2VA), not {}", m->name));
+  }
+  req.clean_guide = cleaned;
   req.keep_latents = flag(args, "keep_latents", comp.has_value());
   Json r = {{"queued", true},
             {"seconds", secs(length)},
             {"size", {size.first, size.second}},
             {"model", m->name}};
+  // Made smaller than the frame it fills: said, so it is not read as
+  // the frame's own.
+  if (shot_frame && !guided && (size.first < shot_frame->width ||
+                                size.second < shot_frame->height)) {
+    r["fills"] = std::format(
+        "made at {} x {} -- the most the model makes in one pass at this "
+        "shape -- and scaled up to fill the {} x {} frame{}",
+        size.first, size.second, shot_frame->width, shot_frame->height,
+        high ? "" : " (high_res: drafted and regenerated at the frame's "
+                    "own size)");
+  }
   if (regenerated) {
     r["high_res"] = std::format(
         "drafted at {} on its short side and regenerated at {} x {}: "
@@ -11613,6 +11677,25 @@ Controller::AgentHost::t_generate_video(Session& s, Step& step,
     }
   }
   req.continue_from = from;
+  // Guided, it is made at the size of the clip it continues -- the size
+  // its latents are -- whatever the frame.
+  if (guided && from) {
+    if (auto own = _c.own_frame(s.project, *from);
+        own.ok() && own->width > 0 && own->height > 0) {
+      r["size"] = {own->width, own->height};
+      r.erase("fills");
+      if (shot_frame && (own->width < shot_frame->width ||
+                         own->height < shot_frame->height)) {
+        r["fills"] = std::format(
+            "made at {} x {}, the size of the clip it carries on from "
+            "(its latents are that size), and scaled up to fill the {} x "
+            "{} frame; a shot that does not continue is made at the "
+            "frame's size (768 on its short side at most)",
+            own->width, own->height, shot_frame->width,
+            shot_frame->height);
+      }
+    }
+  }
   const std::string subjects = text.subjects;
   std::string how;
   VALTZ_ASSIGN(JobId job, submit_shot_(s, step.title, std::move(req),
@@ -11869,20 +11952,32 @@ Controller::AgentHost::submit_shot_(Session& s, const std::string& title,
   GenerateVideoRequest again = carried ? req : GenerateVideoRequest{};
   auto made = _c.generate_video(std::move(req));
   bool kept = carried;
+  const bool cleaning = carried && again.clean_guide;
   if (!made.ok() && carried && latents_refused(made.error())) {
     again.continue_latents = false;
+    again.clean_guide = false;
     kept = false;
     made = _c.generate_video(std::move(again));
   }
   VALTZ_ASSIGN(JobId job, std::move(made));
-  if (how && guided) {
+  if (how && guided && kept && cleaning) {
+    *how = std::format("latent-guided and CLEANED: its last {} frames "
+                       "redone from the latents it kept, each restored by "
+                       "an image edit, the noise fading out over them -- "
+                       "shown over the shot before's last frames -- then "
+                       "on",
+                       guide_frames(*m));
+  } else if (how && guided) {
     *how = kept ? std::format("latent-guided: its last {} frames redone "
                               "from the latents it kept, then on",
                               guide_frames(*m))
                 : std::format("latent-guided: its last {} frames encoded "
                               "(it kept no latents that cover its end) "
-                              "and redone, then on",
-                              guide_frames(*m));
+                              "and redone, then on{}",
+                              guide_frames(*m),
+                              cleaning ? " -- NOT cleaned: cleaning needs "
+                                         "the latents it kept"
+                                       : "");
   } else if (how && continuing) {
     *how = kept ? "its latents carried beside its last seconds, read as a "
                   "reference"
@@ -12007,6 +12102,555 @@ Controller::AgentHost::release_held_(Session& s, int after,
       release_held_(s, h.step, std::nullopt, "");
     }
   }
+}
+
+// ---- programs drawn (DESIGN §4t) --------------------------------------------
+
+namespace {
+
+// The numbers a person's words name: every one -- a size is two of them
+// -- and those before a unit of time, a LENGTH in seconds ("10 s",
+// "10-second", "2 min", "10秒"), or before "fps", a RATE. What their
+// card's size or length gives way to (render_program_): a number with
+// no unit is no length -- "10 stars" asks for no 10 s clip.
+struct NamedNumbers {
+  std::vector<double> any;
+  std::vector<double> seconds;
+  std::vector<double> rates;
+
+  static bool has(const std::vector<double>& v, double x)
+  {
+    return std::ranges::any_of(
+        v, [&](double n) { return std::abs(n - x) < 1e-3; });
+  }
+};
+
+NamedNumbers
+named_numbers(const std::vector<std::string>& words)
+{
+  NamedNumbers out;
+  auto digit = [](std::string_view t, std::size_t k) {
+    return k < t.size() && t[k] >= '0' && t[k] <= '9';
+  };
+  auto letter = [](std::string_view t, std::size_t k) {
+    return k < t.size() &&
+           std::isalpha(static_cast<unsigned char>(t[k])) != 0;
+  };
+  for (const auto& w : words) {
+    const std::string_view t = w;
+    for (std::size_t i = 0; i < t.size();) {
+      // A number standing alone: not a word's digits ("h264", "r186") --
+      // but a size's second ("1920x1080").
+      const bool after_x = i > 0 && (t[i - 1] == 'x' || t[i - 1] == 'X');
+      if (!digit(t, i) ||
+          (i > 0 && !after_x && (letter(t, i - 1) || digit(t, i - 1)))) {
+        ++i;
+        continue;
+      }
+      std::string n;
+      std::size_t j = i;
+      for (;;) {
+        while (digit(t, j)) {
+          n += t[j++];
+        }
+        // "1,920": a thousands comma; "2,5" ends the number.
+        if (j < t.size() && t[j] == ',' && digit(t, j + 1) &&
+            digit(t, j + 2) && digit(t, j + 3) && !digit(t, j + 4)) {
+          ++j;
+          continue;
+        }
+        break;
+      }
+      if (j + 1 < t.size() && t[j] == '.' && digit(t, j + 1)) {
+        n += t[j++];
+        while (digit(t, j)) {
+          n += t[j++];
+        }
+      }
+      const double v = std::strtod(n.c_str(), nullptr);
+      out.any.push_back(v);
+      std::size_t k = j;
+      while (k < t.size() && (t[k] == ' ' || t[k] == '-')) {
+        ++k;
+      }
+      std::string unit;
+      for (std::size_t m = k; m < t.size() && unit.size() < 8; ++m) {
+        unit += static_cast<char>(
+            std::tolower(static_cast<unsigned char>(t[m])));
+      }
+      auto starts = [&](std::string_view u) { return unit.starts_with(u); };
+      if (starts("fps") || starts("帧")) {
+        out.rates.push_back(v);
+      } else if (starts("min") || starts("分")) {
+        out.seconds.push_back(v * 60);
+      } else if ((starts("s") && !letter(t, k + 1)) || starts("sec") ||
+                 starts("sek") || starts("seg") || starts("秒")) {
+        out.seconds.push_back(v);
+      }
+      i = j;
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+std::string
+Controller::AgentHost::card_text_(const Json& render)
+{
+  if (!render.is_object()) {
+    return {};
+  }
+  const int w = jget(render, "width", 0);
+  const int h = jget(render, "height", 0);
+  const double secs = jget(render, "seconds", 0.0);
+  const double fps = jget(render, "fps", 0.0);
+  const bool sized = w > 0 && h > 0;
+  if (!sized && !render.contains("seconds")) {
+    return {};
+  }
+  std::string t = sized ? std::format("at {} x {} pixels, ", w, h) : "";
+  t += secs > 0 ? std::format("a clip of {:.3g} s{}", secs,
+                              fps > 0 ? std::format(" at {:.3g} fps", fps)
+                                      : std::string())
+                : std::string("a still");
+  return t;
+}
+
+std::vector<Controller::AgentHost::Tool>
+Controller::AgentHost::program_tools()
+{
+  using H = AgentHost;
+  std::vector<Tool> t;
+  t.push_back(
+      {"render_program", "generate", "Draw a program",
+       "Draw a PROGRAM: JavaScript a sandboxed web page runs -- a canvas "
+       "(2D, WebGL, WebGPU), SVG, HTML, <video>; three.js (import * as "
+       "THREE from 'three' -- or 'three/webgpu', 'three/tsl' -- its "
+       "addons from 'three/addons/...') or Babylon.js (the global "
+       "BABYLON) -- its frames taken as a picture (a still) or a clip "
+       "(`seconds`), a clip's soundtrack from valtz.audio (an "
+       "OfflineAudioContext the clip's length). The page is "
+       "valtz.width x valtz.height pixels, clear; valtz.canvas a canvas "
+       "filling it; "
+       "valtz.onFrame((t, i) => ...) draws each frame at t seconds "
+       "(requestAnimationFrame too, on the clip's own clock); "
+       "Math.random seeded. No network, no files: make textures in "
+       "code. The program and its drawing are kept as assets of the "
+       "project (in Assets, not placed). Answers what the page said -- "
+       "its console, each error with its line -- and shows you the "
+       "picture, or frames of the clip.",
+       schema({{"code", str("the program: an ES module of plain "
+                            "JavaScript, whole")},
+               {"name", str("what it shows, a few words")},
+               {"program", str("a program's id (read_program): `code` "
+                               "becomes its next version -- or, with no "
+                               "code, it is drawn again as it is")},
+               {"assets", ids("the project's assets it reads (ids or "
+                              "names): pictures, clips, sounds, texts -- "
+                              "valtz.image(name), valtz.frame(name, t), "
+                              "valtz.text(name), valtz.bytes(name). "
+                              "Omitted: those the person gave you")},
+               {"new", boolean("a program of its own, beside the one "
+                               "you draw now: another picture asked for. "
+                               "By default, in a session that draws "
+                               "programs, each call is the next version "
+                               "of the one it drew last")},
+               {"width", integer("pixels; the session's size by default "
+                                 "-- the person's card, which a size the "
+                                 "person did not name in words does not "
+                                 "change")},
+               {"height", integer("pixels")},
+               {"seconds", num("a clip this long; 0 a still; the "
+                               "session's by default -- the person's "
+                               "card, which a length they did not name "
+                               "in words does not change")},
+               {"fps", num("a clip's frames a second; the project's by "
+                           "default")},
+               {"seed", integer("Math.random's seed: the same draws the "
+                                "same; another, another take")}},
+              {}),
+       &H::t_render_program});
+  t.push_back({"read_program", "read", "Read a program",
+               "The code of a PROGRAM -- or of any text asset: to change "
+               "it, then `render_program` with `program` its id.",
+               schema({{"asset", str("the program's id")}}, {"asset"}),
+               &H::t_read_program});
+  return t;
+}
+
+const std::vector<Controller::AgentHost::Tool>&
+Controller::AgentHost::procedural_tools()
+{
+  static const std::vector<Tool> table = [] {
+    std::vector<Tool> t = program_tools();
+    // The full table's that look, and ask.
+    static constexpr std::string_view kKept[] = {
+        "get_project", "view_asset", "view_frames", "get_exif",
+        "ask_user"};
+    for (const auto name : kKept) {
+      for (const auto& x : tools()) {
+        if (x.name == name) {
+          t.push_back(x);
+        }
+      }
+    }
+    return t;
+  }();
+  return table;
+}
+
+Controller::AgentHost::Tool
+Controller::AgentHost::program_guide_tool()
+{
+  return {"program_guide", "read", "Read how to draw programs",
+          "How to write a PROGRAM `render_program` draws: the page and its "
+          "size, the libraries there (three.js, Babylon.js, WebGPU), "
+          "time and a clip's frames, sound, the person's assets read by "
+          "name, randomness, what goes wrong. Read it once, before your "
+          "first program in a conversation.",
+          schema(Json::object()), &AgentHost::t_program_guide};
+}
+
+Result<Json>
+Controller::AgentHost::t_program_guide(Session& s, Step&, const Json&,
+                                       std::vector<fs::path>&)
+{
+  {
+    std::lock_guard lk(s.mu);
+    s.program_guided = true;
+  }
+  return Json{{"guide", _c.skill_text("valtz-procedural")}};
+}
+
+Result<Json>
+Controller::AgentHost::t_read_program(Session& s, Step&, const Json& args,
+                                      std::vector<fs::path>&)
+{
+  const auto t = text_arg(args, "asset");
+  const auto id = AssetId::parse(t);
+  if (!id) {
+    return make_error(Code::InvalidArgument,
+                      t.empty() ? std::string("which program?")
+                                : std::format("'{}' is not an asset id", t));
+  }
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(*id));
+  if (a.kind != AssetKind::Text) {
+    return make_error(Code::InvalidArgument, std::format(
+        "\"{}\" is a {}, not a program", a.name, project::to_str(a.kind)));
+  }
+  VALTZ_ASSIGN(std::string code, p->read_text(*id));
+  Json r = {{"asset", id->str()}, {"name", a.name},
+            {"program", Controller::is_program(a)}};
+  constexpr std::size_t kMost = 200000;
+  if (code.size() > kMost) {
+    r["code"] = std::string(utf8_prefix(code, kMost));
+    r["note"] = "Cut at 200,000 bytes.";
+  } else {
+    r["code"] = std::move(code);
+  }
+  return r;
+}
+
+Result<Json>
+Controller::AgentHost::t_render_program(Session& s, Step& step,
+                                        const Json& args,
+                                        std::vector<fs::path>& shown)
+{
+  auto r = render_program_(s, step, args, shown);
+  // A program of the editor's agent or a chat that drew nothing, the
+  // guide not read (it is told of it, not given it): the guide handed
+  // over after the turn's results, once -- a helper's first program was
+  // written for a page of its own (document.getElementById('canvas')).
+  if (!r.ok() && s.skills != "procedural") {
+    std::lock_guard lk(s.mu);
+    s.program_guide_due = !s.program_guided;
+    s.program_guided = true;
+  }
+  return r;
+}
+
+Result<Json>
+Controller::AgentHost::render_program_(Session& s, Step& step,
+                                       const Json& args,
+                                       std::vector<fs::path>& shown)
+{
+  ProceduralRequest req;
+  req.project = s.project;
+  req.code = text_arg(args, "code");
+  if (const auto t = text_arg(args, "program"); !t.empty()) {
+    const auto id = AssetId::parse(t);
+    if (!id) {
+      return make_error(Code::InvalidArgument,
+                        std::format("'{}' is not an asset id", t));
+    }
+    req.program = *id;
+  }
+  // A procedural session draws its program again, as its next version,
+  // unless it asks for a new one (a helper gave each try a new name:
+  // four programs and four pictures where one of each was meant).
+  if (!req.program && s.skills == "procedural" && s.program &&
+      !flag(args, "new")) {
+    if (auto* p = _c.project(s.project); p && p->asset(*s.program).ok()) {
+      req.program = s.program;
+    }
+  }
+  if (req.program) {
+    if (auto it = s.drawn.find(*req.program); it != s.drawn.end()) {
+      req.drawing = it->second;
+    }
+  }
+  if (one_line(req.code).empty() && !req.program) {
+    return make_error(Code::InvalidArgument,
+                      "no program: `code`, or a program's id");
+  }
+  {
+    std::lock_guard lk(s.mu);
+    if (s.program_failures >= 5) {
+      return make_error(Code::InvalidArgument,
+                        "five tries in a row drew nothing: stop here, and "
+                        "tell the person what you tried and what went "
+                        "wrong");
+    }
+  }
+  // What it reads: the assets named -- by id or name -- else, in a
+  // session that draws programs, those the person gave it: the request's
+  // row and what they attached since.
+  if (auto* p = _c.project(s.project)) {
+    auto list = p->assets();
+    if (args.is_object() && args.contains("assets") &&
+        args["assets"].is_array()) {
+      for (const auto& v : args["assets"]) {
+        const std::string t = v.is_string() ? v.get<std::string>() : "";
+        std::optional<AssetId> id = AssetId::parse(t);
+        if (!id && list.ok()) {
+          for (const auto& a : *list) {
+            if (a.name == t) {
+              id = a.id;
+            }
+          }
+        }
+        if (!id) {
+          return make_error(Code::InvalidArgument, std::format(
+              "no asset \"{}\": get_project lists them", t));
+        }
+        req.assets.push_back(*id);
+      }
+    } else if (s.skills == "procedural") {
+      std::lock_guard lk(s.mu);
+      req.assets = s.row;
+      for (const auto& m : s.messages) {
+        for (const auto& t : m.attached) {
+          if (auto id = AssetId::parse(t)) {
+            req.assets.push_back(*id);
+          }
+        }
+      }
+      // Only what a program reads.
+      std::erase_if(req.assets, [&](const AssetId& id) {
+        auto a = p->asset(id);
+        const bool composed = a.ok() && a->cls != AssetClass::Flat &&
+                              a->cls != AssetClass::Generated;
+        return !a.ok() || Controller::is_program(*a) ||
+               (a->kind != AssetKind::Image &&
+                a->kind != AssetKind::Video &&
+                a->kind != AssetKind::Audio &&
+                a->kind != AssetKind::Text) ||
+               (composed && (a->kind == AssetKind::Video ||
+                             a->kind == AssetKind::Audio));
+      });
+    }
+  }
+  req.name = one_line(text_arg(args, "name"));
+  // Its size and length: what it is given, else the session's (the
+  // person's card), else the composition it works on, a still. A card
+  // the person SET wins over what the model gives where their words
+  // since name none of it: a helper asked for a 10 s clip of its own
+  // with the card at Still (2026-11-08).
+  Json card;
+  std::vector<std::string> said;
+  {
+    std::lock_guard lk(s.mu);
+    card = s.render;
+    if (s.render_words < s.person_words.size()) {
+      said.assign(s.person_words.begin() +
+                      static_cast<std::ptrdiff_t>(s.render_words),
+                  s.person_words.end());
+    }
+  }
+  const bool set = jget(card, "card", false);
+  const NamedNumbers named = set ? named_numbers(said) : NamedNumbers{};
+  const int card_w = jget(card, "width", 0);
+  const int card_h = jget(card, "height", 0);
+  std::string held;  // what of the model's was not taken, in words
+  int w = static_cast<int>(number(args, "width", 0));
+  int h = static_cast<int>(number(args, "height", 0));
+  if (set && card_w > 0 && card_h > 0 && w > 0 && h > 0 &&
+      (w != card_w || h != card_h) &&
+      !(NamedNumbers::has(named.any, w) && NamedNumbers::has(named.any, h))) {
+    held = std::format("{} x {}", w, h);
+    w = card_w;
+    h = card_h;
+  }
+  if (w <= 0 || h <= 0) {
+    w = card_w;
+    h = card_h;
+  }
+  if ((w <= 0 || h <= 0) && s.target) {
+    if (auto f = _c.own_frame(s.project, *s.target); f.ok()) {
+      w = f->width;
+      h = f->height;
+    }
+  }
+  req.width = w > 0 ? w : 1024;
+  req.height = h > 0 ? h : 1024;
+  const double card_secs = jget(card, "seconds", 0.0);
+  req.seconds = number(args, "seconds", card_secs);
+  if (set && card.contains("seconds") &&
+      std::abs(req.seconds - card_secs) > 1e-3 &&
+      !(req.seconds > 0 && NamedNumbers::has(named.seconds, req.seconds))) {
+    held += std::format("{}{}", held.empty() ? "" : ", ",
+                        req.seconds > 0
+                            ? std::format("a {:.3g} s clip", req.seconds)
+                            : std::string("a still"));
+    req.seconds = card_secs;
+  }
+  const double card_fps = jget(card, "fps", 0.0);
+  req.fps = number(args, "fps", card_fps);
+  if (set && req.seconds > 0 && req.fps > 0 &&
+      std::abs(req.fps - card_fps) > 1e-3 &&
+      !NamedNumbers::has(named.rates, req.fps)) {
+    held += std::format("{}{:.3g} fps", held.empty() ? "" : ", ", req.fps);
+    req.fps = card_fps;
+  }
+  if (const double seed = number(args, "seed", -1); seed >= 0) {
+    req.seed = static_cast<std::uint64_t>(seed);
+  }
+
+  auto undo = _c.command_(s.project, "agent", {}, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  VALTZ_ASSIGN(ProceduralJob j, _c.procedural_define_(req));
+  // Its job said while it draws: the app watches its frames come.
+  step.job = j.job;
+  {
+    std::lock_guard lk(s.mu);
+    if (step.n >= 1 && step.n <= static_cast<int>(s.steps.size())) {
+      s.steps[static_cast<std::size_t>(step.n - 1)].job = j.job;
+    }
+  }
+  post_(s, step.n);
+  // The session stopped: its drawing too.
+  std::atomic<bool> over{false};
+  std::thread watch([&] {
+    while (!over.load()) {
+      if (s.cancel.load()) {
+        j.stop->store(true);
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  });
+  std::vector<media::ProgramLog> log;
+  auto out = _c.procedural_run_(j, &log);
+  over = true;
+  watch.join();
+  {
+    std::lock_guard lk(s.mu);
+    s.program_failures = out.ok() ? 0 : s.program_failures + 1;
+  }
+
+  // What the page said, as lines: errors first, then the rest.
+  Json lines = Json::array();
+  for (const char* level : {"error", "warn", "log"}) {
+    for (const auto& l : log) {
+      if (l.level == level && lines.size() < 40) {
+        lines.push_back(media::to_text(l));
+      }
+    }
+  }
+  if (!out.ok()) {
+    std::string why = out.error().message;
+    for (const auto& l : lines) {
+      why += "\n" + l.get<std::string>();
+    }
+    return make_error(out.error().code, why);
+  }
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  {
+    std::lock_guard lk(s.mu);
+    s.program = out->program;
+    s.drawn[out->program] = out->asset;
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(out->asset));
+  const int frames = j.render.frames;
+  const double fps = j.render.fps.to_double();
+  Json r = {{"asset", out->asset.str()},
+            {"program", out->program.str()},
+            {"name", a.name},
+            {"kind", frames > 0 ? "clip" : "picture"},
+            {"width", j.render.width},
+            {"height", j.render.height},
+            {"seed", j.render.seed},
+            {"version", a.head},
+            {"errors", out->run.errors}};
+  if (frames > 0) {
+    r["seconds"] = frames / fps;
+    r["frames"] = frames;
+    r["fps"] = fps;
+  }
+  if (!lines.empty()) {
+    r["log"] = std::move(lines);
+  }
+  std::string note;
+  // What it asked for and did not get: said, for it to tell the person.
+  if (!held.empty()) {
+    note += "Drawn " + card_text_(r) +
+            ", as the person's card says -- not the " + held +
+            " you gave: their words name no such size or length. If they "
+            "want another, they set the card's Size or Length, or say it "
+            "(\"a 10 s loop\"). ";
+  }
+  // Shown as it is drawn: the picture, or a clip's start, middle, end.
+  if (!s.backend->sees()) {
+    r["shown"] = false;
+    note += "You cannot see pictures: only what the page said.";
+  } else {
+    VALTZ_ASSIGN(fs::path file, p->media_path(out->asset));
+    if (frames == 0) {
+      const fs::path small = s.dir / std::format("program-{}.png", step.n);
+      VALTZ_TRY(media::write_thumbnail(file, media::MediaType::Image, 1024,
+                                       small));
+      shown.push_back(small);
+      note += "The picture follows.";
+    } else {
+      const double len = frames / fps;
+      std::string at;
+      for (const double t : {0.0, len / 2, std::max(0.0, len - 1 / fps)}) {
+        const fs::path frame =
+            s.dir / std::format("program-{}-{:.2f}.png", step.n, t);
+        const fs::path small =
+            s.dir / std::format("program-{}-{:.2f}.jpg", step.n, t);
+        if (media::write_movie_frame(file, t, frame).ok() &&
+            media::write_thumbnail(frame, media::MediaType::Image, 640,
+                                   small)
+                .ok()) {
+          shown.push_back(small);
+          at += (at.empty() ? "" : ", ") + std::format("{:.2f} s", t);
+        }
+      }
+      note += "Its frames at " + at + " follow.";
+    }
+    r["shown"] = true;
+  }
+  r["note"] = note;
+  return r;
 }
 
 }  // namespace valtz

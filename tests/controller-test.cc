@@ -15,6 +15,7 @@
 #include "valtz/media/model-input.h"
 #include "valtz/media/movie.h"
 #include "valtz/media/pdf.h"
+#include "valtz/media/procedural.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/sound.h"
 #include "valtz/media/stamp.h"
@@ -1089,7 +1090,13 @@ class HeldEngine final : public engine::Engine {
 public:
   std::string description() const override { return "held"; }
   bool available() const override { return true; }
-  bool supports(std::string_view) const override { return true; }
+  // What an older vpipe lacks (kOpRegenerateInContext, ...): none here.
+  std::set<std::string, std::less<>> lacks;
+  bool
+  supports(std::string_view op) const override
+  {
+    return !lacks.contains(op);
+  }
 
   // Where downloads come from, as vpipe's table says it: its sources,
   // and the repos one does not carry ("<source>|<repo>").
@@ -1824,7 +1831,8 @@ TEST(controller, a_song_is_split_into_its_voice_and_accompaniment)
     }
   }
   CHECK((names == std::vector<std::string>{"transcribe", "summarize",
-                                           "separate", "upscale"}));
+                                           "separate", "upscale",
+                                           "interpolate"}));
   REQUIRE(separate.is_object());
   CHECK(!jget(separate, "on_layer", true));
   CHECK(separate["makes"] == Json::array({"vocals", "accompaniment"}));
@@ -10134,22 +10142,28 @@ TEST(controller, upscalers_run_as_settings_have_them)
   };
   CHECK((offered(fv) == std::vector<std::string>{"sage_attn", "i8_gemm",
                                                  "color_fix"}));
-  CHECK((offered(vo) == std::vector<std::string>{"sol_attn",
-                                                 "sol_threshold", "sol_tau",
-                                                 "sage_attn", "i8_gemm"}));
-  // Med's: int8 GEMMs where the GPU has matrix cores, the rest off.
+  CHECK((offered(vo) == std::vector<std::string>{
+             "sol_attn", "sol_threshold", "sol_tau", "sage_attn", "i8_gemm",
+             "color_fix", "tiles", "tile_overlap"}));
+  // Med's: int8 GEMMs where the GPU has matrix cores, the rest off; the
+  // release's colour fix (wavelet) on its trained tiles.
   CHECK(vo["tuning"]["values"]["i8_gemm"] == m5);
   CHECK(vo["tuning"]["values"]["sol_attn"] == false);
+  CHECK(vo["tuning"]["values"]["color_fix"] == "wavelet");
+  CHECK(vo["tuning"]["values"]["tiles"] == "trained");
+  CHECK(vo["tuning"]["values"]["tile_overlap"] == 32);
   // Set: Sol on at a threshold of its own, int8 off. The threshold's
   // default is not kept.
   REQUIRE_OK(ctl.set_upscale_tuning("vosr", {{"sol_attn", true},
                                              {"sol_tau", 1.0}}));
   REQUIRE_OK(ctl.set_upscale_tuning("vosr", {{"i8_gemm", !m5}}));
+  REQUIRE_OK(ctl.set_upscale_tuning("vosr", {{"color_fix", "adain"}}));
   {
     const Json v = find("vosr");
     CHECK(jget(v, "custom", false));
     CHECK(v["tuning"]["values"]["sol_attn"] == true);
     CHECK(v["tuning"]["values"]["i8_gemm"] == !m5);
+    CHECK(v["tuning"]["values"]["color_fix"] == "adain");
   }
   CHECK(ctl.set_upscale_tuning("krea2-turbo", Json::object()).code() ==
         Code::InvalidArgument);
@@ -10182,6 +10196,7 @@ TEST(controller, upscalers_run_as_settings_have_them)
   const Json t = jget(spec->params, "tuning", Json());
   CHECK(t["sol_attn"] == true);
   CHECK(t["i8_gemm"] == !m5);
+  CHECK(t["color_fix"] == "adain");
   CHECK(!t.contains("loras") && !t.contains("steps"));
   // Kept for a later run over the same support folder.
   ControllerConfig again = cfg;
@@ -10203,6 +10218,18 @@ TEST(controller, upscalers_run_as_settings_have_them)
   REQUIRE_OK(ctl.set_upscale_tuning("vosr", Json::object(), true));
   CHECK(!jget(find("vosr"), "custom", true));
   CHECK(find("vosr")["tuning"]["values"]["sol_attn"] == false);
+
+  // What it needs beside it, by name: nothing while DINOv2 is here; its
+  // DINOv2 -- not the refiner's latent upscaler and FL2VA, which the page
+  // said of VOSR (reported) -- once it is gone.
+  CHECK(jget(find("vosr"), "ready", false));
+  CHECK(jget(find("vosr"), "needs", Json::array()).empty());
+  fs::remove_all(root / "models" / "facebook" / "dinov2-large");
+  ctl.rescan_models();
+  const Json lacking = find("vosr");
+  CHECK(!jget(lacking, "ready", true));
+  CHECK(jget(lacking, "needs", Json::array()) ==
+        Json::array({"DINOv2 Large"}));
 }
 
 // WHICH UPSCALER a kind runs (Settings › Upscaling): Auto's -- the best
@@ -10466,6 +10493,145 @@ TEST(controller, a_video_upscaler_is_auto_or_picked)
   REQUIRE_OK(ctl.use_upscaler("video", "auto"));
   CHECK(video(ctl.upscale_settings())["chosen"] == "");
   CHECK(menu() == "flashvsr-plus-base");
+}
+
+// RENDER INTERPOLATED (DESIGN §4u): a layer's clip made at the rate its
+// timeline shows it -- the timeline's over its slowest speed -- by the
+// RIFE Settings › Temporal Resampling picks (Auto: the best downloaded),
+// its flow scale and scene cut as kept there; landed on its layer as an
+// upscale is. Refused where its frames are enough, where no RIFE is
+// here, on a composition. A RIFE's download is its makers' URL, not a
+// hub's: the job says the URL, its hash, the files kept, the folder.
+TEST(controller, a_layers_clip_is_interpolated_to_its_timelines_rate)
+{
+  auto root = test::temp_dir("ctl-interpolate");
+  const fs::path models = root / "models";
+  auto put = [&](const char* file) {
+    const fs::path f = models / file;
+    fs::create_directories(f.parent_path());
+    std::ofstream(f) << "w";
+  };
+  put("hzwer/Practical-RIFE/4.26/flownet.pkl");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {models};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  // Settings: 4.25 not here, Auto's is 4.26; each takes its two options.
+  Json st = ctl.interpolate_settings();
+  CHECK(st["auto"] == "rife-4.26");
+  CHECK(st["runs"] == "rife-4.26");
+  CHECK(st["interpolators"].size() == 5);
+  for (const auto& u : st["interpolators"]) {
+    std::set<std::string> keys;
+    for (const auto& o : u["tuning"]["options"]) {
+      keys.insert(o["key"].get<std::string>());
+    }
+    CHECK(keys == std::set<std::string>({"flow_scale", "scene_threshold"}));
+    CHECK(u["source"]["host"] == "Google Drive");
+  }
+  REQUIRE_OK(ctl.set_interpolate_tuning("rife-4.26",
+                                        {{"flow_scale", "half"}}));
+  CHECK(ctl.use_interpolator("flashvsr").code() == Code::InvalidArgument);
+  REQUIRE_OK(ctl.use_interpolator("rife-4.25"));
+  st = ctl.interpolate_settings();
+  CHECK(st["chosen"] == "rife-4.25");
+  CHECK(st["runs"] == "rife-4.26");  // 4.25 not downloaded: Auto's
+
+  // A RIFE's download: its makers' URL, checked, into its folder.
+  REQUIRE_OK(ctl.download_model("rife-4.25"));
+  const auto downloads = engine->held_of(engine::kOpFetchModel);
+  REQUIRE(downloads.size() == 1);
+  const engine::JobSpec* dl = engine->spec(downloads[0]);
+  REQUIRE(dl != nullptr);
+  const Json src = jget(dl->params, "url_source", Json());
+  CHECK(jget<std::string>(src, "url", "").starts_with(
+      "https://drive.usercontent.google.com/download?id="));
+  CHECK(jget<std::string>(src, "sha256", "").size() == 64);
+  CHECK(src["take"] == Json({"flownet.pkl", "RIFE_HDv3.py",
+                              "IFNet_HDv3.py"}));
+  CHECK(fs::path(jget<std::string>(dl->params, "dest", "")) ==
+        models / "hzwer" / "Practical-RIFE" / "4.25");
+  CHECK(!dl->params.contains("hf_path"));
+  REQUIRE_OK(engine->cancel(downloads[0]));
+
+  // A 24 fps clip on a 24 fps timeline, slowed to half.
+  auto pid = ctl.create_project(root / "I.valtz", "interp");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 64, 32, {0xff, 0x20, 0x20, 0xff}));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  REQUIRE(red);
+  auto shot = ctl.create_composition(
+      *pid, project::AssetClass::Composition, {64, 32}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto in_shot = ctl.instantiate(*pid, *red, *shot);
+  REQUIRE_OK(in_shot);
+  project::LayerTime t24;
+  t24.duration = 24;
+  REQUIRE_OK(ctl.set_layer_time(*pid, *shot, in_shot->second, t24));
+  auto movie = ctl.rendered(*pid, *shot);
+  REQUIRE_OK(movie);
+  fs::copy_file(*movie, root / "clip.mov");
+  auto clip = import_and_wait(ctl, *pid, root / "clip.mov");
+  REQUIRE(clip);
+  auto tl = ctl.create_composition(
+      *pid, project::AssetClass::Composition, {64, 32}, {24, 1}, "tl");
+  REQUIRE_OK(tl);
+  auto on = ctl.instantiate(*pid, *clip, *tl);
+  REQUIRE_OK(on);
+  const std::string layer = on->second;
+  Controller::AssetOpRequest req;
+  req.project = *pid;
+  req.asset = *tl;
+  req.layer = layer;
+  req.operation = "interpolate";
+  // At its own rate: nothing to make.
+  auto none = ctl.run_asset_operation(req);
+  REQUIRE(!none.ok());
+  CHECK(none.error().key == "core.interpolate_nothing");
+  media::KeyedSpeed half;
+  half.keys.push_back({0, {0.5}});
+  REQUIRE_OK(ctl.set_speed_keys(*pid, *tl, half, layer));
+  auto job = ctl.run_asset_operation(req);
+  REQUIRE_OK(job);
+  const auto held = engine->held_of(engine::kOpInterpolateVideo);
+  REQUIRE(held.size() == 1);
+  const engine::JobSpec* s = engine->spec(held[0]);
+  REQUIRE(s != nullptr);
+  CHECK(s->model.id == "rife-4.26");
+  // Its folder (or its flownet.pkl): vpipe reads either.
+  CHECK(s->model.dir.string().find("Practical-RIFE/4.26") !=
+        std::string::npos);
+  CHECK(jget(s->params, "fps", 0.0) == 48.0);
+  CHECK(jget(s->params, "first", -1) == 0);
+  CHECK(jget(s->params, "count", 0) == 24);
+  CHECK(jget<std::string>(jget(s->params, "tuning", Json()), "flow_scale",
+                          "") == "half");
+  // Landed: the layer shows it, at its own rate; its speed kept.
+  const AssetId made_id = job->made.front();
+  engine->finish(held[0], *movie);
+  auto comp = ctl.project(*pid)->asset(*tl);
+  REQUIRE_OK(comp);
+  const auto l = std::ranges::find(comp->layers, layer,
+                                   &project::Layer::id);
+  REQUIRE(l != comp->layers.end());
+  CHECK(l->source == made_id);
+  CHECK(Controller::speed_keys_of(*comp, layer).keys.size() == 1);
+  // A rate asked for, on a composition: refused by name.
+  req.layer = in_shot->second;
+  req.asset = *shot;
+  auto drawn = ctl.run_asset_operation(req);
+  REQUIRE(!drawn.ok());
+  CHECK(drawn.error().key == "core.interpolate_kind");
 }
 
 // FL2VA's two keyframes: a clip that opens on one picture and ENDS on
@@ -10827,7 +10993,7 @@ struct RegenBench {
   ProjectId pid;
 
   explicit RegenBench(const char* name, bool refiner, bool pika = false,
-                      bool ref2va = false)
+                      bool ref2va = false, bool edit = false)
       : root(test::temp_dir(name))
   {
     auto install = [&](const std::string& f) {
@@ -10861,6 +11027,14 @@ struct RegenBench {
       // Pika H3 Flex's FL2VA adapter, its manifest beside it.
       install("Pika-Labs/Pika-H3-Flex/fl2va/adapter.safetensors");
       install("Pika-Labs/Pika-H3-Flex/fl2va/manifest.json");
+    }
+    if (edit) {
+      // Qwen-Image 2.1 and its Fast's Turbo LoRA: what cleans a guide.
+      fake_pipeline(root / "models" / "Qwen" / "Qwen-Image-2.1",
+                    "QwenImage21Pipeline", "QwenImage21Transformer2DModel");
+      install("Viggle/Qwen-Image-2.1-viggle-turbo/"
+              "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128."
+              "safetensors");
     }
     ControllerConfig cfg;
     cfg.support_root = root / "support";
@@ -11433,6 +11607,203 @@ TEST(controller, a_clips_latents_are_kept_and_carried)
         "encoded");
 }
 
+// A continuation through a clip's end with its GUIDE CLEANED (DESIGN
+// §4e): from kept latents only, by the first of FL2VA's cleaning models
+// here -- the edit settled as the person's own at Fast and handed to the
+// engine as data -- and landed where the clip it continues ends on a
+// timeline, its redone frames over that clip's last ones, silent there.
+TEST(controller, a_continuation_through_its_end_is_cleaned)
+{
+  RegenBench b("cleaned", false, false, false, true);
+  REQUIRE(b.ctl && b.engine);
+  REQUIRE(write_png(b.root / "red.png", 64, 32, {0xff, 0x20, 0x20, 0xff}));
+  auto red = import_and_wait(*b.ctl, b.pid, b.root / "red.png");
+  REQUIRE(red);
+  auto shot = b.ctl->create_composition(
+      b.pid, project::AssetClass::Composition, {64, 32}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto in_shot = b.ctl->instantiate(b.pid, *red, *shot);
+  REQUIRE_OK(in_shot);
+  project::LayerTime t39;
+  t39.duration = 39;
+  REQUIRE_OK(b.ctl->set_layer_time(b.pid, *shot, in_shot->second, t39));
+  auto movie = b.ctl->rendered(b.pid, *shot);
+  REQUIRE_OK(movie);
+  const fs::path clip_file = b.root / "clip.mov";
+  fs::copy_file(*movie, clip_file);
+  const fs::path lat = b.root / "made-latent.vpt";
+  const fs::path alat = b.root / "made-audio-latent.vpt";
+  // The continuation's: its 22 frames redone and 34 more, 56.
+  project::LayerTime t56;
+  t56.duration = 56;
+  REQUIRE_OK(b.ctl->set_layer_time(b.pid, *shot, in_shot->second, t56));
+  auto movie56 = b.ctl->rendered(b.pid, *shot);
+  REQUIRE_OK(movie56);
+  const fs::path clip56 = b.root / "clip56.mov";
+  fs::copy_file(*movie56, clip56);
+
+  // A clip that kept its latents: 39 frames, 12 latent frames.
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-fl2va";
+  req.prompt = "A red field.";
+  req.width = 64;
+  req.height = 32;
+  req.frames = 39;
+  req.keep_latents = true;
+  auto j1 = b.ctl->generate_video(req);
+  REQUIRE_OK(j1);
+  const AssetId clip = b.ctl->jobs().get(*j1)->asset;
+  write_tensor(lat, {24, 12, 2, 4});
+  write_tensor(alat, {2, 32, 65});
+  b.engine->finish(*j1, clip_file,
+                   {{"latents", {{"video", lat.string()},
+                                 {"audio", alat.string()}}}});
+
+  GenerateVideoRequest cont;
+  cont.project = b.pid;
+  cont.model = "minimax-h3-fl2va";
+  cont.prompt = "The red field goes on.";
+  cont.continue_from = clip;
+  cont.frames = 34;
+  cont.clean_guide = true;
+  // Its own latents kept too: what a continuation of it carries.
+  cont.keep_latents = true;
+  // Not from its latents: refused by name.
+  auto no = b.ctl->generate_video(cont);
+  REQUIRE(!no.ok());
+  CHECK(no.error().key == "core.clean_guide_needs_latents");
+
+  // From them: the cleaning recorded, the edit settled for the engine.
+  cont.continue_latents = true;
+  auto j2 = b.ctl->generate_video(cont);
+  REQUIRE_OK(j2);
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s != nullptr);
+  const Json cg = jget(s->params, "clean_guide", Json());
+  REQUIRE(cg.is_object());
+  CHECK(jget<std::string>(cg, "model", "") == "qwen-image-2.1");
+  CHECK(jget(cg, "ramp", false));
+  CHECK(jget(cg, "tone_sigma", 0.0) == 24.0);
+  CHECK(jget<std::string>(cg, "prompt", "").starts_with("Restore"));
+  const Json ed = jget(cg, "edit", Json());
+  const engine::ModelRef em =
+      engine::model_ref_from_json(jget(ed, "model", Json()));
+  CHECK(em.id == "qwen-image-2.1");
+  CHECK(em.dir.filename() == "Qwen-Image-2.1");
+  // Fast: its Turbo LoRA, at the clip's size, no preview, nothing kept.
+  CHECK(em.lora.filename().string().find("turbo") != std::string::npos);
+  const Json ep = jget(ed, "params", Json());
+  CHECK(jget(ep, "width", 0) == 64 && jget(ep, "height", 0) == 32);
+  CHECK(!jget(ep, "preview", true) && !jget(ep, "keep_encodings", true));
+  CHECK(jget<std::string>(ep, "prompt", "").find("Restore") !=
+        std::string::npos);
+  CHECK(jget(ep, "seed", 0) == 7015);
+  CHECK(s->params["continue_latent"]["video"] ==
+        Json({{"start", 5}, {"count", 7}}));
+  // ...and in its recipe, as asked; how it carried on, on its version.
+  const AssetId next = b.ctl->jobs().get(*j2)->asset;
+  {
+    project::Project* p = b.ctl->project(b.pid);
+    auto a = p->asset(next);
+    REQUIRE_OK(a);
+    auto r = p->recipe(a->recipe);
+    REQUIRE_OK(r);
+    CHECK(jget<std::string>(jget(r->params, "clean_guide", Json()), "model",
+                            "") == "qwen-image-2.1");
+    CHECK(!jget(r->params, "clean_guide", Json()).contains("edit"));
+  }
+  write_tensor(lat, {24, 17, 2, 4});
+  write_tensor(alat, {2, 32, 94});
+  b.engine->finish(*j2, clip56,
+                   {{"latents", {{"video", lat.string()},
+                                 {"audio", alat.string()}}}});
+  auto v2 = b.ctl->project(b.pid)->version(next);
+  REQUIRE_OK(v2);
+  CHECK(jget<std::string>(jget(v2->outputs["continued"], "cleaned",
+                               Json()),
+                          "model", "") == "qwen-image-2.1");
+
+  // Landed where the clip ends on a timeline: its redone frames over the
+  // clip's last 22, unmarked, silent until they end.
+  auto scene = b.ctl->create_composition(
+      b.pid, project::AssetClass::Composition, {64, 32}, {24, 1}, "scene");
+  REQUIRE_OK(scene);
+  auto first = b.ctl->instantiate(b.pid, clip, *scene);
+  REQUIRE_OK(first);
+  auto placed = b.ctl->place_result(b.pid, next, *scene, std::nullopt, 39);
+  REQUIRE_OK(placed);
+  auto comp = b.ctl->project(b.pid)->asset(*scene);
+  REQUIRE_OK(comp);
+  const auto l = std::ranges::find(comp->layers, placed->second,
+                                   &project::Layer::id);
+  REQUIRE(l != comp->layers.end());
+  CHECK(l->time.offset == 17);
+  CHECK(l->time.in < 0);
+  const auto keys = b.ctl->sound_keys_of(*comp, placed->second);
+  CHECK(keys.at(0).volume == 0);
+  CHECK(keys.at(21).volume == 0);
+  CHECK(keys.at(22).volume == 1);
+  CHECK(keys.at(40).volume == 1);
+  // ...and the scene ending on it is continued from ITS latents again:
+  // its silence over the clip it lies on is no look along its tail
+  // (reported 2026-11-09 -- refused, Continue offering the references
+  // alone). A look there still is.
+  auto kl = b.ctl->kept_latents(b.pid, *scene, {22});
+  REQUIRE_OK(kl);
+  CHECK(jget(*kl, "kept", false));
+  CHECK(jget<std::string>(*kl, "clip", "") == next.str());
+  CHECK(jget(*kl, "fits", Json::array()) == Json::array({true}));
+  GenerateVideoRequest again = cont;
+  again.continue_from = *scene;
+  auto j4 = b.ctl->generate_video(again);
+  REQUIRE_OK(j4);
+  const engine::JobSpec* s4 = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s4 != nullptr);
+  CHECK(s4->params["continue_latent"]["video"] ==
+        Json({{"start", 10}, {"count", 7}}));
+  CHECK(s4->params.contains("clean_guide"));
+  b.engine->finish(*j4, clip56);
+  media::KeyedAdjustments warm;
+  warm.keys.push_back({60, {}});
+  warm.keys.back().value.exposure = 0.5;
+  REQUIRE_OK(b.ctl->set_adjustment_keys(b.pid, *scene, warm,
+                                        placed->second));
+  kl = b.ctl->kept_latents(b.pid, *scene, {22});
+  REQUIRE_OK(kl);
+  CHECK(!jget(*kl, "kept", true));
+  REQUIRE_OK(b.ctl->set_adjustment_keys(b.pid, *scene, {},
+                                        placed->second));
+  // Landed elsewhere: its redone frames marked out, as any guided clip's.
+  auto apart = b.ctl->place_result(b.pid, next, *scene, std::nullopt, 100);
+  REQUIRE_OK(apart);
+  comp = b.ctl->project(b.pid)->asset(*scene);
+  REQUIRE_OK(comp);
+  const auto m = std::ranges::find(comp->layers, apart->second,
+                                   &project::Layer::id);
+  REQUIRE(m != comp->layers.end());
+  CHECK(m->time.offset == 100);
+  CHECK(m->time.in == 22);
+  CHECK(b.ctl->sound_keys_of(*comp, apart->second).at(0).volume == 1);
+
+  // None of its cleaning models here: refused, naming them.
+  RegenBench bare("cleaned-bare", false);
+  REQUIRE(bare.ctl && bare.engine);
+  req.project = bare.pid;
+  auto j3 = bare.ctl->generate_video(req);
+  REQUIRE_OK(j3);
+  const AssetId kept = bare.ctl->jobs().get(*j3)->asset;
+  write_tensor(lat, {24, 12, 2, 4});
+  bare.engine->finish(*j3, clip_file,
+                      {{"latents", {{"video", lat.string()}}}});
+  cont.project = bare.pid;
+  cont.continue_from = kept;
+  auto refused = bare.ctl->generate_video(cont);
+  REQUIRE(!refused.ok());
+  CHECK(refused.error().key == "core.clean_guide_no_model");
+  CHECK(refused.error().message.find("Qwen-Image 2.1") != std::string::npos);
+}
+
 // THE MICRO AGENT (DESIGN §9c): LFM3-VL 2B, picked when it is here and
 // kept as Settings say; it NAMES a new prompt and what is made from it --
 // in the background, after the build, two Starts of the same words named
@@ -11867,6 +12238,155 @@ TEST(controller, a_clip_is_regenerated_by_its_refiner)
         "a red wall in the sun");
 }
 
+// IN CONTEXT (Open-H3-Regenerate-2K-IC, DESIGN §4q): a refiner of its
+// own beside Open-H3-Regenerate-2K -- Auto's second -- picked in
+// Settings › Upscaling's High-Res Pass With (upscale.json "use"
+// "regenerate"): a clip past 768P is drafted as ever and refined on
+// Ref2VA, the refiner's base, its adapters' files (HyperFlow, LMS Sharp)
+// for the graph and its words made from the prompt -- always, the draft
+// its only reference; no refine start offered. Render Upscaled by it is
+// Ref2VA's job. On a vpipe without the reference refine it runs nowhere:
+// the plain one again, Settings saying it is not ready.
+TEST(controller, a_clip_is_regenerated_in_context)
+{
+  RegenBench b("regen-ic", true, false, true);
+  REQUIRE(b.ctl && b.engine);
+  Controller& ctl = *b.ctl;
+  const auto kind = [&](const char* k) {
+    const Json all = ctl.upscale_settings();
+    for (const auto& x : all["kinds"]) {
+      if (x["kind"] == k) {
+        return x;
+      }
+    }
+    return Json();
+  };
+  // Not here: Auto's the plain refine; the IC one listed, not ready.
+  CHECK(kind("regenerate")["auto"] == "open-h3-regenerate-2k");
+  REQUIRE_OK(ctl.use_upscaler("regenerate", "open-h3-regenerate-2k-ic"));
+  CHECK(kind("regenerate")["chosen"] == "open-h3-regenerate-2k-ic");
+  CHECK(kind("regenerate")["runs"] == "open-h3-regenerate-2k");
+  CHECK(!ctl.use_upscaler("regenerate", "flashvsr-plus-turbo").ok());
+  // Its files: the IC LoRA and Sharp, HyperFlow (its own repo's copy).
+  const auto install = [&](const std::string& f) {
+    const fs::path file = b.root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  };
+  const std::string ic = "Efficient-Large-Model/Open-H3-Regenerate-2K-IC/";
+  install(ic + "lora/open_h3_regenerate_2k_ic_lora.safetensors");
+  install(ic + "lora/minimax_h3_lms_v1.0_r64.safetensors");
+  install("videorebirth/hyperflow/"
+          "minimax_h3_hyperflow_8step_v1.0.safetensors");
+  ctl.rescan_models();
+  CHECK(kind("regenerate")["runs"] == "open-h3-regenerate-2k-ic");
+  const Json listed = ctl.upscale_settings();
+  for (const auto& u : listed["upscalers"]) {
+    if (u["id"] == "open-h3-regenerate-2k-ic") {
+      CHECK(jget(u, "ready", false));
+      CHECK(jget(u, "in_context", false));
+      CHECK(jget(u, "kind", std::string()) == "video");
+      // No refine start: its start is HyperFlow's grid.
+      for (const auto& o : u["tuning"]["options"]) {
+        CHECK(o["key"] != "refine_start" && o["key"] != "vdn");
+      }
+    }
+  }
+  // A clip past 768P: drafted on FL2VA, refined in context on Ref2VA.
+  GenerateVideoRequest req;
+  req.project = b.pid;
+  req.model = "minimax-h3-fl2va";
+  req.prompt = "A lighthouse at dusk, waves breaking below.";
+  req.width = 2560;
+  req.height = 1440;
+  req.frames = 39;
+  req.preview = false;
+  auto j = ctl.generate_video(req);
+  REQUIRE_OK(j);
+  const engine::JobSpec* s = b.job(engine::kOpGenerateVideo, 1);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "regenerate", "") ==
+        "open-h3-regenerate-2k-ic");
+  CHECK(s->model.regenerate_lora.filename() ==
+        "open_h3_regenerate_2k_ic_lora.safetensors");
+  CHECK(s->model.latent_upscaler.filename() ==
+        "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors");
+  CHECK(s->model.regenerate_base.filename() == "Ref2VA");
+  const Json ad = jget(s->params, "regenerate_adapters", Json::array());
+  REQUIRE(ad.size() == 2);
+  CHECK(fs::path(ad[0].get<std::string>()).filename() ==
+        "minimax_h3_hyperflow_8step_v1.0.safetensors");
+  CHECK(fs::path(ad[1].get<std::string>()).filename() ==
+        "minimax_h3_lms_v1.0_r64.safetensors");
+  CHECK(jget(s->params["regenerate_spec"], "in_context", false));
+  CHECK(jget<std::string>(s->params, "regenerate_prompt_from", "") ==
+        "made");
+  CHECK(!jget<std::string>(s->params, "regenerate_prompt", "").empty());
+  CHECK(!s->params["regenerate_tuning"].contains("refine_start"));
+  // Its own presets: Sol kept, lower than the plain refine's -- at 1.0
+  // it ghosted moving hands in context.
+  CHECK(jget(s->params["regenerate_tuning"], "sol_attn", false));
+  CHECK(s->params["regenerate_tuning"]["sol_tau"] == "0.5,0.5,0.5");
+  // Custom offers the IC refine's options, not its start.
+  auto t = ctl.tuning("minimax-h3-fl2va", "balanced", false,
+                      Json::object());
+  REQUIRE_OK(t);
+  CHECK((*t)["values"].contains("regenerate_sage_attn"));
+  CHECK(!(*t)["values"].contains("regenerate_refine_start"));
+  // Render Upscaled by it: Ref2VA's job.
+  REQUIRE(write_png(b.root / "red.png", 48, 32, {0xff, 0x20, 0x20, 0xff}));
+  auto red = import_and_wait(ctl, b.pid, b.root / "red.png");
+  REQUIRE(red);
+  auto shot = ctl.create_composition(b.pid, project::AssetClass::Composition,
+                                     {48, 32}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto in_shot = ctl.instantiate(b.pid, *red, *shot);
+  REQUIRE_OK(in_shot);
+  project::LayerTime one;
+  one.duration = 24;
+  REQUIRE_OK(ctl.set_layer_time(b.pid, *shot, in_shot->second, one));
+  auto movie = ctl.rendered(b.pid, *shot);
+  REQUIRE_OK(movie);
+  fs::copy_file(*movie, b.root / "shot.mov");
+  auto clip = import_and_wait(ctl, b.pid, b.root / "shot.mov");
+  REQUIRE(clip);
+  auto tl = ctl.create_composition(b.pid, project::AssetClass::Composition,
+                                   {96, 64}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  auto placed = ctl.instantiate(b.pid, *clip, *tl);
+  REQUIRE_OK(placed);
+  media::Crop twice;
+  twice.scale_x = twice.scale_y = 2;
+  REQUIRE_OK(ctl.set_crop(b.pid, *tl, twice, placed->second));
+  REQUIRE_OK(ctl.use_upscaler("video", "open-h3-regenerate-2k-ic"));
+  Controller::AssetOpRequest up;
+  up.project = b.pid;
+  up.asset = *tl;
+  up.layer = placed->second;
+  up.operation = "upscale";
+  auto made = ctl.run_asset_operation(up);
+  REQUIRE_OK(made);
+  s = b.engine->spec(made->job);
+  REQUIRE(s != nullptr);
+  CHECK(s->op == engine::kOpUpscaleVideo);
+  CHECK(s->model.id == "minimax-h3-ref2va");
+  CHECK(s->model.regenerate_base.empty());
+  CHECK(jget(s->params, "regenerate_adapters", Json::array()).size() == 2);
+  CHECK(jget(s->params["regenerate_spec"], "posterior_seed", -1) == 0);
+  // An older vpipe, without the reference refine: the plain one runs,
+  // the IC one is not ready, Render Upscaled by it refused.
+  b.engine->lacks.insert(std::string(engine::kOpRegenerateInContext));
+  CHECK(kind("regenerate")["runs"] == "open-h3-regenerate-2k");
+  auto j2 = ctl.generate_video(req);
+  REQUIRE_OK(j2);
+  s = b.job(engine::kOpGenerateVideo, 2);
+  REQUIRE(s != nullptr);
+  CHECK(jget<std::string>(s->params, "regenerate", "") ==
+        "open-h3-regenerate-2k");
+  CHECK(!s->params.contains("regenerate_adapters"));
+  CHECK(ctl.run_asset_operation(up).code() == Code::NotFound);
+}
+
 // A continuation's GUIDE (continuation_guide): the clip's last seconds,
 // rounded UP to the model's grid -- 17n + 5 frames for H3 at 24 fps, so
 // 2 s is 56 frames -- and down again to what the clip holds, on a
@@ -12004,6 +12524,9 @@ public:
     int                                           shrink_at = -1;
     int                                           overflow_at = -1;
     std::string                                   notes = "Notes.";
+    // Replies in words alone, once the calls are out: each the next
+    // turn's (a program written in its answer).
+    std::deque<std::string>                       words;
   };
   explicit ScriptedBackend(std::shared_ptr<Shared> s) : _s(std::move(s)) {}
 
@@ -12067,6 +12590,10 @@ public:
       }
       r.content = "Working on it.";
       r.finish = "tool_calls";
+    } else if (!_s->words.empty()) {
+      r.content = _s->words.front();
+      _s->words.pop_front();
+      r.finish = "stop";
     } else {
       r.content = "Done.";
       r.finish = "stop";
@@ -12650,6 +13177,127 @@ TEST(agent, a_picture_in_assets_is_seen)
 // person goes on changing the project; "none" with no guide and no
 // tool, its pictures still shown, named without ids. And an import adds
 // while the editor holds the project: a picture attached to a chat.
+// PROGRAMS drawn from the Agent tab (DESIGN §4t, §9b): the editor's
+// agent and a chat are offered `render_program` and `program_guide` --
+// the procedural session's guide, handed over when asked, not carried in
+// every system message -- and a Programs session started from it is a
+// procedural one, its guide its system message's head.
+TEST(agent, the_editor_and_a_chat_draw_programs_by_their_guide)
+{
+  auto root = test::temp_dir("agent-programs");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "P.valtz", "programs");
+  REQUIRE_OK(pid);
+  const auto offered = [&](std::size_t turn, const char* tool) {
+    std::lock_guard lk(script->mu);
+    const auto& o = script->offered.at(turn);
+    return std::ranges::find(o, tool) != o.end();
+  };
+  const auto system_of = [&](std::size_t turn) {
+    std::lock_guard lk(script->mu);
+    const auto& m = script->seen.at(turn);
+    return m.empty() ? std::string() : m.front().content;
+  };
+  for (const char* skills : {"full", "chat"}) {
+    const bool chat = std::string_view(skills) == "chat";
+    {
+      std::lock_guard lk(script->mu);
+      // The editor asks for the guide; the chat draws a program that
+      // fails, unguided -- twice: the guide handed over after the first.
+      script->replies =
+          chat ? std::deque<std::vector<agent::ToolCall>>{
+                     {call("render_program", {{"name", "stars"}})},
+                     {call("render_program", {{"name", "stars"}})}}
+               : std::deque<std::vector<agent::ToolCall>>{
+                     {call("program_guide", Json::object())}};
+      script->seen.clear();
+      script->offered.clear();
+    }
+    AgentRequest req;
+    req.project = *pid;
+    req.prompt = "A looping starfield, drawn with code.";
+    req.skills = skills;
+    req.review = false;
+    auto id = ctl.agent_start(req);
+    REQUIRE_OK(id);
+    REQUIRE(jget<std::string>(agent_wait(ctl, *id, "done"), "state", "") ==
+            "done");
+    CHECK(offered(0, "render_program"));
+    CHECK(offered(0, "program_guide"));
+    CHECK(offered(0, "read_program"));
+    // Told when to draw one, not the whole guide.
+    const std::string sys = system_of(0);
+    CHECK(sys.find("program_guide") != std::string::npos);
+    CHECK(sys.find("## The page") == std::string::npos);
+    // Asked for, the guide comes back whole -- a chat's failed program
+    // is followed by it, once, its step's error its own words.
+    std::string guide;
+    int given = 0;
+    {
+      std::lock_guard lk(script->mu);
+      REQUIRE(script->seen.size() >= (chat ? 3u : 2u));
+      for (const auto& m : script->seen.back()) {
+        if (!chat && m.role == "tool") {
+          guide = m.content;
+        }
+        if (chat && m.role == "user" &&
+            m.content.starts_with("[Valtz] Your program drew nothing")) {
+          guide = m.content;
+          ++given;
+        }
+      }
+    }
+    CHECK(guide.find("## The page") != std::string::npos);
+    CHECK(guide.find("valtz.onFrame") != std::string::npos);
+    if (chat) {
+      CHECK(given == 1);
+      const Json steps = jget(ctl.agent_state(*id), "steps", Json());
+      REQUIRE(steps.size() == 2);
+      CHECK(jget<std::string>(steps[0], "state", "") == "failed");
+      CHECK(jget<std::string>(steps[0], "error", "").find("## The page") ==
+            std::string::npos);
+    }
+    REQUIRE_OK(ctl.agent_stop(*id));
+  }
+  // A Programs tab's session: procedural -- the guide in its system
+  // message, drawing at the size it is given.
+  {
+    std::lock_guard lk(script->mu);
+    script->replies.clear();
+    script->seen.clear();
+    script->offered.clear();
+  }
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A looping starfield.";
+  req.skills = "procedural";
+  req.review = false;
+  req.render = {{"width", 640}, {"height", 360}, {"seconds", 4.0}};
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  REQUIRE(jget<std::string>(agent_wait(ctl, *id, "done"), "state", "") ==
+          "done");
+  CHECK(offered(0, "render_program"));
+  CHECK(!offered(0, "program_guide"));
+  const std::string sys = system_of(0);
+  CHECK(sys.find("## The page") != std::string::npos);
+  CHECK(sys.find("Draw at 640 x 360 pixels, a clip of 4 s") !=
+        std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
 TEST(agent, chats_beside_the_editor_look_and_add)
 {
   auto root = test::temp_dir("agent-chats");
@@ -15786,6 +16434,190 @@ TEST(agent, a_shot_carries_on_latent_guided)
             .find("encoded") != std::string::npos);
   CHECK(jget<std::string>(jget(steps[4], "result", Json()), "continued_by",
                           "") == "its last seconds read as a reference");
+
+  // CLEANED, asked for (DESIGN §4e): no model here restores its frames --
+  // said by name, nothing made; with references, refused as it is read.
+  for (const auto& j : next) {
+    engine->start(j);
+    engine->finish(j, shot_file);
+  }
+  st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  script->replies.push_back(
+      {call("generate_video", {{"continue_from", shot1->str()},
+                               {"continue_by", "cleaned"},
+                               {"description", "[Shot 1] Cleaner."},
+                               {"seconds", 2}}),
+       call("generate_video", {{"continue_from", shot1->str()},
+                               {"continue_by", "cleaned"},
+                               {"references", Json::array({shot1->str()})},
+                               {"description", "[Shot 1] Cleaner."},
+                               {"seconds", 2}})});
+  REQUIRE_OK(ctl.agent_say(*id, "Clean it up."));
+  Json more;
+  for (int i = 0; i < 300; ++i) {
+    more = jget(ctl.agent_state(*id), "steps", Json::array());
+    if (more.size() >= 7 &&
+        jget<std::string>(more[6], "state", "") == "failed") {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(more.size() >= 7);
+  CHECK(jget<std::string>(more[5], "state", "") == "failed");
+  CHECK(jget<std::string>(more[5], "error", "").find("Qwen-Image 2.1") !=
+        std::string::npos);
+  CHECK(jget<std::string>(more[6], "error", "").find("no references") !=
+        std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// A SHOT is made at its timeline's own size up to the short side the
+// model makes in one pass (H3's 768P): a 768 x 1152 timeline's shots at
+// 768 x 1152 -- not shrunk to 960 x 544's area and scaled up, as they
+// were (reported: 608 x 896 on a 768 x 1152 timeline) -- a 1080p one's
+// at 768 on its short side, said to be scaled up to fill. A
+// continuation through a clip's end is made at THAT clip's size (its
+// latents), said too.
+TEST(agent, a_shot_is_made_at_its_timelines_own_size)
+{
+  auto root = test::temp_dir("agent-shot-size");
+  for (const char* f :
+       {"MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors",
+        "MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_fl2v_turbo_8step_v1.0_768p_bf16.safetensors",
+        "lightx2v/Minimax-h3-Turbo/"
+        "minimax_h3_ref2v_turbo_8step_v1.0_768p_bf16.safetensors"}) {
+    const fs::path file = root / "models" / f;
+    fs::create_directories(file.parent_path());
+    std::ofstream(file) << "w";
+  }
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "Z.valtz", "sizes");
+  REQUIRE_OK(pid);
+  // What the tall shot comes back as: a clip of 64 x 32, its latents
+  // kept -- smaller than its frame, as a clip made before was.
+  REQUIRE(write_png(root / "still.png", 64, 32, {0x30, 0x60, 0x90, 0xff}));
+  auto still = import_and_wait(ctl, *pid, root / "still.png");
+  REQUIRE(still);
+  fs::path shot_file;
+  {
+    auto c = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                    {64, 32}, {24, 1}, "made");
+    REQUIRE_OK(c);
+    auto in = ctl.instantiate(*pid, *still, *c);
+    REQUIRE_OK(in);
+    project::LayerTime t;
+    t.duration = 56;
+    REQUIRE_OK(ctl.set_layer_time(*pid, *c, in->second, t));
+    auto file = ctl.rendered(*pid, *c);
+    REQUIRE_OK(file);
+    shot_file = root / "shot.mov";
+    fs::copy_file(*file, shot_file);
+  }
+  const fs::path lat = root / "latent.vpt";
+  write_tensor(lat, {24, 17, 2, 4});
+  const Json shot = {{"description", "[Shot 1] A student speaks to the "
+                                     "camera in front of a blackboard."},
+                     {"seconds", 2}};
+  Json next = shot;
+  next["continues"] = true;
+  script->replies = {
+      {call("create_composition", {{"name", "Wide"},
+                                   {"kind", "timeline"},
+                                   {"width", 1920},
+                                   {"height", 1080},
+                                   {"fps", 24}}),
+       call("generate_video", shot)},
+      {call("create_composition", {{"name", "Tall"},
+                                   {"kind", "timeline"},
+                                   {"width", 768},
+                                   {"height", 1152},
+                                   {"fps", 24}}),
+       call("generate_video", shot)},
+      {call("wait_for_generations", Json::object())},
+      {call("generate_video", next)}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A student introduces the course, at two sizes";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  std::vector<JobId> clips;
+  for (int i = 0; i < 300 && clips.size() < 2; ++i) {
+    clips = engine->held_of(engine::kOpGenerateVideo);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(clips.size() == 2);
+  Json st = ctl.agent_state(*id);
+  auto result = [&](int n) {
+    return jget(jget(st, "steps", Json())[static_cast<std::size_t>(n)],
+                "result", Json());
+  };
+  // 1920 x 1080: 768 on its short side (the shape on H3's 32 grid), not
+  // 960 x 544; said to be scaled up, high_res named.
+  const engine::JobSpec* wide = engine->spec(clips[0]);
+  REQUIRE(wide != nullptr);
+  CHECK(jget(wide->params, "width", 0) == 1376);
+  CHECK(jget(wide->params, "height", 0) == 768);
+  CHECK(!jget(wide->params, "regenerate", false));
+  CHECK(jget<std::string>(result(1), "fills", "").find("1920 x 1080") !=
+        std::string::npos);
+  CHECK(jget<std::string>(result(1), "fills", "").find("high_res") !=
+        std::string::npos);
+  // 768 x 1152: its own size, nothing scaled.
+  const engine::JobSpec* tall = engine->spec(clips[1]);
+  REQUIRE(tall != nullptr);
+  CHECK(jget(tall->params, "width", 0) == 768);
+  CHECK(jget(tall->params, "height", 0) == 1152);
+  CHECK(!result(3).contains("fills"));
+  CHECK(result(3)["size"] == Json::array({768, 1152}));
+  // Both land -- the tall one as a 64 x 32 clip with its latents -- and
+  // the shot carrying it on is made at 64 x 32, said.
+  for (const auto& j : clips) {
+    engine->start(j);
+    engine->finish(j, shot_file, {{"latents", {{"video", lat.string()}}}});
+  }
+  std::vector<JobId> more;
+  for (int i = 0; i < 300 && more.empty(); ++i) {
+    for (const auto& j : engine->held_of(engine::kOpGenerateVideo)) {
+      if (j != clips[0] && j != clips[1]) {
+        more.push_back(j);
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  REQUIRE(more.size() == 1);
+  const engine::JobSpec* carried = engine->spec(more[0]);
+  REQUIRE(carried != nullptr);
+  CHECK(jget(jget(carried->params, "continue_guide", Json()), "frames",
+             0) == 22);
+  CHECK(jget(carried->params, "width", 0) == 64);
+  CHECK(jget(carried->params, "height", 0) == 32);
+  st = ctl.agent_state(*id);
+  CHECK(result(5)["size"] == Json::array({64, 32}));
+  CHECK(jget<std::string>(result(5), "fills", "")
+            .find("the clip it carries on from") != std::string::npos);
   REQUIRE_OK(ctl.agent_stop(*id));
 }
 
@@ -17651,3 +18483,814 @@ TEST(controller, a_refmod_is_imported_referenced_and_made)
   CHECK(!ctl.generate_video(bad).ok());
 }
 
+
+// ---- programs drawn (DESIGN §4t) --------------------------------------------
+
+namespace {
+
+// A program written to a file of its own.
+std::filesystem::path
+program_file(const std::filesystem::path& dir, const std::string& name,
+             const std::string& code)
+{
+  const auto f = dir / name;
+  std::ofstream(f, std::ios::binary) << code;
+  return f;
+}
+
+bool
+said(const std::vector<media::ProgramLog>& log, const std::string& words)
+{
+  return std::ranges::any_of(log, [&](const media::ProgramLog& l) {
+    return l.text.find(words) != std::string::npos;
+  });
+}
+
+}  // namespace
+
+// A program is drawn in a page that reaches nothing outside itself --
+// no network, no file, no WebRTC or WebSocket -- its Math.random seeded,
+// its errors told with their line, a still keeping its transparency.
+TEST(procedural, a_program_is_drawn_in_its_sandbox)
+{
+  if (media::procedural_helper().empty()) {
+    SKIP("no valtz-procedural");
+  }
+  auto root = test::temp_dir("procedural-sandbox");
+  const auto prog = program_file(root, "sandbox.js", R"JS(
+const c = valtz.canvas.getContext('2d');
+c.fillStyle = 'rgb(255, 0, 0)';
+c.fillRect(0, 0, valtz.width / 2, valtz.height);
+const tried = [];
+try { await fetch('https://example.com'); tried.push('net reached'); }
+catch (e) { tried.push('net refused'); }
+try { await fetch('file:///etc/hosts'); tried.push('file reached'); }
+catch (e) { tried.push('file refused'); }
+tried.push('rtc ' + typeof RTCPeerConnection);
+tried.push('ws ' + typeof WebSocket);
+tried.push('size ' + valtz.width + 'x' + valtz.height + '@' +
+           window.devicePixelRatio);
+console.log(tried.join(', '));
+console.log('random ' + Math.random().toFixed(9));
+)JS");
+  media::ProgramRender r;
+  r.program = prog;
+  r.width = 64;
+  r.height = 48;
+  r.seed = 7;
+  r.out = root / "a.png";
+  std::vector<media::ProgramLog> log;
+  auto run = media::render_program(r, {}, nullptr, &log);
+  REQUIRE_OK(run);
+  CHECK(run->loaded);
+  CHECK(!run->empty);
+  CHECK(run->errors == 0);
+  CHECK(said(log, "net refused, file refused, rtc undefined, "
+                  "ws undefined, size 64x48@1"));
+  // Drawn where it drew; clear where it did not.
+  const auto left = pixel_at(r.out, 10, 10);
+  CHECK(left[0] > 250 && left[1] < 5 && left[3] == 255);
+  CHECK(pixel_at(r.out, 50, 10)[3] == 0);
+
+  // Seeded: the same seed the same numbers, another seed others.
+  auto random_of = [&](std::uint64_t seed) {
+    r.seed = seed;
+    r.out = root / std::format("r{}.png", seed);
+    std::vector<media::ProgramLog> l;
+    (void)media::render_program(r, {}, nullptr, &l);
+    for (const auto& x : l) {
+      if (x.text.starts_with("random ")) {
+        return x.text;
+      }
+    }
+    return std::string();
+  };
+  const std::string a = random_of(7);
+  CHECK(!a.empty());
+  CHECK(random_of(7) == a);
+  CHECK(random_of(8) != a);
+
+  // An error's line, as the person and the model read it.
+  r.program = program_file(root, "bad.js", "const a = 1;\nlet b = ;\n");
+  r.out = root / "bad.png";
+  log.clear();
+  run = media::render_program(r, {}, nullptr, &log);
+  REQUIRE_OK(run);
+  CHECK(run->empty);
+  CHECK(run->errors >= 1);
+  REQUIRE(!log.empty());
+  CHECK(media::to_text(log.front()).starts_with("error at program.js:2"));
+}
+
+// A clip is drawn on its own clock: each frame's callbacks at its time,
+// however long it took, as many frames as asked.
+TEST(procedural, a_clip_is_drawn_on_its_own_clock)
+{
+  if (media::procedural_helper().empty()) {
+    SKIP("no valtz-procedural");
+  }
+  auto root = test::temp_dir("procedural-clip");
+  media::ProgramRender r;
+  r.program = program_file(root, "clip.js", R"JS(
+valtz.onFrame((t, i) => {
+  const c = valtz.canvas.getContext('2d');
+  c.fillStyle = t < 0.5 ? 'rgb(255, 0, 0)' : 'rgb(0, 0, 255)';
+  c.fillRect(0, 0, valtz.width, valtz.height);
+  if (i === 3) {
+    console.log(`t3 ${t.toFixed(4)} ${performance.now().toFixed(1)} ` +
+                `${valtz.frames} ${valtz.duration}`);
+  }
+});
+)JS");
+  r.width = 64;
+  r.height = 64;
+  r.frames = 24;
+  r.fps = Rational(24, 1);
+  r.out = root / "clip.mov";
+  int counted = 0;
+  std::vector<media::ProgramLog> log;
+  auto run = media::render_program(
+      r, [&](int done, int of) { counted = of == 24 ? done : -1; }, nullptr,
+      &log);
+  REQUIRE_OK(run);
+  CHECK(counted == 24);
+  CHECK(said(log, "t3 0.1250 125.0 24 1"));
+  auto info = media::probe_file(r.out);
+  REQUIRE_OK(info);
+  CHECK(info->frame_count == 24);
+  CHECK(info->frame.width == 64);
+  REQUIRE_OK(media::write_movie_frame(r.out, 0.25, root / "early.png"));
+  REQUIRE_OK(media::write_movie_frame(r.out, 0.75, root / "late.png"));
+  const auto early = pixel_at(root / "early.png", 32, 32);
+  const auto late = pixel_at(root / "late.png", 32, 32);
+  CHECK(early[0] > 200 && early[2] < 60);
+  CHECK(late[2] > 200 && late[0] < 60);
+}
+
+// A program reads the assets it is given -- a picture, a clip a frame at
+// a time, a text inline -- by name, untainted; nothing else is served.
+// A page left clear says why.
+TEST(procedural, a_program_reads_the_assets_it_is_given)
+{
+  if (media::procedural_helper().empty()) {
+    SKIP("no valtz-procedural");
+  }
+  auto root = test::temp_dir("procedural-assets");
+  REQUIRE(write_png(root / "red.png", 40, 30, {0xff, 0, 0, 0xff}));
+  std::ofstream(root / "note.txt") << "seven words of a note, kept here";
+  // A clip: blue for half a second, then green.
+  media::ProgramRender clip;
+  clip.program = program_file(root, "clip.js", R"JS(
+valtz.onFrame((t) => {
+  const c = valtz.canvas.getContext('2d');
+  c.fillStyle = t < 0.5 ? 'rgb(0, 0, 255)' : 'rgb(0, 255, 0)';
+  c.fillRect(0, 0, valtz.width, valtz.height);
+});
+)JS");
+  clip.width = 32;
+  clip.height = 32;
+  clip.frames = 24;
+  clip.out = root / "clip.mov";
+  REQUIRE_OK(media::render_program(clip));
+
+  media::ProgramRender r;
+  r.program = program_file(root, "reads.js", R"JS(
+const c = valtz.canvas.getContext('2d');
+c.drawImage(await valtz.image('red'), 0, 0, 20, 20);
+c.drawImage(await valtz.frame('clip', 0.75), 20, 0, 20, 20);
+const px = c.getImageData(5, 5, 1, 1).data;
+console.log(`read ${px[0]},${px[1]},${px[2]} ` +
+            `${await valtz.text('note')} ` +
+            valtz.assets.map((a) => `${a.name}:${a.kind}:` +
+                             (a.data ? 'inline' : 'url')).join(' '));
+try { await valtz.image('elsewhere'); } catch (e) { console.log(e.message); }
+try { await fetch('valtz-proc://local/assets/9'); console.log('served'); }
+catch (e) { console.log('not served'); }
+)JS");
+  r.width = 40;
+  r.height = 20;
+  r.out = root / "reads.png";
+  for (const char* f : {"red.png", "clip.mov", "note.txt"}) {
+    auto a = media::program_asset_of(root / f);
+    REQUIRE_OK(a);
+    r.assets.push_back(*a);
+  }
+  std::vector<media::ProgramLog> log;
+  auto run = media::render_program(r, {}, nullptr, &log);
+  REQUIRE_OK(run);
+  CHECK(said(log, "read 255,0,0 seven words of a note, kept here "
+                  "red:image:inline clip:video:inline note:text:inline"));
+  CHECK(said(log, "no asset \"elsewhere\""));
+  CHECK(said(log, "not served"));
+  const auto red = pixel_at(r.out, 10, 10);
+  const auto late = pixel_at(r.out, 30, 10);
+  CHECK(red[0] > 250 && red[2] < 5);
+  CHECK(late[1] > 200 && late[2] < 60);
+
+  // Drawn on a canvas never added to the page: said so.
+  r.program = program_file(root, "lost.js", R"JS(
+import * as THREE from 'three';
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(valtz.width, valtz.height);
+renderer.render(new THREE.Scene(), new THREE.PerspectiveCamera());
+)JS");
+  r.assets.clear();
+  r.out = root / "lost.png";
+  run = media::render_program(r);
+  REQUIRE_OK(run);
+  CHECK(run->empty);
+  CHECK(run->empty_why.find("not on the page") != std::string::npos);
+}
+
+// A clip's <video> held to the clip's clock, its soundtrack made on the
+// page's offline audio, a sound read; WebGPU drawn (WebKit's snapshot
+// leaves it out: copied as it is submitted).
+TEST(procedural, a_clip_holds_its_videos_and_makes_its_sound)
+{
+  if (media::procedural_helper().empty()) {
+    SKIP("no valtz-procedural");
+  }
+  auto root = test::temp_dir("procedural-av");
+  // A clip of its own: blue for half a second, then green.
+  media::ProgramRender clip;
+  clip.program = program_file(root, "clip.js", R"JS(
+valtz.onFrame((t) => {
+  const c = valtz.canvas.getContext('2d');
+  c.fillStyle = t < 0.5 ? 'rgb(0, 0, 255)' : 'rgb(0, 255, 0)';
+  c.fillRect(0, 0, valtz.width, valtz.height);
+});
+)JS");
+  clip.width = 32;
+  clip.height = 32;
+  clip.frames = 24;
+  clip.out = root / "clip.mov";
+  REQUIRE_OK(media::render_program(clip));
+
+  media::ProgramRender r;
+  r.program = program_file(root, "av.js", R"JS(
+const v = document.createElement('video');
+v.src = valtz.asset('clip').url;
+const c = valtz.canvas.getContext('2d');
+const osc = valtz.audio.createOscillator();
+osc.connect(valtz.audio.destination);
+osc.start(0);
+const same = new AudioContext() === valtz.audio;
+valtz.onFrame((t, i) => {
+  c.drawImage(v, 0, 0, valtz.width, valtz.height);
+  if (i === 18) console.log(`at ${v.currentTime.toFixed(2)} ${same}`);
+});
+)JS");
+  r.width = 32;
+  r.height = 32;
+  r.frames = 24;
+  r.out = root / "av.mov";
+  r.sound = root / "av.wav";
+  auto a = media::program_asset_of(clip.out);
+  REQUIRE_OK(a);
+  r.assets.push_back(*a);
+  std::vector<media::ProgramLog> log;
+  int previews = 0;
+  auto run = media::render_program(r, {}, nullptr, &log,
+                                   [&](media::ProgramPreview p) {
+                                     previews += p.rgb.size() ==
+                                                 32u * 32u * 3u;
+                                   });
+  REQUIRE_OK(run);
+  CHECK(said(log, "at 0.75 true"));
+  CHECK(previews >= 1);
+  // The video's frame at 0.75 s drawn: green.
+  REQUIRE_OK(media::write_movie_frame(r.out, 0.75, root / "late.png"));
+  const auto late = pixel_at(root / "late.png", 16, 16);
+  CHECK(late[1] > 200 && late[2] < 60);
+  // Its soundtrack: a second of 48 kHz stereo, not silent.
+  REQUIRE(run->sound == r.sound);
+  auto si = media::probe_file(r.sound);
+  REQUIRE_OK(si);
+  CHECK(si->audio_sample_rate == 48000);
+  CHECK(std::abs(si->duration.seconds() - 1.0) < 0.01);
+
+  // WebGPU, where this WebKit has it: drawn, taken.
+  r.program = program_file(root, "gpu.js", R"JS(
+if (!navigator.gpu) { console.log('no webgpu'); }
+else {
+  const device = await (await navigator.gpu.requestAdapter()).requestDevice();
+  const ctx = valtz.canvas.getContext('webgpu');
+  ctx.configure({device, format: navigator.gpu.getPreferredCanvasFormat()});
+  const enc = device.createCommandEncoder();
+  enc.beginRenderPass({colorAttachments: [{
+    view: ctx.getCurrentTexture().createView(), loadOp: 'clear',
+    storeOp: 'store', clearValue: {r: 1, g: 0.5, b: 0, a: 1}}]}).end();
+  device.queue.submit([enc.finish()]);
+}
+)JS");
+  r.frames = 0;
+  r.sound.clear();
+  r.assets.clear();
+  r.out = root / "gpu.png";
+  log.clear();
+  run = media::render_program(r, {}, nullptr, &log);
+  REQUIRE_OK(run);
+  if (!said(log, "no webgpu")) {
+    const auto px = pixel_at(r.out, 16, 16);
+    CHECK(px[0] > 240 && px[1] > 110 && px[1] < 145 && px[2] < 15);
+  }
+}
+
+// A program that never returns is stopped at its frame's time, its
+// page's process with it; a render asked to stop stops.
+TEST(procedural, an_endless_loop_is_stopped)
+{
+  if (media::procedural_helper().empty()) {
+    SKIP("no valtz-procedural");
+  }
+  auto root = test::temp_dir("procedural-loop");
+  media::ProgramRender r;
+  r.program = program_file(root, "loop.js", R"JS(
+valtz.onFrame((t, i) => { if (i === 1) { while (true) {} } });
+)JS");
+  r.width = 32;
+  r.height = 32;
+  r.frames = 4;
+  r.frame_timeout = 2;
+  r.out = root / "loop.mov";
+  const auto t0 = std::chrono::steady_clock::now();
+  auto run = media::render_program(r);
+  CHECK(!run.ok());
+  CHECK(run.error().message.find("frame 1") != std::string::npos);
+  CHECK(std::chrono::steady_clock::now() - t0 < std::chrono::seconds(10));
+  CHECK(!std::filesystem::exists(r.out));
+
+  std::atomic<bool> stop{false};
+  std::thread later([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    stop = true;
+  });
+  r.frame_timeout = 30;
+  auto stopped = media::render_program(r, {}, &stop);
+  later.join();
+  CHECK(!stopped.ok());
+  CHECK(stopped.error().code == Code::Cancelled);
+}
+
+// A program drawn as a task: the program kept, its drawing derived from
+// it; drawn again once it is changed; one that draws nothing leaves
+// neither.
+TEST(controller, a_program_is_kept_and_drawn)
+{
+  if (media::procedural_helper().empty()) {
+    SKIP("no valtz-procedural");
+  }
+  auto root = test::temp_dir("ctl-program");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "P.valtz", "programs");
+  REQUIRE_OK(pid);
+  auto finish = [&](JobId job) {
+    Event ev;
+    for (int i = 0; i < 600; ++i) {
+      if (ctl.events().wait(ev, 100) && ev.job == job &&
+          (ev.kind == "job.finished" || ev.kind == "job.failed")) {
+        return ev;
+      }
+    }
+    return Event{};
+  };
+
+  ProceduralRequest req;
+  req.project = *pid;
+  req.code = R"JS(
+const c = valtz.canvas.getContext('2d');
+c.fillStyle = 'rgb(0, 200, 0)';
+c.fillRect(0, 0, valtz.width, valtz.height);
+console.warn('drawn');
+)JS";
+  req.name = "Green Field";
+  req.width = 40;
+  req.height = 30;
+  req.seed = 3;
+  auto started = ctl.render_procedural(req);
+  REQUIRE_OK(started);
+  // A task while it runs: in its own line.
+  const Json tasks = ctl.tasks();
+  Event ev = finish(started->job);
+  REQUIRE(ev.kind == "job.finished");
+  CHECK(jget(ev.data, "errors", -1) == 0);
+  CHECK(jget(ev.data, "log", Json::array()).size() == 1);
+  auto* p = ctl.project(*pid);
+  auto prog = p->asset(started->program);
+  REQUIRE_OK(prog);
+  CHECK(Controller::is_program(*prog));
+  CHECK(prog->name == "Green Field.js");
+  auto drawn = p->asset(started->asset);
+  REQUIRE_OK(drawn);
+  CHECK(drawn->kind == project::AssetKind::Image);
+  CHECK(drawn->head == 1);
+  auto file = p->media_path(started->asset);
+  REQUIRE_OK(file);
+  const auto green = pixel_at(*file, 20, 15);
+  CHECK(green[1] > 190 && green[0] < 10);
+  auto v = p->version(started->asset);
+  REQUIRE_OK(v);
+  CHECK(v->info.frame.width == 40);
+  auto r = p->recipe(drawn->recipe);
+  REQUIRE_OK(r);
+  CHECK(r->op == "render-program");
+  CHECK(jget<std::uint64_t>(r->params, "seed", 0) == 3);
+  REQUIRE(r->inputs.size() == 1);
+  CHECK(r->inputs[0].asset == started->program);
+  // The program in Programs.
+  auto folders = p->folders();
+  REQUIRE_OK(folders);
+  bool in_programs = false;
+  for (const auto& f : *folders) {
+    in_programs = in_programs ||
+                  (jget<std::string>(f, "name", "") == "Programs" &&
+                   jget<std::string>(f, "id", "") == prog->folder);
+  }
+  CHECK(in_programs);
+
+  // Changed, its drawing stale; built again, the new picture.
+  REQUIRE_OK(p->update_text(started->program,
+                            "const c = valtz.canvas.getContext('2d');\n"
+                            "c.fillStyle = 'rgb(0, 0, 220)';\n"
+                            "c.fillRect(0, 0, valtz.width, "
+                            "valtz.height);\n"));
+  auto st = p->staleness(started->asset);
+  REQUIRE_OK(st);
+  CHECK(!st->fresh());
+  auto again = ctl.build_asset(*pid, started->asset);
+  REQUIRE_OK(again);
+  ev = finish(*again);
+  REQUIRE(ev.kind == "job.finished");
+  CHECK(p->asset(started->asset)->head == 2);
+  file = p->media_path(started->asset);
+  REQUIRE_OK(file);
+  CHECK(pixel_at(*file, 20, 15)[2] > 200);
+
+  // Drawn again from words that fail: the drawing kept as it was, the
+  // program's words too.
+  REQUIRE_OK(p->update_text(started->program, "let broken = ;\n"));
+  auto broken = ctl.build_asset(*pid, started->asset);
+  REQUIRE_OK(broken);
+  ev = finish(*broken);
+  REQUIRE(ev.kind == "job.failed");
+  REQUIRE_OK(p->asset(started->asset));
+  CHECK(p->asset(started->asset)->head == 2);
+
+  // The next version of a program, drawn into its drawing: kept only
+  // once drawn -- words that fail leave both as they were.
+  ProceduralRequest next = req;
+  next.program = started->program;
+  next.drawing = started->asset;
+  next.code = "let still_broken = ;\n";
+  auto n1 = ctl.render_procedural(next);
+  REQUIRE_OK(n1);
+  CHECK(n1->asset == started->asset);
+  ev = finish(n1->job);
+  REQUIRE(ev.kind == "job.failed");
+  CHECK(*p->read_text(started->program) == "let broken = ;\n");
+  CHECK(p->asset(started->asset)->head == 2);
+  // Its recipe as it was: nothing changed (pointed at the try's first,
+  // a failed one left it "recipe changed").
+  CHECK(p->staleness(started->asset)->reason !=
+        project::StaleReason::RecipeChanged);
+  next.code = "const c = valtz.canvas.getContext('2d');\n"
+              "c.fillStyle = 'rgb(220, 0, 220)';\n"
+              "c.fillRect(0, 0, valtz.width, valtz.height);\n";
+  next.width = 50;
+  auto n2 = ctl.render_procedural(next);
+  REQUIRE_OK(n2);
+  ev = finish(n2->job);
+  REQUIRE(ev.kind == "job.finished");
+  CHECK(p->asset(started->asset)->head == 3);
+  CHECK(p->read_text(started->program)->find("220, 0, 220") !=
+        std::string::npos);
+  CHECK(p->version(started->asset)->info.frame.width == 50);
+  CHECK(p->staleness(started->asset)->fresh());
+
+  // An asset it reads: an input of the drawing, by its name.
+  REQUIRE(write_png(root / "dot.png", 8, 8, {0, 0, 0xff, 0xff}));
+  auto dot = import_and_wait(ctl, *pid, root / "dot.png");
+  REQUIRE(dot.has_value());
+  ProceduralRequest reads = req;
+  reads.name = "Reads";
+  reads.code = "const c = valtz.canvas.getContext('2d');\n"
+               "c.drawImage(await valtz.image('" + p->asset(*dot)->name +
+               "'), 0, 0, valtz.width, valtz.height);\n";
+  reads.assets = {*dot};
+  auto r3 = ctl.render_procedural(reads);
+  REQUIRE_OK(r3);
+  ev = finish(r3->job);
+  REQUIRE(ev.kind == "job.finished");
+  auto rr = p->recipe(p->asset(r3->asset)->recipe);
+  REQUIRE_OK(rr);
+  REQUIRE(rr->inputs.size() == 2);
+  CHECK(rr->inputs[1].role == "asset");
+  CHECK(rr->inputs[1].asset == *dot);
+  file = p->media_path(r3->asset);
+  REQUIRE_OK(file);
+  CHECK(pixel_at(*file, 20, 15)[2] > 200);
+
+  // A clip, at the project's rate -- its frames previewed as they are
+  // drawn, its soundtrack joined.
+  ProceduralRequest clip = req;
+  clip.name = "Pulse";
+  clip.code = "valtz.onFrame((t) => { const c = valtz.canvas."
+              "getContext('2d'); c.fillStyle = `rgb(${Math.round(255 * t)}"
+              ", 0, 0)`; c.fillRect(0, 0, valtz.width, valtz.height); });\n"
+              "const o = valtz.audio.createOscillator();\n"
+              "o.connect(valtz.audio.destination); o.start(0);\n";
+  clip.seconds = 1;
+  auto c2 = ctl.render_procedural(clip);
+  REQUIRE_OK(c2);
+  int previews = 0;
+  for (int i = 0; i < 600; ++i) {
+    if (!ctl.events().wait(ev, 100) || ev.job != c2->job) {
+      continue;
+    }
+    previews += ev.kind == "job.preview" && ev.tensor ? 1 : 0;
+    if (ev.kind == "job.finished" || ev.kind == "job.failed") {
+      break;
+    }
+  }
+  REQUIRE(ev.kind == "job.finished");
+  CHECK(previews >= 1);
+  auto cv = p->version(c2->asset);
+  REQUIRE_OK(cv);
+  CHECK(cv->info.type == media::MediaType::Video);
+  CHECK(cv->info.frame_count == 24);
+  CHECK(cv->info.has_audio);
+
+  // Nothing drawn: neither the drawing nor the program it came with.
+  const auto before = p->assets()->size();
+  ProceduralRequest none = req;
+  none.code = "console.log('nothing');\nundefinedName();\n";
+  auto c3 = ctl.render_procedural(none);
+  REQUIRE_OK(c3);
+  ev = finish(c3->job);
+  REQUIRE(ev.kind == "job.failed");
+  CHECK(jget<std::string>(ev.data, "message", "")
+            .find("ReferenceError") != std::string::npos);
+  CHECK(p->assets()->size() == before);
+  CHECK(!p->asset(c3->program).ok());
+  (void)tasks;
+}
+
+// A PROCEDURAL session (DESIGN §4t): its guide and its tools -- programs
+// drawn and read, and the looking ones; a program drawn at the person's
+// size, shown to a model that sees; one written in its words, drawn for
+// it; holding nothing.
+TEST(agent, a_procedural_session_writes_and_draws_programs)
+{
+  if (media::procedural_helper().empty()) {
+    SKIP("no valtz-procedural");
+  }
+  auto root = test::temp_dir("agent-procedural");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  script->sees = true;
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "A.valtz", "procedural");
+  REQUIRE_OK(pid);
+
+  const std::string code =
+      "const c = valtz.canvas.getContext('2d');\n"
+      "c.fillStyle = 'rgb(250, 200, 0)';\n"
+      "c.fillRect(0, 0, valtz.width, valtz.height);\n";
+  script->replies = {{call("render_program",
+                           {{"code", code}, {"name", "Sun"}})},
+                     {call("render_program",
+                           {{"code", "let broken = ;"}, {"name", "Bad"}})}};
+  // Then a program in its words alone: drawn for it -- the session's
+  // program's next version.
+  script->words = {"Here it is:\n```js\n" + code +
+                   "// valtz draws this one too, kept as it is\n```\n"};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "A yellow sun";
+  req.review = false;
+  req.skills = "procedural";
+  req.render = {{"width", 48}, {"height", 36}, {"seconds", 0}};
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "done", 60);
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  // Holding nothing.
+  CHECK(!jget(ctl.project_state(*pid), "agent", false));
+  const Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 3);
+  CHECK(jget<std::string>(steps[0], "state", "") == "done");
+  const Json first = jget(steps[0], "result", Json::object());
+  CHECK(jget<std::string>(first, "kind", "") == "picture");
+  CHECK(jget(first, "width", 0) == 48);
+  CHECK(jget(first, "height", 0) == 36);
+  // The broken one said with its line, and left nothing.
+  CHECK(jget<std::string>(steps[1], "state", "") == "failed");
+  CHECK(jget<std::string>(steps[1], "error", "")
+            .find("program.js:1") != std::string::npos);
+  // The one in its words: drawn by Valtz, a step of its own.
+  CHECK(jget<std::string>(steps[2], "tool", "") == "render_program");
+  CHECK(jget<std::string>(steps[2], "state", "") == "done");
+
+  // One program, one drawing: each try its next version.
+  auto* p = ctl.project(*pid);
+  int programs = 0;
+  int pictures = 0;
+  std::uint32_t head = 0;
+  auto all = p->assets();
+  REQUIRE_OK(all);
+  for (const auto& a : *all) {
+    programs += Controller::is_program(a) ? 1 : 0;
+    if (a.kind == project::AssetKind::Image) {
+      ++pictures;
+      head = a.head;
+    }
+  }
+  CHECK(programs == 1);
+  CHECK(pictures == 1);
+  CHECK(head == 2);
+  CHECK(jget(jget(steps[2], "result", Json::object()), "version", 0) == 2);
+  {
+    std::lock_guard lk(script->mu);
+    // Its tools: the procedural table's.
+    REQUIRE(!script->offered.empty());
+    const auto& tools = script->offered.front();
+    CHECK(std::ranges::find(tools, "render_program") != tools.end());
+    CHECK(std::ranges::find(tools, "read_program") != tools.end());
+    CHECK(std::ranges::find(tools, "add_text") == tools.end());
+    // Its guide, and the person's size.
+    const auto& sys = script->seen.front().front().content;
+    CHECK(sys.find("Drawing with programs in Valtz") != std::string::npos);
+    CHECK(sys.find("Draw at 48 x 36 pixels, a still") != std::string::npos);
+    // The picture shown after the first step.
+    bool shown = false;
+    for (const auto& m : script->seen[1]) {
+      shown = shown || (m.role == "user" && !m.images.empty());
+    }
+    CHECK(shown);
+  }
+}
+
+// A procedural session's CARD (DESIGN §4t): the size and length the
+// person set win over the model's own -- a helper drew a 10 s clip with
+// the card at Still -- unless the person's words name them ("a 2 s
+// loop", "64x48"); the card sent with their next words is the session's
+// from then on, the words before it naming nothing of it. A program's
+// code is a code block of the transcript.
+TEST(agent, a_procedural_cards_size_and_length_hold_unless_named)
+{
+  if (media::procedural_helper().empty()) {
+    SKIP("no valtz-procedural");
+  }
+  auto root = test::temp_dir("agent-card");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "A.valtz", "card");
+  REQUIRE_OK(pid);
+
+  const std::string code =
+      "valtz.onFrame((t) => { const c = valtz.canvas.getContext('2d');\n"
+      "  c.fillStyle = `rgb(${Math.round(200 * t)}, 120, 0)`;\n"
+      "  c.fillRect(0, 0, valtz.width, valtz.height); });\n";
+  // Its own size and a 10 s clip, asked for unasked: the card's still.
+  script->replies = {{call("render_program",
+                           {{"code", code}, {"name", "Glow"},
+                            {"width", 96}, {"height", 72},
+                            {"seconds", 10}})}};
+  const Json still = {{"width", 48}, {"height", 36}, {"seconds", 0},
+                      {"card", true}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "An orange glow";
+  req.review = false;
+  req.skills = "procedural";
+  req.render = still;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  auto steps_done = [&](std::size_t n) {
+    Json st;
+    for (int i = 0; i < 1500; ++i) {
+      st = ctl.agent_state(*id);
+      const std::string state = jget<std::string>(st, "state", "");
+      if (jget(st, "steps", Json::array()).size() >= n &&
+          (state == "done" || state == "failed")) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return jget(st, "steps", Json::array());
+  };
+  Json steps = steps_done(1);
+  REQUIRE(steps.size() == 1);
+  Json r = jget(steps[0], "result", Json::object());
+  CHECK(jget<std::string>(r, "kind", "") == "picture");
+  CHECK(jget(r, "width", 0) == 48);
+  CHECK(jget(r, "height", 0) == 36);
+  const std::string note = jget<std::string>(r, "note", "");
+  CHECK(note.find("as the person's card says") != std::string::npos);
+  CHECK(note.find("96 x 72, a 10 s clip") != std::string::npos);
+  {
+    std::lock_guard lk(script->mu);
+    const auto& sys = script->seen.front().front().content;
+    CHECK(sys.find("The person's card says: draw at 48 x 36 pixels, a "
+                   "still") != std::string::npos);
+  }
+
+  // A length the person names: taken.
+  script->replies.push_back({call("render_program", {{"seconds", 2}})});
+  REQUIRE_OK(ctl.agent_say(*id, "Make it a 2 s loop", Json::object(), {},
+                           still));
+  steps = steps_done(2);
+  REQUIRE(steps.size() == 2);
+  r = jget(steps[1], "result", Json::object());
+  CHECK(jget<std::string>(r, "kind", "") == "clip");
+  CHECK(std::abs(jget(r, "seconds", 0.0) - 2) < 1e-6);
+  CHECK(jget<std::string>(r, "note", "").find("card") == std::string::npos);
+
+  // The card changed: told, and from then on the words before it name
+  // nothing -- its 1 s, not the 2 s asked for before.
+  const Json clip = {{"width", 48}, {"height", 36}, {"seconds", 1},
+                     {"card", true}};
+  script->replies.push_back({call("render_program", {{"seconds", 2}})});
+  REQUIRE_OK(ctl.agent_say(*id, "Again, please", Json::object(), {}, clip));
+  steps = steps_done(3);
+  REQUIRE(steps.size() == 3);
+  r = jget(steps[2], "result", Json::object());
+  CHECK(jget<std::string>(r, "kind", "") == "clip");
+  CHECK(std::abs(jget(r, "seconds", 0.0) - 1) < 1e-6);
+  CHECK(jget<std::string>(r, "note", "").find("a 2 s clip") !=
+        std::string::npos);
+  {
+    std::lock_guard lk(script->mu);
+    bool told = false;
+    for (const auto& m : script->seen.back()) {
+      told = told || (m.role == "user" &&
+                      m.content.find("The person's card now says: draw "
+                                     "at 48 x 36 pixels, a clip of 1 s") !=
+                          std::string::npos);
+    }
+    CHECK(told);
+  }
+
+  // A size named: taken ("64x48"); the length the card's.
+  script->replies.push_back(
+      {call("render_program", {{"width", 64}, {"height", 48}})});
+  REQUIRE_OK(ctl.agent_say(*id, "Now draw it at 64x48", Json::object(), {},
+                           clip));
+  steps = steps_done(4);
+  REQUIRE(steps.size() == 4);
+  r = jget(steps[3], "result", Json::object());
+  CHECK(jget(r, "width", 0) == 64);
+  CHECK(jget(r, "height", 0) == 48);
+  CHECK(std::abs(jget(r, "seconds", 0.0) - 1) < 1e-6);
+
+  // The transcript: the program a fenced block, whole -- written as the
+  // session rests.
+  auto* p = ctl.project(*pid);
+  const std::string block = "\n```javascript\n" + code + "```\n";
+  std::string transcript;
+  for (int i = 0; i < 250; ++i) {
+    const Json st = ctl.agent_state(*id);
+    if (auto tid = AssetId::parse(jget<std::string>(st, "transcript", ""))) {
+      if (auto t = p->read_text(*tid); t.ok()) {
+        transcript = *t;
+      }
+    }
+    if (transcript.find("64 x 48") != std::string::npos ||
+        transcript.find("\"width\":64") != std::string::npos) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(transcript.find(block) != std::string::npos);
+  // Its arguments' line leaves the code out.
+  CHECK(transcript.find("\\n  c.fillStyle") == std::string::npos);
+  REQUIRE_OK(ctl.agent_stop(*id));
+}

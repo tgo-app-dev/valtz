@@ -6,6 +6,7 @@
 #include "valtz/base/rational.h"
 #include "valtz/base/text.h"
 #include "valtz/base/tree-copy.h"
+#include "valtz/base/url-fetch.h"
 
 #include <filesystem>
 #include <fstream>
@@ -235,4 +236,86 @@ TEST(base, a_tree_is_copied_counted_merged_and_stopped)
   CHECK(fs::is_empty(from));
   remove_empty_dirs(from);
   CHECK(!fs::exists(from));
+}
+
+// A model's files from its makers' own URL (DESIGN §4u): Google Drive's
+// page in a large file's place read as the URL its Download button sends;
+// a page that is no such form, nothing. A zip's files taken by name from
+// wherever they lie -- macOS's __MACOSX shadows left -- and one not there
+// refusing the lot. A file fetched (file://), counted, and a stop.
+TEST(base, a_models_files_are_fetched_from_its_makers_url)
+{
+  namespace fs = std::filesystem;
+  const std::string page =
+      "<!DOCTYPE html><html><head><title>Google Drive - Virus scan "
+      "warning</title></head><body><div class=\"uc-main\"><p class=\"uc-"
+      "warning-caption\">Google Drive can't scan this file for viruses."
+      "</p><form id=\"download-form\" action=\"https://drive.usercontent."
+      "google.com/download\" method=\"get\"><input type=\"submit\" "
+      "id=\"uc-download-link\" value=\"Download anyway\"/><input type="
+      "\"hidden\" name=\"id\" value=\"1qh2DSA9a1eZUTtZG9U9RQKO7N7OaUJ0_\">"
+      "<input type=\"hidden\" name=\"export\" value=\"download\"><input "
+      "type=\"hidden\" name=\"confirm\" value=\"t\"><input type=\"hidden"
+      "\" name=\"uuid\" value=\"88506cd6-78eb\"></form></div></body></html>";
+  CHECK(drive_confirm_url(page) ==
+        "https://drive.usercontent.google.com/download?id="
+        "1qh2DSA9a1eZUTtZG9U9RQKO7N7OaUJ0_&export=download&confirm=t&"
+        "uuid=88506cd6-78eb");
+  CHECK(drive_confirm_url("<html><body>Not found</body></html>").empty());
+
+  const fs::path root = test::temp_dir("url-fetch");
+  const fs::path tree = root / "tree";
+  fs::create_directories(tree / "RIFEv4.22" / "train_log" / "__pycache__");
+  fs::create_directories(tree / "__MACOSX" / "RIFEv4.22" / "train_log");
+  std::ofstream(tree / "RIFEv4.22" / "train_log" / "flownet.pkl") << "weights";
+  std::ofstream(tree / "RIFEv4.22" / "train_log" / "RIFE_HDv3.py")
+      << "scale_list = [16, 8, 4, 2, 1]";
+  std::ofstream(tree / "RIFEv4.22" / "train_log" / "__pycache__" / "x.pyc")
+      << "code";
+  std::ofstream(tree / "__MACOSX" / "RIFEv4.22" / "train_log" /
+                "flownet.pkl")
+      << "a shadow";
+  const fs::path zip = root / "m.zip";
+  REQUIRE(std::system(("/usr/bin/ditto -c -k " + tree.string() + " " +
+                       zip.string())
+                          .c_str()) == 0);
+  const fs::path dest = root / "models" / "4.22";
+  REQUIRE_OK(take_from_zip(zip, {"flownet.pkl", "RIFE_HDv3.py"}, dest));
+  std::ifstream w(dest / "flownet.pkl");
+  std::string got((std::istreambuf_iterator<char>(w)),
+                  std::istreambuf_iterator<char>());
+  CHECK(got == "weights");
+  CHECK(fs::exists(dest / "RIFE_HDv3.py"));
+  CHECK(!fs::exists(dest / "x.pyc"));
+  // Nothing of the unpacking left beside it.
+  std::size_t beside = 0;
+  for (const auto& e : fs::directory_iterator(root / "models")) {
+    (void)e;
+    ++beside;
+  }
+  CHECK(beside == 1);
+  auto missing = take_from_zip(zip, {"flownet.pkl", "IFNet_HDv3.py"},
+                               root / "models" / "other");
+  REQUIRE(!missing.ok());
+  CHECK(missing.error().message.find("IFNet_HDv3.py") != std::string::npos);
+
+  // Fetched as any URL is: counted; stopped when asked, nothing left.
+  std::uint64_t counted = 0;
+  auto f = fetch_url("file://" + zip.string(), root / "got.zip",
+                     [&](std::uint64_t done, std::uint64_t) {
+                       counted = done;
+                       return true;
+                     });
+  REQUIRE_OK(f);
+  CHECK(f->bytes == fs::file_size(zip));
+  CHECK(counted == fs::file_size(zip));
+  CHECK(fs::file_size(root / "got.zip") == fs::file_size(zip));
+  auto stopped = fetch_url("file://" + zip.string(), root / "no.zip",
+                           [](std::uint64_t, std::uint64_t) {
+                             return false;
+                           });
+  REQUIRE(!stopped.ok());
+  CHECK(stopped.code() == Code::Cancelled);
+  CHECK(!fs::exists(root / "no.zip"));
+  CHECK(!fetch_url("not a url", root / "x").ok());
 }

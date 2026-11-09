@@ -43,6 +43,7 @@
 #include "valtz/assist/video-summary.h"
 #include "valtz/base/log.h"
 #include "valtz/base/text.h"
+#include "valtz/base/url-fetch.h"
 #include "valtz/base/version.h"
 #include "valtz/cache/cache-store.h"
 #include "valtz/media/exif.h"
@@ -58,12 +59,14 @@
 #include "engine/vpipe/encoding-cache.h"
 #include "engine/vpipe/flex-json.h"
 #include "engine/vpipe/graph-builder.h"
+#include "engine/vpipe/guide-clean.h"
 #include "engine/vpipe/host-exchange.h"
 #include "engine/vpipe/job-progress.h"
 
 #include "valtz-vpipe/exchange.h"
 
 #include "common/perf-flops.h"
+#include "stages/model-catalog.h"
 #include "stages/model-source.h"
 #include "vpipe/system-monitor.h"
 #include "vpipe/vpipe.h"
@@ -238,6 +241,21 @@ public:
     // Open-H3-Regenerate-2K's refine (DESIGN §4q) needs vpipe's latent
     // upscaler (§15 0zzj): an older libvpipe has no such stage.
     _regenerates = has_stage_("latent-upscale");
+    // ...and IN CONTEXT (Open-H3-Regenerate-2K-IC, §15 0zzzi: a flow map
+    // run under a refine, references kept in one, `attach_latent`): no
+    // stage tells it -- an older one takes the new keys as no error and
+    // fails the run -- so the catalogue does: vpipe c8fc15e5 added the
+    // release's records with it.
+    _regenerates_ic =
+        _regenerates &&
+        !vpipe::catalog_all_by_path(
+             "Efficient-Large-Model/Open-H3-Regenerate-2K-IC")
+             .empty();
+    // RIFE (DESIGN §4u, §15 0zzzh): temporal-resample's `rife` method --
+    // an older stage refuses the method by name.
+    _interpolates = has_stage_(
+        "temporal-resample",
+        R"({"output_fps": 48, "method": "rife", "hf_dir": "probe"})");
     // Each backend vpipe was given: loaded when every stage it says it
     // registers is there.
     for (std::size_t i = 0; i < _backends.size(); ++i) {
@@ -463,7 +481,9 @@ public:
            op == kOpUpscaleVideo || op == kOpUpscaleImage ||
            op == kOpTranscribeAudio || op == kOpSummarizeVideo ||
            op == kOpSeparateAudio || op == kOpMakeRefMod ||
-           (op == kOpRegenerateVideo && _regenerates);
+           (op == kOpRegenerateVideo && _regenerates) ||
+           (op == kOpRegenerateInContext && _regenerates_ic) ||
+           (op == kOpInterpolateVideo && _interpolates);
   }
 
   Status
@@ -578,14 +598,14 @@ private:
   // Whether a stage of `type` can be made: what a loaded plugin
   // registered.
   bool
-  has_stage_(const std::string& type)
+  has_stage_(const std::string& type, const std::string& config = "")
   {
     vpipe::PipelineHandle p = _session->create_pipeline("valtz-probe");
     if (!p) {
       return false;
     }
     const bool ok = static_cast<bool>(p.insert_stage(type, "probe", {},
-                                                     ""));
+                                                     config));
     _session->unload_pipeline(p);
     return ok;
   }
@@ -956,10 +976,307 @@ private:
     q.sink(done);
   }
 
+  // A job of the engine's own INSIDE another (a guide cleaned, DESIGN
+  // §4e): `sub` run on this lane as any job is -- its graph, its feeds,
+  // its models kept warm between its kind -- its events kept from the
+  // person, its files collected, its failure its owner's.
+  Status
+  run_inside_(Lane& lane, JobSpec sub, std::vector<fs::path>* outputs)
+  {
+    Status failed = ok_status();
+    bool cancelled = false;
+    Queued s;
+    s.spec = std::move(sub);
+    s.sink = [&](const JobEvent& ev) {
+      if (ev.kind == JobEventKind::Output && outputs) {
+        outputs->push_back(ev.output);
+      } else if (ev.kind == JobEventKind::Failed) {
+        failed = make_error(ev.error == Code::Ok ? Code::Engine : ev.error,
+                            ev.text);
+      } else if (ev.kind == JobEventKind::Cancelled) {
+        cancelled = true;
+      }
+    };
+    run_job_(lane, s);
+    if (cancelled || lane.cancel.load()) {
+      return make_error(Code::Cancelled, "cancelled");
+    }
+    return failed;
+  }
+
+  // A continuation's GUIDE CLEANED (DESIGN §4e, guide-clean.h), before
+  // its own graph: the kept latents' window decoded; each frame handed to
+  // the image edit the job names (param "clean_guide": its "edit" -- the
+  // model as data and its params, settled by the controller) and given
+  // back its own large-scale tones; the cleaned frames encoded, fed from
+  // memory, f16 as decoded; their latents ramped in over the kept ones.
+  // The file the guide is read from, in `dir`. A phase of the job's own,
+  // a frame a step.
+  Result<fs::path>
+  clean_guide_(Lane& lane, Queued& q, const vp::GuideMedia& guide,
+               const fs::path& dir)
+  {
+    const JobSpec& spec = q.spec;
+    const Json cg = jget(spec.params, "clean_guide", Json::object());
+    const Json edit = jget(cg, "edit", Json::object());
+    if (!guide.kept() || !edit.is_object() || edit.empty()) {
+      return make_error(Code::InvalidArgument,
+                        "a guide is cleaned from the latents its clip "
+                        "kept, by an image edit");
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    const auto started = std::chrono::steady_clock::now();
+    auto counted = [&](std::int64_t done, std::int64_t total) {
+      JobEvent ev;
+      ev.job = spec.id;
+      ev.kind = JobEventKind::Progress;
+      const double f = total > 0 ? static_cast<double>(done) / total : 0;
+      ev.progress = static_cast<float>(f);
+      ev.data = {{"phase", kPhaseClean},
+                 {"done", done},
+                 {"total", total},
+                 {"elapsed", std::chrono::duration<double>(
+                                 std::chrono::steady_clock::now() - started)
+                                 .count()},
+                 {"estimate", f}};
+      q.sink(ev);
+    };
+    // The window, decoded: its frames as the VAE made them, 0..1.
+    JobSpec d;
+    d.id = JobId::make();
+    d.op = std::string(vp::kOpCleanDecode);
+    d.model = spec.model;
+    d.params = {{"latent", guide.latent.path.string()},
+                {"start", guide.latent.start},
+                {"count", guide.latent.count},
+                {"width", jget(spec.params, "width", 0)},
+                {"height", jget(spec.params, "height", 0)}};
+    d.output_dir = dir;
+    counted(0, 0);
+    VALTZ_TRY(run_inside_(lane, d, nullptr));
+    VALTZ_ASSIGN(vp::TensorFile frames,
+                 vp::read_tensor_file(dir / (d.id.str() + "-frames.vpt")));
+    if (frames.dtype != vp::TensorFile::kF16 || frames.dims.size() != 4 ||
+        frames.dims[1] != 3 || frames.dims[0] <= 0) {
+      return make_error(Code::Engine,
+                        "the guide's frames came out in another shape");
+    }
+    const std::int64_t n = frames.dims[0];
+    const int h = static_cast<int>(frames.dims[2]);
+    const int w = static_cast<int>(frames.dims[3]);
+    const std::size_t plane = 3 * static_cast<std::size_t>(w) * h;
+    // Each frame restored by the edit, as the person's own edits are made
+    // -- the picture it reads a 16-bit PNG of the frame's samples -- and
+    // its result read back in the frame's place, its tones the frame's.
+    const engine::ModelRef em = model_ref_from_json(jget(edit, "model",
+                                                         Json::object()));
+    const Json ep = jget(edit, "params", Json::object());
+    const double sigma = jget(cg, "tone_sigma", 24.0);
+    std::vector<float> src(plane), out(plane);
+    std::vector<_Float16> half(plane);
+    auto* fh = reinterpret_cast<_Float16*>(frames.bytes.data());
+    for (std::int64_t t = 0; t < n; ++t) {
+      _Float16* f = fh + t * static_cast<std::int64_t>(plane);
+      for (std::size_t i = 0; i < plane; ++i) {
+        src[i] = static_cast<float>(f[i]);
+      }
+      const fs::path png = dir / std::format("frame-{:02}.png", t);
+      VALTZ_TRY(media::write_planar_png16(src.data(), {w, h}, png));
+      JobSpec e;
+      e.id = JobId::make();
+      e.op = std::string(kOpEditImage);
+      e.model = em;
+      e.params = ep;
+      e.output_dir = dir;
+      JobInput in;
+      in.role = "base";
+      in.path = png;
+      VALTZ_ASSIGN(in.info, media::probe_file(png));
+      VALTZ_ASSIGN(in.hash, hash_file(png));
+      e.inputs.push_back(std::move(in));
+      std::vector<fs::path> made;
+      VALTZ_TRY(run_inside_(lane, std::move(e), &made));
+      if (made.empty()) {
+        return make_error(Code::Engine, std::format(
+            "the guide's frame {} came back from its edit with no picture",
+            t + 1));
+      }
+      VALTZ_TRY(media::decode_planar(made.front(), {w, h}, 3,
+                                     media::Fit::Crop, {},
+                                     media::Sample::F16, half.data(),
+                                     half.size() * sizeof(_Float16)));
+      for (std::size_t i = 0; i < plane; ++i) {
+        out[i] = static_cast<float>(half[i]);
+      }
+      vp::tone_transfer(out, src, w, h, sigma);
+      for (std::size_t i = 0; i < plane; ++i) {
+        f[i] = static_cast<_Float16>(out[i]);
+      }
+      fs::remove(made.front(), ec);
+      counted(t + 1, n);
+    }
+    // The cleaned frames, encoded as the tail's frames are.
+    const fs::path cleaned = dir / "cleaned-frames.vpt";
+    VALTZ_TRY(vp::write_tensor_file(cleaned, frames));
+    JobSpec c;
+    c.id = JobId::make();
+    c.op = std::string(vp::kOpCleanEncode);
+    c.model = spec.model;
+    c.params = {{"frames", cleaned.string()},
+                {"count", n},
+                {"width", w},
+                {"height", h}};
+    c.output_dir = dir;
+    VALTZ_TRY(run_inside_(lane, c, nullptr));
+    const fs::path guided = dir / "guide.vpt";
+    VALTZ_TRY(vp::ramp_guide(guide.latent.path, guide.latent.start,
+                             dir / (c.id.str() + "-latent.vpt"), guided,
+                             jget(cg, "ramp", true)));
+    VALTZ_LOG_INFO("engine", "{}: its guide cleaned ({} frames, {:.1f} s)",
+                   spec.id.str(), n,
+                   std::chrono::duration<double>(
+                       std::chrono::steady_clock::now() - started)
+                       .count());
+    return guided;
+  }
+
+  // A model's files from its makers' own URL (DESIGN §4u: Practical-
+  // RIFE's zips on Google Drive -- no hub vpipe's model-fetch knows):
+  // fetched, counted as a download is; Drive's page in the file's place
+  // (too large to scan for viruses) followed through its form; the file
+  // checked by its SHA-256; the files the catalog names taken out of the
+  // zip and put in the model's folder whole -- nothing else kept.
+  void
+  fetch_url_model_(Lane& lane, Queued& q)
+  {
+    const JobSpec& spec = q.spec;
+    const Json src = jget(spec.params, "url_source", Json::object());
+    const fs::path dest = jget<std::string>(spec.params, "dest", "");
+    std::string url = jget<std::string>(src, "url", "");
+    const auto host = jget<std::string>(src, "host", "its makers' site");
+    const auto page = jget<std::string>(src, "page", url);
+    const auto sha = jget<std::string>(src, "sha256", "");
+    const auto expect = jget<std::uint64_t>(src, "bytes", 0);
+    std::vector<std::string> take;
+    for (const auto& t : jget(src, "take", Json::array())) {
+      if (t.is_string()) {
+        take.push_back(t.get<std::string>());
+      }
+    }
+    if (url.empty() || dest.empty() || take.empty()) {
+      fail_(q, Code::InvalidArgument, "a download names its URL, its "
+                                      "folder and the files it keeps");
+      return;
+    }
+    JobEvent started;
+    started.job = spec.id;
+    started.kind = JobEventKind::Started;
+    started.text = _desc;
+    q.sink(started);
+    std::error_code ec;
+    struct Gone {
+      fs::path path;
+      ~Gone()
+      {
+        std::error_code e;
+        fs::remove_all(path, e);
+      }
+    } tmp{dest.parent_path() / (".fetch-" + dest.filename().string())};
+    fs::remove_all(tmp.path, ec);
+    fs::create_directories(tmp.path, ec);
+    const fs::path zip = tmp.path / "download.zip";
+    const auto label = jget<std::string>(spec.params, "label", "");
+    auto sent = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    const auto progress = [&](std::uint64_t done, std::uint64_t total) {
+      if (lane.cancel.load()) {
+        return false;
+      }
+      const auto now = std::chrono::steady_clock::now();
+      if (now - sent < std::chrono::milliseconds(200)) {
+        return true;
+      }
+      sent = now;
+      const std::uint64_t whole = total > 0 ? total : expect;
+      JobEvent ev;
+      ev.job = spec.id;
+      ev.kind = JobEventKind::Progress;
+      ev.progress = whole > 0 ? static_cast<float>(
+                                    static_cast<double>(done) / whole)
+                              : -1.0f;
+      ev.data = {{"phase", kPhaseDownload}, {"done", done},
+                 {"total", whole}, {"label", label}};
+      q.sink(ev);
+      return true;
+    };
+    for (int hop = 0;; ++hop) {
+      auto got = fetch_url(url, zip, progress);
+      if (!got.ok()) {
+        if (got.code() == Code::Cancelled || lane.cancel.load()) {
+          JobEvent c;
+          c.job = spec.id;
+          c.kind = JobEventKind::Cancelled;
+          q.sink(c);
+        } else {
+          fail_(q, got.code(), got.error().message);
+        }
+        return;
+      }
+      if (got->content_type != "text/html") {
+        break;
+      }
+      // A page in the file's place: Drive's confirmation, followed.
+      std::ifstream f(zip);
+      const std::string html((std::istreambuf_iterator<char>(f)),
+                             std::istreambuf_iterator<char>());
+      const std::string next = drive_confirm_url(html);
+      if (next.empty() || hop >= 2) {
+        fail_(q, Code::Io, std::format(
+            "{} sent a page, not the file: download it from {}, unzip it "
+            "and link its train_log folder in Settings › Capabilities",
+            host, page));
+        return;
+      }
+      url = next;
+    }
+    if (!sha.empty()) {
+      auto h = hash_file(zip);
+      if (!h.ok() || h->hex() != sha) {
+        fail_(q, Code::Corrupt, std::format(
+            "the file {} sent is not the one Valtz knows (its SHA-256 "
+            "differs): not kept", host));
+        return;
+      }
+    }
+    const fs::path staged = tmp.path / "files";
+    if (auto st = take_from_zip(zip, take, staged); !st.ok()) {
+      fail_(q, st.code(), st.error().message);
+      return;
+    }
+    // In the model's place whole: what was there before goes.
+    fs::create_directories(dest.parent_path(), ec);
+    fs::remove_all(dest, ec);
+    fs::rename(staged, dest, ec);
+    if (ec) {
+      fail_(q, Code::Io, std::format("cannot write {}: {}", dest.string(),
+                                     ec.message()));
+      return;
+    }
+    JobEvent done;
+    done.job = spec.id;
+    done.kind = JobEventKind::Finished;
+    done.progress = 1.0f;
+    q.sink(done);
+  }
+
   void
   run_job_(Lane& lane, Queued& q)
   {
     const JobSpec& spec = q.spec;
+    if (spec.op == kOpFetchModel && spec.params.contains("url_source")) {
+      fetch_url_model_(lane, q);
+      return;
+    }
     if (spec.op == kOpExportMedia) {
       const auto format = jget<std::string>(spec.params, "format", "");
       const auto* f = export_format(format);
@@ -989,7 +1306,10 @@ private:
         std::error_code ec;
         fs::remove_all(path, ec);
       }
-    } refmod_scratch{spec.output_dir / (spec.id.str() + "-refmods")};
+    } refmod_scratch{spec.output_dir / (spec.id.str() + "-refmods")},
+        clean_scratch{spec.output_dir / (spec.id.str() + "-clean")};
+    // A guide cleaned first (DESIGN §4e): its owner said Started then.
+    bool started_early = false;
     double heard_seconds = 0;
     const int separate_rate = jget(
         jget(jget(spec.model.engine, "vpipe", Json::object()), "separate",
@@ -1045,7 +1365,10 @@ private:
     // after the launch.
     std::map<std::string, vp::Kept> kept;
     std::optional<vp::EncodingCache> encodings;
-    if (_cache && (spec.op == kOpGenerateImage || spec.op == kOpEditImage ||
+    // (A guide's frames edited inside a continuation keep nothing: no
+    // later job is made from the same.)
+    if (_cache && jget(spec.params, "keep_encodings", true) &&
+        (spec.op == kOpGenerateImage || spec.op == kOpEditImage ||
                    spec.op == kOpGenerateVideo)) {
       std::string stamp = vp::model_stamp(spec.model.dir);
       if (!stamp.empty()) {
@@ -1111,6 +1434,31 @@ private:
       auto last = keyframe_(spec, "last");
       auto refs = reference_media_(spec, refmod_scratch.path);
       auto guide = guide_media_(spec);
+      // Its guide CLEANED (DESIGN §4e) -- inside this job, before its
+      // graph: the guide read from what that made.
+      if (guide.ok() && *guide &&
+          spec.params.contains("clean_guide")) {
+        JobEvent ev;
+        ev.job = spec.id;
+        ev.kind = JobEventKind::Started;
+        ev.text = _desc;
+        q.sink(ev);
+        started_early = true;
+        auto cleaned = clean_guide_(lane, q, **guide, clean_scratch.path);
+        if (!cleaned.ok()) {
+          if (cleaned.code() == Code::Cancelled || lane.cancel.load()) {
+            JobEvent c;
+            c.job = spec.id;
+            c.kind = JobEventKind::Cancelled;
+            q.sink(c);
+          } else {
+            fail_(q, cleaned.code(), cleaned.error().message);
+          }
+          return;
+        }
+        (*guide)->latent.path = *cleaned;
+        (*guide)->latent.start = 0;
+      }
       built = !first.ok() ? Result<vp::BuiltGraph>(first.error())
               : !last.ok() ? Result<vp::BuiltGraph>(last.error())
               : !refs.ok() ? Result<vp::BuiltGraph>(refs.error())
@@ -1120,6 +1468,12 @@ private:
                                               *guide ? &**guide : nullptr);
     } else if (spec.op == kOpMakeRefMod) {
       built = vp::build_make_refmod(spec);
+    } else if (spec.op == kOpInterpolateVideo) {
+      built = vp::build_interpolate_video(spec);
+    } else if (spec.op == vp::kOpCleanDecode) {
+      built = vp::build_clean_decode(spec);
+    } else if (spec.op == vp::kOpCleanEncode) {
+      built = vp::build_clean_encode(spec);
     } else if (spec.op == kOpGenerateAudio) {
       built = vp::build_audio(spec);
     } else if (spec.op == kOpGenerateSpeech) {
@@ -1368,11 +1722,13 @@ private:
       }
     };
 
-    JobEvent started;
-    started.job = spec.id;
-    started.kind = JobEventKind::Started;
-    started.text = _desc;
-    q.sink(started);
+    if (!started_early) {
+      JobEvent started;
+      started.job = spec.id;
+      started.kind = JobEventKind::Started;
+      started.text = _desc;
+      q.sink(started);
+    }
 
     // What the job is doing, as vpipe's own UI would show it: its stages'
     // live reports, polled while the graph runs (job-progress.h). Reports
@@ -1390,10 +1746,12 @@ private:
     // refine is its main work -- an upscale by it too, whose frames are
     // written as they are decoded, not restored a group at a time.
     const bool regen = !spec.model.regenerate_lora.empty();
+    // An interpolation, as an upscale: its frames written are the whole.
+    const bool interpolating = spec.op == kOpInterpolateVideo;
     vp::JobProgress progress(
         vp::JobProgress::last_id(vp::from_flex(_session->progress())),
         spec.op == kOpFetchModel, spec.op == kOpExportMedia,
-        spec.op == kOpUpscaleVideo && !regen, group,
+        (spec.op == kOpUpscaleVideo && !regen) || interpolating, group,
         parts.is_array() ? static_cast<int>(parts.size()) : 0);
     if (regen) {
       progress.set_regenerate(spec.op == kOpGenerateVideo);
@@ -1420,6 +1778,9 @@ private:
       }
       vp::JobPhase now =
           progress.read(vp::from_flex(_session->progress()), t);
+      if (interpolating && now.phase == kPhaseRestore) {
+        now.phase = std::string(kPhaseInterpolate);
+      }
       if (!beat && phase && phase->same(now)) {
         return;
       }
@@ -1848,7 +2209,7 @@ private:
         spec.op == kOpGenerateVideo || spec.op == kOpGenerateAudio ||
         spec.op == kOpGenerateSpeech ||
         spec.op == kOpExportMedia || spec.op == kOpUpscaleVideo ||
-        spec.op == kOpUpscaleImage) {
+        spec.op == kOpUpscaleImage || spec.op == kOpInterpolateVideo) {
       if (!fs::is_regular_file(g.output, ec)) {
         fail_(q, Code::Engine, no_file_(lane, "its file"));
         return;
@@ -2509,6 +2870,40 @@ private:
         return fin;
       }
     }
+    // A guide's CLEANED FRAMES (DESIGN §4e): from their tensor file, a
+    // beat each, the samples as they are -- f16, 0..1, as the video VAE
+    // decoded them and the edit gave them back.
+    if (!g.frames_stage.empty()) {
+      VALTZ_ASSIGN(vp::TensorFile fr, vp::read_tensor_file(g.frames_file));
+      if (fr.dtype != vp::TensorFile::kF16 || fr.dims.size() != 4 ||
+          fr.dims[1] != 3) {
+        _session->stop_pipeline(h);
+        return make_error(Code::InvalidArgument,
+                          "a guide's frames are f16 [T, 3, h, w]");
+      }
+      vp::SourceWriter src(h.stage(g.frames_stage), keep_going);
+      const Json tags = {{"color_primaries", 1},
+                         {"color_transfer", 13},
+                         {"color_matrix", 0},
+                         {"color_full_range", true}};
+      const std::size_t each = fr.bytes.size() /
+                               static_cast<std::size_t>(fr.dims[0]);
+      for (std::int64_t t = 0; t < fr.dims[0]; ++t) {
+        VALTZ_ASSIGN(auto lease, src.lease(
+            Tensor::DType::F16, {3, fr.dims[2], fr.dims[3]}, tags));
+        if (lease.size() < each) {
+          _session->stop_pipeline(h);
+          return make_error(Code::Engine, "a frame's lease is too small");
+        }
+        std::memcpy(lease.data(), fr.bytes.data() + t * each, each);
+        lease.commit();
+        fed();
+      }
+      if (auto fin = src.finish(); !fin.ok()) {
+        _session->stop_pipeline(h);
+        return fin;
+      }
+    }
     // A clip fed frame by frame (an export with a look): each frame
     // decoded with its look straight into a leased beat. A cancel stops
     // it between frames.
@@ -2705,6 +3100,8 @@ private:
   std::mutex                            _flops_mu;
   double                                _flops_peak = 0;
   bool                                  _regenerates = false;
+  bool                                  _regenerates_ic = false;
+  bool                                  _interpolates = false;
   std::uint64_t                         _flops_scanned = 0;
   // The wired limit (set_wired_limit_mb), under _mu: the one asked (0
   // vpipe's own), vpipe's own here, and whether a lower one waits.

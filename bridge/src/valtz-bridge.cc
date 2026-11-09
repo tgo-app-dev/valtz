@@ -85,10 +85,10 @@ inline_pictures(const Json& j, const char* key = "inline")
 // A request's reference row ("row": asset ids in order) and the prompt
 // asset its prompt came from ("prompt_asset").
 std::vector<AssetId>
-row_of(const Json& j)
+row_of(const Json& j, const char* key = "row")
 {
   std::vector<AssetId> out;
-  for (const auto& id : jget(j, "row", std::vector<std::string>{})) {
+  for (const auto& id : jget(j, key, std::vector<std::string>{})) {
     if (auto a = AssetId::parse(id)) {
       out.push_back(*a);
     }
@@ -459,11 +459,52 @@ Core::agent_start(const std::string& request_json)
     req.backend = jget<std::string>(*j, "backend", "");
     req.skills = jget<std::string>(*j, "skills", "full");
     req.stage = jget(*j, "stage", Json::object());
+    req.render = jget(*j, "render", Json::object());
     auto id = _impl->ctl->agent_start(std::move(req));
     if (!id.ok()) {
       return err(id.error());
     }
     return ok({{"agent", *id}});
+  });
+}
+
+std::string
+Core::render_procedural(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto pid = ProjectId::parse(jget<std::string>(*j, "project", ""));
+    if (!pid) {
+      return err(Code::InvalidArgument, "bad project id");
+    }
+    ProceduralRequest req;
+    req.project = *pid;
+    req.code = jget<std::string>(*j, "code", "");
+    req.name = jget<std::string>(*j, "name", "");
+    if (auto id = AssetId::parse(jget<std::string>(*j, "program", ""))) {
+      req.program = *id;
+    }
+    if (auto id = AssetId::parse(jget<std::string>(*j, "drawing", ""))) {
+      req.drawing = *id;
+    }
+    req.width = jget(*j, "width", 1024);
+    req.height = jget(*j, "height", 1024);
+    req.seconds = jget(*j, "seconds", 0.0);
+    req.fps = jget(*j, "fps", 0.0);
+    if (j->contains("seed") && (*j)["seed"].is_number()) {
+      req.seed = jget<std::uint64_t>(*j, "seed", 0);
+    }
+    req.assets = row_of(*j, "assets");
+    auto r = _impl->ctl->render_procedural(std::move(req));
+    if (!r.ok()) {
+      return err(r.error());
+    }
+    return ok({{"job", r->job.str()},
+               {"program", r->program.str()},
+               {"asset", r->asset.str()}});
   });
 }
 
@@ -475,10 +516,10 @@ Core::agent_say(const std::string& request_json)
     if (!j.ok()) {
       return err(j.error());
     }
-    auto st = _impl->ctl->agent_say(jget<std::string>(*j, "agent", ""),
-                                    jget<std::string>(*j, "text", ""),
-                                    jget(*j, "stage", Json::object()),
-                                    row_of(*j));
+    auto st = _impl->ctl->agent_say(
+        jget<std::string>(*j, "agent", ""), jget<std::string>(*j, "text", ""),
+        jget(*j, "stage", Json::object()), row_of(*j),
+        j->is_object() && j->contains("render") ? (*j)["render"] : Json());
     return st.ok() ? ok() : err(st.error());
   });
 }
@@ -534,9 +575,16 @@ Core::agent_state(const std::string& request_json) const
       return err(Code::NotFound, "no such agent session");
     }
     // Each step's arguments and result as text, as the app shows them;
-    // an ask_user's question by itself.
+    // an ask_user's question by itself; a program's code by itself, the
+    // chat's code block (in the arguments' text one line of escapes).
     for (auto& step : st["steps"]) {
-      step["args_text"] = to_text(jget(step, "args", Json::object()));
+      Json args = jget(step, "args", Json::object());
+      if (args.is_object() && args.contains("code") &&
+          args["code"].is_string()) {
+        step["code"] = args["code"];
+        args.erase("code");
+      }
+      step["args_text"] = to_text(args);
       if (step.contains("result")) {
         step["result_text"] = to_text(step["result"]);
       }
@@ -1671,6 +1719,7 @@ Core::generate_video(const std::string& request_json)
     }
     req.tail_seconds = jget(*j, "tail_seconds", 0.0);
     req.continue_latents = jget(*j, "continue_latents", false);
+    req.clean_guide = jget(*j, "clean_guide", false);
     req.keep_latents = jget(*j, "keep_latents", false);
     req.reference_sound = jget(*j, "reference_sound", false);
     // Past 768P, drafted and regenerated (DESIGN §4q): unsaid, where it
@@ -2284,6 +2333,43 @@ Core::use_upscaler(const std::string& request_json)
     auto st = _impl->ctl->use_upscaler(jget<std::string>(*j, "kind", ""),
                                        jget<std::string>(*j, "model", ""));
     return st.ok() ? ok(_impl->ctl->upscale_settings()) : err(st.error());
+  });
+}
+
+std::string
+Core::interpolate_settings() const
+{
+  return guarded([&] { return ok(_impl->ctl->interpolate_settings()); });
+}
+
+std::string
+Core::set_interpolate_tuning(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->set_interpolate_tuning(
+        jget<std::string>(*j, "model", ""),
+        jget(*j, "values", Json::object()), jget(*j, "reset", false));
+    return st.ok() ? ok(_impl->ctl->interpolate_settings())
+                   : err(st.error());
+  });
+}
+
+std::string
+Core::use_interpolator(const std::string& request_json)
+{
+  return guarded([&] {
+    auto j = parse(request_json);
+    if (!j.ok()) {
+      return err(j.error());
+    }
+    auto st = _impl->ctl->use_interpolator(
+        jget<std::string>(*j, "model", ""));
+    return st.ok() ? ok(_impl->ctl->interpolate_settings())
+                   : err(st.error());
   });
 }
 

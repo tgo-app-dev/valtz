@@ -18,9 +18,13 @@ extension AppModel {
             // What the panels still have to write, written before it holds
             // the project again (a session done is the person's).
             if a.listening { flushPanels() }
-            // The row's media go with these words: attached to them.
-            let r = core.agentSay(a.agent, words, stage: agentStage,
-                                  row: rowAssetIds)
+            // The row's media go with these words: attached to them --
+            // and Procedural's card as it is now (set to Still after a
+            // clip, it was never told).
+            let r = core.agentSay(
+                a.agent, words, stage: agentStage, row: rowAssetIds,
+                render: activeModality == .procedural
+                    && a.skills == "procedural" ? proceduralRender : nil)
             guard r.ok else { flash(r.message, level: .error); return }
             clearAgentPrompt()
             reloadAgent()
@@ -33,11 +37,20 @@ extension AppModel {
             "project": projectId,
             "prompt": words,
             "row": rowAssetIds,
-            "review": agentSettings?.review ?? true,
+            // Programs are drawn as they come -- Procedural's, or a
+            // Programs tab's: nothing to ask about, nothing they change.
+            "review": activeModality == .procedural
+                || agentSkills == "procedural"
+                ? false : agentSettings?.review ?? true,
             // The tab's tools: one tab with Valtz's (the core refuses a
             // second while it is there).
             "skills": agentSkills,
         ]
+        // What its programs are drawn at: the Procedural card's size and
+        // length -- a Programs tab of the Agent's too.
+        if activeModality == .procedural || agentSkills == "procedural" {
+            req["render"] = proceduralRender
+        }
         if let c = activeComposition { req["composition"] = c.id }
         req["stage"] = agentStage
         let r = core.agentStart(req)
@@ -49,7 +62,7 @@ extension AppModel {
             agentWriting = ""
             agent = AgentSession(agent: id, project: projectId,
                                  state: "starting",
-                                 review: agentSettings?.review ?? true,
+                                 review: req["review"] as? Bool ?? true,
                                  skills: agentSkills,
                                  prompt: words, steps: [])
             agentFollows = true
@@ -104,7 +117,7 @@ extension AppModel {
     /// assistant's suggestion splits the card, or a text asset is being
     /// looked at in a tab of its own (a transcript opened from it).
     var agentChat: Bool {
-        promptImmersive && activeModality == .agent && !suggesting
+        promptImmersive && activeModality.isAgentic && !suggesting
             && !activeTabDoNotApply
     }
 
@@ -145,6 +158,7 @@ extension AppModel {
             agentWriting = next.writing ?? ""
         }
         withAnimation(Self.motion) { agent = next }
+        showProgramDrawn(was: was, next: next)
         // Following it: the composition it works on is the one the stage
         // shows. The person looking elsewhere is left there (agentFollows).
         // While the stage plays its shot's preview, it goes there after.
@@ -221,7 +235,7 @@ extension AppModel {
     }
 
     /// The stage moved for the agent: the following goes on.
-    private func steerForAgent(_ move: () -> Void) {
+    func steerForAgent(_ move: () -> Void) {
         let was = agentSteering
         agentSteering = true
         move()
@@ -333,12 +347,54 @@ extension AppModel {
     }
 
     /// A finished session put away: the next request starts another.
-    func agentDismiss() {
-        if let a = agent, !a.ended { agentControl("stop") }
-        withAnimation(Self.motion) {
-            agent = nil
-            agentWriting = ""
+    /// A target's sessions put away: those shown or kept for it stopped,
+    /// its tabs fresh -- the Agent's, or Procedural's (Settings ›
+    /// Experimental switching it off).
+    func agentDismiss(_ target: Modality? = nil) {
+        let shown = target == nil || target == modality
+        if shown {
+            if let a = agent, !a.ended { agentControl("stop") }
+            withAnimation(Self.motion) {
+                agent = nil
+                agentWriting = ""
+            }
         }
+        if let target, target != modality,
+           let kept = agentTargets.removeValue(forKey: target), let core {
+            for t in kept.tabs {
+                if let s = t.session, !s.ended {
+                    _ = core.agentControl(s.agent, "stop")
+                }
+            }
+        }
+    }
+
+    /// Procedural and the Agent each keep their own TABS -- their
+    /// sessions, words being written -- the one shown live in `agentTabs`,
+    /// the other's kept here as the target changes. The box's words go by
+    /// Prompt History, as for every target.
+    struct AgentTarget {
+        var tabs: [AgentTab]
+        var index: Int
+    }
+
+    func swapAgentTarget(from: Modality, to: Modality) {
+        if from.isAgentic {
+            stashAgentTab()
+            agentTargets[from] = AgentTarget(tabs: agentTabs,
+                                             index: agentTabIndex)
+        }
+        guard to.isAgentic else { return }
+        let next = agentTargets[to] ?? AgentTarget(
+            tabs: [AgentTab(skills: to == .procedural ? "procedural"
+                                                       : "full")],
+            index: 0)
+        agentTabs = next.tabs
+        agentTabIndex = min(next.index, next.tabs.count - 1)
+        let t = agentTabs[agentTabIndex]
+        agent = t.session
+        agentWriting = t.writing
+        if agent != nil { reloadAgent() }
     }
 
     // ---- Settings › Experimental › Agent

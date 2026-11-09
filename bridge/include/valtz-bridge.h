@@ -134,11 +134,19 @@ public:
   std::string fleet_browse(const std::string& request_json);
   std::string fleet_answer(const std::string& request_json);
   std::string choose_assistant(const std::string& request_json);
+  // A PROGRAM DRAWN (Controller::render_procedural, DESIGN §4t):
+  // {"project", "program"? (its id), "code"?, "drawing"? (drawn again as
+  // its next version), "name"?, "width", "height", "seconds", "fps"?,
+  // "seed"?, "assets"?: [ids]} -> {"job", "program", "asset"}.
+  std::string render_procedural(const std::string& request_json);
   // THE AGENT (Controller::agent_start, DESIGN §9b): agent_start
   // ({"project", "prompt", "composition"?, "row": [ids], "review",
-  // "backend"?, "skills"?: full | chat | none} -> {"agent"}); agent_say
+  // "backend"?, "skills"?: full | chat | procedural | none, "render"?:
+  // {"width", "height", "seconds", "fps", "card"?}} -> {"agent"});
+  // agent_say
   // ({"agent", "text", "stage"?,
-  // "row"?: the assets attached to these words});
+  // "row"?: the assets attached to these words, "render"?: a procedural
+  // session's card as it is now});
   // agent_review ({"agent", "step", "decision": approve | skip |
   // approve_all, "args"?, "note"?}); agent_control ({"agent", "action":
   // pause | resume | stop | review | auto}); agent_state ({"agent"} ->
@@ -410,6 +418,14 @@ public:
   // upscale_settings: the upscaler Render Upscaled runs for that kind
   // (Controller::use_upscaler). Event "upscale.changed".
   std::string use_upscaler(const std::string& request_json);
+  // Settings > Temporal Resampling (Controller::interpolate_settings):
+  // the frame interpolators (RIFE), each one's flow scale and scene cut,
+  // and which one Render Interpolated runs; set_interpolate_tuning takes
+  // {"model", "values", "reset"?}, use_interpolator {"model": id | ""
+  // (Auto)} -- each answering the same. Event "interpolate.changed".
+  std::string interpolate_settings() const;
+  std::string set_interpolate_tuning(const std::string& request_json);
+  std::string use_interpolator(const std::string& request_json);
   // {"path"} -> {"ok", "kind": "lora" | "dit" | "vae" | "", "family",
   // "origin"}: what a dropped weight file or folder is -- an extension's
   // recognition rules first (Controller::classify_weights) -- so the

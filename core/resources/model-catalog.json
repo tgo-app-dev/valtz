@@ -102,7 +102,10 @@
         {"model": "p-h3-image-lora", "label": "P-H3-Image adapter, FL2VA (PrunaAI)"},
         {"model": "open-h3-regenerate-2k", "label": "Open-H3-Regenerate-2K refiner (NVIDIA): clips past 768P"},
         {"model": "open-h3-latent-upscaler", "label": "Latent upscaler (for the refiner)"},
-        {"model": "open-h3-fast-vae", "label": "Fast decoder (for the refiner, lossy)"}
+        {"model": "open-h3-fast-vae", "label": "Fast decoder (for the refiner, lossy)"},
+        {"model": "open-h3-regenerate-2k-ic", "label": "Open-H3-Regenerate-2K-IC refiner (NVIDIA): clips past 768P, the draft in context"},
+        {"model": "open-h3-ic-sharp", "label": "LMS Sharp (for the IC refiner)"},
+        {"model": "open-h3-fast-vae-v2", "label": "Fast decoder v2 (for the IC refiner, lossy)"}
       ]
     },
     {
@@ -220,6 +223,17 @@
         {"model": "flashvsr-plus-base", "label": "FlashVSR+ Base (video)"},
         {"model": "flashvsr", "label": "FlashVSR 1.1 (video)"},
         {"model": "vosr", "label": "VOSR (image)"}
+      ]
+    },
+    {
+      "id": "rife", "name": "Frame Interpolation",
+      "features": ["frame-interpolation"],
+      "members": [
+        {"model": "rife-4.25", "label": "RIFE 4.25 (Practical-RIFE's pick)"},
+        {"model": "rife-4.26", "label": "RIFE 4.26"},
+        {"model": "rife-4.22", "label": "RIFE 4.22"},
+        {"model": "rife-4.25-lite", "label": "RIFE 4.25 lite (faster)"},
+        {"model": "rife-4.22-lite", "label": "RIFE 4.22 lite (faster)"}
       ]
     },
     {
@@ -965,14 +979,24 @@
                       "lora_only": {"steps": 3,
                                     "fixes": {"video_shift": 12, "audio_shift": 3}}},
           "vdn": {"branch": "minimax-h3-vdn", "range": 1},
-          "regenerate": {"with": "open-h3-regenerate-2k", "above": 768,
+          "regenerate": {"with": ["open-h3-regenerate-2k", "open-h3-regenerate-2k-ic"], "above": 768,
                          "draft": 768},
           "accel": ["sol_attn", "sol_tau_steps", "vdn_range_steps", "motion_cache", "sage_attn", "sage_pv8", "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier", "ane_ffn", "ane_qkv", "ane_int8"],
           "ane_qkv_min_ram_gb": 24,
           "first_frame": true,
           "last_frame": true,
           "keeps_latents": true,
-          "continuation": {"guide": {"frames": 22, "latents": 7}},
+          "continuation": {
+            "guide": {"frames": 22, "latents": 7},
+            "clean": {
+              "models": ["qwen-image-2.1", "qwen-image-2.1-turbo"],
+              "preference": "speed",
+              "seed": 7015,
+              "prompt": "Restore this video frame: remove the noise, blotches, streaks and mottled texture from its flat and plain surfaces -- walls, boards, floors, sky -- so they are smooth and clean. Keep everything else exactly the same: the people, their faces, poses, hands and clothes, any writing, the framing, the camera position and the lighting.",
+              "tone_sigma": 24,
+              "ramp": true
+            }
+          },
           "quality": 0.8
         }
       },
@@ -1059,7 +1083,7 @@
           "hyperflow": {"lora": "minimax-h3-hyperflow", "steps": 8},
           "pika_flex": {"lora": "minimax-h3-ref2va-pika-flex", "steps": 6,
                         "fixes": {"video_shift": 12, "audio_shift": 3}},
-          "regenerate": {"with": "open-h3-regenerate-2k", "above": 768,
+          "regenerate": {"with": ["open-h3-regenerate-2k", "open-h3-regenerate-2k-ic"], "above": 768,
                          "draft": 768},
           "presets": {
             "speed": {
@@ -1622,14 +1646,175 @@
                 "files": ["VOSR2"]},
       "capabilities": ["upscale-image"],
       "engine": {"vpipe": {
-        "upscale": {"grid": 16, "encoder": "dinov2-large"},
+        "upscale": {"grid": 16, "encoder": "dinov2-large",
+                    "config_stage": "vosr-model-config"},
         "accel": ["sol_attn", "sage_attn", "i8_gemm"],
+        "options": [
+          {"key": "color_fix", "type": "choice",
+           "choices": ["wavelet", "adain", "none"], "default": "wavelet",
+           "stage": "config"},
+          {"key": "tiles", "type": "choice",
+           "choices": ["trained", "one_pass"], "default": "trained",
+           "stage": "config"},
+          {"key": "tile_overlap", "type": "int", "min": 16, "max": 256,
+           "step": 16, "default": 32, "stage": "config"}
+        ],
         "steps_fixed": true, "defaults": {"steps": 1}
       }},
       "disk_gb": 6, "disk_measured": false,
       "min_ram_gb": 16, "rank": 1,
       "requires": ["dinov2-large"],
       "license": "apache-2.0"
+    },
+    {
+      "id": "rife-4.25",
+      "name": "RIFE 4.25",
+      "family": "rife",
+      "role": "interpolate",
+      "hf_path": "hzwer/Practical-RIFE",
+      "subdir": "4.25",
+      "file": "flownet.pkl",
+      "source": {"host": "Google Drive",
+                 "url": "https://drive.usercontent.google.com/download?id=1ZKjcbmt1hypiFprJPIKW0Tt0lr_2i7bg&export=download",
+                 "page": "https://drive.google.com/file/d/1ZKjcbmt1hypiFprJPIKW0Tt0lr_2i7bg/view",
+                 "sha256": "e63d481b7ae5d4a4e6ad7ac5b410ff78f3bf7be3b51b2e38ca8152747abde5b4",
+                 "bytes": 22919050, "archive": "zip",
+                 "take": ["flownet.pkl", "RIFE_HDv3.py", "IFNet_HDv3.py"]},
+      "capabilities": ["interpolate-video"],
+      "engine": {"vpipe": {
+        "options": [
+          {"key": "flow_scale", "type": "choice",
+           "choices": ["auto", "quarter", "half", "full", "double",
+                       "quadruple"],
+           "default": "auto", "stage": "flow"},
+          {"key": "scene_threshold", "type": "real", "min": 0, "max": 1,
+           "step": 0.05, "default": 0.2, "stage": "resample"}
+        ]
+      }},
+      "disk_gb": 0.025, "disk_measured": true,
+      "min_ram_gb": 8, "rank": 50,
+      "license": "mit",
+      "notes": "Practical-RIFE 4.25 (2024-09-19): its README's pick for most footage. A zip on Google Drive, not a hub's: Valtz fetches it, checks its hash and keeps its weights and driver."
+    },
+    {
+      "id": "rife-4.26",
+      "name": "RIFE 4.26",
+      "family": "rife",
+      "role": "interpolate",
+      "hf_path": "hzwer/Practical-RIFE",
+      "subdir": "4.26",
+      "file": "flownet.pkl",
+      "source": {"host": "Google Drive",
+                 "url": "https://drive.usercontent.google.com/download?id=1gViYvvQrtETBgU1w8axZSsr7YUuw31uy&export=download",
+                 "page": "https://drive.google.com/file/d/1gViYvvQrtETBgU1w8axZSsr7YUuw31uy/view",
+                 "sha256": "c2452dd2b244947d4be580156bbead60d6b72af5736860f7d6b3f99648c9c4cc",
+                 "bytes": 22867954, "archive": "zip",
+                 "take": ["flownet.pkl", "RIFE_HDv3.py", "IFNet_HDv3.py"]},
+      "capabilities": ["interpolate-video"],
+      "engine": {"vpipe": {
+        "options": [
+          {"key": "flow_scale", "type": "choice",
+           "choices": ["auto", "quarter", "half", "full", "double",
+                       "quadruple"],
+           "default": "auto", "stage": "flow"},
+          {"key": "scene_threshold", "type": "real", "min": 0, "max": 1,
+           "step": 0.05, "default": 0.2, "stage": "resample"}
+        ]
+      }},
+      "disk_gb": 0.025, "disk_measured": true,
+      "min_ram_gb": 8, "rank": 40,
+      "license": "mit",
+      "notes": "Practical-RIFE 4.26 (2024-09-21)."
+    },
+    {
+      "id": "rife-4.22",
+      "name": "RIFE 4.22",
+      "family": "rife",
+      "role": "interpolate",
+      "hf_path": "hzwer/Practical-RIFE",
+      "subdir": "4.22",
+      "file": "flownet.pkl",
+      "source": {"host": "Google Drive",
+                 "url": "https://drive.usercontent.google.com/download?id=1qh2DSA9a1eZUTtZG9U9RQKO7N7OaUJ0_&export=download",
+                 "page": "https://drive.google.com/file/d/1qh2DSA9a1eZUTtZG9U9RQKO7N7OaUJ0_/view",
+                 "sha256": "466dfd5f310c5c32ed12904d0e22bfc2f793f17e41808353d4378bbe2c60cb9c",
+                 "bytes": 38071105, "archive": "zip",
+                 "take": ["flownet.pkl", "RIFE_HDv3.py", "IFNet_HDv3.py"]},
+      "capabilities": ["interpolate-video"],
+      "engine": {"vpipe": {
+        "options": [
+          {"key": "flow_scale", "type": "choice",
+           "choices": ["auto", "quarter", "half", "full", "double",
+                       "quadruple"],
+           "default": "auto", "stage": "flow"},
+          {"key": "scene_threshold", "type": "real", "min": 0, "max": 1,
+           "step": 0.05, "default": 0.2, "stage": "resample"}
+        ]
+      }},
+      "disk_gb": 0.041, "disk_measured": true,
+      "min_ram_gb": 8, "rank": 30,
+      "license": "mit",
+      "notes": "Practical-RIFE 4.22 (2024-08-08). Google Drive asks to confirm its download (too large to scan): Valtz follows its form."
+    },
+    {
+      "id": "rife-4.25-lite",
+      "name": "RIFE 4.25 lite",
+      "family": "rife",
+      "role": "interpolate",
+      "hf_path": "hzwer/Practical-RIFE",
+      "subdir": "4.25.lite",
+      "file": "flownet.pkl",
+      "source": {"host": "Google Drive",
+                 "url": "https://drive.usercontent.google.com/download?id=1zlKblGuKNatulJNFf5jdB-emp9AqGK05&export=download",
+                 "page": "https://drive.google.com/file/d/1zlKblGuKNatulJNFf5jdB-emp9AqGK05/view",
+                 "sha256": "e84366c23e0eb1a637a55aad2e4f3442ec2bf4c388043b4aabbf590be289e6e8",
+                 "bytes": 22765148, "archive": "zip",
+                 "take": ["flownet.pkl", "RIFE_HDv3.py", "IFNet_HDv3.py"]},
+      "capabilities": ["interpolate-video"],
+      "engine": {"vpipe": {
+        "options": [
+          {"key": "flow_scale", "type": "choice",
+           "choices": ["auto", "quarter", "half", "full", "double",
+                       "quadruple"],
+           "default": "auto", "stage": "flow"},
+          {"key": "scene_threshold", "type": "real", "min": 0, "max": 1,
+           "step": 0.05, "default": 0.2, "stage": "resample"}
+        ]
+      }},
+      "disk_gb": 0.025, "disk_measured": true,
+      "min_ram_gb": 8, "rank": 20,
+      "license": "mit",
+      "notes": "Practical-RIFE 4.25.lite (2024-10-20): its lighter network, its own scale list."
+    },
+    {
+      "id": "rife-4.22-lite",
+      "name": "RIFE 4.22 lite",
+      "family": "rife",
+      "role": "interpolate",
+      "hf_path": "hzwer/Practical-RIFE",
+      "subdir": "4.22.lite",
+      "file": "flownet.pkl",
+      "source": {"host": "Google Drive",
+                 "url": "https://drive.usercontent.google.com/download?id=1Smy6gY7BkS_RzCjPCbMEy-TsX8Ma5B0R&export=download",
+                 "page": "https://drive.google.com/file/d/1Smy6gY7BkS_RzCjPCbMEy-TsX8Ma5B0R/view",
+                 "sha256": "5e123e7a9951940e607353906167a903443be4303ac091d6c6a35a43e35cf840",
+                 "bytes": 19878007, "archive": "zip",
+                 "take": ["flownet.pkl", "RIFE_HDv3.py", "IFNet_HDv3.py"]},
+      "capabilities": ["interpolate-video"],
+      "engine": {"vpipe": {
+        "options": [
+          {"key": "flow_scale", "type": "choice",
+           "choices": ["auto", "quarter", "half", "full", "double",
+                       "quadruple"],
+           "default": "auto", "stage": "flow"},
+          {"key": "scene_threshold", "type": "real", "min": 0, "max": 1,
+           "step": 0.05, "default": 0.2, "stage": "resample"}
+        ]
+      }},
+      "disk_gb": 0.022, "disk_measured": true,
+      "min_ram_gb": 8, "rank": 10,
+      "license": "mit",
+      "notes": "Practical-RIFE 4.22.lite: its lighter network."
     },
     {
       "id": "dinov2-large",
@@ -1855,6 +2040,88 @@
       "disk_gb": 6.5, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
       "license": "minimax",
       "notes": "NVIDIA's StreamRender-H3 decoder: 24 of the released decoder's layers distilled, over the whole clip at once -- 3.6x faster on an M4 Pro, LOSSY (40 dB from the released decoder on one refine). Used by Open-H3-Regenerate-2K when its Fast Decoder is on; its working memory grows with the clip (12 GB at 2K x 121 frames)."
+    },
+    {
+      "id": "open-h3-regenerate-2k-ic", "name": "Open-H3-Regenerate-2K-IC",
+      "family": "minimax-h3", "role": "upscale", "by_name": true,
+      "hf_path": "Efficient-Large-Model/Open-H3-Regenerate-2K-IC",
+      "check": {"tensors": ["lora_A", "token_refiner"]},
+      "file": "lora/open_h3_regenerate_2k_ic_lora.safetensors",
+      "fetch_variant": "Efficient-Large-Model/Open-H3-Regenerate-2K-IC-lora",
+      "capabilities": ["upscale-video"],
+      "requires": ["minimax-h3-hyperflow", "open-h3-ic-sharp", "open-h3-latent-upscaler", "minimax-h3-ref2va"],
+      "engine": {
+        "vpipe": {
+          "regenerate": {
+            "base": "minimax-h3-ref2va",
+            "in_context": true,
+            "adapters": ["minimax-h3-hyperflow", "open-h3-ic-sharp"],
+            "upscaler": "open-h3-latent-upscaler",
+            "fast_decoder": "open-h3-fast-vae-v2",
+            "steps": 3, "encode_short_edge": 768, "posterior_seed": 0,
+            "config": {
+              "video_shift": 12.0, "audio_shift": 3.0,
+              "condition_timestep": 0.999, "condition_audio_timestep": 1.0
+            },
+            "task": "Enhance <Video 1> into a high-quality version of the same video. Preserve the scene, objects, camera motion, timing, and composition of every frame. Restore fine details and remove degradation. Do not continue or change the scene.",
+            "presets": {
+              "speed": {
+                "sol_attn": true, "sol_threshold": "exact",
+                "sol_tau": "0.75,0.75,0.75", "sage_attn": true,
+                "sage_pv8": true, "sage_pv8_all_rows": false,
+                "i8_gemm": true, "i8_gemm_tier": "token"
+              },
+              "balanced": {
+                "sol_attn": true, "sol_threshold": "exact",
+                "sol_tau": "0.5,0.5,0.5", "sage_attn": true,
+                "sage_pv8": false, "i8_gemm": true,
+                "i8_gemm_tier": "fast"
+              },
+              "quality": {
+                "sol_attn": true, "sol_threshold": "exact",
+                "sol_tau": "0.25,0.25,0.25", "sage_attn": true,
+                "sage_pv8": false, "i8_gemm": true,
+                "i8_gemm_tier": "accurate"
+              }
+            }
+          },
+          "accel": ["sol_attn", "sol_tau_steps", "sage_attn", "sage_pv8",
+                    "sage_pv8_all_rows", "i8_gemm", "i8_gemm_tier",
+                    "ane_ffn", "ane_qkv", "ane_int8"],
+          "ane_qkv_min_ram_gb": 24,
+          "steps_fixed": true,
+          "defaults": {"steps": 3}
+        }
+      },
+      "disk_gb": 8.3, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "minimax",
+      "notes": "NVIDIA's refine IN CONTEXT: the 768P draft held clean in MiniMax H3 Ref2VA's DiT as a reference clip (<Video 1>), the 2K clip regenerated beside it from the enlarged draft over the last 3 steps of HyperFlow's grid (from 0.835), under HyperFlow, LMS Sharp and its own LoRA (rank 384) -- faces, mouths, lettering and layout stay the draft's. Slower than Open-H3-Regenerate-2K: the draft's rows ride every step. Chosen in Settings > Upscaling's High-Res Pass With (clips past 768P) or Restore Clips With (Render Upscaled); never Auto's. Needs Ref2VA, HyperFlow, LMS Sharp and the latent upscaler, and vpipe c8fc15e5."
+    },
+    {
+      "id": "open-h3-ic-sharp",
+      "name": "LMS Sharp v1.0 (Open-H3-Regenerate-2K-IC)",
+      "family": "minimax-h3", "role": "lora",
+      "hf_path": "Efficient-Large-Model/Open-H3-Regenerate-2K-IC",
+      "check": {"tensors": ["lora"]},
+      "file": "lora/minimax_h3_lms_v1.0_r64.safetensors",
+      "fetch_variant": "Efficient-Large-Model/Open-H3-Regenerate-2K-IC-sharp",
+      "capabilities": [],
+      "disk_gb": 1.2, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
+      "license": "",
+      "notes": "Alissonerdx's LMS Sharp v1.0 (rank 64) as Open-H3-Regenerate-2K-IC ships it, unchanged: the IC refine runs it beside HyperFlow and its own LoRA. It keeps its author's own terms (Alissonerdx/Minimax-H3-ComfyUI's LICENSES.md), not the release's. Trained on ComfyUI's pruned H3; its 50 AdaLN curve branches are all zero, so they add nothing."
+    },
+    {
+      "id": "open-h3-fast-vae-v2",
+      "name": "MiniMax H3 fast decoder v2 (Open-H3-Regenerate-2K-IC)",
+      "family": "minimax-h3", "role": "vae",
+      "hf_path": "Efficient-Large-Model/Open-H3-Regenerate-2K-IC",
+      "check": {"tensors": ["register_tokens", "x_embedder"]},
+      "file": "vae_fast/fast_h3_vae_v2_24l.safetensors",
+      "fetch_variant": "Efficient-Large-Model/Open-H3-Regenerate-2K-IC-fast-vae",
+      "capabilities": [],
+      "disk_gb": 6.5, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "minimax",
+      "notes": "The StreamRender-H3 decoder's architecture with new weights, as Open-H3-Regenerate-2K-IC ships it -- the IC release's default decode, LOSSY. Used by the IC refiner when its Fast Decoder is on."
     },
     {
       "id": "minimax-h3-turbo-4step", "name": "MiniMax H3 FL2VA 4-step LoRA",

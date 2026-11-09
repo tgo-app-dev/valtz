@@ -264,6 +264,61 @@ extension AppModel {
         }
     }
 
+    /// The rate RENDER INTERPOLATED makes the layer's clip at (DESIGN
+    /// §4u): the timeline's over its slowest speed -- a clip at half
+    /// speed on a 24 fps timeline shows 48 of its frames a second -- when
+    /// that is more than its own (240 at most); nil when its frames are
+    /// enough. A composition is flattened first, as for an upscale.
+    var interpolateTarget: Double? {
+        guard let r = layerFrameRate, let a = layerSource, !a.isComposition
+        else { return nil }
+        let slowest = min(1, layerSpeed.keys.map(\.value.rate)
+            .filter { $0 > 0 }.min() ?? 1)
+        let want = min(240, stageFrameRate.fps / slowest)
+        return want > r.fps + 0.001 ? want : nil
+    }
+
+    /// An interpolator here runs it (the asset operation's take).
+    var interpolatorReady: Bool {
+        operation("interpolate")?.take("video")?.ready == true
+    }
+
+    /// Render Interpolated: the layer's clip at the rate its timeline
+    /// shows it -- the asset operation "interpolate" on the layer (DESIGN
+    /// §4j, §4u); the layer then shows it, its look and marks as they
+    /// were.
+    func interpolateLayer() {
+        guard let stack = stageStack, interpolateJob == nil,
+              interpolateTarget != nil else { return }
+        persistClipTracks()
+        guard let r = runOperation("interpolate", on: composedTarget(stack.id),
+                                   layer: activeLayer),
+              r.ok, let job = r.job else { return }
+        withAnimation(Self.motion) {
+            interpolateJob = job
+            memoryFailure = nil
+        }
+    }
+
+    func stopInterpolate() {
+        if let job = interpolateJob { cancel(job: job) }
+    }
+
+    /// "Interpolating frames · 34%" as its frames are written.
+    var interpolateCaption: String {
+        guard let job = interpolateJob, let p = jobs[job]?.phase else {
+            return String(localized: "Preparing…")
+        }
+        return p.phase == "interpolate" ? p.caption(kind: .video)
+            : String(localized: "Preparing…")
+    }
+
+    var interpolateFraction: Double? {
+        guard let job = interpolateJob, let p = jobs[job]?.phase,
+              p.phase == "interpolate" else { return nil }
+        return p.fraction
+    }
+
     /// "23.976", "24", "29.97".
     static func fpsText(_ r: FrameRate) -> String {
         var t = String(format: "%.3f", r.fps)
@@ -478,7 +533,40 @@ struct SpeedRow: View {
         }
         .font(.callout)
         .foregroundStyle(.tertiary)
-        .help("Each frame of the timeline shows the clip's frame at that moment: frames repeat or are skipped. (Rendering new frames in between is to come.)")
+        .help("Each frame of the timeline shows the clip's frame at that moment: frames repeat or are skipped. Render Interpolated makes the frames in between.")
+        if model.interpolateJob != nil {
+            HStack(spacing: 8) {
+                PhaseBar(fraction: model.interpolateFraction)
+                    .frame(width: 120)
+                Text(model.interpolateCaption)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Button("Stop", action: model.stopInterpolate)
+            }
+        } else if let fps = model.interpolateTarget {
+            let rate = String(format: "%g", (fps * 1000).rounded() / 1000)
+            HStack(spacing: 8) {
+                if model.interpolatorReady {
+                    Button {
+                        model.interpolateLayer()
+                    } label: {
+                        Label("Render Interpolated", systemImage: "film.stack.fill")
+                    }
+                    .help("Make the clip at the rate the timeline shows it, its frames in between made by RIFE: smooth where they now repeat. Its length and sound are kept, the layer then showing it.")
+                    Text("\(rate) fps")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("Get RIFE…") {
+                        model.openCapabilities(family: "rife")
+                    }
+                    .help("Render Interpolated makes the frames in between with RIFE: download it in Settings › Capabilities › Frame Interpolation")
+                }
+                Spacer()
+            }
+        }
     }
 
     /// "1×", "0.5×", "1.25×".

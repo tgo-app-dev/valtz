@@ -357,7 +357,33 @@ struct BuiltGraph {
   // saved for the engine to pool (or keep), stack and write into
   // `output` -- media::make_refmod.
   std::vector<RefModPart> refmod_parts;
+  // A continuation's GUIDE CLEANED (DESIGN §4e, guide-clean.h): frames
+  // fed from a tensor file -- the cleaned frames, f16 [T, 3, h, w], 0..1
+  // -- a beat each through the valtz-source `frames_stage`.
+  std::string           frames_stage;
+  std::filesystem::path frames_file;
 };
+
+// interpolate-video (DESIGN §4u): a clip -- input "source", its span
+// `first`, `count` -- at `fps` frames a second, its length kept: the
+// frames between its own made by RIFE (vpipe's temporal-resample,
+// `method: rife`, the model's train_log/ its `hf_dir`) and the ones that
+// fall on its own passed through; its sound joined back as it was. Fed
+// 8-bit, as the stage takes them; written in the project's intermediate.
+Result<BuiltGraph> build_interpolate_video(const JobSpec& job);
+
+// A continuation's GUIDE CLEANED (DESIGN §4e, guide-clean.h): its two
+// graphs, ops of the engine's own run inside the continuation's job.
+// CLEAN-DECODE: the kept latents' window -- param "latent" their file,
+// "start" and "count" along its time -- decoded by the model's video
+// VAE, its frames stacked and written as one f16 [T, 3, h, w] tensor
+// (0..1, sRGB-encoded) to `output`. CLEAN-ENCODE: such frames -- param
+// "frames" their tensor file -- fed through a valtz-source, stacked and
+// encoded by the video VAE, the latents written to `output`.
+inline constexpr std::string_view kOpCleanDecode = "clean-decode";
+inline constexpr std::string_view kOpCleanEncode = "clean-encode";
+Result<BuiltGraph> build_clean_decode(const JobSpec& job);
+Result<BuiltGraph> build_clean_encode(const JobSpec& job);
 
 // A RefMod MADE (DESIGN §4s), as ComfyUI-MiniMaxH3Mod's creators make one:
 // each input -- role "picture", "clip" or "sound", in the row's order --
@@ -399,8 +425,11 @@ Result<BuiltGraph> build_regenerate_video(const JobSpec&);
 // upscale-image (DESIGN §4f): a picture -- input "source" -- restored at
 // `width` x `height` by VOSR, as vpipe's own graph does it
 // (docs/pipelines/vosr-2-restore): resampled bicubic to its grid (16),
-// read by DINOv2 (ModelRef::encoder) and the VAE, restored in one step,
-// decoded in F16, fitted to the size, written as a 16-bit PNG. The
+// read by DINOv2 (ModelRef::encoder) and the VAE, restored in one step
+// -- tiled at its trained grid, or one pass -- decoded in F16, its
+// colour fixed against the resampled picture as the release does
+// (vosr-model-config's color_fix), fitted to the size, written as a
+// 16-bit PNG. The
 // picture goes in through a valtz-source, F16 at its own size.
 Result<BuiltGraph> build_upscale_image(const JobSpec&);
 // Sizes (DESIGN §4b / the catalog's `engine.vpipe.edit` block): the

@@ -1259,10 +1259,26 @@ regenerate_spec(const JobSpec& job)
 // fast decoder, as vpipe's -fast-m5 graph runs them. The refine writes
 // no soundtrack: it is conditioned on an encoded silence. Returns the
 // decode's id.
+//
+// IN CONTEXT (Open-H3-Regenerate-2K-IC, the refiner's `in_context`;
+// vpipe c8fc15e5, its minimax-h3-regenerate-2k-ic graph): the refine runs
+// on Ref2VA's DiT with the draft held CLEAN in its sequence as a
+// reference clip, <Video 1> -- `draft` its pixels for the vision tower,
+// `latent` folded onto them as its rows (video-ref-encoder's
+// `attach_latent`: one latent for the reference and the upscaler) -- and
+// the upscaled latent regenerated beside it over the last steps of
+// HyperFlow's grid (the refiner's `steps` picks them: 3 from 0.835),
+// under the refiner's adapters (HyperFlow, LMS Sharp: param
+// "regenerate_adapters", their files) and its own LoRA last; its prompt
+// the release's task, then the scene in words. No refine start, no VDN:
+// the grid is the flow map's.
+//
+//   <draft> -2-> video-ref-encoder <-3- <latent> -> latent-upscale
+//   video-ref-encoder -0,7,8-> generate-video <-11- latent-upscale
 std::string
 regenerate_stages(const JobSpec& job, const Json& cond, const Json& latent,
                   int width, int height, int frames, double fps,
-                  const Json& t, Json& stages)
+                  const Json& t, Json& stages, const Json& draft)
 {
   const Json spec = regenerate_spec(job);
   const std::string cfg_stage = jget<std::string>(
@@ -1292,11 +1308,12 @@ regenerate_stages(const JobSpec& job, const Json& cond, const Json& latent,
     stages.push_back(stage(model, "model-select", Json::array(),
                            {{"hf_dir", job.model.regenerate_base.string()}}));
   }
+  const bool ic = jget(spec, "in_context", false);
   // Its words, where it has its own: that model's prompt encoder.
   Json refine_cond = cond;
   if (const auto words = jget<std::string>(job.params, "regenerate_prompt",
                                            "");
-      !words.empty()) {
+      !words.empty() && !ic) {
     stages.push_back(stage("regenerate-prompt", "text-prompt",
                            Json::array(), {{"text", words}}));
     Json ccfg = jget(bvp, "conditioner", Json::object());
@@ -1311,19 +1328,73 @@ regenerate_stages(const JobSpec& job, const Json& cond, const Json& latent,
                            std::move(ccfg)));
     refine_cond = port("regenerate-conditioner");
   }
+  // In context: the draft a reference clip, read by that model's
+  // reference encoder -- its words the task's and the scene's.
+  Json ref_video, ref_audio;
+  if (ic) {
+    std::string words = jget<std::string>(job.params, "regenerate_prompt",
+                                          "");
+    if (words.empty()) {
+      words = jget<std::string>(job.params, "prompt", "");
+    }
+    std::string text = jget<std::string>(spec, "task", "");
+    if (!words.empty()) {
+      text += "\n\nScene description: " + words;
+    }
+    stages.push_back(stage("regenerate-prompt", "text-prompt",
+                           Json::array(), {{"text", text}}));
+    Json ecfg = merged(
+        merged({{"frames", frames}},
+               jget(jget(bvp, "references", Json::object()), "encoder",
+                    Json::object())),
+        {{"attach_latent", Json::array({2})},
+         {"unload_when_idle", "destroy"}});
+    const fs::path enc = other ? job.model.regenerate_base_encoder
+                               : job.model.encoder_weights;
+    if (!enc.empty()) {
+      ecfg["encoder_dir"] = enc.string();
+    }
+    stages.push_back(stage("regenerate-references", "video-ref-encoder",
+                           Json::array({port("regenerate-prompt"),
+                                        port(model), draft, latent}),
+                           with_vae(std::move(ecfg), job)));
+    refine_cond = port("regenerate-references", 0);
+    ref_video = port("regenerate-references", 1);
+    ref_audio = port("regenerate-references", 2);
+  }
   // Where it starts: the refiner's Keep the Draft (its `refine_start`
   // "draft": the catalog's `keep_draft_sigma` on vpipe's shift-6 grid
   // from there), else NVIDIA's own grid -- vpipe's default, what a clip
-  // made before the option had.
+  // made before the option had. In context: the refiner's own config
+  // (its shifts, the reference rows held at 0.999, the silence at 1),
+  // its adapters in the first slots and its LoRA after them.
   Json rcfg = {{"lora", job.model.regenerate_lora.string()},
                {"lora_scale", 1.0}};
-  if (jget<std::string>(t, "refine_start", "release") == "draft") {
+  if (ic) {
+    rcfg = jget(spec, "config", Json::object());
+    std::size_t slot = 0;
+    const auto lay = [&](const std::string& file) {
+      const std::string key = slot == 0 ? std::string("lora")
+                                        : std::format("lora{}", slot + 1);
+      rcfg[key] = file;
+      rcfg[key + "_scale"] = 1.0;
+      ++slot;
+    };
+    for (const auto& a : jget(job.params, "regenerate_adapters",
+                              Json::array())) {
+      if (a.is_string()) {
+        lay(a.get<std::string>());
+      }
+    }
+    lay(job.model.regenerate_lora.string());
+  } else if (jget<std::string>(t, "refine_start", "release") == "draft") {
     rcfg["refine_start_sigma"] = jget(spec, "keep_draft_sigma", 0.7);
   }
   // VDN in place of Sol (its tuning `vdn`): the branch on the refine's
   // own config stage -- the draft's may run without it -- its reach on
   // the refine's generate-video (accel_from).
-  if (jget(t, "vdn", false) && !job.model.regenerate_branch.empty()) {
+  if (jget(t, "vdn", false) && !job.model.regenerate_branch.empty() &&
+      !ic) {
     rcfg["linear_branch"] = job.model.regenerate_branch.string();
   }
   stages.push_back(stage("regenerate-config",
@@ -1343,14 +1414,17 @@ regenerate_stages(const JobSpec& job, const Json& cond, const Json& latent,
       !dit.empty()) {
     gen_cfg["dit_dir"] = dit.string();
   }
-  // generate-video: 0 cond, 2 model, 9 model_config, 11 init_latent.
+  // generate-video: 0 cond, 2 model, 7 / 8 the references' rows (in
+  // context), 9 model_config, 11 init_latent.
   Json gen_in = Json::array();
   for (int k = 0; k < 12; ++k) {
-    gen_in.push_back(k == 0    ? refine_cond
-                     : k == 2  ? port(model)
-                     : k == 9  ? port("regenerate-config")
-                     : k == 11 ? port("latent-upscale")
-                               : unwired());
+    gen_in.push_back(k == 0             ? refine_cond
+                     : k == 2           ? port(model)
+                     : k == 7 && ic     ? ref_video
+                     : k == 8 && ic     ? ref_audio
+                     : k == 9           ? port("regenerate-config")
+                     : k == 11          ? port("latent-upscale")
+                                        : unwired());
   }
   stages.push_back(stage("regenerate", "generate-video", std::move(gen_in),
                          std::move(gen_cfg)));
@@ -1385,13 +1459,21 @@ std::string
 draft_preview_stages(const JobSpec& job, const Json& latent, int width,
                      int height, int frames, Json& stages)
 {
-  Json dec = with_vae({{"unload_when_idle", "destroy"}}, job);
-  if (!job.model.fast_decoder.empty()) {
-    dec["fast_decoder"] = job.model.fast_decoder.string();
+  // Decoded already (an in-context refine reads it): that decode's.
+  bool decoded = false;
+  for (const Json& st : stages) {
+    decoded = decoded || jget<std::string>(st, "id", "") == "draft-decode";
   }
-  const std::string vae = vae_source(job, stages);
-  stages.push_back(stage("draft-decode", "vae-decode",
-                         Json::array({latent, port(vae)}), std::move(dec)));
+  if (!decoded) {
+    Json dec = with_vae({{"unload_when_idle", "destroy"}}, job);
+    if (!job.model.fast_decoder.empty()) {
+      dec["fast_decoder"] = job.model.fast_decoder.string();
+    }
+    const std::string vae = vae_source(job, stages);
+    stages.push_back(stage("draft-decode", "vae-decode",
+                           Json::array({latent, port(vae)}),
+                           std::move(dec)));
+  }
   std::string clip = "draft-decode";
   const double bytes = 3.0 * width * height * std::max(frames, 1);
   if (bytes > kDraftPreviewBytes) {
@@ -2141,11 +2223,31 @@ build_video(const JobSpec& job, const std::optional<RefImage>& first,
   // and that is decoded.
   std::string decoded = "vae-decode";
   if (regen) {
+    // In context, the draft's pixels too: decoded whole, as one clip --
+    // its stage preview read from that decode -- for the reference
+    // encoder's vision tower.
+    Json draft_clip;
+    if (jget(regenerate_spec(job), "in_context", false)) {
+      const std::string vae = vae_source(job, stages);
+      stages.push_back(stage("draft-decode", "vae-decode",
+                             Json::array({port("generate-video"),
+                                          port(vae)}),
+                             with_vae({{"unload_when_idle", "destroy"}},
+                                      job)));
+      stages.push_back(stage(
+          "draft-clip", "temporal-stack",
+          Json::array({port("draft-decode")}),
+          {{"mode", "video"},
+           {"group_size", 0},
+           {"max_mb", static_cast<std::int64_t>(frames) * gen_w * gen_h *
+                              3 / (1 << 20) + 64}}));
+      draft_clip = port("draft-clip");
+    }
     decoded = regenerate_stages(job, cond, port("generate-video"), width,
                                 height, frames, fps,
                                 jget(job.params, "regenerate_tuning",
                                      Json::object()),
-                                stages);
+                                stages, draft_clip);
     if (jget(job.params, "preview", true) &&
         jget(job.params, "draft_preview", true)) {
       g.draft_sink = draft_preview_stages(job, port("generate-video"),
@@ -3375,6 +3477,114 @@ build_upscale_video(const JobSpec& job)
 }
 
 Result<BuiltGraph>
+build_interpolate_video(const JobSpec& job)
+{
+  if (job.inputs.size() != 1 ||
+      job.inputs.front().info.type != media::MediaType::Video) {
+    return make_error(Code::InvalidArgument,
+                      "an interpolation takes one clip (role \"source\")");
+  }
+  const JobInput& in = job.inputs.front();
+  const double out_fps = jget(job.params, "fps", 0.0);
+  if (out_fps <= 0 || job.model.dir.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "an interpolation needs its rate and its model");
+  }
+  const Rational rate = in.info.frame_rate.num > 0 ? in.info.frame_rate
+                                                   : Rational{24, 1};
+  const double fps = rate.to_double();
+  const std::int64_t total = in.info.frame_count;
+  const std::int64_t first = std::max<std::int64_t>(
+      0, jget<std::int64_t>(job.params, "first", 0));
+  std::int64_t count = jget<std::int64_t>(job.params, "count", -1);
+  if (count <= 0) {
+    count = total > first ? total - first : 0;
+  }
+  if (total > 0) {
+    count = std::min(count, total - first);
+  }
+  if (count <= 0) {
+    return make_error(Code::InvalidArgument, "the clip has no frames there");
+  }
+  // Its length kept: each output time k / fps up to the end of its last
+  // frame's interval (vpipe repeats that frame past it).
+  const auto made = static_cast<std::int64_t>(
+      std::ceil(static_cast<double>(count) * out_fps / fps - 1e-6));
+
+  BuiltGraph g;
+  const std::string jid = job.id.str();
+  const ClipFormat kept = clip_format(job);
+  g.output = job.output_dir / std::format("{}.{}", jid, kept.ext);
+  g.sound = kept.sound;
+  fs::path written = g.output;
+  if (in.info.has_audio) {
+    g.video_part = job.output_dir / std::format("{}-picture.{}", jid,
+                                                kept.ext);
+    g.audio_part = in.path;
+    g.audio_is_source = true;
+    g.audio_start = static_cast<double>(first) / fps;
+    g.audio_duration = static_cast<double>(count) / fps;
+    written = g.video_part;
+  }
+  g.width = in.info.frame.width;
+  g.height = in.info.frame.height;
+  g.frames = made;
+
+  MovieFeed m;
+  m.stage = "read";
+  m.path = in.path;
+  m.rate = rate;
+  m.first = first;
+  m.count = count;
+  m.size = {in.info.frame.width, in.info.frame.height};
+  m.sample = media::Sample::U8;
+  const auto& c = in.info.frame.color;
+  // Its rate on every frame: what the stage resamples from.
+  m.tags = {{"color_primaries", static_cast<int>(c.primaries)},
+            {"color_transfer", static_cast<int>(c.transfer)},
+            {"color_matrix", static_cast<int>(c.matrix)},
+            {"color_full_range", true},
+            {"fps", fps},
+            {"fps_num", rate.num},
+            {"fps_den", rate.den}};
+  g.movie = std::move(m);
+
+  // Settings › Frame Interpolation's FLOW SCALE (a choice: vpipe's
+  // `rife_scale`, the release's --scale; auto its advice by the frame's
+  // size) and SCENE CUT threshold (declared on the stage itself).
+  const auto scale = jget<std::string>(
+      jget(job.params, "tuning", Json::object()), "flow_scale", "auto");
+  const double rife_scale = scale == "quarter"     ? 0.25
+                            : scale == "half"      ? 0.5
+                            : scale == "full"      ? 1.0
+                            : scale == "double"    ? 2.0
+                            : scale == "quadruple" ? 4.0
+                                                   : 0.0;
+  Json stages = Json::array();
+  stages.push_back(stage("read", ex::kSourceType, Json::array(),
+                         Json::object()));
+  stages.push_back(stage(
+      "resample", "temporal-resample", Json::array({port("read")}),
+      merged({{"output_fps", out_fps},
+              {"input_fps", fps},
+              {"method", "rife"},
+              {"hf_dir", job.model.dir.string()},
+              {"rife_scale", rife_scale}},
+             declared_of(job, "resample"))));
+  stages.push_back(stage("write", "avf-save-video",
+                         Json::array({port("resample")}),
+                         {{"path", written.string()},
+                          {"codec", kept.codec},
+                          {"alpha", "drop"},
+                          {"fps", out_fps},
+                          {"frames", made}}));
+  g.spec = {{"id", "valtz-" + jid},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+Result<BuiltGraph>
 build_regenerate_video(const JobSpec& job)
 {
   if (job.inputs.size() != 1 ||
@@ -3488,19 +3698,25 @@ build_regenerate_video(const JobSpec& job)
                                    {"unload_when_idle", "destroy"}},
                                   job)));
   // Its words, read by the model's own encoder (dropped before the
-  // refine: the two never share the machine).
-  stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
-                         {{"text", prompt}}));
-  stages.push_back(stage("diffusion-conditioner", "diffusion-conditioner",
-                         Json::array({port("text-prompt"), unwired(),
-                                      port("model-select")}),
-                         with_encoder(jget(vp, "conditioner",
-                                           Json::object()),
-                                      job)));
+  // refine: the two never share the machine) -- in context, by its
+  // reference encoder beside the clip as it was read.
+  const bool ic = jget(spec, "in_context", false);
+  if (!ic) {
+    stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
+                           {{"text", prompt}}));
+    stages.push_back(stage("diffusion-conditioner",
+                           "diffusion-conditioner",
+                           Json::array({port("text-prompt"), unwired(),
+                                        port("model-select")}),
+                           with_encoder(jget(vp, "conditioner",
+                                             Json::object()),
+                                        job)));
+  }
   const std::string decoded = regenerate_stages(
-      job, port("diffusion-conditioner"), port("encode"), W, H,
-      static_cast<int>(count), fps,
-      jget(job.params, "tuning", Json::object()), stages);
+      job, ic ? Json() : port("diffusion-conditioner"), port("encode"), W,
+      H, static_cast<int>(count), fps,
+      jget(job.params, "tuning", Json::object()), stages,
+      ic ? port("stack") : Json());
   // The upscaler makes whole 32-pixel cells, rounded as Python rounds: a
   // size rounded up comes back cut to the size (its crop box), one
   // rounded down is fitted to it here.
@@ -3598,19 +3814,42 @@ build_upscale_image(const JobSpec& job)
                          Json::array({port("upsample"),
                                       port("model-select")}),
                          Json::object()));
+  // Its own config (catalog upscale.config_stage: vosr-model-config) --
+  // Settings › Upscaling's COLOUR FIX (the release's: wavelet, adain,
+  // none) and TILING: at the grid it was distilled at (tile_size unset,
+  // vpipe's default) or one pass (0), the tiles' overlap.
+  const std::string cfg_stage = jget<std::string>(up, "config_stage", "");
+  if (!cfg_stage.empty()) {
+    Json c = declared_of(job, "config");
+    const bool one_pass = jget<std::string>(c, "tiles", "") == "one_pass";
+    c.erase("tiles");
+    if (one_pass) {
+      c["tile_size"] = 0;
+      c.erase("tile_overlap");
+    }
+    stages.push_back(stage("config", cfg_stage, Json::array(),
+                           std::move(c)));
+  }
   stages.push_back(stage("generate", "generate-image",
                          Json::array({port("condition"), unwired(),
                                       port("model-select"), unwired(),
                                       unwired(), port("encode"), unwired(),
-                                      unwired()}),
+                                      cfg_stage.empty() ? unwired()
+                                                        : port("config")}),
                          // Settings › Upscaling's arithmetic (the
                          // recipe's tuning): int8 GEMMs, Sage, Sol.
                          merged({{"seed", jget<std::int64_t>(job.params,
                                                              "seed", 0)}},
                                 accel_of(job))));
-  stages.push_back(stage("decode", "vae-decode",
-                         Json::array({port("generate"),
-                                      port("model-select")}),
+  // The colour fix runs in the decode, against the very pixels the
+  // restorer saw -- the resample's -- on its color_reference input
+  // (vpipe 3f640a2c; unwired, the decode went out uncorrected: the
+  // release's `nofix`).
+  Json decode_in = Json::array({port("generate"), port("model-select")});
+  if (!cfg_stage.empty()) {
+    decode_in.push_back(port("upsample"));
+  }
+  stages.push_back(stage("decode", "vae-decode", std::move(decode_in),
                          {{"dtype", "f16"}}));
   std::string last = "decode";
   if (PW != W || PH != H) {
@@ -3732,6 +3971,98 @@ build_separate(const JobSpec& job, const fs::path& wav)
                          Json::array({port("pcm")}), std::move(cfg)));
   stages.push_back(sink(g.stem_sink, port("separate", 0), false));
   stages.push_back(sink(g.residual_sink, port("separate", 1), false));
+  g.spec = {{"id", "valtz-" + job.id.str()},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+namespace {
+
+// A guide's frames, one tensor of them: what they weigh in memory as
+// f16, with room (temporal-stack refuses past its `max_mb`).
+int
+frames_mb(const JobSpec& job, std::int64_t frames)
+{
+  const double mb = static_cast<double>(std::max<std::int64_t>(frames, 1)) *
+                    3.0 * 2.0 * jget(job.params, "width", 0) *
+                    jget(job.params, "height", 0) / (1024.0 * 1024.0);
+  return std::max(256, static_cast<int>(mb) + 64);
+}
+
+}  // namespace
+
+Result<BuiltGraph>
+build_clean_decode(const JobSpec& job)
+{
+  const auto latent = jget<std::string>(job.params, "latent", "");
+  const auto count = jget<std::int64_t>(job.params, "count", 0);
+  if (job.model.dir.empty() || latent.empty() || count <= 0) {
+    return make_error(Code::InvalidArgument,
+                      "a guide is decoded from its latents by its model");
+  }
+  BuiltGraph g;
+  g.output = job.output_dir / (job.id.str() + "-frames.vpt");
+  Json stages = Json::array();
+  stages.push_back(stage("model-select", "model-select", Json::array(),
+                         {{"hf_dir", job.model.dir.string()}}));
+  const std::string vae = vae_source(job, stages);
+  stages.push_back(stage("latent", "load-tensor", Json::array(),
+                         {{"path", latent},
+                          {"axis", 1},
+                          {"start", jget<std::int64_t>(job.params, "start",
+                                                       0)},
+                          {"count", count}}));
+  // A frame a beat, 0..1 (vpipe's F16 picture), stacked in order.
+  stages.push_back(stage("decode", "vae-decode",
+                         Json::array({port("latent"), port(vae)}),
+                         with_vae({{"dtype", "f16"},
+                                   {"unload_when_idle", "always"}},
+                                  job)));
+  stages.push_back(stage("stack", "temporal-stack",
+                         Json::array({port("decode")}),
+                         {{"mode", "video"}, {"group_size", 0},
+                          {"max_mb", frames_mb(job, 5 * count)}}));
+  stages.push_back(stage("save", "save-tensor", Json::array({port("stack")}),
+                         {{"path", g.output.string()}}));
+  g.spec = {{"id", "valtz-" + job.id.str()},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
+Result<BuiltGraph>
+build_clean_encode(const JobSpec& job)
+{
+  const auto frames = jget<std::string>(job.params, "frames", "");
+  if (job.model.dir.empty() || frames.empty()) {
+    return make_error(Code::InvalidArgument,
+                      "a guide is encoded from its frames by its model");
+  }
+  BuiltGraph g;
+  g.output = job.output_dir / (job.id.str() + "-latent.vpt");
+  g.frames_stage = "frames";
+  g.frames_file = frames;
+  Json stages = Json::array();
+  stages.push_back(stage("model-select", "model-select", Json::array(),
+                         {{"hf_dir", job.model.dir.string()}}));
+  const std::string vae = vae_source(job, stages);
+  // The frames as the engine feeds them -- f16, 0..1, exact: no file
+  // re-read, no 8-bit step (the tail's own encode reads its movie's
+  // bytes) -- stacked into one clip, as the tail's encode stacks its.
+  stages.push_back(stage(g.frames_stage, ex::kSourceType, Json::array(),
+                         Json::object()));
+  stages.push_back(stage("stack", "temporal-stack",
+                         Json::array({port(g.frames_stage)}),
+                         {{"mode", "video"}, {"group_size", 0},
+                          {"max_mb", frames_mb(job, jget<std::int64_t>(
+                                                        job.params, "count",
+                                                        22))}}));
+  stages.push_back(stage("encode", "vae-encode",
+                         Json::array({port("stack"), port(vae)}),
+                         with_vae({{"unload_when_idle", "always"}}, job)));
+  stages.push_back(stage("save", "save-tensor", Json::array({port("encode")}),
+                         {{"path", g.output.string()}}));
   g.spec = {{"id", "valtz-" + job.id.str()},
             {"stages", stages},
             {"subpipelines", Json::array()}};

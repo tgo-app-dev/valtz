@@ -465,6 +465,10 @@ struct TuningPanel: View {
         case "guidance_scale": String(localized: "Guidance")
         case "fast_decoder": String(localized: "Fast decoder")
         case "refine_start": String(localized: "Refine")
+        case "tiles": String(localized: "Tiles")
+        case "tile_overlap": String(localized: "Tile overlap")
+        case "flow_scale": String(localized: "Flow scale")
+        case "scene_threshold": String(localized: "Scene cut")
         default: key
         }
     }
@@ -472,6 +476,10 @@ struct TuningPanel: View {
     /// The short note beside an option that can be changed -- a
     /// schedule's saying it takes one.
     static func note(_ o: TuningOption) -> String {
+        // VOSR's colour fix is a choice (FlashVSR's a switch).
+        if o.key == "color_fix", o.type == "choice" {
+            return String(localized: "The restored picture's colour, as the picture it restored")
+        }
         guard o.schedule else { return note(o.key) }
         switch own(o.key) {
         case "sol_tau":
@@ -485,6 +493,9 @@ struct TuningPanel: View {
 
     /// ...and its help.
     static func help(_ o: TuningOption) -> String {
+        if o.key == "color_fix", o.type == "choice" {
+            return String(localized: "VOSR 2.0's release corrects what it restored against the picture it restored. Wavelet, its default, keeps the restored detail and takes the low frequencies — a soft blur of the picture — from the original, so colours and tones stay as they were. AdaIN moves each colour channel's mean and spread to the original's. None hands back the restorer's own colours, which can drift.")
+        }
         guard o.schedule else { return help(o.key) }
         switch own(o.key) {
         case "sol_tau":
@@ -519,7 +530,10 @@ struct TuningPanel: View {
         case "video_shift": String(localized: "Sigma shift of the video schedule")
         case "audio_shift": String(localized: "Sigma shift of the audio schedule")
         case "shift": String(localized: "Time shift of the noise schedule")
+        case "tiles": String(localized: "Restored in tiles at the size it was trained at, or at once")
+        case "tile_overlap": String(localized: "Pixels neighbouring tiles share, blended")
         case "color_fix": String(localized: "Each frame's colour kept to its source's")
+        case "scene_threshold": String(localized: "Frames less alike than this are a cut: not blended")
         case "guidance_scale": String(localized: "How closely it follows the prompt (CFG)")
         case "fast_decoder": String(localized: "The release's own decoder: about 3.6× faster, lossy")
         default: ""
@@ -549,6 +563,10 @@ struct TuningPanel: View {
         case "ane_int8": String(localized: "Runs the Neural Engine's modules (the feed-forward, and q|k|v with ANE QKV) in int8, weights and activations, instead of fp16: the arithmetic of the GPU's per-token int8 tiers on the Neural Engine's rows. On an M4 Pro, MiniMax H3's blocks ran 1.36× the GPU alone with the feed-forward in int8 against 1.26× in fp16, and 1.65× against 1.41× with q|k|v too; each lands as far from the exact result as the GPU tier of its name. While int8 GEMM runs Per Token or Per Token, Unrotated, this is on at that tier. Needs ANE FFN and macOS 26; a module that cannot run int8 is built in fp16. Off in every Favor preset.")
         case "ane_int8_tier": String(localized: "Which int8 the Neural Engine runs with ANE int8 on. Per Token turns each weight row and each projection's input by a Hadamard rotation in blocks of 256, then gives each row and each token one scale, so that one large channel does not set it. Per Token, Unrotated skips the rotation: about the same speed, and in a MiniMax H3 clip about 1.7× the error. While int8 GEMM runs one of these tiers, this is the same one.")
         case "motion_cache": String(localized: "Before each step, predicts how far the model's answer moved since the last one that ran; when little, reuses it. Little to gain on short schedules.")
+        case "flow_scale": String(localized: "The resolution RIFE reads the motion at, against the frame's: the release's --scale. Auto follows its advice: the frame's own, or half past 2560 pixels (4K). Lower is faster and follows large, fast motion better; higher keeps fine motion. Its makers suggest half for 4K footage.")
+        case "scene_threshold": String(localized: "Two frames whose likeness -- their structural similarity at 32 × 32 -- is under this are a scene cut: the frames between them repeat the first instead of morphing one shot into the next. 0.2 is the release's; 0 never cuts.")
+        case "tiles": String(localized: "VOSR 2.0 was distilled at 512 pixels. Past that, the picture is restored in tiles of 512, each on the grid its weights know, blended where they overlap — as its release does. One Pass restores the whole picture at once: faster, but on a grid the model never saw, which can weave a periodic pattern, a checkerboard on faces.")
+        case "tile_overlap": String(localized: "How many pixels neighbouring tiles share, blended into each other: more hides the seams better, at more work. At least an eighth of a tile is used. One Pass has no tiles.")
         case "color_fix": String(localized: "Corrects each restored frame's colour toward its source frame, so the upscaled layer keeps the colours of the clip it replaces. FlashVSR 1.1 moves each channel's mean and spread to the source's (AdaIN); FlashVSR+ takes the source's low frequencies and keeps its own detail (a wavelet fix).")
         case "guidance_scale": String(localized: "Classifier-free guidance: each step runs the model twice, with the prompt and with an empty one, and moves the picture away from the empty one's by this much. MOSS-Image's own setting is 3. Higher follows the words more literally, with harder colours; 1 runs one forward a step, about twice as fast, the prompt followed less.")
         case "refine_start": String(localized: "How much of the draft the refine keeps. It puts the enlarged draft back to a level of noise and denoises it again in three steps. Keep the Draft starts at 0.7: in a test at 1920×1088, a woman's face and the words on a sign stayed the draft's, their detail sharper. NVIDIA's Recipe, Open-H3-Regenerate-2K as released, starts at 0.909, keeping about 9% of the draft: it redraws more, and in the same test it gave the woman another face and garbled the sign. The refine follows the prompt's words only weakly either way, so they do not bring back what it redraws.")
@@ -582,6 +600,17 @@ struct TuningPanel: View {
         case ("sol_threshold", "exact"): String(localized: "Exact")
         case ("refine_start", "draft"): String(localized: "Keep the Draft")
         case ("refine_start", "release"): String(localized: "NVIDIA's Recipe")
+        case ("color_fix", "wavelet"): String(localized: "Wavelet")
+        case ("color_fix", "adain"): String(localized: "AdaIN")
+        case ("color_fix", "none"): String(localized: "None")
+        case ("tiles", "trained"): String(localized: "At Its Trained Size")
+        case ("tiles", "one_pass"): String(localized: "One Pass")
+        case ("flow_scale", "auto"): String(localized: "Auto")
+        case ("flow_scale", "quarter"): String(localized: "Quarter")
+        case ("flow_scale", "half"): String(localized: "Half")
+        case ("flow_scale", "full"): String(localized: "Full")
+        case ("flow_scale", "double"): String(localized: "Double")
+        case ("flow_scale", "quadruple"): String(localized: "Quadruple")
         default: value
         }
     }
@@ -612,6 +641,24 @@ struct TuningPanel: View {
             String(localized: "From noise 0.7: the draft's faces and lettering kept")
         case ("refine_start", "release"):
             String(localized: "From noise 0.909, as released: faces and lettering redrawn")
+        case ("color_fix", "wavelet"):
+            String(localized: "The original's low frequencies, the restored detail: as released")
+        case ("color_fix", "adain"):
+            String(localized: "Each channel's mean and spread moved to the original's")
+        case ("color_fix", "none"):
+            String(localized: "The restorer's own colours, uncorrected")
+        case ("tiles", "trained"):
+            String(localized: "Tiles of 512, blended where they meet: as released")
+        case ("flow_scale", "auto"):
+            String(localized: "The frame's own, half past 4K: the release's advice")
+        case ("flow_scale", "quarter"), ("flow_scale", "half"):
+            String(localized: "Coarser: faster, large motion followed better")
+        case ("flow_scale", "full"):
+            String(localized: "The frame's own resolution")
+        case ("flow_scale", "double"), ("flow_scale", "quadruple"):
+            String(localized: "Finer: slower, fine motion kept")
+        case ("tiles", "one_pass"):
+            String(localized: "Faster, but may weave a checkerboard through faces")
         default: ""
         }
     }

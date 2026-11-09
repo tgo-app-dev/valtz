@@ -1,0 +1,12 @@
+Babylon.js -- the web rendering engine by the Babylon.js team
+(https://www.babylonjs.com, source https://github.com/BabylonJS/Babylon.js)
+-- version 9.32.0, as published on npm (package "babylonjs"), under the
+Apache License, Version 2.0 (LICENSE, beside this file, as published in
+that package; its own notice is NOTICE.md).
+
+Valtz includes, unmodified, its UMD build:
+
+  babylon.js
+
+and serves it -- from the Mac, never the network -- to the programs it
+draws that name the global BABYLON (DESIGN §4t).

@@ -57,6 +57,27 @@ built it), and says how to substitute another build (`VPIPE_FFMPEG_DIR`).
 **GNU LGPL, version 2.1 or later**; its notice in the same folder
 (`app/macos/licenses/LAME.txt`). Source: <https://lame.sourceforge.io/>.
 
+## three.js
+
+`3rd-party/three/` -- three.js r186 (npm "three" 0.186.1): its build and a
+chosen set of its addons, unmodified, served from the Mac to the programs
+Valtz draws (the app: `Contents/Resources/procedural/three`).
+Home page: <https://threejs.org>.
+
+**License: MIT.** Texts: `3rd-party/three/LICENSE` and `NOTICE`, which
+also ship in the app (`Contents/Resources/Licenses/three.js`).
+
+## Babylon.js
+
+`3rd-party/babylonjs/babylon.js` -- Babylon.js 9.32.0 (npm "babylonjs"),
+its UMD build, unmodified, served from the Mac to the programs Valtz
+draws that name it (the app: `Contents/Resources/procedural/babylonjs`).
+Home page: <https://www.babylonjs.com>.
+
+**License: Apache License 2.0.** Texts: `3rd-party/babylonjs/LICENSE`,
+`NOTICE` and the package's own `NOTICE.md`, which also ship in the app
+(`Contents/Resources/Licenses/Babylon.js`).
+
 ---
 
 # Vendored in, or compiled into, Valtz

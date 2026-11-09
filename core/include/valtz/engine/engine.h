@@ -99,6 +99,11 @@ inline constexpr std::string_view kOpUpscaleVideo = "upscale-video";
 // past 768P drafted and refined, or an upscale-video by the refiner
 // (ModelRef::regenerate_lora). supports() says whether this engine can.
 inline constexpr std::string_view kOpRegenerateVideo = "regenerate-video";
+// ...and one IN CONTEXT (Open-H3-Regenerate-2K-IC: the refiner's
+// `in_context`, the draft held clean as a Ref2VA reference clip; DESIGN
+// §4q): a newer vpipe's, supports() says.
+inline constexpr std::string_view kOpRegenerateInContext =
+    "regenerate-in-context";
 // A picture RESTORED at a larger size (VOSR, DINOv2 its eyes:
 // ModelRef::encoder): input "source", params `width`, `height`. The
 // output is a 16-bit PNG.
@@ -151,6 +156,10 @@ inline constexpr std::string_view kOpSeparateAudio = "separate-audio";
 // one .safetensors, ComfyUI-MiniMaxH3Mod's version 5. Its refinement is
 // counted as phase "refmod".
 inline constexpr std::string_view kOpMakeRefMod = "make-refmod";
+// A clip's frames BETWEEN its frames made (DESIGN §4u): RIFE, through
+// vpipe's temporal-resample -- input "source", its span `first` /
+// `count`, made at `fps` (its length kept), its sound kept.
+inline constexpr std::string_view kOpInterpolateVideo = "interpolate-video";
 inline constexpr std::string_view kOpFetchModel = "fetch-model";
 // One input (role "source") written again in another format: a still as
 // a 16-bit PNG / TIFF, OpenEXR, or 8-bit; a movie as ProRes 4444 (with
@@ -275,6 +284,12 @@ struct ModelRef {
   Json                  engine = Json::object();  // catalog engine block
 };
 
+// A model's reference as data, for a job that runs another model inside
+// it (a continuation's guide cleaned by an image edit: DESIGN §4e) --
+// every file by its path, the catalog block as it is.
+Json to_json(const ModelRef& m);
+ModelRef model_ref_from_json(const Json& j);
+
 struct JobInput {
   std::string           role;  // "reference", "init_image", ...
   std::filesystem::path path;
@@ -316,10 +331,17 @@ inline constexpr std::string_view kPhaseDecode = "decode";
 // A clip's soundtrack out of its latent.
 inline constexpr std::string_view kPhaseSound = "sound";
 inline constexpr std::string_view kPhaseRestore = "restore";
+// A clip's frames made between its frames (DESIGN §4u), counted by its
+// writer.
+inline constexpr std::string_view kPhaseInterpolate = "interpolate";
 // A clip REGENERATED at a larger size (DESIGN §4q): its latent ENLARGED
 // by the latent upscaler, then REGENERATED -- the refine's denoise,
 // counted per block as any. A clip made so is drafted first (DENOISE).
 inline constexpr std::string_view kPhaseEnlarge = "enlarge";
+// A continuation's GUIDE CLEANED before its denoise (DESIGN §4e): the
+// guide's frames restored one by one by an image edit, counted a frame
+// at a time.
+inline constexpr std::string_view kPhaseClean = "clean";
 inline constexpr std::string_view kPhaseRegenerate = "regenerate";
 // A model's files; data "label" names the one being counted (none
 // between them: vpipe counts only the big ones).

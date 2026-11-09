@@ -479,15 +479,32 @@ TEST(models, tuning_for_an_upscaler)
     }
     const bool vosr = std::string_view(id) == "vosr";
     // FlashVSR's colour fix (its encoder's, declared in the catalog): on
-    // for every release -- FlashVSR+'s own default is off.
+    // for every release -- FlashVSR+'s own default is off. VOSR's is a
+    // CHOICE on its config stage, the release's wavelet by default,
+    // beside its tiles (vpipe 3f640a2c).
     CHECK((keys == (vosr ? std::vector<std::string>{"sol_attn",
                                                     "sol_threshold",
                                                     "sol_tau", "sage_attn",
-                                                    "i8_gemm"}
+                                                    "i8_gemm", "color_fix",
+                                                    "tiles", "tile_overlap"}
                          : std::vector<std::string>{"sage_attn", "i8_gemm",
                                                     "color_fix"})));
     if (!vosr) {
       CHECK(opts["values"]["color_fix"] == true);
+    } else {
+      CHECK(opts["values"]["color_fix"] == "wavelet");
+      CHECK(opts["values"]["tiles"] == "trained");
+      CHECK(opts["values"]["tile_overlap"] == 32);
+      for (const auto& o : opts["options"]) {
+        if (o["key"] == "color_fix") {
+          CHECK(o["type"] == "choice");
+          CHECK(o["choices"] == Json::array({"wavelet", "adain", "none"}));
+        }
+      }
+      // A choice it does not offer is not taken: the default stands.
+      const Json odd = resolve_tuning(*m, m5, "balanced", false,
+                                      {{"color_fix", "sepia"}});
+      CHECK(odd["color_fix"] == "wavelet");
     }
     for (const char* none : {"steps", "loras", "dits", "vaes", "shift"}) {
       CHECK(!opts["values"].contains(none));

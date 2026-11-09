@@ -43,6 +43,7 @@ enum class Capability : std::uint8_t {
   AudioSeparate,   // a song split into its sources (BS-RoFormer)
   MicroAgent,      // short text tasks of Valtz's own (LFM3-VL 2B)
   MakeRefMod,      // MiniMax H3 reference latents made (DESIGN §4s)
+  InterpolateVideo,  // a clip's frames between frames made (RIFE, §4u)
 };
 
 inline constexpr Capability kAllCapabilities[] = {
@@ -56,6 +57,7 @@ inline constexpr Capability kAllCapabilities[] = {
   Capability::TextToSpeech,  Capability::Transcribe,
   Capability::VideoSummary,  Capability::AudioSeparate,
   Capability::MicroAgent,    Capability::MakeRefMod,
+  Capability::InterpolateVideo,
 };
 
 const char* to_str(Capability);
@@ -88,6 +90,12 @@ struct ModelEntry {
   // model-fetch unpacks it into, beside it, which holds the package the
   // stage loads (catalog `package`).
   std::string              package;
+  // Fetched by Valtz from a URL of its makers' own, not from a hub vpipe
+  // knows (catalog `source`, DESIGN §4u: Practical-RIFE's zips on Google
+  // Drive): {"url", "page", "sha256", "bytes", "archive": "zip", "take":
+  // [file names]} -- the archive checked by its hash and only the files
+  // `take` names kept, under <root>/<hf_path>/<subdir>. Empty: a hub's.
+  Json                     source = Json::object();
   std::vector<Capability>  capabilities;
   double                   disk_gb = 0;
   bool                     disk_measured = false;

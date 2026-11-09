@@ -8,7 +8,8 @@
 # installation nor a build tree:
 #
 #   * libvpipe (and, when asked, LGPL FFmpeg and Sparkle) is copied into
-#     Contents/Frameworks, `valtzctl` into Contents/Helpers;
+#     Contents/Frameworks, `valtzctl` into Contents/Helpers (beside the
+#     build's `valtz-procedural`, the program renderer);
 #   * every absolute LC_RPATH is DELETED, not appended to -- on the build
 #     machine it still resolves, so a bundle that kept it would load the
 #     build tree's libvpipe and seem to work until opened anywhere else --
@@ -549,6 +550,12 @@ done
 # backends), so it runs under the same entitlements.
 if [ -f "$CONTENTS/Helpers/valtzctl" ]; then
   codesign "${sign_exe_args[@]}" "$CONTENTS/Helpers/valtzctl"
+fi
+
+# The program renderer (DESIGN §4t): WebKit and the system's frameworks
+# alone, no plugin -- no entitlements of its own.
+if [ -f "$CONTENTS/Helpers/valtz-procedural" ]; then
+  codesign "${sign_args[@]}" "$CONTENTS/Helpers/valtz-procedural"
 fi
 
 codesign "${sign_exe_args[@]}" "$APP"

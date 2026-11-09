@@ -823,6 +823,13 @@ struct PromptEditor: NSViewRepresentable {
         return p
     }()
     static let cjkParagraph = NSParagraphStyle.default
+    /// A fenced block's line of code: no room between lines.
+    static let codeParagraph: NSParagraphStyle = {
+        let p = NSMutableParagraphStyle()
+        p.lineHeightMultiple = 1
+        p.paragraphSpacing = 0
+        return p
+    }()
     static let inset = NSSize(width: 14, height: 17)
     /// The chat input's: a line and its room.
     static let chatInset = NSSize(width: 10, height: 10)

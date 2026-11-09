@@ -4,8 +4,10 @@ import AppKit
 /// what the model is sent, what a prompt asset keeps -- and Markdown is a
 /// way of writing it: `**bold**`, `*italic*` (or `_italic_`),
 /// `***both***`, `<u>underline</u>` (as Typora writes it: Markdown has
-/// none of its own), `~~struck~~`, `` `code` `` and `#` / `##` / `###`
-/// headings. Drawn as it reads (AppModel.promptMarkdown) -- WYSIWYG --
+/// none of its own), `~~struck~~`, `` `code` ``, `#` / `##` / `###`
+/// headings and blocks of code between ``` fences (an agent's
+/// transcript holds its programs so: nothing read inside them, a `*` of
+/// JavaScript no italic). Drawn as it reads (AppModel.promptMarkdown) -- WYSIWYG --
 /// the markers are hidden everywhere but in the paragraph the caret is
 /// in, where they show, dimmed, so they can be edited; off, the text is
 /// drawn as typed.
@@ -34,6 +36,8 @@ struct MarkdownRun: Equatable {
     enum Kind: Equatable {
         case bold, italic, boldItalic, underline, strike, code
         case heading(Int)
+        /// Lines between fences: its markers the fence lines.
+        case codeBlock
     }
     let kind: Kind
     let content: NSRange
@@ -79,18 +83,25 @@ enum PromptMarkdown {
         pattern: #"^(#{1,3})([ \t]+)(\S.*)$"#, options: .anchorsMatchLines)
 
     /// Every span in `text`, in no particular order. Spans do not cross a
-    /// line; a heading is its line.
+    /// line, but for a fenced block, inside which nothing else is read; a
+    /// heading is its line.
     nonisolated static func runs(in text: NSString) -> [MarkdownRun] {
         let all = NSRange(location: 0, length: text.length)
-        var out: [MarkdownRun] = []
-        for m in heading.matches(in: text as String, range: all) {
+        var out = fences(in: text)
+        let blocks = out.map(\.whole)
+        let inBlock = { (r: NSRange) in
+            blocks.contains { NSIntersectionRange($0, r).length > 0 }
+        }
+        for m in heading.matches(in: text as String, range: all)
+        where !inBlock(m.range) {
             out.append(MarkdownRun(
                 kind: .heading(m.range(at: 1).length),
                 content: m.range(at: 3),
                 markers: [NSUnionRange(m.range(at: 1), m.range(at: 2))]))
         }
-        var codes: [NSRange] = []
-        for m in code.matches(in: text as String, range: all) {
+        var codes: [NSRange] = blocks
+        for m in code.matches(in: text as String, range: all)
+        where !inBlock(m.range) {
             codes.append(m.range)
             out.append(MarkdownRun(kind: .code, content: m.range(at: 2),
                                    markers: [m.range(at: 1),
@@ -104,6 +115,45 @@ enum PromptMarkdown {
                                        markers: [m.range(at: 1),
                                                  m.range(at: 3)]))
             }
+        }
+        return out
+    }
+
+    /// The fenced blocks of code (CodeFences' rules): a run each, its
+    /// content the lines between, its markers the fence lines -- one left
+    /// open runs to the end.
+    nonisolated static func fences(in text: NSString) -> [MarkdownRun] {
+        guard text.range(of: "```").location != NSNotFound
+                || text.range(of: "~~~").location != NSNotFound
+        else { return [] }
+        var out: [MarkdownRun] = []
+        var open: (fence: CodeFences.Fence, line: NSRange)?
+        var from = 0
+        text.enumerateSubstrings(
+            in: NSRange(location: 0, length: text.length),
+            options: .byLines
+        ) { sub, line, enclosing, _ in
+            let l = Substring(sub ?? "")
+            if let o = open {
+                if o.fence.closes(l) {
+                    out.append(MarkdownRun(
+                        kind: .codeBlock,
+                        content: NSRange(location: from,
+                                         length: line.location - from),
+                        markers: [o.line, line]))
+                    open = nil
+                }
+            } else if let f = CodeFences.Fence(opening: l) {
+                open = (f, line)
+                from = NSMaxRange(enclosing)
+            }
+        }
+        if let o = open {
+            out.append(MarkdownRun(
+                kind: .codeBlock,
+                content: NSRange(location: from,
+                                 length: max(0, text.length - from)),
+                markers: [o.line]))
         }
         return out
     }
@@ -235,18 +285,23 @@ extension NSTextView {
 
 extension PromptEditor {
     /// Each paragraph's spacing: a Latin one 1.1x, a CJK one the
-    /// system's (latinParagraph); typing follows the one at the caret.
+    /// system's (latinParagraph), a fenced block's lines close together
+    /// as code is (codeParagraph); typing follows the one at the caret.
     @MainActor
     static func styleParagraphs(_ tv: NSTextView) {
         guard let storage = tv.textStorage else { return }
         let ns = storage.string as NSString
+        let blocks = PromptMarkdown.fences(in: ns).map(\.whole)
         storage.beginEditing()
         ns.enumerateSubstrings(
             in: NSRange(location: 0, length: ns.length),
             options: [.byParagraphs, .substringNotRequired]
         ) { _, _, enclosing, _ in
             guard enclosing.length > 0 else { return }
-            let want = PromptEditor.hasCJK(ns.substring(with: enclosing))
+            let want = blocks.contains(where: {
+                NSLocationInRange(enclosing.location, $0) })
+                ? PromptEditor.codeParagraph
+                : PromptEditor.hasCJK(ns.substring(with: enclosing))
                 ? PromptEditor.cjkParagraph : PromptEditor.latinParagraph
             let have = storage.attribute(.paragraphStyle,
                                          at: enclosing.location,
@@ -315,7 +370,7 @@ extension PromptEditor {
                 case .italic: each(run.content) { italic[$0] = true }
                 case .boldItalic:
                     each(run.content) { bold[$0] = true; italic[$0] = true }
-                case .code: each(run.content) { code[$0] = true }
+                case .code, .codeBlock: each(run.content) { code[$0] = true }
                 case .heading(let level):
                     let k: CGFloat = [1.45, 1.25, 1.1][min(level, 3) - 1]
                     each(run.whole) { scale[$0] = k; bold[$0] = true }
@@ -353,14 +408,18 @@ extension PromptEditor {
                 }
                 start = end
             }
-            // The markers: shown, dimmed, where the caret is; hidden
-            // everywhere else.
+            // The markers: shown, dimmed, where the caret is -- a code
+            // block's anywhere in it; hidden everywhere else.
             for run in runs {
                 for m in run.markers where m.length > 0 {
+                    let near = run.kind == .codeBlock ? run.whole : m
                     if caretParagraph.location != NSNotFound
-                        && (NSIntersectionRange(m, caretParagraph).length > 0
-                            || NSLocationInRange(m.location,
-                                                 caretParagraph)) {
+                        && (NSIntersectionRange(near, caretParagraph).length
+                                > 0
+                            || NSLocationInRange(near.location,
+                                                 caretParagraph)
+                            || NSLocationInRange(caretParagraph.location,
+                                                 near)) {
                         storage.addAttribute(.foregroundColor,
                                              value: NSColor.tertiaryLabelColor,
                                              range: m)

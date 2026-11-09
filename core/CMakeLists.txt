@@ -13,6 +13,7 @@ set(VALTZ_CORE_SOURCES
   src/base/result.cc
   src/base/text.cc
   src/base/tree-copy.cc
+  src/base/url-fetch.mm
   src/base/version.cc
   src/cache/cache-store.cc
   src/db/lmdb.cc
@@ -29,6 +30,7 @@ set(VALTZ_CORE_SOURCES
   src/media/movie.mm
   src/media/pdf.mm
   src/media/probe.mm
+  src/media/procedural.cc
   src/media/refmod.cc
   src/media/sound.mm
   src/media/stamp.mm
@@ -74,6 +76,7 @@ set(VALTZ_CORE_SOURCES
   src/controller/asset-ops.cc
   src/controller/atlas.cc
   src/controller/compositions.cc
+  src/controller/procedural.cc
   src/controller/controller.cc
   src/controller/event-bus.cc
   src/controller/generate-nodes.cc
@@ -89,6 +92,7 @@ if(VALTZ_HAVE_VPIPE)
     src/engine/vpipe/checkpoint-reader.cc
     src/engine/vpipe/encoding-cache.cc
     src/engine/vpipe/graph-builder.cc
+    src/engine/vpipe/guide-clean.cc
     src/engine/vpipe/host-exchange.cc
     src/engine/vpipe/flex-json.cc
     src/engine/vpipe/job-progress.cc
@@ -130,6 +134,11 @@ valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/valtz-agent.md"
 # editor's tools left to the one agent that changes it (DESIGN §9b).
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/valtz-chat.md"
   kValtzChatSkill valtz-chat-skill.cc)
+# A procedural session's guide: programs written and drawn in a sandboxed
+# page (DESIGN §4t).
+valtz_embed(
+  "${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/valtz-procedural.md"
+  kValtzProceduralSkill valtz-procedural-skill.cc)
 # MOSS-TTS's voice director: Valtz's own, from the model's prompt fields
 # (TTS-Audio-Suite's MOSS_TTS_PROMPT_FIELDS_GUIDE; DESIGN §4g).
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/moss-tts.md"
@@ -220,7 +229,7 @@ set_source_files_properties(
   src/media/exif.mm src/media/markup.mm src/media/model-input.mm
   src/media/movie.mm src/media/pdf.mm src/media/stamp.mm
   src/media/probe.mm src/media/thumbnail.mm
-  src/models/hardware.mm src/project/bookmark.mm
+  src/models/hardware.mm src/project/bookmark.mm src/base/url-fetch.mm
   PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
 
 if(VALTZ_HAVE_VPIPE)
@@ -234,5 +243,15 @@ if(VALTZ_HAVE_VPIPE)
     COMPILE_DEFINITIONS
     "VALTZ_VPIPE_PLUGIN_BUILD_PATH=\"$<TARGET_FILE:valtz-vpipe>\"")
 endif()
+
+# A program drawn (media/procedural.h) runs in valtz-procedural, a
+# process of its own: a dev build finds it, and the libraries it serves
+# the page (3rd-party/three, 3rd-party/babylonjs), in the build and
+# source trees; the app carries both.
+add_dependencies(valtz_core valtz-procedural)
+set_property(SOURCE src/media/procedural.cc APPEND PROPERTY
+  COMPILE_DEFINITIONS
+  "VALTZ_PROCEDURAL_HELPER_BUILD_PATH=\"$<TARGET_FILE:valtz-procedural>\""
+  "VALTZ_PROCEDURAL_LIBS_SOURCE_PATH=\"${PROJECT_SOURCE_DIR}/3rd-party\"")
 
 valtz_target_warnings(valtz_core)

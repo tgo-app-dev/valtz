@@ -162,7 +162,7 @@ struct SimpleView: View {
                             .transition(.move(edge: .bottom)
                                 .combined(with: .opacity))
                     }
-                    if !immersive, model.activeModality == .agent,
+                    if !immersive, model.activeModality.isAgentic,
                        let a = model.agent, !model.suggesting {
                         AgentCard(model: model, shown: a)
                             .frame(maxWidth: Self.columnWidth)
@@ -1171,6 +1171,16 @@ private struct ClipBar: View {
                 let n = String(t.frames)
                 item.subtitle = String(localized: "\(n) frames redone · \(t.model)")
                 menu.addItem(item)
+                // ...its guide cleaned: each redone frame restored by an
+                // image edit, a chain's noise fading out over them.
+                let clean = MenuAction.item(
+                    String(localized: "Through Its End, Cleaned"),
+                    symbol: "sparkles") { [continueClip] in
+                    continueClip(0, .cleaned)
+                }
+                clean.subtitle = String(localized: "\(n) frames restored, the noise fading out · slower")
+                clean.toolTip = String(localized: "Each of the frames redone is restored by an image edit, its own tones kept, and they are shown in place of the clip's last frames, the noise built up over continuations fading out. Its sound carries on as before.")
+                menu.addItem(clean)
             }
             lengths(o.latentGuides, .latents, named: true)
         }

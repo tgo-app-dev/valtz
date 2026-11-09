@@ -309,11 +309,15 @@ enum ZoomStep: Sendable {
 }
 
 /// What a generation makes: a picture, a clip or a sound -- a song (the
-/// tab over the prompt). Its raw value is the core's modality name. The
-/// AGENT is the fourth: the prompt is a request the agent works on the
-/// document with the editor's tools (DESIGN §9b).
+/// tab over the prompt). Its raw value is the core's modality name.
+/// PROCEDURAL is the fourth: the prompt is what to draw, and a model
+/// writes a PROGRAM -- JavaScript run in a sandboxed page -- that draws
+/// it as a picture or a clip (DESIGN §4t). The AGENT is the fifth: the
+/// prompt is a request the agent works on the document with the
+/// editor's tools (DESIGN §9b). Both are agent sessions: their card,
+/// their chat, their tabs -- each target its own.
 enum Modality: String, CaseIterable, Identifiable, Sendable {
-    case video, image, audio, agent
+    case video, image, audio, procedural, agent
     var id: String { rawValue }
 
     var label: String {
@@ -321,6 +325,7 @@ enum Modality: String, CaseIterable, Identifiable, Sendable {
         case .image: String(localized: "Image")
         case .video: String(localized: "Video")
         case .audio: String(localized: "Audio")
+        case .procedural: String(localized: "Procedural")
         case .agent: String(localized: "Agent")
         }
     }
@@ -331,6 +336,7 @@ enum Modality: String, CaseIterable, Identifiable, Sendable {
         case .image: "photo"
         case .video: "video"
         case .audio: "waveform"
+        case .procedural: "curlybraces"
         case .agent: "wand.and.stars"
         }
     }
@@ -342,11 +348,16 @@ enum Modality: String, CaseIterable, Identifiable, Sendable {
         case .video: "1"
         case .image: "2"
         case .audio: "3"
-        case .agent: "4"
+        case .procedural: "4"
+        case .agent: "5"
         }
     }
 
     var shortcut: String { "⌘" + String(key.character) }
+
+    /// A session of a model with tools, not a generation: the Agent, and
+    /// Procedural's program writer.
+    var isAgentic: Bool { self == .agent || self == .procedural }
 }
 
 /// What a song plans before it is sung (YuE2's `cot`): a score of its
@@ -721,6 +732,10 @@ struct PromptAttachment: Identifiable, Hashable, Sendable {
     /// carries them beside its pixels, FL2VA is guided through its tail
     /// by them -- Continue's latent options. Off: read as a reference.
     var fromLatents = false
+    /// ...through its end with its guide CLEANED (DESIGN §4e): the
+    /// guide's frames restored by an image edit, their latents ramped in
+    /// -- Continue's Through Its End, Cleaned.
+    var cleaned = false
     /// A clip or a sound referenced WHOLE (Ref2VA): not cut to the clip's
     /// length, as every other one is -- its scissors badge off.
     var whole = false
@@ -837,9 +852,9 @@ struct JobPhase: Equatable {
 
     /// The phases in the order a generation runs them.
     static let order = ["prepare", "references", "score", "song", "speech",
-                        "transcribe", "summarize", "separate", "denoise",
-                        "enlarge", "regenerate", "decode", "sound",
-                        "restore", "finish"]
+                        "transcribe", "summarize", "separate", "clean",
+                        "denoise", "enlarge", "regenerate", "decode",
+                        "sound", "restore", "interpolate", "finish"]
 
     /// A phase's name, as the inspector lists how long each took -- a
     /// song's sound rendered and decoded, a clip's soundtrack.
@@ -859,12 +874,18 @@ struct JobPhase: Equatable {
         case "sound": kind == .audio ? String(localized: "Decoding")
             : String(localized: "Soundtrack")
         case "restore": String(localized: "Restoring detail")
+        // A clip's frames made between its frames (DESIGN §4u).
+        case "interpolate": String(localized: "Interpolating")
+        // A continuation's guide cleaned before its denoise (DESIGN §4e).
+        case "clean": String(localized: "Cleaning the guide")
         // A clip regenerated (DESIGN §4q): its draft's latent enlarged,
         // then refined at the size asked.
         case "enlarge": String(localized: "Enlarging the draft")
         case "regenerate": String(localized: "Regenerating")
         case "finish": String(localized: "Finishing")
         case "export": String(localized: "Exporting")
+        // A program drawn, a frame at a time (DESIGN §4t).
+        case "drawing": String(localized: "Drawing")
         default: phase
         }
     }
@@ -925,6 +946,15 @@ struct JobPhase: Equatable {
             name = kind == .audio ? String(localized: "Decoding the sound")
                 : String(localized: "Making the soundtrack")
         case "restore": name = String(localized: "Restoring detail")
+        case "interpolate": name = String(localized: "Interpolating frames")
+        // A continuation's guide cleaned (DESIGN §4e): its frames decoded,
+        // then each restored by an image edit -- counted a frame at a time.
+        case "clean":
+            if total <= 0 {
+                return String(localized: "Cleaning the guide…")
+            }
+            let d = String(done), n = String(total)
+            return String(localized: "Cleaning the guide · frame \(d) of \(n)")
         // A clip regenerated (DESIGN §4q): the draft made (denoise), its
         // latent enlarged -- uncounted while the upscaler loads -- then
         // refined at the size asked.
@@ -935,6 +965,7 @@ struct JobPhase: Equatable {
             name = String(localized: "Enlarging the draft")
         case "regenerate": name = String(localized: "Regenerating at full size")
         case "export": name = String(localized: "Exporting")
+        case "drawing": name = String(localized: "Drawing the program")
         case "download": name = label.isEmpty
             ? String(localized: "Downloading")
             : String(localized: "Downloading \(label)")
@@ -1105,8 +1136,44 @@ final class AppModel: TuningHost {
             agentEnabled = on
             if !on {
                 if modality == .agent { setModality(.image) }
-                agentDismiss()
+                agentDismiss(.agent)
             }
+        }
+    }
+
+    /// Settings › Experimental › Procedural: the Procedural tab over the
+    /// prompt (⌘4) -- programs written and drawn (DESIGN §4t) -- off
+    /// until switched on, remembered as the Agent's is
+    /// (VALTZ_SNAPSHOT_EXPERIMENTAL=procedural switches it on for a run).
+    private(set) var proceduralEnabled = AppModel.storedProceduralEnabled {
+        didSet {
+            if Self.keepsViewState {
+                UserDefaults.standard.set(proceduralEnabled,
+                                          forKey: Self.proceduralEnabledKey)
+            }
+        }
+    }
+
+    /// Procedural switched on or off. Off, its tab goes -- the prompt back
+    /// to pictures if it was there -- and its session at work stops.
+    func setProceduralEnabled(_ on: Bool) {
+        guard on != proceduralEnabled else { return }
+        withAnimation(Self.motion) {
+            proceduralEnabled = on
+            if !on {
+                if modality == .procedural { setModality(.image) }
+                agentDismiss(.procedural)
+            }
+        }
+    }
+
+    /// Is the target's tab there: Procedural and the Agent only while
+    /// Settings › Experimental has them on.
+    func targetEnabled(_ m: Modality) -> Bool {
+        switch m {
+        case .agent: agentEnabled
+        case .procedural: proceduralEnabled
+        default: true
         }
     }
 
@@ -1131,7 +1198,7 @@ final class AppModel: TuningHost {
     /// The prompt's tabs: what a generation makes, and the Agent while it
     /// is switched on.
     var modalities: [Modality] {
-        Modality.allCases.filter { $0 != .agent || agentEnabled }
+        Modality.allCases.filter { targetEnabled($0) }
     }
 
     func showsStatusItem(_ item: StatusBarItem) -> Bool {
@@ -1155,6 +1222,7 @@ final class AppModel: TuningHost {
     private static let statusBarKey = "view.statusBar"
     private static let statusItemsKey = "view.statusBarHidden"
     private static let agentEnabledKey = "experimental.agent"
+    private static let proceduralEnabledKey = "experimental.procedural"
     private static let agentSpeedKey = "helper.agentSpeed"
     private static var keepsViewState: Bool {
         ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT"] == nil
@@ -1164,6 +1232,10 @@ final class AppModel: TuningHost {
     }
     private static var storedAgentEnabled: Bool {
         keepsViewState && UserDefaults.standard.bool(forKey: agentEnabledKey)
+    }
+    private static var storedProceduralEnabled: Bool {
+        keepsViewState
+            && UserDefaults.standard.bool(forKey: proceduralEnabledKey)
     }
     private static var storedAgentShowsSpeed: Bool {
         keepsViewState && UserDefaults.standard.bool(forKey: agentSpeedKey)
@@ -1211,6 +1283,10 @@ final class AppModel: TuningHost {
     var upscalers: [UpscalerSettings] = []
     /// Which one each kind runs (Settings › Upscaling's pick, Auto's).
     var upscalerKinds: [UpscalerKind] = []
+    /// Settings › Temporal Resampling: the frame interpolators (RIFE) and
+    /// their options, and which one runs.
+    var interpolators: [UpscalerSettings] = []
+    var interpolatorPick = InterpolatorPick()
 
     /// The ASSET OPERATIONS (DESIGN §4j) as this Mac runs them -- what is
     /// done to an asset with no prompt -- read with the capabilities.
@@ -1267,6 +1343,9 @@ final class AppModel: TuningHost {
     /// `agent`, `agentWriting` and the box.
     var agentTabs: [AgentTab] = [AgentTab(skills: "full")]
     var agentTabIndex = 0
+    /// The other agentic target's tabs, kept while this one's are shown
+    /// (swapAgentTarget).
+    @ObservationIgnored var agentTargets: [Modality: AgentTarget] = [:]
     /// A step's note, typed before it is skipped (told to the model).
     var agentNote = ""
     /// The stage FOLLOWS the agent's work (its composition, the page or
@@ -1675,7 +1754,7 @@ final class AppModel: TuningHost {
         func group(_ m: Modality) -> String {
             switch self {
             case .perTarget: m.rawValue
-            case .agentApart: m == .agent ? "agent" : "generate"
+            case .agentApart: m.isAgentic ? m.rawValue : "generate"
             case .shared: "all"
             }
         }
@@ -1683,6 +1762,30 @@ final class AppModel: TuningHost {
     var promptHistory = AppModel.storedPromptHistory() {
         didSet { Self.keep(promptHistory.rawValue, as: "prompt.history") }
     }
+    /// PROCEDURAL's size and length (its card): what its programs are
+    /// drawn at unless the person asks the writer for another -- a still,
+    /// or a clip of so many seconds at the project's rate. Kept between
+    /// launches.
+    var proceduralWidth = UserDefaults.standard
+        .object(forKey: "procedural.width") as? Int ?? 1280 {
+        didSet { Self.keep(proceduralWidth, as: "procedural.width") }
+    }
+    var proceduralHeight = UserDefaults.standard
+        .object(forKey: "procedural.height") as? Int ?? 720 {
+        didSet { Self.keep(proceduralHeight, as: "procedural.height") }
+    }
+    /// 0: a still.
+    var proceduralSeconds = UserDefaults.standard
+        .object(forKey: "procedural.seconds") as? Double ?? 0 {
+        didSet { Self.keep(proceduralSeconds, as: "procedural.seconds") }
+    }
+    /// The drawings put on the stage as they landed (showProgramDrawn):
+    /// each once -- and the programs' jobs watched as they drew, which
+    /// view their own as they land.
+    @ObservationIgnored var programsShown: Set<String> = []
+    @ObservationIgnored var programJobsWatched: Set<String> = []
+    /// Render Again's sheet (Assets' menu), while it is open.
+    var renderAgain: RenderAgainForm?
     private static func storedPromptHistory() -> PromptHistory {
         let env = ProcessInfo.processInfo.environment
         if !keepsViewState {
@@ -2286,6 +2389,9 @@ final class AppModel: TuningHost {
 
     /// An upscale running (Render Upscaled, the Crop panel): its job.
     var upscaleJob: String?
+    /// Render Interpolated's job (DESIGN §4u): the layer's clip at the
+    /// rate its timeline shows it, by RIFE.
+    var interpolateJob: String?
 
     /// The active layer's source, when it is a clip or a picture.
     private var activeLayerSource: AssetDTO? {
@@ -2518,6 +2624,7 @@ final class AppModel: TuningHost {
                                     core.capabilityTreeJSON())
         helpers = DTO.decode(HelperList.self, core.assistantsJSON())
         (upscalers, upscalerKinds) = core.upscaleSettings()
+        (interpolators, interpolatorPick) = core.interpolateSettings()
         assetOperations = core.assetOperations()
         agentSettings = DTO.decode(AgentSettings.self,
                                    core.agentSettingsJSON())
@@ -2570,7 +2677,7 @@ final class AppModel: TuningHost {
         case .video: ["text-to-video", "image-to-video",
                       "reference-to-video", "make-refmod"]
         case .audio: ["text-to-audio", "text-to-speech"]
-        case .agent: [String]()
+        case .procedural, .agent: [String]()
         }
         // A quantized variant is its source, listed once by the source's
         // name: Favor picks which file runs (Fast and Med the 8-bit pack).
@@ -3110,11 +3217,11 @@ final class AppModel: TuningHost {
         flushPanels()
         // Through its end: a guide of the frames FL2VA redoes, at its
         // grid -- a plain clip itself, as it is.
-        let through = method == .through ? throughModel : nil
-        if method == .through {
+        let through = method.throughEnd ? throughModel : nil
+        if method.throughEnd {
             guard through != nil else { return }
             if !clip.isComposition {
-                continueWith(clip.id, method: .through)
+                continueWith(clip.id, method: method)
                 return
             }
         }
@@ -3180,7 +3287,7 @@ final class AppModel: TuningHost {
     /// its end, as the menu's lengths are: never itself.
     func continueClip(method: ContinueMethod = .reference) {
         guard let clip = currentClip, clip.kind == "video" else { return }
-        if clip.isComposition || method == .through {
+        if clip.isComposition || method.throughEnd {
             continueClip(seconds: 0, method: method)
             return
         }
@@ -3193,7 +3300,10 @@ final class AppModel: TuningHost {
     /// Ref2VA carrying them beside its pixels, or FL2VA guided THROUGH
     /// its end by them, its last frames redone.
     enum ContinueMethod: Equatable {
-        case reference, latents, through
+        case reference, latents, through, cleaned
+
+        /// Through the clip's end (FL2VA's guide), cleaned or not.
+        var throughEnd: Bool { self == .through || self == .cleaned }
     }
 
     /// The model that continues a clip through its end (FL2VA's guide):
@@ -3268,6 +3378,7 @@ final class AppModel: TuningHost {
         for j in list.indices {
             list[j].continues = list[j].id == id
             list[j].fromLatents = list[j].continues && method != .reference
+            list[j].cleaned = list[j].continues && method == .cleaned
         }
         withAnimation(Self.motion) { promptAttachments = list }
         if modality != .video {
@@ -3275,7 +3386,7 @@ final class AppModel: TuningHost {
         }
         // Through its end: the model that is guided so, chosen. Else a
         // reference model's: another chosen gives way to Auto.
-        if method == .through, let t = throughModel {
+        if method.throughEnd, let t = throughModel {
             modelChoice = t.id
         } else if videoChoicePinned {
             modelChoice = ""
@@ -3312,10 +3423,15 @@ final class AppModel: TuningHost {
     /// Make pictures or clips. A model chosen for the other kind gives way
     /// to Auto.
     func setModality(_ m: Modality) {
-        guard m != modality, m != .agent || agentEnabled else { return }
-        // An agent at work holds the project: the box is its alone.
-        guard m == .agent || !agentHolds else { return }
+        guard m != modality, targetEnabled(m) else { return }
+        // An agent at work holds the project: the box is its alone -- and
+        // Procedural's, which adds to Assets and changes nothing.
+        guard m.isAgentic || !agentHolds else { return }
         swapPromptWords(from: modality, to: m)
+        // Procedural and the Agent each keep their own sessions and tabs.
+        if modality.isAgentic || m.isAgentic {
+            swapAgentTarget(from: modality, to: m)
+        }
         otherShapes[modality] = outputShape
         outputShape = otherShapes[m] ?? OutputShape.defaults(for: m)
         modality = m
@@ -3339,7 +3455,7 @@ final class AppModel: TuningHost {
                                assetId: promptAssetId, name: promptName)
         // An agent's box emptied by its Start: its last request is what
         // it was left with.
-        if from == .agent, prompt.isEmpty, let sent = agentWordsSent {
+        if from.isAgentic, prompt.isEmpty, let sent = agentWordsSent {
             left = sent
         }
         promptWordsBy[a] = left
@@ -5046,6 +5162,14 @@ final class AppModel: TuningHost {
                 return String(localized: "Describe the picture — or drop in pictures and say what to change")
             }
             return String(localized: "Describe the picture — subject, setting, light, style")
+        case .procedural:
+            if agent?.listening == true {
+                return String(localized: "Say what to change — another palette, slower, a loop")
+            }
+            if let a = agent, !a.ended {
+                return String(localized: "Say more — it reads it at its next turn")
+            }
+            return String(localized: "Describe what to draw — “a starfield warping into hyperspace”, “these photos as a turning cube” — drop in pictures, clips or a program to use")
         case .agent:
             if agent?.listening == true {
                 if agentSkills != "full" {
@@ -5453,6 +5577,31 @@ final class AppModel: TuningHost {
         (upscalers, upscalerKinds) = core.upscaleSettings()
     }
 
+    /// An interpolator's option set (Settings › Temporal Resampling),
+    /// kept by the core for every later interpolation -- valtzctl's too.
+    func setInterpolateOption(_ model: String, _ key: String, _ value: Any) {
+        guard let core else { return }
+        let r = core.setInterpolateTuning(model, [key: value])
+        if !r.ok { flash(r.message, level: .error) }
+        (interpolators, interpolatorPick) = core.interpolateSettings()
+    }
+
+    func resetInterpolator(_ model: String) {
+        guard let core else { return }
+        let r = core.setInterpolateTuning(model, [:], reset: true)
+        if !r.ok { flash(r.message, level: .error) }
+        (interpolators, interpolatorPick) = core.interpolateSettings()
+    }
+
+    /// The interpolator Render Interpolated runs ("" Auto).
+    func useInterpolator(_ model: String) {
+        guard let core else { return }
+        let r = core.useInterpolator(model)
+        if !r.ok { flash(r.message, level: .error) }
+        (interpolators, interpolatorPick) = core.interpolateSettings()
+        assetOperations = core.assetOperations()
+    }
+
     /// The upscaler Render Upscaled runs for `kind` ("" Auto), kept by
     /// the core -- valtzctl's `upscaler use` too.
     func useUpscaler(kind: String, _ model: String) {
@@ -5517,8 +5666,8 @@ final class AppModel: TuningHost {
     /// for it (view only ending, the timeline going) takes the keyboard
     /// as it appears.
     func focusPrompt(_ m: Modality) {
-        guard m != .agent || agentEnabled, closingTasks == nil,
-              fleetServing == nil, m == .agent || !agentHolds
+        guard targetEnabled(m), closingTasks == nil,
+              fleetServing == nil, m.isAgentic || !agentHolds
         else { return }
         if screen != .editor { show(.editor) }
         setViewOnly(false)
@@ -6114,10 +6263,26 @@ final class AppModel: TuningHost {
     /// its words are the prompt's "regenerate_prompt:" segment, else made
     /// from the prompt (core Controller::refine_words_).
     var refinesOnAnotherModel: Bool {
-        regenerateDraft != nil &&
+        regenerateDraft != nil && !refinerInContext &&
             runningModelInfo?.capabilities.contains("reference-to-video")
             == true
     }
+
+    /// The refiner a clip past 768P is regenerated by, as Settings ›
+    /// Upscaling's High-Res Pass With settles it (core refiner_of_).
+    var runningRefiner: UpscalerSettings? {
+        let id = upscalerKinds.first { $0.kind == "regenerate" }?.runs ?? ""
+        return upscalers.first { $0.id == id }
+    }
+
+    /// Its name, for the card's words.
+    var refinerName: String {
+        runningRefiner?.name ?? "Open-H3-Regenerate-2K"
+    }
+
+    /// It holds the draft IN CONTEXT (Open-H3-Regenerate-2K-IC): on
+    /// Ref2VA, with the draft as its reference, words its own.
+    var refinerInContext: Bool { runningRefiner?.inContext ?? false }
 
     /// That refiner is here: installed with its latent upscaler and its
     /// model, on an engine that has the latent upscaler (Settings ›
@@ -6167,7 +6332,24 @@ final class AppModel: TuningHost {
     /// A refiner is here: installed with its latent upscaler and its
     /// model, on an engine that has the latent upscaler.
     func refinerReady(_ r: CatalogModel.Regenerate) -> Bool {
-        upscalers.first { $0.id == r.with }?.ready ?? false
+        r.with.contains { id in
+            upscalers.first { $0.id == id }?.ready ?? false
+        }
+    }
+
+    /// The card's word for a clip drafted at `a` and regenerated at `b`
+    /// -- by the refiner that runs: in context, on another model (a
+    /// Ref2VA draft on FL2VA), or plainly. The card's, an Atlas node's.
+    func regenerateWords(_ a: String, _ b: String,
+                         references: Bool) -> String {
+        let name = refinerName
+        if refinerInContext {
+            return String(localized: "Drafted at \(a), then regenerated at \(b) by \(name), the draft held beside it as a reference -- its faces, mouths and lettering kept: slower than the plain refine.")
+        }
+        if references {
+            return String(localized: "Drafted at \(a) from the references, then regenerated at \(b) by \(name) on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line.")
+        }
+        return String(localized: "Drafted at \(a), then regenerated at \(b) by \(name): several times the draft's time.")
     }
 
     /// Past the clip model's trained size with its refiner NOT here: made
@@ -6198,10 +6380,7 @@ final class AppModel: TuningHost {
         if let draft = regenerateDraft {
             let a = "\(String(draft.width)) × \(String(draft.height))"
             let b = "\(String(d.width)) × \(String(d.height))"
-            if refinesOnAnotherModel {
-                return String(localized: "Drafted at \(a) from the references, then regenerated at \(b) by Open-H3-Regenerate-2K on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line.")
-            }
-            return String(localized: "Drafted at \(a), then regenerated at \(b) by Open-H3-Regenerate-2K: several times the draft's time.")
+            return regenerateWords(a, b, references: refinesOnAnotherModel)
         }
         if regenerateOffered != nil, let r = videoRefiner {
             let b = "\(String(d.width)) × \(String(d.height))"
@@ -6385,7 +6564,7 @@ final class AppModel: TuningHost {
         if inVoiceOver { return false }
         let words =
             !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if activeModality == .agent {
+        if activeModality.isAgentic {
             return words && projectId != nil
         }
         // A RefMod is made of the row's media; its words are optional.
@@ -6458,13 +6637,13 @@ final class AppModel: TuningHost {
         // said once the task is begun. Read again now -- a file may have
         // gone since the panel was last open.
         startLeftOut = []
-        if preference == .custom, activeModality != .agent {
+        if preference == .custom, !activeModality.isAgentic {
             refreshTuning()
             startLeftOut = leftOutWeights(tuningInfo)
         }
         // The stage shows the work: a picture clicked in the row goes.
         clearReferenceFocus()
-        if activeModality == .agent {
+        if activeModality.isAgentic {
             startAgent()
             return
         }
@@ -6596,6 +6775,7 @@ final class AppModel: TuningHost {
             }
             req["continue"] = id
             if g.fromLatents { req["continue_latents"] = true }
+            if g.cleaned { req["clean_guide"] = true }
             req["inline"] = inlineAssets
         } else if let k = keyframes {
             // As each looks: its modified copy, rendered by the core. Its
@@ -6871,6 +7051,16 @@ final class AppModel: TuningHost {
             }
             return
         }
+        if t.kind == "interpolate" {
+            if let src = t.source,
+               let a = asset(id: src) {
+                if stageAssetId != src { setActive(a) }
+                if let l = t.layer { selectLayer(l) }
+                interpolateJob = job
+                withAnimation(Self.motion) { openPanel = .trim }
+            }
+            return
+        }
         if t.kind == "upscale" {
             if let src = t.source,
                let a = asset(id: src) {
@@ -6930,6 +7120,26 @@ final class AppModel: TuningHost {
         generationJob = nil
         generationStarted = nil
         generationEnds = nil
+    }
+
+    /// A PROGRAM being drawn (DESIGN §4t), watched: its frames on the
+    /// stage as they come -- a Procedural session's step, Render Again.
+    func watchProgram(_ job: String, clip: Bool, asked: Bool = false) {
+        if taskContexts[job] == nil {
+            guard jobs[job]?.live ?? true else { return }
+            var ctx = TaskContext(kind: clip ? .video : .image, base: nil)
+            ctx.program = true
+            ctx.asked = asked
+            ctx.started = jobs[job]?.started
+            taskContexts[job] = ctx
+        }
+        programJobsWatched.insert(job)
+        guard generationJob != job else { return }
+        if !tasks.contains(where: { $0.job == job }) { reloadTasks() }
+        watchTask(job)
+        if !Self.keepsViewState {
+            print("snapshot: program-watch job=\(job) clip=\(clip) asked=\(asked) watched=\(generationJob == job)")
+        }
     }
 
     /// One of the AGENT's shots (DESIGN §9b) kept as a task the stage can
@@ -7650,6 +7860,12 @@ final class AppModel: TuningHost {
         /// stage follows the agent, laid on its timeline by the core --
         /// nothing here lands it, refuses it for memory or stops it.
         var agents = false
+        /// A PROGRAM drawn (DESIGN §4t): its frames the stage's preview
+        /// as they come, the drawing viewed as it lands -- the core keeps
+        /// it in Assets, nothing here lands it. `asked`: by the person
+        /// (Render Again), not a session: its failure said here.
+        var program = false
+        var asked = false
     }
 
     private struct StageAtStart {
@@ -7957,7 +8173,7 @@ final class AppModel: TuningHost {
 
     var assistantEnabled: Bool {
         // The Agent tab's prompt is a request: nothing to enhance.
-        guard enhanceJob == nil, activeModality != .agent, !inVoiceOver
+        guard enhanceJob == nil, !activeModality.isAgentic, !inVoiceOver
         else { return false }
         return prompt.isEmpty ? outlineModel != nil : assistantReady
     }
@@ -11206,8 +11422,10 @@ final class AppModel: TuningHost {
         // one tab again, Valtz's tools its.
         agent = nil
         agentWriting = ""
-        agentTabs = [AgentTab(skills: "full")]
+        agentTabs = [AgentTab(skills: modality == .procedural ? "procedural"
+                                                               : "full")]
         agentTabIndex = 0
+        agentTargets = [:]
         agentFollows = true
         referenceThumbs = [:]
         promptMentions = []
@@ -11407,6 +11625,7 @@ final class AppModel: TuningHost {
         case "summarize": String(localized: "Summarize Video")
         case "separate": String(localized: "Separate Vocals and Accompaniment")
         case "upscale": String(localized: "Render Upscaled")
+        case "interpolate": String(localized: "Render Interpolated")
         case "layer.group": String(localized: "Group Layers")
         case "layer.ungroup": String(localized: "Ungroup Layers")
         case "layer.folder-rename": String(localized: "Rename Layer Folder")
@@ -12125,8 +12344,11 @@ final class AppModel: TuningHost {
             // Refused for memory: its numbers and what to change stay over
             // the prompt, rather than a line that goes in six seconds.
             let task = taskContexts[job] != nil
-            if taskContexts[job]?.agents == true {
-                // The agent's shot: the agent's to tell, its step says it.
+            if taskContexts[job]?.agents == true
+                || (taskContexts[job]?.program == true
+                    && taskContexts[job]?.asked == false) {
+                // The agent's shot, a session's program: the agent's to
+                // tell, its step says it.
             } else if job == generationJob || job == upscaleJob,
                let f = MemoryFailure(ev.payload, message: msg) {
                 withAnimation(Self.motion) { memoryFailure = f }
@@ -12136,8 +12358,18 @@ final class AppModel: TuningHost {
                 flash(title.isEmpty ? msg
                       : String(localized: "\(title): \(msg)"), level: .error)
             } else if job == generationJob || job == enhanceJob
-                || job == upscaleJob || exportJobs[job] != nil {
+                || job == upscaleJob || job == interpolateJob
+                || exportJobs[job] != nil {
                 flash(msg, level: .error)
+            }
+        }
+        // An interpolation ended: its layer shows the clip at its new
+        // rate (the core swapped it; its look as it was).
+        if job == interpolateJob {
+            withAnimation(Self.motion) { interpolateJob = nil }
+            if ev.kind == "job.finished" {
+                syncAfterHistory()
+                flash(String(localized: "Interpolated: the layer shows its clip with the frames in between made"))
             }
         }
         // An upscale ended: its layer shows the result (the core swapped
@@ -12181,6 +12413,34 @@ final class AppModel: TuningHost {
                 enhanceTab = nil
                 enhanceDraft = ""
             }
+        }
+        // A PROGRAM drawn (DESIGN §4t): in Assets already, viewed as it
+        // lands -- watched, or the Procedural tab shown; failed or
+        // stopped, the stage back as it was.
+        if let ctx = taskContexts[job], ctx.program {
+            let watched = job == generationJob
+            if !Self.keepsViewState {
+                print("snapshot: program-landed job=\(job) \(ev.kind) watched=\(watched) previews=\(ctx.step)/\(ctx.steps) preview=\(ctx.preview.map { "\($0.width)x\($0.height)" } ?? "-")")
+            }
+            let back = watchReturn.flatMap { asset(id: $0) }
+            taskContexts[job] = nil
+            if let a = ev.payload["asset"] as? String { taskThumbs[a] = nil }
+            if watched { unwatchTask() }
+            reloadAssets()
+            if ev.kind == "job.finished",
+               watched || activeModality == .procedural,
+               let id = ev.payload["asset"] as? String,
+               let a = asset(id: id) {
+                if viewedAsset == a.id {
+                    putOnStage(a)
+                    askAutoplay(a.id)
+                } else {
+                    steerForAgent { viewAsset(a) }
+                }
+            } else if watched {
+                if let back { putOnStage(back) } else { clearStage() }
+            }
+            return
         }
         // A task Start began: its result placed, watched or not.
         // The agent's shot: laid on its timeline by the core, the stage

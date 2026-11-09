@@ -21,7 +21,7 @@ struct CapName {
   const char* label;
 };
 
-constexpr std::array<CapName, 20> kCapNames = {{
+constexpr std::array<CapName, 21> kCapNames = {{
   {Capability::TextToImage, "text-to-image", "Text to image"},
   {Capability::ImageEdit, "image-edit", "Image edit"},
   {Capability::TextToVideo, "text-to-video", "Text to video"},
@@ -42,6 +42,8 @@ constexpr std::array<CapName, 20> kCapNames = {{
   {Capability::AudioSeparate, "audio-separate", "Separate audio"},
   {Capability::MicroAgent, "micro-agent", "Micro agent"},
   {Capability::MakeRefMod, "make-refmod", "Make a RefMod"},
+  {Capability::InterpolateVideo, "interpolate-video",
+   "Frame interpolation"},
 }};
 
 }
@@ -159,6 +161,9 @@ read_entry(const Json& m, const Contributor& who, ModelEntry& e,
   e.file = jget<std::string>(m, "file", "");
   e.fetch_variant = jget<std::string>(m, "fetch_variant", "");
   e.package = jget<std::string>(m, "package", "");
+  if (const Json src = jget(m, "source", Json()); src.is_object()) {
+    e.source = src;
+  }
   e.family = jget<std::string>(m, "family", "");
   e.role = jget<std::string>(m, "role", "");
   for (const auto& c : jget(m, "capabilities",
@@ -617,6 +622,7 @@ feature_capabilities(std::string_view f)
   if (f == "micro-agent") { return {C::MicroAgent}; }
   if (f == "video-upscale") { return {C::UpscaleVideo}; }
   if (f == "image-upscale") { return {C::UpscaleImage}; }
+  if (f == "frame-interpolation") { return {C::InterpolateVideo}; }
   return {};
 }
 
@@ -750,7 +756,12 @@ to_json(Json& j, const ModelEntry& e)
   if (const Json rg = jget(jget(e.engine, "vpipe", Json::object()),
                            "regenerate", Json());
       rg.is_object() && rg.contains("with")) {
-    j["regenerate"] = {{"with", jget<std::string>(rg, "with", "")},
+    // Its refiners, Auto's order (the plain refine, then in context).
+    Json with = jget(rg, "with", Json());
+    if (!with.is_array()) {
+      with = Json::array({with});
+    }
+    j["regenerate"] = {{"with", std::move(with)},
                        {"above", jget(rg, "above", 768)},
                        {"draft", jget(rg, "draft", 768)}};
   }

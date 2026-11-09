@@ -5,6 +5,7 @@
 
 #include "engine/vpipe/encoding-cache.h"
 #include "engine/vpipe/graph-builder.h"
+#include "engine/vpipe/guide-clean.h"
 #include "engine/vpipe/job-progress.h"
 #include "valtz/cache/cache-store.h"
 #include "valtz/models/catalog.h"
@@ -632,6 +633,35 @@ TEST(graph_builder, a_picture_upscale_runs_as_tuned)
   CHECK(!jget(gen, "sage_attn", true));
   CHECK(jget(gen, "sol_tau", 0.0) == 1.5);
   CHECK(!gen.contains("steps"));
+
+  // Its own config (vosr-model-config) on generate's model_config, and
+  // the colour fix's picture -- the resample's, which the restorer saw --
+  // on the decode's color_reference: the release's fix (vpipe 3f640a2c;
+  // unwired, the decode went out uncorrected).
+  const Json* cfg = find_stage(g->spec, "config");
+  REQUIRE(cfg != nullptr);
+  CHECK(jget<std::string>(*cfg, "type", "") == "vosr-model-config");
+  CHECK(src_of(find_stage(g->spec, "generate"), 7) == "config");
+  REQUIRE((*find_stage(g->spec, "decode"))["iports"].size() == 3);
+  CHECK(src_of(find_stage(g->spec, "decode"), 2) == "upsample");
+  // Settings › Upscaling's values: the colour fix, the tiles.
+  job.params["tuning"] = {{"color_fix", "adain"}, {"tiles", "trained"},
+                          {"tile_overlap", 64}};
+  g = vp::build_upscale_image(job);
+  REQUIRE_OK(g);
+  Json c = config_of(find_stage(g->spec, "config"));
+  CHECK(jget<std::string>(c, "color_fix", "") == "adain");
+  CHECK(jget(c, "tile_overlap", 0) == 64);
+  CHECK(!c.contains("tile_size"));  // the trained grid: vpipe's default
+  CHECK(!c.contains("tiles"));
+  job.params["tuning"] = {{"color_fix", "none"}, {"tiles", "one_pass"},
+                          {"tile_overlap", 64}};
+  g = vp::build_upscale_image(job);
+  REQUIRE_OK(g);
+  c = config_of(find_stage(g->spec, "config"));
+  CHECK(jget<std::string>(c, "color_fix", "") == "none");
+  CHECK(jget(c, "tile_size", -1) == 0);
+  CHECK(!c.contains("tile_overlap"));
 }
 
 TEST(graph_builder, a_video_summary_reads_sparse)
@@ -2517,6 +2547,202 @@ TEST(graph_builder, an_fl2va_continuation_is_guided_through_the_tail)
   CHECK(!vp::build_video(j, pic, {}, {}, nullptr, &kept).ok());
 }
 
+// RENDER INTERPOLATED (DESIGN §4u): a clip's span fed 8-bit through a
+// valtz-source, temporal-resample's `rife` at the rate asked -- the
+// model's flownet.pkl its hf_dir, the flow scale's choice its
+// rife_scale, the scene cut as kept -- written at that rate, as many
+// frames as keep its length; its sound joined from the source.
+TEST(graph_builder, a_clip_is_interpolated_by_rife)
+{
+  JobSpec j = job_for("rife-4.25", kOpInterpolateVideo);
+  j.model.dir = "/m/hzwer/Practical-RIFE/4.25/flownet.pkl";
+  j.params = {{"fps", 60.0}, {"first", 10}, {"count", 124},
+              {"tuning", {{"flow_scale", "half"},
+                          {"scene_threshold", 0.3}}}};
+  JobInput in;
+  in.role = "source";
+  in.path = "/p/clip.mov";
+  in.info.type = media::MediaType::Video;
+  in.info.frame.width = 960;
+  in.info.frame.height = 544;
+  in.info.frame_rate = {24, 1};
+  in.info.frame_count = 200;
+  in.info.has_audio = true;
+  j.inputs = {in};
+  auto g = vp::build_interpolate_video(j);
+  REQUIRE_OK(g);
+  const Json rs = config_of(find_stage(g->spec, "resample"));
+  CHECK(jget<std::string>(*find_stage(g->spec, "resample"), "type", "") ==
+        "temporal-resample");
+  CHECK(src_of(find_stage(g->spec, "resample"), 0) == "read");
+  CHECK(jget<std::string>(rs, "method", "") == "rife");
+  CHECK(jget(rs, "output_fps", 0.0) == 60.0);
+  CHECK(jget(rs, "input_fps", 0.0) == 24.0);
+  CHECK(jget<std::string>(rs, "hf_dir", "") ==
+        "/m/hzwer/Practical-RIFE/4.25/flownet.pkl");
+  CHECK(jget(rs, "rife_scale", 0.0) == 0.5);
+  CHECK(jget(rs, "scene_threshold", 0.0) == 0.3);
+  CHECK(!rs.contains("flow_scale"));
+  const Json w = config_of(find_stage(g->spec, "write"));
+  CHECK(jget(w, "fps", 0.0) == 60.0);
+  CHECK(jget(w, "frames", 0) == 310);  // 124 at 24 -> 60, its length
+  REQUIRE(g->movie);
+  CHECK(g->movie->stage == "read");
+  CHECK(g->movie->first == 10 && g->movie->count == 124);
+  CHECK(g->movie->sample == media::Sample::U8);
+  CHECK(jget(g->movie->tags, "fps_num", 0) == 24);
+  CHECK(g->audio_part == fs::path("/p/clip.mov"));
+  CHECK(std::abs(g->audio_start - 10 / 24.0) < 1e-9);
+  CHECK(std::abs(g->audio_duration - 124 / 24.0) < 1e-9);
+  // Auto's scale: the release's advice, vpipe's 0.
+  j.params["tuning"] = Json::object();
+  auto a = vp::build_interpolate_video(j);
+  REQUIRE_OK(a);
+  CHECK(jget(config_of(find_stage(a->spec, "resample")), "rife_scale",
+             -1.0) == 0.0);
+  j.params.erase("fps");
+  CHECK(!vp::build_interpolate_video(j).ok());
+}
+
+// A continuation's GUIDE CLEANED (DESIGN §4e): its two graphs of the
+// engine's own -- the kept latents' window decoded by the video VAE, its
+// frames stacked into one f16 tensor; the cleaned frames fed from memory
+// through a valtz-source, stacked, encoded, their latents saved.
+TEST(graph_builder, a_guides_frames_are_decoded_and_encoded_for_cleaning)
+{
+  JobSpec d = job_for("minimax-h3-fl2va", std::string(vp::kOpCleanDecode));
+  d.params = {{"latent", "/tmp/out/j-continue_latent.vpt"}, {"start", 35},
+              {"count", 7}, {"width", 608}, {"height", 896}};
+  auto g = vp::build_clean_decode(d);
+  REQUIRE_OK(g);
+  CHECK(g->output == fs::path("/tmp/out") / (d.id.str() + "-frames.vpt"));
+  const Json lt = config_of(find_stage(g->spec, "latent"));
+  CHECK(jget<std::string>(lt, "path", "") ==
+        "/tmp/out/j-continue_latent.vpt");
+  CHECK(jget(lt, "axis", 0) == 1 && jget(lt, "start", 0) == 35 &&
+        jget(lt, "count", 0) == 7);
+  CHECK(jget<std::string>(*find_stage(g->spec, "decode"), "type", "") ==
+        "vae-decode");
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "decode")), "dtype",
+                          "") == "f16");
+  CHECK(src_of(find_stage(g->spec, "decode"), 0) == "latent");
+  CHECK(src_of(find_stage(g->spec, "stack"), 0) == "decode");
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "stack")), "mode",
+                          "") == "video");
+  CHECK(src_of(find_stage(g->spec, "save"), 0) == "stack");
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "save")), "path",
+                          "") == g->output.string());
+  CHECK(g->frames_stage.empty());
+  d.params.erase("latent");
+  CHECK(!vp::build_clean_decode(d).ok());
+
+  JobSpec e = job_for("minimax-h3-fl2va", std::string(vp::kOpCleanEncode));
+  e.params = {{"frames", "/tmp/out/cleaned-frames.vpt"}, {"count", 22},
+              {"width", 608}, {"height", 896}};
+  auto c = vp::build_clean_encode(e);
+  REQUIRE_OK(c);
+  CHECK(c->frames_stage == "frames");
+  CHECK(c->frames_file == fs::path("/tmp/out/cleaned-frames.vpt"));
+  CHECK(jget<std::string>(*find_stage(c->spec, "frames"), "type", "") ==
+        valtz::exchange::kSourceType);
+  CHECK(src_of(find_stage(c->spec, "stack"), 0) == "frames");
+  const Json* enc = find_stage(c->spec, "encode");
+  REQUIRE(enc);
+  CHECK(jget<std::string>(*enc, "type", "") == "vae-encode");
+  CHECK(src_of(enc, 0) == "stack" && src_of(enc, 1) == "model-select");
+  CHECK(src_of(find_stage(c->spec, "save"), 0) == "encode");
+  CHECK(c->output == fs::path("/tmp/out") / (e.id.str() + "-latent.vpt"));
+}
+
+// The cleaning's arithmetic (guide-clean.h): the ramp's weights by where
+// each latent frame's frames lie; the kept and cleaned latents mixed by
+// them, through vpipe's tensor files; a restored frame's detail on its
+// own large-scale tones.
+TEST(graph_builder, a_cleaned_guide_is_ramped_in_and_keeps_its_tones)
+{
+  // A 22-frame guide: [1, 4, 4, 4, 4] then [1, 4], by their middles.
+  const auto w = vp::guide_ramp_weights(7);
+  REQUIRE(w.size() == 7);
+  const double mids[] = {0, 2.5, 6.5, 10.5, 14.5, 17, 19.5};
+  for (std::size_t i = 0; i < 7; ++i) {
+    CHECK(std::abs(w[i] - mids[i] / 19.5) < 1e-9);
+  }
+  CHECK(vp::guide_ramp_weights(1) == std::vector<double>{1.0});
+
+  const fs::path dir = test::temp_dir("guide-clean");
+  auto write = [&](const fs::path& p, std::vector<std::int64_t> dims,
+                   float v, std::string sideband) {
+    vp::TensorFile t;
+    t.dims = std::move(dims);
+    t.bytes.resize(static_cast<std::size_t>(t.count()) * 4);
+    auto* f = reinterpret_cast<float*>(t.bytes.data());
+    for (std::int64_t i = 0; i < t.count(); ++i) {
+      f[i] = v;
+    }
+    t.sideband = std::move(sideband);
+    return vp::write_tensor_file(p, t);
+  };
+  // Kept: 2 channels, 12 latent frames of 0; the window from 5.
+  REQUIRE_OK(write(dir / "kept.vpt", {2, 12, 1, 3}, 0.0f, "{\"k\":1}"));
+  REQUIRE_OK(write(dir / "clean.vpt", {2, 7, 1, 3}, 1.0f,
+                   "{\"frames\":22}"));
+  auto back = vp::read_tensor_file(dir / "clean.vpt");
+  REQUIRE_OK(back);
+  CHECK(back->dims == std::vector<std::int64_t>({2, 7, 1, 3}));
+  CHECK(back->sideband == "{\"frames\":22}");
+  REQUIRE_OK(vp::ramp_guide(dir / "kept.vpt", 5, dir / "clean.vpt",
+                            dir / "guide.vpt", true));
+  auto r = vp::read_tensor_file(dir / "guide.vpt");
+  REQUIRE_OK(r);
+  CHECK(r->dims == std::vector<std::int64_t>({2, 7, 1, 3}));
+  CHECK(r->sideband == "{\"frames\":22}");
+  const auto* rf = reinterpret_cast<const float*>(r->bytes.data());
+  for (std::int64_t c = 0; c < 2; ++c) {
+    for (std::int64_t t = 0; t < 7; ++t) {
+      for (std::int64_t i = 0; i < 3; ++i) {
+        CHECK(std::abs(rf[(c * 7 + t) * 3 + i] - w[t]) < 1e-6);
+      }
+    }
+  }
+  // No ramp: the cleaned alone. A window off the kept ones' end refused.
+  REQUIRE_OK(vp::ramp_guide(dir / "kept.vpt", 5, dir / "clean.vpt",
+                            dir / "all.vpt", false));
+  auto all = vp::read_tensor_file(dir / "all.vpt");
+  REQUIRE_OK(all);
+  CHECK(reinterpret_cast<const float*>(all->bytes.data())[0] == 1.0f);
+  CHECK(!vp::ramp_guide(dir / "kept.vpt", 6, dir / "clean.vpt",
+                        dir / "off.vpt", true)
+             .ok());
+
+  // A flat 0.3 blurred stays 0.3; a restored frame's checker of +-0.05
+  // about 0.8 keeps its checker on the source's 0.3.
+  const int W = 64, H = 48;
+  const std::size_t plane = static_cast<std::size_t>(W) * H;
+  std::vector<float> flat(plane, 0.3f);
+  vp::gaussian_blur(flat, W, H, 24);
+  for (const float v : flat) {
+    CHECK(std::abs(v - 0.3f) < 1e-5f);
+  }
+  std::vector<float> detail(3 * plane), tone(3 * plane, 0.3f);
+  for (std::size_t c = 0; c < 3; ++c) {
+    for (int y = 0; y < H; ++y) {
+      for (int x = 0; x < W; ++x) {
+        detail[c * plane + static_cast<std::size_t>(y) * W + x] =
+            0.8f + ((x + y) % 2 ? 0.05f : -0.05f);
+      }
+    }
+  }
+  vp::tone_transfer(detail, tone, W, H, 24);
+  double mean = 0;
+  for (const float v : detail) {
+    mean += v;
+  }
+  mean /= static_cast<double>(detail.size());
+  CHECK(std::abs(mean - 0.3) < 0.002);
+  const std::size_t mid = static_cast<std::size_t>(H / 2) * W + W / 2;
+  CHECK(std::abs(detail[mid] - detail[mid + 1]) > 0.09f);
+}
+
 // FL2VA from a picture: the picture is fed at its own size, cropped with
 // Lanczos to EXACTLY the clip's frame (vpipe drops an anchor of another
 // size and the clip quietly becomes text-to-video), VAE-encoded and
@@ -3076,6 +3302,175 @@ TEST(graph_builder, a_clip_is_regenerated_as_an_upscale)
   JobSpec bare = j;
   bare.model.latent_upscaler.clear();
   CHECK(!vp::build_regenerate_video(bare).ok());
+}
+
+// IN CONTEXT (Open-H3-Regenerate-2K-IC, DESIGN §4q; vpipe c8fc15e5's
+// minimax-h3-regenerate-2k-ic graph): an FL2VA clip past 768P drafted as
+// ever, the draft decoded whole for Ref2VA's reference encoder -- its
+// pixels to the vision tower, its latent folded onto them
+// (`attach_latent` [2]: one latent for the reference and the upscaler)
+// -- and the enlarged latent regenerated beside it on Ref2VA, under
+// HyperFlow, LMS Sharp and the IC LoRA in that order, at the release's
+// shifts and held timesteps, its prompt the task then the scene. The
+// stage's preview reads the same decode. Render Upscaled the same,
+// the clip as it was read its reference, no conditioner of words.
+TEST(graph_builder, a_clip_is_regenerated_in_context)
+{
+  JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
+  const JobSpec ref2va = job_for("minimax-h3-ref2va", kOpGenerateVideo);
+  const Json spec = {
+      {"in_context", true},
+      {"steps", 3},
+      {"posterior_seed", 0},
+      {"config", {{"video_shift", 12.0}, {"audio_shift", 3.0},
+                  {"condition_timestep", 0.999},
+                  {"condition_audio_timestep", 1.0}}},
+      {"task", "Enhance <Video 1> into a high-quality version of the "
+               "same video."}};
+  j.params = {{"prompt", "<Picture 1> walks along the shore"},
+              {"width", 2560}, {"height", 1440}, {"frames", 39},
+              {"steps", 8}, {"seed", 7},
+              {"draft", {{"width", 1376}, {"height", 768}}},
+              {"regenerate", "open-h3-regenerate-2k-ic"},
+              {"regenerate_prompt", "A woman walks along the shore."},
+              {"regenerate_tuning", {{"sage_attn", true}, {"vdn", true}}},
+              {"regenerate_adapters",
+               Json::array({"/m/hf/hyperflow.st", "/m/ic/sharp.st"})},
+              {"regenerate_spec", spec}};
+  j.model.regenerate_lora = "/m/ic/lora/open_h3_regenerate_2k_ic_lora.st";
+  j.model.latent_upscaler = "/m/regen/up.st";
+  j.model.regenerate_base = "/models/minimax-h3-ref2va";
+  j.model.regenerate_base_engine = ref2va.model.engine;
+  j.model.regenerate_base_encoder = "/m/ref2va-encoder";
+  j.model.regenerate_branch = "/m/vdn";
+  vp::RefImage first{"/tmp/first.png", {1920, 1080}, false, true};
+  auto g = vp::build_video(j, first);
+  REQUIRE_OK(g);
+  // The draft, decoded whole -- the released decoder, 8-bit -- and
+  // stacked into one clip for the reference encoder.
+  const Json* ddec = find_stage(g->spec, "draft-decode");
+  REQUIRE(ddec);
+  CHECK(src_of(ddec, 0) == "generate-video" && oport_of(ddec, 0) == 0);
+  CHECK(!config_of(ddec).contains("fast_decoder"));
+  const Json* clip = find_stage(g->spec, "draft-clip");
+  REQUIRE(clip);
+  CHECK(jget<std::string>(*clip, "type", "") == "temporal-stack");
+  CHECK(src_of(clip, 0) == "draft-decode");
+  CHECK(jget<std::string>(config_of(clip), "mode", "") == "video");
+  // The preview from that decode: no second one.
+  int decodes = 0;
+  for (const auto& st : g->spec["stages"]) {
+    decodes += jget<std::string>(st, "id", "") == "draft-decode" ? 1 : 0;
+  }
+  CHECK(decodes == 1);
+  CHECK(src_of(find_stage(g->spec, "draft-stack"), 0) == "draft-decode");
+  // The reference: Ref2VA's encoder, the words the task's then the
+  // scene's -- never the draft's own tags.
+  const Json* words = find_stage(g->spec, "regenerate-prompt");
+  REQUIRE(words);
+  CHECK(jget<std::string>(config_of(words), "text", "") ==
+        "Enhance <Video 1> into a high-quality version of the same video."
+        "\n\nScene description: A woman walks along the shore.");
+  const Json* refs = find_stage(g->spec, "regenerate-references");
+  REQUIRE(refs);
+  CHECK(jget<std::string>(*refs, "type", "") == "video-ref-encoder");
+  CHECK(src_of(refs, 0) == "regenerate-prompt");
+  CHECK(src_of(refs, 1) == "regenerate-model-select");
+  CHECK(src_of(refs, 2) == "draft-clip");
+  CHECK(src_of(refs, 3) == "generate-video" && oport_of(refs, 3) == 0);
+  CHECK(config_of(refs)["attach_latent"] == Json::array({2}));
+  CHECK(jget(config_of(refs), "frames", 0) == 39);
+  CHECK(jget<std::string>(config_of(refs), "encoder_dir", "") ==
+        "/m/ref2va-encoder");
+  CHECK(jget<std::string>(config_of(refs), "unload_when_idle", "") ==
+        "destroy");
+  CHECK(jget<std::string>(
+            config_of(find_stage(g->spec, "regenerate-model-select")),
+            "hf_dir", "") == "/models/minimax-h3-ref2va");
+  // No conditioner of words: the references carry them.
+  CHECK(!find_stage(g->spec, "regenerate-conditioner"));
+  // Its config: the release's, its adapters first, its LoRA last; no
+  // start, no VDN.
+  const Json c = config_of(find_stage(g->spec, "regenerate-config"));
+  CHECK(jget<std::string>(c, "lora", "") == "/m/hf/hyperflow.st");
+  CHECK(jget<std::string>(c, "lora2", "") == "/m/ic/sharp.st");
+  CHECK(jget<std::string>(c, "lora3", "") ==
+        j.model.regenerate_lora.string());
+  CHECK(jget(c, "lora3_scale", 0.0) == 1.0);
+  CHECK(jget(c, "video_shift", 0.0) == 12.0);
+  CHECK(jget(c, "condition_timestep", 0.0) == 0.999);
+  CHECK(jget(c, "condition_audio_timestep", 0.0) == 1.0);
+  CHECK(!c.contains("refine_start_sigma"));
+  CHECK(!c.contains("linear_branch"));
+  // The refine: the references' rows on 7 and 8, the enlarged latent on
+  // 11, three steps.
+  const Json* ref = find_stage(g->spec, "regenerate");
+  REQUIRE(ref);
+  CHECK(src_of(ref, 0) == "regenerate-references" && oport_of(ref, 0) == 0);
+  CHECK(src_of(ref, 2) == "regenerate-model-select");
+  CHECK(src_of(ref, 7) == "regenerate-references" && oport_of(ref, 7) == 1);
+  CHECK(src_of(ref, 8) == "regenerate-references" && oport_of(ref, 8) == 2);
+  CHECK(src_of(ref, 9) == "regenerate-config");
+  CHECK(src_of(ref, 11) == "latent-upscale");
+  CHECK(jget(config_of(ref), "steps", 0) == 3);
+  CHECK(jget(config_of(ref), "sage_attn", false));
+  CHECK(src_of(find_stage(g->spec, "latent-upscale"), 0) ==
+        "generate-video");
+  // Without words of its own: the prompt's.
+  JobSpec bare = j;
+  bare.params.erase("regenerate_prompt");
+  auto b = vp::build_video(bare, first);
+  REQUIRE_OK(b);
+  CHECK(jget<std::string>(
+            config_of(find_stage(b->spec, "regenerate-prompt")), "text",
+            "")
+            .ends_with("Scene description: <Picture 1> walks along the "
+                       "shore"));
+  // No previews: the draft still decoded, for the reference alone.
+  JobSpec quiet = j;
+  quiet.params["preview"] = false;
+  auto q = vp::build_video(quiet, first);
+  REQUIRE_OK(q);
+  CHECK(find_stage(q->spec, "draft-decode") && q->draft_sink.empty());
+
+  // Render Upscaled in context: Ref2VA's own job, the clip as it was
+  // read its reference.
+  JobSpec u = job_for("minimax-h3-ref2va", kOpUpscaleVideo);
+  u.model.regenerate_lora = j.model.regenerate_lora;
+  u.model.latent_upscaler = j.model.latent_upscaler;
+  u.params = {{"width", 1920}, {"height", 1080},
+              {"encode", {{"width", 1376}, {"height", 768}}},
+              {"first", 0}, {"count", 39}, {"seed", 3},
+              {"prompt", "a fox in snow"},
+              {"regenerate_adapters", j.params["regenerate_adapters"]},
+              {"regenerate_spec", spec}};
+  JobInput in;
+  in.role = "source";
+  in.path = "/tmp/clip.mov";
+  in.info.type = media::MediaType::Video;
+  in.info.frame.width = 1376;
+  in.info.frame.height = 768;
+  in.info.frame_rate = {24, 1};
+  in.info.frame_count = 39;
+  u.inputs.push_back(in);
+  auto ug = vp::build_regenerate_video(u);
+  REQUIRE_OK(ug);
+  CHECK(!find_stage(ug->spec, "diffusion-conditioner"));
+  CHECK(jget(config_of(find_stage(ug->spec, "encode")), "posterior_seed",
+             -1) == 0);
+  const Json* urefs = find_stage(ug->spec, "regenerate-references");
+  REQUIRE(urefs);
+  CHECK(src_of(urefs, 1) == "model-select");
+  CHECK(src_of(urefs, 2) == "stack");
+  CHECK(src_of(urefs, 3) == "encode");
+  CHECK(jget<std::string>(
+            config_of(find_stage(ug->spec, "regenerate-prompt")), "text",
+            "")
+            .ends_with("Scene description: a fox in snow"));
+  const Json* uref = find_stage(ug->spec, "regenerate");
+  CHECK(src_of(uref, 0) == "regenerate-references");
+  CHECK(src_of(uref, 2) == "model-select");
+  CHECK(src_of(uref, 11) == "latent-upscale");
 }
 
 // A crop rides on the picture it belongs to, made real only as it is

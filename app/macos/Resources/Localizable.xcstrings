@@ -297,6 +297,16 @@
         }
       }
     },
+    "%@ fps" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ fps"
+          }
+        }
+      }
+    },
     "%@ fps clip, %@ fps timeline" : {
       "localizations" : {
         "en" : {
@@ -325,6 +335,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "重做 %1$@ 帧 · %2$@"
+          }
+        }
+      }
+    },
+    "%@ frames restored, the noise fading out · slower" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "修复 %@ 帧，噪点逐渐淡去 · 较慢"
           }
         }
       }
@@ -547,6 +567,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%@ 需要 Turbo LoRA"
+          }
+        }
+      }
+    },
+    "%@ needs a newer engine than this build has." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%@ 需要比此版本更新的引擎。"
           }
         }
       }
@@ -775,12 +805,18 @@
         }
       }
     },
-    "%@ runs with its latent upscaler and MiniMax H3 FL2VA beside it: get them in Settings › Capabilities." : {
+    "%@ runs with %@ beside it: get them in Settings › Capabilities." : {
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ runs with %2$@ beside it: get them in Settings › Capabilities."
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "%@ 需要其潜空间放大器和 MiniMax H3 FL2VA 一并就位才能运行：请在“设置 › 能力”中获取。"
+            "value" : "%1$@ 需要 %2$@ 一并就位才能运行：请在“设置 › 能力”中获取。"
           }
         }
       }
@@ -1019,6 +1055,22 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "%1$@ · 在 %2$@ 上"
+          }
+        }
+      }
+    },
+    "%@ — %@ × %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ — %2$@ × %3$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "%1$@ — %2$@ × %3$@"
           }
         }
       }
@@ -1589,6 +1641,16 @@
         }
       }
     },
+    "1 line" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "1 行"
+          }
+        }
+      }
+    },
     "1 reference" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1827,6 +1889,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "片段逐帧读取（横向或纵向，均摆正），在画面变化处切分为场景，每个场景用几句话描述，最后概括全片。帧越多、越大，看到的越多，耗时也越长：每帧在标准尺寸下约为模型要读的 180 个词元，高约 400 个，最高约 720 个。"
+          }
+        }
+      }
+    },
+    "A clip made past 768 on its short side is drafted at 768 and regenerated at its size by one of these. Auto runs Open-H3-Regenerate-2K where it is here, else its IC refine. The IC refine holds the draft beside the clip as a reference -- faces, mouths and lettering stay the draft's -- and runs on Ref2VA, more slowly." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "短边超过 768 的片段会先以 768 生成草稿，再由其中之一以其尺寸重新生成。“自动”在已有 Open-H3-Regenerate-2K 时运行它，否则运行其 IC 精修。IC 精修把草稿作为参考放在片段旁边——人脸、口型和文字保持草稿的样子——在 Ref2VA 上运行，速度更慢。"
           }
         }
       }
@@ -2389,6 +2461,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "实际像素 (⌘0)"
+          }
+        }
+      }
+    },
+    "AdaIN" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "AdaIN"
           }
         }
       }
@@ -3469,12 +3551,12 @@
         }
       }
     },
-    "Ask the agent to work on the document (⌘4, ⇧⌘P)" : {
+    "Ask the agent to work on the document (⌘5, ⇧⌘P)" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "让智能体处理文档（⌘4、⇧⌘P）"
+            "value" : "让智能体处理文档（⌘5、⇧⌘P）"
           }
         }
       }
@@ -3546,6 +3628,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "两端"
+          }
+        }
+      }
+    },
+    "At Its Trained Size" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按训练尺寸"
           }
         }
       }
@@ -3906,12 +3998,22 @@
         }
       }
     },
-    "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory. Open-H3-Regenerate-2K is never Auto's: it runs when chosen here." : {
+    "Auto runs the best one downloaded: 4.25, which Practical-RIFE recommends for most footage, then 4.26, 4.22 and the lighter ones. Each is a download of 20 to 40 MB." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "“自动”运行已下载中最好的一个：先 FlashVSR+ Turbo，再 FlashVSR+ Base，再 FlashVSR 1.1。Turbo 更快，也是其作者为高分辨率推荐的版本；Base 修复质量更高，但更慢、占用内存更多。Open-H3-Regenerate-2K 不会被“自动”选中：只有在这里选中时才运行。"
+            "value" : "“自动”运行已下载中最好的一个：4.25（Practical-RIFE 推荐用于大多数素材），然后是 4.26、4.22 以及更轻量的版本。每个下载约 20 到 40 MB。"
+          }
+        }
+      }
+    },
+    "Auto runs the best one downloaded: FlashVSR+ Turbo, then FlashVSR+ Base, then FlashVSR 1.1. Turbo is the faster, and its makers' pick for high resolutions; Base restores at a higher quality, more slowly and in more memory. Open-H3-Regenerate-2K and its IC refine are never Auto's: they run when chosen here." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“自动”运行已下载中最好的一个：先 FlashVSR+ Turbo，再 FlashVSR+ Base，再 FlashVSR 1.1。Turbo 更快，也是其作者为高分辨率推荐的版本；Base 修复质量更高，但更慢、占用内存更多。Open-H3-Regenerate-2K 及其 IC 精修不会被“自动”选中：只有在这里选中时才运行。"
           }
         }
       }
@@ -4918,6 +5020,42 @@
         }
       }
     },
+    "Cleaning the guide" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "清理续写的衔接段"
+          }
+        }
+      }
+    },
+    "Cleaning the guide · frame %@ of %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Cleaning the guide · frame %1$@ of %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "清理衔接段 · 第 %1$@ 帧，共 %2$@ 帧"
+          }
+        }
+      }
+    },
+    "Cleaning the guide…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在清理衔接段…"
+          }
+        }
+      }
+    },
     "Clear" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5311,6 +5449,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "云端上下文"
+          }
+        }
+      }
+    },
+    "Coarser: faster, large motion followed better" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "更粗：更快，更能跟上大幅运动"
+          }
+        }
+      }
+    },
+    "Code" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "代码"
           }
         }
       }
@@ -5869,6 +6027,16 @@
         }
       }
     },
+    "Continue through its end, cleaned · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从结尾续写并清理 · %@"
+          }
+        }
+      }
+    },
     "Continue · %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5919,12 +6087,32 @@
         }
       }
     },
+    "Copied" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已拷贝"
+          }
+        }
+      }
+    },
     "Copy" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "拷贝"
+          }
+        }
+      }
+    },
+    "Copy the code" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "拷贝代码"
           }
         }
       }
@@ -6735,6 +6923,16 @@
         }
       }
     },
+    "Describe what to draw — “a starfield warping into hyperspace”, “these photos as a turning cube” — drop in pictures, clips or a program to use" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "描述要画的内容——“一片跃入超空间的星野”“把这些照片做成旋转的立方体”——可拖入图片、视频片段或程序来使用"
+          }
+        }
+      }
+    },
     "Description" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7056,6 +7254,16 @@
         }
       }
     },
+    "Double" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "两倍"
+          }
+        }
+      }
+    },
     "Double-click to reset" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7156,6 +7364,16 @@
         }
       }
     },
+    "Download from %@, where its makers publish it -- not a model hub: Valtz fetches their file, checks it is the one it knows and keeps the weights in the models folder it manages" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "从 %@ 下载，即其作者发布它的地方——不是模型中心：Valtz 获取他们的文件，核对它正是已知的那个，并把权重保存在它管理的模型文件夹中"
+          }
+        }
+      }
+    },
     "Download into the models folder Valtz manages" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7238,34 +7456,50 @@
         }
       }
     },
-    "Drafted at %@ from the references, then regenerated at %@ by Open-H3-Regenerate-2K on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line." : {
+    "Drafted at %@ from the references, then regenerated at %@ by %@ on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line." : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Drafted at %1$@ from the references, then regenerated at %2$@ by Open-H3-Regenerate-2K on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line."
+            "value" : "Drafted at %1$@ from the references, then regenerated at %2$@ by %3$@ on FL2VA, which reads no references: it reads what follows a “regenerate_prompt:” line in the prompt, else words made from the prompt. Enhance writes that line."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "先依据参考素材以 %1$@ 生成草稿，再由 Open-H3-Regenerate-2K 在 FL2VA 上以 %2$@ 重新生成；FL2VA 不读取参考素材：它读取提示词中“regenerate_prompt:”一行之后的文字，没有时则使用由提示词生成的文字。“增强”会写出这一行。"
+            "value" : "先依据参考素材以 %1$@ 生成草稿，再由 %3$@ 在 FL2VA 上以 %2$@ 重新生成；FL2VA 不读取参考素材：它读取提示词中“regenerate_prompt:”一行之后的文字，没有时则使用由提示词生成的文字。“增强”会写出这一行。"
           }
         }
       }
     },
-    "Drafted at %@, then regenerated at %@ by Open-H3-Regenerate-2K: several times the draft's time." : {
+    "Drafted at %@, then regenerated at %@ by %@, the draft held beside it as a reference -- its faces, mouths and lettering kept: slower than the plain refine." : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Drafted at %1$@, then regenerated at %2$@ by Open-H3-Regenerate-2K: several times the draft's time."
+            "value" : "Drafted at %1$@, then regenerated at %2$@ by %3$@, the draft held beside it as a reference -- its faces, mouths and lettering kept: slower than the plain refine."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "先以 %@ 生成草稿，再由 Open-H3-Regenerate-2K 以 %@ 重新生成：耗时是草稿的数倍。"
+            "value" : "先以 %1$@ 生成草稿，再由 %3$@ 以 %2$@ 重新生成，草稿作为参考放在旁边——人脸、口型和文字得以保留：比普通精修更慢。"
+          }
+        }
+      }
+    },
+    "Drafted at %@, then regenerated at %@ by %@: several times the draft's time." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Drafted at %1$@, then regenerated at %2$@ by %3$@: several times the draft's time."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "先以 %1$@ 生成草稿，再由 %3$@ 以 %2$@ 重新生成：耗时是草稿的数倍。"
           }
         }
       }
@@ -7431,6 +7665,26 @@
         }
       }
     },
+    "Draw With a Program" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "用程序绘制"
+          }
+        }
+      }
+    },
+    "Draw its program again, at a size and length you choose" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按你选择的尺寸和时长重新绘制其程序"
+          }
+        }
+      }
+    },
     "Draw the selected objects into the layer's pixels: they are no longer editable as shapes or text" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7447,6 +7701,62 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "用画笔绘制"
+          }
+        }
+      }
+    },
+    "Drawing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在绘制"
+          }
+        }
+      }
+    },
+    "Drawing the program" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在绘制程序"
+          }
+        }
+      }
+    },
+    "Drawn as a new picture or clip, beside its program in Assets." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "绘制为新的图片或视频片段，放在素材中其程序旁边。"
+          }
+        }
+      }
+    },
+    "Drawn as its next version; a still drawn as a clip, or a clip as a still, is a new one." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "绘制为它的下一个版本；静态图绘制为视频片段、或视频片段绘制为静态图时，会是新的素材。"
+          }
+        }
+      }
+    },
+    "Draws at %@ × %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Draws at %1$@ × %2$@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "绘制尺寸 %1$@ × %2$@"
           }
         }
       }
@@ -7634,12 +7944,33 @@
         }
       }
     },
+    "Each channel's mean and spread moved to the original's" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "每个通道的均值与离散度对齐到原图"
+          }
+        }
+      }
+    },
     "Each frame of the timeline shows the clip's frame at that moment: frames repeat or are skipped. (Rendering new frames in between is to come.)" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "时间线的每一帧显示片段在那一刻的帧：帧会重复或被跳过。（在两帧之间渲染新帧将在以后提供。）"
+          }
+        }
+      }
+    },
+    "Each frame of the timeline shows the clip's frame at that moment: frames repeat or are skipped. Render Interpolated makes the frames in between." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "时间线的每一帧显示片段在该时刻的帧：帧会重复或被跳过。“渲染插帧”会生成中间的帧。"
           }
         }
       }
@@ -7660,6 +7991,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每种色相自身的色相、饱和度和明亮度，画成绕色轮一周的曲线。"
+          }
+        }
+      }
+    },
+    "Each of the frames redone is restored by an image edit, its own tones kept, and they are shown in place of the clip's last frames, the noise built up over continuations fading out. Its sound carries on as before." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "重做的每一帧都由图像编辑修复，保留其自身的色调，并在原片段最后几帧的位置显示，多次续写累积的噪点随之淡去。声音照常延续。"
           }
         }
       }
@@ -8335,6 +8676,16 @@
         }
       }
     },
+    "Faster, but may weave a checkerboard through faces" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "更快，但可能在人脸上织出棋盘格纹"
+          }
+        }
+      }
+    },
     "Favor" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8502,6 +8853,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "精细"
+          }
+        }
+      }
+    },
+    "Finer: slower, fine motion kept" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "更细：更慢，保留细微运动"
           }
         }
       }
@@ -8706,6 +9067,16 @@
         }
       }
     },
+    "Flow scale" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "光流尺度"
+          }
+        }
+      }
+    },
     "Focal length" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8872,12 +9243,42 @@
         }
       }
     },
+    "Frame Interpolation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "插帧"
+          }
+        }
+      }
+    },
+    "Frame Rate" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "帧率"
+          }
+        }
+      }
+    },
     "Frame Size" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "帧尺寸"
+          }
+        }
+      }
+    },
+    "Frame interpolation, slow motion" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "插帧、慢动作"
           }
         }
       }
@@ -8924,6 +9325,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "写入文件的帧"
+          }
+        }
+      }
+    },
+    "Frames less alike than this are a cut: not blended" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "相似度低于此值的帧视为切换：不混合"
           }
         }
       }
@@ -9400,6 +9811,16 @@
         }
       }
     },
+    "Get RIFE…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "获取 RIFE…"
+          }
+        }
+      }
+    },
     "Glow" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9678,6 +10099,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "HEVC 10 位（保留 HDR）"
+          }
+        }
+      }
+    },
+    "Half" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "一半"
           }
         }
       }
@@ -9962,6 +10393,16 @@
         }
       }
     },
+    "High-Res Pass With" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "高分辨率精修使用"
+          }
+        }
+      }
+    },
     "High-res pass" : {
       "localizations" : {
         "zh-Hans" : {
@@ -10162,6 +10603,16 @@
         }
       }
     },
+    "How Render Interpolated makes a clip at the rate its timeline shows it — slowed down, or on a timeline of more frames a second — the frames in between made by RIFE: which release, and how it reads the motion." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“渲染插帧”如何按时间线显示它的帧率生成片段——放慢后，或放在每秒帧数更多的时间线上——中间的帧由 RIFE 生成：使用哪个版本，以及它如何读取运动。"
+          }
+        }
+      }
+    },
     "How Render Upscaled restores a layer at the size it is shown — FlashVSR for clips, VOSR for pictures: the arithmetic each runs with." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -10249,6 +10700,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "生成方式"
+          }
+        }
+      }
+    },
+    "How many pixels neighbouring tiles share, blended into each other: more hides the seams better, at more work. At least an eighth of a tile is used. One Pass has no tiles." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "相邻分块共享并相互融合的像素数：越多越能掩盖接缝，但计算更多。至少使用分块的八分之一。一次完成时没有分块。"
           }
         }
       }
@@ -10725,6 +11186,46 @@
         }
       }
     },
+    "Interpolate With" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "插帧使用"
+          }
+        }
+      }
+    },
+    "Interpolated: the layer shows its clip with the frames in between made" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "已插帧：图层显示其片段，中间的帧已生成"
+          }
+        }
+      }
+    },
+    "Interpolating" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在插帧"
+          }
+        }
+      }
+    },
+    "Interpolating frames" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在生成中间帧"
+          }
+        }
+      }
+    },
     "Interpolation" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11099,6 +11600,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "JPEG"
+          }
+        }
+      }
+    },
+    "JavaScript, %lld lines" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "JavaScript，%lld 行"
+          }
+        }
+      }
+    },
+    "JavaScript, 1 line" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "JavaScript，1 行"
           }
         }
       }
@@ -12616,6 +13137,16 @@
         }
       }
     },
+    "Make the clip at the rate the timeline shows it, its frames in between made by RIFE: smooth where they now repeat. Its length and sound are kept, the layer then showing it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按时间线显示它的帧率生成片段，中间的帧由 RIFE 生成：原本重复的地方变得流畅。长度和声音保持不变，随后由该图层显示它。"
+          }
+        }
+      }
+    },
     "Make this composition the project's" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13842,6 +14373,16 @@
         }
       }
     },
+    "No RIFE model is downloaded yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尚未下载 RIFE 模型。"
+          }
+        }
+      }
+    },
     "No Results" : {
       "localizations" : {
         "zh-Hans" : {
@@ -14090,6 +14631,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "无提示词 · %@"
+          }
+        }
+      }
+    },
+    "No refiner is downloaded yet." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尚未下载任何精修模型。"
           }
         }
       }
@@ -15811,6 +16362,16 @@
         }
       }
     },
+    "Pixels neighbouring tiles share, blended" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "相邻分块共享并融合的像素"
+          }
+        }
+      }
+    },
     "Place" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16241,6 +16802,36 @@
         }
       }
     },
+    "Procedural" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "程序化"
+          }
+        }
+      }
+    },
+    "Procedural Prompt" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "程序化提示词"
+          }
+        }
+      }
+    },
+    "Procedural · %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "程序化 · %@"
+          }
+        }
+      }
+    },
     "Profile:" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16267,6 +16858,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "程序自动"
+          }
+        }
+      }
+    },
+    "Programs" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "程序"
+          }
+        }
+      }
+    },
+    "Programs run in a sandboxed page with no network and no files. Each drawing lands in Assets beside its program." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "程序在沙盒页面中运行，不能访问网络和文件。每次绘制的结果会与其程序一起放入素材。"
           }
         }
       }
@@ -16542,6 +17153,16 @@
         }
       }
     },
+    "Quadruple" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "四倍"
+          }
+        }
+      }
+    },
     "Quality" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16604,6 +17225,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在量化…"
+          }
+        }
+      }
+    },
+    "Quarter" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "四分之一"
           }
         }
       }
@@ -16671,6 +17302,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "内存"
+          }
+        }
+      }
+    },
+    "RIFE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RIFE"
           }
         }
       }
@@ -17071,6 +17712,16 @@
         }
       }
     },
+    "Regenerates a clip at the size it is shown IN CONTEXT: the clip read at 768 at most and held clean beside it as a reference, its latent enlarged and regenerated in three steps of MiniMax H3 Ref2VA under HyperFlow, LMS Sharp and NVIDIA's IC LoRA, against the words that made it (else its summary). Faces, mouths, lettering and layout stay the clip's. Slower than Open-H3-Regenerate-2K: the clip's own rows ride every step. These also set its refine of a clip made past 768P, unless its Favor is Custom." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "以片段显示的尺寸“在上下文中”重新生成：片段最多以 768 读取，并作为参考干净地放在旁边，其潜变量被放大后，由 MiniMax H3 Ref2VA 在 HyperFlow、LMS Sharp 和 NVIDIA 的 IC LoRA 下用三步重新生成，依据生成它的文字（没有时则用它的摘要）。人脸、口型、文字和构图保持片段原样。比 Open-H3-Regenerate-2K 更慢：片段自身的行参与每一步。这些设置也用于超过 768P 的片段由它精修时，除非其“偏好”为“自定义”。"
+          }
+        }
+      }
+    },
     "Regenerates a clip at the size it is shown, as MiniMax H3 makes clips past 768 on their short side: the clip read at 768 at most, its latent enlarged, then three steps of MiniMax H3 FL2VA under NVIDIA's merged LoRA, against the words that made it (else its summary). Detail is made anew, not restored, and a 2K clip of five seconds takes hours on most Macs, so it runs only when chosen above. These also set the refine of a clip made past 768P, unless its Favor is Custom: Custom has them for the clip." : {
       "localizations" : {
         "zh-Hans" : {
@@ -17442,6 +18093,56 @@
         }
       }
     },
+    "Render" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "渲染"
+          }
+        }
+      }
+    },
+    "Render Again…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "重新渲染…"
+          }
+        }
+      }
+    },
+    "Render Interpolated" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "渲染插帧"
+          }
+        }
+      }
+    },
+    "Render Interpolated makes the frames in between with RIFE: download it in Settings › Capabilities › Frame Interpolation" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“渲染插帧”使用 RIFE 生成中间的帧：请在“设置 › 能力 › 插帧”中下载"
+          }
+        }
+      }
+    },
+    "Render Interpolated runs this one" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“渲染插帧”运行这个模型"
+          }
+        }
+      }
+    },
     "Render Upscaled" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17472,6 +18173,26 @@
         }
       }
     },
+    "Render “%@”" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "渲染“%@”"
+          }
+        }
+      }
+    },
+    "Render “%@” Again" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "重新渲染“%@”"
+          }
+        }
+      }
+    },
     "Rendering" : {
       "localizations" : {
         "zh-Hans" : {
@@ -17488,6 +18209,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在渲染声音"
+          }
+        }
+      }
+    },
+    "Render…" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "渲染…"
           }
         }
       }
@@ -17638,6 +18369,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "修复图片使用"
+          }
+        }
+      }
+    },
+    "Restored in tiles at the size it was trained at, or at once" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按训练尺寸分块修复，或一次完成"
           }
         }
       }
@@ -18085,6 +18826,16 @@
         }
       }
     },
+    "Same seed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "相同种子"
+          }
+        }
+      }
+    },
     "Sample rate" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18251,6 +19002,46 @@
         }
       }
     },
+    "Say more — it reads it at its next turn" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "继续说——它会在下一轮读到"
+          }
+        }
+      }
+    },
+    "Say what to change — another palette, slower, a loop" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "说说要改什么——换一套配色、慢一些、做成循环"
+          }
+        }
+      }
+    },
+    "Say what to draw. It writes a program — a canvas, SVG, WebGL, three.js or Babylon.js — draws it as a picture or a clip, looks at what it drew and puts it right. The program runs in a sandboxed page with no network and no files; the drawing lands in Assets beside its code." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "说出要画什么。它会编写一个程序——Canvas、SVG、WebGL、three.js 或 Babylon.js——将其绘制为图片或视频片段，查看画出的结果并加以修正。程序在沙盒页面中运行，不能访问网络和文件；绘制结果会与其代码一起放入素材。"
+          }
+        }
+      }
+    },
+    "Scene cut" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "场景切换"
+          }
+        }
+      }
+    },
     "Schedule" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18347,6 +19138,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "搜索"
+          }
+        }
+      }
+    },
+    "Seconds" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "秒数"
           }
         }
       }
@@ -19284,6 +20085,16 @@
         }
       }
     },
+    "Sizes to start from" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "常用尺寸"
+          }
+        }
+      }
+    },
     "Skip" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19300,6 +20111,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "跳过内核自动调优"
+          }
+        }
+      }
+    },
+    "Slow Motion" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "慢动作"
           }
         }
       }
@@ -20594,6 +21415,16 @@
         }
       }
     },
+    "Temporal Resampling" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "时间重采样"
+          }
+        }
+      }
+    },
     "Test how fast its files load from where they are: up to ten seconds of reads, past the memory cache" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20826,6 +21657,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "神经网络引擎：在功耗计数可用时据功耗估算，否则据其总线高于空闲状态的时间估算"
+          }
+        }
+      }
+    },
+    "The Procedural tab over the prompt (⌘4): say what to draw, and a model writes a program — JavaScript with a canvas, SVG, WebGL, three.js or Babylon.js — that Valtz draws as a picture or a clip, then looks at and puts right. Programs run in a sandboxed page with no network and no files; each drawing lands in Assets beside its program. It thinks where the Agent does: the Agentic Helper, or the cloud." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "提示词上方的“程序化”标签（⌘4）：说出要画什么，模型会编写一个程序——使用 Canvas、SVG、WebGL、three.js 或 Babylon.js 的 JavaScript——由 Valtz 绘制为图片或视频片段，再由模型查看并修正。程序在沙盒页面中运行，不能访问网络和文件；每次绘制的结果会与其程序一起放入素材。它在智能体思考的地方思考：智能助手，或云端。"
           }
         }
       }
@@ -21157,6 +21998,26 @@
         }
       }
     },
+    "The frame's own resolution" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "帧本身的分辨率"
+          }
+        }
+      }
+    },
+    "The frame's own, half past 4K: the release's advice" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "帧本身的分辨率，超过 4K 时取一半：该版本的建议"
+          }
+        }
+      }
+    },
     "The helper reads a conversation up to its context. Auto gives it as much of the model’s own as this Mac’s memory holds, its words kept beside the model; less leaves more memory for the pictures. Past it, the agent compacts the conversation: the model writes notes on the work so far, and goes on from them and its latest turns. Switched off, a session stops there. For sessions started after a change; the Agent is in Settings › Experimental." : {
       "localizations" : {
         "zh-Hans" : {
@@ -21203,6 +22064,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "图层的不透明度：100% 为原样，调低可透出下方内容，0% 为完全透明。按住 ⌥ 可更精细地调整；连按两次回到 100%。"
+          }
+        }
+      }
+    },
+    "The layer's clip at the rate its timeline shows it, the frames in between made by RIFE" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "图层的片段按其时间线显示的帧率生成，中间的帧由 RIFE 生成"
           }
         }
       }
@@ -21374,6 +22245,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "原模型的 %@ 将被删除。如需恢复，请重新下载。"
+          }
+        }
+      }
+    },
+    "The original's low frequencies, the restored detail: as released" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "低频取自原图，细节取自修复结果：与发布版一致"
           }
         }
       }
@@ -21601,12 +22482,52 @@
         }
       }
     },
+    "The resolution RIFE reads the motion at, against the frame's: the release's --scale. Auto follows its advice: the frame's own, or half past 2560 pixels (4K). Lower is faster and follows large, fast motion better; higher keeps fine motion. Its makers suggest half for 4K footage." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "RIFE 读取运动时所用的分辨率（相对于帧的分辨率）：即该版本的 --scale。“自动”遵循其建议：帧本身的分辨率，超过 2560 像素（4K）时取一半。更低更快，更能跟上大幅、快速的运动；更高保留细微运动。其作者建议 4K 素材用一半。"
+          }
+        }
+      }
+    },
+    "The restored picture's colour, as the picture it restored" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "修复后图片的颜色，与其所修复的图片一致"
+          }
+        }
+      }
+    },
+    "The restorer's own colours, uncorrected" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "修复器自身的颜色，不作校正"
+          }
+        }
+      }
+    },
     "The row over the prompt: each reference is read alongside the clip" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "提示词上方的一行：每个参考都会与视频一同读取"
+          }
+        }
+      }
+    },
+    "The same seed draws the same picture; another, another take" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "相同的种子绘制出相同的画面；换一个种子，就是另一版"
           }
         }
       }
@@ -21971,6 +22892,16 @@
         }
       }
     },
+    "This build's engine has no RIFE: its frame interpolation needs a newer vpipe." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此版本的引擎没有 RIFE：插帧需要更新的 vpipe。"
+          }
+        }
+      }
+    },
     "This engine does not count it." : {
       "localizations" : {
         "zh-Hans" : {
@@ -22071,12 +23002,52 @@
         }
       }
     },
+    "Through Its End, Cleaned" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "贯穿结尾续写并清理"
+          }
+        }
+      }
+    },
     "Thumbnails and previews" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "缩略图与预览"
+          }
+        }
+      }
+    },
+    "Tile overlap" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分块重叠"
+          }
+        }
+      }
+    },
+    "Tiles" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分块"
+          }
+        }
+      }
+    },
+    "Tiles of 512, blended where they meet: as released" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "512 像素分块，接缝处融合：与发布版一致"
           }
         }
       }
@@ -22595,6 +23566,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "一次运行两个 LoRA"
+          }
+        }
+      }
+    },
+    "Two frames whose likeness -- their structural similarity at 32 × 32 -- is under this are a scene cut: the frames between them repeat the first instead of morphing one shot into the next. 0.2 is the release's; 0 never cuts." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "两帧的相似度（它们在 32 × 32 下的结构相似度）低于此值时视为场景切换：它们之间的帧重复第一帧，而不是把一个镜头变形为下一个。0.2 是该版本的默认值；0 表示从不切换。"
           }
         }
       }
@@ -23243,6 +24224,26 @@
         }
       }
     },
+    "VOSR 2.0 was distilled at 512 pixels. Past that, the picture is restored in tiles of 512, each on the grid its weights know, blended where they overlap — as its release does. One Pass restores the whole picture at once: faster, but on a grid the model never saw, which can weave a periodic pattern, a checkerboard on faces." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "VOSR 2.0 在 512 像素下蒸馏。超过这个尺寸时，图片按 512 像素分块修复，每块都在其权重熟悉的网格上，重叠处相互融合——与其发布版一致。一次完成则一次修复整张图片：更快，但所用网格是模型从未见过的，可能织出周期性纹理，在人脸上出现棋盘格。"
+          }
+        }
+      }
+    },
+    "VOSR 2.0's release corrects what it restored against the picture it restored. Wavelet, its default, keeps the restored detail and takes the low frequencies — a soft blur of the picture — from the original, so colours and tones stay as they were. AdaIN moves each colour channel's mean and spread to the original's. None hands back the restorer's own colours, which can drift." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "VOSR 2.0 的发布版会对照其修复的图片校正修复结果。小波（默认）保留修复出的细节，低频——图片的柔和模糊——取自原图，使颜色与色调保持原样。AdaIN 将每个颜色通道的均值与离散度对齐到原图。无则交回修复器自身的颜色，可能会有偏移。"
+          }
+        }
+      }
+    },
     "Valtz" : {
       "localizations" : {
         "zh-Hans" : {
@@ -23834,6 +24835,16 @@
         }
       }
     },
+    "Wavelet" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "小波"
+          }
+        }
+      }
+    },
     "Weights %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -24073,6 +25084,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "Valtz 存放模型的位置：移动过去，或留在原处"
+          }
+        }
+      }
+    },
+    "Where a clip is shown at more frames a second than it has -- slowed down, or on a timeline of a higher rate -- the timeline repeats its frames. Render Interpolated, in the Trim panel, makes the frames in between: the clip at the rate it is shown, its length and sound kept, the layer then showing it. Where a new frame falls on one of the clip's own, that frame is kept as it is." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "当片段以高于其自身的每秒帧数显示时——放慢后，或放在帧率更高的时间线上——时间线会重复它的帧。修剪面板中的“渲染插帧”会生成中间的帧：片段按显示的帧率生成，长度和声音保持不变，随后由该图层显示它。新帧落在片段自身某一帧上时，该帧保持原样。"
           }
         }
       }
@@ -24521,6 +25542,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "为片段的 2K 阶段写文字"
+          }
+        }
+      }
+    },
+    "Write a program that draws a picture or a clip (⌘4)" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "编写程序来绘制图片或视频片段（⌘4）"
+          }
+        }
+      }
+    },
+    "Writes programs — JavaScript in a sandboxed page, with no network or files — and draws them as pictures or clips, kept in Assets with their code." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "编写程序——在沙盒页面中运行的 JavaScript，不能访问网络和文件——并将其绘制为图片或视频片段，与代码一起保存在素材中。"
+          }
+        }
+      }
+    },
+    "Writing a program · %@ lines" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在编写程序 · %@ 行"
           }
         }
       }
@@ -25953,6 +27004,40 @@
         }
       }
     },
+    "core.clean_guide_needs_latents" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "A continuation is cleaned through the end of a clip that kept its latents: continue it through its end, from them."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "清理只适用于续写一个保留了潜变量的片段的结尾：请从这些潜变量续写其结尾。"
+          }
+        }
+      }
+    },
+    "core.clean_guide_no_model" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Cleaning a continuation needs {models} to restore its frames: get one in Settings › Capabilities."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "清理续写需要 {models} 来修复其各帧：请在“设置 › 能力”中获取其中之一。"
+          }
+        }
+      }
+    },
     "core.clip_has_no_sound" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -26803,6 +27888,57 @@
         }
       }
     },
+    "core.interpolate_flatten_first" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "\"{name}\" is a composition: flatten the layer first (its menu's Flatten), then interpolate the clip it makes."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“{name}”是一个合成：请先拼合该图层（其菜单中的“拼合”），再为得到的片段插帧。"
+          }
+        }
+      }
+    },
+    "core.interpolate_kind" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Only a clip's frames can be interpolated."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "只有片段的帧可以插帧。"
+          }
+        }
+      }
+    },
+    "core.interpolate_nothing" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "\"{name}\" already has the frames its timeline shows ({fps} a second): nothing to make. Slow it down, or ask for a rate."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "“{name}”已经具有其时间线显示的帧数（每秒 {fps} 帧）：无需生成。请将其放慢，或指定一个帧率。"
+          }
+        }
+      }
+    },
     "core.key_in_the_way" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -27343,6 +28479,23 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "未选择图像模型。"
+          }
+        }
+      }
+    },
+    "core.no_interpolator" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No frame interpolation model is here: get RIFE in Settings › Capabilities › Frame Interpolation."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "这里没有插帧模型：请在“设置 › 能力 › 插帧”中获取 RIFE。"
           }
         }
       }
@@ -29240,6 +30393,16 @@
         }
       }
     },
+    "seconds" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "秒"
+          }
+        }
+      }
+    },
     "set aside: macOS may take it back" : {
       "localizations" : {
         "zh-Hans" : {
@@ -29402,6 +30565,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "原为 %1$@ × %2$@"
+          }
+        }
+      }
+    },
+    "×" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "×"
           }
         }
       }

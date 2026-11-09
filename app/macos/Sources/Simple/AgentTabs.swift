@@ -13,7 +13,7 @@ import SwiftUI
 /// they change.
 struct AgentTab: Identifiable {
     let id = UUID()
-    /// "full" | "chat" | "none" (AgentRequest::skills).
+    /// "full" | "chat" | "procedural" | "none" (AgentRequest::skills).
     var skills: String
     /// Kept while another tab is shown.
     var session: AgentSession?
@@ -30,7 +30,10 @@ extension AppModel {
     }
 
     /// The shown tab's tools.
-    var agentSkills: String { shownAgentTab?.skills ?? "full" }
+    var agentSkills: String {
+        shownAgentTab?.skills
+            ?? (activeModality == .procedural ? "procedural" : "full")
+    }
 
     /// The tab with Valtz's tools, if any: one at a time.
     var agentEditorTab: Int? {
@@ -55,6 +58,7 @@ extension AppModel {
         switch skills {
         case "chat": String(localized: "Look and Add")
         case "none": String(localized: "No Tools")
+        case "procedural": String(localized: "Programs")
         default: String(localized: "Valtz Tools")
         }
     }
@@ -63,6 +67,7 @@ extension AppModel {
         switch skills {
         case "chat": "eye"
         case "none": "text.bubble"
+        case "procedural": "curlybraces"
         default: "wand.and.stars"
         }
     }
@@ -74,6 +79,8 @@ extension AppModel {
             String(localized: "Looks at the project and adds to Assets -- pictures it makes, texts it keeps -- without changing what is there.")
         case "none":
             String(localized: "Words alone: no Valtz tools, so its context is the conversation’s. Pictures you attach are still shown to it.")
+        case "procedural":
+            String(localized: "Writes programs — JavaScript in a sandboxed page, with no network or files — and draws them as pictures or clips, kept in Assets with their code.")
         default:
             String(localized: "Works on the document with the editor’s tools. One tab at a time has them.")
         }
@@ -113,8 +120,10 @@ extension AppModel {
     /// and Add.
     func newAgentTab() {
         stashAgentTab()
-        agentTabs.append(AgentTab(skills: agentEditorTab == nil ? "full"
-                                                                : "chat"))
+        // Procedural's tabs all write programs.
+        agentTabs.append(AgentTab(
+            skills: activeModality == .procedural ? "procedural"
+                    : agentEditorTab == nil ? "full" : "chat"))
         agentTabIndex = agentTabs.count - 1
         agent = nil
         agentWriting = ""
@@ -140,7 +149,8 @@ extension AppModel {
         let shown = i == agentTabIndex
         agentTabs.remove(at: i)
         if agentTabs.isEmpty {
-            agentTabs = [AgentTab(skills: "full")]
+            agentTabs = [AgentTab(skills: activeModality == .procedural
+                                              ? "procedural" : "full")]
         }
         if shown {
             // Its neighbour shown.

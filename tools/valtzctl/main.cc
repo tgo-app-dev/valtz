@@ -35,7 +35,9 @@
 #include "valtz/media/camera.h"
 #include "valtz/ext/extension.h"
 #include "valtz/media/model-input.h"
+#include "valtz/media/movie.h"
 #include "valtz/media/probe.h"
+#include "valtz/media/procedural.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -253,6 +255,15 @@ usage()
       "          (Canvas Size: the stack on a canvas W x H, anchored at\n"
       "          tl t tr l c r bl b br -- c by default; own: its own)\n"
       "  timeline <project.valtz> <comp-id> <frames>  (0: its layers')\n"
+      "  program <file.js> -o <out.png|out.mov> [--size WxH]\n"
+      "          [--seconds s] [--fps n] [--seed n] [--asset <file>]...\n"
+      "          (a PROGRAM drawn: JavaScript in a sandboxed WKWebView --\n"
+      "          no project; each --asset a file it reads by name)\n"
+      "  program <project.valtz> <file.js|program-id> [--size WxH]\n"
+      "          [--seconds s] [--fps n] [--seed n] [--name n]\n"
+      "          [--asset <file|asset-id>]...\n"
+      "          (kept as a program, drawn as a picture -- or a clip of\n"
+      "          s seconds -- made from it; what the page said)\n"
       "  generate <project.valtz> <prompt> [--model id] [--steps n]\n"
       "           [--seed n] [--size WxH] [--no-preview]\n"
       "           [--speed|--quality] [--tune k=v,...] [--repeat n]\n"
@@ -275,7 +286,7 @@ usage()
       "        [--tune k=v,...]\n"
       "        [--ref <file|asset-id> [--whole|--latents-only]]...\n"
       "        [--continue <clip>]\n"
-      "        [--tail-seconds s] [--latents] [--song-sound]\n"
+      "        [--tail-seconds s] [--latents | --clean] [--song-sound]\n"
       "        [--keep-latents] [--regenerate | --no-regenerate]\n"
       "        [--no-preview]\n"
       "        (a clip with its soundtrack, MiniMax H3; the length goes\n"
@@ -295,7 +306,10 @@ usage()
       "        --tail-seconds) -- read as a reference, or --latents: from\n"
       "        the latents it kept (Ref2VA carries them; FL2VA, chosen, is\n"
       "        guided through its last 22 frames by them, else by its\n"
-      "        tail encoded); --keep-latents: this clip's kept with it,\n"
+      "        tail encoded); --clean: so, its guide CLEANED -- its 22\n"
+      "        frames restored by an image edit, their tones kept, their\n"
+      "        latents ramped in: a chain's noise fading out over them;\n"
+      "        --keep-latents: this clip's kept with it,\n"
       "        for that; --song-sound: the first sound reference is\n"
       "        the clip's soundtrack, as it is -- a music video. Past 768\n"
       "        on its short side a clip from words or pictures is drafted\n"
@@ -551,6 +565,17 @@ usage()
       "  upscaler use <model-id> | auto [video|image]   the upscaler\n"
       "          Render Upscaled runs for its kind (auto: the best\n"
       "          installed -- FlashVSR+ Turbo, then Base, then 1.1)\n"
+      "  interpolate <project> <composition> --layer L [--fps n]\n"
+      "          [--model id]   the layer's clip at the rate its timeline\n"
+      "          shows it (the timeline's over its slowest speed, or n):\n"
+      "          its frames between its own made by RIFE, its length\n"
+      "          and sound kept, the layer then showing it\n"
+      "  interpolator [<model-id> [k=v,...] [--reset]]   Settings >\n"
+      "          Temporal Resampling: each RIFE's flow_scale (auto |\n"
+      "          quarter | half | full | double | quadruple) and\n"
+      "          scene_threshold (0-1; 0 never cut)\n"
+      "  interpolator use <model-id> | auto   the one Render\n"
+      "          Interpolated runs (auto: the best installed, 4.25 first)\n"
       "  intent <text> [--image name]...\n"
       "  fleet [status] [--json] | fleet browse [--seconds N]\n"
       "        | fleet create|join <name> [--discoverable]\n"
@@ -574,7 +599,9 @@ usage()
       "         two on one Mac)\n"
       "  agent <project> <request> [--auto] [--backend helper|cloud]\n"
       "        [--composition <id>] [--ref <file|asset-id>]... [--speed]\n"
-      "        [--assistant <id>] [--skills full|chat|none]\n"
+      "        [--assistant <id>] [--skills full|chat|procedural|none]\n"
+      "        [--size WxH] [--seconds s] [--fps n]  (procedural: what\n"
+      "        its programs are drawn at unless asked otherwise)\n"
       "        | agent tools | agent settings [backend=helper|cloud]\n"
       "            [helper=<id>|same] [memory=64|128|192|<GB>|none]\n"
       "            [expert_cache=<GB>|auto] [i8_prefill=auto|on|off]\n"
@@ -1885,8 +1912,25 @@ agent_command(Controller& c, std::vector<std::string> args)
     } else if (a == "--backend") {
       req.backend = next();
     } else if (a == "--skills") {
-      // Its Valtz tools: full (edits), chat (looks and adds), none.
+      // Its Valtz tools: full (edits), chat (looks and adds), procedural
+      // (writes programs and draws them), none.
       req.skills = next();
+    } else if (a == "--size") {
+      // A procedural session's size, its length: render_program's own --
+      // SET, as the app's card is: the model's own taken only where the
+      // words name it.
+      int w = 0;
+      int h = 0;
+      std::sscanf(next().c_str(), "%dx%d", &w, &h);
+      req.render["width"] = w;
+      req.render["height"] = h;
+      req.render["card"] = true;
+    } else if (a == "--seconds") {
+      req.render["seconds"] = std::atof(next().c_str());
+      req.render["card"] = true;
+    } else if (a == "--fps") {
+      req.render["fps"] = std::atof(next().c_str());
+      req.render["card"] = true;
     } else if (a == "--assistant") {
       // Another catalog helper for this run only (its turns and its
       // enhancer): a smaller one beside a picture model on a small Mac.
@@ -2127,6 +2171,105 @@ main(int argc, char** argv)
                               {"lines", s.lines}}, 2)
               << "\n";
     return 0;
+  }
+
+  // A program drawn to a file: no controller needed.
+  if (cmd == "program" && !args.empty() &&
+      !args[0].ends_with(".valtz")) {
+    media::ProgramRender r;
+    r.program = args[0];
+    double seconds = 0;
+    double fps = 24;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+      const std::string& a = args[i];
+      auto next = [&]() -> std::string {
+        return i + 1 < args.size() ? args[++i] : std::string();
+      };
+      if (a == "-o") {
+        r.out = next();
+      } else if (a == "--size") {
+        std::sscanf(next().c_str(), "%dx%d", &r.width, &r.height);
+      } else if (a == "--seconds") {
+        seconds = std::atof(next().c_str());
+      } else if (a == "--fps") {
+        fps = std::atof(next().c_str());
+      } else if (a == "--seed") {
+        r.seed = std::strtoull(next().c_str(), nullptr, 10);
+      } else if (a == "--asset") {
+        auto x = media::program_asset_of(next());
+        if (!x.ok()) {
+          return fail(x.error());
+        }
+        r.assets.push_back(std::move(*x));
+      } else {
+        return usage();
+      }
+    }
+    if (r.out.empty() || fps <= 0) {
+      return usage();
+    }
+    r.fps = Rational(std::llround(fps * 1000), 1000);
+    r.frames = seconds > 0
+                   ? std::max(1, static_cast<int>(std::lround(seconds * fps)))
+                   : 0;
+    if (r.out.extension() == ".mp4") {
+      r.codec = "hevc";
+    }
+    r.epoch_ms = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    // A clip's soundtrack, when it makes one: joined to the picture.
+    const fs::path final_out = r.out;
+    if (r.frames > 0) {
+      r.sound = fs::path(final_out.string() + ".sound.wav");
+      r.out = final_out.parent_path() /
+              (final_out.stem().string() + ".picture" +
+               final_out.extension().string());
+    }
+    std::vector<media::ProgramLog> log;
+    auto run = media::render_program(
+        r,
+        [](int done, int of) {
+          if (done == of || done % 24 == 0) {
+            std::fprintf(stderr, "  drawing %d/%d\n", done, of);
+          }
+        },
+        nullptr, &log);
+    for (const auto& l : log) {
+      std::printf("%s\n", media::to_text(l).c_str());
+    }
+    if (!run.ok()) {
+      return fail(run.error());
+    }
+    if (r.frames > 0) {
+      std::error_code ec;
+      if (!run->sound.empty()) {
+        auto st = media::add_soundtrack(
+            r.out, run->sound, final_out, 0, 0,
+            r.codec == "hevc" ? media::SoundCodec::Aac
+                              : media::SoundCodec::Pcm);
+        fs::remove(r.out, ec);
+        fs::remove(run->sound, ec);
+        if (!st.ok()) {
+          return fail(st.error());
+        }
+        std::printf("with its soundtrack\n");
+      } else {
+        fs::rename(r.out, final_out, ec);
+      }
+      r.out = final_out;
+    }
+    std::printf("%s: %d x %d, %s in %.2f s%s%s\n", r.out.c_str(), r.width,
+                r.height,
+                r.frames > 0 ? std::format("{} frames", r.frames).c_str()
+                             : "a still",
+                run->seconds,
+                run->errors > 0
+                    ? std::format(", {} errors", run->errors).c_str()
+                    : "",
+                run->empty ? " -- NOTHING DRAWN" : "");
+    return run->empty ? 1 : 0;
   }
 
   // Extension packages as files: no controller needed.
@@ -4061,7 +4204,9 @@ main(int argc, char** argv)
   if (cmd == "upscaler") {
     // Settings > Upscaling: an upscaler's values laid on the kept ones
     // ("k=v,..."), or its defaults again (--reset); or the one a kind
-    // runs ("use <id>", "use auto [video|image]"); then every one's.
+    // runs ("use <id>", "use auto [video|image]"; "use <id> regenerate",
+    // "use auto regenerate": the refiner of a clip past 768P); then
+    // every one's.
     if (!args.empty() && args[0] == "use") {
       if (args.size() < 2) {
         return usage();
@@ -4123,6 +4268,59 @@ main(int argc, char** argv)
                                            : to_text(v);
         std::printf("  %-12s %s%s\n", key.c_str(), shown.c_str(),
                     why.empty() ? "" : std::format("  ({})", why).c_str());
+      }
+    }
+    return 0;
+  }
+  if (cmd == "interpolator") {
+    // Settings > Temporal Resampling: an interpolator's values laid on
+    // the kept ones ("k=v,..."), or its defaults again (--reset); or the
+    // one Render Interpolated runs ("use <id>", "use auto"); then every
+    // one's.
+    if (!args.empty() && args[0] == "use") {
+      if (args.size() < 2) {
+        return usage();
+      }
+      if (auto st = c.use_interpolator(args[1]); !st.ok()) {
+        return fail(st.error());
+      }
+    } else if (!args.empty()) {
+      bool reset = false;
+      Json values = Json::object();
+      for (std::size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "--reset") {
+          reset = true;
+        } else {
+          values.update(tune_spec(args[i]));
+        }
+      }
+      if (auto st = c.set_interpolate_tuning(args[0], values, reset);
+          !st.ok()) {
+        return fail(st.error());
+      }
+    }
+    const Json all = c.interpolate_settings();
+    const auto chosen = jget<std::string>(all, "chosen", "");
+    const auto runs = jget<std::string>(all, "runs", "");
+    std::printf("interpolates with %s, runs %s%s\n",
+                chosen.empty() ? "auto" : chosen.c_str(),
+                runs.empty() ? "none (none installed)" : runs.c_str(),
+                jget(all, "engine", true)
+                    ? ""
+                    : " (this vpipe has no RIFE: temporal-resample's rife)");
+    for (const auto& u : all["interpolators"]) {
+      std::printf("%-16s %-16s %s%s%s  from %s\n",
+                  u["id"].get<std::string>().c_str(),
+                  u["name"].get<std::string>().c_str(),
+                  u["state"].get<std::string>().c_str(),
+                  jget(u, "runs", false) ? "  (in use)" : "",
+                  jget(u, "custom", false) ? "  (changed)" : "",
+                  jget<std::string>(u["source"], "host", "").c_str());
+      const Json& t = u["tuning"];
+      for (const auto& o : t["options"]) {
+        const auto key = o["key"].get<std::string>();
+        const Json v = jget(t["values"], key.c_str(), Json());
+        std::printf("  %-16s %s\n", key.c_str(), to_text(v).c_str());
       }
     }
     return 0;
@@ -4564,6 +4762,8 @@ main(int argc, char** argv)
         req.options["split"] = args[++i];
       } else if (args[i] == "--prompt") {
         req.options["prompt"] = args[++i];
+      } else if (args[i] == "--fps") {
+        req.options["fps"] = std::atof(args[++i].c_str());
       }
     }
     auto made = c.run_asset_operation(std::move(req));
@@ -5213,6 +5413,10 @@ main(int argc, char** argv)
         req.tail_seconds = std::atof(next().c_str());
       } else if (a == "--latents") {
         req.continue_latents = true;
+      } else if (a == "--clean") {
+        // Through its end from its kept latents, the guide cleaned.
+        req.continue_latents = true;
+        req.clean_guide = true;
       } else if (a == "--keep-latents") {
         req.keep_latents = true;
       } else if (a == "--song-sound") {
@@ -5324,6 +5528,98 @@ main(int argc, char** argv)
       return fail(j.error());
     }
     return named(c, follow(c, *j));
+  }
+  if (cmd == "program") {
+    if (args.size() < 2) {
+      return usage();
+    }
+    auto pid = open_or_fail(c, args[0]);
+    if (!pid.ok()) {
+      return fail(pid.error());
+    }
+    ProceduralRequest req;
+    req.project = *pid;
+    if (auto id = AssetId::parse(args[1])) {
+      req.program = *id;
+    } else {
+      std::ifstream in(args[1], std::ios::binary);
+      if (!in) {
+        return fail(make_error(Code::Io,
+                               std::format("cannot read {}", args[1])));
+      }
+      std::ostringstream ss;
+      ss << in.rdbuf();
+      req.code = ss.str();
+      req.name = fs::path(args[1]).stem().string();
+    }
+    for (std::size_t i = 2; i < args.size(); ++i) {
+      const std::string& a = args[i];
+      auto next = [&]() -> std::string {
+        return i + 1 < args.size() ? args[++i] : std::string();
+      };
+      if (a == "--size") {
+        std::sscanf(next().c_str(), "%dx%d", &req.width, &req.height);
+      } else if (a == "--seconds") {
+        req.seconds = std::atof(next().c_str());
+      } else if (a == "--fps") {
+        req.fps = std::atof(next().c_str());
+      } else if (a == "--seed") {
+        req.seed = std::strtoull(next().c_str(), nullptr, 10);
+      } else if (a == "--name") {
+        req.name = next();
+      } else if (a == "--asset") {
+        // What it reads: an asset, or a file imported first.
+        auto r = reference_asset(c, *pid, next());
+        if (!r.ok()) {
+          return fail(r.error());
+        }
+        req.assets.push_back(*r);
+      } else {
+        return usage();
+      }
+    }
+    auto started = c.render_procedural(req);
+    if (!started.ok()) {
+      return fail(started.error());
+    }
+    std::printf("program %s, drawn as %s\n",
+                started->program.str().c_str(),
+                started->asset.str().c_str());
+    for (;;) {
+      Event ev;
+      if (!c.events().wait(ev, 1000) || ev.job != started->job) {
+        continue;
+      }
+      if (ev.kind == "job.progress") {
+        const int done = jget(ev.data, "step", 0);
+        const int of = jget(ev.data, "steps", 0);
+        if (done == of || done % 24 == 0) {
+          std::fprintf(stderr, "  drawing %d/%d\n", done, of);
+        }
+        continue;
+      }
+      if (ev.kind != "job.finished" && ev.kind != "job.failed" &&
+          ev.kind != "job.cancelled") {
+        continue;
+      }
+      for (const auto& l : jget(ev.data, "log", Json::array())) {
+        media::ProgramLog pl;
+        pl.level = jget<std::string>(l, "level", "");
+        pl.text = jget<std::string>(l, "text", "");
+        pl.source = jget<std::string>(l, "source", "");
+        pl.line = jget(l, "line", 0);
+        pl.column = jget(l, "column", 0);
+        std::printf("%s\n", media::to_text(pl).c_str());
+      }
+      if (ev.kind != "job.finished") {
+        std::fprintf(stderr, "not drawn: %s\n",
+                     jget<std::string>(ev.data, "message", "").c_str());
+        return 1;
+      }
+      std::printf("drawn: %s (%d errors)\n", started->asset.str().c_str(),
+                  jget(ev.data, "errors", 0));
+      return 0;
+    }
   }
   if (cmd == "export") {
     if (!args.empty() && args[0] == "--formats") {

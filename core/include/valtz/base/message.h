@@ -687,6 +687,29 @@ inline constexpr Message kLatentsDoNotFit{
     "core.latents_do_not_fit",
     "The latents {clip} kept do not cover this end of it: continue it "
     "from its picture and sound."};
+inline constexpr Message kInterpolateKind{
+    "core.interpolate_kind",
+    "Only a clip's frames can be interpolated."};
+inline constexpr Message kInterpolateFlattenFirst{
+    "core.interpolate_flatten_first",
+    "\"{name}\" is a composition: flatten the layer first (its menu's "
+    "Flatten), then interpolate the clip it makes."};
+inline constexpr Message kNoInterpolator{
+    "core.no_interpolator",
+    "No frame interpolation model is here: get RIFE in Settings › "
+    "Capabilities › Frame Interpolation."};
+inline constexpr Message kInterpolateNothing{
+    "core.interpolate_nothing",
+    "\"{name}\" already has the frames its timeline shows ({fps} a "
+    "second): nothing to make. Slow it down, or ask for a rate."};
+inline constexpr Message kCleanGuideNeedsLatents{
+    "core.clean_guide_needs_latents",
+    "A continuation is cleaned through the end of a clip that kept its "
+    "latents: continue it through its end, from them."};
+inline constexpr Message kCleanGuideNoModel{
+    "core.clean_guide_no_model",
+    "Cleaning a continuation needs {models} to restore its frames: get "
+    "one in Settings › Capabilities."};
 inline constexpr Message kGrabNeedsClip{
     "core.grab_needs_clip",
     "A frame can only be grabbed from a clip."};

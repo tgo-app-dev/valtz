@@ -48,6 +48,11 @@ struct RootView: View {
         }
         .animation(.easeInOut(duration: 0.15),
                    value: projectDrag.showsProject)
+        // Render Again (Assets' menu, DESIGN §4t): a program's size,
+        // length and seed.
+        .sheet(item: $model.renderAgain) { f in
+            RenderAgainSheet(model: model, form: f)
+        }
         // A fleet job running here (DESIGN §11): the window given over to
         // it -- its controls out of reach, the mark in blue, the job's
         // progress.

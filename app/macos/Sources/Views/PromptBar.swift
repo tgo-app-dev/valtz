@@ -34,7 +34,7 @@ struct PromptBar: View {
             .labelsHidden()
             .fixedSize()
             .help("What Start makes")
-            if model.activeModality != .agent {
+            if !model.activeModality.isAgentic {
                 ModelPicker(model: model)
                     .help("The model Start runs -- the generation card's, one choice")
             }

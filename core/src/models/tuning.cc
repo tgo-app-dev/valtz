@@ -298,7 +298,8 @@ snake(std::string_view k)
 
 // The options a family declares for itself (catalog
 // `engine.vpipe.options`: an extension's knobs for its own stages),
-// after Valtz's: each {key, type: bool | int | real, min, max, step,
+// after Valtz's: each {key, type: bool | int | real | choice (its
+// `choices`, strings: VOSR's colour fix), min, max, step,
 // default, presets: {speed, balanced, quality}, needs, excludes,
 // requires: "matrix-cores", label, note, help, group, stage}. A key
 // Valtz offers itself, or one already declared, is not taken: one key,
@@ -324,7 +325,34 @@ declared_offers(const Json& vp, const TuningContext& ctx,
                                      return o.key == key;
                                    });
     if (!snake(key) || kOwn.contains(key) || taken ||
-        (type != "bool" && type != "int" && type != "real")) {
+        (type != "bool" && type != "int" && type != "real" &&
+         type != "choice")) {
+      continue;
+    }
+    if (type == "choice") {
+      Offer o{key, Kind::Choice};
+      for (const auto& c : jget(d, "choices", Json::array())) {
+        if (c.is_string() && snake(c.get<std::string>())) {
+          o.choices.push_back(c);
+        }
+      }
+      if (o.choices.empty()) {
+        continue;
+      }
+      // Its preference's, else its default, else its first.
+      o.preset = jget(jget(d, "presets", Json::object()),
+                      std::string(preference).c_str(),
+                      jget(d, "default", o.choices.front()));
+      if (std::ranges::find(o.choices, o.preset) == o.choices.end()) {
+        o.preset = o.choices.front();
+      }
+      o.needs = jget<std::string>(d, "needs", "");
+      o.declared = true;
+      o.label = jget<std::string>(d, "label", key);
+      o.note = jget<std::string>(d, "note", "");
+      o.help = jget<std::string>(d, "help", "");
+      o.group = jget<std::string>(d, "group", "");
+      out.push_back(std::move(o));
       continue;
     }
     const Kind kind = type == "int"    ? Kind::Int
@@ -400,6 +428,13 @@ offers(const ModelEntry& m, const TuningContext& ctx,
     declared_offers(vp, ctx, preference, out);
     return out;
   }
+  // Nor does a frame interpolator (RIFE, DESIGN §4u): one forward a
+  // frame, its knobs declared -- the scale its flow is read at, its
+  // scene cut -- and nothing of a denoiser's.
+  if (m.role == "interpolate") {
+    declared_offers(vp, ctx, preference, out);
+    return out;
+  }
 
   // Speech (MOSS-TTS) samples a token a frame: no steps to take; nor
   // does a checkpoint whose schedule is its own (`steps_fixed`).
@@ -416,7 +451,10 @@ offers(const ModelEntry& m, const TuningContext& ctx,
   // drew a 768P draft's Japanese-looking woman as another and garbled its
   // sign's words (measured 2026-10-31, tgo-m5-3, 1920 x 1088 x 22). The
   // draft's at every preference: what changes there is the arithmetic.
-  if (upscale && jget(vp, "regenerate", Json()).is_object()) {
+  // A refiner without one (in context: HyperFlow's grid its start) has
+  // no choice.
+  if (upscale && jget(jget(vp, "regenerate", Json::object()),
+                      "keep_draft_sigma", Json()).is_number()) {
     Offer o{"refine_start", Kind::Choice};
     o.choices = Json::array({"draft", "release"});
     o.preset = "draft";

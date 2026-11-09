@@ -87,6 +87,15 @@ private struct AgentChatWelcome: View {
                     .font(.title3.weight(.semibold))
                 Text("Words alone: no Valtz tools, so its context is the conversation’s. Paste or drop pictures here: they are shown to it with your words.")
                     .modifier(WelcomeText())
+            case "procedural":
+                Text("Draw With a Program")
+                    .font(.title3.weight(.semibold))
+                Text("Say what to draw. It writes a program — a canvas, SVG, WebGL, three.js or Babylon.js — draws it as a picture or a clip, looks at what it drew and puts it right. The program runs in a sandboxed page with no network and no files; the drawing lands in Assets beside its code.")
+                    .modifier(WelcomeText())
+                Text("Draws at \(String(model.proceduralWidth)) × \(String(model.proceduralHeight))")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             default:
                 Text("Ask the Agent")
                     .font(.title3.weight(.semibold))
@@ -118,17 +127,20 @@ private struct WelcomeText: ViewModifier {
 
 /// The tab's Valtz tools: chosen before its first words -- Valtz's own
 /// (one tab at a time: offered greyed while another has them), Look and
-/// Add, or none -- and said after.
+/// Add, Programs (a procedural session, as the Procedural target's: it
+/// draws programs at that card's size), or none -- and said after.
 private struct AgentToolsChoice: View {
     @Bindable var model: AppModel
 
     var body: some View {
         let skills = model.agent?.skills ?? model.agentSkills
-        if model.agent == nil {
+        // Procedural's tabs all write programs: nothing to choose.
+        if model.agent == nil, model.activeModality == .agent {
             Picker(selection: Binding(
                 get: { model.agentSkills },
                 set: { model.setAgentSkills($0) })) {
-                ForEach(["full", "chat", "none"], id: \.self) { k in
+                ForEach(["full", "chat", "procedural", "none"],
+                        id: \.self) { k in
                     Label(AppModel.agentSkillsName(k),
                           systemImage: AppModel.agentSkillsSymbol(k))
                         .tag(k)
@@ -222,6 +234,9 @@ private struct AgentConversation: View {
         /// The agent's words -- a part of them -- as written, or being
         /// written.
         case words(String, writing: Bool)
+        /// A block of code fenced in its words (CodeFences): a code
+        /// block, `closed` false while it is being written.
+        case code(language: String, body: String, closed: Bool)
         case steps([AgentStep])
         case question(String)
         case note(String)
@@ -242,12 +257,24 @@ private struct AgentConversation: View {
                 id: id, parts: cuts.parts(id, text), attached: attached,
                 place: place)))
         }
-        // The agent's words: a row a part, as written or being written.
+        // The agent's words: a row a part, as written or being written
+        // -- a block of code fenced in them a code block of its own.
         func words(_ id: String, _ text: String, writing: Bool) {
-            for (k, p) in cuts.parts(id, text).enumerated() {
-                add("\(id).w\(k)", .words(p.text, writing: writing),
-                    gap: k == 0 ? Self.rowGap
-                        : p.blankBefore ? Self.blankLine : 0)
+            for (i, seg) in CodeFences.split(text).enumerated() {
+                switch seg {
+                case .text(let t):
+                    let tid = "\(id).t\(i)"
+                    for (k, p) in cuts.parts(tid, t).enumerated() {
+                        add("\(tid).w\(k)", .words(p.text, writing: writing),
+                            gap: k == 0 ? (i == 0 ? Self.rowGap : 8)
+                                : p.blankBefore ? Self.blankLine : 0)
+                    }
+                case .code(let language, let body, let closed):
+                    add("\(id).c\(i)",
+                        .code(language: language, body: body,
+                              closed: closed),
+                        gap: i == 0 ? Self.rowGap : 8)
+                }
             }
         }
         var next = 0
@@ -375,6 +402,8 @@ private struct AgentConversation: View {
                 .foregroundStyle(writing ? .secondary : .primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        case .code(let language, let body, let closed):
+            CodeBlockView(code: body, language: language, closed: closed)
         case .steps(let steps):
             AgentStepGroup(steps: steps)
         case .question(let q):
@@ -738,6 +767,13 @@ private struct AgentStepDisclosure: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // The program it was given: a code block, shown -- not one
+            // line of JSON escapes behind the disclosure.
+            if let code = step.code, !code.isEmpty {
+                CodeBlockView(code: code, language: "javascript")
+                    .padding(.leading, 24)
+                    .padding(.top, 2)
+            }
             if open {
                 VStack(alignment: .leading, spacing: 4) {
                     if let a = step.argsText, a != "{}" {
@@ -843,8 +879,10 @@ struct AgentStatusRow: View {
 
     @ViewBuilder
     private func controls(_ a: AgentSession?) -> some View {
-        // No tools, no steps to ask about.
-        if (a?.skills ?? model.agentSkills) != "none" {
+        // No tools, no steps to ask about -- nor in Procedural, whose
+        // programs are drawn as they come.
+        let skills = a?.skills ?? model.agentSkills
+        if skills != "none" && skills != "procedural" {
             askFirst(a)
         }
         sessionControls(a)

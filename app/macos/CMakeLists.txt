@@ -73,6 +73,7 @@ set(VALTZ_APP_SOURCES
   Sources/Views/CapabilitiesView.swift
   Sources/Views/HelperView.swift
   Sources/Views/UpscalingView.swift
+  Sources/Views/TemporalResamplingView.swift
   Sources/Views/StorageView.swift
   Sources/Views/StorageLocations.swift
   Sources/Views/SettingsView.swift
@@ -119,8 +120,10 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/SuggestionPane.swift
   Sources/Simple/AgentChat.swift
   Sources/Simple/AgentTabs.swift
+  Sources/Simple/CodeBlock.swift
   Sources/Simple/AgentModel.swift
   Sources/Simple/AgentViews.swift
+  Sources/Simple/Procedural.swift
   Sources/Simple/ReferenceRow.swift
   Sources/Simple/Adjustments.swift
   Sources/Simple/ColorMixer.swift
@@ -262,6 +265,22 @@ set_source_files_properties(${VALTZ_DRAMA3_LICENSE} PROPERTIES
   MACOSX_PACKAGE_LOCATION Resources/Licenses/Fish-Audio-Drama-3)
 list(APPEND VALTZ_APP_RESOURCES ${VALTZ_DRAMA3_LICENSE})
 
+# The libraries the programs Valtz draws are served (DESIGN §4t), each
+# with its license and notice: three.js (MIT), Babylon.js (Apache-2.0).
+set(VALTZ_THREE_LICENSE
+  "${PROJECT_SOURCE_DIR}/3rd-party/three/LICENSE"
+  "${PROJECT_SOURCE_DIR}/3rd-party/three/NOTICE")
+set_source_files_properties(${VALTZ_THREE_LICENSE} PROPERTIES
+  MACOSX_PACKAGE_LOCATION Resources/Licenses/three.js)
+list(APPEND VALTZ_APP_RESOURCES ${VALTZ_THREE_LICENSE})
+set(VALTZ_BABYLON_LICENSE
+  "${PROJECT_SOURCE_DIR}/3rd-party/babylonjs/LICENSE"
+  "${PROJECT_SOURCE_DIR}/3rd-party/babylonjs/NOTICE"
+  "${PROJECT_SOURCE_DIR}/3rd-party/babylonjs/NOTICE.md")
+set_source_files_properties(${VALTZ_BABYLON_LICENSE} PROPERTIES
+  MACOSX_PACKAGE_LOCATION Resources/Licenses/Babylon.js)
+list(APPEND VALTZ_APP_RESOURCES ${VALTZ_BABYLON_LICENSE})
+
 # ---- Localization (DESIGN §10b) ------------------------------------------
 #
 # One String Catalog, Resources/Localizable.xcstrings, holds every UI
@@ -384,6 +403,31 @@ if(VALTZ_SPARKLE)
     COMMENT "Copying Sparkle.framework into Valtz.app"
     VERBATIM)
 endif()
+
+# Programs drawn (DESIGN §4t): valtz-procedural in Contents/Helpers --
+# beside valtzctl, which bundle-app.sh adds -- and Valtz's copies of
+# three.js and Babylon.js in Contents/Resources/procedural, where the
+# core finds them (media/procedural.h). Nested code signed before the
+# bundle.
+add_dependencies(Valtz valtz-procedural)
+set_property(TARGET Valtz APPEND PROPERTY
+  LINK_DEPENDS "$<TARGET_FILE:valtz-procedural>")
+add_custom_command(TARGET Valtz POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory
+          "$<TARGET_BUNDLE_CONTENT_DIR:Valtz>/Helpers"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "$<TARGET_FILE:valtz-procedural>"
+          "$<TARGET_BUNDLE_CONTENT_DIR:Valtz>/Helpers/"
+  COMMAND codesign --force --sign - --options runtime
+          "$<TARGET_BUNDLE_CONTENT_DIR:Valtz>/Helpers/valtz-procedural"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+          "${PROJECT_SOURCE_DIR}/3rd-party/three"
+          "$<TARGET_BUNDLE_CONTENT_DIR:Valtz>/Resources/procedural/three"
+  COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+          "${PROJECT_SOURCE_DIR}/3rd-party/babylonjs"
+          "$<TARGET_BUNDLE_CONTENT_DIR:Valtz>/Resources/procedural/babylonjs"
+  COMMENT "Copying valtz-procedural and its libraries into Valtz.app"
+  VERBATIM)
 
 # Ad-hoc sign after linking so the hardened-runtime entitlements (library
 # validation off, for dlopen'd FFmpeg and vpipe plugins) are exercised in
