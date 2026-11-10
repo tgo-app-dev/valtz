@@ -147,6 +147,12 @@ inline constexpr std::string_view kOpSummarizeVideo = "summarize-video";
 // An Output event each, data {"output": the catalog's name for it --
 // separate's `stem`, then `residual`}.
 inline constexpr std::string_view kOpSeparateAudio = "separate-audio";
+// A sound's BEATS found (DESIGN §4v): input "source" (a sound, a clip's
+// sound, a mix), heard as one channel at 22050 Hz, by vpipe's
+// beat-track over the whole of it -- librosa's beat tracker, no model.
+// A text file telling them (param "name" the sound's); the Output
+// event's data {"beats": media::Beats}.
+inline constexpr std::string_view kOpTrackBeats = "track-beats";
 // A RefMod MADE (DESIGN §4s): inputs "picture", "clip", "sound" -- the
 // row's, in order -- each fitted as params "sources" says and encoded by
 // MiniMax H3's video or audio VAE (ModelRef::dir, a partition's folder),

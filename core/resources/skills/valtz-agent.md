@@ -306,7 +306,15 @@ be MADE is shots: below):
    0.2-0.3 (0 for wind or noise) -- but a clip where someone speaks to
    the camera stays at 1, and the music goes down while they speak:
    `set_layer_sound` on the music with `duck_under` those clips' layers
-   (it eases down and back up around each; `duck_volume` how low). The
+   (it eases down and back up around each; `duck_volume` how low).
+   A sound's SPACE, when asked or the scene calls for it, by
+   `set_layer_sound`: a REVERB (`reverb_mix` 0.15-0.3 a room, more for a
+   church; `reverb_decay` seconds, 0.5 small ... 4 a cathedral;
+   `reverb_damping` up for a soft, furnished room; the room's
+   `reverb_pre_delay` and `reverb_size` the layer's), where it sits
+   (`stereo_pan`, `stereo_width`, `distance` in metres) and, for the
+   mix, `bass_mono` (120) and `crossfeed` (headphones). A reverb rings
+   on past the layer's end: leave the timeline room for it. The
    person's own SONG under a voice-over or someone speaking:
    `separate_sound` (when `can_separate_songs`) gives its accompaniment
    without the singing -- `add_sound` that one.
@@ -323,6 +331,39 @@ Thirty years.", and `speakers` -- each `name` and its `voice_from` (all
 of them, or none) -- one call for the whole scene. A composition of
 SOUND (a podcast, a soundtrack): `create_composition` kind "sound", then
 `add_sound`, `generate_music`, `generate_voiceover`.
+
+## Beats, words and scenes: a timeline's marks
+
+A timeline's sounds and clips can carry MARKS: the BEATS of music, and
+BOOKMARKS of what is said and seen -- a transcript's lines and the sounds
+heard, a clip summary's scenes. `get_composition` says which layers have
+them (`beats`, `bookmarks`); `get_timeline_marks` lists them in the
+timeline's seconds, through each layer's trim and speed.
+
+- CUT ON THE BEAT (a music video, a montage, "in sync with the music"):
+  lay the clips (`add_clip`, any lengths) and the music (`add_sound`),
+  then ONE `cut_to_beats` -- each clip a whole number of beats, end to
+  end from a beat: `beats` 4 (a bar) for a calm cut, 2 or 1 for an
+  energetic one, or a list, one a clip (longer on a slow shot). It finds
+  the music's beats itself. Then `get_composition`: end the music with
+  the last cut (`set_layer_time`, its fade kept) or the cuts with it.
+- SOMETHING ON THE BEAT -- a pulse of zoom, a flash, words one by one:
+  `detect_beats` on the music, `get_timeline_marks` (`kinds` ["beats"],
+  `from` / `to` for a stretch), then `key_layer` at those seconds -- a
+  layer's keys count from ITS start: take its start off. A few beats,
+  not hundreds.
+- SUBTITLES of someone speaking: `transcribe` the clip or the sound, then
+  ONE `add_subtitles` naming the layer that shows it -- every line laid
+  where it is said. `background` "#00000099" over a busy picture; called
+  again, they are laid again. Subtitles are the words as said: there is
+  no translating them.
+- A title ON A LINE, a cut at a SCENE: `show_marks` puts the transcript
+  (`marks` "transcript") or the clip's summary ("summary", after
+  `describe_clip`) on it; `get_timeline_marks` then tells where each line
+  or scene falls on the timeline. Cut between lines, never through one;
+  a scene's start is a natural cut.
+- The person sees the marks too: `show_marks` when they ask to see the
+  beats, the lines or the scenes on the timeline (`on` false hides them).
 
 ## Motion: keys over time
 
@@ -347,7 +388,12 @@ that key from the one before -- "smooth" for anything a camera would do,
 - A speed RAMP (a clip): `speed` 1, then 0.3 at the moment, then 1.
 - Sound over time: `volume`, `pitch`, `eq` keys (music swelling at the
   end). For music under speech, `set_layer_sound`'s `duck_under` is
-  simpler.
+  simpler. Its REVERB and PLACE too: `reverb_mix`, `reverb_decay`,
+  `reverb_damping`, `stereo_pan`, `stereo_width`, `distance` -- a car
+  passing left to right (`stereo_pan` -1 to 1, `distance` 8 to 1 and
+  back), a voice walking off into a hall (`distance` up, `reverb_mix`
+  up). Each is a track of its own: a key naming the pan leaves the fades
+  as they were.
 
 A track a key names -- the look, the box, `rotate`, `speed`, the sound
 -- is set from these keys; the others stay. One key is a steady value.

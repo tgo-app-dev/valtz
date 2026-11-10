@@ -1,6 +1,10 @@
 #include "testing.h"
 
+#include "valtz/assist/transcript.h"
+#include "valtz/assist/video-summary.h"
 #include "valtz/base/json.h"
+#include "valtz/media/beats.h"
+#include "valtz/media/bookmarks.h"
 #include "valtz/media/color.h"
 #include "valtz/media/crop.h"
 #include "valtz/media/exif.h"
@@ -9,7 +13,9 @@
 #include "valtz/media/movie.h"
 #include "valtz/media/probe.h"
 #include "valtz/media/refmod.h"
+#include "valtz/media/reverb.h"
 #include "valtz/media/sound.h"
+#include "valtz/media/space.h"
 #include "valtz/project/records.h"
 
 #include <CoreGraphics/CoreGraphics.h>
@@ -1549,3 +1555,432 @@ TEST(media, a_refmods_arithmetic_is_pytorchs)
   CHECK(worst(r, refined) < 1e-4);
 }
 
+
+// A REVERB's response (media/reverb.h): its pre-delay silent, its energy
+// 1, fading to -60 dB at its decay (Schroeder's backward integral, the
+// slope between -5 and -35 dB), its highs dying sooner with damping, its
+// echoes sparse at first in a large room and dense in a small one; the
+// same room the same echoes, its two channels apart.
+TEST(media, a_reverb_response_rings_as_set)
+{
+  using media::ReverbVoice;
+  const int fs = 48000;
+  const ReverbVoice v{1.2, 0.0, 0.05};
+  const auto h = media::reverb_impulse(v, 0.5, 0, fs);
+  REQUIRE(h.size() == static_cast<std::size_t>(std::ceil(1.25 * fs)));
+  double e = 0, before = 0;
+  for (std::size_t i = 0; i < h.size(); ++i) {
+    e += double(h[i]) * h[i];
+    if (i < static_cast<std::size_t>(0.05 * fs)) {
+      before += std::abs(h[i]);
+    }
+  }
+  CHECK(std::abs(e - 1) < 1e-4);
+  CHECK(before == 0);
+  // RT60 by the slope of the decay curve.
+  auto rt60 = [&](const std::vector<float>& r) {
+    std::vector<double> edc(r.size() + 1, 0);
+    for (std::size_t i = r.size(); i-- > 0;) {
+      edc[i] = edc[i + 1] + double(r[i]) * r[i];
+    }
+    auto at = [&](double db) {
+      for (std::size_t i = 0; i < r.size(); ++i) {
+        if (10 * std::log10(std::max(1e-30, edc[i] / edc[0])) <= db) {
+          return static_cast<double>(i) / fs;
+        }
+      }
+      return static_cast<double>(r.size()) / fs;
+    };
+    return 2 * (at(-35) - at(-5));
+  };
+  const double measured = rt60(h);
+  const double longer = rt60(media::reverb_impulse({3.0, 0.0, 0.05}, 0.5,
+                                                   0, fs));
+  std::printf("[media] reverb: RT60 set 1.2 s -> %.2f s, 3.0 s -> %.2f s\n",
+              measured, longer);
+  CHECK(std::abs(measured - 1.2) < 0.15);
+  CHECK(std::abs(longer - 3.0) < 0.35);
+  // Damping: the late response's highs (its sample-to-sample steps)
+  // against its lows, darker with damping.
+  auto brightness = [&](const std::vector<float>& r) {
+    double hi = 0, lo = 0;
+    for (std::size_t i = r.size() / 2; i + 1 < r.size(); ++i) {
+      hi += double(r[i + 1] - r[i]) * (r[i + 1] - r[i]);
+      lo += double(r[i]) * r[i];
+    }
+    return hi / std::max(1e-30, lo);
+  };
+  const double bright = brightness(h);
+  const double dark =
+      brightness(media::reverb_impulse({1.2, 1.0, 0.05}, 0.5, 0, fs));
+  std::printf("[media] reverb: late brightness %.4f undamped, %.4f damped\n",
+              bright, dark);
+  CHECK(dark < bright * 0.1);
+  // Size: the first 30 ms's crest (peak over rms) -- sparse echoes stand
+  // out of a large room's, a small room's are already dense.
+  auto crest = [&](double size) {
+    const auto r = media::reverb_impulse({1.2, 0.0, 0.05}, size, 0, fs);
+    double peak = 0, sum = 0;
+    const auto a = static_cast<std::size_t>(0.05 * fs);
+    const auto b = static_cast<std::size_t>(0.08 * fs);
+    for (std::size_t i = a; i < b; ++i) {
+      peak = std::max(peak, double(std::abs(r[i])));
+      sum += double(r[i]) * r[i];
+    }
+    return peak / std::sqrt(sum / static_cast<double>(b - a));
+  };
+  const double small = crest(0), large = crest(1);
+  std::printf("[media] reverb: early crest %.1f small room, %.1f large\n",
+              small, large);
+  CHECK(large > 2 * small);
+  // The same room, the same echoes; the right channel apart.
+  CHECK(media::reverb_impulse(v, 0.5, 0, fs) == h);
+  const auto right = media::reverb_impulse(v, 0.5, 1, fs);
+  double c = 0;
+  for (std::size_t i = 0; i < h.size(); ++i) {
+    c += double(h[i]) * right[i];
+  }
+  CHECK(std::abs(c) < 0.1);
+}
+
+// The CONVOLUTION (media::convolve_reverb): partitioned and summed on the
+// GPU as on the CPU, and either the same as a direct convolution; a send
+// hearing two responses by its picks hears each block's mix.
+TEST(media, a_reverb_is_convolved_on_the_gpu_as_on_the_cpu)
+{
+  const int fs = 48000;
+  std::uint64_t seed = 7;
+  auto noise = [&] {
+    seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+    return static_cast<float>(static_cast<double>(seed >> 40) /
+                                  static_cast<double>(1ull << 24) -
+                              0.5);
+  };
+  // Direct: a short send, one response.
+  std::vector<float> send(static_cast<std::size_t>(0.7 * fs));
+  for (auto& x : send) {
+    x = noise();
+  }
+  const media::ReverbVoice v{0.3, 0.4, 0.01};
+  std::array<std::vector<float>, 2> r{media::reverb_impulse(v, 0.4, 0, fs),
+                                      media::reverb_impulse(v, 0.4, 1, fs)};
+  const std::size_t out_frames = send.size() + r[0].size();
+  media::ReverbStats gs, cs;
+  auto gpu = media::convolve_reverb(send.data(), send.size(), {r}, {},
+                                    out_frames, true, &gs);
+  auto cpu = media::convolve_reverb(send.data(), send.size(), {r}, {},
+                                    out_frames, false, &cs);
+  REQUIRE_OK(gpu);
+  REQUIRE_OK(cpu);
+  REQUIRE((*gpu)[0].size() == out_frames);
+  double worst_direct = 0, worst_gpu = 0, peak = 0;
+  for (std::size_t i = 0; i < out_frames; i += 37) {
+    for (int c = 0; c < 2; ++c) {
+      double d = 0;
+      for (std::size_t k = 0; k < r[c].size() && k <= i; ++k) {
+        if (i - k < send.size()) {
+          d += double(send[i - k]) * r[c][k];
+        }
+      }
+      peak = std::max(peak, std::abs(d));
+      worst_direct = std::max(worst_direct, std::abs((*cpu)[c][i] - d));
+      worst_gpu = std::max(worst_gpu,
+                           double(std::abs((*gpu)[c][i] - (*cpu)[c][i])));
+    }
+  }
+  std::printf("[media] reverb: direct vs CPU %.2e, GPU vs CPU %.2e (peak "
+              "%.2f; GPU %s)\n", worst_direct, worst_gpu, peak,
+              gs.gpu ? "ran" : "did not run");
+  CHECK(!cs.gpu);
+  CHECK(worst_direct < 1e-4 * std::max(1.0, peak));
+  CHECK(worst_gpu < 1e-4 * std::max(1.0, peak));
+
+  // Two responses, picked along the send: each block of it hears its
+  // mix -- the same as the send cut in two, each half convolved with
+  // its own.
+  const media::ReverbVoice w{1.0, 0.0, 0.0};
+  std::array<std::vector<float>, 2> r2{media::reverb_impulse(w, 0.4, 0, fs),
+                                       media::reverb_impulse(w, 0.4, 1, fs)};
+  const std::size_t half = 8 * media::kReverbBlock;
+  std::vector<float> two(2 * half);
+  for (auto& x : two) {
+    x = noise();
+  }
+  std::vector<media::ReverbPick> picks(16);
+  for (std::size_t k = 8; k < 16; ++k) {
+    picks[k] = {1, 1, 0};
+  }
+  const std::size_t n2 = two.size() + r2[0].size();
+  auto both = media::convolve_reverb(two.data(), two.size(), {r, r2}, picks,
+                                     n2, true);
+  REQUIRE_OK(both);
+  std::vector<float> first(two.begin(), two.begin() + half);
+  std::vector<float> second(two.size(), 0.0f);
+  std::copy(two.begin() + half, two.end(), second.begin() + half);
+  auto a = media::convolve_reverb(first.data(), first.size(), {r}, {}, n2,
+                                  false);
+  auto b = media::convolve_reverb(second.data(), second.size(), {r2}, {},
+                                  n2, false);
+  REQUIRE_OK(a);
+  REQUIRE_OK(b);
+  double worst_split = 0;
+  for (std::size_t i = 0; i < n2; ++i) {
+    worst_split = std::max(worst_split,
+                           double(std::abs((*both)[0][i] - (*a)[0][i] -
+                                           (*b)[0][i])));
+  }
+  std::printf("[media] reverb: two responses picked vs halves %.2e\n",
+              worst_split);
+  CHECK(worst_split < 1e-3);
+
+  // A minute through a ten-second room: how long it takes.
+  std::vector<float> minute(static_cast<std::size_t>(60 * fs));
+  for (auto& x : minute) {
+    x = noise();
+  }
+  const media::ReverbVoice big{10.0, 0.5, 0.05};
+  std::array<std::vector<float>, 2> r3{
+      media::reverb_impulse(big, 0.5, 0, fs),
+      media::reverb_impulse(big, 0.5, 1, fs)};
+  media::ReverbStats ms;
+  auto long_one = media::convolve_reverb(minute.data(), minute.size(), {r3},
+                                         {}, minute.size() + r3[0].size(),
+                                         true, &ms);
+  REQUIRE_OK(long_one);
+  std::printf("[media] reverb: 60 s through a 10 s room in %.3f s (GPU "
+              "%.3f s, %s)\n", ms.seconds, ms.gpu_seconds,
+              ms.gpu ? "on the GPU" : "on the CPU");
+}
+
+// Where a sound SITS (media/space.h), each on its own: a constant-power
+// pan, a width over the side alone, a distance 6 dB a doubling with its
+// highs dulled, the lows' side taken out below the bass mono's corner, and
+// a crossfeed that leaves what both sides share exactly as it was.
+// A sound's BEATS (DESIGN §4v) where a layer showing it plays them:
+// through its marks (none before its mark-in or past its mark-out), its
+// start, its speed -- a ramp's too -- and none on a picture; kept and read
+// back as data, and told to a person a bar of four to a line.
+TEST(media, beats_land_where_a_layer_plays)
+{
+  using namespace valtz::media;
+  Beats b;
+  b.tempo = 120;
+  b.seconds = 4;
+  b.times = {0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5};
+  // From 2 s on the timeline, its marks 1 s to 3 s of the sound (24 fps).
+  LayerTiming t = resolve_timing(48, 0, 24, 71, {24, 1}, {24, 1}, 4.0, {});
+  auto on = beats_on_timeline(b.times, t);
+  REQUIRE(on.size() == 4);
+  const double at[] = {2.0, 2.5, 3.0, 3.5};
+  for (std::size_t i = 0; i < on.size(); ++i) {
+    CHECK(std::abs(on[i] - at[i]) < 1e-9);
+  }
+  // Twice as fast: half as far apart, the span half as long.
+  KeyedSpeed twice;
+  twice.keys = {{0, Speed{2}}};
+  LayerTiming f = resolve_timing(48, 0, 24, 71, {24, 1}, {24, 1}, 4.0,
+                                 twice);
+  on = beats_on_timeline(b.times, f);
+  REQUIRE(on.size() == 4);
+  CHECK(std::abs(on[1] - 2.25) < 1e-9);
+  CHECK(std::abs(on[3] - 2.75) < 1e-9);
+  // A ramp from 1 to 3 over its first second: the beat 2 s into the
+  // sound where the speed brings it (timing's own inverse).
+  KeyedSpeed ramp;
+  ramp.keys = {{0, Speed{1}}, {24, Speed{3}}};
+  LayerTiming r = resolve_timing(0, 0, -1, -1, {24, 1}, {24, 1}, 4.0, ramp);
+  on = beats_on_timeline({2.0, 3.5}, r);
+  REQUIRE(on.size() == 2);
+  CHECK(std::abs(on[0] - 1.0) < 1e-6);
+  CHECK(std::abs(on[1] - 1.5) < 1e-6);
+  // A picture keeps no time.
+  LayerTiming pic = resolve_timing(0, 0, -1, -1, {}, {24, 1}, 0, {});
+  CHECK(beats_on_timeline(b.times, pic).empty());
+
+  // Kept and read back, in order whatever order they were kept in.
+  Json j = to_json(b);
+  std::swap(j["times"][0], j["times"][6]);
+  const Beats back = beats_from_json(j);
+  CHECK(back.times == b.times);
+  CHECK(back.tempo == 120 && back.seconds == 4);
+  // Told: the tempo, how many, from where to where, four to a line.
+  const std::string text = beats_text("Song", b);
+  CHECK(text.starts_with("# Beats of Song\n"));
+  CHECK(text.find("120.0 bpm, 7 beats from 0:00.500 to 0:03.500.") !=
+        std::string::npos);
+  CHECK(text.find("0:00.500  0:01.000  0:01.500  0:02.000\n"
+                  "0:02.500  0:03.000  0:03.500\n") != std::string::npos);
+  CHECK(beats_text("Hum", Beats{}).find("No beats were found") !=
+        std::string::npos);
+}
+
+// A sound's BOOKMARKS (DESIGN §4w), read from what a transcript and a
+// video summary keep: each line and each sound heard, each scene, in
+// order of start; on a layer, those that start in what it shows, where
+// its start and speed bring them, ending no later than it does.
+TEST(media, bookmarks_are_read_and_land_where_a_layer_plays)
+{
+  using namespace valtz::media;
+  valtz::assist::Transcript tr;
+  tr.seconds = 4;
+  tr.tagged = true;
+  tr.lines = {{2.5, 3.5, "Goodbye.", "English"},
+              {0.2, 0.9, "Before.", "English"},
+              {1.25, 1.75, "Hello there.", "English"}};
+  tr.events = {{1.0, 4.0, "Music", 0.8}};
+  Json tj = valtz::assist::to_json(tr);
+  // One with no start is no moment.
+  tj["lines"].push_back({{"text", "Nowhere."}});
+  const auto said = bookmarks_from_transcript(tj);
+  REQUIRE(said.size() == 4);
+  CHECK(said[0].text == "Before." && said[0].kind == Bookmark::Kind::Speech);
+  CHECK(said[1].text == "Music" && said[1].kind == Bookmark::Kind::Sound);
+  CHECK(said[2].text == "Hello there.");
+  CHECK(said[3].text == "Goodbye." && said[3].end == 3.5);
+  CHECK(kind_name(said[1].kind) == "sound");
+
+  valtz::assist::VideoSummary vs;
+  vs.seconds = 4;
+  vs.scenes = {{0, 1.5, 12, true, "A fox wakes."},
+               {1.5, 4, 20, false, "It trots off."}};
+  const auto seen = bookmarks_from_summary(valtz::assist::to_json(vs));
+  REQUIRE(seen.size() == 2);
+  CHECK(seen[1].kind == Bookmark::Kind::Scene);
+  CHECK(kind_name(seen[1].kind) == "scene");
+  CHECK(bookmarks_from_summary(tj).empty());
+
+  // From 2 s on the timeline, its marks 1 s to 3 s of the sound: "Before"
+  // and the first scene start before what it shows; "Goodbye." starts in
+  // it and ends where the layer does.
+  LayerTiming t = resolve_timing(48, 0, 24, 71, {24, 1}, {24, 1}, 4.0, {});
+  auto on = bookmarks_on_timeline(said, t);
+  REQUIRE(on.size() == 3);
+  CHECK(on[0].text == "Music");
+  CHECK(std::abs(on[0].start - 2.0) < 1e-9);
+  CHECK(std::abs(on[0].end - 4.0) < 1e-9);
+  CHECK(std::abs(on[1].start - 2.25) < 1e-9);
+  CHECK(std::abs(on[1].end - 2.75) < 1e-9);
+  CHECK(on[2].text == "Goodbye.");
+  CHECK(std::abs(on[2].start - 3.5) < 1e-9);
+  CHECK(std::abs(on[2].end - 4.0) < 1e-9);
+  auto scenes = bookmarks_on_timeline(seen, t);
+  REQUIRE(scenes.size() == 1);
+  CHECK(std::abs(scenes[0].start - 2.5) < 1e-9);
+  CHECK(std::abs(scenes[0].end - 4.0) < 1e-9);
+  // Twice as fast: "Hello there." a quarter of a second long.
+  KeyedSpeed twice;
+  twice.keys = {{0, Speed{2}}};
+  LayerTiming f = resolve_timing(48, 0, 24, 71, {24, 1}, {24, 1}, 4.0,
+                                 twice);
+  on = bookmarks_on_timeline(said, f);
+  REQUIRE(on.size() == 3);
+  CHECK(std::abs(on[1].start - 2.125) < 1e-9);
+  CHECK(std::abs(on[1].end - 2.375) < 1e-9);
+  CHECK(std::abs(on[2].start - 2.75) < 1e-9);
+  CHECK(std::abs(on[2].end - 3.0) < 1e-9);
+  // A picture keeps no time.
+  LayerTiming pic = resolve_timing(0, 0, -1, -1, {}, {24, 1}, 0, {});
+  CHECK(bookmarks_on_timeline(said, pic).empty());
+}
+
+TEST(media, a_sound_is_panned_widened_and_placed)
+{
+  const int fs = 48000;
+  const std::size_t n = fs;  // a second
+  auto tone = [&](double hz, double amp) {
+    std::vector<float> v(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      v[i] = static_cast<float>(amp * std::sin(2 * M_PI * hz * i / fs));
+    }
+    return v;
+  };
+  // The level of `hz` in `s` after its first fifth (a filter settled).
+  auto level = [&](const std::vector<float>& s, double hz) {
+    double re = 0, im = 0;
+    const std::size_t a = s.size() / 5;
+    for (std::size_t i = a; i < s.size(); ++i) {
+      re += s[i] * std::cos(2 * M_PI * hz * i / fs);
+      im += s[i] * std::sin(2 * M_PI * hz * i / fs);
+    }
+    return 2 * std::hypot(re, im) / static_cast<double>(s.size() - a);
+  };
+  auto keyed = [&](float v) { return std::vector<float>(n, v); };
+
+  // Pan: a centred tone hard left at sqrt2, nothing right; half right.
+  auto l = tone(1000, 0.5), r = tone(1000, 0.5);
+  media::pan_sound(l, r, keyed(-1));
+  CHECK(std::abs(level(l, 1000) - 0.5 * std::sqrt(2.0)) < 1e-3);
+  CHECK(level(r, 1000) < 1e-6);
+  l = tone(1000, 0.5);
+  r = tone(1000, 0.5);
+  media::pan_sound(l, r, keyed(0));
+  CHECK(l == tone(1000, 0.5));
+  media::pan_sound(l, r, keyed(0.5));
+  const double pl = level(l, 1000), pr = level(r, 1000);
+  CHECK(std::abs(pl * pl + pr * pr - 0.5) < 1e-3);  // as loud
+  CHECK(pr > 2 * pl);
+
+  // Width: 0 one channel's worth on both; 2 the side doubled.
+  l = tone(1000, 0.4);
+  r = tone(300, 0.2);
+  media::widen_sound(l, r, keyed(0));
+  CHECK(l == r);
+  CHECK(std::abs(level(l, 1000) - 0.2) < 1e-3);
+  l = tone(1000, 0.4);
+  r = std::vector<float>(n, 0.0f);
+  media::widen_sound(l, r, keyed(2));
+  CHECK(std::abs(level(l, 1000) - 0.6) < 1e-3);   // mid 0.2 + side 0.4
+  CHECK(std::abs(level(r, 1000) - 0.2) < 1e-3);   // mid - side, opposed
+
+  // Distance: 4 m, 12 dB down at 1 kHz (its air's corner 8.7 kHz); its
+  // highs duller still; a metre, nothing done.
+  l = tone(1000, 0.5);
+  r = tone(8000, 0.5);
+  media::place_sound_far(l, r, keyed(4), fs);
+  const double far = 20 * std::log10(level(l, 1000) / 0.5);
+  const double high = 20 * std::log10(level(r, 8000) / 0.5);
+  std::printf("[media] space: 4 m -> 1 kHz %+.2f dB, 8 kHz %+.2f dB\n",
+              far, high);
+  CHECK(std::abs(far + 12.04) < 0.2);
+  CHECK(high < far - 2);
+  l = tone(1000, 0.5);
+  r = tone(1000, 0.5);
+  media::place_sound_far(l, r, keyed(1), fs);
+  CHECK(l == tone(1000, 0.5));
+
+  // Bass mono at 150 Hz: 50 Hz on the left alone comes out in the middle,
+  // 2 kHz on the left alone stays there.
+  l = tone(50, 0.4);
+  const auto hi = tone(2000, 0.4);
+  for (std::size_t i = 0; i < n; ++i) {
+    l[i] += hi[i];
+  }
+  r = std::vector<float>(n, 0.0f);
+  media::mono_bass(l, r, 150, fs);
+  std::printf("[media] space: bass mono 150 Hz -> 50 Hz L %.3f R %.3f, "
+              "2 kHz L %.3f R %.3f\n", level(l, 50), level(r, 50),
+              level(l, 2000), level(r, 2000));
+  CHECK(std::abs(level(l, 50) - 0.2) < 0.01);
+  CHECK(std::abs(level(r, 50) - 0.2) < 0.01);
+  CHECK(std::abs(level(l, 2000) - 0.4) < 0.01);
+  CHECK(level(r, 2000) < 0.01);
+
+  // Crossfeed: a centred sound exactly as it was; a left one's lows heard
+  // on the right far more than its highs.
+  l = tone(100, 0.5);
+  r = tone(100, 0.5);
+  media::crossfeed_sound(l, r, 1, fs);
+  CHECK(l == tone(100, 0.5) && r == tone(100, 0.5));
+  l = tone(100, 0.5);
+  r = std::vector<float>(n, 0.0f);
+  media::crossfeed_sound(l, r, 1, fs);
+  const double low_over = level(r, 100) / level(l, 100);
+  l = tone(5000, 0.5);
+  r = std::vector<float>(n, 0.0f);
+  media::crossfeed_sound(l, r, 1, fs);
+  const double high_over = level(r, 5000) / level(l, 5000);
+  std::printf("[media] space: crossfeed -> right/left %.3f at 100 Hz, "
+              "%.3f at 5 kHz\n", low_over, high_over);
+  CHECK(low_over > 0.4);
+  CHECK(high_over < 0.15);
+}

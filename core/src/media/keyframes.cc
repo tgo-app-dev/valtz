@@ -114,6 +114,11 @@ zip(const Sound& p, const Sound& a, const Sound& b, const Sound& n, F f)
   for (std::size_t i = 0; i < o.eq.size(); ++i) {
     o.eq[i] = f(p.eq[i], a.eq[i], b.eq[i], n.eq[i]);
   }
+  for (double Sound::*m : {&Sound::reverb_mix, &Sound::reverb_decay,
+                           &Sound::reverb_damping, &Sound::pan,
+                           &Sound::width, &Sound::distance}) {
+    o.*m = f(p.*m, a.*m, b.*m, n.*m);
+  }
   return o;
 }
 
@@ -279,6 +284,12 @@ lerp(const Sound& a, const Sound& b, double t)
   for (std::size_t i = 0; i < o.eq.size(); ++i) {
     o.eq[i] = mix(a.eq[i], b.eq[i], t);
   }
+  o.reverb_mix = mix(a.reverb_mix, b.reverb_mix, t);
+  o.reverb_decay = mix(a.reverb_decay, b.reverb_decay, t);
+  o.reverb_damping = mix(a.reverb_damping, b.reverb_damping, t);
+  o.pan = mix(a.pan, b.pan, t);
+  o.width = mix(a.width, b.width, t);
+  o.distance = mix(a.distance, b.distance, t);
   return o;
 }
 
@@ -296,6 +307,16 @@ to_json(const KeyedSound& k)
     for (std::size_t i = 0; i < v.eq.size(); ++i) {
       if (v.eq[i] != 0) { j["eq_" + std::to_string(i)] = v.eq[i]; }
     }
+    if (v.reverb_mix != 0) { j["reverb_mix"] = v.reverb_mix; }
+    if (v.reverb_decay != kReverbDecay) {
+      j["reverb_decay"] = v.reverb_decay;
+    }
+    if (v.reverb_damping != kReverbDamping) {
+      j["reverb_damping"] = v.reverb_damping;
+    }
+    if (v.pan != 0) { j["pan"] = v.pan; }
+    if (v.width != 1) { j["width"] = v.width; }
+    if (v.distance != 1) { j["distance"] = v.distance; }
     return j;
   });
 }
@@ -326,6 +347,15 @@ keyed_sound_from_json(const Json& j)
           s.eq[i] = std::clamp(jget(v, key.c_str(), 0.0), -kMaxEqGain,
                                kMaxEqGain);
         }
+        s.reverb_mix = std::clamp(jget(v, "reverb_mix", 0.0), 0.0, 1.0);
+        s.reverb_decay = std::clamp(jget(v, "reverb_decay", kReverbDecay),
+                                    kMinReverbDecay, kMaxReverbDecay);
+        s.reverb_damping = std::clamp(
+            jget(v, "reverb_damping", kReverbDamping), 0.0, 1.0);
+        s.pan = std::clamp(jget(v, "pan", 0.0), -1.0, 1.0);
+        s.width = std::clamp(jget(v, "width", 1.0), 0.0, kMaxWidth);
+        s.distance = std::clamp(jget(v, "distance", 1.0), 1.0,
+                                kMaxDistance);
         return s;
       },
       false);

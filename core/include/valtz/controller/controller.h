@@ -51,6 +51,8 @@
 #include "valtz/ext/extension.h"
 #include "valtz/fleet/fleet.h"
 #include "valtz/media/adjust.h"
+#include "valtz/media/beats.h"
+#include "valtz/media/bookmarks.h"
 #include "valtz/media/camera.h"
 #include "valtz/media/capture.h"
 #include "valtz/media/crop.h"
@@ -793,10 +795,16 @@ public:
   Status set_speed_keys(ProjectId, AssetId, const media::KeyedSpeed&,
                         const std::string& layer = "");
   // `follow_speed`: the layer's pitch follows its speed (a tape's) or is
-  // held (false); none keeps what it was (media::SoundLayer).
+  // held (false); `room`: its reverb's room (its pre-delay and size, one
+  // for the layer: media/reverb.h); `field`: its bass mono and crossfeed
+  // (media/space.h); none keeps what it was (media::SoundLayer).
   Status set_sound_keys(ProjectId, AssetId, const media::KeyedSound&,
                         const std::string& layer = "",
-                        std::optional<bool> follow_speed = std::nullopt);
+                        std::optional<bool> follow_speed = std::nullopt,
+                        std::optional<media::ReverbRoom> room =
+                            std::nullopt,
+                        std::optional<media::SoundField> field =
+                            std::nullopt);
   static media::KeyedAdjustments adjustment_keys_of(
       const project::Asset&, const std::string& layer = "");
   static media::KeyedCrop crop_keys_of(const project::Asset&,
@@ -807,6 +815,14 @@ public:
                                          const std::string& layer = "");
   static bool pitch_follows_speed(const project::Asset&,
                                   const std::string& layer = "");
+  // Its reverb's room: the audio modifier's "reverb_pre_delay" and
+  // "reverb_size" beside its keys (written while not the default).
+  static media::ReverbRoom reverb_room_of(const project::Asset&,
+                                          const std::string& layer = "");
+  // Its field: the audio modifier's "bass_mono" (Hz) and "crossfeed"
+  // beside its keys (written while set).
+  static media::SoundField sound_field_of(const project::Asset&,
+                                          const std::string& layer = "");
   // A layer's KEY moved -- the timeline's dot dragged: every one of its
   // tracks that changes something (a track at its default draws no dot)
   // has its key at `from` moved to `to`, frames from the layer's start,
@@ -1350,6 +1366,27 @@ public:
   // not ready, would once downloaded), "model_name", "family" (where
   // Settings › Capabilities lists it)}]}].
   Json asset_operations_json() const;
+  // A sound's or a clip's BEATS (DESIGN §4v): `beats` -- a beats asset,
+  // the text Detect Beats made (from it or from another sound) --
+  // ATTACHED to `media`, a sound or a clip or a composition of either; on
+  // every timeline its layers have them where they play (movie_stack's
+  // MovieLayer::beats); none: taken off. One command, "beats.attach".
+  // Detect Beats attaches what it makes to what it is made from.
+  Status attach_beats(ProjectId, AssetId media,
+                      std::optional<AssetId> beats);
+  // The beats attached to `media`, once found (a detection still running
+  // has none yet); nullopt when none is, or it is gone.
+  std::optional<media::Beats> attached_beats(ProjectId, AssetId media);
+  // A sound's or a clip's BOOKMARKS (DESIGN §4w): `text` -- a transcript
+  // (Transcribe's: its lines and the sounds heard) or a video summary
+  // (Summarize Video's: its scenes), of it or of another -- attached to
+  // `media` (`on`) or taken off; on every timeline its layers have them
+  // where they play (movie_stack's MovieLayer::bookmarks). One command,
+  // "bookmarks.attach". Several may be on one: a transcript and a summary.
+  Status attach_bookmarks(ProjectId, AssetId media, AssetId text, bool on);
+  // The bookmarks attached to `media`, once made (a transcript still
+  // being written has none yet), in order of start.
+  std::vector<media::Bookmark> attached_bookmarks(ProjectId, AssetId media);
   // Layer FOLDERS (DESIGN §6a): `layers` gathered into a new folder
   // named `name` (none: "Folder N"), where the topmost of them is -- its
   // id. A folder's layers lie together in the stack
@@ -2349,6 +2386,20 @@ private:
                                    const project::Asset& src);
   Result<AssetOpResult> separate_(const AssetOpRequest&, project::Project&,
                                   const project::Asset& src);
+  Result<AssetOpResult> track_beats_(const AssetOpRequest&,
+                                     project::Project&,
+                                     const project::Asset& src);
+  // The beats attached to `a` as found (its beats asset's head's
+  // outputs), else none.
+  static std::optional<media::Beats> beats_of_(const project::Project&,
+                                               const project::Asset& a);
+  // The bookmarks of the text `t` -- a transcript's or a summary's, as
+  // its head's outputs keep them -- none for another; of what is attached
+  // to `a`, all of them in order of start.
+  static std::vector<media::Bookmark> bookmarks_in_(const project::Project&,
+                                                    const project::Asset& t);
+  static std::vector<media::Bookmark> bookmarks_of_(const project::Project&,
+                                                    const project::Asset& a);
   Result<AssetOpResult> upscale_(const AssetOpRequest&, project::Project&,
                                  const project::Asset& comp);
   // The model an operation runs for `cap`: the one named (installed or
@@ -2867,6 +2918,10 @@ private:
     // end) -- the layer's own marks counted from there.
     std::int64_t          span_in = -1;
     std::int64_t          span_out = -1;
+    // Whose seconds its source's are (a part's: its clip's) -- what its
+    // BEATS and BOOKMARKS are read from (DESIGN §4v, §4w); nil for a
+    // picture, a markup.
+    AssetId               timed_by;
   };
   // A layer's place in time over what it shows, at the composition's
   // `rate`: its marks -- a part's counted from its span.

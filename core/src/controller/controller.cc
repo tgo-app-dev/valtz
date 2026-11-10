@@ -8919,6 +8919,9 @@ Controller::run_asset_operation(AssetOpRequest req)
   if (op->name == "interpolate") {
     return interpolate_(req, *p, a);
   }
+  if (op->name == "beats") {
+    return track_beats_(req, *p, a);
+  }
   return upscale_(req, *p, a);
 }
 
@@ -8932,8 +8935,26 @@ Controller::asset_operations_json() const
   for (const auto& op : asset_operations()) {
     Json takes = Json::array();
     for (const auto& t : op.takes) {
+      // No model (a sound's beats): it runs where the engine has its op.
+      if (!t.capability) {
+        const bool runs = _engine && _engine->available() &&
+                          _engine->supports(t.op);
+        const auto avail = !_engine || !_engine->available()
+                               ? models::Availability::NoEngine
+                           : runs ? models::Availability::Ready
+                                  : models::Availability::NotWired;
+        takes.push_back({{"kind", project::to_str(t.kind)},
+                         {"op", std::string(t.op)},
+                         {"capability", ""},
+                         {"ready", runs},
+                         {"availability", models::to_str(avail)},
+                         {"model", ""},
+                         {"model_name", ""},
+                         {"family", ""}});
+        continue;
+      }
       const auto it = std::ranges::find(
-          caps, t.capability, &models::CapabilityStatus::capability);
+          caps, *t.capability, &models::CapabilityStatus::capability);
       const auto avail = it != caps.end()
                              ? it->availability
                              : models::Availability::NotOffered;
@@ -8944,8 +8965,8 @@ Controller::asset_operations_json() const
       const bool frames =
           t.capability == models::Capability::InterpolateVideo;
       const models::ModelEntry* m = operation_model_(
-          t.capability, "auto",
-          up       ? chosen_upscaler_(t.capability)
+          *t.capability, "auto",
+          up       ? chosen_upscaler_(*t.capability)
           : frames ? chosen_interpolator_()
                    : helper);
       if (!m && it != caps.end() && !it->chosen.empty()) {
@@ -8953,7 +8974,7 @@ Controller::asset_operations_json() const
       }
       Json tk = {{"kind", project::to_str(t.kind)},
                  {"op", std::string(t.op)},
-                 {"capability", models::to_str(t.capability)},
+                 {"capability", models::to_str(*t.capability)},
                  {"ready", avail == models::Availability::Ready},
                  {"availability", models::to_str(avail)},
                  {"model", m ? m->id : std::string()},
@@ -9288,6 +9309,235 @@ Controller::transcribe_(const AssetOpRequest& req, project::Project& p,
   made.push_back({std::format("{} transcript", src.name),
                   project::AssetKind::Text, std::move(r), ""});
   return make_from_(req.project, p, src, std::move(made), true);
+}
+
+Result<Controller::AssetOpResult>
+Controller::track_beats_(const AssetOpRequest& req, project::Project& p,
+                         const project::Asset& src)
+{
+  // A sound, or a clip with one (a composition's: its mix) -- heard
+  // whole, as the transcriber hears it.
+  const bool timed = src.kind == project::AssetKind::Audio ||
+                     src.kind == project::AssetKind::Video;
+  if (!timed || !sounds_(p, src, 0) ||
+      ((src.cls == project::AssetClass::Flat ||
+        src.cls == project::AssetClass::Generated) && src.head == 0)) {
+    return make_error(Code::InvalidArgument, msg::kBeatsNeedSound,
+                      {{"name", src.name}});
+  }
+  if (!_engine || !_engine->supports(engine::kOpTrackBeats)) {
+    return make_error(Code::Unsupported, msg::kEngineCannotRun,
+                      {{"operation", std::string(engine::kOpTrackBeats)}});
+  }
+  // No model: vpipe's own arithmetic, the same beats every time.
+  project::Recipe r;
+  r.op = std::string(engine::kOpTrackBeats);
+  r.deterministic = true;
+  r.params = {{"name", src.name}};
+  const bool drawn = src.cls == project::AssetClass::Composition;
+  r.inputs.push_back({"source", src.id, drawn ? 0 : src.head});
+  std::vector<OpMade> made;
+  made.push_back({std::format("{} beats", src.name),
+                  project::AssetKind::Text, std::move(r), ""});
+  // Attached to what it is made from in the same command (an undo takes
+  // both back): its timelines show them once they are found.
+  const std::optional<AssetId> was = src.beats;
+  const ProjectId pid = req.project;
+  const AssetId media = src.id;
+  return make_from_(
+      req.project, p, src, std::move(made), true,
+      [&](const std::vector<AssetId>& ids) {
+        (void)p.update_asset(ids.front(), [](project::Asset& b) {
+          b.tags.push_back("beats");
+          return ok_status();
+        });
+        (void)p.update_asset(media, [&](project::Asset& a) {
+          a.beats = ids.front();
+          return ok_status();
+        });
+        post_("assets.changed", JobId{}, {{"project", pid},
+                                          {"asset", media},
+                                          {"reason", "beats"}});
+      },
+      [&](const std::vector<AssetId>&) {
+        (void)p.update_asset(media, [&](project::Asset& a) {
+          a.beats = was;
+          return ok_status();
+        });
+      });
+}
+
+std::optional<media::Beats>
+Controller::beats_of_(const project::Project& p, const project::Asset& a)
+{
+  if (!a.beats) {
+    return std::nullopt;
+  }
+  auto b = p.asset(*a.beats);
+  if (!b.ok() || b->head == 0) {
+    return std::nullopt;
+  }
+  auto v = p.version(b->id, b->head);
+  if (!v.ok()) {
+    return std::nullopt;
+  }
+  const Json j = jget(v->outputs, "beats", Json());
+  if (!j.is_object()) {
+    return std::nullopt;
+  }
+  return media::beats_from_json(j);
+}
+
+Status
+Controller::attach_beats(ProjectId pid, AssetId media,
+                         std::optional<AssetId> beats)
+{
+  auto undo = command_(pid, "beats.attach", media, "");
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(media));
+  if (a.kind != project::AssetKind::Audio &&
+      a.kind != project::AssetKind::Video) {
+    return make_error(Code::InvalidArgument, msg::kBeatsGoOnSound,
+                      {{"name", a.name}});
+  }
+  if (beats) {
+    // Detect Beats' text: its recipe the tracker's (found, or still
+    // being found).
+    VALTZ_ASSIGN(project::Asset b, p->asset(*beats));
+    auto r = b.origin == project::Origin::Derived
+                 ? p->recipe(b.recipe)
+                 : Result<project::Recipe>(make_error(Code::NotFound, ""));
+    if (b.kind != project::AssetKind::Text || !r.ok() ||
+        r->op != engine::kOpTrackBeats) {
+      return make_error(Code::InvalidArgument, msg::kNotBeats,
+                        {{"name", b.name}});
+    }
+  }
+  if (a.beats == beats) {
+    return ok_status();
+  }
+  VALTZ_TRY(p->update_asset(media, [&](project::Asset& r) {
+    r.beats = beats;
+    return ok_status();
+  }));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", media},
+                                    {"reason", "beats"}});
+  return ok_status();
+}
+
+std::optional<media::Beats>
+Controller::attached_beats(ProjectId pid, AssetId media)
+{
+  project::Project* p = project(pid);
+  if (!p) {
+    return std::nullopt;
+  }
+  auto a = p->asset(media);
+  return a.ok() ? beats_of_(*p, *a) : std::nullopt;
+}
+
+std::vector<media::Bookmark>
+Controller::bookmarks_in_(const project::Project& p, const project::Asset& t)
+{
+  if (t.kind != project::AssetKind::Text || t.head == 0 ||
+      t.origin != project::Origin::Derived) {
+    return {};
+  }
+  auto r = p.recipe(t.recipe);
+  auto v = p.version(t.id, t.head);
+  if (!r.ok() || !v.ok()) {
+    return {};
+  }
+  if (r->op == engine::kOpTranscribeAudio) {
+    return media::bookmarks_from_transcript(
+        jget(v->outputs, "transcript", Json()));
+  }
+  if (r->op == engine::kOpSummarizeVideo) {
+    return media::bookmarks_from_summary(
+        jget(v->outputs, "summary", Json()));
+  }
+  return {};
+}
+
+std::vector<media::Bookmark>
+Controller::bookmarks_of_(const project::Project& p, const project::Asset& a)
+{
+  std::vector<media::Bookmark> out;
+  for (const auto& id : a.bookmarks) {
+    // One taken away since (removed, undone) marks nothing.
+    if (auto t = p.asset(id); t.ok()) {
+      auto marks = bookmarks_in_(p, *t);
+      out.insert(out.end(), std::make_move_iterator(marks.begin()),
+                 std::make_move_iterator(marks.end()));
+    }
+  }
+  std::ranges::stable_sort(out, {}, &media::Bookmark::start);
+  return out;
+}
+
+Status
+Controller::attach_bookmarks(ProjectId pid, AssetId media, AssetId text,
+                             bool on)
+{
+  auto undo = command_(pid, "bookmarks.attach", media, "");
+  project::Project* p = project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(media));
+  if (a.kind != project::AssetKind::Audio &&
+      a.kind != project::AssetKind::Video) {
+    return make_error(Code::InvalidArgument, msg::kBookmarksGoOnSound,
+                      {{"name", a.name}});
+  }
+  const auto at = std::ranges::find(a.bookmarks, text);
+  if (on) {
+    // A transcript's or a summary's text: its recipe Transcribe's or
+    // Summarize Video's (made, or still being made).
+    VALTZ_ASSIGN(project::Asset t, p->asset(text));
+    auto r = t.origin == project::Origin::Derived
+                 ? p->recipe(t.recipe)
+                 : Result<project::Recipe>(make_error(Code::NotFound, ""));
+    if (t.kind != project::AssetKind::Text || !r.ok() ||
+        (r->op != engine::kOpTranscribeAudio &&
+         r->op != engine::kOpSummarizeVideo)) {
+      return make_error(Code::InvalidArgument, msg::kNotBookmarks,
+                        {{"name", t.name}});
+    }
+    if (at != a.bookmarks.end()) {
+      return ok_status();
+    }
+  } else if (at == a.bookmarks.end()) {
+    return ok_status();
+  }
+  VALTZ_TRY(p->update_asset(media, [&](project::Asset& r) {
+    if (on) {
+      r.bookmarks.push_back(text);
+    } else {
+      std::erase(r.bookmarks, text);
+    }
+    return ok_status();
+  }));
+  post_("assets.changed", JobId{}, {{"project", pid}, {"asset", media},
+                                    {"reason", "bookmarks"}});
+  return ok_status();
+}
+
+std::vector<media::Bookmark>
+Controller::attached_bookmarks(ProjectId pid, AssetId media)
+{
+  project::Project* p = project(pid);
+  if (!p) {
+    return {};
+  }
+  auto a = p->asset(media);
+  if (!a.ok()) {
+    return {};
+  }
+  return bookmarks_of_(*p, *a);
 }
 
 Result<Controller::AssetOpResult>
@@ -10835,7 +11085,10 @@ Controller::submit_build_(
     }
   }
   VALTZ_ASSIGN(auto inputs, p->resolve_inputs(r));
-  if (!_catalog.find(r.model)) {
+  // An op of no model (a sound's beats: vpipe's own arithmetic) runs
+  // here, where the engine has it -- nothing to send, nothing to wait for.
+  const bool no_model = r.model.empty() && r.op == engine::kOpTrackBeats;
+  if (!no_model && !_catalog.find(r.model)) {
     return make_error(Code::NotFound, msg::kRecipeModelUnknown,
                       {{"model", r.model}});
   }
@@ -10854,11 +11107,12 @@ Controller::submit_build_(
   // weight file of one's own stays here: it is not sent.
   engine::ModelRef ref;
   Json helpers = Json::object();
-  Status here = _engine->supports(r.op)
-                    ? resolve_build_(r.model, r.params, ref, helpers)
-                    : Status(make_error(Code::Unsupported,
+  Status here = !_engine->supports(r.op)
+                    ? Status(make_error(Code::Unsupported,
                                         msg::kEngineCannotRun,
-                                        {{"operation", r.op}}));
+                                        {{"operation", r.op}}))
+                : no_model ? ok_status()
+                           : resolve_build_(r.model, r.params, ref, helpers);
   bool own_files = false;
   for (const auto& k : own_file_keys()) {
     own_files = own_files ||
@@ -10872,20 +11126,21 @@ Controller::submit_build_(
     }
   }
   std::vector<Json> members;
-  if (!own_files) {
+  if (!own_files && !no_model) {
     members = fleet_candidates_(r.op, needs, here.ok());
   }
   // Set to run on the fleet only: never here, and refused while no member
   // can take it (a weight file of one's own included: it is not sent).
   const bool fleet_only =
-      offload_policy_(r.op, r.model) == fleet::kOffloadAlways;
+      !no_model && offload_policy_(r.op, r.model) == fleet::kOffloadAlways;
   if (fleet_only && members.empty()) {
     return make_error(Code::Unsupported, msg::kFleetOnlyNoMember);
   }
   // What it lacks here is downloading (DESIGN §3a): it waits for those
   // downloads -- and nothing else does.
   std::vector<std::string> awaits;
-  if (members.empty() && !here.ok() && _engine->supports(r.op)) {
+  if (members.empty() && !here.ok() && _engine->supports(r.op) &&
+      !no_model) {
     awaits = awaited_(needs);
   }
   if (members.empty() && !here.ok() && awaits.empty()) {
@@ -11523,7 +11778,7 @@ Controller::on_build_event_(const engine::JobEvent& ev)
         !score.empty()) {
       b.outputs["score"] = score;
     }
-    for (const char* key : {"transcript", "summary"}) {
+    for (const char* key : {"transcript", "summary", "beats"}) {
       if (const Json t = jget(ev.data, key, Json()); t.is_object()) {
         b.outputs[key] = t;
       }

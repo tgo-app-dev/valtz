@@ -46,11 +46,20 @@ constexpr std::array<AssetOpTake, 1> kSeparate = {{
 constexpr std::array<std::string_view, 2> kStems = {"vocals",
                                                     "accompaniment"};
 
-constexpr std::array<AssetOperation, 5> kOperations = {{
+// A sound -- a clip's, a composition's mix -- its beats found (§4v): no
+// model, vpipe's beat-track.
+constexpr std::array<AssetOpTake, 2> kBeats = {{
+  {AssetKind::Audio, engine::kOpTrackBeats, std::nullopt},
+  {AssetKind::Video, engine::kOpTrackBeats, std::nullopt},
+}};
+constexpr std::array<std::string_view, 1> kBeatTimes = {"beats"};
+
+constexpr std::array<AssetOperation, 6> kOperations = {{
   {"transcribe", "Transcribe", kTranscribe, false, kTranscript},
   {"summarize", "Summarize Video", kSummarize, false, kSummary},
   {"separate", "Separate Vocals and Accompaniment", kSeparate, false,
    kStems},
+  {"beats", "Detect Beats", kBeats, false, kBeatTimes},
   {"upscale", "Render Upscaled", kUpscale, true, kUpscaled},
   {"interpolate", "Render Interpolated", kInterpolate, true,
    kInterpolated},

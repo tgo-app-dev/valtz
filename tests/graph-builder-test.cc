@@ -389,6 +389,39 @@ TEST(graph_builder, a_song_is_separated_into_two_sinks)
   CHECK(!vp::build_separate(job, "").ok());
 }
 
+// A sound's beats (DESIGN §4v): the engine's one channel at 22050 Hz
+// decoded as it is, vpipe's beat-track over the WHOLE of it (librosa's
+// answer, not a stream's), in seconds, every object to a queued sink --
+// no model anywhere.
+TEST(graph_builder, a_sounds_beats_are_tracked_whole)
+{
+  JobSpec job;
+  job.id = JobId::make();
+  job.op = std::string(kOpTrackBeats);
+  auto g = vp::build_track_beats(job, "/tmp/x-heard.wav");
+  REQUIRE_OK(g);
+  const Json* load = find_stage(g->spec, "load");
+  const Json* pcm = find_stage(g->spec, "pcm");
+  const Json* beats = find_stage(g->spec, "beats");
+  const Json* out = find_stage(g->spec, g->beats_sink);
+  REQUIRE(load && pcm && beats && out);
+  CHECK(jget<std::string>(*beats, "type", "") == "beat-track");
+  CHECK(jget<std::string>(config_of(load), "input_url", "") ==
+        "/tmp/x-heard.wav");
+  CHECK(jget(config_of(pcm), "channels", 0) == 1);
+  CHECK(jget(config_of(pcm), "output_sample_rate", 0) == 22050);
+  CHECK(jget(config_of(pcm), "flush_on_eos", false));
+  CHECK(src_of(beats, 0) == "pcm");
+  CHECK(jget<std::string>(config_of(beats), "mode", "") == "whole");
+  CHECK(jget<std::string>(config_of(beats), "units", "") == "time");
+  // The rate it hears is the one it is given: nothing converted inside.
+  CHECK(jget(config_of(beats), "sample_rate", 0) == 22050);
+  CHECK(src_of(out, 0) == "beats");
+  CHECK(jget<std::string>(config_of(out), "policy", "") == "queue");
+  CHECK(job.model.dir.empty());
+  CHECK(!vp::build_track_beats(job, "").ok());
+}
+
 // A video summary (DESIGN §4i): the clip read sparse into a valtz-source
 // at the size given, the helper's model loaded as its chat loads it (its
 // drafters, its warm hold), its sampler on the stage's port, Valtz's own

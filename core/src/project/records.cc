@@ -350,6 +350,16 @@ to_json(Json& j, const Asset& a)
   if (!a.folder.empty()) {
     j["folder"] = a.folder;
   }
+  if (a.beats) {
+    j["beats"] = *a.beats;
+  }
+  if (!a.bookmarks.empty()) {
+    Json marks = Json::array();
+    for (const auto& b : a.bookmarks) {
+      marks.push_back(b);
+    }
+    j["bookmarks"] = std::move(marks);
+  }
   put_rest(j, a.rest);
 }
 
@@ -410,6 +420,17 @@ from_json(const Json& j, Asset& a)
   }
   a.from = jget(j, "from", Json());
   a.folder = jget<std::string>(j, "folder", "");
+  a.beats.reset();
+  if (const AssetId b = jget(j, "beats", AssetId{}); !b.is_nil()) {
+    a.beats = b;
+  }
+  a.bookmarks.clear();
+  for (const auto& b : jget(j, "bookmarks", Json::array())) {
+    if (const auto id = b.is_string() ? AssetId::parse(b.get<std::string>())
+                                      : std::nullopt) {
+      a.bookmarks.push_back(*id);
+    }
+  }
   a.layers.clear();
   for (const auto& l : jget(j, "layers", Json::array())) {
     Layer layer;
@@ -452,7 +473,8 @@ from_json(const Json& j, Asset& a)
                        "source_path", "linked", "link", "extra",
                        "modifiers", "canvas", "timeline", "rate_num",
                        "rate_den", "pages", "transitions", "markup",
-                       "from", "folder", "layers", "layer_folders"});
+                       "from", "folder", "layers", "layer_folders",
+                       "beats", "bookmarks"});
 }
 
 void

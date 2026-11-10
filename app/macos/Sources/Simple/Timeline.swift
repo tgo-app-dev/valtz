@@ -7,6 +7,25 @@ import SwiftUI
 /// composition on the stage, top first, where it lies in the
 /// composition's frames (a still's pages) -- or a FOLDER's header over
 /// its layers, its span theirs together.
+/// A BOOKMARK on a layer's block (DESIGN §4w): what it marks, where it
+/// starts and ends on the timeline's frames, its words.
+struct TimelineBookmark: Equatable {
+    enum Kind: String { case speech, sound, scene }
+    var frame: Int
+    var end: Int
+    var kind: Kind
+    var text: String
+
+    /// What its tooltip says.
+    var tip: String {
+        switch kind {
+        case .speech: String(localized: "Speech: \(text)")
+        case .sound: String(localized: "Sound: \(text)")
+        case .scene: String(localized: "Scene: \(text)")
+        }
+    }
+}
+
 struct TimelineRow: Equatable, Identifiable {
     enum Kind: Equatable {
         case clip, sound, picture, markup, composition, still, blank
@@ -29,6 +48,17 @@ struct TimelineRow: Equatable, Identifiable {
     var end: Int?
     /// Its keys (look, speed, sound), on the timeline's frames.
     var keys: [Int]
+    /// Its source's BEATS where they fall, on the timeline's frames
+    /// (DESIGN §4v): those attached to the sound or clip it shows, through
+    /// its marks, speed and start -- events, and what drags snap to.
+    var beats: [Int] = []
+    /// Its source's BOOKMARKS where they fall (DESIGN §4w): a transcript's
+    /// lines and sounds, a video summary's scenes attached to what it
+    /// shows -- marked on its block, events, and what drags snap to.
+    var bookmarks: [TimelineBookmark] = []
+    /// What it carries that a drag snaps to: its beats and where its
+    /// bookmarks start.
+    var moments: [Int] { beats + bookmarks.map(\.frame) }
     /// How its values go on from a key to the next (by the first one's
     /// frame): MOVING -- some track linear or a spline there, drawn
     /// o>----->o -- or HELD, changing at once at the next, o     |o;
@@ -309,6 +339,20 @@ extension AppModel {
                     r.from = sp.from
                     r.until = sp.until
                 }
+                // On the frame edge nearest each: where a cut or a block's
+                // end lands on it.
+                if !sp.beats.isEmpty {
+                    var seen = Set<Int>()
+                    r.beats = sp.beats.map { Int(($0 * fps).rounded()) }
+                        .filter { seen.insert($0).inserted }
+                }
+                r.bookmarks = sp.bookmarks.map {
+                    let f = Int(($0.at * fps).rounded())
+                    return TimelineBookmark(
+                        frame: f, end: max(f, Int(($0.end * fps).rounded())),
+                        kind: .init(rawValue: $0.kind) ?? .speech,
+                        text: $0.text)
+                }
             } else {
                 // Before the core's plan lands: as recorded.
                 let t = l.time ?? LayerTimeDTO()
@@ -352,12 +396,14 @@ extension AppModel {
             m.lanes = Self.timelineLanes(m.rows, frames: m.frames,
                                          transitions: m.transitions)
         }
-        // Where |< and >| stop.
+        // Where |< and >| stop -- a layer's beats and bookmarks among
+        // them.
         var ev: Set<Int> = [0, m.frames]
         for r in m.rows {
             ev.insert(r.start)
             if let e = r.end { ev.insert(m.paged ? e - 1 : e) }
             ev.formUnion(r.keys)
+            ev.formUnion(r.moments.filter { $0 >= 0 && $0 <= m.frames })
         }
         m.events = ev.sorted()
         timelineLayoutMemo = (key, m)
@@ -1128,11 +1174,12 @@ extension TimelineNSView: NSViewToolTipOwner {
         String(localized: "Zoom in until this key shows as a dot, then drag it to move it.")
     }
 
-    /// A key's bar, zoomed out: how to move it.
+    /// A key's bar, zoomed out: how to move it; a bookmark's flag: its
+    /// words.
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
               point: NSPoint, userData data: UnsafeMutableRawPointer?)
         -> String {
-        Self.keyTipText
+        markTipText[tag] ?? Self.keyTipText
     }
 }
 
@@ -1278,6 +1325,10 @@ final class TimelineNSView: NSView {
     /// one: as last set, and their tags.
     private var keyTips: [CGRect] = []
     private var keyTipTags: [NSView.ToolTipTag] = []
+    /// The bookmarks' flags in sight, each with its words as a tooltip.
+    private var markTips: [CGRect] = []
+    private var markTipWords: [String] = []
+    private var markTipText: [NSView.ToolTipTag: String] = [:]
     /// A header's name being typed over (a double-click): its field, and
     /// the row's id.
     private var nameField: NSTextField?
@@ -1522,6 +1573,42 @@ final class TimelineNSView: NSView {
                height: h).fill()
         drawReorderMark()
         updateKeyTips()
+        updateMarkTips()
+    }
+
+    /// The bookmarks' flags in sight, a column down the block at each --
+    /// set again only when they have moved or changed. Several flags
+    /// within a few points share one, their words together.
+    private func updateMarkTips() {
+        var rects: [CGRect] = [], words: [String] = []
+        let area = CGRect(x: Self.nameWidth, y: Self.rulerHeight,
+                          width: max(0, bounds.width - Self.nameWidth),
+                          height: max(0, bounds.height - Self.rulerHeight))
+        for i in rowsShown(area) {
+            let r = model.rows[i]
+            guard !r.bookmarks.isEmpty, let b = block(i) else { continue }
+            for m in r.bookmarks {
+                let bx = mid(m.frame).rounded() + 0.5
+                if let last = rects.last, last.minY == b.minY,
+                   bx - last.midX < 4 {
+                    words[words.count - 1] += "\n" + m.tip
+                    continue
+                }
+                let tip = CGRect(x: bx - 3, y: b.minY, width: 7,
+                                 height: b.height).intersection(area)
+                guard !tip.isNull, tip.width > 0 else { continue }
+                rects.append(tip)
+                words.append(m.tip)
+            }
+        }
+        guard rects != markTips || words != markTipWords else { return }
+        markTips = rects
+        markTipWords = words
+        markTipText.keys.forEach(removeToolTip)
+        markTipText = [:]
+        for (r, w) in zip(rects, words) {
+            markTipText[addToolTip(r, owner: self, userData: nil)] = w
+        }
     }
 
     /// The keys' bars, zoomed out, each with its tooltip -- set again only
@@ -1724,6 +1811,61 @@ final class TimelineNSView: NSView {
         }
     }
 
+    /// A bookmark's colour by what it marks: a line spoken, a sound
+    /// heard, a scene seen -- bright, over the muted blocks.
+    private static func color(_ k: TimelineBookmark.Kind) -> NSColor {
+        switch k {
+        case .speech: NSColor(srgbRed: 1.0, green: 0.84, blue: 0.30, alpha: 1)
+        case .sound: NSColor(srgbRed: 0.55, green: 0.90, blue: 0.55, alpha: 1)
+        case .scene: NSColor(srgbRed: 0.98, green: 0.58, blue: 0.86, alpha: 1)
+        }
+    }
+
+    /// A row's bookmarks on its block `b`: a line spoken or a sound
+    /// heard its span as a band along the foot, under the keys -- the
+    /// speech lowest, the sounds just above it (a scene's needs none: the
+    /// scenes follow one another, their flags the cuts); a pennant at each
+    /// start from the top edge and a line down from it -- a flag at most
+    /// every 4 points, the rest their bands alone (a tooltip says each
+    /// one's words).
+    private func drawBookmarks(_ r: TimelineRow, _ b: CGRect,
+                               _ area: CGRect, shift: CGFloat) {
+        let lo = max(b.minX, area.minX) - 6
+        let hi = min(b.maxX, area.maxX) + 6
+        let alpha: CGFloat = r.visible ? 1 : 0.45
+        for m in r.bookmarks where m.kind != .scene {
+            let x0 = max(x(Double(m.frame)) + shift, b.minX)
+            let x1 = min(x(Double(max(m.end, m.frame + 1))) + shift, b.maxX)
+            guard x1 > lo, x0 < hi, x1 - x0 >= 1 else { continue }
+            Self.color(m.kind).withAlphaComponent(0.7 * alpha).setFill()
+            let y = m.kind == .speech ? b.maxY - 2.5 : b.maxY - 4.5
+            CGRect(x: x0, y: y, width: x1 - x0, height: 2).fill()
+        }
+        var last = -CGFloat.infinity
+        for m in r.bookmarks {
+            let bx = (mid(m.frame) + shift).rounded() + 0.5
+            guard bx >= lo, bx <= hi, bx - last >= 4 else { continue }
+            last = bx
+            let c = Self.color(m.kind)
+            let line = NSBezierPath()
+            line.move(to: CGPoint(x: bx, y: b.minY + 6))
+            line.line(to: CGPoint(x: bx, y: b.maxY - 0.5))
+            line.lineWidth = 1
+            c.withAlphaComponent(0.55 * alpha).setStroke()
+            line.stroke()
+            let flag = NSBezierPath()
+            flag.move(to: CGPoint(x: bx - 0.5, y: b.minY + 1))
+            flag.line(to: CGPoint(x: bx + 5, y: b.minY + 3.5))
+            flag.line(to: CGPoint(x: bx - 0.5, y: b.minY + 6))
+            flag.close()
+            c.withAlphaComponent(alpha).setFill()
+            flag.fill()
+            flag.lineWidth = 0.5
+            NSColor.black.withAlphaComponent(0.35 * alpha).setStroke()
+            flag.stroke()
+        }
+    }
+
     private func drawBlock(_ i: Int, _ b: CGRect, _ area: CGRect) {
         let r = model.rows[i]
         let base = Self.color(r.kind)
@@ -1771,6 +1913,37 @@ final class TimelineNSView: NSView {
                                 height: 12),
                    options: [.usesLineFragmentOrigin,
                              .truncatesLastVisibleLine])
+        }
+        // What it carries moves with it as it slides.
+        var shift: CGFloat = 0
+        if case .slide(let row, _, let to)? = drag, row == i {
+            shift = CGFloat(to - r.start) * scale
+        }
+        // Its BEATS (DESIGN §4v): a tick from its top edge at each, where
+        // they lie far enough apart to tell.
+        if !r.beats.isEmpty {
+            let gaps = zip(r.beats, r.beats.dropFirst()).map { $1 - $0 }
+            let apart = CGFloat(gaps.min() ?? 1000) * scale
+            if apart >= 3 {
+                let ticks = NSBezierPath()
+                let lo = max(b.minX, area.minX) - 1
+                let hi = min(b.maxX, area.maxX) + 1
+                let tall: CGFloat = apart >= 8 ? 6 : 4
+                for f in r.beats {
+                    let bx = (mid(f) + shift).rounded() + 0.5
+                    guard bx >= lo, bx <= hi else { continue }
+                    ticks.move(to: CGPoint(x: bx, y: b.minY + 1))
+                    ticks.line(to: CGPoint(x: bx, y: b.minY + 1 + tall))
+                }
+                ticks.lineWidth = 1
+                (r.kind == .markup ? NSColor.black : NSColor.white)
+                    .withAlphaComponent(r.visible ? 0.8 : 0.4).setStroke()
+                ticks.stroke()
+            }
+        }
+        // Its BOOKMARKS (DESIGN §4w).
+        if !r.bookmarks.isEmpty {
+            drawBookmarks(r, b, area, shift: shift)
         }
         // Its keys: solid dots along its foot, the ways between them.
         let y = keyY(b)
@@ -2295,14 +2468,22 @@ final class TimelineNSView: NSView {
 
     // MARK: Snapping
 
-    /// What an end snaps to: the other rows' events, the timeline's start
-    /// and end, the player's line.
-    private func snapTargets(excluding i: Int?) -> [Int] {
+    /// What an end snaps to: the other rows' events -- their beats and
+    /// bookmarks too -- the timeline's start and end, the player's line.
+    /// `ownMoments`: row `i`'s own beats and bookmarks as well (a cut, a
+    /// key put on its own beat or line).
+    private func snapTargets(excluding i: Int?,
+                             ownMoments: Bool = false) -> [Int] {
         var t: Set<Int> = [0, model.frames, model.playhead]
-        for (j, r) in model.rows.enumerated() where j != i && !r.isFolder {
+        for (j, r) in model.rows.enumerated() where !r.isFolder {
+            if j == i {
+                if ownMoments { t.formUnion(r.moments) }
+                continue
+            }
             t.insert(r.start)
             if let e = r.end { t.insert(e) }
             t.formUnion(r.keys)
+            t.formUnion(r.moments)
         }
         return Array(t)
     }
@@ -2320,9 +2501,17 @@ final class TimelineNSView: NSView {
     }
 
     /// Where the scissors cut: the frame edge nearest the pointer, or an
-    /// event (the player's line) within reach.
+    /// event (the player's line, a beat or a bookmark -- its own too)
+    /// within reach.
     private func cutFrame(_ x: CGFloat, row i: Int) -> Int {
-        snapped(x, excluding: i)
+        let f = frame(at: x)
+        let reach = Double(Self.snap / scale)
+        if let t = snapTargets(excluding: i, ownMoments: true)
+            .min(by: { abs(Double($0) - f) < abs(Double($1) - f) }),
+           abs(Double(t) - f) <= reach {
+            return t
+        }
+        return Int(f.rounded())
     }
 
     /// Where a row's block ends: its end, or the timeline's for one that
@@ -2367,23 +2556,37 @@ final class TimelineNSView: NSView {
         return lo...max(lo, hi)
     }
 
-    /// A row dragged by `dx` points: its start, its start or end snapped
-    /// to an event within reach -- never before the timeline's start.
+    /// A row dragged by `dx` points: its start, its start or end -- or
+    /// one of its own beats or bookmarks -- snapped to an event within
+    /// reach (a beat of another: a clip's beat laid on the music's; a line
+    /// spoken on a scene's start) -- never before the timeline's start.
     private func slideStart(_ i: Int, dx: CGFloat) -> Int {
         let r = model.rows[i]
         let s = Double(r.start) + Double(dx / scale)
         let len = r.end.map { Double($0 - r.start) }
         let reach = Double(Self.snap / scale)
+        let targets = snapTargets(excluding: i).sorted()
         var best: (d: Double, to: Double)?
-        for t in snapTargets(excluding: i) {
-            let tt = Double(t)
-            for (d, to) in [(abs(tt - s), tt)]
-                + (len.map { [(abs(tt - (s + $0)), tt - $0)] } ?? []) {
+        // What lies `at` (start + `by` frames) snaps to its nearest
+        // target: the start that puts it there.
+        func near(_ by: Double) {
+            let at = s + by
+            var lo = 0, hi = targets.count
+            while lo < hi {
+                let m = (lo + hi) / 2
+                if Double(targets[m]) < at { lo = m + 1 } else { hi = m }
+            }
+            for k in [lo - 1, lo] where targets.indices.contains(k) {
+                let tt = Double(targets[k])
+                let d = abs(tt - at)
                 if d <= reach, d < (best?.d ?? .infinity) {
-                    best = (d, to)
+                    best = (d, tt - by)
                 }
             }
         }
+        near(0)
+        if let len { near(len) }
+        for b in r.moments { near(Double(b - r.start)) }
         return max(0, Int((best?.to ?? s).rounded()))
     }
 
@@ -2581,7 +2784,8 @@ final class TimelineNSView: NSView {
             // its neighbours.
             let want = Double(from) + Double((p.x - downX) / scale)
             var to = Int(want.rounded())
-            if let t = snapTargets(excluding: i).filter(range.contains)
+            if let t = snapTargets(excluding: i, ownMoments: true)
+                .filter(range.contains)
                 .min(by: { abs(Double($0) - want) < abs(Double($1) - want) }),
                abs(Double(t) - want) <= Double(Self.snap / scale) {
                 to = t
@@ -3183,6 +3387,18 @@ final class TimelineNSView: NSView {
                             y: keyY(b))
         let w = convert(local, to: nil)
         return CGPoint(x: w.x, y: win.frame.height - w.y)
+    }
+
+    /// For the snapshot hooks: the words a bookmark's flag on row `i` at
+    /// frame `f` shows as its tooltip, "-" none; and how many flags have
+    /// tooltips.
+    func markTip(frame f: Int, row i: Int) -> (tip: String, flags: Int) {
+        guard let b = block(i) else { return ("-", markTips.count) }
+        let c = CGPoint(x: mid(f), y: b.midY)
+        guard let k = markTips.firstIndex(where: { $0.contains(c) }) else {
+            return ("-", markTips.count)
+        }
+        return (markTipWords[k], markTips.count)
     }
 
     /// For the snapshot hooks: the tooltip a key's bar has on row `i`

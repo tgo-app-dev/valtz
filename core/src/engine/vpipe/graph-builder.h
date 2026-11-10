@@ -318,6 +318,8 @@ struct BuiltGraph {
   // out -- what the model takes out, and the rest.
   std::string           stem_sink;
   std::string           residual_sink;
+  // A sound's beats (DESIGN §4v): objects of them, {"beats", "tempo"}.
+  std::string           beats_sink;
   std::optional<SampleFeed> samples;
   std::filesystem::path output;        // file the graph writes
   // A still's pages exported (DESIGN §6a): every file, `output` the
@@ -534,6 +536,13 @@ Result<BuiltGraph> build_transcribe(const JobSpec&,
 // f32 [2, n] as they stream out.
 Result<BuiltGraph> build_separate(const JobSpec&,
                                   const std::filesystem::path& wav);
+// track-beats (DESIGN §4v): `wav` -- one channel at 22050 Hz, the
+// engine's (media::mono_sound), the rate beat-track hears -- through
+// vpipe's beat-track over the whole of it (`whole`: librosa's answer,
+// beat for beat), its beats in seconds, a few hundred an object, to
+// g.beats_sink.
+Result<BuiltGraph> build_track_beats(const JobSpec&,
+                                     const std::filesystem::path& wav);
 // summarize-video (DESIGN §4i): the clip -- input "source" -- read sparse
 // at `size` (a frame every param `every` s: g.samples) into Valtz's
 // valtz-video-summary, which cuts it into scenes and has the model

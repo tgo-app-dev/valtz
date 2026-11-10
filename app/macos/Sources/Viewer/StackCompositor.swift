@@ -290,6 +290,10 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
         CMTime(seconds: s, preferredTimescale: 48000)
     }
 
+    /// Before anything a timeline holds, and before the player's earliest
+    /// buffer of it (its first labelled one buffer early: -0.085 s).
+    static let beforeAll = CMTime(seconds: -1, preferredTimescale: 48000)
+
     /// Ten seconds of silence (48 kHz, mono, 16-bit): what pads a
     /// timeline past its clips. Written once, in the temporary folder --
     /// beside, then moved, so two Valtzes never read half of it.
@@ -355,33 +359,47 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
     }
 
     /// `src`'s spans into `track` where they play on the timeline (core
-    /// media::time_segments: [at, length, source, source length]) -- each
-    /// scaled to its length where a speed applies. With none: from the
-    /// start, as long as it runs.
+    /// media::time_segments / sound_segments: [at, length, source, source
+    /// length]) -- each scaled to its length where a speed applies, and a
+    /// sound's never past its track's own end (a shaped sound's tail asks
+    /// for what its file holds, a little less where its source was short).
+    /// With none: from the start, as long as it runs.
     @MainActor
     private static func lay(_ src: AVAssetTrack, into track:
                                 AVMutableCompositionTrack,
                             segments: [[Double]], start: CMTime,
                             limit: CMTime) async {
+        let range = try? await src.load(.timeRange)
         guard !segments.isEmpty else {
-            guard let range = try? await src.load(.timeRange) else { return }
+            guard let range else { return }
             try? track.insertTimeRange(
                 CMTimeRange(start: range.start,
                             duration: CMTimeMinimum(range.duration, limit)),
                 of: src, at: .zero)
             return
         }
+        // A sound's alone: a clip's spans as they were.
+        let own = src.mediaType == .audio
+            ? range.map { $0.duration.seconds }
+                .flatMap { $0.isFinite ? $0 : nil }
+            : nil
         for seg in segments where seg.count == 4 && seg[3] > 0 {
+            var sourceLength = seg[3], length = seg[1]
+            if let own {
+                sourceLength = min(sourceLength, own - seg[2])
+                guard sourceLength > 1e-6 else { continue }
+                length = seg[1] * sourceLength / seg[3]
+            }
             let at = time(seg[0])
             let from = CMTimeRange(start: CMTimeAdd(start, time(seg[2])),
-                                   duration: time(seg[3]))
+                                   duration: time(sourceLength))
             do {
                 try track.insertTimeRange(from, of: src, at: at)
             } catch { continue }
-            if abs(seg[1] - seg[3]) > 1e-6 {
+            if abs(length - sourceLength) > 1e-6 {
                 track.scaleTimeRange(CMTimeRange(start: at,
-                                                 duration: time(seg[3])),
-                                     toDuration: time(seg[1]))
+                                                 duration: time(sourceLength)),
+                                     toDuration: time(length))
             }
         }
     }
@@ -394,15 +412,26 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
         let audioTracks: [Int: CMPersistentTrackID]
     }
 
-    /// The sounds' volume ramps, on their tracks.
+    /// The sounds' volume ramps, on their tracks -- each sound's first
+    /// volume held from well before it starts. AVFoundation plays a track
+    /// at 1.0 before the first time a volume is set, and the player times
+    /// a buffer's volume one buffer behind the sound in it (4,096 frames:
+    /// a sound placed at 0.5 s is tapped in a buffer labelled from 0.41,
+    /// one at 0 in one labelled from -0.085 -- whatever its pitch
+    /// algorithm, from a start or after a seek): a ramp set from a
+    /// sound's start alone played its first 85 ms -- two frames -- at
+    /// full volume, then the keys' (2026-11-09). The exporter reads the
+    /// mix exactly, offline: it never did.
     static func audioMix(_ stack: StackPlayback,
                          tracks: [Int: CMPersistentTrackID]) -> AVAudioMix {
         let mix = AVMutableAudioMix()
         var params: [AVMutableAudioMixInputParameters] = []
-        for (i, s) in stack.audio.enumerated() where s.volume.count > 1 {
-            guard let id = tracks[i] else { continue }
+        for (i, s) in stack.audio.enumerated() where !s.volume.isEmpty {
+            guard let id = tracks[i], let first = s.volume.first,
+                  first.count == 2 else { continue }
             let p = AVMutableAudioMixInputParameters()
             p.trackID = id
+            p.setVolume(Float(first[1]), at: Self.beforeAll)
             for (a, b) in zip(s.volume, s.volume.dropFirst())
                 where a.count == 2 && b.count == 2 && b[0] > a[0] {
                 p.setVolumeRamp(fromStartVolume: Float(a[1]),

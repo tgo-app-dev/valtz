@@ -1342,6 +1342,70 @@ private struct AssetRow: View {
                         .disabled(!ready || model.agentHolds)
                         .help(ready ? op.help : op.needs)
                 }
+                // Its BEATS (DESIGN §4v), once detected: shown on its
+                // layers on every timeline -- events, drags snap to them
+                // -- or not.
+                if a.kind == "audio" || a.kind == "video",
+                   let found = a.beats.flatMap({ model.asset(id: $0) })
+                       ?? model.beatsMade(from: a) {
+                    Toggle("Show Beats on Timelines", isOn: Binding(
+                        get: { a.beats != nil },
+                        set: { model.attachBeats($0 ? found.id : nil,
+                                                 to: a.id) }))
+                        .disabled(model.agentHolds)
+                        .help("Its beats as events on the layers showing it: |< and >| stop at them, and drags snap to them")
+                }
+                // Beats detected: attached to any sound or clip -- a
+                // song's to the clip cut to it.
+                if a.isBeats {
+                    Menu("Attach Beats To") {
+                        ForEach(Array(model.beatsTargets.prefix(40))) { t in
+                            Toggle(t.name, isOn: Binding(
+                                get: { t.beats == a.id },
+                                set: { model.attachBeats($0 ? a.id : nil,
+                                                         to: t.id) }))
+                        }
+                    }
+                    .disabled(model.agentHolds)
+                }
+                // Its BOOKMARKS (DESIGN §4w): its transcript's lines and
+                // sounds, its summary's scenes, marked on its layers on
+                // every timeline -- events, drags snap to them -- or not.
+                if a.kind == "audio" || a.kind == "video" {
+                    let texts = model.bookmarkTexts(of: a)
+                    ForEach(texts) { t in
+                        let alike = texts.filter {
+                            $0.isTranscript == t.isTranscript }.count > 1
+                        Toggle(isOn: Binding(
+                            get: { a.bookmarks?.contains(t.id) == true },
+                            set: { model.attachBookmarks(t.id, to: a.id, $0) })) {
+                            if alike {
+                                Text("Show Bookmarks from \(t.name)")
+                            } else if t.isTranscript {
+                                Text("Show Transcript as Bookmarks")
+                            } else {
+                                Text("Show Summary as Bookmarks")
+                            }
+                        }
+                        .disabled(model.agentHolds)
+                        .help(t.isTranscript
+                              ? "Its lines and the sounds heard as bookmarks on the layers showing it: |< and >| stop at them, and drags snap to them"
+                              : "Its scenes as bookmarks on the layers showing it: |< and >| stop at them, and drags snap to them")
+                    }
+                }
+                // A transcript or a summary: its moments on any sound or
+                // clip -- a song's lyrics on the clip cut to it.
+                if a.givesBookmarks {
+                    Menu("Show as Bookmarks On") {
+                        ForEach(Array(model.beatsTargets.prefix(40))) { t in
+                            Toggle(t.name, isOn: Binding(
+                                get: { t.bookmarks?.contains(a.id) == true },
+                                set: { model.attachBookmarks(a.id, to: t.id,
+                                                             $0) }))
+                        }
+                    }
+                    .disabled(model.agentHolds)
+                }
                 if a.kind == "image" {
                     Divider()
                     Button("Compare as A") { model.compareAsset(a, in: .a) }
@@ -1581,6 +1645,7 @@ private struct AssetRow: View {
         case "transcribe-audio": String(localized: "Transcribed \(made)")
         case "summarize-video": String(localized: "Summarized \(made)")
         case "separate-audio": String(localized: "Separated \(made)")
+        case "track-beats": String(localized: "Beats found \(made)")
         case "make-refmod": String(localized: "RefMod made \(made)")
         case "upscale-image", "upscale-video":
             String(localized: "Upscaled \(made)")

@@ -1323,6 +1323,74 @@ final class AppModel: TuningHost {
         return r
     }
 
+    // MARK: Beats (DESIGN §4v)
+
+    /// The beats asset Detect Beats made from `a` last -- found or still
+    /// being found -- else nil.
+    func beatsMade(from a: AssetDTO) -> AssetDTO? {
+        assets.filter { b in
+            b.isBeats && b.recipe?.inputs?.contains {
+                $0.role == "source" && $0.asset == a.id } == true
+        }.max { $0.created < $1.created }
+    }
+
+    /// The sounds and clips beats or bookmarks may be attached to, newest
+    /// first: what a beats asset's menu offers, a transcript's, a
+    /// summary's.
+    var beatsTargets: [AssetDTO] {
+        assets.filter { ($0.kind == "audio" || $0.kind == "video")
+                        && !$0.isProject }
+            .sorted { $0.created > $1.created }
+    }
+
+    /// `beats` attached to `media` (a sound or a clip) -- nil, taken off:
+    /// its layers on every timeline show them, or none. One command.
+    func attachBeats(_ beats: String?, to media: String) {
+        guard let core, let projectId else { return }
+        let r = core.assetOp(project: projectId, "attach-beats",
+                             ["asset": media, "beats": beats ?? ""])
+        guard r.ok else {
+            flash(r.message, level: .error)
+            return
+        }
+        reloadAssets()
+        if clipOnStage { refreshStackPlan() }
+    }
+
+    // MARK: Bookmarks (DESIGN §4w)
+
+    /// What may be `a`'s bookmarks: the transcripts and video summaries
+    /// attached to it, then the newest of each made from it -- found or
+    /// still being made.
+    func bookmarkTexts(of a: AssetDTO) -> [AssetDTO] {
+        var out = (a.bookmarks ?? []).compactMap { asset(id: $0) }
+        for wanted in [\AssetDTO.isTranscript, \AssetDTO.isVideoSummary] {
+            let made = assets.filter { t in
+                t[keyPath: wanted] && t.recipe?.inputs?.contains {
+                    $0.role == "source" && $0.asset == a.id } == true
+            }.max { $0.created < $1.created }
+            if let made, !out.contains(where: { $0.id == made.id }) {
+                out.append(made)
+            }
+        }
+        return out
+    }
+
+    /// `text` -- a transcript or a video summary -- attached to `media`
+    /// (a sound or a clip), or taken off: its layers on every timeline
+    /// mark its moments, or not. One command.
+    func attachBookmarks(_ text: String, to media: String, _ on: Bool) {
+        guard let core, let projectId else { return }
+        let r = core.assetOp(project: projectId, "attach-bookmarks",
+                             ["asset": media, "text": text, "on": on])
+        guard r.ok else {
+            flash(r.message, level: .error)
+            return
+        }
+        reloadAssets()
+        if clipOnStage { refreshStackPlan() }
+    }
+
     /// From an asset's menu: the operation on it, what it does said.
     @discardableResult
     func perform(_ op: AssetOperationDTO, on a: AssetDTO) -> [String] {
@@ -2203,6 +2271,16 @@ final class AppModel: TuningHost {
         didSet {
             if pitchFollowsSpeed != oldValue { scheduleTrimPersist() }
         }
+    }
+    /// Its reverb's room -- pre-delay and size, the layer's own, not
+    /// keyed (the Audio panel's).
+    var layerRoom = ReverbRoom() {
+        didSet { if layerRoom != oldValue { scheduleTrimPersist() } }
+    }
+    /// Its field -- bass mono and crossfeed, the layer's own, not keyed
+    /// (the Audio panel's Space).
+    var layerField = SoundField() {
+        didSet { if layerField != oldValue { scheduleTrimPersist() } }
     }
     private var trimPersistTask: Task<Void, Never>?
     /// The frame the clip on the stage shows (its player reports it).
@@ -9425,6 +9503,8 @@ final class AppModel: TuningHost {
         layerSpeed = v.speed
         layerSound = v.sound
         pitchFollowsSpeed = v.followsSpeed
+        layerRoom = v.room
+        layerField = v.field
         trimLoaded = v
     }
 
@@ -9440,13 +9520,16 @@ final class AppModel: TuningHost {
         let sound = clip.soundKeys(layer: layer)
         if !sound.isEmpty { v.sound = sound }
         v.followsSpeed = clip.pitchFollowsSpeed(layer: layer)
+        v.room = clip.reverbRoom(layer: layer)
+        v.field = clip.soundField(layer: layer)
         return v
     }
 
     /// What the Trim panel holds now.
     private var trimShown: TrimValues {
         TrimValues(marks: trim, offset: trimOffset, speed: layerSpeed,
-                   sound: layerSound, followsSpeed: pitchFollowsSpeed)
+                   sound: layerSound, followsSpeed: pitchFollowsSpeed,
+                   room: layerRoom, field: layerField)
     }
 
     /// The Trim panel follows the selected layer as the core has it now
@@ -9835,6 +9918,8 @@ final class AppModel: TuningHost {
         let speedChanged = now.speed != base.speed
         let soundChanged = now.sound != base.sound
             || now.followsSpeed != base.followsSpeed
+            || now.room != base.room
+            || now.field != base.field
         guard marksChanged || offsetChanged || speedChanged || soundChanged
         else {
             refreshTrim()
@@ -9871,7 +9956,11 @@ final class AppModel: TuningHost {
             let r = core.layerOp(project: projectId, asset: id, "sound",
                                  layer: layer,
                                  extra: ["keys": keys,
-                                         "follow_speed": pitchFollowsSpeed])
+                                         "follow_speed": pitchFollowsSpeed,
+                                         "reverb_pre_delay": layerRoom.preDelay,
+                                         "reverb_size": layerRoom.size,
+                                         "bass_mono": layerField.bassMono,
+                                         "crossfeed": layerField.crossfeed])
             if !r.ok { flash(r.message, level: .error) }
         }
         // Written: the next write starts from here (one refused, the
@@ -11624,6 +11713,9 @@ final class AppModel: TuningHost {
         case "transcribe": String(localized: "Transcribe")
         case "summarize": String(localized: "Summarize Video")
         case "separate": String(localized: "Separate Vocals and Accompaniment")
+        case "beats": String(localized: "Detect Beats")
+        case "beats.attach": String(localized: "Attach Beats")
+        case "bookmarks.attach": String(localized: "Attach Bookmarks")
         case "upscale": String(localized: "Render Upscaled")
         case "interpolate": String(localized: "Render Interpolated")
         case "layer.group": String(localized: "Group Layers")
@@ -12095,6 +12187,17 @@ final class AppModel: TuningHost {
                      + "\(p["message"] as? String ?? "")")
         case "assets.changed":
             reloadAssets()
+            // Beats or bookmarks attached, taken off, or made (DESIGN
+            // §4v, §4w): the timeline's layers have them through the
+            // stack's plan.
+            let reason = p["reason"] as? String ?? ""
+            let built = reason == "built"
+                ? asset(id: p["asset"] as? String ?? "") : nil
+            if clipOnStage, reason == "beats" || reason == "bookmarks"
+                || built?.isBeats == true
+                || built?.givesBookmarks == true {
+                refreshStackPlan()
+            }
         case "project.changed":
             documentChanged(p)
         case "project.renamed":

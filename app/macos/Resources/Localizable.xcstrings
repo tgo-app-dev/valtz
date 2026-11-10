@@ -3702,6 +3702,36 @@
         }
       }
     },
+    "Attach Beats" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "附加节拍"
+          }
+        }
+      }
+    },
+    "Attach Beats To" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将节拍附加到"
+          }
+        }
+      }
+    },
+    "Attach Bookmarks" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "附加书签"
+          }
+        }
+      }
+    },
     "Attach Media" : {
       "localizations" : {
         "zh-Hans" : {
@@ -4316,6 +4346,46 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "低音"
+          }
+        }
+      }
+    },
+    "Bass Mono" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "低频单声道"
+          }
+        }
+      }
+    },
+    "Bass Mono: its lows below this frequency made one, in the middle, what is above keeping its side -- Off, or 20 to 300 Hz. One for the whole layer, not keyed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "低频单声道：此频率以下的低频合为一路，居于正中，以上的部分保持原来的声道——关闭，或 20 至 300 Hz。整个图层只有一个，不记录在关键帧中。"
+          }
+        }
+      }
+    },
+    "Beats" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "节拍"
+          }
+        }
+      }
+    },
+    "Beats found %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "节拍检测于 %@"
           }
         }
       }
@@ -6389,6 +6459,26 @@
         }
       }
     },
+    "Crossfeed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "交叉馈送"
+          }
+        }
+      }
+    },
+    "Crossfeed: each side's lows heard a little in the other ear, as a head lets them through, for listening on headphones; what both sides share is left as it was. One for the whole layer, not keyed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "交叉馈送：每一侧的低频在另一只耳朵里也听到一些，如同头部让声音透过一般，适合用耳机聆听；两侧共有的部分保持原样。整个图层只有一个，不记录在关键帧中。"
+          }
+        }
+      }
+    },
     "Current" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6531,6 +6621,26 @@
         }
       }
     },
+    "Damping" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "阻尼"
+          }
+        }
+      }
+    },
+    "Damping: how much sooner the room's highs die than its lows -- 0% bright, 100% dark. Keyed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "阻尼：房间的高频比低频提早消失多少——0% 明亮，100% 暗沉。记录在关键帧中。"
+          }
+        }
+      }
+    },
     "Darker" : {
       "localizations" : {
         "zh-Hans" : {
@@ -6577,6 +6687,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "调试"
+          }
+        }
+      }
+    },
+    "Decay" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "衰减"
+          }
+        }
+      }
+    },
+    "Decay: how long the room rings, in seconds to fall 60 dB (RT60). Keyed. Its wheel: dragged right longer, 100 points doubling it; ⌥ finer, ⇧ faster." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "衰减：房间余响持续多久，即衰减 60 dB 所需的秒数（RT60）。记录在关键帧中。其滚轮：向右拖动变长，每 100 点加倍；⌥ 更细，⇧ 更快。"
           }
         }
       }
@@ -6963,6 +7093,16 @@
         }
       }
     },
+    "Detect Beats" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "检测节拍"
+          }
+        }
+      }
+    },
     "Detected by the assistant" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -7150,6 +7290,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "距离"
+          }
+        }
+      }
+    },
+    "Distance: how far away it sounds, in metres -- 1 m as recorded, each doubling 6 dB quieter and its highs duller, as the air dulls them. Keyed. Its wheel: 100 points doubling it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "距离：听起来有多远，单位为米——1 m 为原样，距离每加倍便轻 6 dB，高频也像在空气中那样变暗。记录在关键帧中。其滚轮：每 100 点加倍。"
           }
         }
       }
@@ -7864,6 +8014,16 @@
         }
       }
     },
+    "Dry" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "干声"
+          }
+        }
+      }
+    },
     "Duplicate" : {
       "localizations" : {
         "zh-Hans" : {
@@ -8041,6 +8201,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "每个目标各自保留"
+          }
+        }
+      }
+    },
+    "Echo" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "回声"
           }
         }
       }
@@ -8846,6 +9016,16 @@
         }
       }
     },
+    "Finding the beats of %@: they go to Assets, attached to it." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在检测 %@ 的节拍：结果放入素材，并附加到它。"
+          }
+        }
+      }
+    },
     "Fine" : {
       "comment" : "Favor: more steps",
       "localizations" : {
@@ -9571,12 +9751,12 @@
         }
       }
     },
-    "Gain, pitch and equalizer back as the sound was, in every keyframe" : {
+    "Gain, pitch, equalizer, reverb and place back as the sound was, in every keyframe" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
-            "value" : "增益、音高和均衡器恢复为声音原样，所有关键帧皆然"
+            "value" : "增益、音高、均衡器、混响和空间位置恢复为声音原样，所有关键帧皆然"
           }
         }
       }
@@ -11424,6 +11604,16 @@
         }
       }
     },
+    "Its beats as events on the layers showing it: |< and >| stop at them, and drags snap to them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在显示它的图层上将节拍作为事件：|< 和 >| 会停在节拍处，拖动时也会吸附到节拍"
+          }
+        }
+      }
+    },
     "Its file is missing: %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -11440,6 +11630,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "第一个生成结果决定项目是静态还是时间线。也可以现在设置："
+          }
+        }
+      }
+    },
+    "Its lines and the sounds heard as bookmarks on the layers showing it: |< and >| stop at them, and drags snap to them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在显示它的图层上将语句和听到的声音作为书签：|< 和 >| 会停在书签处，拖动时也会吸附到书签"
           }
         }
       }
@@ -11500,6 +11700,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "其发布者要求你先在 Hugging Face 上接受其许可，然后才能下载。"
+          }
+        }
+      }
+    },
+    "Its scenes as bookmarks on the layers showing it: |< and >| stop at them, and drags snap to them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在显示它的图层上将场景作为书签：|< 和 >| 会停在书签处，拖动时也会吸附到书签"
           }
         }
       }
@@ -13570,6 +13780,16 @@
         }
       }
     },
+    "Mix" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "混合"
+          }
+        }
+      }
+    },
     "Mix the clip's colours" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13586,6 +13806,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "调整画面的颜色"
+          }
+        }
+      }
+    },
+    "Mix: dry to wet -- how much of the sound goes into the room, 0% none, 100% the room alone. Keyed: a mix brought down lets the room's tail ring out." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "混合：从干声到湿声——送入房间的声音有多少，0% 不送，100% 只剩房间声。记录在关键帧中：调低混合时，房间的余响会自然消散。"
           }
         }
       }
@@ -14641,6 +14871,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "尚未下载任何精修模型。"
+          }
+        }
+      }
+    },
+    "No reverb: its mix, decay and damping back as they were in every keyframe, and the room back too" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "不加混响：所有关键帧中的混合、衰减和阻尼恢复原样，房间也恢复原样"
           }
         }
       }
@@ -15966,6 +16206,26 @@
         }
       }
     },
+    "Pan" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "声像"
+          }
+        }
+      }
+    },
+    "Pan: where it sits from left to right, before the reverb -- L 100 hard left, C the centre, R 100 hard right; as loud wherever it is. Keyed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "声像：声音在左右之间的位置，位于混响之前——L 100 为最左，C 为正中，R 100 为最右；无论在何处响度不变。记录在关键帧中。"
+          }
+        }
+      }
+    },
     "Partial" : {
       "localizations" : {
         "zh-Hans" : {
@@ -16668,6 +16928,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "位置"
+          }
+        }
+      }
+    },
+    "Pre-delay" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "预延迟"
+          }
+        }
+      }
+    },
+    "Pre-delay: how long before the room's first echo, the sound heard dry first. One for the whole layer, not keyed. Its wheel: a millisecond a point." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "预延迟：房间第一次回声之前的时间，先听到干声。整个图层只有一个，不记录在关键帧中。其滚轮：每点一毫秒。"
           }
         }
       }
@@ -18505,6 +18785,16 @@
         }
       }
     },
+    "Reverb" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "混响"
+          }
+        }
+      }
+    },
     "Reverse the gradient" : {
       "localizations" : {
         "zh-Hans" : {
@@ -18562,6 +18852,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "右"
+          }
+        }
+      }
+    },
+    "Room" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "房间"
           }
         }
       }
@@ -19038,6 +19338,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "场景切换"
+          }
+        }
+      }
+    },
+    "Scene: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "场景：%@"
           }
         }
       }
@@ -19653,6 +19963,26 @@
         }
       }
     },
+    "Show Beats on Timelines" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在时间线上显示节拍"
+          }
+        }
+      }
+    },
+    "Show Bookmarks from %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示来自 %@ 的书签"
+          }
+        }
+      }
+    },
     "Show Guides" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19740,6 +20070,36 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "显示状态栏"
+          }
+        }
+      }
+    },
+    "Show Summary as Bookmarks" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将概括显示为书签"
+          }
+        }
+      }
+    },
+    "Show Transcript as Bookmarks" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将转写显示为书签"
+          }
+        }
+      }
+    },
+    "Show as Bookmarks On" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "显示为书签于"
           }
         }
       }
@@ -20085,6 +20445,16 @@
         }
       }
     },
+    "Size: how dense the room's echoes are -- small, they crowd in at once; large, they come apart and thicken as the sound dies. One for the whole layer, not keyed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "尺寸：房间的回声有多密——小房间回声一齐涌来；大房间回声彼此分开，随声音消逝而变密。整个图层只有一个，不记录在关键帧中。"
+          }
+        }
+      }
+    },
     "Sizes to start from" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20346,6 +20716,16 @@
         }
       }
     },
+    "Sound: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "声音：%@"
+          }
+        }
+      }
+    },
     "Soundtrack" : {
       "localizations" : {
         "zh-Hans" : {
@@ -20383,6 +20763,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "空格"
+          }
+        }
+      }
+    },
+    "Spatial" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "空间声场"
           }
         }
       }
@@ -20443,6 +20833,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "语音生成、声音克隆"
+          }
+        }
+      }
+    },
+    "Speech: %@" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "语音：%@"
           }
         }
       }
@@ -22972,6 +23372,16 @@
         }
       }
     },
+    "This vpipe has no beat tracker: install one with beat-track" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "此 vpipe 没有节拍跟踪器：请安装带有 beat-track 的版本"
+          }
+        }
+      }
+    },
     "Three or more objects" : {
       "localizations" : {
         "zh-Hans" : {
@@ -25108,6 +25518,16 @@
         }
       }
     },
+    "Where it was recorded: centred, as wide and as near in every keyframe, its lows not made mono, no crossfeed" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "回到录制时的位置：所有关键帧中居中、宽度与距离照旧，低频不合为单声道，无交叉馈送"
+          }
+        }
+      }
+    },
     "Where models are downloaded from. ModelScope mirrors most of them and can be reached from mainland China; a model it does not carry comes from Hugging Face. Either way it is the same files, in the same folder." : {
       "localizations" : {
         "zh-Hans" : {
@@ -25150,6 +25570,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "当神经网络引擎与 GPU 分担模型的计算时，它在这台 Mac 上始终承担 %@ 的行，而不是按计时不断调整份额。"
+          }
+        }
+      }
+    },
+    "Where the beats of its music fall, into a text asset attached to it: on a timeline they are events, and drags snap to them" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "找出其音乐的节拍位置，写入附加到它的文本素材：在时间线上它们是事件，拖动时会吸附到节拍"
           }
         }
       }
@@ -25342,6 +25772,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "宽 × 高"
+          }
+        }
+      }
+    },
+    "Width: how wide its stereo is, the reverb's with it -- 0% one channel, 100% as it is, 200% twice as wide. Keyed." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "宽度：立体声有多宽，混响也随之——0% 为单声道，100% 为原样，200% 为两倍宽。记录在关键帧中。"
           }
         }
       }
@@ -26337,6 +26777,57 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "它在等待 {model} 下载完成，但下载已停止。"
+          }
+        }
+      }
+    },
+    "core.beats_go_on_sound" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Beats go on a sound or a clip: {name} is neither."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "节拍只能附加到声音或视频：{name} 两者都不是。"
+          }
+        }
+      }
+    },
+    "core.beats_need_sound" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{name} has no sound to find beats in."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{name} 没有可检测节拍的声音。"
+          }
+        }
+      }
+    },
+    "core.bookmarks_go_on_sound" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Bookmarks go on a sound or a clip: {name} is neither."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "书签只能附加到声音或视频：{name} 两者都不是。"
           }
         }
       }
@@ -28734,6 +29225,40 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "{model} 不是智能助手。"
+          }
+        }
+      }
+    },
+    "core.not_beats" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{name} holds no beats: Detect Beats on a sound or a clip makes them."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{name} 不含节拍：在声音或视频上使用“检测节拍”来生成。"
+          }
+        }
+      }
+    },
+    "core.not_bookmarks" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "{name} holds no bookmarks: a transcript or a video summary makes them."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "{name} 不含书签：转写或视频概括会生成书签。"
           }
         }
       }

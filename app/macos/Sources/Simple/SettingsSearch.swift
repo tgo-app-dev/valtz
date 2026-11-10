@@ -20,6 +20,7 @@ struct SettingsRow: Identifiable, Sendable {
     static let trimStart = "trim-start", speed = "speed"
     static let pitch = "pitch"
     static let audioGain = "audio-gain", audioEq = "audio-eq"
+    static let audioReverb = "audio-reverb", audioSpace = "audio-space"
 
     let id: String
     /// The card it is on; none for what is always in view (the modality
@@ -253,6 +254,20 @@ struct SettingsRow: Identifiable, Sendable {
                                 String(localized: "EQ"),
                                 String(localized: "Bass"),
                                 String(localized: "Treble")]),
+            SettingsRow(id: audioReverb, panel: .audio,
+                        terms: [String(localized: "Reverb"),
+                                String(localized: "Decay"),
+                                String(localized: "Pre-delay"),
+                                String(localized: "Damping"),
+                                String(localized: "Room"),
+                                String(localized: "Echo")]),
+            SettingsRow(id: audioSpace, panel: .audio,
+                        terms: [String(localized: "Pan"),
+                                String(localized: "Width"),
+                                String(localized: "Distance"),
+                                String(localized: "Bass Mono"),
+                                String(localized: "Crossfeed"),
+                                String(localized: "Stereo")]),
         ]
     }
 }

@@ -21,6 +21,7 @@
 
 #include "valtz/base/result.h"
 #include "valtz/media/adjust.h"
+#include "valtz/media/bookmarks.h"
 #include "valtz/media/crop.h"
 #include "valtz/media/format.h"
 #include "valtz/media/keyframes.h"
@@ -184,6 +185,13 @@ struct MovieLayer {
   // Its place in time; the default -- from the start, forever, its source
   // at the timeline's time -- is how a stack from before plays.
   LayerTiming           timing;
+  // Its source's BEATS where they fall on the timeline, in its seconds
+  // (DESIGN §4v): the screen's stack only (not written: a job has no use
+  // for them).
+  std::vector<double>   beats;
+  // Its source's BOOKMARKS where they fall, in its seconds (DESIGN §4w):
+  // the screen's stack only, as its beats.
+  std::vector<Bookmark> bookmarks;
 };
 
 struct MovieStack {

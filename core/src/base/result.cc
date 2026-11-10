@@ -64,6 +64,8 @@ all_messages()
     kDecomposeMask, kDecomposeSkew, kDecomposeRate, kDecomposeTimeline,
     kSplitNeedsClip, kSplitKeyed, kSplitOutside,
     kTranscribeNeedsSound, kNoTranscriber, kSummarizeNeedsPicture,
+    kBeatsNeedSound, kNotBeats, kBeatsGoOnSound,
+    kNotBookmarks, kBookmarksGoOnSound,
     kNoVideoWatcher, kSeparateNeedsSound, kNoSeparator, kUnknownOperation,
     kModelNotUnpacked,
     kStretchNeedsStill, kNoKeyToMove, kKeyInTheWay, kNoDrawingThere,

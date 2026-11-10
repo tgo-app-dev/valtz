@@ -18,6 +18,8 @@ set(VALTZ_CORE_SOURCES
   src/cache/cache-store.cc
   src/db/lmdb.cc
   src/media/adjust.cc
+  src/media/beats.cc
+  src/media/bookmarks.cc
   src/media/camera.mm
   src/media/capture.mm
   src/media/color.cc
@@ -32,7 +34,9 @@ set(VALTZ_CORE_SOURCES
   src/media/probe.mm
   src/media/procedural.cc
   src/media/refmod.cc
+  src/media/reverb.mm
   src/media/sound.mm
+  src/media/space.cc
   src/media/stamp.mm
   src/media/text-flow.cc
   src/media/thumbnail.mm
@@ -208,6 +212,7 @@ target_link_libraries(valtz_core PUBLIC
   "-framework AVFoundation"
   "-framework VideoToolbox"
   "-framework AudioToolbox"
+  "-framework Accelerate"
   "-framework ImageIO"
   "-framework UniformTypeIdentifiers"
   "-framework Metal"
@@ -227,7 +232,8 @@ set_source_files_properties(
   src/media/camera.mm src/media/capture.mm
   src/fleet/fleet.mm src/agent/cloud.mm
   src/media/exif.mm src/media/markup.mm src/media/model-input.mm
-  src/media/movie.mm src/media/pdf.mm src/media/stamp.mm
+  src/media/movie.mm src/media/pdf.mm src/media/reverb.mm
+  src/media/stamp.mm
   src/media/probe.mm src/media/thumbnail.mm
   src/models/hardware.mm src/project/bookmark.mm src/base/url-fetch.mm
   PROPERTIES COMPILE_OPTIONS "-fobjc-arc")

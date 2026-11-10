@@ -2610,10 +2610,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "stage": m.dropAssetOnStage(arg)
                     // An ASSET OPERATION from the row's menu (DESIGN
                     // §4j): "transcribe:<id>", "summarize:<id>",
-                    // "separate:<id>" -- the request, then, its task
-                    // done, what it made: a transcript's or a
-                    // summary's words; a separation's sounds.
-                    case "transcribe", "summarize", "separate":
+                    // "separate:<id>", "beats:<id>" -- the request, then,
+                    // its task done, what it made: a transcript's or a
+                    // summary's words; a separation's sounds; the beats
+                    // found and what they are attached to.
+                    case "transcribe", "summarize", "separate", "beats":
                         guard let a = m.asset(id: arg),
                               let op = m.operation(p[0]) else {
                             print("snapshot: \(p[0]) offered=\(m.operation(p[0]) != nil) asset=\(arg) -")
@@ -2637,6 +2638,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     "\(d.id):\(d.name):\(String(format: "%.2f", d.info?.seconds ?? 0))s"
                                 }.joined(separator: ",")
                                 print("snapshot: separated from=\(a.id) made=\(list) folder=\(done.map { $0.folder ?? "" }.joined(separator: ","))")
+                                break
+                            }
+                            if op.name == "beats" {
+                                let b = done[0]
+                                let f = b.beatsFound.map {
+                                    String(format: "%.1f/%d", $0.tempo, $0.count)
+                                } ?? "-"
+                                let on = m.asset(id: a.id)?.beats ?? "-"
+                                print("snapshot: beats asset=\(b.id) name=\(b.name) found=\(f) attached=\(on == b.id) timeline=\(AppDelegate.timelineSummary(m))")
                                 break
                             }
                             let t = done[0]
@@ -2663,6 +2673,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             print("snapshot: assets view \(a.kind) viewed=\(m.viewedAsset ?? "-") notice=\(n)")
                         }
                     case "unview": m.endViewing()
+                    // Beats attached ("attach:<beats>@<sound|clip>") or
+                    // taken off ("detach:<sound|clip>") as the row's menu
+                    // does (DESIGN §4v).
+                    case "attach", "detach":
+                        let parts = arg.split(separator: "@").map(String.init)
+                        let media = p[0] == "attach" ? parts.last ?? ""
+                                                     : arg
+                        m.attachBeats(p[0] == "attach" ? parts.first : nil,
+                                      to: media)
+                        try? await Task.sleep(for: .seconds(1))
+                        print("snapshot: beats-\(p[0]) media=\(media) attached=\(m.asset(id: media)?.beats ?? "-") timeline=\(AppDelegate.timelineSummary(m))")
+                    // Bookmarks: a transcript or a summary attached
+                    // ("marks:<text>@<sound|clip>") or taken off
+                    // ("unmarks:<text>@<sound|clip>") as the row's menu
+                    // does (DESIGN §4w); "marks:newest-transcript@<id>",
+                    // "newest-summary" the newest made.
+                    case "marks", "unmarks":
+                        let parts = arg.split(separator: "@").map(String.init)
+                        let media = parts.last ?? ""
+                        var text = parts.first ?? ""
+                        if text.hasPrefix("newest-") {
+                            let want = text == "newest-summary"
+                            text = m.assets.filter {
+                                want ? $0.isVideoSummary : $0.isTranscript
+                            }.max { $0.created < $1.created }?.id ?? ""
+                        }
+                        m.attachBookmarks(text, to: media, p[0] == "marks")
+                        try? await Task.sleep(for: .seconds(1))
+                        let on = (m.asset(id: media)?.bookmarks ?? [])
+                            .joined(separator: "+")
+                        let offered = m.asset(id: media).map {
+                            m.bookmarkTexts(of: $0).map(\.name)
+                                .joined(separator: "+") } ?? "-"
+                        print("snapshot: bookmarks-\(p[0]) media=\(media) text=\(text) attached=\(on.isEmpty ? "-" : on) offered=\(offered) timeline=\(AppDelegate.timelineSummary(m))")
                     // A blank asset of the New menu ("new:timeline",
                     // "new:still", "new:sound"), made active.
                     case "new":
@@ -3634,8 +3678,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             } else if p[0].hasPrefix("eq"),
                                       let i = Int(p[0].dropFirst(2)) {
                                 m.setLayerEq(i, v)
+                            } else if let r = Self.reverbParam(p[0]) {
+                                m.setLayerReverb(r, v)
+                            } else if let q = Self.spaceParam(p[0]) {
+                                m.setLayerSpace(q, v)
                             }
                         }
+                    // A reverb's or a space's number: its jog wheel turned
+                    // so many points ("decay:40", "pan:-30"), or its field
+                    // typed ("predelay:35 ms", "pan:L 40").
+                    case "rjog", "rtype":
+                        let pp = arg.split(separator: ":", maxSplits: 1)
+                            .map(String.init)
+                        guard pp.count == 2 else { break }
+                        var took = false
+                        if let r = Self.reverbParam(pp[0]) {
+                            took = Self.turn(m, r, kv[0], pp[1])
+                        } else if let q = Self.spaceParam(pp[0]) {
+                            took = Self.turn(m, q, kv[0], pp[1])
+                        }
+                        if !took { print("snapshot: audio \(arg) not taken") }
+                    case "dry": m.dryLayerReverb()
+                    case "centre": m.centreLayerSound()
                     case "fdrag", "fodrag", "fclick", "fdclick":
                         // "eq5:0.5,0.5>0.5,0.2": the fader, then where.
                         let pp = arg.split(separator: ":", maxSplits: 1)
@@ -3687,6 +3751,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             } else if what.hasPrefix("eq"),
                                       let b = Int(what.dropFirst(2)) {
                                 m.setLayerEq(b, v)
+                            } else if let r = Self.reverbParam(what) {
+                                m.setLayerReverb(r, v)
+                            } else if let q = Self.spaceParam(what) {
+                                m.setLayerSpace(q, v)
                             }
                         }
                         print("snapshot: audio-sweep \(what) \(line)")
@@ -3702,18 +3770,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         try? await Task.sleep(for: .milliseconds(600))
                     case "draw": Self.drawWindow(to: arg)
                     case "persist":
+                        let began = Date()
                         m.persistTrim()
                         // The plan made again -- its mix rendered.
                         var waited = 0
                         repeat {
-                            try? await Task.sleep(for: .milliseconds(100))
+                            try? await Task.sleep(for: .milliseconds(20))
                             waited += 1
-                        } while m.stackPlanning && waited < 300
+                        } while m.stackPlanning && waited < 1500
+                        print("snapshot: audio-persist took=\(Int(Date().timeIntervalSince(began) * 1000))ms")
                         try? await Task.sleep(for: .milliseconds(300))
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(500))
-                    print("snapshot: audio \(step) here=\(Self.soundSummary(m.layerSoundHere)) keys=\(m.layerSound.keys.map { "\($0.frame):\(Self.soundSummary($0.value))" }.joined(separator: ";")) follow=\(m.pitchFollowsSpeed) alpha=\(String(format: "%.3f", m.adjustments.alpha)) frozen=\(m.layerFrozen) tab=\(m.showsAudio) panel=\(m.openPanel.map { "\($0)" } ?? "-") mix=\(m.stackPlayback?.mix?.path ?? "-") audio=\(m.stackPlayback?.audio.count ?? 0) faders=\(Self.fadersSummary())")
+                    print("snapshot: audio \(step) here=\(Self.soundSummary(m.layerSoundHere)) keys=\(m.layerSound.keys.map { "\($0.frame):\(Self.soundSummary($0.value))" }.joined(separator: ";")) follow=\(m.pitchFollowsSpeed) room=\(Self.roomSummary(m.layerRoom)) field=\(Self.fieldSummary(m.layerField)) alpha=\(String(format: "%.3f", m.adjustments.alpha)) frozen=\(m.layerFrozen) tab=\(m.showsAudio) panel=\(m.openPanel.map { "\($0)" } ?? "-") mix=\(m.stackPlayback?.mix?.path ?? "-") audio=\(m.stackPlayback?.audio.count ?? 0) faders=\(Self.fadersSummary())")
                 }
             }
             if let g = env["VALTZ_SNAPSHOT_GUIDES"] {
@@ -3863,7 +3933,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // KEYS: "kdrag=0:30>40" (a key's dot dragged from its frame
             // to another, through the view; "khold=" the same left
             // held, for the capture), "ktip=0:30" (its bar's tooltip,
-            // zoomed out),
+            // zoomed out), "mtip=0:30" (a bookmark's flag's),
             // "wait=2" -- each printing the timeline as it is.
             if let spec = env["VALTZ_SNAPSHOT_TIMELINE_VIEW"] {
                 func layerArg(_ s: Substring) -> String {
@@ -4248,6 +4318,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                            let t = TimelineNSView.shown?
                                .keyTip(frame: p[1], row: p[0]) {
                             print("snapshot: timeline-ktip \(arg) bars=\(t.bars) tip=\(t.tip)")
+                        }
+                    // A bookmark's flag's tooltip ("mtip=1:30": row 1,
+                    // frame 30; "-" none), its lines joined by " | ".
+                    case "mtip":
+                        let p = arg.split(separator: ":")
+                            .compactMap { Int($0) }
+                        if p.count == 2,
+                           let t = TimelineNSView.shown?
+                               .markTip(frame: p[1], row: p[0]) {
+                            let tip = t.tip.replacingOccurrences(
+                                of: "\n", with: " | ")
+                            print("snapshot: timeline-mtip \(arg) flags=\(t.flags) tip=\(tip)")
                         }
                     case "length":
                         let p = arg.split(separator: ":")
@@ -7740,11 +7822,67 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// A sound's values: "v0.50,p+2,eq:0,0,0,0,0,+6,0,0,0,0".
+    /// A sound's values: "v0.50,p+2,eq:0,0,0,0,0,+6,0,0,0,0,rv:m0.25/
+    /// d1.50/dp0.50".
     static func soundSummary(_ s: LayerSound) -> String {
         String(format: "v%.2f,p%@,eq:", s.volume,
                AudioPanel.pitchText(s.pitch))
             + s.eq.map { AudioPanel.decibels($0) }.joined(separator: ",")
+            + String(format: ",rv:m%.2f/d%.2f/dp%.2f,sp:p%+.2f/w%.2f/d%.2f",
+                     s.reverbMix, s.reverbDecay, s.reverbDamping, s.pan,
+                     s.width, s.distance)
+    }
+
+    /// A field: "120Hz/0.30" (bass mono, crossfeed).
+    static func fieldSummary(_ f: SoundField) -> String {
+        String(format: "%.0fHz/%.2f", f.bassMono, f.crossfeed)
+    }
+
+    /// A space's number by the hooks' names: "pan", "width", "distance",
+    /// "bassmono", "crossfeed".
+    static func spaceParam(_ name: String) -> SpaceParam? {
+        switch name {
+        case "pan": .pan
+        case "width": .width
+        case "distance": .distance
+        case "bassmono", "bass_mono", "bassMono": .bassMono
+        case "crossfeed": .crossfeed
+        default: nil
+        }
+    }
+
+    /// One of the panel's numbers turned by its wheel so many points
+    /// (`rjog`) or typed (`rtype`); false when it took nothing.
+    @MainActor
+    static func turn<P: SoundNumber>(_ m: AppModel, _ p: P, _ how: String,
+                                     _ arg: String) -> Bool {
+        if how == "rjog", let pts = Double(arg) {
+            m.nudgeSound(p, by: pts * p.perPoint)
+            return true
+        }
+        if how == "rtype", let v = p.parse(arg) {
+            p.set(m, v)
+            return true
+        }
+        return false
+    }
+
+    /// A room: "0.020s/0.50".
+    static func roomSummary(_ r: ReverbRoom) -> String {
+        String(format: "%.3fs/%.2f", r.preDelay, r.size)
+    }
+
+    /// A reverb number by the hooks' names: "decay", "predelay", "mix",
+    /// "damping", "size".
+    static func reverbParam(_ name: String) -> ReverbParam? {
+        switch name {
+        case "decay": .decay
+        case "predelay", "pre_delay", "preDelay": .preDelay
+        case "mix", "wet": .mix
+        case "damping": .damping
+        case "size": .size
+        default: nil
+        }
     }
 
     /// The Audio panel's faders in the window, points from its top left:
@@ -8078,6 +8216,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     return "\(k)\(way)"
                 }.joined()
             let wave = r.wave != nil ? ":wave" : ""
+            // Its beats (DESIGN §4v): how many, the first few frames.
+            let beats = r.beats.isEmpty ? ""
+                : ":b\(r.beats.count)@"
+                    + r.beats.prefix(4).map(String.init).joined(separator: "/")
+            // Its bookmarks (DESIGN §4w): how many, the first few -- each
+            // its frame and kind's letter (s speech, n sound, c scene).
+            let marks = r.bookmarks.isEmpty ? ""
+                : ":m\(r.bookmarks.count)@"
+                    + r.bookmarks.prefix(4).map { b in
+                        "\(b.frame)\(b.kind == .speech ? "s" : b.kind == .sound ? "n" : "c")"
+                    }.joined(separator: "/")
             let shown = (r.visible ? "" : ":hidden")
                 + (r.locked ? ":locked" : "")
                 + (r.separator ? ":sep" : "")
@@ -8089,7 +8238,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return "[\(r.folder ?? "")\(r.folded ? ":folded" : ""):\(spans)\(shown)]"
             }
             let inset = r.depth > 0 ? ">" : ""
-            return "\(inset)\(id):\(r.start)-\(end):\(r.kind)\(keys)\(wave)\(shown)"
+            return "\(inset)\(id):\(r.start)-\(end):\(r.kind)\(keys)\(wave)\(beats)\(marks)\(shown)"
         }.joined(separator: ",")
         let sel = t.selected == TimelineModel.noLayer ? "-"
             : t.selected.isEmpty ? "0" : t.selected

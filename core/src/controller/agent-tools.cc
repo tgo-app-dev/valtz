@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <format>
+#include <limits>
 #include <optional>
 #include <set>
 
@@ -1537,12 +1538,165 @@ secs(double v)
   return std::round(v * 100) / 100;
 }
 
-// A sound's SHAPE: its level, faded in and out; its pitch and its
-// equalizer, the same throughout; and the spans it is held LOWER -- the
-// music under a voice-over (set_layer_sound's `duck_under`) -- each a
-// share of its level, eased down and back up over kDuckRamp. Laid as
-// keys at the layer's own frames (shape_keys) and read back from them
-// (shape_of), so a trim lays them again over its new length.
+// Seconds to the millisecond: a beat's place (secs' hundredths are a
+// quarter of a frame off).
+double
+ms(double v)
+{
+  return std::round(v * 1000) / 1000;
+}
+
+// The middle gap between beats (seconds); 0 for fewer than two.
+double
+beat_gap(const std::vector<double>& b)
+{
+  if (b.size() < 2) {
+    return 0;
+  }
+  std::vector<double> g;
+  for (std::size_t i = 1; i < b.size(); ++i) {
+    g.push_back(b[i] - b[i - 1]);
+  }
+  std::ranges::nth_element(g, g.begin() + g.size() / 2);
+  return g[g.size() / 2];
+}
+
+// A text's characters (UTF-8 code points).
+std::size_t
+chars_of(std::string_view t)
+{
+  std::size_t n = 0;
+  for (const unsigned char c : t) {
+    n += (c & 0xC0) != 0x80;
+  }
+  return n;
+}
+
+// Words cut into pieces of at most `most` characters, at spaces where
+// there are any (a CJK line, none: at characters).
+std::vector<std::string>
+pieces_of(const std::string& text, std::size_t most)
+{
+  std::vector<std::string> out;
+  std::string cur;
+  std::size_t cur_n = 0;
+  auto flush = [&] {
+    while (!cur.empty() && cur.back() == ' ') {
+      cur.pop_back();
+    }
+    if (!cur.empty()) {
+      out.push_back(std::move(cur));
+    }
+    cur.clear();
+    cur_n = 0;
+  };
+  std::size_t i = 0;
+  while (i < text.size()) {
+    // The next word, with the spaces after it.
+    std::size_t j = i;
+    const bool spaced = text.find(' ') != std::string::npos;
+    if (spaced) {
+      while (j < text.size() && text[j] != ' ') {
+        ++j;
+      }
+      while (j < text.size() && text[j] == ' ') {
+        ++j;
+      }
+    } else {
+      ++j;
+      while (j < text.size() &&
+             (static_cast<unsigned char>(text[j]) & 0xC0) == 0x80) {
+        ++j;
+      }
+    }
+    const std::string word = text.substr(i, j - i);
+    const std::size_t n = chars_of(word);
+    if (cur_n > 0 && cur_n + n > most) {
+      flush();
+    }
+    cur += word;
+    cur_n += n;
+    i = j;
+  }
+  flush();
+  return out;
+}
+
+// The sound's NUMBERS as the tools name them, each a track of its own
+// in key_layer (the keys naming one set it alone), steady through
+// set_layer_sound's shape -- and their ranges (media::Sound's). The
+// equalizer is a track too, by its bands (eq_over). Its pan and width
+// are "stereo_": a key's "width" is its box's, a picture's pan its
+// dx / dy.
+struct SoundNumber {
+  const char* name;
+  double media::Sound::*member;
+  double lo, hi;
+};
+constexpr SoundNumber kSoundNumbers[] = {
+    {"volume", &media::Sound::volume, 0, 2},
+    {"pitch", &media::Sound::pitch, -media::kMaxPitch, media::kMaxPitch},
+    {"reverb_mix", &media::Sound::reverb_mix, 0, 1},
+    {"reverb_decay", &media::Sound::reverb_decay, media::kMinReverbDecay,
+     media::kMaxReverbDecay},
+    {"reverb_damping", &media::Sound::reverb_damping, 0, 1},
+    {"stereo_pan", &media::Sound::pan, -1, 1},
+    {"stereo_width", &media::Sound::width, 0, media::kMaxWidth},
+    {"distance", &media::Sound::distance, 1, media::kMaxDistance}};
+// The layer's own -- its room, its field: one for its whole time, set by
+// set_layer_sound alone.
+constexpr const char* kLayerSoundNumbers[] = {
+    "reverb_pre_delay", "reverb_size", "bass_mono", "crossfeed"};
+
+// Every track of a sound by name: the numbers, then "eq".
+std::vector<std::string>
+sound_tracks()
+{
+  std::vector<std::string> out;
+  for (const auto& n : kSoundNumbers) {
+    out.emplace_back(n.name);
+  }
+  out.emplace_back("eq");
+  return out;
+}
+
+// Track `t` of `from` put into `to`.
+void
+take_track(media::Sound& to, const media::Sound& from, std::string_view t)
+{
+  if (t == "eq") {
+    to.eq = from.eq;
+    return;
+  }
+  for (const auto& n : kSoundNumbers) {
+    if (t == n.name) {
+      to.*n.member = from.*n.member;
+      return;
+    }
+  }
+}
+
+// Track `t` changes along the keys.
+bool
+track_varies(const media::KeyedSound& k, std::string_view t)
+{
+  for (const auto& key : k.keys) {
+    media::Sound a = k.keys.front().value;
+    take_track(a, key.value, t);
+    if (!(a == k.keys.front().value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// A sound's SHAPE: its level, faded in and out; the rest of it -- its
+// pitch, equalizer, reverb and place -- the same throughout (`held`, its
+// volume unused); and the spans it is held LOWER -- the music under a
+// voice-over (set_layer_sound's `duck_under`) -- each a share of its
+// level, eased down and back up over kDuckRamp. Laid as keys at the
+// layer's own frames (shape_keys) and read back from them (shape_of), so
+// a trim lays them again over its new length.
 struct SoundDip {
   double from = 0;   // its own seconds
   double to = 0;
@@ -1552,8 +1706,7 @@ struct SoundShape {
   double volume = 1;
   double fade_in = 0;
   double fade_out = 0;
-  double pitch = 0;
-  std::array<double, media::kEqBands> eq{};
+  media::Sound held;
   std::vector<SoundDip> dips;  // by time, apart
 };
 constexpr double kDuckRamp = 0.4;
@@ -1575,7 +1728,9 @@ shape_keys(const SoundShape& sh, double seconds, Rational rate)
       k.keys.back().value.volume = gain;
       return;
     }
-    k.keys.push_back({f, media::Sound{gain, sh.pitch, sh.eq}});
+    media::Sound v = sh.held;
+    v.volume = gain;
+    k.keys.push_back({f, v});
   };
   key(0, fi > 0 ? 0.0 : v);
   if (fi > 0) {
@@ -1602,20 +1757,52 @@ shape_keys(const SoundShape& sh, double seconds, Rational rate)
   return k;
 }
 
+// The keys where its VOLUME turns: a key on the line between its
+// neighbours (laid there by another track's key) left out.
+media::KeyedSound
+volume_turns(const media::KeyedSound& k)
+{
+  media::KeyedSound out;
+  out.rate = k.rate;
+  const auto& ks = k.keys;
+  for (std::size_t i = 0; i < ks.size(); ++i) {
+    if (i > 0 && i + 1 < ks.size()) {
+      const auto& a = out.keys.back();
+      const auto& b = ks[i + 1];
+      const double t = static_cast<double>(ks[i].frame - a.frame) /
+                       static_cast<double>(b.frame - a.frame);
+      const double on = a.value.volume + t * (b.value.volume -
+                                              a.value.volume);
+      if (std::abs(on - ks[i].value.volume) < 1e-6) {
+        continue;
+      }
+    }
+    out.keys.push_back(ks[i]);
+  }
+  // Held at its end: the last key's level reached before it.
+  while (out.keys.size() >= 2 &&
+         std::abs(out.keys.back().value.volume -
+                  out.keys[out.keys.size() - 2].value.volume) < 1e-6) {
+    out.keys.pop_back();
+  }
+  return out;
+}
+
 SoundShape
-shape_of(const media::KeyedSound& k, double fps)
+shape_of(const media::KeyedSound& keyed, double fps)
 {
   SoundShape s;
-  if (k.keys.empty()) {
+  if (keyed.keys.empty()) {
     return s;
   }
+  s.held = keyed.keys.front().value;
+  s.held.volume = 1;
+  const media::KeyedSound k = volume_turns(keyed);
   double top = 0;
   for (const auto& key : k.keys) {
     top = std::max(top, key.value.volume);
   }
   s.volume = top;
-  s.pitch = k.keys.front().value.pitch;
-  s.eq = k.keys.front().value.eq;
   const auto& ks = k.keys;
   const auto at = [&](std::size_t i) {
     return static_cast<double>(ks[i].frame) / fps;
@@ -1648,26 +1835,91 @@ shape_of(const media::KeyedSound& k, double fps)
   return s;
 }
 
-// Keys a shape lays exactly -- set_layer_sound's, a landing's -- not ones
-// keyed by hand (key_layer), which a trim leaves as they are.
+// Its VOLUME as a shape lays it -- set_layer_sound's, a landing's -- not
+// keyed by hand (key_layer), which a trim leaves as it is.
 bool
-is_shape(const media::KeyedSound& k, double seconds, Rational rate)
+volume_is_shape(const media::KeyedSound& k, double seconds, Rational rate)
 {
+  const media::KeyedSound turns = volume_turns(k);
+  // One level throughout, from wherever its keys are.
+  if (turns.keys.size() <= 1) {
+    return true;
+  }
   const media::KeyedSound again =
       shape_keys(shape_of(k, rate.to_double()), seconds, rate);
-  if (again.keys.size() != k.keys.size()) {
+  if (again.keys.size() != turns.keys.size()) {
     return false;
   }
-  for (std::size_t i = 0; i < k.keys.size(); ++i) {
+  for (std::size_t i = 0; i < turns.keys.size(); ++i) {
     const auto& a = again.keys[i];
-    const auto& b = k.keys[i];
+    const auto& b = turns.keys[i];
     if (std::abs(a.frame - b.frame) > 1 ||
-        std::abs(a.value.volume - b.value.volume) > 1e-3 ||
-        a.value.pitch != b.value.pitch || a.value.eq != b.value.eq) {
+        std::abs(a.value.volume - b.value.volume) > 1e-3) {
       return false;
     }
   }
   return true;
+}
+
+// Keys a shape lays exactly: its volume a shape's, the rest the same
+// throughout.
+bool
+is_shape(const media::KeyedSound& k, double seconds, Rational rate)
+{
+  if (!volume_is_shape(k, seconds, rate)) {
+    return false;
+  }
+  for (const auto& t : sound_tracks()) {
+    if (t != "volume" && track_varies(k, t)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// A layer's sound keyed TRACK BY TRACK: each track `named` -- a number,
+// the equalizer -- from the keys naming it (one key: a steady value;
+// held before its first and after its last), the others as they were in
+// `was`, at their own keys' frames where they change.
+media::KeyedSound
+sound_keyed(const media::KeyedSound& was,
+            std::map<std::string, media::KeyedSound> named, Rational rate)
+{
+  std::set<std::int64_t> frames;
+  for (auto& [t, k] : named) {
+    // By frame, the last given at a frame kept; linear between.
+    std::ranges::stable_sort(k.keys, {}, &media::Keyframe<media::Sound>::frame);
+    std::vector<media::Keyframe<media::Sound>> one;
+    for (auto& key : k.keys) {
+      key.interp = media::Interp::Linear;
+      if (!one.empty() && one.back().frame == key.frame) {
+        one.back() = key;
+      } else {
+        one.push_back(key);
+      }
+      frames.insert(key.frame);
+    }
+    k.keys = std::move(one);
+  }
+  for (const auto& t : sound_tracks()) {
+    if (!named.contains(t) && track_varies(was, t)) {
+      for (const auto& key : was.keys) {
+        frames.insert(key.frame);
+      }
+      break;
+    }
+  }
+  media::KeyedSound out;
+  out.rate = rate;
+  for (const std::int64_t f : frames) {
+    const double at = static_cast<double>(f);
+    media::Sound v = was.at(at);
+    for (const auto& [t, k] : named) {
+      take_track(v, k.at(at), t);
+    }
+    out.keys.push_back({f, v});
+  }
+  return out;
 }
 
 // ---- a layer's look, by name ------------------------------------------------
@@ -1987,6 +2239,31 @@ eq_said(const std::array<double, media::kEqBands>& eq)
     }
   }
   return out;
+}
+
+double
+round3(double v)
+{
+  return std::round(v * 1000) / 1000;
+}
+
+// A sound told back but its volume: what is not as recorded -- its
+// pitch, equalizer, reverb, place.
+Json
+sound_said(const media::Sound& v)
+{
+  Json j = Json::object();
+  const media::Sound rest;
+  for (const auto& n : kSoundNumbers) {
+    if (std::string_view(n.name) != "volume" &&
+        v.*n.member != rest.*n.member) {
+      j[n.name] = round3(v.*n.member);
+    }
+  }
+  if (!v.flat()) {
+    j["eq"] = eq_said(v.eq);
+  }
+  return j;
 }
 
 // Layer ids from an argument: a list, or one; "0" the bottom layer.
@@ -3402,8 +3679,13 @@ Controller::AgentHost::tools()
                     "\"y\", \"width\", \"height\" (a box, as "
                     "set_layer_box); \"rotate\" degrees; \"speed\" "
                     "0.1-10 (a clip, a sound); SOUND: \"volume\" 0-2, "
-                    "\"pitch\", \"eq\" (set_layer_sound's). Zoom and "
-                    "pan are from its box as it is now"}}}},
+                    "\"pitch\", \"eq\", \"reverb_mix\", "
+                    "\"reverb_decay\", \"reverb_damping\", "
+                    "\"stereo_pan\", \"stereo_width\", \"distance\" "
+                    "(set_layer_sound's) -- each a track of its own, set "
+                    "by the keys naming it (a sound panned from left to "
+                    "right keeps its fades). Zoom and pan are from its "
+                    "box as it is now"}}}},
                 {"layer", "keys"}),
          &H::t_key_layer});
     t.push_back({"rename_asset", "edit", "Rename an asset",
@@ -3541,6 +3823,108 @@ Controller::AgentHost::tools()
                  {"model", str(kModelDoc)}},
                 {"asset"}),
          &H::t_separate_sound});
+    // ---- beats and bookmarks: a timeline's marks (DESIGN §4v, §4w)
+    t.push_back(
+        {"detect_beats", "read", "Find the beats",
+         "Where the BEATS of a sound's music fall -- a sound, a clip's "
+         "sound, a timeline's mix -- found with no model in about a "
+         "second, kept in the project and SHOWN on it: every timeline "
+         "layer showing it then has them (get_timeline_marks, "
+         "cut_to_beats). Tells the tempo and its first beats in its own "
+         "seconds.",
+         schema({{"asset", str("the sound's or the clip's id")}},
+                {"asset"}),
+         &H::t_detect_beats});
+    t.push_back(
+        {"get_timeline_marks", "read", "Read the timeline's marks",
+         "A timeline's MARKS where they fall, in its seconds: each "
+         "layer's BEATS (its music's, once detect_beats found them) and "
+         "BOOKMARKS -- the lines spoken and sounds heard of a transcript, "
+         "the scenes of a clip's summary, once show_marks put them on it. "
+         "For a title on a line, a cut on a scene, a key on each beat.",
+         schema({{"composition", str(kCompDoc)},
+                 {"layer", str("one layer's alone; omitted: every layer "
+                               "with marks")},
+                 {"from", num("from this second of the timeline")},
+                 {"to", num("up to this second")},
+                 {"kinds", {{"type", "array"},
+                            {"items", {{"type", "string"},
+                                       {"enum", Json::array(
+                                           {"beats", "speech", "sound",
+                                            "scene"})}}},
+                            {"description", "only these; omitted: all"}}}}),
+         &H::t_get_timeline_marks});
+    t.push_back(
+        {"show_marks", "edit", "Show marks on the timeline",
+         "A sound's or a clip's transcript (its lines and sounds heard), "
+         "its summary (a clip's scenes) or its beats SHOWN on its layers "
+         "on every timeline -- marked on their blocks for the person, "
+         "events the playhead stops at, what drags snap to, and read by "
+         "get_timeline_marks -- or taken off (`on`: false). Its own, or "
+         "another's: a song's lyrics on the clip cut to it.",
+         schema({{"asset", str("the sound's or the clip's id")},
+                 {"marks", str("\"transcript\" (by default), \"summary\" or "
+                               "\"beats\" -- the newest made from it -- or "
+                               "a transcript's, summary's or beats' id")},
+                 {"on", boolean("false takes them off; true by default")}},
+                {"asset"}),
+         &H::t_show_marks});
+    t.push_back(
+        {"add_subtitles", "edit", "Add subtitles",
+         "SUBTITLES of what is said in a clip's or a sound's layer: its "
+         "transcript's lines (transcribe it first), each a title on the "
+         "timeline from where it is spoken to where it ends -- long lines "
+         "split, each shown a second at least -- through the layer's trim "
+         "and speed, in a folder \"Subtitles\" (laid again: the old ones "
+         "replaced). White words with a soft shadow at the foot by "
+         "default.",
+         schema({{"composition", str(kCompDoc)},
+                 {"layer", str("the clip's or the sound's layer whose "
+                               "words they are")},
+                 {"transcript", str("a transcript's id; omitted: the one "
+                                    "shown on it, else its newest")},
+                 {"size", num("the words' size, pixels; 4.5% of the "
+                              "frame's height by default")},
+                 {"color", str("their colour; white by default")},
+                 {"background", str("a panel behind them, \"#rrggbbaa\" "
+                                    "(\"#00000099\": dark, see-through); "
+                                    "none by default")},
+                 {"position", one_of({"bottom", "top"},
+                                     "bottom by default")},
+                 {"max_chars", integer("characters a row; 42 by default")},
+                 {"lines", integer("rows a subtitle at most; 2 by "
+                                   "default")},
+                 {"font", str("their font family")},
+                 {"bold", boolean("bold")},
+                 {"shadow", boolean("their soft shadow; on unless a "
+                                    "background is given")}},
+                {"layer"}),
+         &H::t_add_subtitles});
+    t.push_back(
+        {"cut_to_beats", "edit", "Cut on the beat",
+         "Cuts ON THE BEAT: a timeline's clips and pictures, in the order "
+         "they play, laid END TO END from a beat of its music, each "
+         "lasting a whole number of beats -- a clip from its `in`, as "
+         "much as its part holds. The music's beats are found first if it "
+         "has none. Dissolves between them become cuts.",
+         schema({{"composition", str(kCompDoc)},
+                 {"music", str("the music's layer; omitted: the sound "
+                               "with beats, else the longest sound")},
+                 {"beats", {{"description",
+                             "beats each lasts: one number for all (4 a "
+                             "bar of 4/4; 2, 1 faster), or a list, one a "
+                             "clip in order; omitted: each as near its "
+                             "length now as whole beats go"},
+                            {"anyOf", Json::array(
+                                {{{"type", "integer"}},
+                                 {{"type", "array"},
+                                  {"items", {{"type", "integer"}}}}})}}},
+                 {"start", num("the first cut's second, moved to the beat "
+                               "at or after it; omitted: where the first "
+                               "of them starts")},
+                 {"layers", ids("which layers, in the order they play; "
+                                "omitted: every clip and picture")}}),
+         &H::t_cut_to_beats});
     t.push_back({"grab_frame", "edit", "Grab a frame",
                  "A FRAME of a clip or a timeline, at `at` seconds of its "
                  "own (\"end\" its last), made a picture in Assets (a "
@@ -3626,10 +4010,14 @@ Controller::AgentHost::tools()
     t.push_back(
         {"set_layer_sound", "edit", "Set a layer's sound",
          "A clip's or a sound's SOUND over its time: a level, faded in "
-         "from silence and out to silence; its pitch and equalizer; and "
-         "DUCKED -- lower wherever other layers sound (music under a "
-         "voice-over or someone speaking), eased down and back up. Only "
-         "what is given changes.",
+         "from silence and out to silence; its pitch and equalizer; its "
+         "REVERB (a room it rings in, on past its end); where it SITS -- "
+         "panned, wide, far; and DUCKED -- lower wherever other layers "
+         "sound (music under a voice-over or someone speaking), eased "
+         "down and back up. Only what is given changes. Pitch, eq, the "
+         "reverb's mix, decay and damping and the stereo_pan, "
+         "stereo_width and distance are steady here: key_layer changes "
+         "them over its time.",
          schema({{"composition", str(kCompDoc)},
                  {"layer", str(kLayerDoc)},
                  {"volume", num("0 (mute) to 1 (as it is); up to 2 "
@@ -3643,6 +4031,37 @@ Controller::AgentHost::tools()
                           "{\"bass\": 3, \"4k\": -2} -- \"125\", "
                           "\"1k\", \"8k\", \"bass\", \"mid\", "
                           "\"treble\"; \"flat\" to clear"}}},
+                 {"reverb_mix", num("how much of it rings in the room, "
+                                    "0 dry ... 1 the room alone: 0.15-0.3 "
+                                    "a natural space")},
+                 {"reverb_decay", num("seconds the room rings to silence "
+                                      "(RT60), 0.1-10: 0.5 a small room, "
+                                      "1.5 a hall, 4 a cathedral")},
+                 {"reverb_damping", num("its highs dying sooner, 0 bright "
+                                        "(tile, glass) ... 1 dull "
+                                        "(curtains, wood)")},
+                 {"reverb_pre_delay", num("seconds before the room "
+                                          "answers, 0-0.5 (larger "
+                                          "rooms: later) -- the layer's, "
+                                          "not keyed")},
+                 {"reverb_size", num("its echoes' density, 0 sparse "
+                                     "(a few echoes) ... 1 dense -- the "
+                                     "layer's, not keyed")},
+                 {"stereo_pan", num("-1 hard left ... 0 centre ... 1 "
+                                    "hard right; before the reverb, which "
+                                    "rings on both sides")},
+                 {"stereo_width", num("0 mono ... 1 as recorded ... 2 "
+                                      "twice as wide")},
+                 {"distance", num("metres away, 1 as recorded ... 16: "
+                                  "6 dB quieter each doubling, its highs "
+                                  "dulled by the air")},
+                 {"bass_mono", num("Hz under which both sides share one "
+                                   "bass, 20-300 (120 a mix's usual); 0 "
+                                   "off -- the layer's")},
+                 {"crossfeed", num("0-1: each side's lows heard by the "
+                                   "other ear too, for headphones; a "
+                                   "hard-panned sound eased -- the "
+                                   "layer's")},
                  {"follow_speed", boolean("its pitch follows its speed, as "
                                           "a tape's (off: held)")},
                  {"duck_under", ids("layers it goes lower under, wherever "
@@ -3921,6 +4340,7 @@ Controller::AgentHost::chat_tools()
         "view_page",    "view_asset",    "get_exif",     "get_recipe",
         "grab_frame",   "make_refmod",
         "view_frames",  "describe_clip", "transcribe",
+        "detect_beats", "get_timeline_marks",
         "enhance_prompt", "create_prompt", "wait_for_generations"};
     std::vector<Tool> t;
     for (const auto name : kKept) {
@@ -4739,6 +5159,72 @@ Controller::AgentHost::timings_(ProjectId pid, AssetId comp)
   return out;
 }
 
+Result<std::map<std::string, Controller::AgentHost::Marks>>
+Controller::AgentHost::marks_(ProjectId pid, AssetId comp)
+{
+  // The screen's stack: a job's carries none.
+  VALTZ_ASSIGN(media::MovieStack m, _c.movie_stack(pid, comp, false));
+  std::map<std::string, Marks> out;
+  for (auto& l : m.layers) {
+    if (!l.beats.empty() || !l.bookmarks.empty()) {
+      out[l.id] = {std::move(l.beats), std::move(l.bookmarks)};
+    }
+  }
+  return out;
+}
+
+Result<AssetId>
+Controller::AgentHost::timed_by_(ProjectId pid, AssetId comp,
+                                 const std::string& layer)
+{
+  auto* p = _c.project(pid);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  const auto it = std::ranges::find(a.layers, layer, &project::Layer::id);
+  if (it == a.layers.end()) {
+    return make_error(Code::NotFound,
+                      std::format("no layer {}", model_layer(layer)));
+  }
+  media::PixelSize frame;
+  if (a.kind != AssetKind::Audio) {
+    VALTZ_ASSIGN(frame, _c.own_frame(pid, comp));
+  }
+  VALTZ_ASSIGN(TimedSource src,
+               _c.timed_source_(pid, *p, *it, false, frame, 0,
+                                a.kind == AssetKind::Audio));
+  return src.timed_by;
+}
+
+std::optional<AssetId>
+Controller::AgentHost::made_text_(ProjectId pid, AssetId source,
+                                  std::string_view op)
+{
+  auto* p = _c.project(pid);
+  if (!p) {
+    return std::nullopt;
+  }
+  std::optional<AssetId> found;
+  std::int64_t newest = -1;
+  if (auto deps = p->dependents(source, false); deps.ok()) {
+    for (const auto& d : *deps) {
+      auto a = p->asset(d);
+      if (!a.ok() || a->origin != project::Origin::Derived) {
+        continue;
+      }
+      auto r = p->recipe(a->recipe);
+      auto st = p->staleness(d);
+      if (r.ok() && r->op == op && st.ok() && st->fresh() &&
+          a->created_ms > newest) {
+        newest = a->created_ms;
+        found = d;
+      }
+    }
+  }
+  return found;
+}
+
 std::string
 Controller::AgentHost::layer_kind_(ProjectId pid, const project::Layer& l)
 {
@@ -4841,12 +5327,19 @@ Controller::AgentHost::reshape_sound_(ProjectId pid, AssetId comp,
   VALTZ_ASSIGN(project::Asset a, p->asset(comp));
   const media::KeyedSound keys = Controller::sound_keys_of(a, layer);
   const Rational rate = rate_(pid, comp);
-  if (keys.identity() || !is_shape(keys, was, rate)) {
+  if (keys.identity() || !volume_is_shape(keys, was, rate)) {
     return ok_status();
   }
-  return _c.set_sound_keys(
-      pid, comp, shape_keys(shape_of(keys, rate.to_double()), seconds, rate),
-      layer);
+  const media::KeyedSound shaped =
+      shape_keys(shape_of(keys, rate.to_double()), seconds, rate);
+  if (is_shape(keys, was, rate)) {
+    return _c.set_sound_keys(pid, comp, shaped, layer);
+  }
+  // Its level a shape's, another track keyed by hand (a pan, a mix): the
+  // level laid again, the rest as it was.
+  return _c.set_sound_keys(pid, comp,
+                           sound_keyed(keys, {{"volume", shaped}}, rate),
+                           layer);
 }
 
 double
@@ -5293,8 +5786,14 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
   const bool timeline = a.cls == AssetClass::Composition;
   const bool sound_only = a.kind == AssetKind::Audio;
   std::map<std::string, media::LayerTiming> times;
+  // Its layers' beats and bookmarks, told in sum (get_timeline_marks
+  // lists them).
+  std::map<std::string, Marks> marked;
   if (timeline) {
     VALTZ_ASSIGN(times, timings_(s.project, comp));
+    if (auto m = marks_(s.project, comp); m.ok()) {
+      marked = std::move(*m);
+    }
   }
   const double fps = timeline ? rate_(s.project, comp).to_double() : 1;
   // A still's page alone, when asked: a long text's pages are many.
@@ -5356,6 +5855,20 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
                          std::round(key.value.volume * 100) / 100});
         }
         j["volume"] = std::move(vol);
+      }
+      if (const auto mk = marked.find(l.id); mk != marked.end()) {
+        if (!mk->second.beats.empty()) {
+          j["beats"] = {{"count", mk->second.beats.size()},
+                        {"every", ms(beat_gap(mk->second.beats))}};
+        }
+        Json sum = Json::object();
+        for (const auto& b : mk->second.bookmarks) {
+          const std::string k(media::kind_name(b.kind));
+          sum[k] = jget(sum, k.c_str(), 0) + 1;
+        }
+        if (!sum.empty()) {
+          j["bookmarks"] = std::move(sum);
+        }
       }
     }
     if (a.pages > 1) {
@@ -5441,16 +5954,37 @@ Controller::AgentHost::t_get_composition(Session& s, Step&, const Json& args,
         k.keys.size() > 1) {
       keyed["speed"] = times_of(k);
     }
+    // Its sound beside its level: steady, or keyed (its tracks that
+    // change, at its sound's keys) -- and its room and field.
+    if (const auto k = Controller::sound_keys_of(a, l.id); !k.empty()) {
+      Json said = sound_said(k.keys.front().value);
+      Json tracks = Json::array();
+      for (const auto& t : sound_tracks()) {
+        if (t != "volume" && track_varies(k, t)) {
+          said.erase(t);
+          tracks.push_back(t);
+        }
+      }
+      if (!tracks.empty()) {
+        keyed["sound"] = {{"tracks", std::move(tracks)},
+                          {"at", times_of(k)}};
+      }
+      j.update(said);
+      if (std::ranges::any_of(k.keys, [](const auto& key) {
+            return key.value.reverberates();
+          })) {
+        const media::ReverbRoom room = Controller::reverb_room_of(a, l.id);
+        j["reverb_pre_delay"] = round3(room.pre_delay);
+        j["reverb_size"] = round3(room.size);
+      }
+    }
+    if (const media::SoundField f = Controller::sound_field_of(a, l.id);
+        !f.at_rest()) {
+      j["bass_mono"] = f.bass_mono;
+      j["crossfeed"] = round3(f.crossfeed);
+    }
     if (!keyed.empty()) {
       j["keyed"] = std::move(keyed);
-    }
-    if (const auto k = Controller::sound_keys_of(a, l.id); !k.empty()) {
-      if (k.keys.front().value.pitch != 0) {
-        j["pitch"] = k.keys.front().value.pitch;
-      }
-      if (!k.keys.front().value.flat()) {
-        j["eq"] = eq_said(k.keys.front().value.eq);
-      }
     }
     layers.push_back(std::move(j));
   }
@@ -7737,8 +8271,12 @@ says_box(const Json& key)
 bool
 says_sound(const Json& key)
 {
-  return key.contains("volume") || key.contains("pitch") ||
-         key.contains("eq");
+  for (const auto& t : sound_tracks()) {
+    if (key.contains(t)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // Keys by frame, the last given at a frame kept; each span's ease the
@@ -7857,7 +8395,10 @@ Controller::AgentHost::t_key_layer(Session& s, Step& step, const Json& args,
   media::Keyed<media::Crop> place;
   media::Keyed<media::Rotation> turn;
   media::KeyedSpeed speed;
+  // The sound's keys as given, and the tracks they name: each track
+  // set by the keys naming it alone (sound_keyed).
   media::KeyedSound sound;
+  std::map<std::string, media::KeyedSound> sound_by_track;
   look.rate = place.rate = turn.rate = speed.rate = sound.rate = rate;
   bool any_look = false, any_place = false, any_turn = false;
   bool any_speed = false, any_sound = false;
@@ -7866,6 +8407,22 @@ Controller::AgentHost::t_key_layer(Session& s, Step& step, const Json& args,
     if (!key.is_object()) {
       return make_error(Code::InvalidArgument,
                         "each key is an object: {\"at\": 0, ...}");
+    }
+    for (const char* n : kLayerSoundNumbers) {
+      if (key.contains(n)) {
+        return make_error(Code::InvalidArgument, std::format(
+            "{} is the layer's, one for its whole time -- "
+            "set_layer_sound; keyed here: volume, pitch, eq, "
+            "reverb_mix, reverb_decay, reverb_damping, stereo_pan, "
+            "stereo_width, distance",
+            n));
+      }
+    }
+    if (key.contains("pan")) {
+      return make_error(Code::InvalidArgument,
+                        "\"pan\": its sound's is \"stereo_pan\" (-1 left "
+                        "... 1 right); a picture moved is \"dx\" / "
+                        "\"dy\"");
     }
     std::int64_t f = 0;
     if (timeline) {
@@ -7981,13 +8538,18 @@ Controller::AgentHost::t_key_layer(Session& s, Step& step, const Json& args,
                           "only a clip or a sound has a sound");
       }
       media::Sound v = sound0.at(static_cast<double>(f));
-      v.volume = std::clamp(number(key, "volume", v.volume), 0.0, 2.0);
-      v.pitch = std::clamp(number(key, "pitch", v.pitch),
-                           -media::kMaxPitch, media::kMaxPitch);
+      for (const auto& n : kSoundNumbers) {
+        v.*n.member = std::clamp(number(key, n.name, v.*n.member), n.lo,
+                                 n.hi);
+      }
       if (key.contains("eq")) {
         VALTZ_ASSIGN(v.eq, eq_over(key["eq"], v.eq));
       }
-      sound.keys.push_back({f, v});
+      for (const auto& t : sound_tracks()) {
+        if (key.contains(t)) {
+          sound_by_track[t].keys.push_back({f, v});
+        }
+      }
       any_sound = true;
     }
   }
@@ -8054,17 +8616,12 @@ Controller::AgentHost::t_key_layer(Session& s, Step& step, const Json& args,
     }
   }
   if (any_sound) {
-    tidy_keys(sound);
+    sound = sound_keyed(sound0, sound_by_track, rate);
     VALTZ_TRY(_c.set_sound_keys(s.project, comp, sound, layer));
     for (const auto& k : sound.keys) {
-      Json j = {{at_key, when(k.frame)},
-                {"volume", std::round(k.value.volume * 100) / 100}};
-      if (k.value.pitch != 0) {
-        j["pitch"] = k.value.pitch;
-      }
-      if (!k.value.flat()) {
-        j["eq"] = eq_said(k.value.eq);
-      }
+      Json j = sound_said(k.value);
+      j[at_key] = when(k.frame);
+      j["volume"] = std::round(k.value.volume * 100) / 100;
       told["sound"].push_back(std::move(j));
     }
   }
@@ -9908,6 +10465,645 @@ Controller::AgentHost::t_transcribe(Session& s, Step&, const Json& args,
   return out;
 }
 
+// ---- beats and bookmarks on a timeline (DESIGN §4v, §4w) ------------------
+
+Result<Json>
+Controller::AgentHost::t_detect_beats(Session& s, Step&, const Json& args,
+                                      std::vector<fs::path>&)
+{
+  const auto asset = AssetId::parse(text_arg(args, "asset"));
+  if (!asset) {
+    return make_error(Code::InvalidArgument, "which sound or clip?");
+  }
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset src, p->asset(*asset));
+  if (src.kind != AssetKind::Audio && src.kind != AssetKind::Video) {
+    return make_error(Code::InvalidArgument, std::format(
+        "\"{}\" is not a sound or a clip", src.name));
+  }
+  // Found before -- by the person, or an earlier step -- and still about
+  // it as it is: those, attached if they are not.
+  std::optional<AssetId> beats = made_text_(s.project, *asset,
+                                            engine::kOpTrackBeats);
+  if (beats) {
+    if (src.beats != beats) {
+      VALTZ_TRY(_c.attach_beats(s.project, *asset, beats));
+    }
+  } else {
+    Controller::AssetOpRequest req;
+    req.project = s.project;
+    req.asset = *asset;
+    req.operation = "beats";
+    VALTZ_ASSIGN(auto made, _c.run_asset_operation(std::move(req)));
+    beats = made.made.front();
+    if (!wait_job_(s, made.job)) {
+      return make_error(Code::Cancelled, "stopped");
+    }
+    const auto rec = _c._jobs.get(made.job);
+    if (rec && rec->state != JobState::Finished) {
+      return make_error(Code::Engine, rec->message.empty()
+                                          ? std::string("its beats could "
+                                                        "not be found")
+                                          : rec->message);
+    }
+  }
+  VALTZ_ASSIGN(project::Asset now, p->asset(*asset));
+  const auto found = Controller::beats_of_(*p, now);
+  Json out = {{"asset", asset->str()},
+              {"name", src.name},
+              {"beats_asset", beats->str()},
+              {"attached", true}};
+  if (!found || found->times.empty()) {
+    out["count"] = 0;
+    out["note"] = "no steady beat was found in it";
+    return out;
+  }
+  out["bpm"] = std::round(found->tempo * 10) / 10;
+  out["count"] = found->times.size();
+  out["every"] = ms(beat_gap(found->times));
+  // Its own seconds: a timeline's are get_timeline_marks'.
+  Json times = Json::array();
+  for (const double t : found->times) {
+    if (times.size() == 64) {
+      break;
+    }
+    times.push_back(ms(t));
+  }
+  out["first_beats"] = std::move(times);
+  out["note"] = "its own seconds; on a timeline, get_timeline_marks tells "
+                "where they fall";
+  return out;
+}
+
+Result<Json>
+Controller::AgentHost::t_get_timeline_marks(Session& s, Step&,
+                                            const Json& args,
+                                            std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, timeline_(s, args));
+  auto* p = _c.project(s.project);
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  VALTZ_ASSIGN(auto marks, marks_(s.project, comp));
+  std::optional<std::string> only;
+  if (args.contains("layer")) {
+    VALTZ_ASSIGN(only, layer_(args));
+  }
+  const double from = number(args, "from", 0);
+  const double to = number(args, "to", std::numeric_limits<double>::max());
+  std::set<std::string> kinds;
+  for (const auto& k : jget(args, "kinds", Json::array())) {
+    if (k.is_string()) {
+      kinds.insert(k.get<std::string>());
+    }
+  }
+  auto wanted = [&](std::string_view k) {
+    return kinds.empty() || kinds.contains(std::string(k));
+  };
+  constexpr std::size_t kMostBeats = 256, kMostMarks = 200;
+  Json layers = Json::array();
+  for (const auto& l : a.layers) {
+    const auto it = marks.find(l.id);
+    if ((only && l.id != *only) || it == marks.end()) {
+      continue;
+    }
+    Json j = {{"layer", model_layer(l.id)}, {"name", l.name},
+              {"kind", layer_kind_(s.project, l)}};
+    const auto& b = it->second.beats;
+    if (!b.empty() && wanted("beats")) {
+      Json times = Json::array();
+      std::size_t in = 0;
+      for (const double t : b) {
+        if (t < from || t > to) {
+          continue;
+        }
+        ++in;
+        if (times.size() < kMostBeats) {
+          times.push_back(ms(t));
+        }
+      }
+      j["beats"] = {{"count", in}, {"every", ms(beat_gap(b))},
+                    {"times", std::move(times)}};
+      if (in > kMostBeats) {
+        j["beats"]["more"] = std::format(
+            "{} more: ask with `from` past {:.3f}", in - kMostBeats,
+            j["beats"]["times"].back().get<double>());
+      }
+    }
+    Json bm = Json::array();
+    std::size_t more = 0;
+    for (const auto& m : it->second.bookmarks) {
+      if (m.start < from || m.start > to ||
+          !wanted(media::kind_name(m.kind))) {
+        continue;
+      }
+      if (bm.size() == kMostMarks) {
+        ++more;
+        continue;
+      }
+      bm.push_back({{"kind", media::kind_name(m.kind)},
+                    {"start", ms(m.start)},
+                    {"end", ms(m.end)},
+                    {"text", std::string(utf8_prefix(m.text, 240))}});
+    }
+    if (!bm.empty()) {
+      j["bookmarks"] = std::move(bm);
+    }
+    if (more > 0) {
+      j["more_bookmarks"] = more;
+    }
+    if (j.contains("beats") || j.contains("bookmarks")) {
+      layers.push_back(std::move(j));
+    }
+  }
+  Json out = {{"composition", comp.str()}, {"layers", std::move(layers)}};
+  if (out["layers"].empty()) {
+    out["note"] = "no marks here: detect_beats on its music finds its "
+                  "beats; show_marks puts a transcript's lines or a clip "
+                  "summary's scenes on a sound or clip";
+  }
+  return out;
+}
+
+Result<Json>
+Controller::AgentHost::t_show_marks(Session& s, Step& step, const Json& args,
+                                    std::vector<fs::path>&)
+{
+  const auto asset = AssetId::parse(text_arg(args, "asset"));
+  if (!asset) {
+    return make_error(Code::InvalidArgument, "which sound or clip?");
+  }
+  auto* p = _c.project(s.project);
+  if (!p) {
+    return make_error(Code::NotFound, msg::kProjectNotOpen);
+  }
+  VALTZ_ASSIGN(project::Asset media, p->asset(*asset));
+  const bool on = flag(args, "on", true);
+  // What is shown: a transcript's, a summary's, beats -- by id, or the
+  // newest of that kind made from it.
+  const std::string what = text_arg(args, "marks", "transcript");
+  std::optional<AssetId> text = AssetId::parse(what);
+  std::string op;
+  if (text) {
+    VALTZ_ASSIGN(project::Asset t, p->asset(*text));
+    auto r = t.origin == project::Origin::Derived
+                 ? p->recipe(t.recipe)
+                 : Result<project::Recipe>(make_error(Code::NotFound, ""));
+    op = r.ok() ? r->op : "";
+  } else {
+    op = what == "beats"     ? std::string(engine::kOpTrackBeats)
+         : what == "summary" ? std::string(engine::kOpSummarizeVideo)
+         : what == "transcript"
+             ? std::string(engine::kOpTranscribeAudio)
+             : std::string();
+    if (op.empty()) {
+      return make_error(Code::InvalidArgument,
+                        "marks is \"transcript\", \"summary\", \"beats\" "
+                        "or a text's id");
+    }
+    text = made_text_(s.project, *asset, op);
+    if (!text && on) {
+      return make_error(Code::NotFound, std::format(
+          "\"{}\" has no {} yet: {} makes one", media.name, what,
+          what == "beats" ? "detect_beats"
+          : what == "summary" ? "describe_clip" : "transcribe"));
+    }
+  }
+  auto undo = _c.command_(s.project, "agent", *asset, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  if (op == engine::kOpTrackBeats) {
+    if (on) {
+      VALTZ_TRY(_c.attach_beats(s.project, *asset, text));
+    } else if (!text || media.beats == text) {
+      VALTZ_TRY(_c.attach_beats(s.project, *asset, std::nullopt));
+    }
+  } else {
+    if (!text) {
+      return Json{{"asset", asset->str()}, {"shown", false}};
+    }
+    VALTZ_TRY(_c.attach_bookmarks(s.project, *asset, *text, on));
+  }
+  return Json{{"asset", asset->str()},
+              {"marks", text ? text->str() : std::string()},
+              {"shown", on},
+              {"note", on ? "on every timeline layer showing it: "
+                            "get_timeline_marks tells where"
+                          : "taken off"}};
+}
+
+Result<Json>
+Controller::AgentHost::t_add_subtitles(Session& s, Step& step,
+                                       const Json& args,
+                                       std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, timeline_(s, args));
+  VALTZ_ASSIGN(std::string layer, layer_(args));
+  auto* p = _c.project(s.project);
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  if (a.kind == AssetKind::Audio) {
+    return make_error(Code::InvalidArgument,
+                      "a composition of sound shows no subtitles");
+  }
+  const auto it = std::ranges::find(a.layers, layer, &project::Layer::id);
+  if (it == a.layers.end()) {
+    return make_error(Code::NotFound,
+                      std::format("no layer {}", model_layer(layer)));
+  }
+  const std::string kind = layer_kind_(s.project, *it);
+  if (kind != "clip" && kind != "sound") {
+    return make_error(Code::InvalidArgument, std::format(
+        "layer {} is a {}: subtitles are a clip's or a sound's words",
+        model_layer(layer), kind));
+  }
+  // Its words: the transcript named, else the one shown on it, else the
+  // newest made from what it shows.
+  VALTZ_ASSIGN(AssetId heard, timed_by_(s.project, comp, layer));
+  std::optional<AssetId> text = AssetId::parse(text_arg(args, "transcript"));
+  if (!text) {
+    if (auto src = p->asset(heard); src.ok()) {
+      for (const auto& b : src->bookmarks) {
+        auto t = p->asset(b);
+        auto r = t.ok() && t->origin == project::Origin::Derived
+                     ? p->recipe(t->recipe)
+                     : Result<project::Recipe>(
+                           make_error(Code::NotFound, ""));
+        if (r.ok() && r->op == engine::kOpTranscribeAudio) {
+          text = b;
+        }
+      }
+    }
+  }
+  if (!text) {
+    text = made_text_(s.project, heard, engine::kOpTranscribeAudio);
+  }
+  auto heard_name = [&] {
+    auto h = p->asset(heard);
+    return h.ok() ? h->name : std::string("it");
+  };
+  if (!text) {
+    return make_error(Code::NotFound, std::format(
+        "\"{}\" has no transcript: transcribe {} first", heard_name(),
+        heard.str()));
+  }
+  VALTZ_ASSIGN(project::Asset words, p->asset(*text));
+  std::vector<media::Bookmark> said;
+  for (auto& m : Controller::bookmarks_in_(*p, words)) {
+    if (m.kind == media::Bookmark::Kind::Speech && !m.text.empty()) {
+      said.push_back(std::move(m));
+    }
+  }
+  VALTZ_ASSIGN(auto times, timings_(s.project, comp));
+  const auto lines = media::bookmarks_on_timeline(said, times[layer]);
+  if (lines.empty()) {
+    return make_error(Code::NotFound, std::format(
+        "nothing in \"{}\"'s transcript is said where layer {} plays",
+        heard_name(), model_layer(layer)));
+  }
+  // Their look.
+  VALTZ_ASSIGN(media::PixelSize frame, _c.own_frame(s.project, comp));
+  const double size = std::clamp(
+      number(args, "size", std::round(frame.height * 0.045)), 8.0, 400.0);
+  auto c = colour(text_arg(args, "color", "#ffffff"));
+  const std::string bg_s = text_arg(args, "background", "none");
+  auto bg = bg_s == "none" ? std::optional<std::array<double, 4>>()
+                           : colour(bg_s);
+  if (!c || (bg_s != "none" && !bg)) {
+    return make_error(Code::InvalidArgument,
+                      "a colour is \"#rrggbb\" or \"#rrggbbaa\"");
+  }
+  const bool top = text_arg(args, "position", "bottom") == "top";
+  const auto per_row = static_cast<std::size_t>(
+      std::clamp(number(args, "max_chars", 42), 10.0, 120.0));
+  const auto rows = static_cast<std::size_t>(
+      std::clamp(number(args, "lines", 2), 1.0, 4.0));
+  Json shadow_args = {{"shadow", flag(args, "shadow", !bg)}};
+  VALTZ_ASSIGN(Json fx, effects_arg(shadow_args, Json::array(), size, *c));
+  // Each line, long ones cut where its words allow, its time shared by
+  // their lengths; each shown a second at least, never into the next.
+  struct Cue {
+    double start, end;
+    std::string text;
+  };
+  std::vector<Cue> cues;
+  for (const auto& l : lines) {
+    const auto parts = pieces_of(l.text, per_row * rows);
+    std::size_t total = 0;
+    for (const auto& w : parts) {
+      total += chars_of(w);
+    }
+    double at = l.start;
+    for (const auto& w : parts) {
+      const double share = total ? static_cast<double>(chars_of(w)) /
+                                       static_cast<double>(total)
+                                 : 1.0;
+      const double end = at + (l.end - l.start) * share;
+      cues.push_back({at, end, w});
+      at = end;
+    }
+  }
+  for (std::size_t i = 0; i < cues.size(); ++i) {
+    const double next = i + 1 < cues.size()
+                            ? cues[i + 1].start
+                            : std::numeric_limits<double>::max();
+    cues[i].end = std::min(std::max(cues[i].end, cues[i].start + 1.0),
+                           std::max(cues[i].end, next));
+  }
+  const double fps = rate_(s.project, comp).to_double();
+  auto undo = _c.command_(s.project, "agent", comp, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  // Laid again: the ones laid before go.
+  int replaced = 0;
+  for (const auto& f : a.layer_folders) {
+    if (f.name != "Subtitles") {
+      continue;
+    }
+    for (const auto& l : a.layers) {
+      if (l.folder == f.id) {
+        VALTZ_TRY(_c.remove_layer(s.project, comp, l.id));
+        ++replaced;
+      }
+    }
+  }
+  std::vector<std::string> made;
+  for (const auto& cue : cues) {
+    const std::int64_t f0 = frames_of(cue.start, fps);
+    const std::int64_t f1 = std::max(f0 + 1, frames_of(cue.end, fps));
+    VALTZ_ASSIGN(std::string l,
+                 title_layer_(s.project, comp, f0, f1 - f0));
+    const std::size_t n = chars_of(cue.text);
+    const double used = static_cast<double>(
+        std::min(rows, std::max<std::size_t>(1, (n + per_row - 1) /
+                                                    per_row)));
+    const double h = used * size * 1.3 + size * 0.5;
+    const double w = frame.width * 0.86;
+    const double x = (frame.width - w) / 2;
+    const double y = top ? frame.height * 0.06
+                         : frame.height * 0.93 - h;
+    VALTZ_ASSIGN(Json objs, objects_(s.project, comp, l));
+    if (bg) {
+      objs.push_back({{"id", object_id()},
+                      {"kind", "rect"},
+                      {"x0", x}, {"y0", y}, {"x1", x + w}, {"y1", y + h},
+                      {"stroke", {0, 0, 0, 0}},
+                      {"fill", {(*bg)[0], (*bg)[1], (*bg)[2], (*bg)[3]}},
+                      {"width", 0}});
+    }
+    objs.push_back(
+        {{"id", object_id()},
+         {"kind", "text"},
+         {"effects", fx},
+         {"align", "center"},
+         {"line_spacing", 1},
+         {"x0", x}, {"y0", y + size * 0.25},
+         {"x1", x + w}, {"y1", y + h},
+         {"box", true},
+         {"text", cue.text},
+         {"stroke", {(*c)[0], (*c)[1], (*c)[2], (*c)[3]}},
+         {"width", 0},
+         {"font",
+          {{"family", text_arg(args, "font", "Helvetica Neue")},
+           {"size", size},
+           {"bold", flag(args, "bold")},
+           {"italic", false},
+           {"underline", false}}}});
+    VALTZ_TRY(_c.set_markup_objects(s.project, comp, l, objs));
+    made.push_back(l);
+  }
+  VALTZ_ASSIGN(std::string folder,
+               _c.group_layers(s.project, comp, made, "Subtitles"));
+  Json out = {{"subtitles", made.size()},
+              {"lines", lines.size()},
+              {"folder", folder},
+              {"transcript", text->str()},
+              {"from", secs(cues.front().start)},
+              {"to", secs(cues.back().end)}};
+  if (replaced > 0) {
+    out["note"] = std::format("the {} subtitles laid before replaced",
+                              replaced);
+  }
+  return out;
+}
+
+Result<Json>
+Controller::AgentHost::t_cut_to_beats(Session& s, Step& step,
+                                      const Json& args,
+                                      std::vector<fs::path>&)
+{
+  VALTZ_ASSIGN(AssetId comp, timeline_(s, args));
+  auto* p = _c.project(s.project);
+  VALTZ_ASSIGN(project::Asset a, p->asset(comp));
+  VALTZ_ASSIGN(auto times, timings_(s.project, comp));
+  // The music: the layer named, else a sound with beats, else the
+  // longest sound -- its beats found first where it has none.
+  VALTZ_ASSIGN(auto marks, marks_(s.project, comp));
+  // (Layer 0's id is "": the music found is said apart.)
+  std::optional<std::string> found;
+  if (args.contains("music")) {
+    Json m = {{"layer", jget(args, "music", Json())}};
+    VALTZ_ASSIGN(found, layer_(m));
+  } else {
+    double longest = -1;
+    for (const auto& l : a.layers) {
+      if (layer_kind_(s.project, l) != "sound") {
+        continue;
+      }
+      const auto mk = marks.find(l.id);
+      const bool beats = mk != marks.end() && !mk->second.beats.empty();
+      const double len = std::isfinite(times[l.id].length)
+                             ? times[l.id].length : 0;
+      const double score = (beats ? 1e9 : 0) + len;
+      if (score > longest) {
+        longest = score;
+        found = l.id;
+      }
+    }
+  }
+  if (!found) {
+    return make_error(Code::NotFound,
+                      "no music on this timeline: add_sound it first");
+  }
+  const std::string music = *found;
+  if (std::ranges::find(a.layers, music, &project::Layer::id) ==
+      a.layers.end()) {
+    return make_error(Code::NotFound,
+                      std::format("no layer {}", model_layer(music)));
+  }
+  std::string found_note;
+  if (marks[music].beats.empty()) {
+    VALTZ_ASSIGN(AssetId heard, timed_by_(s.project, comp, music));
+    if (heard.is_nil()) {
+      return make_error(Code::InvalidArgument, std::format(
+          "layer {} is no sound to find beats in", model_layer(music)));
+    }
+    std::vector<fs::path> none;
+    VALTZ_ASSIGN(Json got, t_detect_beats(s, step,
+                                          Json{{"asset", heard.str()}},
+                                          none));
+    found_note = std::format("its beats found first ({} at {} bpm)",
+                             jget(got, "count", 0), jget(got, "bpm", 0.0));
+    VALTZ_ASSIGN(marks, marks_(s.project, comp));
+  }
+  const std::vector<double> B = marks[music].beats;
+  if (B.size() < 2) {
+    return make_error(Code::NotFound, std::format(
+        "layer {} keeps no steady beat to cut on", model_layer(music)));
+  }
+  const double gap = beat_gap(B);
+  auto beat_at = [&](std::size_t j) {
+    return j < B.size() ? B[j]
+                        : B.back() + static_cast<double>(j - B.size() + 1) *
+                                         gap;
+  };
+  // What is cut: the layers named, else every clip and picture, in the
+  // order they play.
+  std::vector<std::string> cut;
+  if (args.contains("layers")) {
+    for (const auto& id : layer_ids(args, "layers")) {
+      cut.push_back(id);
+    }
+  } else {
+    for (const auto& l : a.layers) {
+      const std::string k = layer_kind_(s.project, l);
+      if ((k == "clip" || k == "picture") && l.visible) {
+        cut.push_back(l.id);
+      }
+    }
+  }
+  std::ranges::stable_sort(cut, {}, [&](const std::string& id) {
+    return times[id].start;
+  });
+  if (cut.empty()) {
+    return make_error(Code::NotFound, "no clips or pictures to cut");
+  }
+  std::vector<int> want;
+  const Json bj = jget(args, "beats", Json());
+  for (std::size_t i = 0; i < cut.size(); ++i) {
+    int n = 0;
+    if (bj.is_number()) {
+      n = bj.get<int>();
+    } else if (bj.is_array() && i < bj.size() && bj[i].is_number()) {
+      n = bj[i].get<int>();
+    } else {
+      const double len = std::isfinite(times[cut[i]].length)
+                             ? times[cut[i]].length : 3.0;
+      n = static_cast<int>(std::lround(len / gap));
+    }
+    want.push_back(std::clamp(n, 1, 512));
+  }
+  const double start = number(args, "start", times[cut.front()].start);
+  std::size_t i = 0;
+  while (i < B.size() && B[i] < start - 1e-6) {
+    ++i;
+  }
+  const Rational rate = rate_(s.project, comp);
+  const double fps = rate.to_double();
+  auto undo = _c.command_(s.project, "agent", comp, "",
+                          {{"tool", step.tool}, {"title", step.title}});
+  Json cuts = Json::array();
+  std::vector<std::string> notes;
+  for (std::size_t c = 0; c < cut.size(); ++c) {
+    const std::string& id = cut[c];
+    const auto lit = std::ranges::find(a.layers, id, &project::Layer::id);
+    if (lit == a.layers.end()) {
+      return make_error(Code::NotFound,
+                        std::format("no layer {}", model_layer(id)));
+    }
+    const media::LayerTiming was = times[id];
+    const bool clip = layer_kind_(s.project, *lit) == "clip";
+    // A clip's part from its `in` to its end: what it can show.
+    double room = std::numeric_limits<double>::max();
+    double speed = 1;
+    Rational mr = rate;
+    double whole = 0;
+    if (clip) {
+      VALTZ_ASSIGN(project::Asset src, p->asset(*lit->source));
+      whole = source_seconds(_c, *p, src);
+      speed = was.speed.keys.empty() ? 1.0
+                                     : was.speed.keys.front().value.rate;
+      speed = speed > 0 ? speed : 1.0;
+      room = std::max(0.0, whole - was.in) / speed;
+      mr = mark_rate_(s.project, *lit->source, false);
+    }
+    int k = want[c];
+    while (k > 1 && beat_at(i + static_cast<std::size_t>(k)) - beat_at(i) >
+                        room + 0.5 / fps) {
+      --k;
+    }
+    const double t0 = beat_at(i);
+    double t1 = beat_at(i + static_cast<std::size_t>(k));
+    if (t1 - t0 > room + 0.5 / fps) {
+      // Shorter than a beat: as long as it is, the next on the beat
+      // after.
+      notes.push_back(std::format(
+          "layer {} is shorter than a beat: it ends before the next cut",
+          model_layer(id)));
+      t1 = t0 + room;
+    } else if (k < want[c]) {
+      notes.push_back(std::format(
+          "layer {} holds {} beats, not {}", model_layer(id), k, want[c]));
+    }
+    project::LayerTime t = lit->time;
+    t.offset = frames_of(t0, fps);
+    const std::int64_t len =
+        std::max<std::int64_t>(1, frames_of(t1, fps) - t.offset);
+    if (clip) {
+      const double part = static_cast<double>(len) / fps * speed;
+      t.in = frames_of(was.in, mr.to_double());
+      t.out = std::max(t.in, t.in + frames_of(part, mr.to_double()) - 1);
+      t.rate = mr;
+      t.duration = 0;
+    } else {
+      t.duration = len;
+    }
+    VALTZ_TRY(_c.set_layer_time(s.project, comp, id, t));
+    if (clip) {
+      VALTZ_ASSIGN(auto now, timings_(s.project, comp));
+      if (std::abs(now[id].length - was.length) > 1e-3) {
+        VALTZ_TRY(reshape_sound_(s.project, comp, id, was.length,
+                                 now[id].length));
+      }
+    }
+    cuts.push_back({{"layer", model_layer(id)},
+                    {"start", ms(static_cast<double>(t.offset) / fps)},
+                    {"end", ms(static_cast<double>(t.offset + len) / fps)},
+                    {"beats", k}});
+    i += static_cast<std::size_t>(k);
+  }
+  // Cut on the beat: what joined them softly is taken off (they no
+  // longer overlap).
+  int dropped = 0;
+  {
+    VALTZ_ASSIGN(project::Asset now, p->asset(comp));
+    const std::set<std::string> moved(cut.begin(), cut.end());
+    for (const auto& tr : now.transitions) {
+      if (moved.contains(tr.from) || moved.contains(tr.to)) {
+        VALTZ_TRY(_c.set_transition(s.project, comp, tr.from, tr.to, ""));
+        ++dropped;
+      }
+    }
+  }
+  Json out = {{"music", model_layer(music)}, {"every", ms(gap)}};
+  out["end"] = cuts.back()["end"];
+  out["cuts"] = std::move(cuts);
+  if (dropped > 0) {
+    notes.push_back(std::format(
+        "{} transitions taken off: they are cuts now", dropped));
+  }
+  if (!found_note.empty()) {
+    notes.insert(notes.begin(), found_note);
+  }
+  if (!notes.empty()) {
+    std::string n;
+    for (const auto& x : notes) {
+      n += (n.empty() ? "" : "; ") + x;
+    }
+    out["note"] = n;
+  }
+  return out;
+}
+
 Result<Json>
 Controller::AgentHost::t_separate_sound(Session& s, Step& step,
                                         const Json& args,
@@ -10380,11 +11576,18 @@ Controller::AgentHost::t_set_layer_sound(Session& s, Step& step,
   VALTZ_ASSIGN(auto times, timings_(s.project, comp));
   const media::LayerTiming mine = times[layer];
   const media::KeyedSound keys = Controller::sound_keys_of(a, layer);
-  // Its shape as it is -- what is not given stays. Keys made by hand
-  // (key_layer) are no shape: they are replaced, and said.
-  const bool by_hand =
-      !keys.identity() && !is_shape(keys, mine.length, rate);
+  // Its shape as it is -- what is not given stays. A level keyed by hand
+  // (key_layer) is no shape: given a level, fades or a duck, it is
+  // replaced, and said; its other tracks keyed by hand go on as they
+  // are, unless given here (then steady).
+  const bool volume_by_hand =
+      !keys.empty() && !volume_is_shape(keys, mine.length, rate);
   SoundShape sh = shape_of(keys, rate.to_double());
+  bool level_given = false;
+  for (const char* k : {"volume", "fade_in", "fade_out", "duck_under",
+                        "duck_volume"}) {
+    level_given = level_given || args.contains(k);
+  }
   if (args.contains("volume")) {
     sh.volume = std::clamp(number(args, "volume", 1), 0.0, 2.0);
   }
@@ -10394,12 +11597,51 @@ Controller::AgentHost::t_set_layer_sound(Session& s, Step& step,
   if (args.contains("fade_out")) {
     sh.fade_out = std::max(0.0, number(args, "fade_out", 0));
   }
-  if (args.contains("pitch")) {
-    sh.pitch = std::clamp(number(args, "pitch", 0), -media::kMaxPitch,
-                          media::kMaxPitch);
+  // Its pitch, equalizer, reverb and place given: steady throughout
+  // (stereo_pan and stereo_width also taken as pan and width).
+  std::vector<std::string> given;
+  for (const auto& n : kSoundNumbers) {
+    const std::string_view name = n.name;
+    const char* alias = name == "stereo_pan"     ? "pan"
+                        : name == "stereo_width" ? "width"
+                                                 : nullptr;
+    const char* said = args.contains(n.name) ? n.name
+                       : alias && args.contains(alias) ? alias
+                                                       : nullptr;
+    if (name == "volume" || !said) {
+      continue;
+    }
+    sh.held.*n.member = std::clamp(number(args, said, 0), n.lo, n.hi);
+    given.emplace_back(name);
   }
   if (args.contains("eq")) {
-    VALTZ_ASSIGN(sh.eq, eq_over(args["eq"], sh.eq));
+    VALTZ_ASSIGN(sh.held.eq, eq_over(args["eq"], sh.held.eq));
+    given.emplace_back("eq");
+  }
+  // Its ROOM's pre-delay and size, its FIELD's bass mono and crossfeed:
+  // the layer's, one for its whole time.
+  std::optional<media::ReverbRoom> room;
+  if (args.contains("reverb_pre_delay") || args.contains("reverb_size")) {
+    media::ReverbRoom r = Controller::reverb_room_of(a, layer);
+    r.pre_delay = std::clamp(number(args, "reverb_pre_delay", r.pre_delay),
+                             0.0, media::kMaxPreDelay);
+    r.size = std::clamp(number(args, "reverb_size", r.size), 0.0, 1.0);
+    room = r;
+  }
+  std::optional<media::SoundField> field;
+  if (args.contains("bass_mono") || args.contains("crossfeed")) {
+    media::SoundField f = Controller::sound_field_of(a, layer);
+    if (args.contains("bass_mono")) {
+      f.bass_mono = std::clamp(number(args, "bass_mono", 0), 0.0,
+                               media::kMaxBassMono);
+      // Under the lowest corner: off, as the panel's.
+      if (f.bass_mono < media::kMinBassMono) {
+        f.bass_mono = 0;
+      }
+    }
+    f.crossfeed = std::clamp(number(args, "crossfeed", f.crossfeed), 0.0,
+                             1.0);
+    field = f;
   }
   // DUCKED under other layers -- a voice-over, someone speaking: lower
   // wherever they sound, eased down and back up. Where they are now:
@@ -10484,20 +11726,58 @@ Controller::AgentHost::t_set_layer_sound(Session& s, Step& step,
   if (args.contains("follow_speed")) {
     follow = flag(args, "follow_speed");
   }
+  // The level from the shape where it is given (or none is keyed), the
+  // tracks given steady from it; the rest as they are.
+  const media::KeyedSound shaped = shape_keys(sh, mine.length, rate);
+  std::map<std::string, media::KeyedSound> from_shape;
+  if (level_given || keys.empty()) {
+    from_shape["volume"] = shaped;
+  }
+  std::vector<std::string> steadied;
+  for (const auto& t : given) {
+    from_shape[t] = shaped;
+    if (track_varies(keys, t)) {
+      steadied.push_back(t);
+    }
+  }
+  const media::KeyedSound laid =
+      from_shape.empty() ? keys : sound_keyed(keys, from_shape, rate);
   auto undo = _c.command_(s.project, "agent", comp, layer,
                           {{"tool", step.tool}, {"title", step.title}});
-  VALTZ_TRY(_c.set_sound_keys(s.project, comp,
-                              shape_keys(sh, mine.length, rate), layer,
-                              follow));
+  VALTZ_TRY(_c.set_sound_keys(s.project, comp, laid, layer, follow, room,
+                              field));
   Json r = {{"layer", model_layer(layer)},
             {"volume", std::clamp(sh.volume, 0.0, 2.0)},
             {"fade_in", sh.fade_in},
             {"fade_out", sh.fade_out}};
-  if (sh.pitch != 0) {
-    r["pitch"] = sh.pitch;
+  // What it is beside its level: steady, or keyed over its time.
+  Json keyed = Json::array();
+  if (!laid.empty()) {
+    r.update(sound_said(laid.keys.front().value));
+    for (const auto& t : sound_tracks()) {
+      if (t != "volume" && track_varies(laid, t)) {
+        r.erase(t);
+        keyed.push_back(t);
+      }
+    }
   }
-  if (const Json eq = eq_said(sh.eq); !eq.empty()) {
-    r["eq"] = eq;
+  if (!keyed.empty()) {
+    r["keyed"] = std::move(keyed);
+  }
+  const bool rings = std::ranges::any_of(laid.keys, [](const auto& k) {
+    return k.value.reverberates();
+  });
+  if (const auto rm = Controller::reverb_room_of(a, layer);
+      room || rings) {
+    const media::ReverbRoom shown = room.value_or(rm);
+    r["reverb_pre_delay"] = round3(shown.pre_delay);
+    r["reverb_size"] = round3(shown.size);
+  }
+  if (const media::SoundField shown =
+          field.value_or(Controller::sound_field_of(a, layer));
+      field || !shown.at_rest()) {
+    r["bass_mono"] = shown.bass_mono;
+    r["crossfeed"] = round3(shown.crossfeed);
   }
   if (!sh.dips.empty()) {
     Json d = Json::array();
@@ -10511,9 +11791,26 @@ Controller::AgentHost::t_set_layer_sound(Session& s, Step& step,
   if (follow) {
     r["follow_speed"] = *follow;
   }
-  if (by_hand) {
-    r["note"] = "Its volume was keyed by hand (key_layer): those keys are "
-                "replaced by this level and its fades.";
+  std::string note;
+  if (level_given && volume_by_hand) {
+    note = "Its volume was keyed by hand (key_layer): those keys are "
+           "replaced by this level and its fades.";
+  }
+  if (!steadied.empty()) {
+    std::string names;
+    for (const auto& t : steadied) {
+      names += std::format("{}{}", names.empty() ? "" : ", ", t);
+    }
+    note += std::format("{}Its {} changed over its time (key_layer): now "
+                        "steady -- key_layer to change it again.",
+                        note.empty() ? "" : " ", names);
+  }
+  if (rings && std::ranges::find(given, "reverb_mix") != given.end()) {
+    note += std::format("{}Its reverb rings on past its end.",
+                        note.empty() ? "" : " ");
+  }
+  if (!note.empty()) {
+    r["note"] = note;
   }
   return r;
 }

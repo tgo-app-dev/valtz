@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <numbers>
+#include <optional>
 #include <set>
 
 namespace valtz::media {
@@ -23,10 +25,22 @@ to_json(const SoundPlan& p)
 {
   Json ls = Json::array();
   for (const auto& l : p.layers) {
-    ls.push_back({{"file", l.file.string()},
-                  {"timing", to_json(l.timing)},
-                  {"sound", to_json(l.sound)},
-                  {"follow_speed", l.follow_speed}});
+    Json lj{{"file", l.file.string()},
+            {"timing", to_json(l.timing)},
+            {"sound", to_json(l.sound)},
+            {"follow_speed", l.follow_speed}};
+    if (l.room != ReverbRoom{}) {
+      lj["room"] = {{"pre_delay", l.room.pre_delay},
+                    {"size", l.room.size}};
+    }
+    if (!l.field.at_rest()) {
+      lj["field"] = {{"bass_mono", l.field.bass_mono},
+                     {"crossfeed", l.field.crossfeed}};
+    }
+    if (l.tail > 0) {
+      lj["tail"] = l.tail;
+    }
+    ls.push_back(std::move(lj));
   }
   Json ts = Json::array();
   for (const auto& t : p.transitions) {
@@ -46,6 +60,15 @@ sound_plan_from_json(const Json& j)
     sl.timing = layer_timing_from_json(jget(l, "timing", Json()));
     sl.sound = keyed_sound_from_json(jget(l, "sound", Json::object()));
     sl.follow_speed = jget(l, "follow_speed", false);
+    const Json room = jget(l, "room", Json::object());
+    sl.room.pre_delay = std::clamp(jget(room, "pre_delay", sl.room.pre_delay),
+                                   0.0, kMaxPreDelay);
+    sl.room.size = std::clamp(jget(room, "size", sl.room.size), 0.0, 1.0);
+    const Json field = jget(l, "field", Json::object());
+    sl.field.bass_mono = std::clamp(jget(field, "bass_mono", 0.0), 0.0,
+                                    kMaxBassMono);
+    sl.field.crossfeed = std::clamp(jget(field, "crossfeed", 0.0), 0.0, 1.0);
+    sl.tail = std::max(0.0, jget(l, "tail", 0.0));
     p.layers.push_back(std::move(sl));
   }
   for (const auto& t : jget(j, "transitions", Json::array())) {
@@ -136,6 +159,61 @@ equalizes(const SoundLayer& l)
   return std::ranges::any_of(l.sound.keys, [](const auto& key) {
     return !key.value.flat();
   });
+}
+
+
+// Something of layer `l` goes into its room in some key.
+bool
+reverberates(const SoundLayer& l)
+{
+  return std::ranges::any_of(l.sound.keys, [](const auto& key) {
+    return key.value.reverberates();
+  });
+}
+
+// Layer `l` is put somewhere else in the field: panned, widened or
+// narrowed, set farther, its lows made mono or crossfed.
+bool
+places(const SoundLayer& l)
+{
+  return !l.field.at_rest() ||
+         std::ranges::any_of(l.sound.keys, [](const auto& key) {
+           return !key.value.placed_at_rest();
+         });
+}
+
+// Where a reverberating layer's shaped span ends in its source: its
+// out mark, or sooner where the layer is cut short (its room's tail
+// rings on from where it stops sounding).
+double
+shaped_out(const SoundLayer& l)
+{
+  const LayerTiming& t = l.timing;
+  if (!reverberates(l) || !std::isfinite(t.length)) {
+    return t.out;
+  }
+  return std::min(t.out, t.source_at_local(t.length));
+}
+
+// Its shaped span's tail, after the layer's end at the speed it ended
+// at, up to `end`; none where it has none, or the layer runs on to
+// `end`.
+std::optional<TimeSegment>
+tail_segment(const SoundLayer& l, double end)
+{
+  const LayerTiming& t = l.timing;
+  const double b = t.end();
+  if (!(l.tail > 0) || !std::isfinite(b) || !(b < end) || !(b > t.start)) {
+    return std::nullopt;
+  }
+  const double s0 = t.source_at(b);
+  const double rest = std::isfinite(t.out) ? t.out + l.tail - s0 : l.tail;
+  const double speed = std::max(kMinSpeed, t.speed_at_local(b - t.start));
+  if (!(rest > 0)) {
+    return std::nullopt;
+  }
+  const double len = std::min(rest / speed, end - b);
+  return TimeSegment{b, len, s0, len * speed};
 }
 
 
@@ -255,13 +333,47 @@ volume_points(const SoundPlan& p, std::size_t i, double step)
     }
   }
   out.push_back({b, g(b)});
+  // Its room ringing on: the gain it ended with.
+  if (auto tail = tail_segment(p.layers[i],
+                               p.seconds > 0 ? p.seconds : kForever)) {
+    out.push_back({tail->at + tail->length, g(b)});
+  }
   return out;
 }
 
 bool
 shapes(const SoundLayer& l)
 {
-  return shifts_pitch(l) || equalizes(l);
+  return shifts_pitch(l) || equalizes(l) || reverberates(l) || places(l);
+}
+
+double
+reverb_tail(const SoundLayer& l)
+{
+  if (!reverberates(l)) {
+    return 0;
+  }
+  double decay = 0;
+  for (const auto& key : l.sound.keys) {
+    decay = std::max(decay, key.value.reverb_decay);
+  }
+  double fastest = l.timing.speed.keys.empty() ? 1.0 : 0.0;
+  for (const auto& key : l.timing.speed.keys) {
+    fastest = std::max(fastest, key.value.rate);
+  }
+  return std::min(kMaxReverbLength,
+                  (std::clamp(l.room.pre_delay, 0.0, kMaxPreDelay) + decay) *
+                      fastest);
+}
+
+std::vector<TimeSegment>
+sound_segments(const SoundLayer& l, double end, double step)
+{
+  std::vector<TimeSegment> out = time_segments(l.timing, end, step);
+  if (auto tail = tail_segment(l, end)) {
+    out.push_back(*tail);
+  }
+  return out;
 }
 
 bool
@@ -278,8 +390,9 @@ namespace {
 AVAudioFormat*
 mix_format()
 {
-  return [[AVAudioFormat alloc] initStandardFormatWithSampleRate:kMixRate
-                                                        channels:2];
+  return [[[AVAudioFormat alloc] initStandardFormatWithSampleRate:kMixRate
+                                                         channels:2]
+      autorelease];
 }
 
 // `file`'s sound from `in` to `out` seconds, as float PCM at the mix's
@@ -324,8 +437,8 @@ read_span(const fs::path& file, double in, double out)
   }
   const auto cap = static_cast<AVAudioFrameCount>(
       std::ceil(std::max(0.0, dur) * kMixRate) + kMixRate);
-  AVAudioPCMBuffer* buf = [[AVAudioPCMBuffer alloc]
-      initWithPCMFormat:mix_format() frameCapacity:cap];
+  AVAudioPCMBuffer* buf = [[[AVAudioPCMBuffer alloc]
+      initWithPCMFormat:mix_format() frameCapacity:cap] autorelease];
   while (CMSampleBufferRef sb = [o copyNextSampleBuffer]) {
     const auto n = static_cast<AVAudioFrameCount>(
         CMSampleBufferGetNumSamples(sb));
@@ -356,51 +469,255 @@ read_span(const fs::path& file, double in, double out)
   return buf;
 }
 
-// Layer `l`'s span with its pitch shifted and its equalizer on it --
-// each block at what its keys give where it falls -- written to `out`
-// (CAF). Its timing then starts the span from 0.
-Status
-render_shaped(const SoundLayer& l, const fs::path& out)
+// The voices layer `l`'s room speaks with along its span (`span` source
+// seconds from its start) -- at its ends, and between where its keys or
+// its speed change it more than an ear would let pass a straight mix of
+// the two either side -- 16 at most. Its times are the source's: a decay
+// stretched later by a speed, made longer by it first.
+struct VoiceAt {
+  double      at = 0;
+  ReverbVoice voice;
+};
+
+std::vector<VoiceAt>
+reverb_voices(const SoundLayer& l, double span)
 {
-  VALTZ_ASSIGN(AVAudioPCMBuffer* src,
-               read_span(l.file, l.timing.in, l.timing.out));
-  AVAudioEngine* engine = [[AVAudioEngine alloc] init];
-  AVAudioPlayerNode* player = [[AVAudioPlayerNode alloc] init];
-  AVAudioUnitTimePitch* tp = [[AVAudioUnitTimePitch alloc] init];
-  AVAudioUnitEQ* eq = [[AVAudioUnitEQ alloc] initWithNumberOfBands:kEqBands];
-  // What does nothing here is passed by as it is.
-  tp.bypass = !shifts_pitch(l);
-  const bool bands = equalizes(l);
-  eq.bypass = !bands;
-  eq.globalGain = 0;
-  for (std::size_t i = 0; i < kEqFrequencies.size(); ++i) {
-    AVAudioUnitEQFilterParameters* b = eq.bands[i];
-    b.filterType = AVAudioUnitEQFilterTypeParametric;
-    b.frequency = static_cast<float>(kEqFrequencies[i]);
-    b.bandwidth = 1;   // octaves
-    b.gain = 0;
-    b.bypass = NO;
+  const LayerTiming& t = l.timing;
+  const double fps = fps_of(t.rate);
+  auto voice = [&](double s) {
+    double u = t.local_at_source(t.in + s);
+    if (!std::isfinite(u)) {
+      u = 0;
+    }
+    const Sound v = l.sound.at(u * fps);
+    const double speed = t.speed_at_local(u);
+    return ReverbVoice{v.reverb_decay * speed,
+                       std::clamp(v.reverb_damping, 0.0, 1.0),
+                       std::clamp(l.room.pre_delay, 0.0, kMaxPreDelay) *
+                           speed};
+  };
+  span = std::max(0.0, std::isfinite(span) ? span : 0.0);
+  std::vector<double> times;
+  const int n = std::clamp(static_cast<int>(std::ceil(span / 0.5)), 1, 256);
+  for (int i = 0; i <= n; ++i) {
+    times.push_back(span * i / n);
   }
-  [engine attachNode:player];
-  [engine attachNode:tp];
-  [engine attachNode:eq];
-  AVAudioFormat* fmt = mix_format();
-  [engine connect:player to:tp format:fmt];
-  [engine connect:tp to:eq format:fmt];
-  [engine connect:eq to:engine.mainMixerNode format:fmt];
+  auto add_key = [&](std::int64_t frame) {
+    const double s = t.source_at_local(static_cast<double>(frame) / fps) -
+                     t.in;
+    if (s > 0 && s < span) {
+      times.push_back(s);
+    }
+  };
+  for (const auto& k : l.sound.keys) {
+    add_key(k.frame);
+  }
+  for (const auto& k : t.speed.keys) {
+    add_key(k.frame);
+  }
+  std::ranges::sort(times);
+  times.erase(std::unique(times.begin(), times.end(),
+                          [](double a, double b) { return b - a < 1e-3; }),
+              times.end());
+  std::vector<VoiceAt> all;
+  for (double s : times) {
+    all.push_back({s, voice(s)});
+  }
+  // How far a voice is from the two kept either side, mixed where it
+  // lies: 1 the most an ear lets pass (5% of the decay, 0.03 of the
+  // damping, 2 ms of pre-delay).
+  auto off = [&](std::size_t i, std::size_t a, std::size_t b) {
+    const double w = (all[i].at - all[a].at) /
+                     std::max(1e-9, all[b].at - all[a].at);
+    const ReverbVoice& x = all[i].voice;
+    const ReverbVoice& va = all[a].voice;
+    const ReverbVoice& vb = all[b].voice;
+    const double decay = va.decay + (vb.decay - va.decay) * w;
+    const double damping = va.damping + (vb.damping - va.damping) * w;
+    const double pre = va.pre_delay + (vb.pre_delay - va.pre_delay) * w;
+    return std::max({std::abs(std::log(x.decay / std::max(1e-6, decay))) /
+                         0.05,
+                     std::abs(x.damping - damping) / 0.03,
+                     std::abs(x.pre_delay - pre) / 0.002});
+  };
+  std::vector<std::size_t> kept = {0};
+  if (all.size() > 1) {
+    kept.push_back(all.size() - 1);
+  }
+  while (kept.size() < 16) {
+    double worst = 1;
+    std::size_t at = 0, slot = 0;
+    for (std::size_t j = 0; j + 1 < kept.size(); ++j) {
+      for (std::size_t i = kept[j] + 1; i < kept[j + 1]; ++i) {
+        const double d = off(i, kept[j], kept[j + 1]);
+        if (d > worst) {
+          worst = d;
+          at = i;
+          slot = j + 1;
+        }
+      }
+    }
+    if (at == 0) {
+      break;
+    }
+    kept.insert(kept.begin() + static_cast<std::ptrdiff_t>(slot), at);
+  }
+  std::vector<VoiceAt> out;
+  for (std::size_t i : kept) {
+    out.push_back(all[i]);
+  }
+  // One voice throughout: one response.
+  if (out.size() == 2 && out[0].voice == out[1].voice) {
+    out.pop_back();
+  }
+  return out;
+}
+
+// `left` and `right` (`n` frames) written to `file` (its processing
+// format the mix's), a piece at a time.
+Status
+write_planar(AVAudioFile* file, const float* left, const float* right,
+             std::size_t n, const fs::path& out)
+{
+  constexpr AVAudioFrameCount kPiece = 65536;
+  AVAudioPCMBuffer* buf = [[[AVAudioPCMBuffer alloc]
+      initWithPCMFormat:file.processingFormat frameCapacity:kPiece]
+      autorelease];
   NSError* err = nil;
-  constexpr AVAudioFrameCount kBlock = 2048;
-  if (![engine enableManualRenderingMode:AVAudioEngineManualRenderingModeOffline
-                                  format:fmt
-                       maximumFrameCount:kBlock
-                                   error:&err] ||
-      ![engine startAndReturnError:&err]) {
-    return make_error(Code::Internal, std::format(
-        "cannot shift the pitch: {}",
-        err ? err.localizedDescription.UTF8String : "?"));
+  for (std::size_t i = 0; i < n; i += kPiece) {
+    const auto k = static_cast<AVAudioFrameCount>(
+        std::min<std::size_t>(kPiece, n - i));
+    std::copy_n(left + i, k, buf.floatChannelData[0]);
+    std::copy_n(right + i, k, buf.floatChannelData[1]);
+    buf.frameLength = k;
+    if (![file writeFromBuffer:buf error:&err]) {
+      return make_error(Code::Io, std::format("cannot write {}",
+                                              out.string()));
+    }
   }
-  [player scheduleBuffer:src completionHandler:nil];
-  [player play];
+  return ok_status();
+}
+
+// One of layer `l`'s keyed numbers along its shaped span, a value a frame
+// for `n` frames (the span and its tail): its keys read every 64 frames,
+// straight between -- past the span's end, its last.
+std::vector<float>
+along(const SoundLayer& l, std::size_t n, double Sound::*number)
+{
+  std::vector<float> out(n);
+  const LayerTiming& t = l.timing;
+  const double fps = fps_of(t.rate);
+  auto at = [&](std::size_t i) {
+    double u = t.local_at_source(t.in + static_cast<double>(i) / kMixRate);
+    if (!std::isfinite(u)) {
+      u = std::isfinite(t.length) ? t.length : 0;
+    }
+    return l.sound.keys.empty() ? Sound{}.*number
+                                : l.sound.at(u * fps).*number;
+  };
+  constexpr std::size_t kStep = 64;
+  double v0 = at(0);
+  for (std::size_t i = 0; i < n; i += kStep) {
+    const std::size_t e = std::min(n, i + kStep);
+    const double v1 = at(e);
+    for (std::size_t j = i; j < e; ++j) {
+      out[j] = static_cast<float>(
+          v0 + (v1 - v0) * static_cast<double>(j - i) / kStep);
+    }
+    v0 = v1;
+  }
+  return out;
+}
+
+// The room laid on `dry` (`left`, `right`: the span, pitch and equalizer
+// already on it): what its keys' mix sends of it -- the sine of a
+// quarter turn by the mix, the dry the cosine: as loud together at any
+// mix -- convolved with the responses its keys and speed give along it
+// (media/reverb.h), the wet added. Its tail after it: `tail` frames.
+Status
+add_room(const SoundLayer& l, std::vector<float>& left,
+         std::vector<float>& right, std::size_t tail, ReverbStats* stats)
+{
+  const std::size_t n = left.size();
+  const LayerTiming& t = l.timing;
+  const double fps = fps_of(t.rate);
+  // The mix every 64 frames, straight between.
+  constexpr std::size_t kStep = 64;
+  auto mix_at = [&](std::size_t i) {
+    double u = t.local_at_source(t.in + static_cast<double>(i) / kMixRate);
+    if (!std::isfinite(u)) {
+      u = 0;
+    }
+    return std::clamp(l.sound.at(u * fps).reverb_mix, 0.0, 1.0);
+  };
+  std::vector<float> send(n);
+  double m0 = mix_at(0);
+  for (std::size_t i = 0; i < n; i += kStep) {
+    const std::size_t e = std::min(n, i + kStep);
+    const double m1 = mix_at(e);
+    for (std::size_t j = i; j < e; ++j) {
+      const double m = m0 + (m1 - m0) * static_cast<double>(j - i) / kStep;
+      const double quarter = 0.5 * std::numbers::pi * m;
+      send[j] = static_cast<float>(0.5 * (left[j] + right[j]) *
+                                   std::sin(quarter));
+      const auto dry = static_cast<float>(std::cos(quarter));
+      left[j] *= dry;
+      right[j] *= dry;
+    }
+    m0 = m1;
+  }
+  const auto voices = reverb_voices(l, static_cast<double>(n) / kMixRate);
+  std::vector<std::array<std::vector<float>, 2>> responses;
+  for (const auto& v : voices) {
+    responses.push_back({reverb_impulse(v.voice, l.room.size, 0, kMixRate),
+                         reverb_impulse(v.voice, l.room.size, 1, kMixRate)});
+  }
+  // Each send block: the voices either side of its middle, mixed.
+  std::vector<ReverbPick> picks;
+  for (std::size_t k = 0; k * kReverbBlock < std::max<std::size_t>(1, n);
+       ++k) {
+    const double at = (static_cast<double>(k) + 0.5) * kReverbBlock /
+                      kMixRate;
+    ReverbPick pk;
+    for (std::size_t i = 0; i + 1 < voices.size(); ++i) {
+      if (at >= voices[i].at) {
+        pk.a = static_cast<std::uint32_t>(i);
+        pk.b = static_cast<std::uint32_t>(i + 1);
+        pk.w = static_cast<float>(std::clamp(
+            (at - voices[i].at) /
+                std::max(1e-9, voices[i + 1].at - voices[i].at),
+            0.0, 1.0));
+      }
+    }
+    if (voices.size() > 1 && at >= voices.back().at) {
+      pk = {static_cast<std::uint32_t>(voices.size() - 1),
+            static_cast<std::uint32_t>(voices.size() - 1), 0};
+    }
+    picks.push_back(pk);
+  }
+  VALTZ_ASSIGN(auto wet, convolve_reverb(send.data(), n, responses, picks,
+                                         n + tail, true, stats));
+  left.resize(n + tail, 0.0f);
+  right.resize(n + tail, 0.0f);
+  for (std::size_t i = 0; i < n + tail; ++i) {
+    left[i] += wet[0][i];
+    right[i] += wet[1][i];
+  }
+  return ok_status();
+}
+
+// Layer `l`'s span with its pitch shifted, its equalizer and its room on
+// it -- each block at what its keys give where it falls -- written to
+// `out` (CAF), its room's tail after it. Its timing then starts the span
+// from 0.
+Status
+render_shaped(const SoundLayer& l, const fs::path& out, ReverbStats* stats)
+{
+  const bool room = reverberates(l);
+  // Anything after the equalizer: the span in memory, worked on there.
+  const bool after = room || places(l);
+  VALTZ_ASSIGN(AVAudioPCMBuffer* src,
+               read_span(l.file, l.timing.in, shaped_out(l)));
   std::error_code ec;
   fs::remove(out, ec);
   // The file interleaved (a CAF holds no other), written from the
@@ -414,68 +731,145 @@ render_shaped(const SoundLayer& l, const fs::path& out)
     AVLinearPCMIsNonInterleaved : @NO,
     AVLinearPCMIsBigEndianKey : @NO,
   };
-  AVAudioFile* file = [[AVAudioFile alloc]
+  NSError* err = nil;
+  AVAudioFile* file = [[[AVAudioFile alloc]
       initForWriting:[NSURL fileURLWithPath:@(out.c_str())]
             settings:settings
         commonFormat:AVAudioPCMFormatFloat32
          interleaved:NO
-               error:&err];
+               error:&err] autorelease];
   if (!file) {
-    [engine stop];
     return make_error(Code::Io, std::format("cannot write {}",
                                             out.string()));
   }
-  AVAudioPCMBuffer* block = [[AVAudioPCMBuffer alloc]
-      initWithPCMFormat:engine.manualRenderingFormat frameCapacity:kBlock];
   const AVAudioFramePosition total = src.frameLength;
-  Status st = ok_status();
-  while (engine.manualRenderingSampleTime < total) {
-    const double s = l.timing.in +
-        static_cast<double>(engine.manualRenderingSampleTime) / kMixRate;
-    const double u = l.timing.local_at_source(s);
-    tp.pitch = static_cast<float>(pitch_at(l, u) * 100.0);
-    if (bands) {
-      const auto g = l.sound.at(u * fps_of(l.timing.rate)).eq;
-      for (std::size_t i = 0; i < g.size(); ++i) {
-        eq.bands[i].gain = static_cast<float>(
-            std::clamp(g[i], -kMaxEqGain, kMaxEqGain));
-      }
+  // The room alone: the span as read, into it.
+  const bool pitch = shifts_pitch(l);
+  const bool bands = equalizes(l);
+  std::vector<float> left, right;
+  if (after) {
+    left.reserve(static_cast<std::size_t>(total));
+    right.reserve(static_cast<std::size_t>(total));
+  }
+  if (after && !pitch && !bands) {
+    left.assign(src.floatChannelData[0], src.floatChannelData[0] + total);
+    right.assign(src.floatChannelData[1], src.floatChannelData[1] + total);
+  } else {
+    AVAudioEngine* engine = [[[AVAudioEngine alloc] init] autorelease];
+    AVAudioPlayerNode* player =
+        [[[AVAudioPlayerNode alloc] init] autorelease];
+    AVAudioUnitTimePitch* tp =
+        [[[AVAudioUnitTimePitch alloc] init] autorelease];
+    AVAudioUnitEQ* eq = [[[AVAudioUnitEQ alloc]
+        initWithNumberOfBands:kEqBands] autorelease];
+    // What does nothing here is passed by as it is.
+    tp.bypass = !pitch;
+    eq.bypass = !bands;
+    eq.globalGain = 0;
+    for (std::size_t i = 0; i < kEqFrequencies.size(); ++i) {
+      AVAudioUnitEQFilterParameters* b = eq.bands[i];
+      b.filterType = AVAudioUnitEQFilterTypeParametric;
+      b.frequency = static_cast<float>(kEqFrequencies[i]);
+      b.bandwidth = 1;   // octaves
+      b.gain = 0;
+      b.bypass = NO;
     }
-    const auto n = static_cast<AVAudioFrameCount>(std::min<std::int64_t>(
-        kBlock, total - engine.manualRenderingSampleTime));
-    const AVAudioEngineManualRenderingStatus rs =
-        [engine renderOffline:n toBuffer:block error:&err];
-    if (rs != AVAudioEngineManualRenderingStatusSuccess) {
-      st = make_error(Code::Internal, std::format(
+    [engine attachNode:player];
+    [engine attachNode:tp];
+    [engine attachNode:eq];
+    AVAudioFormat* fmt = mix_format();
+    [engine connect:player to:tp format:fmt];
+    [engine connect:tp to:eq format:fmt];
+    [engine connect:eq to:engine.mainMixerNode format:fmt];
+    constexpr AVAudioFrameCount kBlock = 2048;
+    if (![engine
+            enableManualRenderingMode:AVAudioEngineManualRenderingModeOffline
+                               format:fmt
+                    maximumFrameCount:kBlock
+                                error:&err] ||
+        ![engine startAndReturnError:&err]) {
+      return make_error(Code::Internal, std::format(
           "cannot shift the pitch: {}",
           err ? err.localizedDescription.UTF8String : "?"));
-      break;
     }
-    if (![file writeFromBuffer:block error:&err]) {
-      st = make_error(Code::Io, std::format("cannot write {}",
-                                            out.string()));
-      break;
+    [player scheduleBuffer:src completionHandler:nil];
+    [player play];
+    AVAudioPCMBuffer* block = [[[AVAudioPCMBuffer alloc]
+        initWithPCMFormat:engine.manualRenderingFormat
+            frameCapacity:kBlock] autorelease];
+    Status st = ok_status();
+    while (engine.manualRenderingSampleTime < total) {
+      const double s = l.timing.in +
+          static_cast<double>(engine.manualRenderingSampleTime) / kMixRate;
+      const double u = l.timing.local_at_source(s);
+      tp.pitch = static_cast<float>(pitch_at(l, u) * 100.0);
+      if (bands) {
+        const auto g = l.sound.at(u * fps_of(l.timing.rate)).eq;
+        for (std::size_t i = 0; i < g.size(); ++i) {
+          eq.bands[i].gain = static_cast<float>(
+              std::clamp(g[i], -kMaxEqGain, kMaxEqGain));
+        }
+      }
+      const auto n = static_cast<AVAudioFrameCount>(std::min<std::int64_t>(
+          kBlock, total - engine.manualRenderingSampleTime));
+      const AVAudioEngineManualRenderingStatus rs =
+          [engine renderOffline:n toBuffer:block error:&err];
+      if (rs != AVAudioEngineManualRenderingStatusSuccess) {
+        st = make_error(Code::Internal, std::format(
+            "cannot shift the pitch: {}",
+            err ? err.localizedDescription.UTF8String : "?"));
+        break;
+      }
+      if (after) {
+        const AVAudioFrameCount k = block.frameLength;
+        left.insert(left.end(), block.floatChannelData[0],
+                    block.floatChannelData[0] + k);
+        right.insert(right.end(), block.floatChannelData[1],
+                     block.floatChannelData[1] + k);
+      } else if (![file writeFromBuffer:block error:&err]) {
+        st = make_error(Code::Io, std::format("cannot write {}",
+                                              out.string()));
+        break;
+      }
     }
+    [player stop];
+    [engine stop];
+    VALTZ_TRY(st);
   }
-  [player stop];
-  [engine stop];
-  return st;
+  if (!after) {
+    return ok_status();
+  }
+  // Panned, into the room, then placed: as wide, as far, its lows in the
+  // middle, crossfed.
+  pan_sound(left, right, along(l, left.size(), &Sound::pan));
+  if (room) {
+    const auto tail = static_cast<std::size_t>(
+        std::llround(reverb_tail(l) * kMixRate));
+    VALTZ_TRY(add_room(l, left, right, tail, stats));
+  }
+  widen_sound(left, right, along(l, left.size(), &Sound::width));
+  place_sound_far(left, right, along(l, left.size(), &Sound::distance),
+                  kMixRate);
+  mono_bass(left, right, l.field.bass_mono, kMixRate);
+  crossfeed_sound(left, right, l.field.crossfeed, kMixRate);
+  return write_planar(file, left.data(), right.data(), left.size(), out);
 }
 
 }
 
 Status
-shape_sound(const SoundLayer& l, const fs::path& out)
+shape_sound(const SoundLayer& l, const fs::path& out, ReverbStats* stats)
 {
   @autoreleasepool {
-    return render_shaped(l, out);
+    return render_shaped(l, out, stats);
   }
 }
 
 SoundLayer
 as_shaped(SoundLayer l, const fs::path& file)
 {
-  const double span = l.timing.out - l.timing.in;
+  const double span = shaped_out(l) - l.timing.in;
+  l.tail = reverb_tail(l);
   l.file = file;
   l.timing.out = std::isfinite(span) ? span : kForever;
   // Keys as they were, read along the shaped span's time (from its
@@ -484,8 +878,15 @@ as_shaped(SoundLayer l, const fs::path& file)
   for (auto& key : l.sound.keys) {
     key.value.pitch = 0;
     key.value.eq = {};
+    key.value.reverb_mix = 0;
+    key.value.reverb_decay = kReverbDecay;
+    key.value.reverb_damping = kReverbDamping;
+    key.value.pan = 0;
+    key.value.width = 1;
+    key.value.distance = 1;
   }
   l.follow_speed = false;
+  l.field = {};
   return l;
 }
 
@@ -509,7 +910,7 @@ mix_sound(const SoundPlan& plan, const fs::path& out)
         const fs::path shifted = fs::temp_directory_path() /
             std::format("valtz-shaped-{}-{}.caf", ::getpid(),
                         reinterpret_cast<std::uintptr_t>(&l) + i);
-        VALTZ_TRY(render_shaped(l, shifted));
+        VALTZ_TRY(render_shaped(l, shifted, nullptr));
         scratch.push_back(shifted);
         l = as_shaped(std::move(l), shifted);
       }
@@ -527,7 +928,7 @@ mix_sound(const SoundPlan& plan, const fs::path& out)
                       preferredTrackID:kCMPersistentTrackID_Invalid];
       const double own = track_seconds(src);
       bool any = false;
-      for (const auto& seg : time_segments(l.timing, end, 1.0 / 24)) {
+      for (const auto& seg : sound_segments(l, end, 1.0 / 24)) {
         // Never past the source's own end.
         const double sl = std::min(seg.source_length, own - seg.source);
         if (sl <= 0) {

@@ -183,6 +183,8 @@ struct TrimValues: Equatable, Sendable {
     var speed = Keyframes(start: LayerSpeed())
     var sound = Keyframes(start: LayerSound())
     var followsSpeed = false
+    var room = ReverbRoom()
+    var field = SoundField()
 }
 
 /// A clip's frame rate, exactly (24000/1001 is not 23.976).

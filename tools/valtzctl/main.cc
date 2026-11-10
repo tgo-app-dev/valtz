@@ -235,17 +235,24 @@ usage()
       "         stack's frame (0 is layer 0). Applied when a model reads\n"
       "         it or it is exported; none clears it)\n"
       "  keys <project.valtz> <comp-id> adjust|crop|rotate|speed|audio\n"
-      "       [--layer L] [--follow-speed on|off] [<frame>:k=v,...]...\n"
+      "       [--layer L] [--follow-speed on|off]\n"
+      "       [--room pre_delay=S,size=0..1]\n"
+      "       [--field bass_mono=Hz,crossfeed=0..1] [<frame>:k=v,...]...\n"
       "         (a layer's track: keyframes from its own start, linear\n"
       "         between -- or a key's interp=hold|spline on to the\n"
       "         next, adjust, crop and rotate; adjust keys as for\n"
       "         adjust; crop keys offset_x,\n"
       "         offset_y, scale_x, scale_y (pad_* in any is its\n"
       "         background); rotate keys rotate=degrees; speed keys\n"
-      "         rate=1.5; audio keys volume=0..4,pitch=semitones. None\n"
-      "         clears the track; layer 0 without --layer.\n"
+      "         rate=1.5; audio keys volume=0..4,pitch=semitones,\n"
+      "         eq_0..eq_9=dB, reverb_mix=0..1 (dry .. all room),\n"
+      "         reverb_decay=RT60 s, reverb_damping=0..1, pan=-1..1,\n"
+      "         width=0..2, distance=1..16 m. None clears the track;\n"
+      "         layer 0 without --layer.\n"
       "         audio --follow-speed on|off: its pitch follows its\n"
-      "         speed, as a tape's, or is held -- with keys or alone)\n"
+      "         speed, as a tape's, or is held; --room: its reverb's\n"
+      "         pre-delay (s) and size; --field: its bass mono (a\n"
+      "         corner, Hz; 0 off) and crossfeed -- with keys or alone)\n"
       "  trim <project.valtz> <comp-id> [--layer L] [<in> <out>|none]\n"
       "       [--offset F] [--duration F]\n"
       "         (a layer's marks in its source -- frames, a sound's\n"
@@ -418,6 +425,16 @@ usage()
       "  separate <project.valtz> <sound-id> [--model ID]  (a song split\n"
       "         into its vocals and its accompaniment: two sounds made\n"
       "         from it, their files printed)\n"
+      "  beats <project.valtz> <sound|clip-id>  (its beats found -- vpipe's\n"
+      "         beat-track, librosa's tracker, no model -- a text asset\n"
+      "         of them, printed, ATTACHED to it: its timelines' layers\n"
+      "         have them as events, drags snap to them)\n"
+      "  attach-beats <project.valtz> <sound|clip-id> [<beats-id>|none]\n"
+      "         (the beats it has, or those attached / taken off)\n"
+      "  bookmarks <project.valtz> <sound|clip-id> [<text-id> [on|off]]\n"
+      "         (its BOOKMARKS: a transcript's lines and sounds, a video\n"
+      "         summary's scenes, attached or taken off -- then each, as\n"
+      "         its timelines' layers mark them and drags snap to them)\n"
       "  layers <project.valtz> <picture-id> [add [above] | move <layer> <by>\n"
       "         | show|hide <layer> | lock|unlock <layer>\n"
       "         | separator <layer> on|off  (a track of its own in the\n"
@@ -3197,6 +3214,39 @@ main(int argc, char** argv)
         break;
       }
     }
+    // A sound's reverb room ("--room pre_delay=0.03,size=0.7"): the
+    // layer's, beside its keys.
+    std::optional<media::ReverbRoom> room;
+    for (std::size_t i = 3; i + 1 < args.size(); ++i) {
+      if (args[i] == "--room") {
+        if (args[2] != "audio") {
+          return usage();
+        }
+        const Json r = key_values(args[i + 1]);
+        room = Controller::reverb_room_of(*a, layer);
+        room->pre_delay = jget(r, "pre_delay", room->pre_delay);
+        room->size = jget(r, "size", room->size);
+        args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
+                   args.begin() + static_cast<std::ptrdiff_t>(i) + 2);
+        break;
+      }
+    }
+    // Its field ("--field bass_mono=120,crossfeed=0.3"): the layer's.
+    std::optional<media::SoundField> field;
+    for (std::size_t i = 3; i + 1 < args.size(); ++i) {
+      if (args[i] == "--field") {
+        if (args[2] != "audio") {
+          return usage();
+        }
+        const Json f = key_values(args[i + 1]);
+        field = Controller::sound_field_of(*a, layer);
+        field->bass_mono = jget(f, "bass_mono", field->bass_mono);
+        field->crossfeed = jget(f, "crossfeed", field->crossfeed);
+        args.erase(args.begin() + static_cast<std::ptrdiff_t>(i),
+                   args.begin() + static_cast<std::ptrdiff_t>(i) + 2);
+        break;
+      }
+    }
     // Keys count the composition's frames -- a still's pages, one a
     // "second".
     Rational rate{24, 1};
@@ -3220,10 +3270,12 @@ main(int argc, char** argv)
     for (std::size_t i = 3; i < args.size(); ++i) {
       any_key = any_key || args[i].find(':') != std::string::npos;
     }
-    // The pitch's following alone: the keys as they are.
-    if (!any_key && follow) {
+    // The pitch's following, the room or the field alone: the keys as
+    // they are.
+    if (!any_key && (follow || room || field)) {
       const auto k = Controller::sound_keys_of(*a, layer);
-      if (auto st = c.set_sound_keys(*pid, *aid, k, layer, follow);
+      if (auto st = c.set_sound_keys(*pid, *aid, k, layer, follow, room,
+                                     field);
           !st.ok()) {
         return fail(st.error());
       }
@@ -3240,6 +3292,12 @@ main(int argc, char** argv)
       } else if (args[2] == "audio") {
         now = media::to_json(Controller::sound_keys_of(*a, layer));
         now["follow_speed"] = Controller::pitch_follows_speed(*a, layer);
+        const auto r = Controller::reverb_room_of(*a, layer);
+        now["reverb_room"] = {{"pre_delay", r.pre_delay},
+                              {"size", r.size}};
+        const auto f = Controller::sound_field_of(*a, layer);
+        now["field"] = {{"bass_mono", f.bass_mono},
+                        {"crossfeed", f.crossfeed}};
       } else {
         now = media::to_json(Controller::crop_keys_of(*a, layer));
       }
@@ -3283,10 +3341,16 @@ main(int argc, char** argv)
       out = media::to_json(k);
     } else if (args[2] == "audio") {
       const auto k = media::keyed_sound_from_json(track);
-      st = c.set_sound_keys(*pid, *aid, k, layer, follow);
+      st = c.set_sound_keys(*pid, *aid, k, layer, follow, room, field);
       out = media::to_json(k);
       if (auto now = c.project(*pid)->asset(*aid); now.ok()) {
         out["follow_speed"] = Controller::pitch_follows_speed(*now, layer);
+        const auto r = Controller::reverb_room_of(*now, layer);
+        out["reverb_room"] = {{"pre_delay", r.pre_delay},
+                              {"size", r.size}};
+        const auto f = Controller::sound_field_of(*now, layer);
+        out["field"] = {{"bass_mono", f.bass_mono},
+                        {"crossfeed", f.crossfeed}};
       }
     } else {
       // One track of the layer's crop; the other stays as it is.
@@ -4492,7 +4556,8 @@ main(int argc, char** argv)
   if (cmd == "folders" || cmd == "folder" || cmd == "mv" || cmd == "rm" ||
       cmd == "rename" || cmd == "modify" || cmd == "capture" ||
       cmd == "instantiate" || cmd == "land" || cmd == "place" ||
-      cmd == "guide" || cmd == "grab" || cmd == "latent") {
+      cmd == "guide" || cmd == "grab" || cmd == "latent" ||
+      cmd == "attach-beats" || cmd == "bookmarks") {
     if (args.empty()) {
       return usage();
     }
@@ -4537,6 +4602,75 @@ main(int argc, char** argv)
     auto aid = args.size() > 1 ? AssetId::parse(args[1]) : std::nullopt;
     if (!aid) {
       return usage();
+    }
+    if (cmd == "attach-beats") {
+      // A sound's or a clip's beats (DESIGN §4v): attached, taken off --
+      // then what it has.
+      if (args.size() > 2) {
+        std::optional<AssetId> beats;
+        if (args[2] != "none") {
+          beats = AssetId::parse(args[2]);
+          if (!beats) {
+            return usage();
+          }
+        }
+        const Status st = c.attach_beats(*pid, *aid, beats);
+        if (!st.ok()) {
+          return fail(st.error());
+        }
+      }
+      auto a = c.project(*pid)->asset(*aid);
+      if (!a.ok()) {
+        return fail(a.error());
+      }
+      const auto b = c.attached_beats(*pid, *aid);
+      const std::string said =
+          !a->beats ? std::string("no beats attached")
+          : b ? std::format("{} ({:.1f} bpm, {} beats)", a->beats->str(),
+                            b->tempo, b->times.size())
+              : std::format("{} (not found yet)", a->beats->str());
+      std::printf("%s: %s\n", a->name.c_str(), said.c_str());
+      return 0;
+    }
+    if (cmd == "bookmarks") {
+      // A sound's or a clip's bookmarks (DESIGN §4w): a transcript or a
+      // summary attached, taken off -- then each it has.
+      if (args.size() > 2) {
+        const auto text = AssetId::parse(args[2]);
+        const std::string how = args.size() > 3 ? args[3] : "on";
+        if (!text || (how != "on" && how != "off")) {
+          return usage();
+        }
+        const Status st = c.attach_bookmarks(*pid, *aid, *text, how == "on");
+        if (!st.ok()) {
+          return fail(st.error());
+        }
+      }
+      project::Project* p = c.project(*pid);
+      auto a = p->asset(*aid);
+      if (!a.ok()) {
+        return fail(a.error());
+      }
+      if (a->bookmarks.empty()) {
+        std::printf("%s: no bookmarks attached\n", a->name.c_str());
+        return 0;
+      }
+      for (const auto& id : a->bookmarks) {
+        auto t = p->asset(id);
+        std::printf("%s: %s %s\n", a->name.c_str(), id.str().c_str(),
+                    t.ok() ? t->name.c_str() : "(gone)");
+      }
+      const auto marks = c.attached_bookmarks(*pid, *aid);
+      for (const auto& m : marks) {
+        // On one line each, its words cut short.
+        std::string words(utf8_prefix(m.text, 72));
+        std::ranges::replace(words, '\n', ' ');
+        std::printf("  %8.3f-%8.3f  %-6s %s%s\n", m.start, m.end,
+                    std::string(media::kind_name(m.kind)).c_str(),
+                    words.c_str(), words.size() < m.text.size() ? "..." : "");
+      }
+      std::printf("%zu bookmarks\n", marks.size());
+      return 0;
     }
     if (cmd == "rename") {
       if (args.size() < 3) {

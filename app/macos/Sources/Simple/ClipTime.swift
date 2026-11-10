@@ -376,12 +376,162 @@ extension AppModel {
         editSound { $0.eq[band] = g }
     }
 
-    /// The Audio panel's Reset: gain, pitch and equalizer at rest, in
-    /// every key (whether the pitch follows the speed is the Trim
-    /// panel's, kept).
+    /// How much of it goes into its room there: 0 dry ... 1 the room
+    /// alone.
+    func setLayerReverbMix(_ mix: Double) {
+        let m = min(1, max(0, mix))
+        editSound { $0.reverbMix = m }
+    }
+
+    /// How long its room rings there: RT60, seconds.
+    func setLayerReverbDecay(_ seconds: Double) {
+        let d = min(LayerSound.decayRange.upperBound,
+                    max(LayerSound.decayRange.lowerBound, seconds))
+        editSound { $0.reverbDecay = d }
+    }
+
+    /// How much sooner its room's highs die there: 0 ... 1.
+    func setLayerReverbDamping(_ damping: Double) {
+        let d = min(1, max(0, damping))
+        editSound { $0.reverbDamping = d }
+    }
+
+    /// Its room's pre-delay, seconds -- the layer's, not keyed.
+    func setLayerPreDelay(_ seconds: Double) {
+        guard !layerFrozen else { return }
+        layerRoom.preDelay = min(ReverbRoom.preDelayRange.upperBound,
+                                 max(0, seconds))
+    }
+
+    /// Its room's size, 0 ... 1 -- the layer's, not keyed.
+    func setLayerRoomSize(_ size: Double) {
+        guard !layerFrozen else { return }
+        layerRoom.size = min(1, max(0, size))
+    }
+
+    /// The Audio panel's Reset: gain, pitch, equalizer, reverb and place at
+    /// rest, in every key, the room and the field as they were (whether
+    /// the pitch follows the speed is the Trim panel's, kept).
     func resetLayerSound() {
-        guard !layerFrozen, !layerSound.isEmpty else { return }
-        layerSound = layerSound.collapsingValues { _ in LayerSound() }
+        guard !layerFrozen else { return }
+        if !layerSound.isEmpty {
+            layerSound = layerSound.collapsingValues { _ in LayerSound() }
+        }
+        layerRoom = ReverbRoom()
+        layerField = SoundField()
+    }
+
+    /// Its Dry: no reverb -- the mix, decay and damping at rest in every
+    /// key, the room as it was.
+    func dryLayerReverb() {
+        guard !layerFrozen else { return }
+        if !layerSound.isEmpty {
+            layerSound = layerSound.collapsingValues {
+                var o = $0
+                o.reverbMix = 0
+                o.reverbDecay = LayerSound.restDecay
+                o.reverbDamping = LayerSound.restDamping
+                return o
+            }
+        }
+        layerRoom = ReverbRoom()
+    }
+
+    /// One of the reverb's numbers set: a keyed one where the playhead
+    /// is, the room's for the layer.
+    func setLayerReverb(_ p: ReverbParam, _ v: Double) {
+        switch p {
+        case .decay: setLayerReverbDecay(v)
+        case .preDelay: setLayerPreDelay(v)
+        case .mix: setLayerReverbMix(v)
+        case .damping: setLayerReverbDamping(v)
+        case .size: setLayerRoomSize(v)
+        }
+    }
+
+    /// One of them moved by its jog wheel, `by` its points times its step:
+    /// the decay by octaves, the others straight.
+    func nudgeLayerReverb(_ p: ReverbParam, by delta: Double) {
+        nudgeSound(p, by: delta)
+    }
+
+    /// Any of the panel's numbers moved by its jog wheel: `by` its points
+    /// times its step, as the number steps (a decay or a distance by
+    /// octaves).
+    func nudgeSound<P: SoundNumber>(_ p: P, by delta: Double) {
+        p.set(self, p.nudged(p.value(self), by: delta))
+    }
+
+    // MARK: Space
+
+    /// Its pan there: -1 left ... 1 right.
+    func setLayerPan(_ v: Double) {
+        let x = min(1, max(-1, v))
+        editSound { $0.pan = x }
+    }
+
+    /// Its width there: 0 mono ... 1 as it is ... 2.
+    func setLayerWidth(_ v: Double) {
+        let x = min(LayerSound.widthRange.upperBound, max(0, v))
+        editSound { $0.width = x }
+    }
+
+    /// Its distance there, metres: 1 as recorded ... 16.
+    func setLayerDistance(_ v: Double) {
+        let x = min(LayerSound.distanceRange.upperBound,
+                    max(LayerSound.distanceRange.lowerBound, v))
+        editSound { $0.distance = x }
+    }
+
+    /// Its lows made mono below `hz` -- the layer's; under 20 Hz, off.
+    func setLayerBassMono(_ hz: Double) {
+        guard !layerFrozen else { return }
+        let x = min(SoundField.bassMonoRange.upperBound, max(0, hz))
+        layerField.bassMono = x < SoundField.bassMonoLowest ? 0 : x
+    }
+
+    /// Its crossfeed, 0 ... 1 -- the layer's.
+    func setLayerCrossfeed(_ v: Double) {
+        guard !layerFrozen else { return }
+        layerField.crossfeed = min(1, max(0, v))
+    }
+
+    func setLayerSpace(_ p: SpaceParam, _ v: Double) {
+        switch p {
+        case .pan: setLayerPan(v)
+        case .width: setLayerWidth(v)
+        case .distance: setLayerDistance(v)
+        case .bassMono: setLayerBassMono(v)
+        case .crossfeed: setLayerCrossfeed(v)
+        }
+    }
+
+    /// The layer's place is not at rest: its keys' or its field's.
+    var layerPlaced: Bool {
+        !layerSound.keys.allSatisfy(\.value.placedAtRest)
+            || layerField != SoundField()
+    }
+
+    /// The Space column's Centre: each key's pan, width and distance at
+    /// rest, the field too.
+    func centreLayerSound() {
+        guard !layerFrozen else { return }
+        if !layerSound.isEmpty {
+            layerSound = layerSound.collapsingValues {
+                var o = $0
+                o.pan = 0
+                o.width = 1
+                o.distance = 1
+                return o
+            }
+        }
+        layerField = SoundField()
+    }
+
+    /// The layer's reverb is not at rest: its keys' or its room's.
+    var layerReverbSet: Bool {
+        !layerSound.keys.allSatisfy(\.value.reverbAtRest)
+            || layerRoom != ReverbRoom()
     }
 
     /// Its Flat: every band at 0 dB, in every key.

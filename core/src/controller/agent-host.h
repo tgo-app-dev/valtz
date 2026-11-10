@@ -497,6 +497,21 @@ private:
                                 std::vector<std::filesystem::path>&);
   Result<Json> t_generate_voiceover(Session&, Step&, const Json&,
                                     std::vector<std::filesystem::path>&);
+  // ---- beats and bookmarks on a timeline (DESIGN §4v, §4w, §9b)
+  // A sound's beats found (Detect Beats) and attached; a timeline's marks
+  // where they fall; a transcript, a summary or beats shown on its
+  // layers; a layer's speech laid as SUBTITLES; the picture layers cut
+  // on the music's beats.
+  Result<Json> t_detect_beats(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
+  Result<Json> t_get_timeline_marks(Session&, Step&, const Json&,
+                                    std::vector<std::filesystem::path>&);
+  Result<Json> t_show_marks(Session&, Step&, const Json&,
+                            std::vector<std::filesystem::path>&);
+  Result<Json> t_add_subtitles(Session&, Step&, const Json&,
+                               std::vector<std::filesystem::path>&);
+  Result<Json> t_cut_to_beats(Session&, Step&, const Json&,
+                              std::vector<std::filesystem::path>&);
   // ---- scenes: shots of a clip with its sound (agent-tools.cc)
   Result<Json> t_generate_video(Session&, Step&, const Json&,
                                 std::vector<std::filesystem::path>&);
@@ -655,6 +670,23 @@ private:
   // hand; `was` its length before.
   Status reshape_sound_(ProjectId, AssetId comp, const std::string& layer,
                         double was, double seconds);
+  // Each layer's BEATS and BOOKMARKS where they fall on the timeline, in
+  // its seconds (the screen's stack: MovieLayer::beats, ::bookmarks), by
+  // its id; layers with none left out.
+  struct Marks {
+    std::vector<double>          beats;
+    std::vector<media::Bookmark> bookmarks;
+  };
+  Result<std::map<std::string, Marks>> marks_(ProjectId, AssetId comp);
+  // The sound or clip whose seconds a layer's source counts -- itself, or
+  // the clip a scissors part is (TimedSource::timed_by); nil for a
+  // picture or a markup.
+  Result<AssetId> timed_by_(ProjectId, AssetId comp,
+                            const std::string& layer);
+  // The newest transcript (`op` transcribe-audio) or summary
+  // (summarize-video) made from `source` and still about it as it is.
+  std::optional<AssetId> made_text_(ProjectId, AssetId source,
+                                    std::string_view op);
   // Where a timeline's last clip or picture ends, seconds (0: none).
   double shown_end_(ProjectId, AssetId comp);
   // A clip's or sound's layer cut to end at `end` (timeline seconds), its

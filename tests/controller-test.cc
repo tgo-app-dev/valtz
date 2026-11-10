@@ -6,6 +6,7 @@
 #include <array>
 
 #include "valtz/assist/transcript.h"
+#include "valtz/assist/video-summary.h"
 #include "valtz/base/tree-copy.h"
 #include "valtz/controller/controller.h"
 #include "valtz/media/refmod.h"
@@ -605,9 +606,10 @@ write_tone(const fs::path& path, double seconds, double hz, double amp)
   return static_cast<bool>(f);
 }
 
-// A sound file's samples, as float, its first channel at 48 kHz.
+// A sound file's samples, as float, a channel of it (the first) at
+// 48 kHz.
 std::vector<float>
-read_sound(const fs::path& path)
+read_sound(const fs::path& path, int channel = 0)
 {
   std::vector<float> out;
   CFURLRef url = CFURLCreateFromFileSystemRepresentation(
@@ -642,7 +644,7 @@ read_sound(const fs::path& path)
       break;
     }
     for (UInt32 i = 0; i < frames; ++i) {
-      out.push_back(buf[i * 2]);
+      out.push_back(buf[i * 2 + (channel == 1 ? 1 : 0)]);
     }
   }
   ExtAudioFileDispose(f);
@@ -1831,7 +1833,7 @@ TEST(controller, a_song_is_split_into_its_voice_and_accompaniment)
     }
   }
   CHECK((names == std::vector<std::string>{"transcribe", "summarize",
-                                           "separate", "upscale",
+                                           "separate", "beats", "upscale",
                                            "interpolate"}));
   REQUIRE(separate.is_object());
   CHECK(!jget(separate, "on_layer", true));
@@ -1926,6 +1928,439 @@ TEST(controller, a_song_is_split_into_its_voice_and_accompaniment)
   REQUIRE_OK(ctl.undo(*pid));
   CHECK(!p->asset(voice->id).ok());
   CHECK(!p->asset(rest->id).ok());
+}
+
+namespace {
+
+// A click track as a 16-bit mono WAV at 48 kHz: `seconds` long, a 1 kHz
+// click of 30 ms every 60 / `bpm` seconds from `first`.
+bool
+write_clicks(const fs::path& path, double seconds, double bpm, double first)
+{
+  const std::uint32_t rate = 48000;
+  const auto n = static_cast<std::uint32_t>(seconds * rate);
+  std::vector<double> v(n, 0.0);
+  for (double t = first; t < seconds - 0.1; t += 60.0 / bpm) {
+    const auto at = static_cast<std::size_t>(t * rate);
+    for (std::size_t i = 0; i < rate * 3 / 100 && at + i < n; ++i) {
+      v[at + i] = 0.8 * std::exp(-double(i) / (0.004 * rate)) *
+                  std::sin(2 * M_PI * 1000 * double(i) / rate);
+    }
+  }
+  std::ofstream f(path, std::ios::binary);
+  auto u32 = [&](std::uint32_t x) { f.write(reinterpret_cast<char*>(&x), 4); };
+  auto u16 = [&](std::uint16_t x) { f.write(reinterpret_cast<char*>(&x), 2); };
+  f.write("RIFF", 4);
+  u32(36 + n * 2);
+  f.write("WAVEfmt ", 8);
+  u32(16);
+  u16(1);
+  u16(1);
+  u32(rate);
+  u32(rate * 2);
+  u16(2);
+  u16(16);
+  f.write("data", 4);
+  u32(n * 2);
+  for (const double x : v) {
+    u16(static_cast<std::uint16_t>(static_cast<std::int16_t>(x * 30000)));
+  }
+  return static_cast<bool>(f);
+}
+
+}
+
+// A sound's BEATS (DESIGN §4v), an asset operation of NO MODEL: listed
+// ready where the engine has vpipe's beat-track (and not where it has
+// not), refused on a picture; one task making a text asset beside the
+// sound, tagged "beats" and ATTACHED to it in the same command (an undo
+// takes both back); its times kept as data. On a timeline each layer
+// showing the sound has them where they play -- through its start and
+// its marks, on each part the scissors cut -- the screen's stack alone;
+// taken off, none; attached only to a sound or a clip, and only beats.
+TEST(controller, a_sounds_beats_are_found_and_attached)
+{
+  auto root = test::temp_dir("ctl-beats");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "B.valtz", "beats");
+  REQUIRE_OK(pid);
+  auto beats_op = [&] {
+    for (const auto& o : ctl.asset_operations_json()) {
+      if (jget<std::string>(o, "name", "") == "beats") {
+        return o;
+      }
+    }
+    return Json();
+  };
+  // Listed for sounds and clips, ready with no model at all.
+  Json op = beats_op();
+  REQUIRE(op.is_object());
+  CHECK(op["makes"] == Json::array({"beats"}));
+  REQUIRE(op["takes"].size() == 2);
+  CHECK(jget<std::string>(op["takes"][0], "kind", "") == "audio");
+  CHECK(jget<std::string>(op["takes"][1], "kind", "") == "video");
+  CHECK(jget(op["takes"][0], "ready", false));
+  CHECK(jget<std::string>(op["takes"][0], "model", "x").empty());
+  CHECK(asset_operation_of(engine::kOpTrackBeats)->name == "beats");
+
+  auto folder = ctl.create_folder(*pid, "Songs");
+  REQUIRE_OK(folder);
+  REQUIRE(write_tone(root / "song.wav", 4, 440, 0.5));
+  auto song = import_and_wait(ctl, *pid, root / "song.wav");
+  REQUIRE(song);
+  REQUIRE_OK(ctl.move_asset(*pid, *song, *folder));
+  REQUIRE(write_png(root / "pic.png", 16, 16, {0x40, 0x80, 0xc0, 0xff}));
+  auto pic = import_and_wait(ctl, *pid, root / "pic.png");
+  REQUIRE(pic);
+  auto ask = [&](AssetId a) {
+    Controller::AssetOpRequest req;
+    req.project = *pid;
+    req.asset = a;
+    req.operation = "beats";
+    return ctl.run_asset_operation(std::move(req));
+  };
+  auto refused = ask(*pic);
+  REQUIRE(!refused.ok());
+  CHECK(refused.error().key == msg::kBeatsNeedSound.key);
+  // An engine without beat-track (an older vpipe): not ready, refused.
+  engine->lacks.insert(std::string(engine::kOpTrackBeats));
+  CHECK(!jget(beats_op()["takes"][0], "ready", true));
+  CHECK(!ask(*song).ok());
+  engine->lacks.clear();
+
+  // One task: a text beside the song, tagged, attached at once.
+  auto found = ask(*song);
+  REQUIRE_OK(found);
+  REQUIRE(found->made.size() == 1);
+  project::Project* p = ctl.project(*pid);
+  const AssetId bid = found->made[0];
+  auto b = p->asset(bid);
+  REQUIRE_OK(b);
+  CHECK(b->kind == project::AssetKind::Text);
+  CHECK(b->name == p->asset(*song)->name + " beats");
+  CHECK(b->folder == *folder);
+  CHECK(std::ranges::find(b->tags, "beats") != b->tags.end());
+  CHECK(p->asset(*song)->beats == bid);
+  const Json ts = ctl.tasks();
+  REQUIRE(ts.size() == 1);
+  CHECK(jget<std::string>(ts[0], "operation", "") == "beats");
+  const engine::JobSpec* spec = engine->spec(found->job);
+  REQUIRE(spec != nullptr);
+  CHECK(spec->op == engine::kOpTrackBeats);
+  CHECK(spec->model.dir.empty());
+  REQUIRE(spec->inputs.size() == 1);
+  CHECK(spec->inputs[0].role == "source");
+  // Nothing to lay out until they are found.
+  CHECK(!ctl.attached_beats(*pid, *song));
+
+  media::Beats got;
+  got.tempo = 120;
+  got.seconds = 4;
+  got.times = {0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5};
+  {
+    std::ofstream(root / "beats.txt") << media::beats_text("song", got);
+  }
+  engine->finish(found->job, root / "beats.txt",
+                 {{"beats", media::to_json(got)}});
+  CHECK(ctl.tasks().empty());
+  auto kept = ctl.attached_beats(*pid, *song);
+  REQUIRE(kept.has_value());
+  CHECK(kept->times == got.times);
+  CHECK(kept->tempo == 120);
+  CHECK(p->read_text(bid)->starts_with("# Beats of song"));
+  // Undone, the beats go and the song has none; redone, both are back.
+  REQUIRE_OK(ctl.undo(*pid));
+  CHECK(!p->asset(bid).ok());
+  CHECK(!p->asset(*song)->beats);
+  REQUIRE_OK(ctl.redo(*pid));
+  CHECK(p->asset(*song)->beats == bid);
+  REQUIRE(ctl.attached_beats(*pid, *song).has_value());
+
+  // On a timeline: from 2 s, its marks from 1 s (a sound's are ms).
+  auto tl = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                   {640, 360}, {24, 1}, "T");
+  REQUIRE_OK(tl);
+  auto put = ctl.instantiate(*pid, *song, *tl);
+  REQUIRE_OK(put);
+  const std::string layer = put->second;
+  project::LayerTime lt;
+  lt.offset = 48;
+  lt.in = 1000;
+  REQUIRE_OK(ctl.set_layer_time(*pid, *tl, layer, lt));
+  auto beats_on = [&](const std::string& id, bool for_job = false) {
+    auto m = ctl.movie_stack(*pid, *tl, for_job);
+    std::vector<double> out;
+    if (m.ok()) {
+      for (const auto& l : m->layers) {
+        if (l.id == id) {
+          out = l.beats;
+        }
+      }
+    }
+    return out;
+  };
+  const std::vector<double> want = {2.0, 2.5, 3.0, 3.5, 4.0, 4.5};
+  auto close = [](const std::vector<double>& a,
+                  const std::vector<double>& w) {
+    if (a.size() != w.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      if (std::abs(a[i] - w[i]) > 1e-6) {
+        return false;
+      }
+    }
+    return true;
+  };
+  CHECK(close(beats_on(layer), want));
+  CHECK(beats_on(layer, true).empty());
+  // Cut in two at 3.25 s (frame 78): each part its own beats, all of
+  // them between the two.
+  auto parts = ctl.split_layer(*pid, *tl, layer, 78);
+  REQUIRE_OK(parts);
+  const auto first = beats_on(layer);
+  const auto second = beats_on(parts->layer);
+  CHECK(close(first, {2.0, 2.5, 3.0}));
+  CHECK(close(second, {3.5, 4.0, 4.5}));
+
+  // Taken off: none anywhere; attached again: back.
+  REQUIRE_OK(ctl.attach_beats(*pid, *song, std::nullopt));
+  CHECK(!p->asset(*song)->beats);
+  CHECK(beats_on(layer).empty() && beats_on(parts->layer).empty());
+  REQUIRE_OK(ctl.attach_beats(*pid, *song, bid));
+  CHECK(close(beats_on(parts->layer), {3.5, 4.0, 4.5}));
+  // Only a sound or a clip takes them, and only beats are taken.
+  auto onto_pic = ctl.attach_beats(*pid, *pic, bid);
+  REQUIRE(!onto_pic.ok());
+  CHECK(onto_pic.error().key == msg::kBeatsGoOnSound.key);
+  auto not_beats = ctl.attach_beats(*pid, *song, *pic);
+  REQUIRE(!not_beats.ok());
+  CHECK(not_beats.error().key == msg::kNotBeats.key);
+  CHECK(p->asset(*song)->beats == bid);
+}
+
+// A sound's BOOKMARKS (DESIGN §4w): a transcript and a video summary --
+// texts whose outputs time what they tell -- attached to a sound (several
+// at once), each one command undone as one; on a timeline each layer
+// showing the sound has their moments where they play, in order -- each
+// part the scissors cut its own -- the screen's stack alone; taken off,
+// gone; only a sound or a clip takes them, and only such texts give them.
+TEST(controller, a_transcript_and_a_summary_are_attached_as_bookmarks)
+{
+  auto root = test::temp_dir("ctl-bookmarks");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "M.valtz", "marks");
+  REQUIRE_OK(pid);
+  REQUIRE(write_tone(root / "song.wav", 4, 440, 0.5));
+  auto song = import_and_wait(ctl, *pid, root / "song.wav");
+  REQUIRE(song);
+  REQUIRE(write_png(root / "pic.png", 16, 16, {0x40, 0x80, 0xc0, 0xff}));
+  auto pic = import_and_wait(ctl, *pid, root / "pic.png");
+  REQUIRE(pic);
+  project::Project* p = ctl.project(*pid);
+
+  // A text as Transcribe or Summarize Video commits one: its words, its
+  // data in its outputs.
+  int n = 0;
+  auto text = [&](std::string_view op, const char* key, Json data)
+      -> std::optional<AssetId> {
+    project::Recipe r;
+    r.op = std::string(op);
+    r.inputs.push_back({"source", *song, 0});
+    auto d = p->define_derived(std::format("song {}", key),
+                               project::AssetKind::Text, r);
+    if (!d.ok()) {
+      return std::nullopt;
+    }
+    fs::create_directories(p->blobs().tmp_dir());
+    const fs::path out = p->blobs().tmp_dir() / std::format("t{}.md", n++);
+    std::ofstream(out) << "# words\n";
+    project::Project::BuildRecord b;
+    b.recipe = r;
+    b.output = out;
+    b.outputs = {{key, std::move(data)}};
+    return p->commit_build(d->id, std::move(b)).ok()
+               ? std::optional<AssetId>(d->id) : std::nullopt;
+  };
+  assist::Transcript tr;
+  tr.seconds = 4;
+  tr.lines = {{0.2, 0.9, "Before.", "English"},
+              {1.25, 1.75, "Hello there.", "English"},
+              {2.5, 3.5, "Goodbye.", "English"}};
+  tr.events = {{1.0, 4.0, "Music", 0.8}};
+  auto heard = text(engine::kOpTranscribeAudio, "transcript",
+                    assist::to_json(tr));
+  REQUIRE(heard);
+  assist::VideoSummary vs;
+  vs.seconds = 4;
+  vs.scenes = {{0, 1.5, 12, true, "A fox wakes."},
+               {1.5, 4, 20, false, "It trots off."}};
+  auto seen = text(engine::kOpSummarizeVideo, "summary",
+                   assist::to_json(vs));
+  REQUIRE(seen);
+  CHECK(ctl.attached_bookmarks(*pid, *song).empty());
+
+  REQUIRE_OK(ctl.attach_bookmarks(*pid, *song, *heard, true));
+  REQUIRE_OK(ctl.attach_bookmarks(*pid, *song, *heard, true));  // as it is
+  REQUIRE_OK(ctl.attach_bookmarks(*pid, *song, *seen, true));
+  CHECK((p->asset(*song)->bookmarks == std::vector<AssetId>{*heard, *seen}));
+  {
+    // Kept with the record.
+    Json j = *p->asset(*song);
+    CHECK(j["bookmarks"].size() == 2);
+    CHECK(j.get<project::Asset>().bookmarks == p->asset(*song)->bookmarks);
+  }
+  const auto all = ctl.attached_bookmarks(*pid, *song);
+  REQUIRE(all.size() == 6);
+  CHECK(all[0].start == 0);
+  CHECK(all[0].kind == media::Bookmark::Kind::Scene);
+  CHECK(all[1].text == "Before.");
+
+  // On a timeline: from 2 s, its marks from 1 s (a sound's are ms).
+  auto tl = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                   {640, 360}, {24, 1}, "T");
+  REQUIRE_OK(tl);
+  auto put = ctl.instantiate(*pid, *song, *tl);
+  REQUIRE_OK(put);
+  const std::string layer = put->second;
+  project::LayerTime lt;
+  lt.offset = 48;
+  lt.in = 1000;
+  REQUIRE_OK(ctl.set_layer_time(*pid, *tl, layer, lt));
+  auto marks_on = [&](const std::string& id, bool for_job = false) {
+    auto m = ctl.movie_stack(*pid, *tl, for_job);
+    std::vector<media::Bookmark> out;
+    if (m.ok()) {
+      for (const auto& l : m->layers) {
+        if (l.id == id) {
+          out = l.bookmarks;
+        }
+      }
+    }
+    return out;
+  };
+  auto starts = [](const std::vector<media::Bookmark>& v) {
+    std::vector<double> out;
+    for (const auto& b : v) {
+      out.push_back(std::round(b.start * 1000) / 1000);
+    }
+    return out;
+  };
+  const auto on = marks_on(layer);
+  CHECK((starts(on) == std::vector<double>{2.0, 2.25, 2.5, 3.5}));
+  REQUIRE(on.size() == 4);
+  CHECK(on[0].text == "Music" && on[0].kind == media::Bookmark::Kind::Sound);
+  CHECK(std::abs(on[0].end - 5.0) < 1e-6);
+  CHECK(on[2].text == "It trots off.");
+  CHECK(std::abs(on[3].end - 4.5) < 1e-6);
+  CHECK(marks_on(layer, true).empty());
+  // Cut in two at 3.25 s (frame 78): each part its own, the first's ends
+  // where it does.
+  auto parts = ctl.split_layer(*pid, *tl, layer, 78);
+  REQUIRE_OK(parts);
+  const auto first = marks_on(layer);
+  CHECK((starts(first) == std::vector<double>{2.0, 2.25, 2.5}));
+  REQUIRE(!first.empty());
+  CHECK(std::abs(first[0].end - 3.25) < 1e-3);
+  CHECK((starts(marks_on(parts->layer)) == std::vector<double>{3.5}));
+
+  // Taken off: the summary's go, the transcript's stay; undone, back.
+  REQUIRE_OK(ctl.attach_bookmarks(*pid, *song, *seen, false));
+  CHECK((p->asset(*song)->bookmarks == std::vector<AssetId>{*heard}));
+  CHECK((starts(marks_on(layer)) == std::vector<double>{2.0, 2.25}));
+  REQUIRE_OK(ctl.undo(*pid));
+  CHECK(p->asset(*song)->bookmarks.size() == 2);
+  REQUIRE_OK(ctl.redo(*pid));
+  CHECK(p->asset(*song)->bookmarks.size() == 1);
+  // Only a sound or a clip takes them, and only a transcript or a
+  // summary gives them.
+  auto onto_pic = ctl.attach_bookmarks(*pid, *pic, *heard, true);
+  REQUIRE(!onto_pic.ok());
+  CHECK(onto_pic.error().key == msg::kBookmarksGoOnSound.key);
+  auto not_marks = ctl.attach_bookmarks(*pid, *song, *pic, true);
+  REQUIRE(!not_marks.ok());
+  CHECK(not_marks.error().key == msg::kNotBookmarks.key);
+  REQUIRE_OK(ctl.attach_bookmarks(*pid, *song, *heard, false));
+  CHECK(p->asset(*song)->bookmarks.empty());
+  CHECK(marks_on(layer).empty() && marks_on(parts->layer).empty());
+}
+
+// The same with vpipe's own beat-track (edc294c1), no model: a click
+// track at 120 bpm found as librosa finds it -- its tempo on librosa's
+// grid near 120, a beat on (within 50 ms of) a click each. Skipped where
+// the engine is not there or has no beat-track.
+TEST(controller, a_real_sounds_beats_are_tracked)
+{
+  auto root = test::temp_dir("ctl-beats-real");
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.extensions = false;
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  bool ready = false;
+  for (const auto& o : ctl.asset_operations_json()) {
+    if (jget<std::string>(o, "name", "") == "beats") {
+      ready = jget(o["takes"][0], "ready", false);
+    }
+  }
+  if (!ready) {
+    SKIP("no engine, or a vpipe without beat-track (edc294c1)");
+  }
+  auto pid = ctl.create_project(root / "R.valtz", "beats");
+  REQUIRE_OK(pid);
+  REQUIRE(write_clicks(root / "clicks.wav", 12, 120, 0.5));
+  auto song = import_and_wait(ctl, *pid, root / "clicks.wav");
+  REQUIRE(song);
+  Controller::AssetOpRequest req;
+  req.project = *pid;
+  req.asset = *song;
+  req.operation = "beats";
+  auto found = ctl.run_asset_operation(std::move(req));
+  REQUIRE_OK(found);
+  bool done = false;
+  for (int i = 0; i < 300 && !done; ++i) {
+    Event ev;
+    if (ctl.events().wait(ev, 100) && ev.job == found->job) {
+      REQUIRE(ev.kind != "job.failed");
+      done = ev.kind == "job.finished";
+    }
+  }
+  REQUIRE(done);
+  auto beats = ctl.attached_beats(*pid, *song);
+  REQUIRE(beats.has_value());
+  CHECK(beats->tempo > 110 && beats->tempo < 130);
+  CHECK(beats->times.size() >= 15);
+  CHECK(std::abs(beats->seconds - 12) < 0.1);
+  for (const double t : beats->times) {
+    const double k = std::round((t - 0.5) / 0.5);
+    CHECK(std::abs(t - (0.5 + 0.5 * k)) < 0.05);
+  }
+  auto text = ctl.project(*pid)->read_text(found->made[0]);
+  REQUIRE_OK(text);
+  CHECK(text->find("bpm") != std::string::npos);
 }
 
 namespace {
@@ -8696,6 +9131,262 @@ TEST(composition, a_layers_equalizer_shapes_its_bands)
   const media::Sound half = media::lerp(media::Sound{}, media::Sound{1, 0, up},
                                         0.5);
   CHECK(half.eq[5] == 6 && half.eq[4] == 0);
+}
+
+// A layer's REVERB (DESIGN §10a Audio, media/reverb.h): its mix, decay and
+// damping keyed, its room -- pre-delay, size -- the layer's; the room
+// heard after its pre-delay and RINGING ON past the layer's end at -60 dB
+// a decay (its shaped span that much longer, played on after the layer
+// at the gain it ended with); a decay set while dry kept, nothing made.
+TEST(composition, a_layers_reverb_rings_past_its_end)
+{
+  Bench b("comp-reverb");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  REQUIRE(write_tone(b.root / "burst.wav", 0.5, 1000, 0.3));
+  auto burst = import_and_wait(ctl, pid, b.root / "burst.wav");
+  REQUIRE(burst);
+  auto snd = ctl.create_composition(pid, project::AssetClass::Composition,
+                                    {0, 0}, {}, "sound");
+  REQUIRE_OK(snd);
+  REQUIRE_OK(ctl.instantiate(pid, *burst, *snd));
+  auto plan = ctl.sound_plan(pid, *snd);
+  REQUIRE_OK(plan);
+  const Rational r = plan->layers[0].timing.rate;
+  const double fps = r.to_double() > 0 ? r.to_double() : 24.0;
+  // Three seconds long: room for the tail.
+  const auto three = static_cast<std::int64_t>(std::llround(3 * fps));
+  REQUIRE_OK(ctl.set_timeline(pid, *snd, three));
+  auto rms = [](const std::vector<float>& s, double from, double to) {
+    double sum = 0;
+    std::size_t n = 0;
+    for (auto i = static_cast<std::size_t>(from * 48000);
+         i < static_cast<std::size_t>(to * 48000) && i < s.size(); ++i) {
+      sum += double(s[i]) * s[i];
+      ++n;
+    }
+    return n ? std::sqrt(sum / static_cast<double>(n)) : 0.0;
+  };
+  auto mixed = [&] {
+    auto mix = ctl.sound_mix(pid, *snd);
+    return mix.ok() && !mix->empty() ? read_sound(*mix)
+                                     : std::vector<float>{};
+  };
+  const auto dry = mixed();
+  REQUIRE(dry.size() > 2 * 48000);
+  CHECK(rms(dry, 0.6, 0.7) < 1e-4);
+
+  // A decay set while dry: kept, nothing to make.
+  media::Sound set;
+  set.reverb_decay = 1.0;
+  media::KeyedSound k;
+  k.keys = {{0, set}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  plan = ctl.sound_plan(pid, *snd);
+  REQUIRE_OK(plan);
+  CHECK(!media::needs_render(*plan));
+  CHECK(Controller::sound_keys_of(*b.p().asset(*snd), "").keys.size() == 1);
+
+  // All into the room: a second's decay, undamped, 50 ms before it.
+  set.reverb_mix = 1;
+  set.reverb_damping = 0;
+  k.keys = {{0, set}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, "", std::nullopt,
+                                media::ReverbRoom{0.05, 0.3}));
+  const auto room = Controller::reverb_room_of(*b.p().asset(*snd), "");
+  CHECK(room.pre_delay == 0.05 && room.size == 0.3);
+  plan = ctl.sound_plan(pid, *snd);
+  REQUIRE_OK(plan);
+  CHECK(media::needs_render(*plan));
+  CHECK(std::abs(media::reverb_tail(plan->layers[0]) - 1.05) < 1e-9);
+  // The player's: its shaped span, its tail after the layer.
+  auto shaped = ctl.playable_sound_plan(pid, *snd);
+  REQUIRE_OK(shaped);
+  const auto& sl = shaped->layers[0];
+  CHECK(!media::needs_render(*shaped));
+  CHECK(std::abs(sl.tail - 1.05) < 1e-9);
+  const auto segs = media::sound_segments(sl, shaped->seconds, 1.0 / 24);
+  REQUIRE(segs.size() == 2);
+  CHECK(std::abs(segs[1].at - 0.5) < 1e-6);
+  CHECK(std::abs(segs[1].length - 1.05) < 1e-6);
+  CHECK(std::abs(segs[1].source - 0.5) < 1e-6);
+  const auto pts = media::volume_points(*shaped, 0);
+  REQUIRE(!pts.empty());
+  CHECK(std::abs(pts.back().first - 1.55) < 1e-6);
+  CHECK(std::abs(pts.back().second - 1) < 1e-6);
+  const auto span = read_sound(sl.file);
+  CHECK(std::abs(static_cast<double>(span.size()) / 48000 - 1.55) < 0.01);
+  // The plan as JSON keeps the room and the tail.
+  const auto back = media::sound_plan_from_json(media::to_json(*shaped));
+  CHECK(back.layers[0].tail == sl.tail);
+  CHECK(media::sound_plan_from_json(media::to_json(*plan)).layers[0].room ==
+        room);
+
+  const auto wet = mixed();
+  REQUIRE(wet.size() > 2 * 48000);
+  // Nothing before its pre-delay; then the room. No dry: all in the room.
+  const double early = rms(wet, 0.0, 0.045);
+  const double on = rms(wet, 0.1, 0.45);
+  // Past the burst: ringing, -60 dB a second.
+  const double a = rms(wet, 0.65, 0.75);
+  const double c = rms(wet, 1.15, 1.25);
+  const double fall = 20 * std::log10(a / std::max(1e-12, c));
+  std::printf("[composition] reverb: before its pre-delay %.1e, in the room "
+              "%.3f, its tail %.1f dB down in 0.5 s, at 1.7 s %.1e\n",
+              early, on, fall, rms(wet, 1.65, 1.75));
+  CHECK(early < 1e-3);
+  CHECK(on > 0.03);
+  CHECK(a > 0.003);
+  CHECK(std::abs(fall - 30) < 6);
+  CHECK(rms(wet, 1.65, 1.75) < a * 1e-2);
+
+  // Half and half: the dry at the cosine of a quarter turn, the room's
+  // tail as loud as the sine.
+  set.reverb_mix = 0.5;
+  k.keys = {{0, set}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  CHECK(Controller::reverb_room_of(*b.p().asset(*snd), "") == room);
+  const auto half = mixed();
+  const double tail_ratio = rms(half, 0.65, 0.75) / a;
+  CHECK(std::abs(tail_ratio - std::sin(M_PI / 4)) < 0.05);
+
+  // The keys as the modifier holds them.
+  const Json j = media::to_json(k);
+  CHECK(j["keys"][0]["reverb_mix"].get<double>() == 0.5);
+  CHECK(j["keys"][0]["reverb_decay"].get<double>() == 1.0);
+  CHECK(j["keys"][0]["reverb_damping"].get<double>() == 0.0);
+  CHECK(media::keyed_sound_from_json(j) == k);
+  // The panel's live volume, its room the record's (in the span).
+  Controller::LiveTracks live;
+  live.look = false;
+  live.sound = k;
+  auto lit = ctl.playable_sound_plan(pid, *snd, live);
+  REQUIRE_OK(lit);
+  CHECK(lit->layers[0].sound.keys[0].value.reverb_at_rest());
+  CHECK(lit->layers[0].tail > 0);
+  // Dry again: no tail.
+  k.keys = {{0, media::Sound{}}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  auto plain = ctl.playable_sound_plan(pid, *snd);
+  REQUIRE_OK(plain);
+  CHECK(plain->layers[0].tail == 0);
+}
+
+// Where a layer SITS (DESIGN §10a Audio, media/space.h): its pan, width
+// and distance keyed, its bass mono and crossfeed the layer's -- the pan
+// BEFORE the room (a voice panned hard left and sent wholly into the room
+// rings on both sides), the rest AFTER it (narrowed to nothing, the room
+// too is one channel; 2 m away, all of it 6 dB down).
+TEST(composition, a_layer_is_placed_in_the_field)
+{
+  Bench b("comp-space");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  REQUIRE(write_tone(b.root / "burst.wav", 0.5, 1000, 0.3));
+  auto burst = import_and_wait(ctl, pid, b.root / "burst.wav");
+  REQUIRE(burst);
+  auto snd = ctl.create_composition(pid, project::AssetClass::Composition,
+                                    {0, 0}, {}, "sound");
+  REQUIRE_OK(snd);
+  REQUIRE_OK(ctl.instantiate(pid, *burst, *snd));
+  auto plan = ctl.sound_plan(pid, *snd);
+  REQUIRE_OK(plan);
+  const Rational r = plan->layers[0].timing.rate;
+  const double fps = r.to_double() > 0 ? r.to_double() : 24.0;
+  const auto two = static_cast<std::int64_t>(std::llround(2 * fps));
+  REQUIRE_OK(ctl.set_timeline(pid, *snd, two));
+  auto mix = [&](int channel) {
+    auto m = ctl.sound_mix(pid, *snd);
+    return m.ok() && !m->empty() ? read_sound(*m, channel)
+                                 : std::vector<float>{};
+  };
+  const double dry = rms(mix(0), 0.1, 0.4);
+
+  // Hard left: the right silent while it sounds.
+  media::Sound s;
+  s.pan = -1;
+  media::KeyedSound k;
+  k.keys = {{0, s}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  plan = ctl.sound_plan(pid, *snd);
+  REQUIRE_OK(plan);
+  CHECK(media::needs_render(*plan));
+  CHECK(std::abs(20 * std::log10(rms(mix(0), 0.1, 0.4) / dry) - 3.01) <
+        0.1);
+  CHECK(rms(mix(1), 0.1, 0.4) < 1e-4);
+
+  // ... and wholly into a room: the room rings on both sides -- the pan
+  // was before it.
+  s.reverb_mix = 1;
+  s.reverb_decay = 1;
+  k.keys = {{0, s}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  const auto wl = mix(0), wr = mix(1);
+  std::printf("[composition] space: panned left into the room -> tail L "
+              "%.4f R %.4f\n", rms(wl, 0.6, 0.8), rms(wr, 0.6, 0.8));
+  CHECK(rms(wr, 0.6, 0.8) > 0.3 * rms(wl, 0.6, 0.8));
+
+  // Narrowed to nothing: the room's tail one channel -- the width was
+  // after it.
+  s.width = 0;
+  k.keys = {{0, s}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  const auto nl = mix(0), nr = mix(1);
+  double apart = 0;
+  for (std::size_t i = 0; i < nl.size() && i < nr.size(); ++i) {
+    apart = std::max(apart, double(std::abs(nl[i] - nr[i])));
+  }
+  CHECK(apart < 1e-4);
+  CHECK(rms(nl, 0.6, 0.8) > 1e-3);
+
+  // Two metres off: all of it 6 dB down (1 kHz under the air's corner).
+  s.distance = 2;
+  k.keys = {{0, s}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  const double near = rms(nl, 0.1, 0.8);
+  const double far = rms(mix(0), 0.1, 0.8);
+  std::printf("[composition] space: 2 m -> %+.2f dB\n",
+              20 * std::log10(far / near));
+  CHECK(std::abs(20 * std::log10(far / near) + 6.1) < 0.4);
+
+  // The field's settings: the layer's, kept beside the keys, read back,
+  // in the plan; keys' pan, width and distance written and read.
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, "", std::nullopt,
+                                std::nullopt,
+                                media::SoundField{120, 0.4}));
+  const auto field = Controller::sound_field_of(*b.p().asset(*snd), "");
+  CHECK(field.bass_mono == 120 && field.crossfeed == 0.4);
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, k, ""));
+  CHECK(Controller::sound_field_of(*b.p().asset(*snd), "") == field);
+  plan = ctl.sound_plan(pid, *snd);
+  REQUIRE_OK(plan);
+  CHECK(plan->layers[0].field == field);
+  CHECK(media::sound_plan_from_json(media::to_json(*plan)).layers[0].field ==
+        field);
+  const Json j = media::to_json(k);
+  CHECK(j["keys"][0]["pan"].get<double>() == -1);
+  CHECK(j["keys"][0]["width"].get<double>() == 0);
+  CHECK(j["keys"][0]["distance"].get<double>() == 2);
+  CHECK(media::keyed_sound_from_json(j) == k);
+  // Shaped, none of it left to shape again.
+  auto shaped = ctl.playable_sound_plan(pid, *snd);
+  REQUIRE_OK(shaped);
+  CHECK(!media::needs_render(*shaped));
+  CHECK(shaped->layers[0].field.at_rest());
+  CHECK(shaped->layers[0].sound.keys[0].value.placed_at_rest());
+  // The field alone shapes it; at rest, nothing does.
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, {}, "", std::nullopt,
+                                std::nullopt, media::SoundField{0, 0.3}));
+  plan = ctl.sound_plan(pid, *snd);
+  REQUIRE_OK(plan);
+  CHECK(media::needs_render(*plan));
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, {}, "", std::nullopt,
+                                std::nullopt, media::SoundField{}));
+  plan = ctl.sound_plan(pid, *snd);
+  REQUIRE_OK(plan);
+  CHECK(!media::needs_render(*plan));
 }
 
 // What the PLAYER plays (Controller::playable_sound_plan): a layer its
@@ -16819,6 +17510,483 @@ TEST(agent, a_layer_changes_over_time_and_its_sound_is_shaped)
   CHECK(jget<std::string>(steps[0], "state", "") == "done");
   CHECK(jget(jget(steps[0], "result", J()), "end", 0.0) == 4.0);
   REQUIRE_OK(ctl.agent_stop(*cut));
+}
+
+// A sound's REVERB and PLACE set by the agent, steady and keyed: the room
+// and the field set beside a fade; a pan keyed across it -- the fade kept,
+// a distance in one key its steady value -- then a level set (the pan
+// kept), a mix keyed (the pan kept), the pan made steady (the mix kept,
+// said), a trim (the fade laid again, the mix kept). The layer's own
+// numbers in a key, a "pan", and a picture's sound refused;
+// get_composition tells what it is and what changes.
+// The agent and a timeline's MARKS (DESIGN §4v, §4w, §9b): beats found
+// before reused and shown; the marks read where they fall; pictures CUT
+// ON THE BEAT end to end -- the beats given, a list, as near their
+// lengths as whole beats go; a sound's lines laid as SUBTITLES where it
+// plays (long ones split, short ones held a second), laid again in place
+// of the old; a transcript shown as bookmarks; get_composition telling
+// which layers carry marks.
+TEST(agent, beats_cut_and_subtitles_are_laid)
+{
+  auto root = test::temp_dir("agent-marks");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "B.valtz", "marks");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 160, 90, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_png(root / "blue.png", 160, 90, {0, 0, 0xff, 0xff}));
+  REQUIRE(write_tone(root / "music.wav", 6, 220, 0.3));
+  REQUIRE(write_tone(root / "voice.wav", 6, 330, 0.3));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  auto blue = import_and_wait(ctl, *pid, root / "blue.png");
+  auto music = import_and_wait(ctl, *pid, root / "music.wav");
+  auto voice = import_and_wait(ctl, *pid, root / "voice.wav");
+  REQUIRE(red && blue && music && voice);
+  project::Project* p = ctl.project(*pid);
+  // A text as an asset operation commits one, its data in its outputs.
+  int n = 0;
+  auto text = [&](std::string_view op, AssetId src, const char* key,
+                  Json data) -> std::optional<AssetId> {
+    project::Recipe r;
+    r.op = std::string(op);
+    r.inputs.push_back({"source", src, 0});
+    auto d = p->define_derived(std::format("{} {}", key, n),
+                               project::AssetKind::Text, r);
+    if (!d.ok()) {
+      return std::nullopt;
+    }
+    fs::create_directories(p->blobs().tmp_dir());
+    const fs::path out = p->blobs().tmp_dir() / std::format("m{}.md", n++);
+    std::ofstream(out) << "# words\n";
+    // As a build records it -- the asset's own recipe, its inputs
+    // resolved: fresh while its source is as it was.
+    project::Project::BuildRecord b;
+    auto own = p->recipe(d->recipe);
+    b.recipe = own.ok() ? *own : r;
+    b.output = out;
+    if (auto ins = p->resolve_inputs(b.recipe); ins.ok()) {
+      b.inputs = *ins;
+    }
+    b.outputs = {{key, std::move(data)}};
+    return p->commit_build(d->id, std::move(b)).ok()
+               ? std::optional<AssetId>(d->id) : std::nullopt;
+  };
+  // The music's beats, found before: 120 bpm from 0.25 s.
+  media::Beats bt;
+  bt.tempo = 120;
+  bt.seconds = 6;
+  for (double t = 0.25; t < 6; t += 0.5) {
+    bt.times.push_back(t);
+  }
+  auto beats = text(engine::kOpTrackBeats, *music, "beats",
+                    media::to_json(bt));
+  REQUIRE(beats);
+  // The voice's lines: one long enough to be split.
+  assist::Transcript tr;
+  tr.seconds = 6;
+  const std::string longer(60, 'a');
+  tr.lines = {{0.5, 1.5, "Hello there.", "English"},
+              {2.0, 2.4, "Hi.", "English"},
+              {3.0, 4.0, longer + " " + longer, "English"}};
+  auto heard = text(engine::kOpTranscribeAudio, *voice, "transcript",
+                    assist::to_json(tr));
+  REQUIRE(heard);
+
+  auto film = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                     {320, 180}, {24, 1}, "Film");
+  REQUIRE_OK(film);
+  auto r = ctl.instantiate(*pid, *red, *film);
+  auto b = ctl.instantiate(*pid, *blue, *film);
+  auto m = ctl.instantiate(*pid, *music, *film);
+  auto v = ctl.instantiate(*pid, *voice, *film);
+  REQUIRE_OK(r);
+  REQUIRE_OK(b);
+  REQUIRE_OK(m);
+  REQUIRE_OK(v);
+  REQUIRE_OK(ctl.slide_layer(*pid, *film, m->second, 0));
+  REQUIRE_OK(ctl.slide_layer(*pid, *film, v->second, 48));
+  auto id_of = [](const std::string& l) { return l.empty() ? "0" : l; };
+  const std::string comp = film->str();
+  const std::string R = id_of(r->second), Bl = id_of(b->second);
+  const std::string M = id_of(m->second), V = id_of(v->second);
+  using J = Json;
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "Cut it to the music and subtitle the voice";
+  req.review = false;
+  auto run = [&](std::deque<std::vector<agent::ToolCall>> replies) -> J {
+    script->replies = std::move(replies);
+    auto id = ctl.agent_start(req);
+    if (!id.ok()) {
+      return J::array();
+    }
+    Json st = agent_wait(ctl, *id, "done");
+    (void)ctl.agent_stop(*id);
+    return jget(st, "steps", J::array());
+  };
+  auto done = [](const J& steps, std::size_t k) {
+    bool all = steps.size() == k;
+    for (const J& step : steps) {
+      all = all && jget<std::string>(step, "state", "") == "done";
+    }
+    return all;
+  };
+  auto result = [](const J& steps, int i) {
+    return jget(steps[i], "result", J());
+  };
+  auto time_of = [&](const std::string& layer) {
+    auto a = ctl.project(*pid)->asset(*film);
+    for (const auto& l : a->layers) {
+      if (l.id == (layer == "0" ? std::string() : layer)) {
+        return l.time;
+      }
+    }
+    return project::LayerTime{};
+  };
+
+  // The beats found before: reused, shown on the music.
+  J steps = run({{call("detect_beats", {{"asset", music->str()}})}});
+  REQUIRE(done(steps, 1));
+  CHECK(jget(result(steps, 0), "count", 0) == 12);
+  CHECK(jget(result(steps, 0), "every", 0.0) == 0.5);
+  CHECK(jget<std::string>(result(steps, 0), "beats_asset", "") ==
+        beats->str());
+  CHECK(p->asset(*music)->beats == *beats);
+  // Read where they fall: the music's from 0.
+  steps = run({{call("get_timeline_marks",
+                     {{"composition", comp}, {"kinds", J::array({"beats"})},
+                      {"to", 2.0}})}});
+  REQUIRE(done(steps, 1));
+  {
+    const J ls = jget(result(steps, 0), "layers", J::array());
+    REQUIRE(ls.size() == 1);
+    CHECK(jget<std::string>(ls[0], "layer", "") == M);
+    CHECK(jget(ls[0]["beats"], "count", 0) == 4);
+    CHECK(ls[0]["beats"]["times"][0] == 0.25);
+  }
+  // Cut on the beat: red 2 beats from the first, blue 4 after it.
+  steps = run({{call("cut_to_beats",
+                     {{"composition", comp},
+                      {"beats", J::array({2, 4})}})}});
+  REQUIRE(done(steps, 1));
+  CHECK(jget<std::string>(result(steps, 0), "music", "") == M);
+  CHECK(time_of(R).offset == 6);
+  CHECK(time_of(R).duration == 24);
+  CHECK(time_of(Bl).offset == 30);
+  CHECK(time_of(Bl).duration == 48);
+  CHECK(jget(result(steps, 0), "end", 0.0) == 3.25);
+  // One number for all, from a later second; then as near their
+  // lengths as whole beats go (1 s and 2 s: 2 and 4 beats).
+  steps = run({{call("cut_to_beats",
+                     {{"composition", comp}, {"beats", 1},
+                      {"start", 1.0}})}});
+  REQUIRE(done(steps, 1));
+  CHECK(time_of(R).offset == 30);
+  CHECK(time_of(R).duration == 12);
+  CHECK(time_of(Bl).offset == 42);
+  REQUIRE_OK(ctl.undo(*pid));
+  CHECK(time_of(R).offset == 6);
+  steps = run({{call("cut_to_beats", {{"composition", comp}})}});
+  REQUIRE(done(steps, 1));
+  CHECK(time_of(R).duration == 24);
+  CHECK(time_of(Bl).duration == 48);
+
+  // Subtitles of the voice, from 2 s: "Hello there." 2.5-3.5; "Hi." held
+  // a second; the long line in two, sharing its second.
+  steps = run({{call("add_subtitles",
+                     {{"composition", comp}, {"layer", V},
+                      {"background", "#00000099"}})}});
+  REQUIRE(done(steps, 1));
+  CHECK(jget(result(steps, 0), "subtitles", 0) == 4);
+  CHECK(jget(result(steps, 0), "lines", 0) == 3);
+  auto subtitles = [&] {
+    auto a = ctl.project(*pid)->asset(*film);
+    std::string folder;
+    for (const auto& f : a->layer_folders) {
+      if (f.name == "Subtitles") {
+        folder = f.id;
+      }
+    }
+    std::vector<project::Layer> out;
+    for (const auto& l : a->layers) {
+      if (!folder.empty() && l.folder == folder) {
+        out.push_back(l);
+      }
+    }
+    std::ranges::sort(out, {}, [](const project::Layer& l) {
+      return l.time.offset;
+    });
+    return out;
+  };
+  auto subs = subtitles();
+  REQUIRE(subs.size() == 4);
+  CHECK(subs[0].time.offset == 60);
+  CHECK(subs[0].time.duration == 24);
+  CHECK(subs[1].time.offset == 96);
+  CHECK(subs[1].time.duration == 24);
+  CHECK(subs[2].time.offset == 120);
+  CHECK(subs[3].time.offset == 132);
+  {
+    auto src = p->asset(*subs[0].source);
+    REQUIRE_OK(src);
+    REQUIRE(src->markup.has_value());
+    const Json objs = src->markup->objects;
+    REQUIRE(objs.size() == 2);
+    CHECK(jget<std::string>(objs[0], "kind", "") == "rect");
+    CHECK(jget<std::string>(objs[1], "text", "") == "Hello there.");
+    CHECK(jget<std::string>(objs[1], "align", "") == "center");
+  }
+  // Laid again: the old ones go.
+  steps = run({{call("add_subtitles", {{"composition", comp},
+                                       {"layer", V}})}});
+  REQUIRE(done(steps, 1));
+  CHECK(subtitles().size() == 4);
+  CHECK(jget<std::string>(result(steps, 0), "note", "").find("replaced") !=
+        std::string::npos);
+  // A picture has no words.
+  steps = run({{call("add_subtitles", {{"composition", comp},
+                                       {"layer", R}})}});
+  CHECK(!done(steps, 1));
+
+  // The transcript shown on the voice: its lines are bookmarks there.
+  steps = run({{call("show_marks", {{"asset", voice->str()}})},
+               {call("get_timeline_marks",
+                     {{"composition", comp}, {"layer", V}})},
+               {call("get_composition", {{"composition", comp}})}});
+  REQUIRE(done(steps, 3));
+  CHECK((p->asset(*voice)->bookmarks == std::vector<AssetId>{*heard}));
+  {
+    const J ls = jget(result(steps, 1), "layers", J::array());
+    REQUIRE(ls.size() == 1);
+    const J bm = jget(ls[0], "bookmarks", J::array());
+    REQUIRE(bm.size() == 3);
+    CHECK(jget<std::string>(bm[0], "kind", "") == "speech");
+    CHECK(jget(bm[0], "start", 0.0) == 2.5);
+    CHECK(jget<std::string>(bm[0], "text", "") == "Hello there.");
+    bool beats_told = false, lines_told = false;
+    for (const J& l : jget(result(steps, 2), "layers", J::array())) {
+      const std::string id = jget<std::string>(l, "id", "");
+      if (id == M) {
+        beats_told = jget(l["beats"], "count", 0) == 12;
+      }
+      if (id == V) {
+        lines_told = jget(l["bookmarks"], "speech", 0) == 3;
+      }
+    }
+    CHECK(beats_told);
+    CHECK(lines_told);
+  }
+  // Taken off again.
+  steps = run({{call("show_marks", {{"asset", voice->str()},
+                                    {"on", false}})}});
+  REQUIRE(done(steps, 1));
+  CHECK(p->asset(*voice)->bookmarks.empty());
+}
+
+TEST(agent, a_layers_reverb_and_place_are_keyed)
+{
+  auto root = test::temp_dir("agent-space");
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "S.valtz", "space");
+  REQUIRE_OK(pid);
+  REQUIRE(write_png(root / "red.png", 160, 90, {0xff, 0, 0, 0xff}));
+  REQUIRE(write_tone(root / "music.wav", 6, 220, 0.3));
+  auto red = import_and_wait(ctl, *pid, root / "red.png");
+  auto music = import_and_wait(ctl, *pid, root / "music.wav");
+  REQUIRE(red && music);
+  auto film = ctl.create_composition(*pid, project::AssetClass::Composition,
+                                     {320, 180}, {24, 1}, "Film");
+  REQUIRE_OK(film);
+  auto pic = ctl.instantiate(*pid, *red, *film);
+  auto mus = ctl.instantiate(*pid, *music, *film);
+  REQUIRE_OK(pic);
+  REQUIRE_OK(mus);
+  REQUIRE_OK(ctl.slide_layer(*pid, *film, mus->second, 0));
+  auto id_of = [](const std::string& l) { return l.empty() ? "0" : l; };
+  const std::string comp = film->str();
+  const std::string P = id_of(pic->second);
+  const std::string M = id_of(mus->second);
+  using J = Json;
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "Put the music in a hall, sweeping left to right";
+  req.review = false;
+  auto run = [&](std::deque<std::vector<agent::ToolCall>> replies) -> J {
+    script->replies = std::move(replies);
+    auto id = ctl.agent_start(req);
+    if (!id.ok()) {
+      return J::array();
+    }
+    Json st = agent_wait(ctl, *id, "done");
+    (void)ctl.agent_stop(*id);
+    return jget(st, "steps", J::array());
+  };
+  auto done = [](const J& steps, std::size_t n) {
+    bool all = steps.size() == n;
+    for (const J& step : steps) {
+      all = all && jget<std::string>(step, "state", "") == "done";
+    }
+    return all;
+  };
+  auto result = [](const J& steps, int i) {
+    return jget(steps[i], "result", J());
+  };
+  auto sound = [&] {
+    auto a = ctl.project(*pid)->asset(*film);
+    return a.ok() ? Controller::sound_keys_of(*a, mus->second)
+                  : media::KeyedSound{};
+  };
+  // The room and the field are the layer's; the reverb and the width
+  // steady, faded out at its end; the reverb said to ring past it.
+  J steps = run({{call("set_layer_sound",
+                       {{"composition", comp}, {"layer", M},
+                        {"fade_out", 0.5}, {"reverb_mix", 0.3},
+                        {"reverb_decay", 2.5}, {"reverb_pre_delay", 0.04},
+                        {"reverb_size", 0.7}, {"bass_mono", 120},
+                        {"crossfeed", 0.3}, {"width", 1.4}})}});
+  REQUIRE(done(steps, 1));
+  {
+    auto a = ctl.project(*pid)->asset(*film);
+    REQUIRE_OK(a);
+    const media::ReverbRoom room =
+        Controller::reverb_room_of(*a, mus->second);
+    CHECK(std::abs(room.pre_delay - 0.04) < 1e-9);
+    CHECK(std::abs(room.size - 0.7) < 1e-9);
+    const media::SoundField f = Controller::sound_field_of(*a, mus->second);
+    CHECK(f.bass_mono == 120);
+    CHECK(std::abs(f.crossfeed - 0.3) < 1e-9);
+  }
+  CHECK(jget(result(steps, 0), "reverb_pre_delay", 0.0) == 0.04);
+  CHECK(jget(result(steps, 0), "stereo_width", 0.0) == 1.4);
+  CHECK(jget<std::string>(result(steps, 0), "note", "")
+            .find("past its end") != std::string::npos);
+  // The pan keyed across it, the fade kept; the distance in one key
+  // steady throughout; the width and the reverb as they were.
+  steps = run({{call("key_layer",
+                     {{"composition", comp}, {"layer", M},
+                      {"keys", J::array({J{{"at", 0}, {"stereo_pan", -1}},
+                                         J{{"at", 4}, {"stereo_pan", 1},
+                                           {"distance", 4}}})}})}});
+  REQUIRE(done(steps, 1));
+  media::KeyedSound sk = sound();
+  REQUIRE(!sk.keys.empty());
+  CHECK(sk.at(0).pan == -1);
+  CHECK(std::abs(sk.at(48).pan) < 1e-9);
+  CHECK(sk.at(120).pan == 1);
+  CHECK(sk.keys.back().frame == 144);
+  CHECK(sk.keys.back().value.volume == 0);
+  CHECK(std::abs(sk.at(132).volume - 1) < 1e-9);
+  for (const auto& k : sk.keys) {
+    CHECK(k.value.distance == 4);
+    CHECK(std::abs(k.value.width - 1.4) < 1e-9);
+    CHECK(std::abs(k.value.reverb_mix - 0.3) < 1e-9);
+    CHECK(k.value.reverb_decay == 2.5);
+  }
+  // A level set keeps the pan (nothing said); a mix keyed keeps both.
+  steps = run({{call("set_layer_sound",
+                     {{"composition", comp}, {"layer", M},
+                      {"volume", 0.5}})},
+               {call("key_layer",
+                     {{"composition", comp}, {"layer", M},
+                      {"keys", J::array({J{{"at", 0}, {"reverb_mix", 0}},
+                                         J{{"at", 2},
+                                           {"reverb_mix", 0.6}}})}})}});
+  REQUIRE(done(steps, 2));
+  CHECK(jget<std::string>(result(steps, 0), "note", "").empty());
+  sk = sound();
+  CHECK(std::abs(sk.at(48).pan) < 1e-9);
+  CHECK(sk.at(120).pan == 1);
+  CHECK(std::abs(sk.at(24).volume - 0.5) < 1e-9);
+  CHECK(std::abs(sk.at(24).reverb_mix - 0.3) < 1e-9);
+  CHECK(std::abs(sk.at(100).reverb_mix - 0.6) < 1e-9);
+  CHECK(sk.keys.back().value.volume == 0);
+  // The pan made steady keeps the mix, and says so.
+  steps = run({{call("set_layer_sound",
+                     {{"composition", comp}, {"layer", M},
+                      {"stereo_pan", 0.25}})}});
+  REQUIRE(done(steps, 1));
+  const J told = jget(result(steps, 0), "keyed", J());
+  REQUIRE(told.size() == 1);
+  CHECK(told[0] == "reverb_mix");
+  CHECK(jget(result(steps, 0), "stereo_pan", 0.0) == 0.25);
+  CHECK(jget<std::string>(result(steps, 0), "note", "")
+            .find("stereo_pan") != std::string::npos);
+  sk = sound();
+  for (const auto& k : sk.keys) {
+    CHECK(k.value.pan == 0.25);
+  }
+  CHECK(std::abs(sk.at(0).reverb_mix) < 1e-9);
+  CHECK(std::abs(sk.at(24).reverb_mix - 0.3) < 1e-9);
+  CHECK(std::abs(sk.at(100).reverb_mix - 0.6) < 1e-9);
+  CHECK(std::abs(sk.at(24).volume - 0.5) < 1e-9);
+  CHECK(sk.keys.back().value.volume == 0);
+  // Trimmed to 5 s: its fade laid again at its new end, the mix still
+  // keyed.
+  steps = run({{call("set_layer_time", {{"composition", comp},
+                                        {"layer", M}, {"out", 5}})}});
+  REQUIRE(done(steps, 1));
+  sk = sound();
+  CHECK(std::abs(sk.at(108).volume - 0.5) < 1e-9);
+  CHECK(std::abs(sk.at(114).volume - 0.25) < 1e-9);
+  CHECK(sk.at(120).volume == 0);
+  CHECK(std::abs(sk.at(100).reverb_mix - 0.6) < 1e-9);
+  CHECK(sk.at(60).pan == 0.25);
+  // The layer's own in a key, a "pan", a picture's sound: refused.
+  steps = run(
+      {{call("key_layer",
+             {{"composition", comp}, {"layer", M},
+              {"keys", J::array({J{{"at", 1}, {"reverb_size", 0.2}}})}})},
+       {call("key_layer",
+             {{"composition", comp}, {"layer", M},
+              {"keys", J::array({J{{"at", 1}, {"pan", 0.5}}})}})},
+       {call("key_layer",
+             {{"composition", comp}, {"layer", P},
+              {"keys", J::array({J{{"at", 0}, {"stereo_pan", 0.5}}})}})},
+       {call("get_composition", {{"composition", comp}})}});
+  REQUIRE(steps.size() == 4);
+  CHECK(jget<std::string>(steps[0], "state", "") == "failed");
+  CHECK(to_text(steps[0]).find("set_layer_sound") != std::string::npos);
+  CHECK(jget<std::string>(steps[1], "state", "") == "failed");
+  CHECK(to_text(steps[1]).find("stereo_pan") != std::string::npos);
+  CHECK(jget<std::string>(steps[2], "state", "") == "failed");
+  // Told back: what is steady, what changes, the room and the field.
+  J layer;
+  for (const J& l : jget(result(steps, 3), "layers", J::array())) {
+    if (jget<std::string>(l, "id", "") == M) {
+      layer = l;
+    }
+  }
+  REQUIRE(layer.is_object());
+  CHECK(jget(layer, "stereo_pan", 0.0) == 0.25);
+  CHECK(jget(layer, "distance", 0.0) == 4);
+  CHECK(!layer.contains("reverb_mix"));
+  CHECK(to_text(jget(jget(layer, "keyed", J()), "sound", J()))
+            .find("reverb_mix") != std::string::npos);
+  CHECK(jget(layer, "reverb_size", 0.0) == 0.7);
+  CHECK(jget(layer, "bass_mono", 0.0) == 120);
 }
 
 // Layers and assets ORGANISED by the agent: two photos in a folder --

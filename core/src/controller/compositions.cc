@@ -528,7 +528,9 @@ Status
 Controller::set_sound_keys(ProjectId pid, AssetId aid,
                            const media::KeyedSound& k,
                            const std::string& layer,
-                           std::optional<bool> follow_speed)
+                           std::optional<bool> follow_speed,
+                           std::optional<media::ReverbRoom> room,
+                           std::optional<media::SoundField> field)
 {
   auto undo = command_(pid, "keys", aid, layer);
   project::Project* p = project(pid);
@@ -536,11 +538,27 @@ Controller::set_sound_keys(ProjectId pid, AssetId aid,
     return make_error(Code::NotFound, msg::kProjectNotOpen);
   }
   VALTZ_ASSIGN(project::Asset a, p->asset(aid));
-  // Beside the keys, a number (the app reads a modifier's numbers): kept
-  // while it is on, even with every key the identity.
+  // Beside the keys, numbers (the app reads a modifier's numbers): kept
+  // while they are set, even with every key the identity.
   Json j = media::to_json(k);
   if (follow_speed.value_or(pitch_follows_speed(a, layer))) {
     j["follow_speed"] = 1;
+  }
+  const media::ReverbRoom r = room.value_or(reverb_room_of(a, layer));
+  const media::ReverbRoom rest;
+  if (r.pre_delay != rest.pre_delay) {
+    j["reverb_pre_delay"] = std::clamp(r.pre_delay, 0.0,
+                                       media::kMaxPreDelay);
+  }
+  if (r.size != rest.size) {
+    j["reverb_size"] = std::clamp(r.size, 0.0, 1.0);
+  }
+  const media::SoundField f = field.value_or(sound_field_of(a, layer));
+  if (f.bass_mono > 0) {
+    j["bass_mono"] = std::clamp(f.bass_mono, 0.0, media::kMaxBassMono);
+  }
+  if (f.crossfeed > 0) {
+    j["crossfeed"] = std::clamp(f.crossfeed, 0.0, 1.0);
   }
   return set_modifier_(pid, aid, "audio", layer, std::move(j));
 }
@@ -569,6 +587,28 @@ media::KeyedSound
 Controller::sound_keys_of(const project::Asset& a, const std::string& layer)
 {
   return media::keyed_sound_from_json(modifier_of_(a, "audio", layer));
+}
+
+media::ReverbRoom
+Controller::reverb_room_of(const project::Asset& a, const std::string& layer)
+{
+  const Json m = modifier_of_(a, "audio", layer);
+  media::ReverbRoom r;
+  r.pre_delay = std::clamp(jget(m, "reverb_pre_delay", r.pre_delay), 0.0,
+                           media::kMaxPreDelay);
+  r.size = std::clamp(jget(m, "reverb_size", r.size), 0.0, 1.0);
+  return r;
+}
+
+media::SoundField
+Controller::sound_field_of(const project::Asset& a, const std::string& layer)
+{
+  const Json m = modifier_of_(a, "audio", layer);
+  media::SoundField f;
+  f.bass_mono = std::clamp(jget(m, "bass_mono", 0.0), 0.0,
+                           media::kMaxBassMono);
+  f.crossfeed = std::clamp(jget(m, "crossfeed", 0.0), 0.0, 1.0);
+  return f;
 }
 
 bool
@@ -3161,6 +3201,7 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
   // scissors' wait was the clip's length, the app's beachball).
   if (const project::Layer* in = part_layer(p, s)) {
     VALTZ_ASSIGN(project::Asset raw, p.asset(*in->source));
+    t.timed_by = raw.id;
     VALTZ_ASSIGN(t.file, or_nothing(p.media_path(raw.id,
                                                  in->source_version)));
     VALTZ_ASSIGN(project::AssetVersion v,
@@ -3192,6 +3233,7 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
   }
   if (s.cls == AssetClass::Composition) {
     const Rational r = rate_of_(p, s);
+    t.timed_by = s.id;
     VALTZ_ASSIGN(std::int64_t n, length_of_(pid, s.id, depth + 1));
     t.seconds = static_cast<double>(n) / r.to_double();
     if (clip_sound) {
@@ -3214,6 +3256,7 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
   t.video = s.kind == AssetKind::Video && !clip_sound;
   t.audio_only = s.kind == AssetKind::Audio || clip_sound;
   if (t.video || t.audio_only) {
+    t.timed_by = s.id;
     t.seconds = seconds_of(v, t.video);
     t.mark_rate = t.video && v.info.frame_rate.num > 0
                       ? v.info.frame_rate : Rational{1000, 1};
@@ -3319,6 +3362,13 @@ Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
   m.rate = rate;
   std::map<std::string, std::size_t> index;
   PlainSources plain;
+  // The beats and bookmarks each source has attached (DESIGN §4v, §4w),
+  // read once a call: the screen's stack only.
+  struct Attached {
+    std::optional<media::Beats>  beats;
+    std::vector<media::Bookmark> bookmarks;
+  };
+  std::map<AssetId, Attached> attached;
   for (const auto& l : a.layers) {
     media::MovieLayer ml;
     ml.id = l.id;
@@ -3339,6 +3389,23 @@ Controller::movie_stack_(ProjectId pid, AssetId aid, bool for_job,
     ml.video = src.video;
     ml.audio_only = src.audio_only;
     ml.timing = timing_over_(l.time, src, rate, speed_keys_of(a, l.id));
+    if (!for_job && !src.timed_by.is_nil()) {
+      auto at = attached.find(src.timed_by);
+      if (at == attached.end()) {
+        Attached got;
+        if (auto s = p->asset(src.timed_by); s.ok()) {
+          got.beats = beats_of_(*p, *s);
+          got.bookmarks = bookmarks_of_(*p, *s);
+        }
+        at = attached.emplace(src.timed_by, std::move(got)).first;
+      }
+      if (at->second.beats) {
+        ml.beats = media::beats_on_timeline(at->second.beats->times,
+                                            ml.timing);
+      }
+      ml.bookmarks = media::bookmarks_on_timeline(at->second.bookmarks,
+                                                  ml.timing);
+    }
     index[l.id] = m.layers.size();
     m.layers.push_back(std::move(ml));
   }
@@ -3383,10 +3450,22 @@ Controller::shaped_plan_(ProjectId pid, media::SoundPlan plan)
     }
     media::LayerTiming span = l.timing;
     span.start = 0;
+    // Its room, where it rings.
+    std::string room;
+    if (std::ranges::any_of(l.sound.keys, [](const auto& key) {
+          return key.value.reverberates();
+        })) {
+      room = std::format("|room|{}|{}", l.room.pre_delay, l.room.size);
+    }
+    // Its field, where it is set.
+    if (!l.field.at_rest()) {
+      room += std::format("|field|{}|{}", l.field.bass_mono,
+                          l.field.crossfeed);
+    }
     const ContentHash key = ContentHash::of(std::format(
-        "shaped|{}|{}|{}|{}", file_stamp(l.file),
+        "shaped|{}|{}|{}|{}{}", file_stamp(l.file),
         to_text(media::to_json(span)), to_text(media::to_json(shaping)),
-        l.follow_speed ? "follow" : "held"));
+        l.follow_speed ? "follow" : "held", room));
     VALTZ_ASSIGN(fs::path f,
                  cached_(pid, cache::CacheStore::key_for(key, "shaped.caf"),
                          [&](const fs::path& out) {
@@ -3421,6 +3500,12 @@ Controller::playable_sound_plan(ProjectId pid, AssetId aid,
     for (auto& key : k.keys) {
       key.value.pitch = 0;
       key.value.eq = {};
+      key.value.reverb_mix = 0;
+      key.value.reverb_decay = media::kReverbDecay;
+      key.value.reverb_damping = media::kReverbDamping;
+      key.value.pan = 0;
+      key.value.width = 1;
+      key.value.distance = 1;
     }
     plan.layers[i].sound = std::move(k);
   }
@@ -3460,6 +3545,8 @@ Controller::sound_plan_(ProjectId pid, AssetId aid, int depth)
     }
     sl.sound = sound_keys_of(a, a.layers[i].id);
     sl.follow_speed = pitch_follows_speed(a, a.layers[i].id);
+    sl.room = reverb_room_of(a, a.layers[i].id);
+    sl.field = sound_field_of(a, a.layers[i].id);
     plan.layers.push_back(std::move(sl));
   }
   return plan;

@@ -3977,6 +3977,42 @@ build_separate(const JobSpec& job, const fs::path& wav)
   return g;
 }
 
+// The sound's packets (load-audio) decoded into 10 s pieces of PCM at
+// the tracker's own rate (audio-to-pcm: the wav is one channel at 22050
+// Hz already, so beat-track converts nothing), its beats found over the
+// whole of it -- `whole`, librosa's answer for all of it; a stream's
+// beats are decided as it goes and may differ near its ends -- handed
+// out in seconds, 256 an object, to the beats' sink.
+Result<BuiltGraph>
+build_track_beats(const JobSpec& job, const fs::path& wav)
+{
+  if (wav.empty()) {
+    return make_error(Code::InvalidArgument, "beats need a sound");
+  }
+  BuiltGraph g;
+  g.beats_sink = "beats-sink";
+  Json stages = Json::array();
+  stages.push_back(stage("load", "load-audio", Json::array(),
+                         {{"input_url", wav.string()}}));
+  stages.push_back(stage("pcm", "audio-to-pcm",
+                         Json::array({port("load")}),
+                         {{"output_sample_rate", 22050},
+                          {"channels", 1},
+                          {"chunk_duration_s", 10.0},
+                          {"flush_on_eos", true}}));
+  stages.push_back(stage("beats", "beat-track", Json::array({port("pcm")}),
+                         {{"mode", "whole"},
+                          {"units", "time"},
+                          {"channels", "mix"},
+                          {"sample_rate", 22050},
+                          {"group", 256}}));
+  stages.push_back(sink(g.beats_sink, port("beats"), false));
+  g.spec = {{"id", "valtz-" + job.id.str()},
+            {"stages", stages},
+            {"subpipelines", Json::array()}};
+  return g;
+}
+
 namespace {
 
 // A guide's frames, one tensor of them: what they weigh in memory as

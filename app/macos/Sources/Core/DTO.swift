@@ -596,8 +596,23 @@ struct StackSpan: Equatable, Sendable {
     var video: Bool
     var audioOnly: Bool
     var file: URL?
+    /// Its source's BEATS where they fall, in timeline seconds (DESIGN
+    /// §4v): those attached to what it shows.
+    var beats: [Double] = []
+    /// Its source's BOOKMARKS where they fall (DESIGN §4w): those of the
+    /// transcripts and video summaries attached to what it shows.
+    var bookmarks: [StackBookmark] = []
 
     var end: Double? { length.map { start + $0 } }
+}
+
+/// A bookmark on a layer (core media::Bookmark): "speech", "sound" or
+/// "scene", where it starts and ends in timeline seconds, its words.
+struct StackBookmark: Equatable, Sendable {
+    var kind: String
+    var at: Double
+    var end: Double
+    var text: String
 }
 
 /// One layer's sound, as the player plays it.
@@ -789,6 +804,7 @@ struct AssetOperationDTO: Decodable, Sendable, Hashable, Identifiable {
         case "transcribe": String(localized: "Transcribe")
         case "summarize": String(localized: "Summarize Video")
         case "separate": String(localized: "Separate Vocals and Accompaniment")
+        case "beats": String(localized: "Detect Beats")
         case "upscale": String(localized: "Render Upscaled")
         case "interpolate": String(localized: "Render Interpolated")
         default: label
@@ -801,6 +817,7 @@ struct AssetOperationDTO: Decodable, Sendable, Hashable, Identifiable {
         case "transcribe": String(localized: "Its speech line by line, and the sounds heard, into a text asset")
         case "summarize": String(localized: "What it shows, scene by scene and as a whole, into a text asset")
         case "separate": String(localized: "Its voice and its accompaniment, each into a sound of its own")
+        case "beats": String(localized: "Where the beats of its music fall, into a text asset attached to it: on a timeline they are events, and drags snap to them")
         case "upscale": String(localized: "The layer's picture or clip restored at the size it is shown")
         case "interpolate": String(localized: "The layer's clip at the rate its timeline shows it, the frames in between made by RIFE")
         default: label
@@ -813,6 +830,7 @@ struct AssetOperationDTO: Decodable, Sendable, Hashable, Identifiable {
         case "transcribe": String(localized: "Download Qwen3-ASR and Silero VAD in Settings › Capabilities › Listening to transcribe")
         case "summarize": String(localized: "Download Qwen3.5 9B in Settings › Capabilities › Agentic helpers to summarize")
         case "separate": String(localized: "Download BS-RoFormer in Settings › Capabilities › Stem Separation to separate")
+        case "beats": String(localized: "This vpipe has no beat tracker: install one with beat-track")
         default: String(localized: "Download a model for it in Settings › Capabilities")
         }
     }
@@ -823,9 +841,16 @@ struct AssetOperationDTO: Decodable, Sendable, Hashable, Identifiable {
         case "transcribe": String(localized: "Transcribing \(asset): the transcript goes to Assets.")
         case "summarize": String(localized: "Summarizing \(asset): the summary goes to Assets.")
         case "separate": String(localized: "Separating \(asset): its vocals and accompaniment go to Assets.")
+        case "beats": String(localized: "Finding the beats of \(asset): they go to Assets, attached to it.")
         default: title
         }
     }
+}
+
+/// What Detect Beats found (core media::Beats, its times kept there).
+struct BeatsFoundDTO: Decodable, Sendable, Hashable {
+    var tempo: Double
+    var count: Int
 }
 
 /// A TASK of the queue (DESIGN §3a; core Controller::tasks): a job that
@@ -947,6 +972,27 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
     var markup: MarkupDTO?
     /// A flat asset FLATTENED from another: which (a note, not a tie).
     var from: FlattenedFromDTO?
+    /// A sound's or a clip's BEATS (DESIGN §4v): the beats asset attached
+    /// to it, which its timelines' layers show -- nil, none.
+    var beats: String?
+    /// A beats asset's: what Detect Beats found -- the tempo, how many.
+    var beatsFound: BeatsFoundDTO?
+    /// A sound's or a clip's BOOKMARKS (DESIGN §4w): the transcripts and
+    /// video summaries attached to it, which its timelines' layers mark.
+    var bookmarks: [String]?
+
+    /// A beats asset: Detect Beats' text (core tag "beats").
+    var isBeats: Bool { kind == "text" && (tags ?? []).contains("beats") }
+    /// A text whose moments may be bookmarks (DESIGN §4w): Transcribe's
+    /// transcript -- its lines, the sounds heard -- or Summarize Video's
+    /// summary -- its scenes.
+    var isTranscript: Bool {
+        kind == "text" && recipe?.op == "transcribe-audio"
+    }
+    var isVideoSummary: Bool {
+        kind == "text" && recipe?.op == "summarize-video"
+    }
+    var givesBookmarks: Bool { isTranscript || isVideoSummary }
 
     var isComposition: Bool {
         assetClass == "still" || assetClass == "composition"
@@ -1133,6 +1179,31 @@ struct AssetDTO: Decodable, Sendable, Identifiable, Hashable {
     /// Controller::pitch_follows_speed), rather than being held.
     func pitchFollowsSpeed(layer: String) -> Bool {
         (modifier("audio", layer)?.params["follow_speed"] ?? 0) != 0
+    }
+
+    /// Its reverb's room (core Controller::reverb_room_of): beside its
+    /// keys, the defaults where none is written.
+    func reverbRoom(layer: String) -> ReverbRoom {
+        let p = modifier("audio", layer)?.params ?? [:]
+        var r = ReverbRoom()
+        if let d = p["reverb_pre_delay"], d.isFinite {
+            r.preDelay = min(ReverbRoom.preDelayRange.upperBound,
+                             max(0, d))
+        }
+        if let s = p["reverb_size"], s.isFinite { r.size = min(1, max(0, s)) }
+        return r
+    }
+
+    /// Its field (core Controller::sound_field_of): beside its keys, at
+    /// rest where none is written.
+    func soundField(layer: String) -> SoundField {
+        let p = modifier("audio", layer)?.params ?? [:]
+        var f = SoundField()
+        if let b = p["bass_mono"], b.isFinite {
+            f.bassMono = min(SoundField.bassMonoRange.upperBound, max(0, b))
+        }
+        if let c = p["crossfeed"], c.isFinite { f.crossfeed = min(1, max(0, c)) }
+        return f
     }
 
     private func modifier(_ kind: String, _ layer: String) -> ModifierDTO? {

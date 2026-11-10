@@ -1,6 +1,7 @@
 // ASSET OPERATIONS (DESIGN §4j): what is DONE TO an asset with no prompt
 // -- a sound's speech transcribed, a clip summarized, a layer's picture or
-// clip rendered larger, a song split into its voice and its accompaniment.
+// clip rendered larger, a song split into its voice and its accompaniment,
+// a sound's beats found.
 //
 // They share ONE PROTOCOL, so a new one is a row here and a function in
 // the controller, not a path of its own through the bridge, the app and
@@ -27,17 +28,20 @@
 #include "valtz/models/catalog.h"
 #include "valtz/project/records.h"
 
+#include <optional>
 #include <span>
 #include <string_view>
 
 namespace valtz {
 
 // What an operation does to one kind of asset: the engine op that runs
-// it, the capability its model has.
+// it, the capability its model has -- none for one that needs no model
+// (a sound's beats: vpipe's own arithmetic), which runs wherever the
+// engine has its op.
 struct AssetOpTake {
-  project::AssetKind kind;
-  std::string_view   op;
-  models::Capability capability;
+  project::AssetKind                kind;
+  std::string_view                  op;
+  std::optional<models::Capability> capability;
 };
 
 struct AssetOperation {

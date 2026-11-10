@@ -486,13 +486,14 @@ struct InspectorView: View {
         }
     }
 
-    /// The TEXT assets told from it -- its summaries (DESIGN §4i) and
-    /// transcripts (§4h) -- each opened in the Prompt Editor by a click.
+    /// The TEXT assets told from it -- its summaries (DESIGN §4i),
+    /// transcripts (§4h) and beats (§4v) -- each opened in the Prompt
+    /// Editor by a click.
     @ViewBuilder
     private func toldIn(_ a: AssetDTO) -> some View {
         let told = model.assets.filter { t in
             t.kind == "text" &&
-                ["summarize-video", "transcribe-audio"]
+                ["summarize-video", "transcribe-audio", "track-beats"]
                     .contains(t.recipe?.op ?? "") &&
                 (t.recipe?.inputs ?? []).contains {
                     $0.role == "source" && $0.asset == a.id
@@ -502,7 +503,8 @@ struct InspectorView: View {
             section("In Words") {
                 ForEach(told) { t in
                     row(t.recipe?.op == "summarize-video" ? Text("Summary")
-                                                          : Text("Transcript")) {
+                        : t.recipe?.op == "track-beats" ? Text("Beats")
+                        : Text("Transcript")) {
                         if readOnly {
                             // Its name: the Prompt Editor is away.
                             Text(verbatim: t.name)
@@ -558,13 +560,14 @@ struct InspectorView: View {
                 case "project": Text("Project")
                 case "summarize-video": Text("Video summary")
                 case "transcribe-audio": Text("Transcript")
+                case "track-beats": Text("Beats")
                 default: Text("Generation")
                 }
             }
             // What it was made from, by name: an original, what was
             // captured or placed, the clip or sound told in words.
             if ["modify", "capture", "instance", "summarize-video",
-                "transcribe-audio"].contains(r.op),
+                "transcribe-audio", "track-beats"].contains(r.op),
                let from = r.inputs?.first(where: {
                    $0.role == "base" || $0.role == "own" ||
                        $0.role == "source" })?.asset,

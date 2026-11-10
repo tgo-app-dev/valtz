@@ -604,6 +604,7 @@ extension AppModel {
         case "transcribe-audio": String(localized: "Transcribe")
         case "summarize-video": String(localized: "Summarize Video")
         case "separate-audio": String(localized: "Separate")
+        case "track-beats": String(localized: "Detect Beats")
         case "upscale-video", "upscale-image":
             String(localized: "Render Upscaled")
         case "flatten": String(localized: "Flatten")
@@ -622,6 +623,7 @@ extension AppModel {
         case "transcribe-audio": "text.bubble"
         case "summarize-video": "text.below.photo"
         case "separate-audio": "slider.vertical.3"
+        case "track-beats": "metronome"
         case "upscale-video", "upscale-image":
             "arrow.up.left.and.arrow.down.right"
         case "flatten": "square.stack.3d.down.forward"

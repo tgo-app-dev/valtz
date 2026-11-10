@@ -290,6 +290,14 @@ struct Asset {
   // The folder of the asset list it is in (Project::folders); "" the
   // list's top.
   std::string              folder;
+  // A sound's or a clip's BEATS (DESIGN §4v): the beats asset attached
+  // to it -- the text Detect Beats made, its times in its outputs --
+  // which its layers show on a timeline. None: nothing attached.
+  std::optional<AssetId>   beats;
+  // Its BOOKMARKS (DESIGN §4w): the transcripts and video summaries
+  // attached to it -- text assets whose outputs time what they tell --
+  // which its layers mark on a timeline. In the order attached.
+  std::vector<AssetId>     bookmarks;
   Json                     extra = Json::object();
   // A kind this Valtz does not know (an extension's): read as Other, its
   // name kept and written back.

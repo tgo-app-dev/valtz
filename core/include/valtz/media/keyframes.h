@@ -71,16 +71,31 @@ struct Speed {
 
 // A composition layer's SOUND: its gain (`volume`, 0 mute to 1 as it is,
 // up to kMaxVolume), its pitch in semitones -- kept apart from its speed:
-// a faster layer keeps its pitch -- and its EQUALIZER (DESIGN §10a
-// Audio): a gain in decibels for each of kEqBands bands an octave wide,
-// centred an octave apart on kEqFrequencies (0 flat, at most kMaxEqGain
-// either way).
+// a faster layer keeps its pitch -- its EQUALIZER (DESIGN §10a Audio): a
+// gain in decibels for each of kEqBands bands an octave wide, centred an
+// octave apart on kEqFrequencies (0 flat, at most kMaxEqGain either way)
+// -- and what of its REVERB changes along it (media/reverb.h): how much of
+// it goes into the room (`reverb_mix`, 0 none -- dry -- to 1 the room
+// alone), how long the room rings (`reverb_decay`, RT60: seconds to
+// -60 dB) and how much sooner its highs die (`reverb_damping`, 0..1) --
+// and where it sits (media/space.h): its PAN (-1 left ... 1 right),
+// before the room; its stereo WIDTH (0 mono, 1 as it is, 2 twice as wide)
+// and its DISTANCE (metres: 1 as recorded, farther quieter and duller),
+// after it. The room itself -- its pre-delay and size -- and the field's
+// bass mono and crossfeed are the layer's, one for its whole span
+// (ReverbRoom, SoundField).
 inline constexpr double kMaxVolume = 4.0;
 inline constexpr double kMaxPitch = 24.0;
 inline constexpr int kEqBands = 10;
 inline constexpr std::array<double, kEqBands> kEqFrequencies = {
     31.25, 62.5, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
 inline constexpr double kMaxEqGain = 12.0;
+inline constexpr double kMinReverbDecay = 0.1;
+inline constexpr double kMaxReverbDecay = 10.0;
+inline constexpr double kReverbDecay = 1.5;
+inline constexpr double kReverbDamping = 0.5;
+inline constexpr double kMaxWidth = 2.0;
+inline constexpr double kMaxDistance = 16.0;
 struct Sound {
   Sound() = default;
   Sound(double v, double p, const std::array<double, kEqBands>& e = {})
@@ -89,12 +104,33 @@ struct Sound {
   double volume = 1;
   double pitch = 0;
   std::array<double, kEqBands> eq{};
+  double reverb_mix = 0;
+  double reverb_decay = kReverbDecay;
+  double reverb_damping = kReverbDamping;
+  double pan = 0;
+  double width = 1;
+  double distance = 1;
 
   // The equalizer changes nothing.
   bool flat() const {
     return std::ranges::all_of(eq, [](double g) { return g == 0; });
   }
-  bool identity() const { return volume == 1 && pitch == 0 && flat(); }
+  // Something of it goes into the room.
+  bool reverberates() const { return reverb_mix > 0; }
+  // The reverb as it is at rest: none, its decay and damping the
+  // defaults (a decay set while dry is kept: the next mix rings so).
+  bool reverb_at_rest() const {
+    return reverb_mix == 0 && reverb_decay == kReverbDecay &&
+           reverb_damping == kReverbDamping;
+  }
+  // Where it sits as recorded: centred, as wide, as near.
+  bool placed_at_rest() const {
+    return pan == 0 && width == 1 && distance == 1;
+  }
+  bool identity() const {
+    return volume == 1 && pitch == 0 && flat() && reverb_at_rest() &&
+           placed_at_rest();
+  }
   bool operator==(const Sound&) const = default;
 };
 
@@ -303,8 +339,10 @@ Json to_json(const KeyedCrop&);
 KeyedAdjustments keyed_adjustments_from_json(const Json&);
 KeyedCrop keyed_crop_from_json(const Json&);
 // {"keys": [{"frame", "rate"}]} and {"keys": [{"frame", "volume",
-// "pitch", "eq_0" ... "eq_9"}]} (a band's gain written while it is not
-// 0): the modifiers "speed" and "audio" (project::Modifier).
+// "pitch", "eq_0" ... "eq_9", "reverb_mix", "reverb_decay",
+// "reverb_damping", "pan", "width", "distance"}]} (a band's gain, a
+// reverb's number or a place's, written while it is not at rest): the
+// modifiers "speed" and "audio" (project::Modifier).
 Json to_json(const KeyedSpeed&);
 Json to_json(const KeyedSound&);
 KeyedSpeed keyed_speed_from_json(const Json&);

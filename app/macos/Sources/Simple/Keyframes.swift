@@ -317,21 +317,52 @@ struct LayerSpeed: Keyable {
 }
 
 /// A composition layer's SOUND (core media::Sound): its gain -- 0 mute, 1
-/// as it is, up to 4 (+12 dB) -- and its pitch in semitones.
+/// as it is, up to 4 (+12 dB) -- its pitch in semitones, its equalizer
+/// and what of its REVERB changes along it: how much goes into the room
+/// (`reverbMix`, 0 dry to 1 the room alone), how long the room rings
+/// (`reverbDecay`, RT60 seconds) and how much sooner its highs die
+/// (`reverbDamping`, 0...1). The room itself is the layer's
+/// (`ReverbRoom`), not keyed.
 struct LayerSound: Keyable {
     var volume = 1.0
     var pitch = 0.0
     /// The equalizer (the core's media::Sound::eq): a gain in decibels
     /// for each band, an octave wide, centred on `eqFrequencies`.
     var eq = [Double](repeating: 0, count: LayerSound.eqFrequencies.count)
+    var reverbMix = 0.0
+    var reverbDecay = LayerSound.restDecay
+    var reverbDamping = LayerSound.restDamping
+    /// Where it sits (core media/space.h): its pan, -1 left ... 1 right
+    /// (before the room), its width, 0 mono ... 1 as it is ... 2, and its
+    /// distance, metres, 1 as recorded ... 16 (after it).
+    var pan = 0.0
+    var width = 1.0
+    var distance = 1.0
     static let volumeRange = 0.0...4.0
     static let pitchRange = -24.0...24.0
     static let eqRange = -12.0...12.0
+    /// media::kMinReverbDecay ... kMaxReverbDecay; kReverbDecay,
+    /// kReverbDamping.
+    static let decayRange = 0.1...10.0
+    static let restDecay = 1.5
+    static let restDamping = 0.5
+    /// media::kMaxWidth, kMaxDistance.
+    static let widthRange = 0.0...2.0
+    static let distanceRange = 1.0...16.0
     /// The bands' centres, Hz (media::kEqFrequencies).
     static let eqFrequencies: [Double] = [31.25, 62.5, 125, 250, 500, 1000,
                                           2000, 4000, 8000, 16000]
     var isFlat: Bool { eq.allSatisfy { $0 == 0 } }
-    var isIdentity: Bool { volume == 1 && pitch == 0 && isFlat }
+    /// No reverb, its decay and damping the defaults.
+    var reverbAtRest: Bool {
+        reverbMix == 0 && reverbDecay == Self.restDecay
+            && reverbDamping == Self.restDamping
+    }
+    /// Where it was recorded: centred, as wide, as near.
+    var placedAtRest: Bool { pan == 0 && width == 1 && distance == 1 }
+    var isIdentity: Bool {
+        volume == 1 && pitch == 0 && isFlat && reverbAtRest && placedAtRest
+    }
 
     init(volume: Double = 1, pitch: Double = 0, eq: [Double]? = nil) {
         self.volume = volume
@@ -340,7 +371,8 @@ struct LayerSound: Keyable {
     }
 
     /// From a key's numbers, as the core keeps them: "volume", "pitch",
-    /// "eq_0" ... "eq_9".
+    /// "eq_0" ... "eq_9", "reverb_mix", "reverb_decay",
+    /// "reverb_damping".
     init(_ p: [String: Double]) {
         self.init(volume: p["volume"] ?? 1, pitch: p["pitch"] ?? 0)
         for i in eq.indices {
@@ -349,12 +381,39 @@ struct LayerSound: Keyable {
                             max(Self.eqRange.lowerBound, g))
             }
         }
+        if let m = p["reverb_mix"], m.isFinite {
+            reverbMix = min(1, max(0, m))
+        }
+        if let d = p["reverb_decay"], d.isFinite {
+            reverbDecay = min(Self.decayRange.upperBound,
+                              max(Self.decayRange.lowerBound, d))
+        }
+        if let d = p["reverb_damping"], d.isFinite {
+            reverbDamping = min(1, max(0, d))
+        }
+        if let v = p["pan"], v.isFinite { pan = min(1, max(-1, v)) }
+        if let v = p["width"], v.isFinite {
+            width = min(Self.widthRange.upperBound, max(0, v))
+        }
+        if let v = p["distance"], v.isFinite {
+            distance = min(Self.distanceRange.upperBound,
+                           max(Self.distanceRange.lowerBound, v))
+        }
     }
 
-    /// Its numbers as the core reads a key's: a band while it is set.
+    /// Its numbers as the core reads a key's: a band, or a reverb's
+    /// number, while it is set.
     var json: [String: Double] {
         var j = ["volume": volume, "pitch": pitch]
         for (i, g) in eq.enumerated() where g != 0 { j["eq_\(i)"] = g }
+        if reverbMix != 0 { j["reverb_mix"] = reverbMix }
+        if reverbDecay != Self.restDecay { j["reverb_decay"] = reverbDecay }
+        if reverbDamping != Self.restDamping {
+            j["reverb_damping"] = reverbDamping
+        }
+        if pan != 0 { j["pan"] = pan }
+        if width != 1 { j["width"] = width }
+        if distance != 1 { j["distance"] = distance }
         return j
     }
 
@@ -363,11 +422,46 @@ struct LayerSound: Keyable {
     }
     static func zip(_ p: Self, _ a: Self, _ b: Self, _ n: Self,
                     _ f: (Double, Double, Double, Double) -> Double) -> Self {
-        LayerSound(volume: f(p.volume, a.volume, b.volume, n.volume),
-                   pitch: f(p.pitch, a.pitch, b.pitch, n.pitch),
-                   eq: a.eq.indices.map { f(p.eq[$0], a.eq[$0], b.eq[$0],
-                                            n.eq[$0]) })
+        var o = LayerSound(volume: f(p.volume, a.volume, b.volume, n.volume),
+                           pitch: f(p.pitch, a.pitch, b.pitch, n.pitch),
+                           eq: a.eq.indices.map { f(p.eq[$0], a.eq[$0],
+                                                    b.eq[$0], n.eq[$0]) })
+        o.reverbMix = f(p.reverbMix, a.reverbMix, b.reverbMix, n.reverbMix)
+        o.reverbDecay = f(p.reverbDecay, a.reverbDecay, b.reverbDecay,
+                          n.reverbDecay)
+        o.reverbDamping = f(p.reverbDamping, a.reverbDamping,
+                            b.reverbDamping, n.reverbDamping)
+        o.pan = f(p.pan, a.pan, b.pan, n.pan)
+        o.width = f(p.width, a.width, b.width, n.width)
+        o.distance = f(p.distance, a.distance, b.distance, n.distance)
+        return o
     }
+}
+
+/// A layer's reverb ROOM (core media::ReverbRoom): one for its whole span,
+/// not keyed -- how long before the room's first echo (`preDelay`,
+/// seconds) and how large it is (`size`, 0...1: small, its echoes crowd
+/// in at once; large, they come apart and fill in as the sound dies).
+/// Kept on the layer's audio modifier beside its keys ("reverb_pre_delay",
+/// "reverb_size").
+struct ReverbRoom: Equatable, Sendable {
+    var preDelay = 0.02
+    var size = 0.5
+    /// media::kMaxPreDelay.
+    static let preDelayRange = 0.0...0.5
+}
+
+/// A layer's FIELD (core media::SoundField): one for its whole span, not
+/// keyed -- its lows made mono below `bassMono` (Hz; under 20, off) and
+/// how much each side is fed to the other (`crossfeed`, 0...1, for
+/// headphones). Kept on the layer's audio modifier ("bass_mono",
+/// "crossfeed").
+struct SoundField: Equatable, Sendable {
+    var bassMono = 0.0
+    var crossfeed = 0.0
+    /// media::kMinBassMono, kMaxBassMono.
+    static let bassMonoLowest = 20.0
+    static let bassMonoRange = 0.0...300.0
 }
 
 /// A clip's turn, in degrees (+ clockwise): its crop's rotation, keyed on

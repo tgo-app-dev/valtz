@@ -466,7 +466,21 @@ final class CoreService: @unchecked Sendable {
                     timed: l["timed"] as? Bool ?? false,
                     video: l["video"] as? Bool ?? false,
                     audioOnly: l["audio_only"] as? Bool ?? false,
-                    file: file.isEmpty ? nil : URL(fileURLWithPath: file))
+                    file: file.isEmpty ? nil : URL(fileURLWithPath: file),
+                    beats: (l["beats"] as? [Any] ?? []).compactMap {
+                        ($0 as? NSNumber)?.doubleValue
+                    },
+                    bookmarks: (l["bookmarks"] as? [[String: Any]] ?? [])
+                        .compactMap { m in
+                            guard let at = (m["at"] as? NSNumber)?
+                                .doubleValue else { return nil }
+                            return StackBookmark(
+                                kind: m["kind"] as? String ?? "speech",
+                                at: at,
+                                end: (m["end"] as? NSNumber)?.doubleValue
+                                    ?? at,
+                                text: m["text"] as? String ?? "")
+                        })
             }
         return StackPlayback(plan: plan, width: w, height: h, frames: frames,
                              rate: FrameRate(num: num, den: den),

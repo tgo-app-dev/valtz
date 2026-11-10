@@ -243,6 +243,23 @@ inline constexpr Message kNoTranscriber{
     "core.no_transcriber",
     "No speech model is installed: download Qwen3-ASR and Silero VAD in "
     "Settings › Capabilities › Listening."};
+inline constexpr Message kBeatsNeedSound{
+    "core.beats_need_sound",
+    "{name} has no sound to find beats in."};
+inline constexpr Message kNotBeats{
+    "core.not_beats",
+    "{name} holds no beats: Detect Beats on a sound or a clip makes "
+    "them."};
+inline constexpr Message kBeatsGoOnSound{
+    "core.beats_go_on_sound",
+    "Beats go on a sound or a clip: {name} is neither."};
+inline constexpr Message kNotBookmarks{
+    "core.not_bookmarks",
+    "{name} holds no bookmarks: a transcript or a video summary makes "
+    "them."};
+inline constexpr Message kBookmarksGoOnSound{
+    "core.bookmarks_go_on_sound",
+    "Bookmarks go on a sound or a clip: {name} is neither."};
 inline constexpr Message kSummarizeNeedsPicture{
     "core.summarize_needs_picture",
     "{name} has no picture to summarize: a clip or a timeline does."};

@@ -1156,6 +1156,14 @@ Core::assets_json(const std::string& project_id) const
             !sc.empty()) {
           j["score"] = sc;
         }
+        // Beats found (DESIGN §4v): how many, at what tempo -- the times
+        // stay in the core, laid on the timelines.
+        if (const Json bt = jget(head->outputs, "beats", Json());
+            bt.is_object()) {
+          j["beats_found"] = {
+              {"tempo", jget(bt, "tempo", 0.0)},
+              {"count", jget(bt, "times", Json::array()).size()}};
+        }
         if (auto path = p->media_path(a, *head); path.ok()) {
           j["path"] = path->string();
         } else if (path.error().key == msg::kMediaMissing.key) {
@@ -1433,6 +1441,30 @@ Core::asset_op(const std::string& request_json)
     }
     if (op == "rename") {
       auto st = c.rename_asset(*pid, *aid, name);
+      return st.ok() ? ok() : err(st.error());
+    }
+    if (op == "attach-beats") {
+      // A sound's or a clip's beats (DESIGN §4v): {"beats"} -- a beats
+      // asset, "" taken off.
+      std::optional<AssetId> beats;
+      if (const auto b = jget<std::string>(*j, "beats", ""); !b.empty()) {
+        auto id = parse_id<AssetId>(b);
+        if (!id.ok()) {
+          return err(id.error());
+        }
+        beats = *id;
+      }
+      auto st = c.attach_beats(*pid, *aid, beats);
+      return st.ok() ? ok() : err(st.error());
+    }
+    if (op == "attach-bookmarks") {
+      // A sound's or a clip's bookmarks (DESIGN §4w): {"text", "on"} -- a
+      // transcript or a video summary attached, or taken off.
+      auto text = parse_id<AssetId>(jget<std::string>(*j, "text", ""));
+      if (!text.ok()) {
+        return err(text.error());
+      }
+      auto st = c.attach_bookmarks(*pid, *aid, *text, jget(*j, "on", true));
       return st.ok() ? ok() : err(st.error());
     }
     if (op == "project") {
@@ -2141,16 +2173,39 @@ Core::stack_plan(const std::string& request_json)
     for (const auto& l : stack->layers) {
       const auto& t = l.timing;
       const auto fin = [](double v) { return std::isfinite(v) ? v : -1.0; };
-      spans.push_back({{"id", l.id},
-                       {"start", t.start},
-                       {"length", fin(t.length)},
-                       {"in", t.in},
-                       {"out", fin(t.timed && std::isfinite(t.length)
-                                       ? t.source_at(t.end()) : t.out)},
-                       {"timed", t.timed},
-                       {"video", l.video},
-                       {"audio_only", l.audio_only},
-                       {"file", l.file.string()}});
+      Json span = {{"id", l.id},
+                   {"start", t.start},
+                   {"length", fin(t.length)},
+                   {"in", t.in},
+                   {"out", fin(t.timed && std::isfinite(t.length)
+                                   ? t.source_at(t.end()) : t.out)},
+                   {"timed", t.timed},
+                   {"video", l.video},
+                   {"audio_only", l.audio_only},
+                   {"file", l.file.string()}};
+      // Its source's beats where they fall (DESIGN §4v), timeline
+      // seconds to the millisecond.
+      if (!l.beats.empty()) {
+        Json bs = Json::array();
+        for (const double b : l.beats) {
+          bs.push_back(std::round(b * 1000) / 1000);
+        }
+        span["beats"] = std::move(bs);
+      }
+      // Its source's bookmarks (DESIGN §4w): each one's kind, its span in
+      // timeline seconds to the millisecond, its words -- a scene's told
+      // at some length, cut for a tooltip.
+      if (!l.bookmarks.empty()) {
+        Json ms = Json::array();
+        for (const auto& m : l.bookmarks) {
+          ms.push_back({{"kind", media::kind_name(m.kind)},
+                        {"at", std::round(m.start * 1000) / 1000},
+                        {"end", std::round(m.end * 1000) / 1000},
+                        {"text", std::string(utf8_prefix(m.text, 600))}});
+        }
+        span["bookmarks"] = std::move(ms);
+      }
+      spans.push_back(std::move(span));
     }
     Json segs = Json::array();
     for (const auto& l : stack->layers) {
@@ -2172,8 +2227,7 @@ Core::stack_plan(const std::string& request_json)
           continue;
         }
         Json ss = Json::array();
-        for (const auto& g : media::time_segments(sl.timing, end,
-                                                  1.0 / fps)) {
+        for (const auto& g : media::sound_segments(sl, end, 1.0 / fps)) {
           ss.push_back({g.at, g.length, g.source, g.source_length});
         }
         Json vol = Json::array();
@@ -2666,16 +2720,40 @@ Core::layer_op(const std::string& request_json)
                                 jget(*j, "keys", Json::object())),
                             layer);
     } else if (op == "sound") {
-      // "follow_speed": the pitch follows the speed; left out, kept.
+      // "follow_speed": the pitch follows the speed; "reverb_pre_delay",
+      // "reverb_size": its room; "bass_mono", "crossfeed": its field;
+      // each left out, kept.
       std::optional<bool> follow;
       if (const auto f = j->find("follow_speed"); f != j->end()) {
         follow = f->is_boolean() ? f->get<bool>()
                  : f->is_number() && f->get<double>() != 0;
       }
+      std::optional<media::ReverbRoom> room;
+      if (j->contains("reverb_pre_delay") || j->contains("reverb_size")) {
+        room = media::ReverbRoom{};
+        if (project::Project* p = c.project(*pid)) {
+          if (auto a = p->asset(*aid); a.ok()) {
+            room = Controller::reverb_room_of(*a, layer);
+          }
+        }
+        room->pre_delay = jget(*j, "reverb_pre_delay", room->pre_delay);
+        room->size = jget(*j, "reverb_size", room->size);
+      }
+      std::optional<media::SoundField> field;
+      if (j->contains("bass_mono") || j->contains("crossfeed")) {
+        field = media::SoundField{};
+        if (project::Project* p = c.project(*pid)) {
+          if (auto a = p->asset(*aid); a.ok()) {
+            field = Controller::sound_field_of(*a, layer);
+          }
+        }
+        field->bass_mono = jget(*j, "bass_mono", field->bass_mono);
+        field->crossfeed = jget(*j, "crossfeed", field->crossfeed);
+      }
       st = c.set_sound_keys(*pid, *aid,
                             media::keyed_sound_from_json(
                                 jget(*j, "keys", Json::object())),
-                            layer, follow);
+                            layer, follow, room, field);
     } else if (op == "transition") {
       st = c.set_transition(*pid, *aid, layer,
                             jget<std::string>(*j, "to", ""),

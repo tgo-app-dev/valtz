@@ -46,6 +46,7 @@
 #include "valtz/base/url-fetch.h"
 #include "valtz/base/version.h"
 #include "valtz/cache/cache-store.h"
+#include "valtz/media/beats.h"
 #include "valtz/media/exif.h"
 #include "valtz/media/layers.h"
 #include "valtz/media/model-input.h"
@@ -256,6 +257,8 @@ public:
     _interpolates = has_stage_(
         "temporal-resample",
         R"({"output_fps": 48, "method": "rife", "hf_dir": "probe"})");
+    // A sound's beats (DESIGN §4v, §15 0zzzj): vpipe's beat-track.
+    _tracks_beats = has_stage_("beat-track");
     // Each backend vpipe was given: loaded when every stage it says it
     // registers is there.
     for (std::size_t i = 0; i < _backends.size(); ++i) {
@@ -483,7 +486,8 @@ public:
            op == kOpSeparateAudio || op == kOpMakeRefMod ||
            (op == kOpRegenerateVideo && _regenerates) ||
            (op == kOpRegenerateInContext && _regenerates_ic) ||
-           (op == kOpInterpolateVideo && _interpolates);
+           (op == kOpInterpolateVideo && _interpolates) ||
+           (op == kOpTrackBeats && _tracks_beats);
   }
 
   Status
@@ -1315,15 +1319,19 @@ private:
         jget(jget(spec.model.engine, "vpipe", Json::object()), "separate",
              Json::object()),
         "rate", 44100);
-    if (spec.op == kOpTranscribeAudio || spec.op == kOpSeparateAudio) {
+    if (spec.op == kOpTranscribeAudio || spec.op == kOpSeparateAudio ||
+        spec.op == kOpTrackBeats) {
       if (spec.inputs.empty()) {
         fail_(q, Code::InvalidArgument, "no sound to hear");
         return;
       }
       heard = spec.output_dir / (spec.id.str() + "-heard.wav");
       const fs::path& in = spec.inputs.front().path;
+      // Beats are heard at librosa's own rate, as beat-track hears them.
       auto s = spec.op == kOpTranscribeAudio
                    ? media::mono_sound(in, heard, 16000)
+               : spec.op == kOpTrackBeats
+                   ? media::mono_sound(in, heard, 22050)
                    : media::stereo_sound(in, heard, separate_rate);
       if (!s.ok()) {
         fail_(q, s.code(), s.error().message);
@@ -1495,6 +1503,8 @@ private:
       built = vp::build_transcribe(spec, heard);
     } else if (spec.op == kOpSeparateAudio) {
       built = vp::build_separate(spec, heard);
+    } else if (spec.op == kOpTrackBeats) {
+      built = vp::build_track_beats(spec, heard);
     } else if (spec.op == kOpSummarizeVideo) {
       // Its frames' size: the clip's shape, upright, within the most a
       // frame may be (576 x 320), on the tower's 32-pixel grid.
@@ -1618,6 +1628,21 @@ private:
     auto on_events = [&](vp::SinkBeat&& b) {
       std::lock_guard lk(result_mu);
       windows.push_back(std::move(b.meta));
+    };
+    // A sound's beats (DESIGN §4v): each object's, in seconds, and the
+    // tempo they were placed under -- all of them at the end (`whole`).
+    media::Beats beats;
+    beats.seconds = heard_seconds;
+    auto on_beats = [&](vp::SinkBeat&& b) {
+      std::lock_guard lk(result_mu);
+      for (const auto& t : jget(b.meta, "beats", Json::array())) {
+        if (t.is_number()) {
+          beats.times.push_back(t.get<double>());
+        }
+      }
+      if (const double bpm = jget(b.meta, "tempo", 0.0); bpm > 0) {
+        beats.tempo = bpm;
+      }
     };
     // A clip summarized: its scenes as they are told -- how far into the
     // clip they reach is its progress -- and the whole.
@@ -1799,7 +1824,8 @@ private:
     const bool reports = spec.op != kOpChat && spec.op != kOpAgentTurn &&
                          spec.op != kOpTranscribeAudio &&
                          spec.op != kOpSummarizeVideo &&
-                         spec.op != kOpSeparateAudio;
+                         spec.op != kOpSeparateAudio &&
+                         spec.op != kOpTrackBeats;
 
     // A long export shows what it writes (kPhaseExport): a small frame
     // every half second, as a generation's preview -- drawn from the
@@ -1894,6 +1920,7 @@ private:
     read(g.score_sink, on_score);
     read(g.transcript_sink, on_transcript);
     read(g.events_sink, on_events);
+    read(g.beats_sink, on_beats);
     read(g.summary_sink, on_summary);
     read(g.stem_sink, [&](vp::SinkBeat&& b) {
       on_stem(stems[0], true, std::move(b));
@@ -2356,6 +2383,28 @@ private:
         out.data = {{"output", st.name}};
         q.sink(out);
       }
+    } else if (spec.op == kOpTrackBeats) {
+      // Told as text, kept as data: what the timeline places them by.
+      fs::remove(heard, ec);
+      std::ranges::sort(beats.times);
+      const fs::path text = spec.output_dir / (spec.id.str() + ".md");
+      {
+        std::ofstream f(text, std::ios::binary);
+        f << media::beats_text(jget<std::string>(spec.params, "name", ""),
+                               beats);
+        if (!f) {
+          fail_(q, Code::Io, "could not write the beats");
+          return;
+        }
+      }
+      JobEvent out;
+      out.job = spec.id;
+      out.kind = JobEventKind::Output;
+      out.output = text;
+      out.output_info.type = media::MediaType::Text;
+      out.output_info.uti = "net.daringfireball.markdown";
+      out.data = {{"beats", media::to_json(beats)}};
+      q.sink(out);
     } else if (spec.op == kOpSummarizeVideo) {
       // Told as text: the whole, then the scenes in order.
       if (summary.scenes.empty()) {
@@ -3102,6 +3151,7 @@ private:
   bool                                  _regenerates = false;
   bool                                  _regenerates_ic = false;
   bool                                  _interpolates = false;
+  bool                                  _tracks_beats = false;
   std::uint64_t                         _flops_scanned = 0;
   // The wired limit (set_wired_limit_mb), under _mu: the one asked (0
   // vpipe's own), vpipe's own here, and whether a lower one waits.
