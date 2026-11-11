@@ -340,7 +340,8 @@ TEST(ext, catalog_takes_a_contribution)
                                   "qwen-image-2.1", "acme-v1",
                                   "z-image-turbo", "flux3-klein",
                                   "flux2-klein-9b", "moss-image-sft",
-                                  "moss-image-base", "p-h3-image"}));
+                                  "moss-image-base", "minimax-h3-image",
+                                  "p-h3-image"}));
   REQUIRE(cat->skill("acme-t2i"));
   CHECK(*cat->skill("acme-t2i") == "Rewrite: {x}");
   CHECK(cat->skill("qwen-image-2.1-t2i") == nullptr);  // not an ext's

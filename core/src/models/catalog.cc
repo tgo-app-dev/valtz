@@ -201,6 +201,7 @@ read_entry(const Json& m, const Contributor& who, ModelEntry& e,
   }
   e.preview_with = jget<std::string>(m, "preview_with", "");
   e.requires_models = jget(m, "requires", std::vector<std::string>{});
+  e.requires_one_of = jget(m, "requires_one_of", std::vector<std::string>{});
   e.files_of = jget<std::string>(m, "files_of", "");
   e.license = jget<std::string>(m, "license", "");
   e.gated = jget(m, "gated", false);
@@ -271,6 +272,9 @@ inherit_from_source(ModelEntry& e, const ModelEntry& src)
   if (e.requires_models.empty()) {
     e.requires_models = src.requires_models;
   }
+  if (e.requires_one_of.empty()) {
+    e.requires_one_of = src.requires_one_of;
+  }
   if (e.license.empty()) {
     e.license = src.license;
   }
@@ -304,6 +308,12 @@ missing_reference(const Catalog& cat, const ModelEntry& e,
   for (const auto& r : e.requires_models) {
     if (!cat.find(r)) {
       *what = "requires";
+      return r;
+    }
+  }
+  for (const auto& r : e.requires_one_of) {
+    if (!cat.find(r)) {
+      *what = "requires one of";
       return r;
     }
   }
@@ -692,6 +702,19 @@ max_edge(const ModelEntry& e)
                           "max_edge", 0));
 }
 
+bool
+needs_met(const Catalog& cat, const ModelEntry& e,
+          const std::function<bool(const ModelEntry&)>& here)
+{
+  const auto is_here = [&](const std::string& id) {
+    const ModelEntry* r = cat.find(id);
+    return r && here(*r);
+  };
+  return std::ranges::all_of(e.requires_models, is_here) &&
+         (e.requires_one_of.empty() ||
+          std::ranges::any_of(e.requires_one_of, is_here));
+}
+
 void
 to_json(Json& j, const ModelEntry& e)
 {
@@ -712,6 +735,7 @@ to_json(Json& j, const ModelEntry& e)
     {"rank", e.rank},
     {"preview_with", e.preview_with},
     {"requires", e.requires_models},
+    {"requires_one_of", e.requires_one_of},
     {"license", e.license},
     {"gated", e.gated},
     {"notes", e.notes},

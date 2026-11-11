@@ -18,6 +18,16 @@ struct ValtzApp: App {
     /// What the menus and Settings act on: the window in front's.
     private var model: AppModel { windows.menuModel }
 
+    init() {
+        // AppKit shows a tooltip -- every `.help`, a control's toolTip,
+        // the timeline's -- once the pointer has stood still 1.5 s; a
+        // quarter of a second here. AppKit reads it as the first one is
+        // set up, so before any window. Registered, not set: one's own
+        // `defaults write -g NSInitialToolTipDelay` still wins.
+        UserDefaults.standard.register(
+            defaults: ["NSInitialToolTipDelay": 250])
+    }
+
     /// The selection's drawings, for the hook's "dsel": the one selected
     /// on the raster (its box), the lifted ones (theirs), the core's
     /// drawing at a point ("x,y").
@@ -2224,6 +2234,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let spec = env["VALTZ_SNAPSHOT_MD"],
                let tv = m.promptTextView {
                 tv.window?.makeFirstResponder(tv)
+                // What the text view is as code: its language, type,
+                // gutter, the brackets marked, the toolbar's words.
+                func report(_ tag: String) {
+                    let scroll = tv.enclosingScrollView
+                    let ruler = scroll?.verticalRulerView as? LineNumberRuler
+                    let ptv = tv as? PromptTextView
+                    let marks = (ptv?.bracketMarks ?? []).map { "\($0.location)" }
+                        .joined(separator: "+")
+                    FileHandle.standardError.write(Data(
+                        "snapshot: md \(tag) text=\(tv.string.replacingOccurrences(of: "\n", with: "|")) selection=\(tv.selectedRange().location),\(tv.selectedRange().length) code=\(ptv?.codeLanguage ?? "-") font=\(tv.typingAttributes[.font].map { ($0 as? NSFont)?.fontName ?? "-" } ?? "-") gutter=\(scroll?.rulersVisible == true ? "\(Int(ruler?.ruleThickness ?? 0))pt:\(ruler?.starts.count ?? 0)lines" : "-") brackets=\(marks.isEmpty ? "-" : marks)\(ptv?.bracketsMatched == false ? ":unmatched" : "") toolbar=\(m.promptCodeLanguage.map(CodeSyntax.title) ?? "words")\n".utf8))
+                }
                 for op in spec.split(separator: ";") {
                     let kv = op.split(separator: ":", maxSplits: 1)
                         .map(String.init)
@@ -2239,12 +2260,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "bold": tv.toggleMarkdown(.bold)
                     case "italic": tv.toggleMarkdown(.italic)
                     case "underline": tv.toggleMarkdown(.underline)
+                    // CODE (CodeEditing): Return and Tab as the keyboard's,
+                    // words typed at the caret, the look at a character.
+                    case "return":
+                        tv.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+                    case "tab":
+                        tv.doCommand(by: #selector(NSResponder.insertTab(_:)))
+                    case "type" where kv.count > 1:
+                        tv.insertText(kv[1], replacementRange:
+                                          tv.selectedRange())
+                    case "state":
+                        report("state")
+                    case "look" where nums.count == 1:
+                        let ns = tv.string as NSString
+                        if let st = tv.textStorage, nums[0] < ns.length {
+                            let f = st.attribute(.font, at: nums[0],
+                                                 effectiveRange: nil) as? NSFont
+                            let c = st.attribute(.foregroundColor, at: nums[0],
+                                                 effectiveRange: nil) as? NSColor
+                            let named: [(String, NSColor)] = [
+                                ("keyword", .systemPink), ("string", .systemRed),
+                                ("number", .systemBlue),
+                                ("comment", .secondaryLabelColor),
+                                ("plain", .labelColor)]
+                            let kind = named.first { $0.1 == c }?.0 ?? "-"
+                            FileHandle.standardError.write(Data(
+                                "snapshot: md-look \(nums[0]) char=\(ns.substring(with: NSRange(location: nums[0], length: 1))) kind=\(kind) font=\(f?.fontName ?? "-")\n".utf8))
+                        }
                     default: break
                     }
                     try? await Task.sleep(for: .milliseconds(200))
                 }
-                FileHandle.standardError.write(Data(
-                    "snapshot: md text=\(tv.string.replacingOccurrences(of: "\n", with: "|")) selection=\(tv.selectedRange().location),\(tv.selectedRange().length)\n".utf8))
+                report("end")
             }
             if env["VALTZ_SNAPSHOT_EXIT_IMMERSIVE"] != nil {
                 withAnimation(AppModel.motion) { m.exitImmersivePrompt() }

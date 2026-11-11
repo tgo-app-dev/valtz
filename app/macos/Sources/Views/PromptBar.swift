@@ -53,8 +53,29 @@ struct PromptBar: View {
         .overlay(alignment: .bottom) { Divider() }
     }
 
-    /// Markdown's bold, italic and underline, and whether it is drawn.
+    /// Markdown's bold, italic and underline, and whether it is drawn --
+    /// for words. A code tab's: its language and its lines.
+    @ViewBuilder
     private var formatting: some View {
+        if let language = model.promptCodeLanguage {
+            let lines = model.prompt.utf8.reduce(1) {
+                $0 + ($1 == 10 ? 1 : 0) }
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                Text(verbatim: CodeSyntax.title(language))
+                    .fontWeight(.medium)
+                Text(lines == 1 ? String(localized: "1 line")
+                                : String(localized: "\(lines) lines"))
+                    .foregroundStyle(.secondary)
+            }
+            .font(.callout)
+            .help("Edited as code: its lines numbered, its words tinted, the bracket beside the caret and its match marked")
+        } else {
+            wordFormatting
+        }
+    }
+
+    private var wordFormatting: some View {
         HStack(spacing: 12) {
             HStack(spacing: 2) {
                 format(.bold, symbol: "bold",

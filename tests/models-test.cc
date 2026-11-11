@@ -339,11 +339,12 @@ TEST(models, auto_order_is_catalog_data)
                                   "qwen-image-2.1", "z-image-turbo",
                                   "flux3-klein", "flux2-klein-9b",
                                   "moss-image-sft", "moss-image-base",
-                                  "p-h3-image"}));
+                                  "minimax-h3-image", "p-h3-image"}));
   CHECK((c->auto_order("image", "edit") ==
          std::vector<std::string>{"qwen-image-2.1", "qwen-image-2.1-turbo",
                                   "flux3-klein", "flux2-klein-9b",
-                                  "fibo2-edit-turbo", "p-h3-image"}));
+                                  "fibo2-edit-turbo", "minimax-h3-image",
+                                  "p-h3-image"}));
   // A clip from words: FL2VA, the trained route; else Ref2VA from the
   // prompt alone (vpipe's prompt-only request).
   CHECK((c->auto_order("video", "generate") ==
@@ -1653,7 +1654,8 @@ TEST(models, the_anes_int8_follows_a_per_token_tier)
   };
   for (const char* id :
        {"minimax-h3-fl2va", "minimax-h3-ref2va", "p-h3-image",
-        "krea2-turbo", "qwen-image-2.1", "qwen-image-2.1-turbo",
+        "minimax-h3-image", "krea2-turbo", "qwen-image-2.1",
+        "qwen-image-2.1-turbo",
         "flux2-klein-9b", "flux3-klein", "z-image-turbo", "moss-image-sft",
         "moss-image-base", "fibo2-edit-turbo"}) {
     const ModelEntry& m = *c->find(id);
@@ -2004,6 +2006,93 @@ TEST(models, p_h3_image_is_fl2va_under_its_adapter)
     }
     for (const auto& mem : f.members) {
       listed = listed || mem.model == "p-h3-image";
+    }
+  }
+  CHECK(listed);
+}
+
+// MiniMax-H3-Image (MiniMaxAI, DESIGN §4x): pictures and edits of up to
+// sixteen pictures on its own audio-less H3 DiT, 6 steps at every
+// preference, up to 6272 a side, conditioned by MiniMax-H3's text encoder
+// -- which FL2VA, Ref2VA or the encoder's own download carries: ready
+// with ANY ONE of them (`requires_one_of`), the first here its encoder
+// (`encoder_from`, the encoder alone first). Custom offers its canvas
+// rule (Generate At) and H3's arithmetic.
+TEST(models, minimax_h3_image_conditions_on_any_h3_encoder)
+{
+  auto c = Catalog::builtin();
+  REQUIRE_OK(c);
+  const ModelEntry* m = c->find("minimax-h3-image");
+  REQUIRE(m);
+  CHECK(m->family == "minimax-h3" && m->role == "image");
+  CHECK(m->has(Capability::TextToImage) && m->has(Capability::ImageEdit));
+  CHECK(m->hf_path == "MiniMaxAI/MiniMax-H3-Image");
+  CHECK(m->requires_models.empty());
+  CHECK((m->requires_one_of ==
+         std::vector<std::string>{"minimax-h3-fl2va", "minimax-h3-ref2va",
+                                  "minimax-h3-text-encoder"}));
+  CHECK(max_edge(*m) == 6272);
+  const Json vp = jget(m->engine, "vpipe", Json::object());
+  CHECK(jget<std::string>(vp, "shape", "") == "h3-image");
+  CHECK(jget<std::string>(vp, "dit_from", "").empty());
+  CHECK((jget(vp, "encoder_from", std::vector<std::string>{}) ==
+         std::vector<std::string>{"minimax-h3-text-encoder",
+                                  "minimax-h3-fl2va", "minimax-h3-ref2va"}));
+  const Json ed = jget(vp, "edit", Json::object());
+  CHECK(jget(ed, "max_references", 0) == 16);
+  CHECK(jget(ed, "encoder_seed", false));
+  CHECK(jget<std::string>(m->prompting, "reference_tag", "") ==
+        "<Picture {n}>");
+  const ModelEntry* te = c->find("minimax-h3-text-encoder");
+  REQUIRE(te);
+  CHECK(te->hf_path == "MiniMaxAI/MiniMax-H3" && te->subdir == "text_encoder");
+  CHECK(te->fetch_variant == "MiniMaxAI/MiniMax-H3-text-encoder");
+
+  // Ready with any one of them; with none, not.
+  for (const char* one : {"minimax-h3-fl2va", "minimax-h3-ref2va",
+                          "minimax-h3-text-encoder"}) {
+    CHECK(needs_met(*c, *m, [&](const ModelEntry& e) {
+      return e.id == one;
+    }));
+  }
+  CHECK(!needs_met(*c, *m, [](const ModelEntry&) { return false; }));
+  // `requires` stays every one of them (P-H3-Image's two).
+  const ModelEntry* ph3 = c->find("p-h3-image");
+  CHECK(!needs_met(*c, *ph3, [](const ModelEntry& e) {
+    return e.id == "minimax-h3-fl2va";
+  }));
+
+  TuningContext m5;
+  m5.matrix_cores = true;
+  for (const char* p : {"speed", "balanced", "quality"}) {
+    for (bool edit : {false, true}) {
+      CHECK(preset_steps(*m, p, edit, false) == 6);
+    }
+  }
+  const Json opts = tuning_options(*m, m5, "balanced", false);
+  auto opt = [&](const char* k) {
+    for (const auto& o : opts["options"]) {
+      if (o["key"] == k) {
+        return o;
+      }
+    }
+    return Json();
+  };
+  CHECK(opt("steps").is_null());
+  CHECK(opt("video_shift").is_null());
+  REQUIRE(opt("generate_at").is_object());
+  CHECK(opt("generate_at")["type"] == "choice");
+  CHECK(jget<std::string>(opts["values"], "generate_at", "") == "release");
+  for (const char* k : {"sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
+                        "ane_ffn", "ane_int8", "sol_attn"}) {
+    CHECK(opt(k).is_object());
+  }
+  CHECK(jget(opt("loras"), "slots", 0) == kLoraSlots);
+  bool listed = false;
+  for (const auto& f : c->families()) {
+    for (const auto& mem : f.members) {
+      listed = listed || (f.id == "minimax-h3" &&
+                          mem.model == "minimax-h3-image");
     }
   }
   CHECK(listed);

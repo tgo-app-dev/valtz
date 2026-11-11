@@ -43,14 +43,13 @@ resolve_capabilities(const Catalog& cat, const ModelStore& store,
         first_fit = &o;
       }
       // Ready with what it needs beside it (catalog `requires`: a
-      // codec, a voice detector), not alone.
-      const bool needs_met = std::ranges::all_of(
-          o.entry->requires_models, [&](const std::string& r) {
-            const ModelEntry* re = cat.find(r);
-            return re && store.info(*re).state == InstallState::Installed;
-          });
+      // codec, a voice detector; `requires_one_of`: a text encoder
+      // another model carries), not alone.
+      const bool met = needs_met(cat, *o.entry, [&](const ModelEntry& r) {
+        return store.info(r).state == InstallState::Installed;
+      });
       if (!first_ready && o.install.state == InstallState::Installed &&
-          needs_met) {
+          met) {
         first_ready = &o;
       }
     }

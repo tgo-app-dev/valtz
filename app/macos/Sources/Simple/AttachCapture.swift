@@ -283,6 +283,9 @@ struct AttachCaptureCard: View {
                 .foregroundStyle(.secondary)
             LevelBar(level: model.capture.level)
                 .frame(width: 120, height: 6)
+            InputVolumeControl(model: model,
+                               source: model.capture.source ?? "",
+                               width: 80)
             Spacer(minLength: 12)
             Button(action: model.finishAttachSound) {
                 Text("Stop and Attach").frame(minWidth: 70)

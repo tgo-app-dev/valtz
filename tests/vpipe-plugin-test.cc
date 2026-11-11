@@ -889,7 +889,7 @@ TEST(vpipe_plugin, extension_backends_are_checked)
 
 // A download vpipe refuses fails with vpipe's words. A fetch writes no
 // file to look for, and the refusal reaches only the log: MiniMax-H3's,
-// its repo named without saying which of its two models, ended in a
+// its repo named without saying which of its models, ended in a
 // millisecond as a download FINISHED -- Capabilities said nothing.
 TEST(vpipe_plugin, a_refused_download_fails_in_words)
 {
@@ -926,7 +926,8 @@ TEST(vpipe_plugin, a_refused_download_fails_in_words)
                         [&] { return end.has_value(); }));
   }
   CHECK(end->kind == JobEventKind::Failed);
-  CHECK(end->text.find("publishes 2 models") != std::string::npos);
+  // FL2VA, Ref2VA and (vpipe 9a0cc5b0) the text encoder alone.
+  CHECK(end->text.find("publishes 3 models") != std::string::npos);
   CHECK(end->text.find('\n') == std::string::npos);
   CHECK(!fs::exists(dir / "models" / "MiniMaxAI"));
   e->shutdown();

@@ -1178,6 +1178,10 @@ public:
   // (its mark-in, milliseconds) -- or, cued before the first sample came,
   // the layer starting that much later. Uncued, it starts at the frame.
   Json capture_sources() const;
+  // A microphone's INPUT VOLUME (0...1; capture_sources' "input_volume",
+  // where it has one): macOS's own -- System Settings › Sound › Input's
+  // slider -- for every app. Set while it records too.
+  Status set_input_volume(const std::string& source, double volume);
   Status start_capture(ProjectId, std::optional<AssetId> composition,
                        const std::string& source,
                        std::optional<std::int64_t> voice_over_at = {});
@@ -2223,11 +2227,34 @@ private:
                         engine::ModelRef& ref, Json& helpers) const;
   // A chat as this Mac's assistant runs it -- or `model`, another of
   // this Mac's (the micro agent enhancing, DESIGN §9c).
+  // A chat on a model of its own, decoded as its makers send it (a
+  // prompt expander's): its system message, its sampler, thinking on or
+  // off and how hard -- in place of the helper's. Run here, never a
+  // fleet member's.
+  struct OwnChat {
+    const models::ModelEntry* model = nullptr;
+    std::string               system;
+    Json                      sampling = Json::object();
+    std::string               reasoning_effort;
+    bool                      thinking = false;
+  };
   Result<engine::JobSpec> chat_spec_(JobId, std::string text,
                                      std::vector<engine::JobInput> images,
                                      int max_new_tokens,
                                      const models::ModelEntry* model =
-                                         nullptr) const;
+                                         nullptr,
+                                     const OwnChat* own = nullptr) const;
+  // A model's own prompt expander for `prompt` (catalog prompting.enhance.
+  // expander: MiniMax-H3-Image's), where it is installed and this Mac has
+  // its memory: the chat and the text to send it -- its task prompt with
+  // the request in its place -- and its reply budget. Empty otherwise.
+  struct ExpanderChat {
+    OwnChat     chat;
+    std::string text;
+    int         max_tokens = 4096;
+  };
+  std::optional<ExpanderChat> expander_chat_(const models::ModelEntry& m,
+                                             std::string_view prompt) const;
   // How the helper `m` is loaded and decodes, as its chat and a video
   // summary hand it to vpipe -- alike, so the model one keeps warm is the
   // other's: {mtp, sampling, keep_loaded, context_tokens?, mtp_model?,
@@ -2685,13 +2712,21 @@ private:
     // The person's own segments (assist/segments.h), not the helper's to
     // rewrite: put back after the suggestion, but where it wrote one.
     std::map<std::string, std::string>               segments;
+    // A reply that may be the caption ITSELF (a prompt expander's: its
+    // release constrains the answer to JSON with a grammar vpipe does not
+    // have): what it says after its reasoning, where it wrote no object.
+    // (value-initialized: ReplyForm{} -- false)
+    bool                                             plain_caption;
     std::string apply(std::string prompt) const;
   };
+  // A plain answer read as a caption (ReplyForm::plain_caption).
+  static std::string plain_caption_(std::string_view text);
   Result<JobId> submit_chat_(JobId id, std::string purpose,
                              std::string text,
                              std::vector<engine::JobInput> images = {},
                              int max_new_tokens = 512,
-                             std::string song = {}, ReplyForm form = {});
+                             std::string song = {}, ReplyForm form = {},
+                             std::optional<OwnChat> own = std::nullopt);
   // A clip's request to its makers' guide (enhance_prompt): the mode,
   // its length, the references as the model names them (the pictures
   // shown), the prompt's mentions so named, and how the reply lands.

@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <functional>
 #include <tuple>
 #include <vector>
@@ -410,6 +411,79 @@ TEST(model_input, a_kept_picture_draws_as_its_file)
   // Rewritten (a linked file may be): read again.
   write_pattern(b, 120, 90, 160);
   check("rewritten");
+}
+
+namespace {
+
+// A 16-bit RGB PNG with no alpha, as a generated picture is written:
+// red down the rows, green across, `blue` its own -- no two rows alike.
+void
+write_rgb16(const std::filesystem::path& path, int w, int h, double blue)
+{
+  std::vector<std::uint16_t> px(static_cast<std::size_t>(w) * h * 4);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      std::uint16_t* p = &px[(static_cast<std::size_t>(y) * w + x) * 4];
+      p[0] = static_cast<std::uint16_t>(65535.0 * y / h);
+      p[1] = static_cast<std::uint16_t>(65535.0 * x / w);
+      p[2] = static_cast<std::uint16_t>(65535 * blue);
+      p[3] = 65535;
+    }
+  }
+  CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  CGContextRef ctx = CGBitmapContextCreate(
+      px.data(), w, h, 16, static_cast<size_t>(w) * 8, cs,
+      static_cast<std::uint32_t>(kCGImageAlphaNoneSkipLast) |
+          static_cast<std::uint32_t>(kCGBitmapByteOrder16Little));
+  CGImageRef img = CGBitmapContextCreateImage(ctx);
+  NSURL* url = [NSURL fileURLWithPath:@(path.c_str())];
+  CGImageDestinationRef d = CGImageDestinationCreateWithURL(
+      (__bridge CFURLRef)url, CFSTR("public.png"), 1, nullptr);
+  CGImageDestinationAddImage(d, img, nullptr);
+  CGImageDestinationFinalize(d);
+  CFRelease(d);
+  CGImageRelease(img);
+  CGContextRelease(ctx);
+  CGColorSpaceRelease(cs);
+}
+
+}  // namespace
+
+// Reported: a still of three 3072 x 4096 pictures showed, now and then,
+// its lower half a copy of its upper half -- Core Image's, with the
+// pictures kept as ImageIO decoded them (16-bit RGB, no alpha): ~4% of
+// the stage's draws. Kept on the GPU, none.
+TEST(model_input, a_big_stack_draws_its_lower_half)
+{
+  const auto dir = test::temp_dir("halves");
+  std::vector<media::LayerPicture> stack(3);
+  for (int i = 0; i < 3; ++i) {
+    const auto f = dir / std::format("l{}.png", i);
+    write_rgb16(f, 3072, 4096, 0.3 * i);
+    stack[i].file = f;
+  }
+  int repeated = 0;
+  for (int i = 0; i < 100; ++i) {
+    auto surf = media::flatten_layers_surface(stack);
+    REQUIRE_OK(surf);
+    IOSurfaceLock(*surf, kIOSurfaceLockReadOnly, nullptr);
+    const auto* base = static_cast<const std::uint8_t*>(
+        IOSurfaceGetBaseAddress(*surf));
+    const std::size_t bpr = IOSurfaceGetBytesPerRow(*surf);
+    const std::size_t h = IOSurfaceGetHeight(*surf);
+    const std::size_t w = IOSurfaceGetWidth(*surf);
+    int same = 0, rows = 0;
+    for (std::size_t y = 7; y < h / 2; y += h / 64) {
+      ++rows;
+      same += std::memcmp(base + y * bpr, base + (y + h / 2) * bpr,
+                          w * 4) == 0;
+    }
+    IOSurfaceUnlock(*surf, kIOSurfaceLockReadOnly, nullptr);
+    CFRelease(*surf);
+    repeated += same * 2 > rows;
+  }
+  std::fprintf(stderr, "[halves] %d of 100 draws repeated\n", repeated);
+  CHECK(repeated == 0);
 }
 
 namespace {

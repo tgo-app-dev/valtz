@@ -519,11 +519,14 @@ encoding_doc(const EncodingCache& c, const JobSpec& job,
   return made_from;
 }
 
-// P-H3-Image's graph (catalog `shape` "h3-image"; vpipe's
-// p-h3-image-text-to-image / -edit): a MiniMax H3 picture, ONE latent
-// frame of generate-video, on the DiT of another model (`dit_from`:
-// FL2VA's, ModelRef::dit) under its adapter (ModelRef::lora, the config
-// beat's first slot):
+// A MiniMax H3 picture (catalog `shape` "h3-image"): ONE latent frame of
+// generate-video -- P-H3-Image's (vpipe's p-h3-image-text-to-image /
+// -edit) on the DiT of another model (`dit_from`: FL2VA's, ModelRef::dit)
+// under its adapter (ModelRef::lora, the config beat's first slot), or
+// MiniMax-H3-Image's (vpipe's minimax-h3-image-*) on its own audio-less
+// DiT, conditioned by MiniMax-H3's text encoder, which another model
+// carries (`encoder_from`: ModelRef::encoder, every encoding stage's
+// `encoder_dir`):
 //
 //   text: [text-prompt] -> diffusion-conditioner -0-> generate-video
 //   edit: [text-prompt] + pictures -> video-ref-encoder -0,1,2->
@@ -534,8 +537,12 @@ encoding_doc(const EncodingCache& c, const JobSpec& job,
 // `references` list, read before its six ports, so all eight keep their
 // numbers -- as the engine made them readable (a look rendered in, a RAW
 // developed: VpipeEngine). vpipe sizes them by the model's own rules;
-// the canvas is the size asked (the picture edited held at 4 MP at
-// least). No guidance, its own 8-step grid, no shift: vpipe's.
+// the canvas is the size asked (P-H3-Image's picture edited held at 4 MP
+// at least; MiniMax-H3-Image's pictures drawn from one generator at the
+// request's seed: `edit.encoder_seed`). No guidance, its own grid, no
+// shift: vpipe's. MiniMax-H3-Image makes a size under 4 MP on a larger
+// canvas and resizes it back, as released, unless Custom's Generate At
+// says the size asked (its config's `min_generation_area`).
 Result<BuiltGraph>
 build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
                const EncodingCache* cache)
@@ -547,7 +554,8 @@ build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
     return make_error(Code::Unsupported, std::format(
         "{} has no vpipe recipe for {}", job.model.id, job.op));
   }
-  if (job.model.dit.empty()) {
+  const bool borrows_dit = !jget<std::string>(vp, "dit_from", "").empty();
+  if (borrows_dit && job.model.dit.empty()) {
     return make_error(Code::InvalidArgument, std::format(
         "{} runs on another model's DiT, and none is given",
         job.model.id));
@@ -583,7 +591,7 @@ build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
   const std::string jid = job.id.str();
   g.output = job.output_dir / std::format("{}.png", jid);
 
-  const int max_refs = std::clamp(jget(ed, "max_references", 8), 1, 8);
+  const int max_refs = std::clamp(jget(ed, "max_references", 8), 1, 16);
   const std::size_t npic = std::min<std::size_t>(refs.size(), max_refs);
   if (refs.size() > npic) {
     VALTZ_LOG_WARN("engine", "{} takes {} picture(s); using the first {} "
@@ -594,8 +602,19 @@ build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
   // words and the conditioner's config), an edit's three outputs of the
   // encoder (the words, its config, every picture by its bytes and the
   // look laid on the one edited).
-  const Json ccfg = jget(vp, "conditioner", Json::object());
-  Json enc = jget(ed, "encoder", Json::object());
+  // The text encoder another model carries, where it is.
+  const auto encoder_at = [&](Json cfg) {
+    cfg = with_encoder(std::move(cfg), job);
+    if (!job.model.encoder.empty()) {
+      cfg["encoder_dir"] = job.model.encoder.string();
+    }
+    return cfg;
+  };
+  const Json ccfg = encoder_at(jget(vp, "conditioner", Json::object()));
+  Json enc = encoder_at(jget(ed, "encoder", Json::object()));
+  if (jget(ed, "encoder_seed", false)) {
+    enc["seed"] = seed;
+  }
   std::string key;
   if (cache) {
     if (edit) {
@@ -661,7 +680,7 @@ build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
     stages.push_back(stage("video-ref-encoder", "video-ref-encoder",
                            Json::array({port("text-prompt"),
                                         port("model-select")}),
-                           with_vae(with_encoder(enc, job), job)));
+                           with_vae(enc, job)));
     cond = port("video-ref-encoder", 0);
     ref_video = port("video-ref-encoder", 1);
     ref_audio = port("video-ref-encoder", 2);
@@ -686,7 +705,7 @@ build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
     stages.push_back(stage("diffusion-conditioner", "diffusion-conditioner",
                            Json::array({port("text-prompt"), unwired(),
                                         port("model-select")}),
-                           with_encoder(ccfg, job)));
+                           ccfg));
     cond = port("diffusion-conditioner");
     if (!key.empty()) {
       stages.push_back(sink(kConditioningTap, cond, false));
@@ -699,6 +718,10 @@ build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
   // it -- no shifts (vpipe runs the checkpoint's grid as given).
   Json cfg = jget(vp, "config", Json::object());
   lay_loras(cfg, job);
+  if (jget<std::string>(jget(job.params, "tuning", Json::object()),
+                        "generate_at", "") == "asked") {
+    cfg["min_generation_area"] = 1024;  // the release's "off"
+  }
   if (!job.model.preview.empty() && jget(job.params, "preview", true)) {
     cfg["preview_vae"] = job.model.preview.string();
     cfg["preview_every"] = jget(job.params, "preview_every", 1);
@@ -714,8 +737,10 @@ build_h3_image(const JobSpec& job, const std::vector<RefImage>& refs,
   Json gen_in = Json::array({cond, unwired(), port("model-select"),
                              unwired(), unwired(), unwired(), unwired(),
                              ref_video, ref_audio, port(cfg_stage)});
-  Json gen_cfg = {{"steps", steps}, {"seed", seed},
-                  {"dit_dir", job.model.dit.string()}};
+  Json gen_cfg = {{"steps", steps}, {"seed", seed}};
+  if (!job.model.dit.empty()) {
+    gen_cfg["dit_dir"] = job.model.dit.string();
+  }
   if (width > 0 && height > 0) {
     gen_cfg["width"] = width;
     gen_cfg["height"] = height;
@@ -2896,10 +2921,27 @@ build_chat(const JobSpec& job)
   g.text_sink = "text-sink";
   g.result_sink = "result-sink";
 
-  const Json chat_cfg = helper_chat_config(job);
+  Json chat_cfg = helper_chat_config(job);
+  // How hard a reasoning model thinks, where its makers ask (a prompt
+  // expander's request: "xhigh"); else the template's own.
+  if (const auto e = jget<std::string>(job.params, "reasoning_effort", "");
+      !e.empty() && !jget(job.params, "disable_thinking", true)) {
+    chat_cfg["reasoning_effort"] = e;
+  }
   Json stages = Json::array();
-  stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
-                         {{"text", text}}));
+  // A system message of the makers' own (a prompt expander's): the turn
+  // as text-chat's conversation beat, system then user; else the words.
+  if (const auto sys = jget<std::string>(job.params, "system", "");
+      !sys.empty()) {
+    const Json conv = {
+        {"messages", Json::array({{{"role", "system"}, {"content", sys}},
+                                  {{"role", "user"}, {"content", text}}})}};
+    stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
+                           {{"value", conv}}));
+  } else {
+    stages.push_back(stage("text-prompt", "text-prompt", Json::array(),
+                           {{"text", text}}));
+  }
   // The model's own sampler (catalog engine.vpipe.sampling: Qwen's
   // recommendation), on text-chat's sampler port; none, greedy. Its seed
   // 0 is a fresh one each time: asked again, the assistant may answer

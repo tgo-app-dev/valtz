@@ -166,6 +166,13 @@ valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/flux3-klein-t2i.md"
   kFlux3KleinT2iSkill flux3-klein-t2i-skill.cc)
 valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/flux3-klein-edit.md"
   kFlux3KleinEditSkill flux3-klein-edit-skill.cc)
+# MiniMax-H3-Image's: Valtz's own, after the task prompts of MiniMax's
+# prompt expander for it (MiniMax-H3-Image-PE: the helper's, where the
+# expander does not run).
+valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/minimax-h3-image-t2i.md"
+  kMinimaxH3ImageT2iSkill minimax-h3-image-t2i-skill.cc)
+valtz_embed("${CMAKE_CURRENT_SOURCE_DIR}/resources/skills/minimax-h3-image-edit.md"
+  kMinimaxH3ImageEditSkill minimax-h3-image-edit-skill.cc)
 # MiniMax H3's prompt-writing skill, as its makers publish it (MiniMax
 # H3 Community License, 3rd-party/minimax-h3): the base guide (FL2VA)
 # and the full-reference one (Ref2VA).
@@ -212,6 +219,7 @@ target_link_libraries(valtz_core PUBLIC
   "-framework AVFoundation"
   "-framework VideoToolbox"
   "-framework AudioToolbox"
+  "-framework CoreAudio"
   "-framework Accelerate"
   "-framework ImageIO"
   "-framework UniformTypeIdentifiers"

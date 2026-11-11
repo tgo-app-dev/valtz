@@ -469,6 +469,7 @@ struct TuningPanel: View {
         case "tile_overlap": String(localized: "Tile overlap")
         case "flow_scale": String(localized: "Flow scale")
         case "scene_threshold": String(localized: "Scene cut")
+        case "generate_at": String(localized: "Generate at")
         default: key
         }
     }
@@ -536,6 +537,7 @@ struct TuningPanel: View {
         case "scene_threshold": String(localized: "Frames less alike than this are a cut: not blended")
         case "guidance_scale": String(localized: "How closely it follows the prompt (CFG)")
         case "fast_decoder": String(localized: "The release's own decoder: about 3.6× faster, lossy")
+        case "generate_at": String(localized: "Where a size under 4 megapixels is made")
         default: ""
         }
     }
@@ -568,6 +570,7 @@ struct TuningPanel: View {
         case "tiles": String(localized: "VOSR 2.0 was distilled at 512 pixels. Past that, the picture is restored in tiles of 512, each on the grid its weights know, blended where they overlap — as its release does. One Pass restores the whole picture at once: faster, but on a grid the model never saw, which can weave a periodic pattern, a checkerboard on faces.")
         case "tile_overlap": String(localized: "How many pixels neighbouring tiles share, blended into each other: more hides the seams better, at more work. At least an eighth of a tile is used. One Pass has no tiles.")
         case "color_fix": String(localized: "Corrects each restored frame's colour toward its source frame, so the upscaled layer keeps the colours of the clip it replaces. FlashVSR 1.1 moves each channel's mean and spread to the source's (AdaIN); FlashVSR+ takes the source's low frequencies and keeps its own detail (a wavelet fix).")
+        case "generate_at": String(localized: "MiniMax-H3-Image works best from 4 to 20 megapixels. As released, a size under 4 megapixels is made on a 4-megapixel canvas of the same shape and resized back, so a 1024 × 1024 picture takes as long as a 2048 × 2048 one. The Size Asked makes it at its own size: several times faster, outside the range the model was trained at.")
         case "guidance_scale": String(localized: "Classifier-free guidance: each step runs the model twice, with the prompt and with an empty one, and moves the picture away from the empty one's by this much. MOSS-Image's own setting is 3. Higher follows the words more literally, with harder colours; 1 runs one forward a step, about twice as fast, the prompt followed less.")
         case "refine_start": String(localized: "How much of the draft the refine keeps. It puts the enlarged draft back to a level of noise and denoises it again in three steps. Keep the Draft starts at 0.7: in a test at 1920×1088, a woman's face and the words on a sign stayed the draft's, their detail sharper. NVIDIA's Recipe, Open-H3-Regenerate-2K as released, starts at 0.909, keeping about 9% of the draft: it redraws more, and in the same test it gave the woman another face and garbled the sign. The refine follows the prompt's words only weakly either way, so they do not bring back what it redraws.")
         case "fast_decoder": String(localized: "Decodes the regenerated clip with the fast decoder Open-H3-Regenerate-2K ships (NVIDIA's StreamRender-H3): 24 of MiniMax H3's decoder layers distilled, over the whole clip at once. About 3.6× faster on an M4 Pro, its frames about 40 dB from the released decoder's. Its working memory grows with the clip: about 12 GB for five seconds at 2K. Needs its download, in Settings › Capabilities › MiniMax H3.")
@@ -611,6 +614,8 @@ struct TuningPanel: View {
         case ("flow_scale", "full"): String(localized: "Full")
         case ("flow_scale", "double"): String(localized: "Double")
         case ("flow_scale", "quadruple"): String(localized: "Quadruple")
+        case ("generate_at", "release"): String(localized: "4 Megapixels or More")
+        case ("generate_at", "asked"): String(localized: "The Size Asked")
         default: value
         }
     }
@@ -659,6 +664,10 @@ struct TuningPanel: View {
             String(localized: "Finer: slower, fine motion kept")
         case ("tiles", "one_pass"):
             String(localized: "Faster, but may weave a checkerboard through faces")
+        case ("generate_at", "release"):
+            String(localized: "Made at 4 MP and resized back: as released")
+        case ("generate_at", "asked"):
+            String(localized: "Made at its own size: faster, outside its training")
         default: ""
         }
     }

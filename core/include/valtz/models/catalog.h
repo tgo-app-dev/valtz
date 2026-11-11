@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -149,6 +150,11 @@ struct ModelEntry {
   std::vector<std::pair<Capability, int>> rank_for;
   std::string              preview_with;  // id of a TAE entry
   std::vector<std::string> requires_models;
+  // What it needs ONE of beside it (catalog `requires_one_of`): any of
+  // these here will do. MiniMax-H3-Image conditions on MiniMax-H3's text
+  // encoder, which FL2VA, Ref2VA and the encoder's own download each
+  // carry.
+  std::vector<std::string> requires_one_of;
   // Another entry whose files these are (catalog `files_of`): a link of
   // that one's is this one's. The RefMod maker runs on Ref2VA's folder
   // (DESIGN §4s).
@@ -318,6 +324,11 @@ private:
 };
 
 void to_json(Json&, const ModelEntry&);
+
+// What `e` needs beside it is here: every model of its `requires`, and
+// one of its `requires_one_of` -- `here` says whether a model is.
+bool needs_met(const Catalog& cat, const ModelEntry& e,
+               const std::function<bool(const ModelEntry&)>& here);
 
 }
 

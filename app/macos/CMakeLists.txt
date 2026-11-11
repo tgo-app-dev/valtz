@@ -121,6 +121,7 @@ set(VALTZ_APP_SOURCES
   Sources/Simple/AgentChat.swift
   Sources/Simple/AgentTabs.swift
   Sources/Simple/CodeBlock.swift
+  Sources/Simple/CodeEditor.swift
   Sources/Simple/AgentModel.swift
   Sources/Simple/AgentViews.swift
   Sources/Simple/Procedural.swift

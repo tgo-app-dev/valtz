@@ -158,6 +158,8 @@ struct VoiceOverRow: View {
             Text("Voice-over")
                 .fontWeight(.medium)
             source
+            InputVolumeControl(model: model, source: model.voiceOverSource,
+                               width: 80)
             state
             Spacer(minLength: 8)
             recordButton

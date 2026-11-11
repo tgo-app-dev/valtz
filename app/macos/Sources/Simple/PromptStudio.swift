@@ -472,6 +472,16 @@ extension AppModel {
         promptImmersive && tabDoNotApply(activePromptTab)
     }
 
+    /// The open tab's CODE language (DESIGN §10c): a program, or a text
+    /// named as a code file is, opened from Assets -- edited as code
+    /// (CodeEditing); nil for words.
+    var promptCodeLanguage: String? {
+        guard promptImmersive, promptTabs.indices.contains(activePromptTab),
+              let source = promptTabs[activePromptTab].source,
+              let a = asset(id: source) else { return nil }
+        return CodeSyntax.language(of: a)
+    }
+
     var activeTabReadOnly: Bool {
         promptImmersive && promptTabs.indices.contains(activePromptTab)
             && promptTabs[activePromptTab].readOnly

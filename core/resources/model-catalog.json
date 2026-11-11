@@ -58,15 +58,23 @@
     "empty prompt's, for its CFG), wired to generate-image's negative port",
     "and kept with the conditioning. engine.vpipe.config_shift: the",
     "schedule's shift is taken by the family's config stage (`shift`), not",
-    "a scheduler-select -- this its default -- so Custom's shift offers it."
+    "a scheduler-select -- this its default -- so Custom's shift offers it.",
+    "requires_one_of: models of which ONE must be here beside it (any will",
+    "do); engine.vpipe.encoder_from: the models whose text encoder it",
+    "conditions with, the first here taken -- MiniMax-H3-Image's is",
+    "MiniMax-H3's, which FL2VA, Ref2VA and the encoder's own download each",
+    "carry. engine.vpipe.edit.encoder_seed: the edit's encoder draws from",
+    "the request's seed (MiniMax-H3-Image's pictures' posteriors)."
   ],
   "auto": {
     "image": {
       "generate": ["krea2-turbo", "qwen-image-2.1-turbo", "qwen-image-2.1",
                    "z-image-turbo", "flux3-klein", "flux2-klein-9b",
-                   "moss-image-sft", "moss-image-base", "p-h3-image"],
+                   "moss-image-sft", "moss-image-base", "minimax-h3-image",
+                   "p-h3-image"],
       "edit": ["qwen-image-2.1", "qwen-image-2.1-turbo", "flux3-klein",
-               "flux2-klein-9b", "fibo2-edit-turbo", "p-h3-image"]
+               "flux2-klein-9b", "fibo2-edit-turbo", "minimax-h3-image",
+               "p-h3-image"]
     },
     "video": {
       "generate": ["minimax-h3-fl2va", "minimax-h3-ref2va"],
@@ -98,6 +106,9 @@
         {"model": "minimax-h3-vdn", "label": "VDN linear branch"},
         {"model": "minimax-h3-hyperflow", "label": "HyperFlow (8-step)"},
         {"model": "minimax-h3-image-vae", "label": "Image VAE (Mamad8)"},
+        {"model": "minimax-h3-image", "label": "MiniMax-H3-Image (MiniMaxAI): pictures and edits up to 16 MP"},
+        {"model": "minimax-h3-text-encoder", "label": "Text encoder alone (for MiniMax-H3-Image without FL2VA or Ref2VA)"},
+        {"model": "minimax-h3-image-pe", "label": "MiniMax-H3-Image prompt expander (Enhance, 32 GB Macs)"},
         {"model": "p-h3-image", "label": "P-H3-Image (PrunaAI): pictures and edits on FL2VA"},
         {"model": "p-h3-image-lora", "label": "P-H3-Image adapter, FL2VA (PrunaAI)"},
         {"model": "open-h3-regenerate-2k", "label": "Open-H3-Regenerate-2K refiner (NVIDIA): clips past 768P"},
@@ -763,6 +774,73 @@
       },
       "prompting": {"language": "english", "reference_tag": "<Picture {n}>"},
       "notes": "PrunaAI's image model on MiniMax H3: text to image, and an instruction editing a picture with up to seven more beside it (<Picture 1> the one edited, <Picture 2> ...), 8 steps on its own grid, no guidance. Its DiT is MiniMax H3 FL2VA's under PrunaAI's rank-128 adapter -- both needed, FL2VA downloaded or linked -- streamed as FL2VA streams; its text encoder a Qwen3-VL-4B through a connector, its VAE H3's encoder with a decoder for one frame. Best at 8 megapixels (2912 x 2912) for pictures and 4-8 for edits, from long, detailed prompts read as written: an edit's picture is held at 4 MP at least. MEASURED by vpipe on an M4 Pro, FL2VA bf16: 1024^2 in 2 min 48 s, 8 MP in 10 min 49 s, a 2048^2 edit in 12 min 16 s (vpipe 9366a96e). Its prompt upsampler (a Qwen3.5-9B) is not run. MiniMax H3 Community License; the Qwen3-VL parts Apache-2.0."
+    },
+    {
+      "id": "minimax-h3-image",
+      "name": "MiniMax-H3-Image",
+      "family": "minimax-h3",
+      "role": "image",
+      "hf_path": "MiniMaxAI/MiniMax-H3-Image",
+      "fetch_variant": "MiniMaxAI/MiniMax-H3-Image",
+      "check": {"is": {"model_index.json": "MiniMaxH3ImagePipeline",
+                       "transformer/config.json": "MiniMaxH3DiTModel",
+                       "vae/config.json": "MiniMaxH3ImageVAE"},
+                "files": ["pdd_config.json", "pdd_fused_heads.safetensors"]},
+      "capabilities": ["text-to-image", "image-edit"],
+      "requires_one_of": ["minimax-h3-fl2va", "minimax-h3-ref2va",
+                          "minimax-h3-text-encoder"],
+      "disk_gb": 68.7, "disk_measured": true,
+      "min_ram_gb": 16, "rank": 2,
+      "license": "minimax-h3-image",
+      "engine": {
+        "vpipe": {
+          "shape": "h3-image",
+          "config_stage": "minimax-h3-model-config",
+          "encoder_from": ["minimax-h3-text-encoder", "minimax-h3-fl2va",
+                           "minimax-h3-ref2va"],
+          "steps_fixed": true,
+          "align": 32,
+          "max_edge": 6272,
+          "accel": ["sol_attn", "sage_attn", "sage_pv8", "i8_gemm", "i8_gemm_tier",
+                    "ane_ffn", "ane_int8"],
+          "options": [{"key": "generate_at", "type": "choice",
+                       "choices": ["release", "asked"], "default": "release",
+                       "stage": "valtz"}],
+          "config": {},
+          "conditioner": { "unload_when_idle": "always" },
+          "generate": { "unload_when_idle": "always" },
+          "defaults": { "steps": 6, "width": 2048, "height": 2048 },
+          "presets": {
+            "speed": { "sage_attn": true, "sage_pv8": true, "i8_gemm": true,
+                       "i8_gemm_tier": "token" },
+            "balanced": { "sage_attn": true, "i8_gemm": true },
+            "quality": { "sol_attn": false, "sage_attn": false,
+                         "i8_gemm": false }
+          },
+          "edit": {
+            "max_references": 16,
+            "encoder_seed": true,
+            "encoder": { "unload_when_idle": "auto" }
+          }
+        }
+      },
+      "prompting": {
+        "language": "english",
+        "reference_tag": "<Picture {n}>",
+        "enhance": {
+          "generate": "minimax-h3-image-t2i",
+          "edit": "minimax-h3-image-edit",
+          "expander": {
+            "model": "minimax-h3-image-pe",
+            "generate": {
+              "system": "prompt/t2i/system_prompt.txt",
+              "task": "prompt/t2i/task_prompt.txt",
+              "request": "prompt/t2i/request_params.json"
+            }
+          }
+        }
+      },
+      "notes": "MiniMax's own image model on H3: text to image, and edits of up to 16 pictures (<Picture 1>, <Picture 2>, ...), about 16 megapixels at any aspect (4096 x 4096, 6272 x 2688 at 21:9), 6 steps, no guidance. Its DiT is H3's 33B stack without the audio branch, an output head a step; its VAE H3's encoder with a 2D decoder. It conditions on MiniMax-H3's text encoder (Qwen3-VL-32B), which its repository leaves out: FL2VA's or Ref2VA's is used where either is here, else download the encoder alone (67 GB). Best at 4-20 MP from long, complete descriptions of the whole picture, read as written: Enhance writes them. A size under 4 MP is made at 4 MP and resized back, as released (Custom's Generate At). MEASURED by vpipe on an M4 Pro: 1024^2 in 3 min 23 s, 16 MP in 16 min 44 s, a 16 MP edit in 20 min 23 s (vpipe 9a0cc5b0). MiniMax-H3-Image Community License, which excludes the European Union, the United Kingdom, South Korea and the United States."
     },
     {
       "id": "krea2-turbo",
@@ -1928,6 +2006,33 @@
       "disk_gb": 2.0, "disk_measured": true, "min_ram_gb": 16, "rank": 0,
       "license": "minimax",
       "notes": "PrunaAI's rank-128 adapter that makes MiniMax H3 FL2VA's DiT P-H3-Image's: always on under it, in the first LoRA slot (P-H3-Image-Comfy's file)."
+    },
+    {
+      "id": "minimax-h3-text-encoder", "name": "MiniMax H3 text encoder",
+      "family": "minimax-h3", "role": "encoder",
+      "hf_path": "MiniMaxAI/MiniMax-H3",
+      "subdir": "text_encoder",
+      "fetch_variant": "MiniMaxAI/MiniMax-H3-text-encoder",
+      "check": {"is": {"config.json": "qwen3_vl"}},
+      "capabilities": [],
+      "disk_gb": 66.7, "disk_measured": false, "min_ram_gb": 16, "rank": 0,
+      "license": "minimax",
+      "notes": "MiniMax-H3's Qwen3-VL-32B text encoder alone, the one MiniMax-H3-Image conditions on: needed only where neither FL2VA nor Ref2VA is here (each carries the same files)."
+    },
+    {
+      "id": "minimax-h3-image-pe", "name": "MiniMax-H3-Image prompt expander",
+      "family": "minimax-h3", "role": "expander",
+      "hf_path": "MiniMaxAI/MiniMax-H3-Image-PE",
+      "check": {"is": {"config.json": "qwen3_5"},
+                "files": ["prompt/t2i/system_prompt.txt",
+                          "prompt/t2i/task_prompt.txt",
+                          "prompt/t2i/request_params.json"]},
+      "capabilities": [],
+      "disk_gb": 17.97, "disk_measured": true, "held_gb": 18.5,
+      "min_ram_gb": 32, "rank": 0,
+      "license": "minimax-h3-image",
+      "engine": {"vpipe": {"mtp": false}},
+      "notes": "MiniMax's prompt expander for MiniMax-H3-Image (MiniMaxAI/MiniMax-H3-Image-PE): a Qwen3.8-27B fine-tune, published only in NVFP4 (17.9 GB; vpipe runs it natively, 18.5 GB held). Where it is here and the Mac has 32 GB or more, Enhance for a MiniMax-H3-Image picture runs ON IT, with its own system and task prompts and its sampler as its release sends them (read from its download): it reasons, then writes one caption of the whole picture and the ratio it was written for -- the card's shape follows. Edits stay with the Agentic Helper (MiniMax publishes the edit expander as a prompt only). MiniMax-H3-Image Community License."
     },
     {
       "id": "minimax-h3-pika-flex", "name": "MiniMax H3 Pika H3 Flex adapter (FL2VA)",

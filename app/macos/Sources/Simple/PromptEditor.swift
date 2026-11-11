@@ -61,6 +61,11 @@ final class RefTagAttachment: NSTextAttachment {
 /// a thumbnail dragged in from the row over it, or a file dropped (or
 /// pasted) into it, which is staged and mentioned where it lands.
 final class PromptTextView: NSTextView {
+    /// CODE (CodeEditing): its language while a code tab is open, and the
+    /// brackets marked beside the caret.
+    var codeLanguage: String?
+    var bracketMarks: [NSRange] = []
+    var bracketsMatched = true
     /// Files dropped or pasted in: staged, their ids back, in order.
     var onFilesDropped: (([URL]) -> [UUID])?
     var onDropTargeted: ((Bool) -> Void)?
@@ -865,14 +870,104 @@ struct PromptEditor: NSViewRepresentable {
         /// markers show (the caret's).
         var markdownOn: Bool?
         var caretParagraph = NSRange(location: NSNotFound, length: 0)
+        /// CODE (DESIGN §10c): the language of the tab open, its strings'
+        /// and comments' ranges (brackets there are none), its gutter.
+        var code: String?
+        var codeSkip: [NSRange] = []
+        weak var ruler: LineNumberRuler?
+        /// Typing as words had it, before code took over.
+        var wordsSpelling: Bool?
 
         init(_ p: PromptEditor) { parent = p }
+
+        /// Code or words: the text's look, its gutter, what typing does.
+        func setCode(_ language: String?) {
+            guard language != code, let tv = textView,
+                  let scroll = scrollView else { return }
+            code = language
+            tv.codeLanguage = language
+            if language != nil {
+                wordsSpelling = wordsSpelling
+                    ?? tv.isContinuousSpellCheckingEnabled
+                tv.isContinuousSpellCheckingEnabled = false
+                tv.isAutomaticSpellingCorrectionEnabled = false
+                tv.isAutomaticTextReplacementEnabled = false
+                tv.typingAttributes = CodeEditing.typing
+                if ruler == nil {
+                    let r = LineNumberRuler(scrollView: scroll, textView: tv)
+                    scroll.verticalRulerView = r
+                    ruler = r
+                }
+                scroll.hasVerticalRuler = true
+                scroll.rulersVisible = true
+                markdownOn = nil
+                codeSkip = CodeEditing.paint(tv, language: language ?? "")
+                ruler?.refresh()
+            } else {
+                scroll.rulersVisible = false
+                if let w = wordsSpelling {
+                    tv.isContinuousSpellCheckingEnabled = w
+                }
+                tv.typingAttributes = [
+                    .font: PromptEditor.font,
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: PromptEditor.latinParagraph]
+                // The code's look gone: words in the words' type again.
+                if let storage = tv.textStorage, storage.length > 0 {
+                    storage.addAttributes(tv.typingAttributes, range:
+                        NSRange(location: 0, length: storage.length))
+                }
+                showBrackets(nil)
+                codeSkip = []
+                styleParagraphs()
+                styleMarkdown()
+            }
+        }
+
+        /// The bracket beside the caret and its match marked -- the last
+        /// ones let go -- or nothing (`nil`: words).
+        func matchBrackets() {
+            guard let tv = textView, code != nil else { return }
+            showBrackets(CodeEditing.brackets(tv, skip: codeSkip))
+        }
+
+        private func showBrackets(_ b: (ranges: [NSRange], matched: Bool)?) {
+            guard let tv = textView, let lm = tv.layoutManager else { return }
+            let length = (tv.string as NSString).length
+            for r in tv.bracketMarks where NSMaxRange(r) <= length {
+                lm.removeTemporaryAttribute(.backgroundColor,
+                                            forCharacterRange: r)
+            }
+            tv.bracketMarks = b?.ranges ?? []
+            tv.bracketsMatched = b?.matched ?? true
+            guard let b else { return }
+            let tint = b.matched
+                ? NSColor.controlAccentColor.withAlphaComponent(0.28)
+                : NSColor.systemRed.withAlphaComponent(0.35)
+            for r in b.ranges where NSMaxRange(r) <= length {
+                lm.addTemporaryAttribute(.backgroundColor, value: tint,
+                                         forCharacterRange: r)
+            }
+        }
 
         /// In the agent's chat, Return SENDS -- Start, as the Send button
         /// -- and ⇧Return or ⌥Return breaks the line. (An input method
         /// composing takes its own Return: it never comes here.)
         func textView(_ textView: NSTextView,
                       doCommandBy selector: Selector) -> Bool {
+            // Code: Return keeps the line's indent, Tab puts in spaces.
+            if code != nil, !parent.chat, textView.isEditable {
+                switch selector {
+                case #selector(NSResponder.insertNewline(_:)):
+                    CodeEditing.newline(textView)
+                    return true
+                case #selector(NSResponder.insertTab(_:)):
+                    CodeEditing.tab(textView)
+                    return true
+                default:
+                    return false
+                }
+            }
             guard parent.chat else { return false }
             switch selector {
             case #selector(NSResponder.insertNewline(_:)):
@@ -915,10 +1010,16 @@ struct PromptEditor: NSViewRepresentable {
                 return
             }
             // Tags typed or pasted as text become tags: an edit of its
-            // own, which syncs again.
-            if tv.convertTypedTags() { return }
-            styleParagraphs()
-            styleMarkdown()
+            // own, which syncs again. Code keeps its text as typed, drawn
+            // as code.
+            if let language = code {
+                codeSkip = CodeEditing.paint(tv, language: language)
+                ruler?.refresh()
+            } else {
+                if tv.convertTypedTags() { return }
+                styleParagraphs()
+                styleMarkdown()
+            }
             let (marked, items) = PromptEditor.marked(storage)
             let text = marked.replacingOccurrences(of: "\u{FFFC}", with: "")
             let model = parent.model
@@ -931,6 +1032,7 @@ struct PromptEditor: NSViewRepresentable {
             }
             measure()
             mark(parent.highlight, reveal: false)
+            matchBrackets()
         }
 
         /// Each paragraph's spacing: a Latin one 1.1x, a CJK one the
@@ -945,7 +1047,7 @@ struct PromptEditor: NSViewRepresentable {
         /// elsewhere. Off: the text as typed. Attributes only -- the
         /// characters, and so the prompt, are untouched.
         func styleMarkdown() {
-            guard let tv = textView else { return }
+            guard let tv = textView, code == nil else { return }
             let on = parent.model.promptMarkdown
             caretParagraph = PromptEditor.caretParagraph(of: tv)
             // Nothing drawn before, and nothing to draw: leave the text.
@@ -962,6 +1064,11 @@ struct PromptEditor: NSViewRepresentable {
         func textViewDidChangeSelection(_ notification: Notification) {
             // Composing: the selection is the input method's (sync).
             guard let tv = textView, !tv.hasMarkedText() else { return }
+            if code != nil {
+                matchBrackets()
+                ruler?.needsDisplay = true
+                return
+            }
             // Another paragraph: its markers show, the last one's hide.
             if parent.model.promptMarkdown, let ns = tv.textStorage?.string
                 as NSString? {
@@ -1204,7 +1311,7 @@ struct PromptEditor: NSViewRepresentable {
         // The prompt the toolbar's B / I / U format (PromptBar).
         tv.onFocus = { [weak tv] in model.promptTextView = tv }
         tv.onFocusChange = { [weak coordinator = context.coordinator] in
-            guard let coordinator,
+            guard let coordinator, coordinator.code == nil,
                   coordinator.parent.model.promptMarkdown else { return }
             coordinator.styleMarkdown()
             coordinator.measure()
@@ -1260,6 +1367,9 @@ struct PromptEditor: NSViewRepresentable {
         // A voice-over's: no prompt taken.
         let editable = !model.activeTabReadOnly && !model.inVoiceOver
         if tv.isEditable != editable { tv.isEditable = editable }
+        // A code tab or words: set before its text is put in, which takes
+        // its typing's look.
+        context.coordinator.setCode(chat ? nil : model.promptCodeLanguage)
         if context.coordinator.revision != model.promptRevision {
             context.coordinator.revision = model.promptRevision
             replaceText(in: tv, with: model.prompt)
@@ -1284,7 +1394,8 @@ struct PromptEditor: NSViewRepresentable {
             }
         }
         // Markdown drawn as it reads, or as typed: switched.
-        if context.coordinator.markdownOn != nil,
+        if context.coordinator.code == nil,
+           context.coordinator.markdownOn != nil,
            context.coordinator.markdownOn != model.promptMarkdown {
             context.coordinator.styleMarkdown()
         }
@@ -1390,6 +1501,12 @@ struct PromptEditor: NSViewRepresentable {
     private func attributedWords(_ text: String,
                                  in tv: PromptTextView)
         -> NSMutableAttributedString {
+        // Code: its characters as they are -- "<image2>" in a page's HTML
+        // is no picture.
+        if tv.codeLanguage != nil {
+            return NSMutableAttributedString(string: text,
+                                             attributes: tv.typingAttributes)
+        }
         let words = text as NSString
         let inline = model.pictureTags(in: words).map { ($0.range,
                                                          $0.picture.id) }

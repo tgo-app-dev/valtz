@@ -1907,6 +1907,15 @@ parse_enhance_reply(std::string_view reply)
   if (out.prompt.empty()) {
     out.prompt = jget<std::string>(j, "rewritten_prompt", "");
   }
+  // MiniMax-H3-Image's prompt expander: a caption of the whole picture
+  // and the ratio it was written for (its edit prompt's
+  // `target_aspect_ratio`).
+  if (out.prompt.empty()) {
+    out.prompt = jget<std::string>(j, "expanded_caption", "");
+  }
+  for (const char* k : {"aspect_ratio", "target_aspect_ratio"}) {
+    if (out.aspect.empty()) { out.aspect = jget<std::string>(j, k, ""); }
+  }
   // A caption draft (MOSS-Image's skill): the caption is the prompt.
   if (out.prompt.empty() && !j.contains("items")) {
     out.prompt = jget<std::string>(j, "caption", "");
@@ -1988,7 +1997,9 @@ parse_enhance_reply(std::string_view reply)
   }
   out.negative = jget<std::string>(j, "negative", "");
   out.title = jget<std::string>(j, "title", "");
-  out.aspect = jget<std::string>(j, "wh_ratio", "");
+  if (out.aspect.empty()) {
+    out.aspect = jget<std::string>(j, "wh_ratio", "");
+  }
   out.follow = jget<std::string>(j, "ratio_follow", "");
   if (out.prompt.size() < 8) {
     return make_error(Code::Corrupt, "enhanced prompt is missing");
@@ -2157,6 +2168,47 @@ skip_value(std::string_view s, std::size_t& i)
 }  // namespace
 
 std::string
+outside_thinking(std::string_view r)
+{
+  std::string out;
+  std::size_t i = 0;
+  // A stream that began inside the block: its end, with no start before.
+  const std::size_t e0 = r.find(kThinkEnd), s0 = r.find(kThinkStart);
+  if (e0 != std::string_view::npos && (s0 == std::string_view::npos ||
+                                       e0 < s0)) {
+    i = e0 + kThinkEnd.size();
+  }
+  while (i < r.size()) {
+    const std::size_t s = r.find(kThinkStart, i);
+    if (s == std::string_view::npos) {
+      out += r.substr(i);
+      break;
+    }
+    out += r.substr(i, s - i);
+    const std::size_t e = r.find(kThinkEnd, s + kThinkStart.size());
+    if (e == std::string_view::npos) { break; }   // still thinking
+    i = e + kThinkEnd.size();
+  }
+  return out;
+}
+
+std::string
+py_format(std::string_view tpl, std::string_view value)
+{
+  std::string out;
+  out.reserve(tpl.size() + value.size());
+  for (std::size_t i = 0; i < tpl.size(); ++i) {
+    const char c = tpl[i];
+    const char n = i + 1 < tpl.size() ? tpl[i + 1] : '\0';
+    if (c == '{' && n == '{') { out += '{'; ++i; continue; }
+    if (c == '}' && n == '}') { out += '}'; ++i; continue; }
+    if (c == '{' && n == '}') { out += value; ++i; continue; }
+    out += c;
+  }
+  return out;
+}
+
+std::string
 partial_enhance_reply(std::string_view s)
 {
   std::size_t i = s.find('{');
@@ -2206,6 +2258,7 @@ partial_enhance_reply(std::string_view s)
     std::string* into = key == "prompt"             ? &prompt
                         : key == "rewritten_prompt" ? &rewritten
                         : key == "caption"          ? &rewritten
+                        : key == "expanded_caption" ? &rewritten
                         : key == "style"            ? &style
                         : key == "lyrics"           ? &lyrics
                         : is_section(key)           ? &sections[key]

@@ -1741,6 +1741,16 @@
         }
       }
     },
+    "4 Megapixels or More" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "至少 400 万像素"
+          }
+        }
+      }
+    },
     "4 a second" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1752,11 +1762,22 @@
       }
     },
     "4096 pixels on the long side: up to 16 times Standard's pixels, and an hour or more to make" : {
+      "extractionState" : "stale",
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "长边 4096 像素：像素最多为“标准”的 16 倍，生成需要一小时或更久"
+          }
+        }
+      }
+    },
+    "4096 pixels on the long side: up to 16 times Standard's pixels, and many times longer to make" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "长边 4096 像素：像素最多为“标准”的 16 倍，生成时间也长得多"
           }
         }
       }
@@ -8306,6 +8327,16 @@
         }
       }
     },
+    "Edited as code: its lines numbered, its words tinted, the bracket beside the caret and its match marked" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按代码编辑：行有编号，词语着色，光标旁的括号与其配对括号会被标出"
+          }
+        }
+      }
+    },
     "Edited by a model %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -9877,6 +9908,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "生成图像后，可在此查看其详细信息。"
+          }
+        }
+      }
+    },
+    "Generate at" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "生成尺寸"
           }
         }
       }
@@ -13171,6 +13212,26 @@
         }
       }
     },
+    "Made at 4 MP and resized back: as released" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在 400 万像素上生成后缩回：与发布版一致"
+          }
+        }
+      }
+    },
+    "Made at its own size: faster, outside its training" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "按所选尺寸生成：更快，超出其训练范围"
+          }
+        }
+      }
+    },
     "Made at the size directly, as the model makes it" : {
       "localizations" : {
         "zh-Hans" : {
@@ -13756,6 +13817,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "中间调"
+          }
+        }
+      }
+    },
+    "MiniMax-H3-Image works best from 4 to 20 megapixels. As released, a size under 4 megapixels is made on a 4-megapixel canvas of the same shape and resized back, so a 1024 × 1024 picture takes as long as a 2048 × 2048 one. The Size Asked makes it at its own size: several times faster, outside the range the model was trained at." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "MiniMax-H3-Image 在 400 万至 2000 万像素之间效果最好。按发布版的做法，小于 400 万像素的尺寸会在同样比例的 400 万像素画布上生成，再缩回所选尺寸，因此 1024 × 1024 的图片与 2048 × 2048 的耗时相同。“所选尺寸”直接按该尺寸生成：快数倍，但超出模型的训练范围。"
           }
         }
       }
@@ -22071,6 +22142,16 @@
         }
       }
     },
+    "The Size Asked" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "所选尺寸"
+          }
+        }
+      }
+    },
     "The Valtz Macs of this network as one: a job this Mac cannot run, or not now, goes to a member that can, and this Mac takes theirs when it is free." : {
       "localizations" : {
         "zh-Hans" : {
@@ -22504,6 +22585,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "较低的上限会在当前工作结束后生效。"
+          }
+        }
+      }
+    },
+    "The microphone's own input volume, as System Settings › Sound › Input sets it: lower it when the level meter reaches its end" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "麦克风自身的输入音量，与“系统设置 › 声音 › 输入”中的设置相同：电平表到顶时请调低"
           }
         }
       }
@@ -25504,6 +25595,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "当片段以高于其自身的每秒帧数显示时——放慢后，或放在帧率更高的时间线上——时间线会重复它的帧。修剪面板中的“渲染插帧”会生成中间的帧：片段按显示的帧率生成，长度和声音保持不变，随后由该图层显示它。新帧落在片段自身某一帧上时，该帧保持原样。"
+          }
+        }
+      }
+    },
+    "Where a size under 4 megapixels is made" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "小于 400 万像素的尺寸在何处生成"
           }
         }
       }

@@ -8,6 +8,9 @@ struct CaptureSourceDTO: Decodable, Sendable, Hashable, Identifiable {
     var name: String
     var kind: String       // "microphone" | "system"
     var preferred: Bool
+    /// A microphone's own input volume (0...1) -- System Settings › Sound
+    /// › Input's -- where it has one to set.
+    var inputVolume: Double?
 }
 
 /// A recording as the core reports it (Controller::capture_state).
@@ -57,6 +60,21 @@ extension AppModel {
         captureSources = list
         if !list.contains(where: { $0.id == captureSource }) {
             captureSource = list.first?.id ?? ""
+        }
+    }
+
+    /// A microphone's own INPUT VOLUME set (0...1): macOS's, as System
+    /// Settings › Sound › Input sets it -- while it records too.
+    func setInputVolume(_ source: String, _ volume: Double) {
+        guard let core else { return }
+        let r = core.captureOp(["op": "input-volume", "source": source,
+                                "volume": volume])
+        guard r.ok else {
+            flash(r.message, level: .error)
+            return
+        }
+        if let i = captureSources.firstIndex(where: { $0.id == source }) {
+            captureSources[i].inputVolume = volume
         }
     }
 
@@ -171,6 +189,8 @@ struct CaptureOverlay: View {
             .frame(width: 260)
             .disabled(recording)
             .help("Record from a microphone, or the system's audio: what every app plays, Valtz's own left out")
+            InputVolumeControl(model: model, source: model.captureSource,
+                               width: 180)
             HStack(spacing: 12) {
                 if recording {
                     Button {
@@ -242,5 +262,36 @@ private struct LevelMeter: View {
             }
         }
         .accessibilityLabel(Text("Level"))
+    }
+}
+
+/// A microphone's own INPUT VOLUME, beside where it is chosen or heard: a
+/// slider of macOS's setting (System Settings › Sound › Input), live while
+/// it records -- for a microphone that has one (one with a knob of its
+/// own may not); nothing for the system's audio.
+struct InputVolumeControl: View {
+    @Bindable var model: AppModel
+    let source: String
+    var width: CGFloat = 110
+
+    var body: some View {
+        if let v = model.captureSources.first(where: { $0.id == source })?
+            .inputVolume {
+            HStack(spacing: 6) {
+                Image(systemName: "mic.and.signal.meter")
+                    .foregroundStyle(.secondary)
+                Slider(value: Binding(
+                    get: { v },
+                    set: { model.setInputVolume(source, $0) }),
+                    in: 0...1)
+                    .controlSize(.small)
+                    .frame(width: width)
+                Text(verbatim: "\(Int((v * 100).rounded()))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 34, alignment: .trailing)
+            }
+            .help("The microphone's own input volume, as System Settings › Sound › Input sets it: lower it when the level meter reaches its end")
+        }
     }
 }

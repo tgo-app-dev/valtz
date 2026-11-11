@@ -426,6 +426,20 @@ std::string shot_prompt(const ShotText&);
 // whole (keep_song_lyrics may yet change a song's lyrics).
 std::string partial_enhance_reply(std::string_view reply);
 
+// What a reply that THINKS says outside it: vpipe streams a reasoning
+// model's thinking between its own markers (kThinkStart / kThinkEnd,
+// common/media-line.h) -- each such block cut, one still open cut to the
+// end, and everything before an end marker no start opened (a stream that
+// began inside the block). A plain reply comes back as it is.
+inline constexpr std::string_view kThinkStart = "<|__vpipe_think_start__|>";
+inline constexpr std::string_view kThinkEnd = "<|__vpipe_think_end__|>";
+std::string outside_thinking(std::string_view reply);
+
+// Python's str.format(value) on a template with one positional field:
+// each "{}" the value, "{{" and "}}" a brace -- how a model maker's task
+// prompt (MiniMax-H3-Image-PE's) takes the request.
+std::string py_format(std::string_view tpl, std::string_view value);
+
 std::string build_intent_prompt(std::string_view text,
                                 const std::vector<Attachment>&);
 Result<IntentResult> parse_intent_reply(std::string_view reply);

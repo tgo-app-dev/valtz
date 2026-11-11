@@ -1471,6 +1471,67 @@ kept_render(CIImage* img, std::size_t& bytes)
   return out;
 }
 
+// A decoded 16-bit RGB picture with no alpha -- as a generated PNG is
+// written -- kept ON THE GPU: 16 bits a channel, RGBA, in an IOSurface
+// Core Image reads in place, in the picture's own colour space and
+// encoding, so it is sampled as its file is (a half-float copy in linear
+// light differed by up to 45 of 255 wherever a layer is turned or
+// scaled). Nil for any other picture, kept as ImageIO's CGImage.
+//
+// Not as that CGImage: a still of three 3072 x 4096 such pictures --
+// big-endian, three channels, which Core Image converts as it uploads
+// them -- came out with its lower half a copy of its upper half in ~4% of
+// the stage's draws (2026-11-10, macOS 27.0; Core Image alone does it).
+// As surfaces, never in 500; a draw quicker too, nothing uploaded each
+// time: 3.7 ms against 10. Only its outer pixels differ from its file's
+// where a layer lies between pixels: by 14 of 255 at most, on screen.
+// Other formats were never seen to repeat, and keep their edges.
+CIImage*
+kept_surface(CGImageRef cg, std::size_t& bytes)
+{
+  CGColorSpaceRef cs = CGImageGetColorSpace(cg);
+  if (CGImageGetBitsPerComponent(cg) != 16 ||
+      CGImageGetBitsPerPixel(cg) != 48 || !cs ||
+      CGColorSpaceGetModel(cs) != kCGColorSpaceModelRGB ||
+      CGColorSpaceUsesExtendedRange(cs) || !CGColorSpaceSupportsOutput(cs) ||
+      (CGImageGetBitmapInfo(cg) & kCGBitmapFloatComponents) != 0) {
+    return nil;
+  }
+  const std::size_t w = CGImageGetWidth(cg), h = CGImageGetHeight(cg);
+  const std::size_t bpr = IOSurfaceAlignProperty(kIOSurfaceBytesPerRow,
+                                                 w * 8);
+  NSDictionary* props = @{
+    (id)kIOSurfaceWidth : @(w),
+    (id)kIOSurfaceHeight : @(h),
+    (id)kIOSurfaceBytesPerElement : @8,
+    (id)kIOSurfaceBytesPerRow : @(bpr),
+    (id)kIOSurfacePixelFormat : @(kCVPixelFormatType_64RGBALE),
+  };
+  IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
+  if (!surface) { return nil; }
+  CIRenderDestination* dest = [[CIRenderDestination alloc]
+      initWithIOSurface:(__bridge IOSurface*)surface];
+  dest.colorSpace = cs;
+  dest.alphaMode = CIRenderDestinationAlphaPremultiplied;
+  CIImage* img = [CIImage imageWithCGImage:cg];
+  NSError* err = nil;
+  CIRenderTask* task = [decode_context() startTaskToRender:img
+                                                  fromRect:img.extent
+                                             toDestination:dest
+                                                   atPoint:CGPointZero
+                                                     error:&err];
+  CIImage* out = nil;
+  if (task && [task waitUntilCompletedAndReturnError:&err]) {
+    out = [CIImage imageWithIOSurface:surface
+                              options:@{
+                                kCIImageColorSpace : (__bridge id)cs,
+                              }];
+  }
+  CFRelease(surface);  // the image holds it
+  if (out) { bytes = bpr * h; }
+  return out;
+}
+
 // A picture kept for the stage (`decoded_image`): the pixels, and the
 // size it is laid out at -- its own, or, a smaller LEVEL of it, the
 // picture's.
@@ -1485,7 +1546,8 @@ struct KeptPicture {
 // of it decoding. Kept by path, size and time on disk (a blob is never
 // rewritten; a linked file may be), the least recently drawn let go past
 // 1.5 GB; nil for what ImageIO cannot read -- read as ever. Upright, as
-// `source_image` makes it.
+// `source_image` makes it. A 16-bit RGB one kept on the GPU
+// (`kept_surface`), the rest as ImageIO's CGImage.
 //
 // A camera RAW is DEVELOPED once, at its own size, and kept: its engine
 // took 75-240 ms a draw of a 30 MP CR2 on the M5 Pro, every tick of a
@@ -1576,8 +1638,11 @@ decoded_image(const fs::path& file, int level = 0)
           });
       CFRelease(src);
       if (!cg) { return {}; }
-      bytes = CGImageGetBytesPerRow(cg) * CGImageGetHeight(cg);
-      CIImage* img = [CIImage imageWithCGImage:cg];
+      CIImage* img = kept_surface(cg, bytes);
+      if (!img) {
+        bytes = CGImageGetBytesPerRow(cg) * CGImageGetHeight(cg);
+        img = [CIImage imageWithCGImage:cg];
+      }
       CGImageRelease(cg);
       if (NSNumber* o = props[(id)kCGImagePropertyOrientation];
           o && o.intValue > 1 && o.intValue <= 8) {

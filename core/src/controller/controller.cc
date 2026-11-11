@@ -2789,6 +2789,24 @@ Controller::apply_tuning_(project::Recipe& r, const models::ModelEntry& m,
       !d.empty() && !r.params.contains("dit_file")) {
     r.params["dit_model"] = d;
   }
+  // A text encoder another model carries (catalog `encoder_from`:
+  // MiniMax-H3-Image conditions on MiniMax-H3's, which its repository
+  // leaves out): the first of them here with its own encoder files -- not
+  // one whose encoder is linked apart, a Draw Things file -- recorded by
+  // its id and resolved where the job runs (ModelRef::encoder). None
+  // here: the first named, which the job is refused for by its name.
+  if (const auto from = jget(vp, "encoder_from", std::vector<std::string>{});
+      !from.empty()) {
+    std::string pick = from.front();
+    for (const auto& id : from) {
+      const auto* ee = _catalog.find(id);
+      if (ee && ready_(*ee) && _store->info(*ee).part("encoder").empty()) {
+        pick = id;
+        break;
+      }
+    }
+    r.params["encoder"] = pick;
+  }
   // The parts the model is linked to apart (Draw Things checkpoints,
   // Settings > Capabilities), recorded: its DiT and VAE where Custom
   // names none of its own (its VAE is read as a whole model's, by
@@ -6401,9 +6419,12 @@ Result<engine::JobSpec>
 Controller::chat_spec_(JobId id, std::string text,
                        std::vector<engine::JobInput> images,
                        int max_new_tokens,
-                       const models::ModelEntry* model) const
+                       const models::ModelEntry* model,
+                       const OwnChat* own) const
 {
-  const auto* m = model ? model : assistant_model();
+  const auto* m = own && own->model ? own->model
+                  : model           ? model
+                                    : assistant_model();
   if (!m) {
     return make_error(Code::Unsupported, msg::kNoAssistantModel);
   }
@@ -6418,8 +6439,85 @@ Controller::chat_spec_(JobId id, std::string text,
   spec.params["text"] = std::move(text);
   spec.params["disable_thinking"] = true;
   spec.params["max_new_tokens"] = max_new_tokens;
+  // Its makers' way: their system message, their sampler, their
+  // thinking.
+  if (own) {
+    if (!own->system.empty()) { spec.params["system"] = own->system; }
+    spec.params["sampling"] = own->sampling;
+    spec.params["disable_thinking"] = !own->thinking;
+    if (!own->reasoning_effort.empty()) {
+      spec.params["reasoning_effort"] = own->reasoning_effort;
+    }
+  }
   spec.inputs = std::move(images);
   return spec;
+}
+
+std::optional<Controller::ExpanderChat>
+Controller::expander_chat_(const models::ModelEntry& m,
+                           std::string_view prompt) const
+{
+  const Json ex = jget(jget(m.prompting, "enhance", Json::object()),
+                       "expander", Json::object());
+  const Json files = jget(ex, "generate", Json::object());
+  const models::ModelEntry* pe =
+      _catalog.find(jget<std::string>(ex, "model", ""));
+  if (pe == nullptr || !files.is_object() || files.empty() ||
+      _hw.ram_gb() < pe->min_ram_gb) {
+    return std::nullopt;
+  }
+  const auto info = _store->info(*pe);
+  if (info.state != models::InstallState::Installed) {
+    return std::nullopt;
+  }
+  // Its own prompts, read where its download put them each time (a few
+  // KB): they are MiniMax's, licensed with the model, never Valtz's.
+  auto read = [&](const char* key) {
+    std::ifstream in(info.dir / jget<std::string>(files, key, ""),
+                     std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+  };
+  std::string system = read("system");
+  const std::string task = read("task");
+  if (task.empty()) {
+    return std::nullopt;
+  }
+  while (!system.empty() &&
+         (system.back() == '\n' || system.back() == '\r')) {
+    system.pop_back();
+  }
+  ExpanderChat out;
+  out.chat.model = pe;
+  out.chat.system = std::move(system);
+  out.chat.thinking = true;
+  out.text = assist::py_format(task, prompt);
+  // Its request's sampling, thinking and budget, as its script sends
+  // them (request_params.json); the release's values where it cannot be
+  // read.
+  Json rq = Json::object();
+  try {
+    const std::string t = read("request");
+    if (!t.empty()) { rq = Json::parse(t); }
+  } catch (...) {
+    rq = Json::object();
+  }
+  for (const char* k : {"temperature", "top_p", "top_k", "min_p",
+                        "presence_penalty", "repetition_penalty"}) {
+    if (rq.contains(k) && rq[k].is_number()) {
+      out.chat.sampling[k] = rq[k];
+    }
+  }
+  if (out.chat.sampling.empty()) {
+    out.chat.sampling = {{"temperature", 1.0}, {"top_p", 0.95},
+                         {"top_k", 20}};
+  }
+  out.chat.reasoning_effort =
+      jget<std::string>(rq, "reasoning_effort", "xhigh");
+  const Json kw = jget(rq, "chat_template_kwargs", Json::object());
+  out.chat.thinking = jget(kw, "enable_thinking", true);
+  out.max_tokens = jget(rq, "max_tokens", 4096);
+  return out;
 }
 
 Json
@@ -6601,24 +6699,40 @@ Controller::helper_context_(const models::ModelEntry& m, bool chosen) const
   return n;
 }
 
+std::string
+Controller::plain_caption_(std::string_view text)
+{
+  // Blank lines and spaces around it dropped; the words as written.
+  std::size_t a = 0, b = text.size();
+  while (a < b && std::isspace(static_cast<unsigned char>(text[a]))) { ++a; }
+  while (b > a && std::isspace(static_cast<unsigned char>(text[b - 1]))) {
+    --b;
+  }
+  return std::string(text.substr(a, b - a));
+}
+
 Result<JobId>
 Controller::submit_chat_(JobId id, std::string purpose, std::string text,
                          std::vector<engine::JobInput> images,
                          int max_new_tokens, std::string song,
-                         ReplyForm form)
+                         ReplyForm form, std::optional<OwnChat> own)
 {
   // Written by this Mac's assistant -- or, in a fleet, by a member's
   // when this Mac has none or is busy (DESIGN §11). An enhance by the
-  // micro agent where Settings ask (DESIGN §9c): here, never a member's.
+  // micro agent where Settings ask (DESIGN §9c), or by a model's own
+  // expander (OwnChat): here, never a member's.
   const models::ModelEntry* micro =
-      purpose == "enhance" && _micro_enhance ? micro_model() : nullptr;
-  auto spec = chat_spec_(id, text, images, max_new_tokens, micro);
+      !own && purpose == "enhance" && _micro_enhance ? micro_model()
+                                                     : nullptr;
+  auto spec = chat_spec_(id, text, images, max_new_tokens, micro,
+                         own ? &*own : nullptr);
   const bool here = spec.ok() && _engine->supports(engine::kOpChat);
+  const bool local_only = micro != nullptr || own.has_value();
   auto members =
-      micro ? std::vector<Json>()
-            : fleet_candidates_(std::string(engine::kOpChat), {}, here);
+      local_only ? std::vector<Json>()
+                 : fleet_candidates_(std::string(engine::kOpChat), {}, here);
   const bool fleet_only =
-      !micro &&
+      !local_only &&
       offload_policy_(engine::kOpChat, "") == fleet::kOffloadAlways;
   if (fleet_only && members.empty()) {
     return make_error(Code::Unsupported, msg::kFleetOnlyNoMember);
@@ -6672,7 +6786,16 @@ Controller::submit_chat_(JobId id, std::string purpose, std::string text,
       {
         std::lock_guard lk(written->mu);
         written->text += ev.text;
-        now = form.apply(assist::partial_enhance_reply(written->text));
+        // A model that thinks (an expander) streams its reasoning first:
+        // only what it says after is the suggestion -- the caption itself
+        // where it writes no object.
+        const std::string after = assist::outside_thinking(written->text);
+        std::string part = assist::partial_enhance_reply(after);
+        if (part.empty() && form.plain_caption &&
+            after.find('{') == std::string::npos) {
+          part = plain_caption_(after);
+        }
+        now = form.apply(std::move(part));
         if (now.empty() || now == written->shown) {
           now.clear();
         } else {
@@ -6723,7 +6846,14 @@ Controller::on_chat_event_(const engine::JobEvent& ev,
     break;
   case engine::JobEventKind::Output:
     if (purpose == "enhance") {
-      auto r = assist::parse_enhance_reply(ev.text);
+      const std::string after = assist::outside_thinking(ev.text);
+      auto r = assist::parse_enhance_reply(after);
+      if ((!r.ok() || r->prompt.empty()) && form.plain_caption &&
+          !plain_caption_(after).empty()) {
+        assist::EnhanceResult e;
+        e.prompt = plain_caption_(after);
+        r = std::move(e);
+      }
       if (form.canvas.first > 0) {
         // A MOSS-Image draft -- a caption, or a layout -- compiled for
         // the picture's canvas, as its skill's script compiles it; a
@@ -6857,6 +6987,20 @@ Controller::enhance_prompt(EnhancePromptRequest req)
   const bool edit = m && m->has(models::Capability::ImageEdit) &&
                     (req.mode == "edit" ||
                      (req.mode == "auto" && !pictures.empty()));
+  // A picture written up by its makers' own expander where it is here
+  // and this Mac holds it (MiniMax-H3-Image-PE, 32 GB): its prompts, its
+  // thinking, its caption and ratio -- not the helper's. Edits stay the
+  // helper's: MiniMax publishes the edit expander as a prompt only.
+  if (m && !edit && req.target == "image") {
+    if (auto ex = expander_chat_(*m, req.prompt)) {
+      ReplyForm form{};
+      form.segments = std::move(segs.segments);
+      form.plain_caption = true;
+      return submit_chat_(JobId::make(), "enhance", std::move(ex->text), {},
+                          ex->max_tokens, "", std::move(form),
+                          std::move(ex->chat));
+    }
+  }
 
   assist::EnhanceRequest er;
   er.target = req.target;
@@ -6887,7 +7031,7 @@ Controller::enhance_prompt(EnhancePromptRequest req)
   // on it: here the helper replies with the draft, and Valtz compiles it
   // (on_chat_event_) for the picture's own canvas -- the size asked for,
   // else the model's -- since a layout's boxes are that picture's pixels.
-  ReplyForm form;
+  ReplyForm form{};
   form.segments = std::move(segs.segments);
   if (skill == "moss-image" && !er.system.empty()) {
     int w = 0, h = 0;
@@ -9042,11 +9186,7 @@ Controller::ready_(const models::ModelEntry& e) const
   const auto installed = [&](const models::ModelEntry& x) {
     return _store->info(x).state == models::InstallState::Installed;
   };
-  return installed(e) &&
-         std::ranges::all_of(e.requires_models, [&](const std::string& r) {
-           const auto* re = _catalog.find(r);
-           return re && installed(*re);
-         });
+  return installed(e) && models::needs_met(_catalog, e, installed);
 }
 
 std::pair<std::string, std::string>

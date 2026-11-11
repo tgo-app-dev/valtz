@@ -1491,3 +1491,37 @@ TEST(assist, a_shot_counts_its_own_shots)
       "1> (from [Shot 2]) aligns with the 5.17-second mark of the target "
       "video.\n\nintegrated_multimodal_description: [Shot 1] A door"));
 }
+
+// A model that thinks streams its reasoning between vpipe's markers: the
+// suggestion is what it says after. And a model maker's task prompt takes
+// the request as Python's str.format does; MiniMax-H3-Image-PE's answer
+// reads as a caption and the ratio it was written for.
+TEST(assist, an_expanders_reply_is_read_after_its_thinking)
+{
+  using namespace valtz::assist;
+  const std::string s(kThinkStart), e(kThinkEnd);
+  CHECK(outside_thinking("plain {\"prompt\": \"x\"}") ==
+        "plain {\"prompt\": \"x\"}");
+  CHECK(outside_thinking(s + "a {draft}" + e + "{\"a\": 1}") ==
+        "{\"a\": 1}");
+  CHECK(outside_thinking(s + "still thinking {\"x\":") == "");
+  // A stream that began inside its block: everything before the end.
+  CHECK(outside_thinking("reasoning" + e + " answer") == " answer");
+  CHECK(outside_thinking("a" + s + "b" + e + "c" + s + "d" + e + "e") ==
+        "ace");
+  CHECK(py_format("x {{\"k\":\"v\"}} input: {}\nout:", "a {fox}") ==
+        "x {\"k\":\"v\"} input: a {fox}\nout:");
+  const std::string reply =
+      s + "draft {\"expanded_caption\": \"no\"}" + e +
+      "{\"expanded_caption\": \"A white lighthouse.\", "
+      "\"aspect_ratio\": \"3:4\"}";
+  auto r = parse_enhance_reply(outside_thinking(reply));
+  REQUIRE_OK(r);
+  CHECK(r->prompt == "A white lighthouse.");
+  CHECK(r->aspect == "3:4");
+  CHECK(partial_enhance_reply(outside_thinking(
+            s + "x" + e + "{\"expanded_caption\": \"A white li")) ==
+        "A white li");
+  CHECK(partial_enhance_reply(outside_thinking(
+            s + "{\"expanded_caption\": \"no")) == "");
+}

@@ -5414,11 +5414,22 @@ Controller::capture_sources() const
 {
   Json out = Json::array();
   for (const auto& s : media::capture_sources()) {
-    out.push_back({{"id", s.id}, {"name", s.name}, {"kind", s.kind},
-                   {"preferred", s.preferred}});
+    Json j = {{"id", s.id}, {"name", s.name}, {"kind", s.kind},
+              {"preferred", s.preferred}};
+    // A microphone's input volume, where it has one to set.
+    if (s.input_volume) {
+      j["input_volume"] = std::round(*s.input_volume * 1000) / 1000;
+    }
+    out.push_back(std::move(j));
   }
   return {{"sources", std::move(out)},
           {"microphone", media::microphone_permission()}};
+}
+
+Status
+Controller::set_input_volume(const std::string& source, double volume)
+{
+  return media::set_input_volume(source, volume);
 }
 
 Status

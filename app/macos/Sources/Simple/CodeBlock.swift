@@ -330,7 +330,18 @@ enum CodeHighlight {
             }
             append(rest, kind)
         }
-        if tinted.contains(language.lowercased()) {
+        if let l = CodeSyntax.normal(language) {
+            // The editor's tokens (CodeSyntax): every language it knows.
+            for (range, kind) in CodeSyntax.runs(code, language: l) {
+                switch kind {
+                case .comment?: add(code[range], .comment)
+                case .string?: add(code[range], .string)
+                case .keyword?: add(code[range], .keyword)
+                case .number?: add(code[range], .number)
+                case nil: add(code[range], .plain)
+                }
+            }
+        } else if tinted.contains(language.lowercased()) {
             for (range, kind) in tokens(code) {
                 add(code[range], kind)
             }

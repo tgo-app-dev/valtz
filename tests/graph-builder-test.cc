@@ -1387,6 +1387,90 @@ TEST(graph_builder, p_h3_image_makes_a_picture_on_fl2va)
   CHECK(t1->encodings[0].key != t2->encodings[0].key);
 }
 
+// MiniMax-H3-Image (DESIGN §4x; vpipe's minimax-h3-image graphs): the
+// same one-frame shape on its OWN DiT -- no dit_dir, no adapter -- its 6
+// steps, conditioned by MiniMax-H3's text encoder from another model's
+// folder (`encoder_dir` on the conditioner and on an edit's encoder),
+// an edit's pictures -- sixteen at most -- drawn from the request's seed
+// (the encoder's `seed`); Custom's Generate At the Size Asked turns the
+// release's 4 MP canvas off.
+TEST(graph_builder, minimax_h3_image_makes_a_picture_on_its_own_dit)
+{
+  auto job = job_for("minimax-h3-image", kOpGenerateImage);
+  REQUIRE(job.model.id == "minimax-h3-image");
+  job.model.encoder = "/models/MiniMaxAI/MiniMax-H3/FL2VA";
+  job.params["width"] = 1000;
+  job.params["height"] = 750;
+  auto g = vp::build_text_to_image(job);
+  REQUIRE_OK(g);
+  CHECK(g->width == 992 && g->height == 736);
+  const Json* gen = find_stage(g->spec, "generate-video");
+  REQUIRE(gen);
+  const Json gc = config_of(gen);
+  CHECK(!gc.contains("dit_dir"));
+  CHECK(jget(gc, "steps", 0) == 6);
+  CHECK(jget(gc, "seed", 0) == 7);
+  CHECK(src_of(gen, 0) == "diffusion-conditioner");
+  CHECK(src_of(gen, 9) == "minimax-h3-model-config");
+  const Json* cond = find_stage(g->spec, "diffusion-conditioner");
+  REQUIRE(cond);
+  CHECK(jget<std::string>(config_of(cond), "encoder_dir", "") ==
+        "/models/MiniMaxAI/MiniMax-H3/FL2VA");
+  const Json cfg = config_of(find_stage(g->spec, "minimax-h3-model-config"));
+  CHECK(!cfg.contains("lora"));
+  CHECK(!cfg.contains("min_generation_area"));   // the release's 4 MP
+  CHECK(src_of(find_stage(g->spec, "vae-decode"), 1) == "model-select");
+
+  // Generate At the Size Asked: the release's canvas rule off.
+  auto asked = job;
+  asked.params["tuning"] = {{"generate_at", "asked"}};
+  auto a = vp::build_text_to_image(asked);
+  REQUIRE_OK(a);
+  CHECK(jget(config_of(find_stage(a->spec, "minimax-h3-model-config")),
+             "min_generation_area", 0) == 1024);
+
+  // An edit: seventeen pictures given, the first sixteen by file, the
+  // encoder at the request's seed and the encoder's folder.
+  auto ej = job_for("minimax-h3-image", kOpEditImage);
+  ej.model.encoder = job.model.encoder;
+  std::vector<vp::RefImage> refs;
+  refs.push_back({"/base.png", {1024, 768}, false, true});
+  for (int i = 2; i <= 17; ++i) {
+    refs.push_back({std::format("/p{}.jpg", i), {800, 800}, false, false});
+  }
+  auto e = vp::build_image_edit(ej, refs);
+  REQUIRE_OK(e);
+  const Json* enc = find_stage(e->spec, "video-ref-encoder");
+  REQUIRE(enc);
+  const Json ec = config_of(enc);
+  REQUIRE(ec["references"].size() == 16);
+  CHECK(ec["references"][15] == "/p16.jpg");
+  CHECK(jget(ec, "seed", 0) == 7);
+  CHECK(jget<std::string>(ec, "encoder_dir", "") ==
+        "/models/MiniMaxAI/MiniMax-H3/FL2VA");
+  const Json* eg = find_stage(e->spec, "generate-video");
+  REQUIRE(eg);
+  CHECK(src_of(eg, 7) == "video-ref-encoder" &&
+        src_of(eg, 8) == "video-ref-encoder");
+  CHECK(!config_of(eg).contains("dit_dir"));
+
+  // The pictures' encoding is the seed's: another seed, another key.
+  vp::EncodingCache cache;
+  cache.engine = "vpipe test";
+  cache.model = "stamp";
+  cache.kept = [](const std::string&) { return false; };
+  for (auto& r : refs) {
+    r.hash = ContentHash::of(r.path.string());
+  }
+  auto s1 = vp::build_image_edit(ej, refs, &cache);
+  ej.params["seed"] = 8;
+  auto s2 = vp::build_image_edit(ej, refs, &cache);
+  REQUIRE_OK(s1);
+  REQUIRE_OK(s2);
+  REQUIRE(s1->encodings.size() == 1 && s2->encodings.size() == 1);
+  CHECK(s1->encodings[0].key != s2->encodings[0].key);
+}
+
 // Qwen-Image 2.1 Turbo: the base model's graph -- its config stage, the
 // conditioner reading the pictures -- with NO scheduler (its schedule is
 // in its files) and its own 8 steps whatever was asked; vpipe would run
@@ -4703,3 +4787,49 @@ TEST(graph_builder, a_refmod_is_made_of_its_sources)
         "audio-vae-encode");
 }
 
+
+// A chat on a model of its own, as its makers send it (MiniMax-H3-Image-
+// PE's request): its system message and the words as text-chat's
+// conversation beat, thinking on and asked for at its effort, its own
+// sampler. A plain chat stays the words alone.
+TEST(graph_builder, a_chat_takes_its_makers_system_message_and_thinking)
+{
+  JobSpec chat;
+  chat.id = JobId::make();
+  chat.op = std::string(kOpChat);
+  chat.model.dir = "/m/pe";
+  chat.params = {{"text", "Rules. input_text: a fox"},
+                 {"system", "Reason first."},
+                 {"disable_thinking", false},
+                 {"reasoning_effort", "xhigh"},
+                 {"max_new_tokens", 4096},
+                 {"sampling", {{"temperature", 1.0}, {"top_p", 0.95},
+                               {"top_k", 20}}}};
+  auto g = vp::build_chat(chat);
+  REQUIRE_OK(g);
+  const Json tp = config_of(find_stage(g->spec, "text-prompt"));
+  const Json msgs = jget(jget(tp, "value", Json::object()), "messages",
+                         Json::array());
+  REQUIRE(msgs.size() == 2);
+  CHECK(jget<std::string>(msgs[0], "role", "") == "system");
+  CHECK(jget<std::string>(msgs[0], "content", "") == "Reason first.");
+  CHECK(jget<std::string>(msgs[1], "role", "") == "user");
+  CHECK(jget<std::string>(msgs[1], "content", "") ==
+        "Rules. input_text: a fox");
+  CHECK(!tp.contains("text"));
+  const Json cc = config_of(find_stage(g->spec, "text-chat"));
+  CHECK(!jget(cc, "disable_thinking", true));
+  CHECK(jget<std::string>(cc, "reasoning_effort", "") == "xhigh");
+  CHECK(jget(cc, "max_new_tokens", 0) == 4096);
+  CHECK(jget(config_of(find_stage(g->spec, "sampler")), "temperature",
+             0.0) == 1.0);
+  // Thinking off: no effort asked for; no system: the words.
+  chat.params["disable_thinking"] = true;
+  chat.params.erase("system");
+  g = vp::build_chat(chat);
+  REQUIRE_OK(g);
+  CHECK(!config_of(find_stage(g->spec, "text-chat"))
+             .contains("reasoning_effort"));
+  CHECK(jget<std::string>(config_of(find_stage(g->spec, "text-prompt")),
+                          "text", "") == "Rules. input_text: a fox");
+}

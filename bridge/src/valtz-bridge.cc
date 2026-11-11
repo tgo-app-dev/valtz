@@ -3196,6 +3196,12 @@ Core::capture_op(const std::string& request_json)
       auto st = c.cue_capture(jget(*j, "host", 0.0));
       return st.ok() ? ok() : err(st.error());
     }
+    if (op == "input-volume") {
+      // {"source", "volume"}: a microphone's own input volume, 0...1.
+      auto st = c.set_input_volume(jget<std::string>(*j, "source", ""),
+                                   jget(*j, "volume", 1.0));
+      return st.ok() ? ok() : err(st.error());
+    }
     if (op == "stop") {
       auto made = c.stop_capture();
       return made.ok() ? ok({{"asset", made->str()}}) : err(made.error());

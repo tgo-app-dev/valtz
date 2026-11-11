@@ -364,6 +364,9 @@ usage()
       "        --voice is the next speaker's, cloned from its sound and the\n"
       "        words said in it: --voice-text, else its transcript -- Valtz\n"
       "        transcribes it first when it has none. A 44.1 kHz mono WAV)\n"
+      "  record --input-volume <mic-id> <0...1>  (a microphone's own input\n"
+      "        volume, as System Settings › Sound › Input sets it; then the\n"
+      "        sources with theirs)\n"
       "  record --sources | record <project.valtz> [<sound-comp-id>]\n"
       "        [--source id] [--seconds s]  (a microphone -- the default\n"
       "        one without --source -- or the system's audio, \"system\",\n"
@@ -6125,14 +6128,31 @@ main(int argc, char** argv)
     // record --sources | record <proj> [<sound-comp>] [--source id]
     // [--seconds s]: a microphone or the system's audio, into the
     // composition -- or, with none, the asset list (DESIGN §7b).
+    // record --input-volume <source> <0...1>: a microphone's own input
+    // volume, as System Settings sets it.
+    if (!args.empty() && args[0] == "--input-volume") {
+      if (args.size() < 3) {
+        return usage();
+      }
+      const Status st = c.set_input_volume(args[1], std::stod(args[2]));
+      if (!st.ok()) {
+        return fail(st.error());
+      }
+      args = {"--sources"};
+    }
     const Json src = c.capture_sources();
     if (!args.empty() && args[0] == "--sources") {
       for (const auto& s : jget(src, "sources", Json::array())) {
-        std::printf("  %-9s %s%s  %s\n",
+        const Json v = jget(s, "input_volume", Json());
+        std::printf("  %-9s %s%s  %s%s\n",
                     jget<std::string>(s, "kind", "").c_str(),
                     jget<std::string>(s, "name", "").c_str(),
                     jget(s, "preferred", false) ? " (default)" : "",
-                    jget<std::string>(s, "id", "").c_str());
+                    jget<std::string>(s, "id", "").c_str(),
+                    v.is_number() ? std::format("  input volume {:.0f}%",
+                                                v.get<double>() * 100)
+                                        .c_str()
+                                  : "");
       }
       std::printf("  microphone permission: %s\n",
                   jget<std::string>(src, "microphone", "").c_str());

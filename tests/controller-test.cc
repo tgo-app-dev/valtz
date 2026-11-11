@@ -11,6 +11,7 @@
 #include "valtz/controller/controller.h"
 #include "valtz/media/refmod.h"
 #include "valtz/media/camera.h"
+#include "valtz/media/capture.h"
 #include "valtz/media/exif.h"
 #include "valtz/media/markup.h"
 #include "valtz/media/model-input.h"
@@ -2958,6 +2959,85 @@ TEST(controller, p_h3_image_runs_on_fl2va_under_its_adapter)
   REQUIRE(es->inputs.size() >= 2);
   CHECK(es->inputs[0].role == "base");
   CHECK(es->model.dit.filename() == "FL2VA");
+}
+
+// MiniMax-H3-Image (DESIGN §4x): its recipe names the model whose text
+// encoder it conditions on -- the first of its `encoder_from` here, the
+// encoder alone, else FL2VA, else Ref2VA -- and the job is handed that
+// model's folder; its own DiT, no adapter, 6 steps. With none of them
+// here it is refused, naming the encoder's own download.
+TEST(controller, minimax_h3_image_conditions_on_an_h3_encoder_here)
+{
+  auto root = test::temp_dir("ctl-h3i");
+  const fs::path models = root / "models";
+  auto install = [&](const std::string& f) {
+    fs::create_directories((models / f).parent_path());
+    std::ofstream(models / f) << "w";
+  };
+  install("MiniMaxAI/MiniMax-H3-Image/model_index.json");
+  install("MiniMaxAI/MiniMax-H3-Image/transformer/model.safetensors");
+  auto make = [&](HeldEngine*& engine) {
+    ControllerConfig cfg;
+    cfg.support_root = root / "support";
+    cfg.model_roots = {models};
+    cfg.with_engine = false;
+    cfg.extensions = false;
+    cfg.engine_factory = [&engine] {
+      auto e = std::make_unique<HeldEngine>();
+      engine = e.get();
+      return std::unique_ptr<engine::Engine>(std::move(e));
+    };
+    return Controller::create(cfg);
+  };
+  auto ask = [&](Controller& ctl, const char* name) {
+    auto pid = ctl.create_project(root / std::format("{}.valtz", name), name);
+    GenerateImageRequest req;
+    req.project = pid.ok() ? *pid : ProjectId();
+    req.prompt = "A lighthouse at dusk";
+    req.model = "minimax-h3-image";
+    req.width = 1024;
+    req.height = 1024;
+    req.steps = 20;
+    return ctl.generate_image(req);
+  };
+  // No encoder anywhere: refused, naming the encoder's download.
+  {
+    HeldEngine* engine = nullptr;
+    auto made = make(engine);
+    REQUIRE_OK(made);
+    auto job = ask(**made, "none");
+    REQUIRE(!job.ok());
+    CHECK(job.error().message.find("MiniMax H3 text encoder") !=
+          std::string::npos);
+  }
+  // Ref2VA here: its encoder.
+  install("MiniMaxAI/MiniMax-H3/Ref2VA/model.safetensors");
+  {
+    HeldEngine* engine = nullptr;
+    auto made = make(engine);
+    REQUIRE_OK(made);
+    auto job = ask(**made, "ref2va");
+    REQUIRE_OK(job);
+    const auto* spec = engine->spec(*job);
+    REQUIRE(spec != nullptr);
+    CHECK(jget<std::string>(spec->params, "encoder", "") ==
+          "minimax-h3-ref2va");
+    CHECK(spec->model.encoder.filename() == "Ref2VA");
+    CHECK(spec->model.dit.empty() && spec->model.lora.empty());
+    CHECK(jget(spec->params, "steps", 0) == 6);
+    CHECK(!spec->params.contains("dit_model"));
+  }
+  // FL2VA too: FL2VA's, ahead of Ref2VA's.
+  install("MiniMaxAI/MiniMax-H3/FL2VA/model.safetensors");
+  HeldEngine* engine = nullptr;
+  auto made = make(engine);
+  REQUIRE_OK(made);
+  auto job = ask(**made, "fl2va");
+  REQUIRE_OK(job);
+  const auto* spec = engine->spec(*job);
+  REQUIRE(spec != nullptr);
+  CHECK(jget<std::string>(spec->params, "encoder", "") == "minimax-h3-fl2va");
+  CHECK(spec->model.encoder.filename() == "FL2VA");
 }
 
 TEST(controller, a_job_waits_only_for_what_it_needs_downloading)
@@ -9993,6 +10073,67 @@ TEST(capture, a_voice_over_lies_where_it_was_heard)
 // timeline from frame 48: uncued at the frame, a new layer; cued half a
 // second in, that much earlier -- the head heard before the picture moved
 // lies before frame 48.
+// A source that CHANGES ITS FORMAT as it goes (DESIGN §7b, 2026-11-10):
+// an external microphone handed its first buffer in 16-bit and the rest
+// in float, and the writer read them all as its first -- each float's
+// halves two loud samples, the take unusable. Each buffer is converted
+// from its own format now: a sine through 16-bit, float and 24-bit
+// pieces comes out the same sine; a piece of another channel count is
+// left out. And the system's audio has no input volume to set.
+TEST(capture, a_source_that_changes_its_format_is_written_as_heard)
+{
+  auto root = test::temp_dir("capture-formats");
+  const double rate = 48000, hz = 440, amp = 0.25;
+  std::size_t at = 0;
+  auto piece = [&](bool flt, int bits, double seconds, int channels = 1) {
+    media::PcmPiece p;
+    p.is_float = flt;
+    p.bits = bits;
+    p.channels = channels;
+    p.rate = rate;
+    const auto n = static_cast<std::size_t>(seconds * rate);
+    for (std::size_t i = 0; i < n; ++i) {
+      const double v = amp * std::sin(2 * M_PI * hz * double(at + i) /
+                                      rate);
+      for (int c = 0; c < channels; ++c) {
+        p.samples.push_back(v);
+      }
+    }
+    if (channels == 1) {
+      at += n;
+    }
+    return p;
+  };
+  std::vector<media::PcmPiece> pieces;
+  pieces.push_back(piece(false, 16, 0.1));   // as the microphone began
+  pieces.push_back(piece(true, 32, 0.4));    // then float
+  pieces.push_back(piece(true, 32, 0.25, 2));  // two channels: left out
+  pieces.push_back(piece(false, 24, 0.25));  // and 24-bit
+  const fs::path out = root / "take.wav";
+  REQUIRE_OK(media::write_capture_pieces(pieces, out));
+  const std::vector<float> got = read_sound(out);
+  REQUIRE(got.size() == at);
+  double worst = 0, peak = 0;
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    const double want = amp * std::sin(2 * M_PI * hz * double(i) / rate);
+    worst = std::max(worst, std::abs(got[i] - want));
+    peak = std::max(peak, double(std::abs(got[i])));
+  }
+  CHECK(worst < 1e-3);
+  CHECK(peak < amp + 1e-3);
+  // As it was before: the first piece's format for all -- the float
+  // samples' halves near full scale.
+  CHECK(std::abs(rms(got, 0.2, 0.4) - amp / std::sqrt(2.0)) < 1e-3);
+
+  CHECK(!media::set_input_volume("system", 0.5).ok());
+  for (const auto& src : media::capture_sources()) {
+    if (src.input_volume) {
+      CHECK(*src.input_volume >= 0.0);
+      CHECK(*src.input_volume <= 1.0);
+    }
+  }
+}
+
 TEST(capture, a_real_voice_over_lands_on_the_timeline)
 {
   const char* source = std::getenv("VALTZ_TEST_CAPTURE");
@@ -20461,4 +20602,136 @@ TEST(agent, a_procedural_cards_size_and_length_hold_unless_named)
   // Its arguments' line leaves the code out.
   CHECK(transcript.find("\\n  c.fillStyle") == std::string::npos);
   REQUIRE_OK(ctl.agent_stop(*id));
+}
+
+// MiniMax-H3-Image's own prompt expander (MiniMax-H3-Image-PE) writes a
+// picture's Enhance where it is installed and the Mac has 32 GB: its own
+// system and task prompts, read from its download, the request in the
+// task's place; its sampler and thinking as its release asks; the reply
+// read after the thinking -- the caption the prompt, its ratio the
+// suggested shape. Below 32 GB, and for an edit, the helper as before.
+TEST(controller, minimax_h3_image_is_enhanced_by_its_own_expander)
+{
+  auto root = test::temp_dir("ctl-h3i-pe");
+  const fs::path helper =
+      root / "models" / "mlx-community" / "Qwen3.5-9B-OptiQ-4bit";
+  fs::create_directories(helper);
+  std::ofstream(helper / "config.json") << "{}";
+  std::ofstream(helper / "model.safetensors") << "w";
+  const fs::path pe = root / "models" / "MiniMaxAI" / "MiniMax-H3-Image-PE";
+  fs::create_directories(pe / "prompt" / "t2i");
+  std::ofstream(pe / "config.json") << R"({"model_type": "qwen3_5"})";
+  std::ofstream(pe / "model.safetensors") << "w";
+  std::ofstream(pe / "prompt" / "t2i" / "system_prompt.txt")
+      << "Reason first. Answer one JSON object.\n";
+  std::ofstream(pe / "prompt" / "t2i" / "task_prompt.txt")
+      << "Rules.\n{{\"expanded_caption\":\"X\",\"aspect_ratio\":\"R\"}}\n"
+         "input_text: {}\noutput_text:";
+  std::ofstream(pe / "prompt" / "t2i" / "request_params.json")
+      << R"({"reasoning_effort": "xhigh", "temperature": 1.0,
+             "top_p": 0.95, "top_k": 20, "min_p": 0.0,
+             "chat_template_kwargs": {"enable_thinking": true},
+             "max_tokens": 4096})";
+  auto run = [&](const char* gb, bool edit, auto&& check) {
+    ::setenv("VALTZ_RAM_LIMIT_GB", gb, 1);
+    ControllerConfig cfg;
+    cfg.support_root = root / (std::string("support-") + gb +
+                               (edit ? "-edit" : ""));
+    cfg.model_roots = {root / "models"};
+    cfg.with_engine = false;
+    cfg.extensions = false;
+    HeldEngine* engine = nullptr;
+    cfg.engine_factory = [&engine] {
+      auto e = std::make_unique<HeldEngine>();
+      engine = e.get();
+      return std::unique_ptr<engine::Engine>(std::move(e));
+    };
+    auto made = Controller::create(cfg);
+    ::unsetenv("VALTZ_RAM_LIMIT_GB");
+    REQUIRE_OK(made);
+    REQUIRE(engine != nullptr);
+    Controller& ctl = **made;
+    EnhancePromptRequest req;
+    req.prompt = "a lighthouse on a cliff";
+    req.model = "minimax-h3-image";
+    if (edit) { req.mode = "edit"; }
+    auto job = ctl.enhance_prompt(req);
+    REQUIRE_OK(job);
+    const auto chats = engine->held_of(engine::kOpChat);
+    REQUIRE(chats.size() == 1);
+    check(ctl, *engine, chats[0], *job);
+  };
+  run("32", false, [&](Controller& ctl, HeldEngine& engine, JobId chat,
+                       JobId job) {
+    const auto* spec = engine.spec(chat);
+    REQUIRE(spec != nullptr);
+    CHECK(spec->model.dir == pe);
+    const Json& p = spec->params;
+    CHECK(jget<std::string>(p, "system", "") ==
+          "Reason first. Answer one JSON object.");
+    const auto text = jget<std::string>(p, "text", "");
+    CHECK(text == "Rules.\n{\"expanded_caption\":\"X\",\"aspect_ratio\":"
+                  "\"R\"}\ninput_text: a lighthouse on a cliff\n"
+                  "output_text:");
+    CHECK(!jget(p, "disable_thinking", true));
+    CHECK(jget<std::string>(p, "reasoning_effort", "") == "xhigh");
+    CHECK(jget(p, "max_new_tokens", 0) == 4096);
+    const Json smp = jget(p, "sampling", Json::object());
+    CHECK(jget(smp, "temperature", 0.0) == 1.0);
+    CHECK(jget(smp, "top_k", 0) == 20);
+    // Its reasoning first -- a draft JSON in it is not the answer.
+    engine.turn(chat,
+                {{"text", "<|__vpipe_think_start__|>A draft: "
+                          "{\"expanded_caption\":\"no\"}<|__vpipe_think_end__"
+                          "|>{\"expanded_caption\":\"A white lighthouse "
+                          "stands on a dark cliff.\",\"aspect_ratio\":"
+                          "\"3:4\"}"}});
+    std::string prompt, aspect;
+    for (int i = 0; i < 50 && prompt.empty(); ++i) {
+      Event ev;
+      if (ctl.events().wait(ev, 100) && ev.job == job &&
+          ev.kind == "assist.enhanced") {
+        prompt = jget<std::string>(ev.data, "prompt", "");
+        aspect = jget<std::string>(ev.data, "aspect", "");
+      }
+    }
+    CHECK(prompt == "A white lighthouse stands on a dark cliff.");
+    CHECK(aspect == "3:4");
+    // Its release constrains the answer to JSON with a grammar; without
+    // one the expander may write the caption itself after its reasoning.
+    EnhancePromptRequest again;
+    again.prompt = "a lighthouse on a cliff";
+    again.model = "minimax-h3-image";
+    auto job2 = ctl.enhance_prompt(again);
+    REQUIRE_OK(job2);
+    const auto chats = engine.held_of(engine::kOpChat);
+    REQUIRE(!chats.empty());
+    engine.turn(chats.back(),
+                {{"text", "<|__vpipe_think_start__|>Plan: a {square} frame."
+                          "<|__vpipe_think_end__|>\n\n\nThe image is a "
+                          "photograph of a white lighthouse.\n"}});
+    prompt.clear();
+    for (int i = 0; i < 50 && prompt.empty(); ++i) {
+      Event ev;
+      if (ctl.events().wait(ev, 100) && ev.job == *job2 &&
+          ev.kind == "assist.enhanced") {
+        prompt = jget<std::string>(ev.data, "prompt", "");
+      }
+    }
+    CHECK(prompt == "The image is a photograph of a white lighthouse.");
+  });
+  // A 24 GB Mac: the helper, on Valtz's own guide.
+  run("24", false, [&](Controller&, HeldEngine& engine, JobId chat, JobId) {
+    const auto* spec = engine.spec(chat);
+    REQUIRE(spec != nullptr);
+    CHECK(spec->model.dir == helper);
+    CHECK(jget<std::string>(spec->params, "system", "").empty());
+    CHECK(jget(spec->params, "disable_thinking", false));
+  });
+  // An edit: the helper, whatever the Mac.
+  run("32", true, [&](Controller&, HeldEngine& engine, JobId chat, JobId) {
+    const auto* spec = engine.spec(chat);
+    REQUIRE(spec != nullptr);
+    CHECK(spec->model.dir == helper);
+  });
 }

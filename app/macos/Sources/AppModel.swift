@@ -462,7 +462,7 @@ enum SizeClass: Int, CaseIterable, Identifiable, Sendable {
     case draft = 512, standard = 1024, large = 1536
     /// 4K: 4096 pixels on the LONG side (4096 x 4096 square, 4096 x 2304
     /// at 16:9) -- offered only for a model that makes them (catalog
-    /// `max_edge`: FLUX.3 Image Klein), for pictures. A clip's is 2K:
+    /// `max_edge`: FLUX.3 Image Klein, MiniMax-H3-Image), for pictures. A clip's is 2K:
     /// 2560 on the long side (2560 x 1440 at 16:9), offered where the clip
     /// model's refiner is here (DESIGN §4q: drafted at 768, regenerated).
     case ultra = 4096
@@ -495,7 +495,7 @@ enum SizeClass: Int, CaseIterable, Identifiable, Sendable {
         case .draft: String(localized: "About 512 × 512 pixels: the quickest")
         case .standard: String(localized: "About 1024 × 1024 pixels")
         case .large: String(localized: "About 1536 × 1536 pixels")
-        case .ultra: String(localized: "4096 pixels on the long side: up to 16 times Standard's pixels, and an hour or more to make")
+        case .ultra: String(localized: "4096 pixels on the long side: up to 16 times Standard's pixels, and many times longer to make")
         }
     }
 }
