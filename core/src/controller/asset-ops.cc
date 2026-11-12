@@ -46,6 +46,15 @@ constexpr std::array<AssetOpTake, 1> kSeparate = {{
 constexpr std::array<std::string_view, 2> kStems = {"vocals",
                                                     "accompaniment"};
 
+// A voice -- a song's vocals, or a whole song -- its lead taken from the
+// rest: the backing vocals (and, given a whole song, its accompaniment).
+constexpr std::array<AssetOpTake, 1> kSeparateLead = {{
+  {AssetKind::Audio, engine::kOpSeparateAudio,
+   Capability::AudioSeparateLead},
+}};
+constexpr std::array<std::string_view, 2> kVoices = {"lead vocals",
+                                                     "backing vocals"};
+
 // A sound -- a clip's, a composition's mix -- its beats found (§4v): no
 // model, vpipe's beat-track.
 constexpr std::array<AssetOpTake, 2> kBeats = {{
@@ -54,11 +63,13 @@ constexpr std::array<AssetOpTake, 2> kBeats = {{
 }};
 constexpr std::array<std::string_view, 1> kBeatTimes = {"beats"};
 
-constexpr std::array<AssetOperation, 6> kOperations = {{
+constexpr std::array<AssetOperation, 7> kOperations = {{
   {"transcribe", "Transcribe", kTranscribe, false, kTranscript},
   {"summarize", "Summarize Video", kSummarize, false, kSummary},
   {"separate", "Separate Vocals and Accompaniment", kSeparate, false,
-   kStems},
+   kStems, "vocals"},
+  {"separate-lead", "Separate Lead and Backing Vocals", kSeparateLead,
+   false, kVoices, "lead"},
   {"beats", "Detect Beats", kBeats, false, kBeatTimes},
   {"upscale", "Render Upscaled", kUpscale, true, kUpscaled},
   {"interpolate", "Render Interpolated", kInterpolate, true,
@@ -82,9 +93,12 @@ find_asset_operation(std::string_view name)
 }
 
 const AssetOperation*
-asset_operation_of(std::string_view op)
+asset_operation_of(std::string_view op, std::string_view split)
 {
   for (const auto& o : kOperations) {
+    if (!split.empty() && !o.split.empty() && o.split != split) {
+      continue;
+    }
     for (const auto& t : o.takes) {
       if (t.op == op) {
         return &o;

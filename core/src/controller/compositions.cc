@@ -2747,8 +2747,10 @@ Controller::mixed_(ProjectId pid, AssetId id, int depth)
   VALTZ_ASSIGN(media::SoundPlan plan, shaped_plan_(pid, std::move(raw)));
   const ContentHash key = sound_key(plan);
   bool silent = false;
+  // "mix-2": a layer starting partway in now keeps its first volume from
+  // its first sample (media/sound.mm); the mixes made before are left.
   VALTZ_ASSIGN(fs::path out,
-               cached_(pid, cache::CacheStore::key_for(key, "mix.wav"),
+               cached_(pid, cache::CacheStore::key_for(key, "mix-2.wav"),
                        [&](const fs::path& out) -> Status {
     VALTZ_ASSIGN(bool made, media::mix_sound(plan, out));
     if (!made) {
@@ -3221,14 +3223,9 @@ Controller::timed_source_(ProjectId pid, project::Project& p,
     const Rational ir = in->time.rate.num > 0
                             ? in->time.rate
                             : fps ? v.info.frame_rate : Rational{1000, 1};
-    const double k = t.mark_rate.to_double() / ir.to_double();
-    if (in->time.in >= 0) {
-      t.span_in = std::llround(static_cast<double>(in->time.in) * k);
-    }
-    if (in->time.out >= 0) {
-      t.span_out = std::llround(
-                       static_cast<double>(in->time.out + 1) * k) - 1;
-    }
+    t.span_in = in->time.in;
+    t.span_out = in->time.out;
+    t.span_rate = ir;
     return t;
   }
   if (s.cls == AssetClass::Composition) {
@@ -3319,18 +3316,28 @@ Controller::timing_over_(const project::LayerTime& t, const TimedSource& src,
                                  rate, src.seconds, std::move(speed));
   }
   // A part shown as its clip: the layer's marks -- the part's own frames
-  // -- counted from its span's start, cut at its end.
-  const double k = src.mark_rate.to_double() / marks.to_double();
-  const std::int64_t from = std::max<std::int64_t>(0, src.span_in);
-  const auto at = [&](std::int64_t f) {
-    return std::llround(static_cast<double>(f) * k);
+  // -- counted from its span's start, cut at its end. Counted in the
+  // clip's frames, or the span's own units where they are finer (a span
+  // ending between two frames: thousandths of one).
+  const Rational span = src.span_rate.num > 0 ? src.span_rate
+                                              : src.mark_rate;
+  const Rational unit = span.to_double() > src.mark_rate.to_double()
+                            ? span : src.mark_rate;
+  const auto in_units = [&](std::int64_t f, Rational of) {
+    return std::llround(static_cast<double>(f) * unit.to_double() /
+                        of.to_double());
   };
-  const std::int64_t in = from + (t.in >= 0 ? at(t.in) : 0);
-  std::int64_t out = t.out >= 0 ? from + at(t.out + 1) - 1 : src.span_out;
-  if (src.span_out >= 0) {
-    out = std::min(out, src.span_out);
+  const std::int64_t from =
+      src.span_in >= 0 ? in_units(src.span_in, span) : 0;
+  const std::int64_t span_out =
+      src.span_out >= 0 ? in_units(src.span_out + 1, span) - 1 : -1;
+  const std::int64_t in = from + (t.in >= 0 ? in_units(t.in, marks) : 0);
+  std::int64_t out = t.out >= 0 ? from + in_units(t.out + 1, marks) - 1
+                                : span_out;
+  if (span_out >= 0) {
+    out = std::min(out, span_out);
   }
-  return media::resolve_timing(t.offset, t.duration, in, out, src.mark_rate,
+  return media::resolve_timing(t.offset, t.duration, in, out, unit,
                                rate, src.seconds, std::move(speed));
 }
 
@@ -4163,6 +4170,28 @@ from_first_frame(project::Modifier m, const std::string& layer)
   return m;
 }
 
+// A keyed track cut at its frame `c` (the cut, in the track's frames from
+// the layer's start): the first part's keys up to the frame before it, a
+// key there holding the track's value; the second's from a key at its
+// first frame holding the value at the cut, the keys after it moved by
+// as much. Linear and held spans are the same either side; a spline's
+// curve is laid through the new keys (its ends level, as a track's are).
+template <class T>
+std::pair<media::Keyed<T>, media::Keyed<T>>
+cut_track(const media::Keyed<T>& k, std::int64_t c)
+{
+  media::Keyed<T> a = k;
+  media::Keyed<T> b = k;
+  pin_key(a, c - 1);
+  std::erase_if(a.keys, [&](const auto& x) { return x.frame > c - 1; });
+  pin_key(b, c);
+  std::erase_if(b.keys, [&](const auto& x) { return x.frame < c; });
+  for (auto& x : b.keys) {
+    x.frame -= c;
+  }
+  return {std::move(a), std::move(b)};
+}
+
 }  // namespace
 
 Result<Controller::SplitParts>
@@ -4205,14 +4234,11 @@ Controller::split_layer(ProjectId pid, AssetId aid, const std::string& layer,
   const Rational raw_rate = video && rv.info.frame_rate.num > 0
                                 ? rv.info.frame_rate : Rational{1000, 1};
   const double raw_seconds = seconds_of(rv, video);
-  // Keyed along it, a look would have to be cut too: not yet.
+  // Its tracks, cut with it below where keyed along it.
+  const auto adjust = adjustment_keys_of(c, cut.id);
   const auto crop = crop_keys_of(c, cut.id);
-  if (adjustment_keys_of(c, cut.id).keys.size() > 1 ||
-      crop.place.keys.size() > 1 || crop.turn.keys.size() > 1 ||
-      speed_keys_of(c, cut.id).keys.size() > 1 ||
-      sound_keys_of(c, cut.id).keys.size() > 1) {
-    return make_error(Code::InvalidArgument, msg::kSplitKeyed);
-  }
+  const auto speed = speed_keys_of(c, cut.id);
+  const auto heard = sound_keys_of(c, cut.id);
   // The layer in time, as it is drawn: in what it shows (a part: its own
   // seconds, from where its span starts in the source).
   double base = 0;
@@ -4243,19 +4269,70 @@ Controller::split_layer(ProjectId pid, AssetId aid, const std::string& layer,
       at > lt.end() - 1.0 / fps + eps) {
     return make_error(Code::InvalidArgument, msg::kSplitOutside);
   }
-  // The two spans, in the source's seconds, then its frames (a mark-out
-  // keeps its frame: the first part ends a frame before the cut).
+  // A track keyed along it is cut at the cut (cut_track): each part keyed
+  // on its side of it, a key either side holding the value there -- the
+  // first part's last frame, the second's first -- so each part looks,
+  // plays and sounds there as the layer did. The cut in each track's own
+  // frames: from the layer's start, at its rate (the timeline's when
+  // keyed before tracks had one).
+  const auto at_cut = [&](Rational r) {
+    const double tr = r.num > 0 ? r.to_double() : fps;
+    return std::max<std::int64_t>(
+        1, std::llround(static_cast<double>(frame - t.offset) * tr / fps));
+  };
+  const auto keyed = [](const auto& k) {
+    return k.keys.size() > 1 && !k.identity();
+  };
+  std::optional<std::pair<media::KeyedSpeed, media::KeyedSpeed>> speeds;
+  if (keyed(speed)) {
+    speeds = cut_track(speed, at_cut(speed.rate));
+  }
+  // The two spans, in the source's seconds. The second starts where the
+  // layer had reached at the cut; the first ends where ITS speed reaches
+  // there -- held from the frame before the cut, a keyed speed's last
+  // frame plays a hair slower -- so it ends at the cut, not past it.
   const double end_s = std::min({lt.out, lt.source_at(lt.end()),
                                  shown_seconds});
   const double r0 = base + lt.in;
   const double rc = base + lt.source_at(at);
+  double rc1 = rc;
+  if (speeds) {
+    const media::LayerTiming lt1 = media::resolve_timing(
+        t.offset, t.duration, t.in, t.out,
+        t.rate.num > 0 ? t.rate : shown_rate, rate, shown_seconds,
+        speeds->first);
+    rc1 = base + lt1.source_at(at);
+  }
   const double r1 = base + end_s;
+  // Marked in the source's frames (a mark-out keeps its frame: the first
+  // part ends a frame before the cut) -- or, where an end falls between
+  // two of its frames (a speed changing along the layer, a timeline at
+  // another rate), in thousandths of one: the parts played on from
+  // exactly where the layer was, not the nearest frame (a half frame
+  // late, the second part ran out a frame early).
   const double mr = raw_rate.to_double();
-  const std::int64_t in1 = std::llround(r0 * mr);
-  const std::int64_t in2 = std::llround(rc * mr);
-  const std::int64_t last = std::llround(raw_seconds * mr) - 1;
-  const std::int64_t out2 = std::llround(r1 * mr) - 1;
-  if (in2 <= in1 || out2 < in2) {
+  const auto whole = [&](double s) {
+    return std::abs(s * mr - std::round(s * mr)) < 1e-6;
+  };
+  const Rational marks =
+      whole(r0) && whole(rc) && whole(rc1) && whole(r1)
+          ? raw_rate : Rational{raw_rate.num * 1000, raw_rate.den};
+  const double fr = marks.to_double();
+  // A mark-in rounded UP, never down: a frame shows from its own time on
+  // (ClipCursor::at), so a part starting a hair early -- a thousandth of a
+  // frame -- showed the frame before wherever the layer fell exactly on
+  // one (every other frame at 1.5x: a part cut again, seen in the app).
+  // Up, it is at most a thousandth late; arithmetic's hair below a whole
+  // mark (the 1e-6) stays on it.
+  const auto in_mark = [&](double s) {
+    return static_cast<std::int64_t>(std::ceil(s * fr - 1e-6));
+  };
+  const std::int64_t in1 = in_mark(r0);
+  const std::int64_t out1 = std::llround(rc1 * fr) - 1;
+  const std::int64_t in2 = in_mark(rc);
+  const std::int64_t last = std::llround(raw_seconds * fr) - 1;
+  const std::int64_t out2 = std::llround(r1 * fr) - 1;
+  if (out1 < in1 || in2 <= in1 || out2 < in2) {
     return make_error(Code::InvalidArgument, msg::kSplitOutside);
   }
   // The parts: compositions of one layer each, the source's frame and
@@ -4275,13 +4352,13 @@ Controller::split_layer(ProjectId pid, AssetId aid, const std::string& layer,
     l0.source_version = raw_version;
     l0.time.in = in > 0 ? in : -1;
     l0.time.out = out < last ? out : -1;
-    l0.time.rate = raw_rate;
+    l0.time.rate = marks;
     VALTZ_TRY(p->set_layers(made, {l0}));
     post_("assets.changed", JobId{}, {{"project", pid}, {"asset", made},
                                       {"reason", "layers"}});
     return made;
   };
-  VALTZ_ASSIGN(AssetId first, part(in1, in2 - 1, shown.name + " · 1"));
+  VALTZ_ASSIGN(AssetId first, part(in1, out1, shown.name + " · 1"));
   VALTZ_ASSIGN(AssetId second, part(in2, out2, shown.name + " · 2"));
   VALTZ_ASSIGN(project::Asset a1, p->asset(first));
   VALTZ_ASSIGN(project::Asset a2, p->asset(second));
@@ -4310,7 +4387,8 @@ Controller::split_layer(ProjectId pid, AssetId aid, const std::string& layer,
   }
   const std::string added = next.id;
   ls.insert(it + 1, std::move(next));
-  // Its look, speed and sound on both.
+  // Its look, speed and sound on both: a track keyed once holds its
+  // value along each.
   std::vector<project::Modifier> mods = c.modifiers;
   for (const auto& m : c.modifiers) {
     if (m.layer == cut.id) {
@@ -4319,6 +4397,30 @@ Controller::split_layer(ProjectId pid, AssetId aid, const std::string& layer,
   }
   VALTZ_TRY(p->set_modifiers(aid, std::move(mods)));
   VALTZ_TRY(p->set_layers(aid, std::move(ls)));
+  // Its keyed tracks cut (above).
+  if (keyed(adjust)) {
+    const auto [a, b] = cut_track(adjust, at_cut(adjust.rate));
+    VALTZ_TRY(set_adjustment_keys(pid, aid, a, cut.id));
+    VALTZ_TRY(set_adjustment_keys(pid, aid, b, added));
+  }
+  if (keyed(crop.place) || keyed(crop.turn)) {
+    const std::int64_t at = at_cut(crop.rate);
+    media::KeyedCrop a = crop;
+    media::KeyedCrop b = crop;
+    std::tie(a.place, b.place) = cut_track(crop.place, at);
+    std::tie(a.turn, b.turn) = cut_track(crop.turn, at);
+    VALTZ_TRY(set_crop_keys(pid, aid, a, cut.id));
+    VALTZ_TRY(set_crop_keys(pid, aid, b, added));
+  }
+  if (speeds) {
+    VALTZ_TRY(set_speed_keys(pid, aid, speeds->first, cut.id));
+    VALTZ_TRY(set_speed_keys(pid, aid, speeds->second, added));
+  }
+  if (keyed(heard)) {
+    const auto [a, b] = cut_track(heard, at_cut(heard.rate));
+    VALTZ_TRY(set_sound_keys(pid, aid, a, cut.id));
+    VALTZ_TRY(set_sound_keys(pid, aid, b, added));
+  }
   post_("assets.changed", JobId{}, {{"project", pid}, {"asset", aid},
                                     {"reason", "layers"}, {"layer", added}});
   return SplitParts{first, second, added};

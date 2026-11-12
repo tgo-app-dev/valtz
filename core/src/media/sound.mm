@@ -962,6 +962,15 @@ mix_sound(const SoundPlan& plan, const fs::path& out)
           [AVMutableAudioMixInputParameters
               audioMixInputParametersWithTrack:t];
       const auto pts = volume_points(one, i);
+      // Its first volume held from the mix's start: AVFoundation reads a
+      // track at 1.0 until a volume is first set and glides from there
+      // -- a layer starting partway in, its keys lower, came out up to
+      // twice as loud for its first ~10 ms (the player's alike,
+      // 2026-11-09; found 2026-11-11 by a keyed fade cut in two).
+      if (!pts.empty()) {
+        [p setVolume:static_cast<float>(pts.front().second)
+              atTime:kCMTimeZero];
+      }
       for (std::size_t k = 0; k + 1 < pts.size(); ++k) {
         const double a = pts[k].first;
         const double b = pts[k + 1].first;

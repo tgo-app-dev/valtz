@@ -317,7 +317,13 @@ be MADE is shots: below):
    on past the layer's end: leave the timeline room for it. The
    person's own SONG under a voice-over or someone speaking:
    `separate_sound` (when `can_separate_songs`) gives its accompaniment
-   without the singing -- `add_sound` that one.
+   without the singing -- `add_sound` that one. The LEAD singer alone,
+   or the harmonies without it (a karaoke track that keeps the backing
+   vocals): `separate_sound` with `split` "lead" (when
+   `can_separate_lead_vocals`) on the VOCALS the first split made -- it
+   gives `lead_vocals` and `backing_vocals`; on a whole song the
+   accompaniment comes with the backing. It tells lead from backing, not
+   one singer from another: two singers taking turns are both the lead.
 8. `wait_for_generations`, then `get_composition`: no gaps between the
    clips, the music covering them and ending with them.
 
@@ -539,8 +545,9 @@ scene longer than a few seconds -- rather than cut from their clips
 
 Each tool that makes something runs a MODEL: Auto's, unless the person
 names one. `list_models` (a `task`: picture, edit, shot,
-shot_references, music, voiceover, transcribe, separate, upscale; none:
-all of them) says which are on this Mac -- each one's id, name, what it
+shot_references, music, voiceover, transcribe, separate, separate_lead,
+upscale; none: all of them) says which are on this Mac -- each one's id,
+name, what it
 does, Auto's marked -- and which are not downloaded.
 
 1. "Which video models do I have?", "what can make music here?": answer

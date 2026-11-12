@@ -1833,9 +1833,9 @@ TEST(controller, a_song_is_split_into_its_voice_and_accompaniment)
       separate = o;
     }
   }
-  CHECK((names == std::vector<std::string>{"transcribe", "summarize",
-                                           "separate", "beats", "upscale",
-                                           "interpolate"}));
+  CHECK((names == std::vector<std::string>{
+            "transcribe", "summarize", "separate", "separate-lead",
+            "beats", "upscale", "interpolate"}));
   REQUIRE(separate.is_object());
   CHECK(!jget(separate, "on_layer", true));
   CHECK(separate["makes"] == Json::array({"vocals", "accompaniment"}));
@@ -1929,6 +1929,120 @@ TEST(controller, a_song_is_split_into_its_voice_and_accompaniment)
   REQUIRE_OK(ctl.undo(*pid));
   CHECK(!p->asset(voice->id).ok());
   CHECK(!p->asset(rest->id).ok());
+}
+
+// A voice's LEAD taken from its BACKING (DESIGN §4j): an operation of its
+// own -- a karaoke model's capability apart, so the vocals' Separate
+// never runs one, nor this one a vocals model -- that shares the
+// separation's engine op, its split "lead" naming the task's operation;
+// the model's YAML named by the catalog (its repository holds two).
+TEST(controller, a_voice_is_split_into_its_lead_and_backing)
+{
+  auto root = test::temp_dir("ctl-separate-lead");
+  // The karaoke model alone "installed": no vocals model here.
+  const fs::path repo = root / "models" / "becruily" /
+                        "bs-roformer-karaoke";
+  fs::create_directories(repo);
+  std::ofstream(repo / "bs_roformer_karaoke_frazer_becruily.ckpt") << "w";
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "L.valtz", "lead");
+  REQUIRE_OK(pid);
+
+  // Listed apart: the lead split runs here, the vocals' does not.
+  Json lead, vocals;
+  for (const auto& o : ctl.asset_operations_json()) {
+    const auto name = jget<std::string>(o, "name", "");
+    if (name == "separate-lead") {
+      lead = o;
+    } else if (name == "separate") {
+      vocals = o;
+    }
+  }
+  REQUIRE(lead.is_object());
+  REQUIRE(vocals.is_object());
+  CHECK(lead["makes"] == Json::array({"lead vocals", "backing vocals"}));
+  REQUIRE(lead["takes"].size() == 1);
+  CHECK(jget<std::string>(lead["takes"][0], "kind", "") == "audio");
+  CHECK(jget(lead["takes"][0], "ready", false));
+  CHECK(jget<std::string>(lead["takes"][0], "model", "") ==
+        "bs-roformer-karaoke");
+  CHECK(jget<std::string>(lead["takes"][0], "capability", "") ==
+        "audio-separate-lead");
+  CHECK(!jget(vocals["takes"][0], "ready", true));
+  CHECK(asset_operation_of(engine::kOpSeparateAudio, "lead")->name ==
+        "separate-lead");
+  CHECK(asset_operation_of(engine::kOpSeparateAudio, "vocals")->name ==
+        "separate");
+
+  REQUIRE(write_tone(root / "voices.wav", 1, 440, 0.5));
+  auto voices = import_and_wait(ctl, *pid, root / "voices.wav");
+  REQUIRE(voices);
+  auto ask = [&](const char* op, std::string model = "auto") {
+    Controller::AssetOpRequest req;
+    req.project = *pid;
+    req.asset = *voices;
+    req.operation = op;
+    req.model = std::move(model);
+    return ctl.run_asset_operation(std::move(req));
+  };
+  // The vocals' Separate finds no vocals model: the karaoke one is not.
+  auto none = ask("separate");
+  REQUIRE(!none.ok());
+  CHECK(none.error().key == msg::kNoSeparator.key);
+  // Nor is a vocals model the lead's, named.
+  auto wrong = ask("separate-lead", "bs-roformer-vocals");
+  REQUIRE(!wrong.ok());
+  CHECK(wrong.error().key == msg::kNoLeadSeparator.key);
+
+  auto split = ask("separate-lead");
+  REQUIRE_OK(split);
+  REQUIRE(split->made.size() == 2);
+  project::Project* p = ctl.project(*pid);
+  auto first = p->asset(split->made[0]);
+  auto second = p->asset(split->made[1]);
+  REQUIRE_OK(first);
+  REQUIRE_OK(second);
+  CHECK(first->name.ends_with(" lead vocals"));
+  CHECK(second->name.ends_with(" backing vocals"));
+  const Json ts = ctl.tasks();
+  REQUIRE(ts.size() == 1);
+  CHECK(jget<std::string>(ts[0], "operation", "") == "separate-lead");
+  const engine::JobSpec* spec = engine->spec(split->job);
+  REQUIRE(spec != nullptr);
+  CHECK(spec->op == engine::kOpSeparateAudio);
+  CHECK(spec->model.id == "bs-roformer-karaoke");
+  CHECK(jget<std::string>(spec->params, "split", "") == "lead");
+  CHECK(jget<std::string>(spec->params, "checkpoint", "") ==
+        "bs_roformer_karaoke_frazer_becruily.ckpt");
+  const Json sep = jget(jget(spec->model.engine, "vpipe", Json::object()),
+                        "separate", Json::object());
+  CHECK(jget<std::string>(sep, "config", "") ==
+        "config_karaoke_frazer_becruily.yaml");
+  CHECK(jget<std::string>(sep, "stem", "") == "lead vocals");
+
+  // Each output into its own asset, as the model names it.
+  REQUIRE(write_tone(root / "lead.wav", 1, 880, 0.3));
+  REQUIRE(write_tone(root / "back.wav", 1, 220, 0.3));
+  engine->finish_outputs(split->job, {{"lead vocals", root / "lead.wav"},
+                                      {"backing vocals", root / "back.wav"}});
+  CHECK(ctl.tasks().empty());
+  auto bv = p->version(second->id);
+  REQUIRE_OK(bv);
+  CHECK(jget<std::string>(bv->executed, "output", "") == "backing vocals");
 }
 
 namespace {
@@ -2989,7 +3103,7 @@ TEST(controller, minimax_h3_image_conditions_on_an_h3_encoder_here)
     };
     return Controller::create(cfg);
   };
-  auto ask = [&](Controller& ctl, const char* name) {
+  auto ask = [&](Controller& ctl, const char* name, bool preview = true) {
     auto pid = ctl.create_project(root / std::format("{}.valtz", name), name);
     GenerateImageRequest req;
     req.project = pid.ok() ? *pid : ProjectId();
@@ -2998,6 +3112,7 @@ TEST(controller, minimax_h3_image_conditions_on_an_h3_encoder_here)
     req.width = 1024;
     req.height = 1024;
     req.steps = 20;
+    req.preview = preview;
     return ctl.generate_image(req);
   };
   // No encoder anywhere: refused, naming the encoder's download.
@@ -3038,6 +3153,25 @@ TEST(controller, minimax_h3_image_conditions_on_an_h3_encoder_here)
   REQUIRE(spec != nullptr);
   CHECK(jget<std::string>(spec->params, "encoder", "") == "minimax-h3-fl2va");
   CHECK(spec->model.encoder.filename() == "FL2VA");
+  CHECK(spec->model.preview.empty());   // no TAE here
+
+  // H3's TAE here: its live preview, as a clip's -- unless asked off
+  // (valtzctl --no-preview), which a picture's request had dropped.
+  install("madebyollin/taehv/taeh3.safetensors");
+  HeldEngine* with_tae = nullptr;
+  auto tm = make(with_tae);
+  REQUIRE_OK(tm);
+  auto shown = ask(**tm, "tae");
+  REQUIRE_OK(shown);
+  const auto* ts = with_tae->spec(*shown);
+  REQUIRE(ts != nullptr);
+  CHECK(ts->model.preview.filename() == "taeh3.safetensors");
+  CHECK(!ts->params.contains("preview"));
+  auto quiet = ask(**tm, "quiet", false);
+  REQUIRE_OK(quiet);
+  const auto* qs = with_tae->spec(*quiet);
+  REQUIRE(qs != nullptr);
+  CHECK(!jget(qs->params, "preview", true));
 }
 
 TEST(controller, a_job_waits_only_for_what_it_needs_downloading)
@@ -7478,18 +7612,13 @@ TEST(composition, a_clip_is_cut_in_two_parts)
   CHECK(q2[0].source == *clip && q2[0].time.in == 34);
   CHECK(b.layers(*tl).size() == 3);
   CHECK(b.layers(*tl)[2].time.offset == 40);
-  // Keyed along it: refused. A picture: refused.
-  media::KeyedAdjustments ramp = look;
-  ramp.keys.push_back({10, media::Adjustments{}});
-  REQUIRE_OK(ctl.set_adjustment_keys(pid, *tl, ramp, l));
-  auto keyed = ctl.split_layer(pid, *tl, l, 20);
-  CHECK(!keyed.ok() && keyed.error().key == msg::kSplitKeyed.key);
+  // A picture: refused.
   auto pic = ctl.instantiate(pid, *red, *tl);
   REQUIRE_OK(pic);
   auto still = ctl.split_layer(pid, *tl, pic->second, 20);
   CHECK(!still.ok() && still.error().key == msg::kSplitNeedsClip.key);
   // Undone a command at a time: one layer showing the clip, marked.
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 3; ++i) {
     REQUIRE_OK(ctl.undo(pid));
   }
   ls = b.layers(*tl);
@@ -7534,6 +7663,217 @@ TEST(composition, a_clip_is_cut_in_two_parts)
   const auto samples = read_sound(*mix);
   CHECK(std::abs(static_cast<double>(samples.size()) / 48000 - 1.0) < 0.01);
   CHECK(std::abs(rms(samples, 0.3, 0.6) - 0.354) < 0.03);  // across it
+}
+
+// A clip KEYED along its layer cut by the scissors: each track -- its
+// look, its crop's placement and turn, its speed, its sound -- cut with
+// it, the first part keyed to the frame before the cut with a key there,
+// the second from a key at its first frame holding the value at the
+// cut; each part as the layer was, frame by frame, and played on from
+// where the source had reached. One command.
+TEST(composition, a_keyed_clip_is_cut_its_keys_either_side)
+{
+  Bench b("comp-split-keyed");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  auto red = b.png("red.png", 16, 16, {0xff, 0, 0, 0xff});
+  REQUIRE(red);
+  auto shot = ctl.create_composition(pid, project::AssetClass::Composition,
+                                     {16, 16}, {24, 1}, "shot");
+  REQUIRE_OK(shot);
+  auto in_shot = ctl.instantiate(pid, *red, *shot);
+  REQUIRE_OK(in_shot);
+  project::LayerTime two;
+  two.duration = 48;
+  REQUIRE_OK(ctl.set_layer_time(pid, *shot, in_shot->second, two));
+  auto movie = ctl.rendered(pid, *shot);
+  REQUIRE_OK(movie);
+  fs::copy_file(*movie, b.root / "shot.mov");
+  auto clip = import_and_wait(ctl, pid, b.root / "shot.mov");
+  REQUIRE(clip);
+  // From frame 12, marked in at its frame 6.
+  auto tl = ctl.create_composition(pid, project::AssetClass::Composition,
+                                   {16, 16}, {24, 1}, "edit");
+  REQUIRE_OK(tl);
+  auto placed = ctl.instantiate(pid, *clip, *tl, std::nullopt, 12);
+  REQUIRE_OK(placed);
+  const std::string l = placed->second;
+  project::LayerTime marked;
+  marked.in = 6;
+  marked.rate = {24, 1};
+  marked.offset = 12;
+  REQUIRE_OK(ctl.set_layer_time(pid, *tl, l, marked));
+  // Keyed from its start (local frames at 24): exposure up, held, down;
+  // zoomed and turned; sped up; faded out.
+  media::KeyedAdjustments adjust;
+  adjust.rate = {24, 1};
+  media::Adjustments e0, e1, e2;
+  e1.exposure = 1.5;
+  e2.exposure = 0.5;
+  adjust.keys = {{0, e0}, {30, e1, media::Interp::Hold}, {36, e2}};
+  REQUIRE_OK(ctl.set_adjustment_keys(pid, *tl, adjust, l));
+  media::KeyedCrop crop = Controller::crop_keys_of(b.p().asset(*tl).value(),
+                                                   l);
+  media::Crop c0 = crop.at(0), c1 = c0;
+  c0.content = {16, 16};
+  c1.content = {16, 16};
+  c1.scale_x = c1.scale_y = 2;
+  crop.rate = crop.place.rate = crop.turn.rate = {24, 1};
+  crop.place.keys = {{0, c0}, {41, c1}};
+  crop.turn.keys = {{0, {0}}, {41, {20}}};
+  REQUIRE_OK(ctl.set_crop_keys(pid, *tl, crop, l));
+  media::KeyedSpeed speed;
+  speed.rate = {24, 1};
+  speed.keys = {{0, {1.0}}, {41, {2.0}}};
+  REQUIRE_OK(ctl.set_speed_keys(pid, *tl, speed, l));
+  media::KeyedSound sound;
+  sound.rate = {24, 1};
+  sound.keys = {{0, {1.0, 0}}, {41, {0.0, 0}}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *tl, sound, l));
+  const project::Asset was = b.p().asset(*tl).value();
+  const auto adj0 = Controller::adjustment_keys_of(was, l);
+  const auto crop0 = Controller::crop_keys_of(was, l);
+  const auto speed0 = Controller::speed_keys_of(was, l);
+  const auto sound0 = Controller::sound_keys_of(was, l);
+  auto before = ctl.movie_stack(pid, *tl, true);
+  REQUIRE_OK(before);
+  REQUIRE(before->layers.size() == 1);
+  const media::LayerTiming lt0 = before->layers[0].timing;
+
+  // Cut at 30: local frame 18.
+  auto r = ctl.split_layer(pid, *tl, l, 30);
+  REQUIRE_OK(r);
+  const project::Asset now = b.p().asset(*tl).value();
+  const auto frames = [](const auto& k) {
+    std::vector<std::int64_t> f;
+    for (const auto& x : k.keys) {
+      f.push_back(x.frame);
+    }
+    return f;
+  };
+  using F = std::vector<std::int64_t>;
+  const auto a1 = Controller::adjustment_keys_of(now, l);
+  const auto a2 = Controller::adjustment_keys_of(now, r->layer);
+  CHECK(frames(a1) == (F{0, 17}));
+  CHECK(frames(a2) == (F{0, 12, 18}));
+  CHECK(std::abs(a1.keys[1].value.exposure - 1.5 * 17 / 30) < 1e-9);
+  CHECK(std::abs(a2.keys[0].value.exposure - 1.5 * 18 / 30) < 1e-9);
+  CHECK(a2.keys[1].interp == media::Interp::Hold);
+  const auto k1 = Controller::crop_keys_of(now, l);
+  const auto k2 = Controller::crop_keys_of(now, r->layer);
+  CHECK(frames(k1.place) == (F{0, 17}));
+  CHECK(frames(k2.place) == (F{0, 23}));
+  CHECK(frames(k2.turn) == (F{0, 23}));
+  const auto v1 = Controller::sound_keys_of(now, l);
+  const auto v2 = Controller::sound_keys_of(now, r->layer);
+  CHECK(frames(v2) == (F{0, 23}));
+  const auto s1 = Controller::speed_keys_of(now, l);
+  const auto s2 = Controller::speed_keys_of(now, r->layer);
+  CHECK(frames(s1) == (F{0, 17}));
+  // Each part as the layer was, frame by frame.
+  const double eps = 1e-9;
+  for (int u = 0; u < 42; ++u) {
+    const bool first = u < 18;
+    const double v = first ? u : u - 18;
+    const auto& ak = first ? a1 : a2;
+    CHECK(std::abs(ak.at(v).exposure - adj0.at(u).exposure) < eps);
+    const auto& ck = first ? k1 : k2;
+    CHECK(std::abs(ck.at(v).scale_x - crop0.at(u).scale_x) < eps);
+    CHECK(std::abs(ck.at(v).rotate - crop0.at(u).rotate) < eps);
+    const auto& sk = first ? s1 : s2;
+    CHECK(std::abs(sk.at(v).rate - speed0.at(u).rate) < eps);
+    const auto& vk = first ? v1 : v2;
+    CHECK(std::abs(vk.at(v).volume - sound0.at(u).volume) < eps);
+  }
+  // Played on from where the source had reached at the cut -- between
+  // two of its frames, the speed ramping: the parts marked in
+  // thousandths of a frame -- the first ending at the cut, the second
+  // where the layer ended.
+  auto after = ctl.movie_stack(pid, *tl, true);
+  REQUIRE_OK(after);
+  REQUIRE(after->layers.size() == 2);
+  const double cut = 30.0 / 24;
+  const double ms = 1e-3;
+  CHECK(std::abs(after->layers[0].timing.end() - cut) < ms);
+  CHECK(std::abs(after->layers[1].timing.start - cut) < 1e-9);
+  CHECK(std::abs(after->layers[1].timing.in - lt0.source_at(cut)) < ms);
+  CHECK(std::abs(after->layers[1].timing.end() - lt0.end()) < ms);
+  for (const double at : {0.6, 1.0, 1.2, 1.3, 1.5, 1.8}) {
+    const auto& lt = after->layers[at < cut ? 0 : 1].timing;
+    CHECK(std::abs(lt.source_at(at) - lt0.source_at(at)) < ms);
+  }
+  const auto inner = b.layers(r->second);
+  REQUIRE(inner.size() == 1);
+  CHECK(inner[0].time.rate == (Rational{24000, 1}));
+  // Never before where the layer was, frame by frame: a frame shows from
+  // its own time on, so a part a hair early showed the frame before
+  // wherever the layer fell exactly on one. The second part cut again
+  // (local 6 of it) the same.
+  const auto shown_at = [&](const media::MovieStack& s, double at) {
+    for (auto it = s.layers.rbegin(); it != s.layers.rend(); ++it) {
+      if (at >= it->timing.start - 1e-9 && at < it->timing.end()) {
+        return it->timing.source_at(at);
+      }
+    }
+    return -1.0;
+  };
+  const auto as_before = [&](const media::MovieStack& s, double late) {
+    for (int f = 12; f / 24.0 < lt0.end() - 1e-9; ++f) {
+      const double d = shown_at(s, f / 24.0) - lt0.source_at(f / 24.0);
+      CHECK(d >= -1e-9);
+      CHECK(d < late);
+    }
+  };
+  as_before(*after, 1e-4 / 2);
+  auto again = ctl.split_layer(pid, *tl, r->layer, 36);
+  REQUIRE_OK(again);
+  auto thrice = ctl.movie_stack(pid, *tl, true);
+  REQUIRE_OK(thrice);
+  REQUIRE(thrice->layers.size() == 3);
+  as_before(*thrice, 1e-4);
+  REQUIRE_OK(ctl.undo(pid));
+  // One command: undone, the layer keyed as it was.
+  REQUIRE_OK(ctl.undo(pid));
+  const project::Asset back = b.p().asset(*tl).value();
+  REQUIRE(back.layers.size() == 1);
+  CHECK(Controller::adjustment_keys_of(back, l) == adj0);
+  CHECK(Controller::sound_keys_of(back, l) == sound0);
+}
+
+// A sound starting partway into a mix, at a volume of its own, is mixed
+// at that volume from its first sample: AVFoundation reads a track at
+// 1.0 until a volume is first set and glides from there -- it came out
+// up to twice as loud for ~10 ms (the scissors' second part of a fade
+// showed it, 2026-11-11).
+TEST(composition, a_late_sound_is_mixed_at_its_volume_from_its_start)
+{
+  Bench b("comp-late-volume");
+  REQUIRE(b.ok());
+  Controller& ctl = *b.ctl;
+  const ProjectId pid = b.pid;
+  REQUIRE(write_tone(b.root / "tone.wav", 1, 440, 0.5));
+  auto tone = import_and_wait(ctl, pid, b.root / "tone.wav");
+  REQUIRE(tone);
+  auto snd = ctl.create_composition(pid, project::AssetClass::Composition,
+                                    {0, 0}, {}, "sound");
+  REQUIRE_OK(snd);
+  auto in = ctl.instantiate(pid, *tone, *snd);
+  REQUIRE_OK(in);
+  project::LayerTime late;
+  late.offset = 500;  // milliseconds
+  REQUIRE_OK(ctl.set_layer_time(pid, *snd, in->second, late));
+  media::KeyedSound quiet;
+  quiet.keys = {{0, {0.25, 0}}};
+  REQUIRE_OK(ctl.set_sound_keys(pid, *snd, quiet, in->second));
+  auto mix = ctl.sound_mix(pid, *snd);
+  REQUIRE_OK(mix);
+  const auto samples = read_sound(*mix);
+  const double full = 0.354;
+  CHECK(rms(samples, 0.0, 0.49) < 1e-3);
+  for (const double at : {0.500, 0.505, 0.510, 0.600, 1.200}) {
+    CHECK(std::abs(rms(samples, at, at + 0.005) - 0.25 * full) < 0.01);
+  }
 }
 
 // A TIMELINE continued (continuation_guide) is never nested in its
@@ -15540,6 +15880,90 @@ TEST(agent, a_song_is_separated_in_the_background)
   REQUIRE_OK(ctl.agent_stop(*id));
 }
 
+// A voice's LEAD taken from its BACKING for the agent: separate_sound's
+// `split` "lead", the karaoke model's task listed apart -- its vocals'
+// split refused where only the karaoke model is here -- its two sounds
+// told back by name.
+TEST(agent, a_voice_is_split_into_its_lead_and_backing)
+{
+  auto root = test::temp_dir("agent-separate-lead");
+  const fs::path repo = root / "models" / "becruily" /
+                        "bs-roformer-karaoke";
+  fs::create_directories(repo);
+  std::ofstream(repo / "bs_roformer_karaoke_frazer_becruily.ckpt") << "w";
+  auto script = std::make_shared<ScriptedBackend::Shared>();
+  ControllerConfig cfg;
+  cfg.support_root = root / "support";
+  cfg.model_roots = {root / "models"};
+  cfg.with_engine = false;
+  cfg.extensions = false;
+  HeldEngine* engine = nullptr;
+  cfg.engine_factory = [&engine] {
+    auto e = std::make_unique<HeldEngine>();
+    engine = e.get();
+    return std::unique_ptr<engine::Engine>(std::move(e));
+  };
+  cfg.agent_backend = [script] {
+    return std::unique_ptr<agent::Backend>(
+        std::make_unique<ScriptedBackend>(script));
+  };
+  auto made = Controller::create(cfg);
+  REQUIRE_OK(made);
+  REQUIRE(engine != nullptr);
+  Controller& ctl = **made;
+  auto pid = ctl.create_project(root / "L.valtz", "lead");
+  REQUIRE_OK(pid);
+  REQUIRE(write_tone(root / "vocals.wav", 1, 440, 0.5));
+  auto vocals = import_and_wait(ctl, *pid, root / "vocals.wav");
+  REQUIRE(vocals);
+  script->replies = {
+      {call("get_project", Json::object())},
+      {call("list_models", {{"task", "separate_lead"}})},
+      {call("separate_sound", {{"asset", vocals->str()}})},
+      {call("separate_sound",
+            {{"asset", vocals->str()}, {"split", "Lead vocals"}})},
+      {call("wait_for_generations", Json::object())}};
+  AgentRequest req;
+  req.project = *pid;
+  req.prompt = "The lead singer alone, and the harmonies apart";
+  req.review = false;
+  auto id = ctl.agent_start(req);
+  REQUIRE_OK(id);
+  Json st = agent_wait(ctl, *id, "waiting");
+  REQUIRE(jget<std::string>(st, "state", "") == "waiting");
+  Json steps = jget(st, "steps", Json::array());
+  REQUIRE(steps.size() == 5);
+  auto result = [&](int i) { return jget(steps[i], "result", Json()); };
+  CHECK(jget(result(0), "can_separate_lead_vocals", false));
+  CHECK(!jget(result(0), "can_separate_songs", true));
+  const Json listed = jget(result(1), "models", Json::array());
+  REQUIRE(listed.size() == 1);
+  CHECK(jget<std::string>(listed[0], "id", "") == "bs-roformer-karaoke");
+  CHECK(jget(listed[0], "auto", false));
+  // No vocals model here: the vocals' split is refused, not run on it.
+  CHECK(!jget<std::string>(steps[2], "error", "").empty());
+  const Json r = result(3);
+  const auto lead = AssetId::parse(jget<std::string>(r, "lead_vocals", ""));
+  const auto backing =
+      AssetId::parse(jget<std::string>(r, "backing_vocals", ""));
+  REQUIRE(lead && backing);
+  const auto jobs = engine->held_of(engine::kOpSeparateAudio);
+  REQUIRE(jobs.size() == 1);
+  REQUIRE(engine->spec(jobs[0]) != nullptr);
+  CHECK(engine->spec(jobs[0])->model.id == "bs-roformer-karaoke");
+  REQUIRE(write_tone(root / "lead.wav", 1, 880, 0.3));
+  REQUIRE(write_tone(root / "back.wav", 1, 220, 0.3));
+  engine->finish_outputs(jobs[0], {{"lead vocals", root / "lead.wav"},
+                                   {"backing vocals", root / "back.wav"}});
+  st = agent_wait(ctl, *id, "done");
+  REQUIRE(jget<std::string>(st, "state", "") == "done");
+  auto bv = ctl.project(*pid)->version(*backing);
+  REQUIRE_OK(bv);
+  CHECK(bv->number == 1);
+  CHECK(ctl.project(*pid)->asset(*lead)->name.ends_with(" lead vocals"));
+  REQUIRE_OK(ctl.agent_stop(*id));
+}
+
 // The MODELS of a task, as the agent asks for them (list_models): those
 // here, Auto's marked, those not downloaded; and a model the person
 // names -- loosely, "FLUX.3", "MiniMax Music3" -- run by the tool given
@@ -15659,7 +16083,7 @@ TEST(agent, a_model_is_listed_and_chosen_by_name)
   CHECK(error(6).find("the task is one of") != std::string::npos);
   // Every task at once.
   const Json every = jget(result(7), "tasks", Json::array());
-  CHECK(every.size() == 9);
+  CHECK(every.size() == 10);
   // The chosen model failing: told with its name, so it is said (once
   // nothing else is out).
   engine->fail(images[0], "tokenizer load failed");

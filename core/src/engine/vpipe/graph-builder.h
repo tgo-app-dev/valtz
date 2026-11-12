@@ -531,9 +531,10 @@ Result<BuiltGraph> build_transcribe(const JobSpec&,
 // separate-audio (DESIGN §4j): `wav` -- two channels at the model's rate
 // (catalog engine.vpipe.separate `rate`), the engine's
 // (media::stereo_sound) -- through vpipe's audio-separate, the checkpoint
-// job.model.dir with param "checkpoint" its file there; the model's own
-// target to g.stem_sink, the mix without it to g.residual_sink, planar
-// f32 [2, n] as they stream out.
+// job.model.dir with param "checkpoint" its file there (and the catalog's
+// `config` its YAML there, when named); the model's own target to
+// g.stem_sink, the mix without it to g.residual_sink, planar f32 [2, n]
+// as they stream out.
 Result<BuiltGraph> build_separate(const JobSpec&,
                                   const std::filesystem::path& wav);
 // track-beats (DESIGN §4v): `wav` -- one channel at 22050 Hz, the

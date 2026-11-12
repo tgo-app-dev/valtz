@@ -350,8 +350,9 @@ TEST(graph_builder, a_transcription_hears_one_channel)
 
 // A song SEPARATED (DESIGN §4j): the engine's two-channel WAV read at the
 // model's rate, through vpipe's audio-separate -- the checkpoint by its
-// folder and its file -- each output to a sink of its own, every beat
-// kept (a source is written as it streams out).
+// folder and its file, its YAML by the catalog's name when it gives one
+// -- each output to a sink of its own, every beat kept (a source is
+// written as it streams out).
 TEST(graph_builder, a_song_is_separated_into_two_sinks)
 {
   JobSpec job;
@@ -386,7 +387,24 @@ TEST(graph_builder, a_song_is_separated_into_two_sinks)
   CHECK((*stem)["iports"][0]["oport"] == 0);
   CHECK((*rest)["iports"][0]["oport"] == 1);
   CHECK(jget<std::string>(config_of(stem), "policy", "") == "queue");
+  // No YAML named: vpipe finds the one named for the checkpoint.
+  CHECK(!config_of(sep).contains("config"));
   CHECK(!vp::build_separate(job, "").ok());
+
+  // becruily's karaoke model: two identical YAMLs beside its checkpoint,
+  // neither named for it -- the catalog's named for vpipe.
+  job.model.dir = "/m/becruily/bs-roformer-karaoke";
+  job.model.engine["vpipe"]["separate"]["config"] =
+      "config_karaoke_frazer_becruily.yaml";
+  job.params = {{"checkpoint", "bs_roformer_karaoke_frazer_becruily.ckpt"}};
+  auto lead = vp::build_separate(job, "/tmp/x-heard.wav");
+  REQUIRE_OK(lead);
+  const Json* ksep = find_stage(lead->spec, "separate");
+  REQUIRE(ksep);
+  CHECK(jget<std::string>(config_of(ksep), "config", "") ==
+        "config_karaoke_frazer_becruily.yaml");
+  CHECK(jget<std::string>(config_of(ksep), "checkpoint", "") ==
+        "bs_roformer_karaoke_frazer_becruily.ckpt");
 }
 
 // A sound's beats (DESIGN §4v): the engine's one channel at 22050 Hz
@@ -1420,6 +1438,33 @@ TEST(graph_builder, minimax_h3_image_makes_a_picture_on_its_own_dit)
   CHECK(!cfg.contains("lora"));
   CHECK(!cfg.contains("min_generation_area"));   // the release's 4 MP
   CHECK(src_of(find_stage(g->spec, "vae-decode"), 1) == "model-select");
+  CHECK(!cfg.contains("preview_vae") && g->preview_sink.empty());
+
+  // Its latent is H3's -- H3's encoder, the same 24 channels, mean and
+  // std -- so its live preview is H3's TAE, which keeps one frame of one
+  // latent frame: on the config beat, the sink on generate-video's 2.
+  {
+    auto cat = models::Catalog::builtin();
+    REQUIRE_OK(cat);
+    const auto* e = cat->find("minimax-h3-image");
+    REQUIRE(e);
+    CHECK(e->preview_with == "taeh3");
+  }
+  auto pj = job;
+  pj.model.preview = "/models/taehv/taeh3.safetensors";
+  auto p = vp::build_text_to_image(pj);
+  REQUIRE_OK(p);
+  CHECK(p->preview_sink == "preview-sink");
+  CHECK(jget<std::string>(config_of(find_stage(p->spec,
+                                               "minimax-h3-model-config")),
+                          "preview_vae", "") == pj.model.preview.string());
+  const Json* prev = find_stage(p->spec, "preview-sink");
+  REQUIRE(prev);
+  CHECK(src_of(prev, 0) == "generate-video" && oport_of(prev, 0) == 2);
+  pj.params["preview"] = false;   // valtzctl's --no-preview
+  auto quiet = vp::build_text_to_image(pj);
+  REQUIRE_OK(quiet);
+  CHECK(quiet->preview_sink.empty());
 
   // Generate At the Size Asked: the release's canvas rule off.
   auto asked = job;
@@ -3817,8 +3862,9 @@ TEST(graph_builder, z_image_turbo_from_words)
 
 // The LoRA slots after the first -- style or identity adapters, up to
 // vpipe's eight in all -- reach the stage that takes them, each at its
-// strength: H3's config stage, generate-image for pictures. A slot is its
-// index, so one left empty keeps its place.
+// strength -- a negative one too, the adapter subtracted: H3's config
+// stage, generate-image for pictures. A slot is its index, so one left
+// empty keeps its place.
 TEST(graph_builder, every_lora_slot)
 {
   JobSpec j = job_for("minimax-h3-fl2va", kOpGenerateVideo);
@@ -3845,7 +3891,7 @@ TEST(graph_builder, every_lora_slot)
   JobSpec p = job_for("krea2-turbo", kOpGenerateImage);
   p.params = {{"prompt", "a kite"}, {"width", 512}, {"height", 512},
               {"steps", 8}, {"seed", 1}, {"lora2_scale", 0.9},
-              {"lora4_scale", 0.5}};
+              {"lora4_scale", -0.5}};
   p.model.more_loras = {"/loras/m87.safetensors", "",
                         "/loras/ink.safetensors"};
   auto pg = vp::build_text_to_image(p);
@@ -3855,7 +3901,7 @@ TEST(graph_builder, every_lora_slot)
   CHECK(jget(ic, "lora2_scale", 0.0) == 0.9);
   CHECK(!ic.contains("lora3"));
   CHECK(jget<std::string>(ic, "lora4", "") == "/loras/ink.safetensors");
-  CHECK(jget(ic, "lora4_scale", 0.0) == 0.5);
+  CHECK(jget(ic, "lora4_scale", 0.0) == -0.5);
   CHECK(!ic.contains("lora"));
 }
 

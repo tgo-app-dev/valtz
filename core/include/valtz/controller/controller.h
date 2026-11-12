@@ -1312,8 +1312,10 @@ public:
   // layer showing its span of the source -- a flat clip or sound, or a
   // part cut before (cut again from its source) -- the layer showing the
   // first, a new layer right above it the second, from `frame`. Its look,
-  // speed and sound go with both; a track keyed more than once is
-  // refused (kSplitKeyed). One command.
+  // speed and sound go with both, a track keyed along it CUT with it: the
+  // first part's keys to the frame before the cut and one there, the
+  // second's from one at the cut -- each holding the track's value there
+  // -- the rest moved back. One command.
   struct SplitParts {
     AssetId     first;
     AssetId     second;
@@ -1341,6 +1343,10 @@ public:
   //   separate    {}: a sound -- a song, a composition's mix -- split by
   //               a source separator into its VOCALS and its
   //               ACCOMPANIMENT: two sounds from one job (DESIGN §4j);
+  //   separate-lead {}: a sound -- a song's vocals, best -- its LEAD
+  //               VOCALS taken from its BACKING VOCALS by a karaoke
+  //               model (given a whole song, the accompaniment goes with
+  //               the backing): two sounds from one job (DESIGN §4j);
   //   upscale     {"seed"}: what a composition's layer shows -- a clip
   //               over its marks (FlashVSR), a picture (VOSR) -- restored
   //               at its size times the layer's scale, which the layer
@@ -2411,7 +2417,8 @@ private:
                                     const project::Asset& src);
   Result<AssetOpResult> summarize_(const AssetOpRequest&, project::Project&,
                                    const project::Asset& src);
-  Result<AssetOpResult> separate_(const AssetOpRequest&, project::Project&,
+  Result<AssetOpResult> separate_(const AssetOpRequest&,
+                                  const AssetOperation&, project::Project&,
                                   const project::Asset& src);
   Result<AssetOpResult> track_beats_(const AssetOpRequest&,
                                      project::Project&,
@@ -2949,10 +2956,13 @@ private:
     double                seconds = 0;           // 0: untimed
     Rational              mark_rate{24, 1};      // its marks' rate
     // A PART the scissors made, shown as its clip: the span of the
-    // clip it is, in `mark_rate` frames (-1: from its start, to its
-    // end) -- the layer's own marks counted from there.
+    // clip it is, in `span_rate` frames -- the part's own marks: the
+    // clip's frames, or thousandths of one where an end falls between
+    // two (0: `mark_rate`) -- -1: from its start, to its end. The
+    // layer's own marks counted from there.
     std::int64_t          span_in = -1;
     std::int64_t          span_out = -1;
+    Rational              span_rate{0, 1};
     // Whose seconds its source's are (a part's: its clip's) -- what its
     // BEATS and BOOKMARKS are read from (DESIGN §4v, §4w); nil for a
     // picture, a markup.

@@ -565,6 +565,21 @@ private struct GeneralSettings: View {
         language.isEmpty ? L10n.systemDefault : language
     }
 
+    /// What each launch appearance opens in.
+    static func launchAppearanceNote(
+        _ a: AppModel.LaunchAppearance) -> String {
+        switch a {
+        case .light:
+            String(localized: "Light, whatever the system's appearance.")
+        case .dark:
+            String(localized: "Dark, whatever the system's appearance.")
+        case .system:
+            String(localized: "As System Settings › Appearance has it, changing with it while Valtz is open.")
+        case .last:
+            String(localized: "As Valtz looked when you last used it: light or dark as the light bulb last left it, else as it opened.")
+        }
+    }
+
     /// What Name generated assets does, and -- by summary -- who sums the
     /// prompt up here: the micro agent while its Names task is on, else
     /// the Agentic Helper.
@@ -620,6 +635,30 @@ private struct GeneralSettings: View {
                 Button("Restart") { model.relaunch() }
             } message: {
                 Text("The pictures made in this session are deleted when Valtz quits. Save anything you want to keep first.")
+            }
+            // The look Valtz opens in (AppModel.launchAppearance).
+            Section {
+                Picker(selection: $model.launchAppearance) {
+                    Text("Light").tag(AppModel.LaunchAppearance.light)
+                    Text("Dark").tag(AppModel.LaunchAppearance.dark)
+                    Text("Match the System")
+                        .tag(AppModel.LaunchAppearance.system)
+                    Text("Last Used").tag(AppModel.LaunchAppearance.last)
+                } label: {
+                    Text("Open Valtz in")
+                    Text(Self.launchAppearanceNote(model.launchAppearance))
+                }
+                .settingsMark(String(localized: "Open Valtz in"),
+                              String(localized: "Light"),
+                              String(localized: "Dark"),
+                              String(localized: "Last Used"))
+            } header: {
+                Text("Appearance")
+                    .settingsMark(String(localized: "Appearance"))
+            } footer: {
+                Text("Applied when Valtz opens. The light bulb in the title bar switches between light and dark at any time.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             // What a result landing does (AppModel.landed, revealTasks).
             Section {

@@ -1555,8 +1555,9 @@ private:
         ev.progress = static_cast<float>(ev.step) / ev.steps;
       }
       // A video's preview is a clip, [F, 3, H, W]: how many frames, and
-      // the rate that plays them over the clip's duration.
-      if (const int frames = jget(b.meta, "frames", 0); frames > 0) {
+      // the rate that plays them over the clip's duration. One frame is a
+      // picture: MiniMax-H3-Image's, through H3's clip path.
+      if (const int frames = jget(b.meta, "frames", 0); frames > 1) {
         ev.data = {{"frames", frames}, {"fps", jget(b.meta, "fps", 24.0)}};
       }
       // Planar, as the engine produced it, and the engine's own bytes:
@@ -1694,8 +1695,10 @@ private:
       stems[0].name = jget<std::string>(sep, "stem", "stem");
       stems[1].name = jget<std::string>(sep, "residual", "residual");
       for (auto& st : stems) {
-        st.file = spec.output_dir /
-                  std::format("{}-{}.wav", spec.id.str(), st.name);
+        // Named by its source ("lead vocals": no space in the file's).
+        std::string file = std::format("{}-{}.wav", spec.id.str(), st.name);
+        std::ranges::replace(file, ' ', '-');
+        st.file = spec.output_dir / file;
         st.st = st.wav.open(st.file, 2, separate_rate);
         if (!st.st.ok()) {
           fail_(q, st.st.code(), st.st.error().message);

@@ -21,14 +21,16 @@
 //
 // The options (keys as vpipe spells them, where it has them):
 //   steps          int     denoising steps
-//   loras          list    the LoRAs: [{"path", "scale", "on"}] -- a
-//                          preset's is the catalog's few-step Turbo LoRA
-//                          (`turbo.lora`, its file), on; others are
-//                          one's own. Up to eight on: vpipe's slots,
-//                          `lora` .. `lora8` (seven with HyperFlow, which
-//                          takes the other). An older "turbo" override
-//                          (true / false / the catalog's id / a file)
-//                          still reads, into the list
+//   loras          list    the LoRAs: [{"path", "scale", "on"}] -- the
+//                          scale -2..2, a negative one subtracting the
+//                          adapter; a preset's is the catalog's few-step
+//                          Turbo LoRA (`turbo.lora`, its file), on;
+//                          others are one's own. Up to eight on: vpipe's
+//                          slots, `lora` .. `lora8` (seven with
+//                          HyperFlow, which takes the other). An older
+//                          "turbo" override (true / false / the
+//                          catalog's id / a file) still reads, into the
+//                          list
 //   dits, vaes     list    community checkpoints for the DiT and the VAE:
 //                          [{"path", "on"}] -- a .safetensors or a folder;
 //                          the one on runs in place of the model's own

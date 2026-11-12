@@ -40,6 +40,7 @@
 #include "valtz/media/procedural.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <chrono>
 #include <thread>
@@ -428,6 +429,10 @@ usage()
       "  separate <project.valtz> <sound-id> [--model ID]  (a song split\n"
       "         into its vocals and its accompaniment: two sounds made\n"
       "         from it, their files printed)\n"
+      "  separate-lead <project.valtz> <sound-id> [--model ID]  (a song's\n"
+      "         vocals -- best -- or a whole song split into its lead\n"
+      "         vocals and its backing vocals, the accompaniment with the\n"
+      "         backing: two sounds made from it, their files printed)\n"
       "  beats <project.valtz> <sound|clip-id>  (its beats found -- vpipe's\n"
       "         beat-track, librosa's tracker, no model -- a text asset\n"
       "         of them, printed, ATTACHED to it: its timelines' layers\n"
@@ -535,7 +540,8 @@ usage()
       "         clip past 768P its refine's after regenerate_\n"
       "         (regenerate_sol_tau=1.75); --turbo the catalog's\n"
       "         few-step LoRA off (none) or on, or a file in its place;\n"
-      "         --lora adds one -- eight run, the first on)\n"
+      "         --lora adds one -- eight run, the first on -- at its\n"
+      "         scale, -2..2 (1 unsaid; negative subtracts the LoRA))\n"
       "  export <project.valtz> <asset-id|file> --format F -o <file>\n"
       "         [--quality 1..100]\n"
       "         [--bitrate 20M] [--max-bitrate 30M] [--video-quality 0..1]\n"
@@ -1060,15 +1066,18 @@ lora_arg(Json& tuning, const std::string& flag, const std::string& v)
     return false;
   }
   // path[:scale] -- a path may hold no ':' of its own here. (An older
-  // path:kind:scale still reads: the last number is the strength.)
+  // path:kind:scale still reads: the last number is the strength.) Any
+  // number: 0 off, negative the adapter subtracted (the core holds it
+  // to -2..2); not a number, 1.
   std::string path = v;
   double scale = 1.0;
   if (const auto c = v.find(':'); c != std::string::npos) {
     path = v.substr(0, c);
-    const auto last = v.rfind(':');
-    scale = std::atof(v.substr(last + 1).c_str());
-    if (scale <= 0) {
-      scale = 1.0;
+    const std::string s = v.substr(v.rfind(':') + 1);
+    char* end = nullptr;
+    const double d = std::strtod(s.c_str(), &end);
+    if (!s.empty() && end == s.c_str() + s.size() && std::isfinite(d)) {
+      scale = d;
     }
   }
   // A list said replaces the preset's, so the Turbo LoRA comes back in by

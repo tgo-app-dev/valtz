@@ -76,7 +76,12 @@ enum SettingsPlace: Hashable, Sendable {
     func keywords(_ model: AppModel) -> [String] {
         switch self {
         case .page(.general):
-            [String(localized: "Language"), String(localized: "Generations"),
+            [String(localized: "Language"),
+             String(localized: "Appearance"),
+             String(localized: "Open Valtz in"),
+             String(localized: "Light"), String(localized: "Dark"),
+             String(localized: "Last Used"),
+             String(localized: "Generations"),
              String(localized: "Timeline"), String(localized: "Assets"),
              String(localized: "Play"), String(localized: "Muted"),
              String(localized: "Playhead"),

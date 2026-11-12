@@ -3312,12 +3312,32 @@
         }
       }
     },
+    "Appearance" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "外观"
+          }
+        }
+      }
+    },
     "Applied as the picture is edited and saved; the original is kept." : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "在编辑和保存这张图片时应用，原图保持不变。"
+          }
+        }
+      }
+    },
+    "Applied when Valtz opens. The light bulb in the title bar switches between light and dark at any time." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "在 Valtz 打开时应用。标题栏中的灯泡可随时在浅色与深色之间切换。"
           }
         }
       }
@@ -3428,6 +3448,26 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "同其任务"
+          }
+        }
+      }
+    },
+    "As System Settings › Appearance has it, changing with it while Valtz is open." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "与“系统设置 › 外观”一致，Valtz 打开时也随之变化。"
+          }
+        }
+      }
+    },
+    "As Valtz looked when you last used it: light or dark as the light bulb last left it, else as it opened." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "与你上次使用 Valtz 时的外观相同：灯泡最后留下的浅色或深色，否则为它打开时的外观。"
           }
         }
       }
@@ -6662,6 +6702,26 @@
         }
       }
     },
+    "Dark" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "深色"
+          }
+        }
+      }
+    },
+    "Dark, whatever the system's appearance." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "深色，无论系统外观如何。"
+          }
+        }
+      }
+    },
     "Darker" : {
       "localizations" : {
         "zh-Hans" : {
@@ -7461,6 +7521,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "请先下载 %@：此模型由它量化而来——或链接已制作好的量化包"
+          }
+        }
+      }
+    },
+    "Download BS-RoFormer Karaoke in Settings › Capabilities › Stem Separation to separate lead vocals" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "要分离主唱，请在“设置 › 能力 › Stem Separation”中下载 BS-RoFormer Karaoke"
           }
         }
       }
@@ -11675,6 +11745,16 @@
         }
       }
     },
+    "Its lead vocals and its backing vocals, each into a sound of its own. Best on a song's vocals: given a whole song, the accompaniment goes with the backing" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "将其中的主唱与和声分别存为独立的声音素材。最适合用于歌曲的人声轨：若给的是整首歌，伴奏会随和声一起分出"
+          }
+        }
+      }
+    },
     "Its lines and the sounds heard as bookmarks on the layers showing it: |< and >| stop at them, and drags snap to them" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12292,6 +12372,16 @@
         }
       }
     },
+    "Last Used" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "上次使用的"
+          }
+        }
+      }
+    },
     "Last frame" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12474,6 +12564,16 @@
         }
       }
     },
+    "Lead and backing vocals" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "主唱与和声"
+          }
+        }
+      }
+    },
     "Least" : {
       "localizations" : {
         "zh-Hans" : {
@@ -12644,12 +12744,32 @@
         }
       }
     },
+    "Light" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "浅色"
+          }
+        }
+      }
+    },
     "Light or Dark" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "浅色或深色"
+          }
+        }
+      }
+    },
+    "Light, whatever the system's appearance." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "浅色，无论系统外观如何。"
           }
         }
       }
@@ -13625,6 +13745,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "作为下方图层的蒙版"
+          }
+        }
+      }
+    },
+    "Match the System" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "跟随系统"
           }
         }
       }
@@ -15961,6 +16091,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "打开 Valtz 项目"
+          }
+        }
+      }
+    },
+    "Open Valtz in" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "Valtz 打开时使用"
           }
         }
       }
@@ -19693,6 +19833,16 @@
         }
       }
     },
+    "Separate Lead and Backing Vocals" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分离主唱与和声"
+          }
+        }
+      }
+    },
     "Separate Vocals and Accompaniment" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19723,6 +19873,16 @@
         }
       }
     },
+    "Separate lead vocals" : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "分离主唱"
+          }
+        }
+      }
+    },
     "Separated %@" : {
       "localizations" : {
         "zh-Hans" : {
@@ -19739,6 +19899,16 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "正在分离"
+          }
+        }
+      }
+    },
+    "Separating %@: its lead and backing vocals go to Assets." : {
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "正在分离 %@：主唱与和声将放入素材。"
           }
         }
       }
@@ -29126,6 +29296,23 @@
         }
       }
     },
+    "core.no_lead_separator" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "No lead vocals separator is installed: download BS-RoFormer Karaoke in Settings › Capabilities › Stem Separation."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "needs_review",
+            "value" : "未安装主唱分离模型：请在“设置 › 能力 › Stem Separation”中下载 BS-RoFormer Karaoke。"
+          }
+        }
+      }
+    },
     "core.no_micro_agent" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -29955,23 +30142,6 @@
           "stringUnit" : {
             "state" : "needs_review",
             "value" : "导入的素材无需生成。"
-          }
-        }
-      }
-    },
-    "core.split_keyed" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "This layer's look, speed or sound changes along it (keyed more than once): it cannot be cut yet."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "needs_review",
-            "value" : "此图层的外观、速度或声音随时间变化（关键帧多于一个）：暂时无法剪开。"
           }
         }
       }

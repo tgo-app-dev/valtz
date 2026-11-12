@@ -4004,10 +4004,16 @@ build_separate(const JobSpec& job, const fs::path& wav)
                           {"flush_on_eos", true}}));
   // The checkpoint by its folder and its file: one repository may hold
   // several models (BS-RoFormer Resurrection: vocals and instrumental).
+  // Its YAML named where the catalog names it: one not named for its
+  // checkpoint, beside another (becruily's karaoke model ships two).
   Json cfg = {{"hf_dir", job.model.dir.string()}};
   if (const auto ckpt = jget<std::string>(job.params, "checkpoint", "");
       !ckpt.empty()) {
     cfg["checkpoint"] = ckpt;
+  }
+  if (const auto yaml = jget<std::string>(sep, "config", "");
+      !yaml.empty()) {
+    cfg["config"] = yaml;
   }
   stages.push_back(stage("separate", "audio-separate",
                          Json::array({port("pcm")}), std::move(cfg)));

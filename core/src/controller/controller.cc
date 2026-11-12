@@ -1684,6 +1684,7 @@ Controller::engine_runs_(models::Capability c) const
   case Capability::VideoSummary:
     return _engine->supports(engine::kOpSummarizeVideo);
   case Capability::AudioSeparate:
+  case Capability::AudioSeparateLead:
     return _engine->supports(engine::kOpSeparateAudio);
   case Capability::MakeRefMod:
     return _engine->supports(engine::kOpMakeRefMod);
@@ -5371,8 +5372,10 @@ Controller::tasks() const
                              : j.op == "render-program"
                                  ? runner + " programs"
                                  : runner;
-    // An asset operation's (asset-ops.h): its name.
-    const AssetOperation* aop = asset_operation_of(j.op);
+    // An asset operation's (asset-ops.h): its name -- a separation's by
+    // its split.
+    const AssetOperation* aop = asset_operation_of(
+        j.op, jget<std::string>(j.recipe.params, "split", ""));
     Json t = {{"job", j.id.str()},
               {"project", j.project.str()},
               {"asset", exp ? std::string() : j.asset.str()},
@@ -7931,6 +7934,9 @@ Controller::generate_image(GenerateImageRequest req)
   if (req.height > 0) {
     r.params["height"] = req.height;
   }
+  if (!req.preview) {
+    r.params["preview"] = false;
+  }
   // Steps are always recorded explicitly, so a snapshot says exactly
   // what ran even if the catalog's defaults change later; so are the
   // Favor options (models/tuning.h).
@@ -9057,8 +9063,8 @@ Controller::run_asset_operation(AssetOpRequest req)
   if (op->name == "summarize") {
     return summarize_(req, *p, a);
   }
-  if (op->name == "separate") {
-    return separate_(req, *p, a);
+  if (op->name == "separate" || op->name == "separate-lead") {
+    return separate_(req, *op, *p, a);
   }
   if (op->name == "interpolate") {
     return interpolate_(req, *p, a);
@@ -9741,8 +9747,8 @@ Controller::summarize_(const AssetOpRequest& req, project::Project& p,
 }
 
 Result<Controller::AssetOpResult>
-Controller::separate_(const AssetOpRequest& req, project::Project& p,
-                      const project::Asset& src)
+Controller::separate_(const AssetOpRequest& req, const AssetOperation& op,
+                      project::Project& p, const project::Asset& src)
 {
   // A sound: imported, made, or a composition of sound alone -- its mix.
   const bool drawn = src.cls == project::AssetClass::Composition;
@@ -9751,21 +9757,29 @@ Controller::separate_(const AssetOpRequest& req, project::Project& p,
     return make_error(Code::InvalidArgument, msg::kSeparateNeedsSound,
                       {{"name", src.name}});
   }
-  // The SPLIT asked for (catalog engine.vpipe.separate `split`): "vocals"
-  // -- the voice and the accompaniment. A model serves it when it is its
-  // split; each of its two outputs is one of the split's sources.
-  const auto split = jget<std::string>(req.options, "split", "vocals");
+  // The SPLIT asked for (catalog engine.vpipe.separate `split`): the
+  // operation's -- "vocals", the voice and the accompaniment; "lead", the
+  // lead voice and the backing. A model serves it when it is its split;
+  // each of its two outputs is one of the split's sources.
+  const auto split = jget<std::string>(req.options, "split",
+                                       std::string(op.split));
   const auto block = [](const models::ModelEntry& e) {
     return jget(jget(e.engine, "vpipe", Json::object()), "separate",
                 Json::object());
   };
+  const AssetOpTake* take = asset_op_take(op, project::AssetKind::Audio);
+  const auto need = take && take->capability
+                        ? *take->capability
+                        : models::Capability::AudioSeparate;
   const models::ModelEntry* m = operation_model_(
-      models::Capability::AudioSeparate, req.model, nullptr,
-      [&](const models::ModelEntry& e) {
+      need, req.model, nullptr, [&](const models::ModelEntry& e) {
         return jget<std::string>(block(e), "split", "") == split;
       });
   if (!m) {
-    return make_error(Code::NotFound, msg::kNoSeparator);
+    return make_error(Code::NotFound,
+                      need == models::Capability::AudioSeparateLead
+                          ? msg::kNoLeadSeparator
+                          : msg::kNoSeparator);
   }
   std::vector<std::string> sources;
   for (const auto& s : jget(block(*m), "sources", Json::array())) {
@@ -12837,7 +12851,8 @@ Controller::fleet_self_() const
     const auto task = feature_task(c.capability);
     // A separation runs here alone: a job's several outputs do not come
     // back from a member yet.
-    if (c.capability == models::Capability::AudioSeparate) {
+    if (c.capability == models::Capability::AudioSeparate ||
+        c.capability == models::Capability::AudioSeparateLead) {
       continue;
     }
     if (c.availability == models::Availability::Ready &&

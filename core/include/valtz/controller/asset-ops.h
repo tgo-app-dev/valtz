@@ -1,7 +1,7 @@
 // ASSET OPERATIONS (DESIGN §4j): what is DONE TO an asset with no prompt
 // -- a sound's speech transcribed, a clip summarized, a layer's picture or
-// clip rendered larger, a song split into its voice and its accompaniment,
-// a sound's beats found.
+// clip rendered larger, a song split into its voice and its accompaniment
+// or a voice into its lead and its backing, a sound's beats found.
 //
 // They share ONE PROTOCOL, so a new one is a row here and a function in
 // the controller, not a path of its own through the bridge, the app and
@@ -54,13 +54,20 @@ struct AssetOperation {
   bool                         on_layer = false;
   // What it makes, in order (a separation: the voice, then the rest).
   std::span<const std::string_view> makes;
+  // A separation's SPLIT (catalog engine.vpipe.separate `split`): two
+  // operations share its engine op -- the voice from the accompaniment
+  // ("vocals"), the lead voice from the backing ("lead") -- and its
+  // recipe's `split` says which one a job is.
+  std::string_view             split = {};
 };
 
 // Every operation, in the order a menu lists them.
 std::span<const AssetOperation> asset_operations();
 const AssetOperation* find_asset_operation(std::string_view name);
-// The operation an engine op does (a task's), else null.
-const AssetOperation* asset_operation_of(std::string_view op);
+// The operation an engine op does (a task's) -- with `split`, a
+// separation's (its recipe's param) -- else null.
+const AssetOperation* asset_operation_of(std::string_view op,
+                                         std::string_view split = {});
 // What `op` does to `kind`; null when it does not take that kind.
 const AssetOpTake* asset_op_take(const AssetOperation& op,
                                  project::AssetKind kind);

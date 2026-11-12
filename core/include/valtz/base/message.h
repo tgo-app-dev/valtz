@@ -275,6 +275,10 @@ inline constexpr Message kNoSeparator{
     "core.no_separator",
     "No source separator is installed: download BS-RoFormer in Settings › "
     "Capabilities › Stem Separation."};
+inline constexpr Message kNoLeadSeparator{
+    "core.no_lead_separator",
+    "No lead vocals separator is installed: download BS-RoFormer Karaoke "
+    "in Settings › Capabilities › Stem Separation."};
 inline constexpr Message kUnknownOperation{
     "core.unknown_operation", "Valtz has no operation called {operation}."};
 inline constexpr Message kModelNotUnpacked{
@@ -284,10 +288,6 @@ inline constexpr Message kSplitNeedsClip{
     "core.split_needs_clip",
     "Only a clip or a sound -- imported or generated, or a part cut from "
     "one -- can be cut in two."};
-inline constexpr Message kSplitKeyed{
-    "core.split_keyed",
-    "This layer's look, speed or sound changes along it (keyed more than "
-    "once): it cannot be cut yet."};
 inline constexpr Message kSplitOutside{
     "core.split_outside",
     "Cut inside the clip, at least a frame from either end."};

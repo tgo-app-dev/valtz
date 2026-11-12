@@ -1272,6 +1272,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Settings › General › Appearance: before any window is made.
+        AppModel.applyLaunchAppearance()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A bare executable (not launched through LaunchServices) starts
         // as a background process; make it a regular foreground app.
@@ -1646,6 +1651,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if env["VALTZ_SNAPSHOT_COMPACT"] != nil {
                 m.promptCompact = true
+            }
+            if env["VALTZ_SNAPSHOT_LAUNCH_APPEARANCE"] != nil {
+                // What the launch set (AppModel.applyLaunchAppearance).
+                let set = NSApp.appearance.map {
+                    $0.name == .darkAqua ? "dark" : "light"
+                } ?? "system"
+                FileHandle.standardError.write(Data(
+                    "snapshot: launch-appearance setting=\(m.launchAppearance.rawValue) set=\(set) dark=\(m.appearsDark)\n".utf8))
             }
             if let a = env["VALTZ_SNAPSHOT_APPEARANCE"] {
                 m.setAppearance(dark: a == "dark")
@@ -2657,11 +2670,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     case "stage": m.dropAssetOnStage(arg)
                     // An ASSET OPERATION from the row's menu (DESIGN
                     // §4j): "transcribe:<id>", "summarize:<id>",
-                    // "separate:<id>", "beats:<id>" -- the request, then,
-                    // its task done, what it made: a transcript's or a
-                    // summary's words; a separation's sounds; the beats
-                    // found and what they are attached to.
-                    case "transcribe", "summarize", "separate", "beats":
+                    // "separate:<id>", "separate-lead:<id>", "beats:<id>"
+                    // -- the request, then, its task done, what it made:
+                    // a transcript's or a summary's words; a separation's
+                    // sounds; the beats found and what they are attached
+                    // to.
+                    case "transcribe", "summarize", "separate",
+                         "separate-lead", "beats":
                         guard let a = m.asset(id: arg),
                               let op = m.operation(p[0]) else {
                             print("snapshot: \(p[0]) offered=\(m.operation(p[0]) != nil) asset=\(arg) -")
@@ -2680,7 +2695,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                 m.assets.first { $0.id == id && $0.head > 0 }
                             }
                             guard done.count == made.count else { continue }
-                            if op.name == "separate" {
+                            if op.name.hasPrefix("separate") {
                                 let list = done.map { d in
                                     "\(d.id):\(d.name):\(String(format: "%.2f", d.info?.seconds ?? 0))s"
                                 }.joined(separator: ",")
@@ -4561,22 +4576,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "snapshot: player-play from=\(from) now=\(m.videoFrame) rate=\(m.videoRate)\n".utf8))
             }
             // Frame N of the clip as its player draws it, with its
-            // look: "30:/tmp/frame.png".
+            // look: "30:/tmp/frame.png" -- several, "20,30:/tmp/f.png",
+            // each to its own file (f-20.png, f-30.png).
             if let spec = env["VALTZ_SNAPSHOT_LOOK_FRAME"],
-               let colon = spec.firstIndex(of: ":"),
-               let n = Int(spec[..<colon]), let core = m.core {
-                let out = URL(fileURLWithPath:
-                    String(spec[spec.index(after: colon)...]))
-                // A composition's frame as its plan draws it; a clip's
-                // through its look.
-                if let plan = m.stackPlayback, !plan.soundOnly,
-                   let img = core.stackStill(plan: plan.plan, frame: n) {
-                    _ = AppModel.writePNG(img, to: out)
-                } else if let url = m.stage.video,
-                          let look = m.stageClipLook,
-                          let img = await VideoPlayerView.frame(
-                              url, n, look: look, core: core) {
-                    _ = AppModel.writePNG(img, to: out)
+               let colon = spec.firstIndex(of: ":"), let core = m.core {
+                let frames = spec[..<colon].split(separator: ",")
+                    .compactMap { Int($0) }
+                let path = String(spec[spec.index(after: colon)...])
+                for n in frames {
+                    var out = URL(fileURLWithPath: path)
+                    if frames.count > 1 {
+                        let ext = out.pathExtension
+                        out = out.deletingPathExtension()
+                        out = out.deletingLastPathComponent()
+                            .appendingPathComponent(
+                                "\(out.lastPathComponent)-\(n)")
+                            .appendingPathExtension(ext)
+                    }
+                    // A composition's frame as its plan draws it; a
+                    // clip's through its look.
+                    if let plan = m.stackPlayback, !plan.soundOnly,
+                       let img = core.stackStill(plan: plan.plan,
+                                                 frame: n) {
+                        _ = AppModel.writePNG(img, to: out)
+                    } else if let url = m.stage.video,
+                              let look = m.stageClipLook,
+                              let img = await VideoPlayerView.frame(
+                                  url, n, look: look, core: core) {
+                        _ = AppModel.writePNG(img, to: out)
+                    }
                 }
             }
             // The attach menu's captures, in turn: "mic" / "system"

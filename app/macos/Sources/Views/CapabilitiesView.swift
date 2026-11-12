@@ -360,6 +360,7 @@ private struct FeatureBadge: View {
         case "audio-transcribe": "captions.bubble"
         case "video-summary": "text.below.photo"
         case "audio-separate": "music.mic"
+        case "audio-separate-lead": "person.2.wave.2"
         case "micro-agent": "bolt"
         case "frame-interpolation": "film.stack.fill"
         default: "questionmark"
@@ -380,6 +381,7 @@ private struct FeatureBadge: View {
         case "audio-transcribe": String(localized: "Transcription, sound events")
         case "video-summary": String(localized: "Video summary")
         case "audio-separate": String(localized: "Vocals and accompaniment")
+        case "audio-separate-lead": String(localized: "Lead and backing vocals")
         case "micro-agent": String(localized: "Micro agent: names, a 2K pass's words")
         case "frame-interpolation": String(localized: "Frame interpolation, slow motion")
         default: f

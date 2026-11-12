@@ -2099,7 +2099,8 @@ TEST(models, minimax_h3_image_conditions_on_any_h3_encoder)
 }
 
 // The LoRA list: eight on at most, the first in list order (vpipe's
-// slots; seven with HyperFlow); strengths held to 0..2; a file that is
+// slots; seven with HyperFlow); strengths held to -2..2, a negative one
+// kept (the adapter subtracted); a file that is
 // gone kept, off. An older "turbo" file goes first, in the catalog's
 // place.
 TEST(models, tuning_loras)
@@ -2124,11 +2125,15 @@ TEST(models, tuning_loras)
       {{"path", a}, {"scale", 0.8}, {"on", true}},
       {{"path", b}, {"on", true}, {"scale", 5.0}},
   });
-  // Seven more, all asked on: nine in all.
+  // Seven more, all asked on: nine in all. The first subtracted, past
+  // the least strength; the second subtracted.
   for (int i = 0; i < 7; ++i) {
-    list.push_back({{"path", touch(std::format("s{}.safetensors", i)
-                                       .c_str())},
-                    {"on", true}});
+    Json e = {{"path", touch(std::format("s{}.safetensors", i).c_str())},
+              {"on", true}};
+    if (i < 2) {
+      e["scale"] = i == 0 ? -5.0 : -0.65;
+    }
+    list.push_back(std::move(e));
   }
   list.push_back({{"path", (dir / "gone.safetensors").string()},
                   {"on", true}});
@@ -2138,7 +2143,9 @@ TEST(models, tuning_loras)
   Json l = v["loras"];
   REQUIRE(l.size() == 10);
   CHECK(l[0]["on"] == true && l[0]["scale"] == 0.8);
-  CHECK(l[1]["on"] == true && l[1]["scale"] == 2.0);  // held to 0..2
+  CHECK(l[1]["on"] == true && l[1]["scale"] == 2.0);  // held to -2..2
+  CHECK(l[2]["on"] == true && l[2]["scale"] == -2.0);
+  CHECK(l[3]["on"] == true && l[3]["scale"] == -0.65);
   auto on = [](const Json& x) {
     int n = 0;
     for (const auto& e : x) {

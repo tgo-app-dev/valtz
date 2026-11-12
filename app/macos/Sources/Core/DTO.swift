@@ -88,6 +88,7 @@ struct CapabilityStatus: Decodable, Sendable, Identifiable {
         case "audio-transcribe": String(localized: "Transcribe audio")
         case "video-summary": String(localized: "Video summary")
         case "audio-separate": String(localized: "Separate audio")
+        case "audio-separate-lead": String(localized: "Separate lead vocals")
         case "micro-agent": String(localized: "Micro agent")
         case "text-to-audio": String(localized: "Text to audio")
         case "text-to-speech": String(localized: "Text to speech")
@@ -804,6 +805,7 @@ struct AssetOperationDTO: Decodable, Sendable, Hashable, Identifiable {
         case "transcribe": String(localized: "Transcribe")
         case "summarize": String(localized: "Summarize Video")
         case "separate": String(localized: "Separate Vocals and Accompaniment")
+        case "separate-lead": String(localized: "Separate Lead and Backing Vocals")
         case "beats": String(localized: "Detect Beats")
         case "upscale": String(localized: "Render Upscaled")
         case "interpolate": String(localized: "Render Interpolated")
@@ -817,6 +819,7 @@ struct AssetOperationDTO: Decodable, Sendable, Hashable, Identifiable {
         case "transcribe": String(localized: "Its speech line by line, and the sounds heard, into a text asset")
         case "summarize": String(localized: "What it shows, scene by scene and as a whole, into a text asset")
         case "separate": String(localized: "Its voice and its accompaniment, each into a sound of its own")
+        case "separate-lead": String(localized: "Its lead vocals and its backing vocals, each into a sound of its own. Best on a song's vocals: given a whole song, the accompaniment goes with the backing")
         case "beats": String(localized: "Where the beats of its music fall, into a text asset attached to it: on a timeline they are events, and drags snap to them")
         case "upscale": String(localized: "The layer's picture or clip restored at the size it is shown")
         case "interpolate": String(localized: "The layer's clip at the rate its timeline shows it, the frames in between made by RIFE")
@@ -830,6 +833,7 @@ struct AssetOperationDTO: Decodable, Sendable, Hashable, Identifiable {
         case "transcribe": String(localized: "Download Qwen3-ASR and Silero VAD in Settings › Capabilities › Listening to transcribe")
         case "summarize": String(localized: "Download Qwen3.5 9B in Settings › Capabilities › Agentic helpers to summarize")
         case "separate": String(localized: "Download BS-RoFormer in Settings › Capabilities › Stem Separation to separate")
+        case "separate-lead": String(localized: "Download BS-RoFormer Karaoke in Settings › Capabilities › Stem Separation to separate lead vocals")
         case "beats": String(localized: "This vpipe has no beat tracker: install one with beat-track")
         default: String(localized: "Download a model for it in Settings › Capabilities")
         }
@@ -841,6 +845,7 @@ struct AssetOperationDTO: Decodable, Sendable, Hashable, Identifiable {
         case "transcribe": String(localized: "Transcribing \(asset): the transcript goes to Assets.")
         case "summarize": String(localized: "Summarizing \(asset): the summary goes to Assets.")
         case "separate": String(localized: "Separating \(asset): its vocals and accompaniment go to Assets.")
+        case "separate-lead": String(localized: "Separating \(asset): its lead and backing vocals go to Assets.")
         case "beats": String(localized: "Finding the beats of \(asset): they go to Assets, attached to it.")
         default: title
         }

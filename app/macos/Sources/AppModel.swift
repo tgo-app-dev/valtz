@@ -1890,6 +1890,55 @@ final class AppModel: TuningHost {
             : ProcessInfo.processInfo.environment["VALTZ_SNAPSHOT_POINTER"]
         return key.flatMap(PointingDevice.init(rawValue:)) ?? .trackpad
     }
+    /// The look Valtz OPENS in (Settings › General › Appearance, DESIGN
+    /// §10a): LIGHT or DARK whatever the system's appearance, SYSTEM's
+    /// (the default, as before: following it while open), or LAST USED
+    /// -- as Valtz last looked: the light bulb's last choice, else what
+    /// it opened in. Taken at the launch alone (applyLaunchAppearance,
+    /// before any window); the bulb switches it meanwhile. Kept between
+    /// launches -- a snapshot run takes VALTZ_SNAPSHOT_LAUNCH_APPEARANCE's
+    /// ("last:dark": Last Used, last seen dark), saving nothing.
+    enum LaunchAppearance: String, CaseIterable, Sendable {
+        case light, dark, system, last
+    }
+    var launchAppearance = AppModel.storedLaunchAppearance {
+        didSet {
+            Self.keep(launchAppearance.rawValue, as: "appearance.launch")
+        }
+    }
+    private static var launchAppearanceWords: [String] {
+        (ProcessInfo.processInfo.environment[
+            "VALTZ_SNAPSHOT_LAUNCH_APPEARANCE"] ?? "")
+            .split(separator: ":").map(String.init)
+    }
+    static var storedLaunchAppearance: LaunchAppearance {
+        let key = keepsViewState
+            ? UserDefaults.standard.string(forKey: "appearance.launch")
+            : launchAppearanceWords.first
+        return key.flatMap(LaunchAppearance.init(rawValue:)) ?? .system
+    }
+    /// How Valtz last looked -- "light", "dark" or "system" -- for Last
+    /// Used: noted at each launch and by the bulb.
+    private static var lastAppearance: String {
+        (keepsViewState
+            ? UserDefaults.standard.string(forKey: "appearance.last")
+            : launchAppearanceWords.dropFirst().first) ?? "system"
+    }
+    /// The launch's look, set before any window shows (AppDelegate's
+    /// applicationWillFinishLaunching: set later, a window would open in
+    /// the system's look and turn), and noted as the last.
+    static func applyLaunchAppearance() {
+        var look = storedLaunchAppearance.rawValue
+        if look == "last" { look = lastAppearance }
+        switch look {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default:
+            look = "system"
+            NSApp.appearance = nil
+        }
+        keep(look, as: "appearance.last")
+    }
     /// The words each box group was left with; the agent's last sent,
     /// for when its box was emptied by Start.
     struct PromptWords {
@@ -11379,6 +11428,7 @@ final class AppModel: TuningHost {
         take(Self.storedLanding("muted", default: false), \.mutesNewClips)
         take(Self.storedPlacement, \.clipPlacement)
         take(Self.storedPointingDevice, \.pointingDevice)
+        take(Self.storedLaunchAppearance, \.launchAppearance)
         if Self.storedAgentEnabled != agentEnabled {
             setAgentEnabled(Self.storedAgentEnabled)
         }
@@ -11713,6 +11763,7 @@ final class AppModel: TuningHost {
         case "transcribe": String(localized: "Transcribe")
         case "summarize": String(localized: "Summarize Video")
         case "separate": String(localized: "Separate Vocals and Accompaniment")
+        case "separate-lead": String(localized: "Separate Lead and Backing Vocals")
         case "beats": String(localized: "Detect Beats")
         case "beats.attach": String(localized: "Attach Beats")
         case "bookmarks.attach": String(localized: "Attach Bookmarks")
@@ -11814,6 +11865,8 @@ final class AppModel: TuningHost {
             }
         }
         NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        // What Last Used opens in (launchAppearance).
+        Self.keep(dark ? "dark" : "light", as: "appearance.last")
     }
 
     /// The app shows dark now.

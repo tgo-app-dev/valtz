@@ -259,10 +259,11 @@
     },
     {
       "id": "separate", "name": "Stem Separation",
-      "features": ["audio-separate"],
+      "features": ["audio-separate", "audio-separate-lead"],
       "members": [
         {"model": "bs-roformer-vocals", "label": "BS-RoFormer, vocals model (pcunwa, no license stated)"},
-        {"model": "bs-roformer-instrumental", "label": "BS-RoFormer, instrumental model (pcunwa, no license stated)"}
+        {"model": "bs-roformer-instrumental", "label": "BS-RoFormer, instrumental model (pcunwa, no license stated)"},
+        {"model": "bs-roformer-karaoke", "label": "BS-RoFormer, karaoke model: lead and backing vocals (becruily, no license stated)"}
       ]
     },
     {
@@ -791,6 +792,7 @@
                           "minimax-h3-text-encoder"],
       "disk_gb": 68.7, "disk_measured": true,
       "min_ram_gb": 16, "rank": 2,
+      "preview_with": "taeh3",
       "license": "minimax-h3-image",
       "engine": {
         "vpipe": {
@@ -2394,6 +2396,26 @@
       "disk_gb": 0.2, "disk_measured": false, "min_ram_gb": 16, "rank": 1,
       "license": "",
       "notes": "The same network trained on the ACCOMPANIMENT: the cleaner instrumental (a karaoke track), the vocals as what is left. A little slower than the vocals model (finer time steps). Its repository states NO license."
+    },
+    {
+      "id": "bs-roformer-karaoke", "name": "BS-RoFormer Karaoke (lead vocals)",
+      "family": "separate", "role": "separator",
+      "hf_path": "becruily/bs-roformer-karaoke",
+      "file": "bs_roformer_karaoke_frazer_becruily.ckpt",
+      "capabilities": ["audio-separate-lead"],
+      "engine": {
+        "vpipe": {
+          "separate": {
+            "split": "lead", "rate": 44100,
+            "config": "config_karaoke_frazer_becruily.yaml",
+            "sources": ["lead vocals", "backing vocals"],
+            "stem": "lead vocals", "residual": "backing vocals"
+          }
+        }
+      },
+      "disk_gb": 0.2, "disk_measured": false, "min_ram_gb": 16, "rank": 1,
+      "license": "",
+      "notes": "becruily's BS-RoFormer trained for karaoke: the LEAD voice taken from everything else -- the backing vocals and harmonies, and the accompaniment too when it is given a whole song, so it is best on a song's vocals (Separate Vocals and Accompaniment first). One sound for the lead and one for the rest, not one a singer: two singers taking turns are both the lead. The same network as the Resurrection vocals model (51M parameters, under 1 GB of memory) at 20-second chunks overlapped four times: 25 s of a song in about 4 s on an M5 Pro. Its repository holds two identical YAMLs, neither named for the checkpoint: Valtz names one. It states NO license: fetchable, not shipped."
     }
   ]
 }

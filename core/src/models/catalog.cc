@@ -21,7 +21,7 @@ struct CapName {
   const char* label;
 };
 
-constexpr std::array<CapName, 21> kCapNames = {{
+constexpr std::array<CapName, 22> kCapNames = {{
   {Capability::TextToImage, "text-to-image", "Text to image"},
   {Capability::ImageEdit, "image-edit", "Image edit"},
   {Capability::TextToVideo, "text-to-video", "Text to video"},
@@ -40,6 +40,8 @@ constexpr std::array<CapName, 21> kCapNames = {{
   {Capability::Transcribe, "audio-transcribe", "Transcribe audio"},
   {Capability::VideoSummary, "video-summary", "Video summary"},
   {Capability::AudioSeparate, "audio-separate", "Separate audio"},
+  {Capability::AudioSeparateLead, "audio-separate-lead",
+   "Separate lead vocals"},
   {Capability::MicroAgent, "micro-agent", "Micro agent"},
   {Capability::MakeRefMod, "make-refmod", "Make a RefMod"},
   {Capability::InterpolateVideo, "interpolate-video",
@@ -629,6 +631,7 @@ feature_capabilities(std::string_view f)
   if (f == "helper") { return {C::PromptEnhance, C::Intent}; }
   if (f == "video-summary") { return {C::VideoSummary}; }
   if (f == "audio-separate") { return {C::AudioSeparate}; }
+  if (f == "audio-separate-lead") { return {C::AudioSeparateLead}; }
   if (f == "micro-agent") { return {C::MicroAgent}; }
   if (f == "video-upscale") { return {C::UpscaleVideo}; }
   if (f == "image-upscale") { return {C::UpscaleImage}; }

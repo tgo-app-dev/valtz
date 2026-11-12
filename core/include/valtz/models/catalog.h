@@ -42,6 +42,10 @@ enum class Capability : std::uint8_t {
   Transcribe,      // speech to text, sound events heard (Qwen3-ASR)
   VideoSummary,    // a clip told scene by scene (a VLM: Qwen3.5)
   AudioSeparate,   // a song split into its sources (BS-RoFormer)
+  // Its lead voice taken from the rest -- backing vocals, harmonies, and
+  // the accompaniment when a whole song is given (a karaoke model): a
+  // capability apart, so Auto's vocals pick is never a karaoke model.
+  AudioSeparateLead,
   MicroAgent,      // short text tasks of Valtz's own (LFM3-VL 2B)
   MakeRefMod,      // MiniMax H3 reference latents made (DESIGN §4s)
   InterpolateVideo,  // a clip's frames between frames made (RIFE, §4u)
@@ -57,6 +61,7 @@ inline constexpr Capability kAllCapabilities[] = {
   Capability::AudioOutput,   Capability::TextToAudio,
   Capability::TextToSpeech,  Capability::Transcribe,
   Capability::VideoSummary,  Capability::AudioSeparate,
+  Capability::AudioSeparateLead,
   Capability::MicroAgent,    Capability::MakeRefMod,
   Capability::InterpolateVideo,
 };

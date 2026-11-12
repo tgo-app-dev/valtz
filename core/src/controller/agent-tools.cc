@@ -1056,6 +1056,8 @@ constexpr ModelTask kModelTasks[] = {
     {"voiceover", "generate_voiceover", "voice-overs"},
     {"transcribe", "transcribe", "transcripts"},
     {"separate", "separate_sound", "a song's voice and accompaniment"},
+    {"separate_lead", "separate_sound with split lead",
+     "a voice's lead and backing vocals"},
     {"upscale", "upscale_layer", "upscales"},
 };
 
@@ -1091,6 +1093,7 @@ task_capability(std::string_view task, const models::ModelEntry& m)
   using C = models::Capability;
   if (task == "transcribe") return C::Transcribe;
   if (task == "separate") return C::AudioSeparate;
+  if (task == "separate_lead") return C::AudioSeparateLead;
   return m.has(C::UpscaleVideo) ? C::UpscaleVideo : C::UpscaleImage;
 }
 
@@ -1118,6 +1121,7 @@ does_task(const models::ModelEntry& m, std::string_view task)
   if (task == "voiceover") return m.has(C::TextToSpeech);
   if (task == "transcribe") return m.has(C::Transcribe);
   if (task == "separate") return m.has(C::AudioSeparate);
+  if (task == "separate_lead") return m.has(C::AudioSeparateLead);
   if (task == "upscale") {
     return m.has(C::UpscaleVideo) || m.has(C::UpscaleImage);
   }
@@ -2927,6 +2931,7 @@ Controller::AgentHost::tools()
                                    "picture), shot_references (drawing on "
                                    "references, continuing), music, "
                                    "voiceover, transcribe, separate, "
+                                   "separate_lead, "
                                    "upscale; omitted: every task")}}),
            &H::t_list_models});
       t.push_back(
@@ -3818,8 +3823,15 @@ Controller::AgentHost::tools()
     t.push_back(
         {"separate_sound", "generate", "Separate a song",
          "A song split, in the background, into its VOICE and its "
-         "ACCOMPANIMENT, each a new sound of the project.",
+         "ACCOMPANIMENT -- or, `split` lead, a voice into its LEAD VOCALS "
+         "and its BACKING VOCALS (harmonies, a choir: best on the vocals "
+         "a first split made; on a whole song the accompaniment goes "
+         "with the backing) -- each a new sound of the project.",
          schema({{"asset", str("the song's id (a sound)")},
+                 {"split", one_of({"vocals", "lead"},
+                                  "vocals (the default): the voice and "
+                                  "the accompaniment; lead: the lead "
+                                  "vocals and the backing vocals")},
                  {"model", str(kModelDoc)}},
                 {"asset"}),
          &H::t_separate_sound});
@@ -4516,6 +4528,8 @@ Controller::AgentHost::auto_for_(std::string_view task) const
     add(_c.operation_model_(C::Transcribe, "auto"));
   } else if (task == "separate") {
     add(_c.operation_model_(C::AudioSeparate, "auto"));
+  } else if (task == "separate_lead") {
+    add(_c.operation_model_(C::AudioSeparateLead, "auto"));
   } else if (task == "upscale") {
     for (const auto c : {C::UpscaleVideo, C::UpscaleImage}) {
       add(_c.operation_model_(c, "auto", _c.chosen_upscaler_(c)));
@@ -5690,6 +5704,7 @@ Controller::AgentHost::t_get_project(Session& s, Step&, const Json&,
               {"can_transcribe", ready["transcribe/audio"] ||
                                      ready["transcribe/video"]},
               {"can_separate_songs", ready["separate/audio"]},
+              {"can_separate_lead_vocals", ready["separate-lead/audio"]},
               {"can_upscale", ready["upscale/image"] ||
                                   ready["upscale/video"]},
               {"can_make_shots", video},
@@ -11113,24 +11128,34 @@ Controller::AgentHost::t_separate_sound(Session& s, Step& step,
   if (!asset) {
     return make_error(Code::InvalidArgument, "which song?");
   }
+  // The split: the voice from the accompaniment, or -- "lead", read
+  // loosely ("lead vocals", "Lead") -- the lead voice from the backing.
+  const std::string split = squeezed(text_arg(args, "split"));
+  const bool lead = split.starts_with("lead");
+  if (!split.empty() && !lead && !split.starts_with("vocal")) {
+    return make_error(Code::InvalidArgument,
+                      "split is vocals (the voice and the accompaniment) "
+                      "or lead (the lead and the backing vocals)");
+  }
   VALTZ_ASSIGN(const models::ModelEntry* named,
-               model_for_("separate", text_arg(args, "model")));
+               model_for_(lead ? "separate_lead" : "separate",
+                          text_arg(args, "model")));
   auto undo = _c.command_(s.project, "agent", AssetId{}, "",
                           {{"tool", step.tool}, {"title", step.title}});
   Controller::AssetOpRequest req;
   req.project = s.project;
   req.asset = *asset;
-  req.operation = "separate";
+  req.operation = lead ? "separate-lead" : "separate";
   if (named) {
     req.model = named->id;
   }
   VALTZ_ASSIGN(auto made, _c.run_asset_operation(std::move(req)));
   book_(s, step, made.job);
   Json r = {{"job", made.job.str()}, {"queued", true}};
-  // In the operation's order: the voice, then the rest.
+  // In the operation's order: the voice (the lead), then the rest.
   if (made.made.size() >= 2) {
-    r["vocals"] = made.made[0].str();
-    r["accompaniment"] = made.made[1].str();
+    r[lead ? "lead_vocals" : "vocals"] = made.made[0].str();
+    r[lead ? "backing_vocals" : "accompaniment"] = made.made[1].str();
   }
   r["note"] = "Made in the background: wait_for_generations, then "
               "add_sound the one you want.";

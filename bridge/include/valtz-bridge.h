@@ -299,8 +299,9 @@ public:
   //  (none: the row's first), "seconds"?: about how long.
   std::string generate_audio(const std::string& request_json);
   // An ASSET OPERATION (Controller::run_asset_operation, DESIGN §4j):
-  // {"project", "operation" (transcribe | summarize | separate | upscale),
-  //  "asset" (an on-layer operation's composition), "layer"?, "model"?,
+  // {"project", "operation" (transcribe | summarize | separate |
+  //  separate-lead | beats | upscale | interpolate), "asset" (an
+  //  on-layer operation's composition), "layer"?, "model"?,
   //  "options"?: its own -- transcribe {"language"}, summarize {"every"},
   //  separate {"split"}, upscale {"seed"}} -> {"assets": [what it makes,
   //  in order], "asset" (the first), "job"}.

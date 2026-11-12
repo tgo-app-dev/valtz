@@ -222,7 +222,11 @@ largest_weights(const std::filesystem::path& dir)
 // its file, once; a file that is not there kept, marked missing and off
 // -- and "wanted" where it was on, so the choice outlives the file's
 // absence (on again when it is back) and Start can say what it left out.
-// How many may be on -- vpipe's slots, kLoraSlots -- is settled after
+// Its strength is held to -2..2: a negative one takes the adapter's
+// change away from the model (W x - s B (A x)), as ComfyUI's LoRA loader
+// allows -- a slider LoRA turned the other way, a style subtracted.
+// vpipe takes any strength and skips an adapter only at exactly 0. How
+// many may be on -- vpipe's slots, kLoraSlots -- is settled after
 // (settle_loras).
 Json
 loras_of(const Json& in)
@@ -241,7 +245,7 @@ loras_of(const Json& in)
     const bool missing = !std::filesystem::exists(path, ec);
     const bool asked = jget(l, "on", false) || jget(l, "wanted", false);
     double scale = jget(l, "scale", 1.0);
-    scale = std::isfinite(scale) ? std::clamp(scale, 0.0, 2.0) : 1.0;
+    scale = std::isfinite(scale) ? std::clamp(scale, -2.0, 2.0) : 1.0;
     Json e = {{"path", path}, {"scale", scale}, {"on", !missing && asked},
               {"missing", missing}};
     if (missing && asked) {

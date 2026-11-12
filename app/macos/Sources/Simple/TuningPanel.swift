@@ -367,10 +367,11 @@ struct TuningPanel: View {
         }
     }
 
-    /// A LoRA's strength, as the number field takes it.
+    /// A LoRA's strength, as the number field takes it: negative takes
+    /// the adapter's change away (a slider LoRA the other way).
     private static let strength = TuningOption([
         "key": "strength", "type": "real", "available": true,
-        "min": 0.0, "max": 2.0, "step": 0.05,
+        "min": -2.0, "max": 2.0, "step": 0.05,
     ])
 
     /// Why `o` cannot be changed now, or nil when it can: this Mac or

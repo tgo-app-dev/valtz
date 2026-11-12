@@ -420,8 +420,9 @@ class StackCompositor: NSObject, AVVideoCompositing, @unchecked Sendable {
     /// one at 0 in one labelled from -0.085 -- whatever its pitch
     /// algorithm, from a start or after a seek): a ramp set from a
     /// sound's start alone played its first 85 ms -- two frames -- at
-    /// full volume, then the keys' (2026-11-09). The exporter reads the
-    /// mix exactly, offline: it never did.
+    /// full volume, then the keys' (2026-11-09). The exporter's mix
+    /// (core media/sound.mm) glided from 1.0 for ~10 ms: it holds its
+    /// first volume from the mix's start (2026-11-11).
     static func audioMix(_ stack: StackPlayback,
                          tracks: [Int: CMPersistentTrackID]) -> AVAudioMix {
         let mix = AVMutableAudioMix()
